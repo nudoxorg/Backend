@@ -10,8 +10,8 @@ use crate::{
 };
 use backend_semantic::ir::{
     GenerationId, JumboRopeLimits, SemanticImageIdentity, SemanticImageView, SemanticInputClaimV2,
-    SemanticInputWitness, SemanticIrPlane, SemanticPlaneCatalog, SemanticPlaneImageKey,
-    SemanticPlaneKind, SemanticPlaneManifest, SemanticTypedPlaneVerificationTierV2,
+    SemanticIrPlane, SemanticPlaneCatalog, SemanticPlaneImageKey, SemanticPlaneKind,
+    SemanticPlaneManifest, SemanticTypedPlaneVerificationTierV2,
     VerifiedTypedPlaneHistoryContentV3,
 };
 use backend_store::{
@@ -73,29 +73,29 @@ pub trait SelectedNativeImagePublicationFence {
     fn selected_image_identity(&self) -> SemanticImageIdentity;
 }
 
-/// Exact committed selection metadata paired with a structurally reopened
-/// compiler image. Construct this from the same marker-backed source that
-/// serves the workspace's selected semantic image.
-pub struct SelectedNativeHistoryImage<'bytes> {
+/// Exact metadata for one image selected by the committed owner marker.
+///
+/// This metadata-only proof supports idempotency checks before image bytes are
+/// read. It cannot publish history or recreate complete compiler-input
+/// authority; publication requires [`SelectedNativeHistoryImage`], which also
+/// verifies the reopened image bytes.
+pub struct SelectedNativeHistoryBinding {
     target: crate::SemanticTargetKey,
     selection: crate::SelectedSemanticPlane,
     catalog: SemanticPlaneCatalog,
     manifest: SemanticPlaneManifest,
-    image: SemanticImageView<'bytes>,
     image_identity: SemanticImageIdentity,
     input_claim: SemanticInputClaimV2,
 }
 
-impl<'bytes> SelectedNativeHistoryImage<'bytes> {
-    /// Binds a complete native image and its typed manifest to the current
-    /// committed owner selection. This rejects stale catalogs, manifests,
-    /// image generations, or image bytes before the history producer runs.
+impl SelectedNativeHistoryBinding {
+    /// Binds selected catalog and manifest metadata to the committed owner
+    /// selection without loading the native image bytes.
     pub fn bind<S: SelectedNativeImageSource>(
         source: &mut S,
         catalog: SemanticPlaneCatalog,
         image_key: SemanticPlaneImageKey,
         manifest: SemanticPlaneManifest,
-        image: SemanticImageView<'bytes>,
     ) -> Result<Self, String> {
         let target = source
             .selected_semantic_target()
@@ -140,13 +140,6 @@ impl<'bytes> SelectedNativeHistoryImage<'bytes> {
                 .map_err(|error| {
                     format!("read committed image identity for typed V3 history: {error}")
                 })?;
-        let observed_identity = SemanticImageIdentity::from_encoded_bytes(image.as_ref());
-        let observed_generation = GenerationId::from_canonical_bytes(image.as_ref());
-        if observed_identity != expected_identity
-            || observed_generation != image_key.semantic_generation()
-        {
-            return Err("reopened image bytes differ from the committed selected image".to_owned());
-        }
         let core_kind = SemanticPlaneKind::Ir(SemanticIrPlane::Core);
         let selection = crate::SelectedSemanticPlane::select(
             source, &manifest, image_key, core_kind,
@@ -161,9 +154,27 @@ impl<'bytes> SelectedNativeHistoryImage<'bytes> {
             selection,
             catalog,
             manifest,
-            image,
-            image_identity: observed_identity,
+            image_identity: expected_identity,
             input_claim,
+        })
+    }
+
+    /// Verifies image bytes against this selected metadata proof before
+    /// producing or publishing typed history.
+    pub fn bind_image<'bytes>(
+        self,
+        image: SemanticImageView<'bytes>,
+    ) -> Result<SelectedNativeHistoryImage<'bytes>, String> {
+        let observed_identity = SemanticImageIdentity::from_encoded_bytes(image.as_ref());
+        let observed_generation = GenerationId::from_canonical_bytes(image.as_ref());
+        if observed_identity != self.image_identity
+            || observed_generation != self.selection.image().semantic_generation()
+        {
+            return Err("reopened image bytes differ from the committed selected image".to_owned());
+        }
+        Ok(SelectedNativeHistoryImage {
+            binding: self,
+            image,
         })
     }
 
@@ -186,7 +197,7 @@ impl<'bytes> SelectedNativeHistoryImage<'bytes> {
         self.selection.image()
     }
 
-    /// Returns the checked full-image identity recomputed from image bytes.
+    /// Returns the full-image identity admitted by the committed selection.
     #[must_use]
     pub const fn image_identity(&self) -> SemanticImageIdentity {
         self.image_identity
@@ -196,6 +207,79 @@ impl<'bytes> SelectedNativeHistoryImage<'bytes> {
     #[must_use]
     pub const fn manifest(&self) -> &SemanticPlaneManifest {
         &self.manifest
+    }
+
+    /// Returns the persisted input claim without recreating input authority.
+    #[must_use]
+    pub const fn input_claim(&self) -> SemanticInputClaimV2 {
+        self.input_claim
+    }
+
+    /// Returns the exact catalog authenticated by the selected stamp.
+    #[must_use]
+    pub const fn catalog(&self) -> &SemanticPlaneCatalog {
+        &self.catalog
+    }
+}
+
+/// Exact committed selection metadata paired with a structurally reopened
+/// compiler image. Construct this from the same marker-backed source that
+/// serves the workspace's selected semantic image.
+pub struct SelectedNativeHistoryImage<'bytes> {
+    binding: SelectedNativeHistoryBinding,
+    image: SemanticImageView<'bytes>,
+}
+
+impl<'bytes> SelectedNativeHistoryImage<'bytes> {
+    /// Binds a complete native image and its typed manifest to the current
+    /// committed owner selection. This rejects stale catalogs, manifests,
+    /// image generations, or image bytes before the history producer runs.
+    pub fn bind<S: SelectedNativeImageSource>(
+        source: &mut S,
+        catalog: SemanticPlaneCatalog,
+        image_key: SemanticPlaneImageKey,
+        manifest: SemanticPlaneManifest,
+        image: SemanticImageView<'bytes>,
+    ) -> Result<Self, String> {
+        SelectedNativeHistoryBinding::bind(source, catalog, image_key, manifest)?.bind_image(image)
+    }
+
+    /// Returns the exact selected metadata proof usable for idempotency checks
+    /// before loading image bytes.
+    #[must_use]
+    pub const fn metadata_binding(&self) -> &SelectedNativeHistoryBinding {
+        &self.binding
+    }
+
+    /// Returns the exact target namespace selected by the owner source.
+    #[must_use]
+    pub const fn target(&self) -> &crate::SemanticTargetKey {
+        self.binding.target()
+    }
+
+    /// Returns the selected generation stamp captured by the nonconstructible
+    /// plane-selection proof.
+    #[must_use]
+    pub const fn selected_stamp(&self) -> crate::SelectedGenerationStamp {
+        self.binding.selected_stamp()
+    }
+
+    /// Returns the exact image catalog key captured by this binding.
+    #[must_use]
+    pub const fn image_key(&self) -> SemanticPlaneImageKey {
+        self.binding.image_key()
+    }
+
+    /// Returns the checked full-image identity recomputed from image bytes.
+    #[must_use]
+    pub const fn image_identity(&self) -> SemanticImageIdentity {
+        self.binding.image_identity()
+    }
+
+    /// Returns the canonical selected manifest.
+    #[must_use]
+    pub const fn manifest(&self) -> &SemanticPlaneManifest {
+        self.binding.manifest()
     }
 
     /// Returns the structurally reopened full semantic image bound to the
@@ -208,13 +292,13 @@ impl<'bytes> SelectedNativeHistoryImage<'bytes> {
     /// Returns the exact catalog authenticated by the selected stamp.
     #[must_use]
     pub const fn catalog(&self) -> &SemanticPlaneCatalog {
-        &self.catalog
+        self.binding.catalog()
     }
 
     /// Returns the persisted input claim without recreating input authority.
     #[must_use]
     pub const fn input_claim(&self) -> SemanticInputClaimV2 {
-        self.input_claim
+        self.binding.input_claim()
     }
 }
 
@@ -496,16 +580,15 @@ impl FileSemanticRangeStore {
     /// still independently verifies the persisted closure before serving it.
     pub fn selected_typed_v3_history_branch_current(
         &self,
-        selected: &SelectedNativeHistoryImage<'_>,
+        selected: &SelectedNativeHistoryBinding,
         branch: &crate::HistoryRefName,
     ) -> Result<Option<crate::HistoryCommitId>, String> {
         let _state_lock = self.acquire_state_lock()?;
         let target = selected.target();
-        let Some(reference) = self.generations.history_ref(
-            target,
-            crate::HistoryRefKind::Branch,
-            branch,
-        )? else {
+        let Some(reference) =
+            self.generations
+                .history_ref(target, crate::HistoryRefKind::Branch, branch)?
+        else {
             return Ok(None);
         };
         let commit_id = reference.commit();
@@ -1523,6 +1606,14 @@ mod tests {
             .current(&target)
             .expect("read selected native generation")
             .expect("fixture selected generation exists");
+        let mut metadata_source = source_copy(&source);
+        let selected_metadata = SelectedNativeHistoryBinding::bind(
+            &mut metadata_source,
+            selected.catalog().clone(),
+            selected.image(),
+            selected.manifest().clone(),
+        )
+        .expect("bind selected metadata before loading native image bytes");
         let selected_image = store
             .find_semantic_image(&target, selected.image())
             .expect("open selected native image")
@@ -1736,7 +1827,7 @@ mod tests {
         assert_ne!(second_commit, commit_id);
         assert_eq!(
             store
-                .selected_typed_v3_history_branch_current(&selected_binding, &typed_branch)
+                .selected_typed_v3_history_branch_current(&selected_metadata, &typed_branch,)
                 .expect("read exact selected V3 branch tip"),
             Some(second_commit),
             "the retry check recognizes the exact committed selected image"
@@ -1745,14 +1836,14 @@ mod tests {
             crate::HistoryRefName::new("selected-native-v3-absent").expect("empty branch name");
         assert_eq!(
             store
-                .selected_typed_v3_history_branch_current(&selected_binding, &absent_branch)
+                .selected_typed_v3_history_branch_current(&selected_metadata, &absent_branch,)
                 .expect("read absent selected V3 branch"),
             None,
             "the retry check does not invent a branch tip"
         );
         assert_eq!(
             store
-                .selected_typed_v3_history_branch_current(&selected_binding, &local_cache)
+                .selected_typed_v3_history_branch_current(&selected_metadata, &local_cache,)
                 .expect("read the separate transfer-cache branch"),
             None,
             "the selected V3 lineage does not reuse a V2 local-cache tip"

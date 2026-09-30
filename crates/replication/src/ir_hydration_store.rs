@@ -55,7 +55,8 @@ pub use history_v2::{
     TypedV2HistoryResidentReplay,
 };
 pub use history_v3::{
-    SelectedNativeHistoryImage, SelectedNativeImagePublicationFence, SelectedNativeImageSource,
+    SelectedNativeHistoryBinding, SelectedNativeHistoryImage, SelectedNativeImagePublicationFence,
+    SelectedNativeImageSource,
 };
 pub(crate) use history_v3::{
     TypedV3HistoryAdmission, TypedV3HistoryAdmissionMetrics, TypedV3HistoryGcPin,
