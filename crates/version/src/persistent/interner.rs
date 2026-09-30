@@ -1,6 +1,7 @@
 use super::build::{build_tree, build_tree_owned, empty_node};
 use super::update::{
-    apply_structural, collect_target_range, find_node, get_node, replace_existing, target_shape,
+    apply_structural, collect_target_range, find_node, get_node, replace_existing,
+    replacement_keeps_encoded_width, target_shape,
 };
 use super::{Item, Node, PersistentTree, PreparedUpdate, TreeChange, TreeWork};
 use super::{
@@ -183,7 +184,11 @@ impl<R: Relation> PersistentTree<R, NoInterner> {
                 work,
             ));
         }
-        if changes.len() == 1 && changes[0].after.is_some() && single_present {
+        if changes.len() == 1
+            && changes[0].after.is_some()
+            && single_present
+            && replacement_keeps_encoded_width(&self.root, &changes[0])
+        {
             let mut work = TreeWork::default();
             let root = replace_existing(
                 &self.root,
@@ -419,7 +424,11 @@ impl<R: Relation, I: TreeInterner<R> + Clone> PersistentTree<R, I> {
                 work,
             ));
         }
-        if changes.len() == 1 && changes[0].after.is_some() && single_present {
+        if changes.len() == 1
+            && changes[0].after.is_some()
+            && single_present
+            && replacement_keeps_encoded_width(&self.root, &changes[0])
+        {
             let mut work = TreeWork::default();
             let root = replace_existing(
                 &self.root,

@@ -841,12 +841,25 @@ fn lazy_batch_falls_back_cleanly_on_width_and_leaf_cut_changes()
         LazyTreeMetadataShape::new(8, 500, 64, 1024, 35, 3),
     ));
     for (label, changes, shape) in cases {
+        let mut expected = items.clone();
+        for change in &changes {
+            let index = expected
+                .binary_search_by_key(&change.key, |(key, _)| *key)
+                .map_err(|_| "stable replacement fixture key missing")?;
+            expected[index].1 = change.after.clone().expect("replacement value");
+        }
+        let rebuilt = PersistentTree::<VariableRelation>::from_sorted_items(&expected)?;
         let mut sequential = tree.clone();
         for change in &changes {
             sequential = sequential
                 .prepare_update(std::slice::from_ref(change))?
                 .commit();
         }
+        assert_eq!(
+            sequential.root().as_bytes(),
+            rebuilt.root().as_bytes(),
+            "{label} eager replacements must match a full canonical rebuild"
+        );
         let loader = MeasuredLoader::<VariableRelation>::new(base_nodes.clone());
         let claim = UntrustedId::from_wire(
             tree.root().commitment().as_bytes(),
@@ -875,13 +888,13 @@ fn lazy_batch_falls_back_cleanly_on_width_and_leaf_cut_changes()
         let baseline_reads = baseline_loader.calls.get() - baseline_calls_before;
         assert_eq!(
             baseline.target().node().as_bytes(),
-            sequential.root().as_bytes()
+            rebuilt.root().as_bytes()
         );
 
         let update = lazy.prepare_replacements_bounded(&replacements, budget)?;
         assert_eq!(
             update.target().node().as_bytes(),
-            sequential.root().as_bytes(),
+            rebuilt.root().as_bytes(),
             "{label} fallback must start from the original root without a partial overlay"
         );
         assert!(loader.calls.get() > calls_before);
@@ -894,7 +907,7 @@ fn lazy_batch_falls_back_cleanly_on_width_and_leaf_cut_changes()
             "{label} must exercise the sequential fallback after provisional shared-path work"
         );
 
-        let cold_nodes = sequential
+        let cold_nodes = rebuilt
             .node_closure()
             .map(|node| (node.id().to_bytes(), node.canonical_bytes().to_vec()))
             .collect();

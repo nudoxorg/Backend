@@ -83,6 +83,27 @@ pub(super) fn target_shape<R: Relation>(
     }
     Ok((len, single_present, single_noop))
 }
+
+/// Returns whether a present row replacement keeps the encoded value width.
+///
+/// Leaf anchors account for encoded entry sizes. Keeping a one-row replacement
+/// on the existing leaf is canonical only when its encoded width is unchanged;
+/// width changes must use the structural splice path so neighboring leaf cuts
+/// can be recomputed under the canonical byte bound.
+pub(super) fn replacement_keeps_encoded_width<R: Relation>(
+    root: &Node<R>,
+    change: &TreeChange<R>,
+) -> bool {
+    let (Some(before), Some(after)) = (get_node(root, &change.key), change.after.as_ref()) else {
+        return false;
+    };
+    let mut before_bytes = Vec::new();
+    R::encode_value(before, &mut before_bytes);
+    let mut after_bytes = Vec::new();
+    R::encode_value(after, &mut after_bytes);
+    before_bytes.len() == after_bytes.len()
+}
+
 pub(super) fn collect_target_range<R: Relation>(changes: &[TreeChange<R>]) -> Vec<Item<R>> {
     changes
         .iter()
