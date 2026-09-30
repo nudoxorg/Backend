@@ -157,6 +157,7 @@ async fn remote_index_capability_echo_works_from_an_independent_client_process()
             })
             .await
             .expect("send bounded echo response");
+        let _ = timeout(Duration::from_secs(5), session.receive_request()).await;
         listener
             .shutdown()
             .await
@@ -188,13 +189,15 @@ async fn remote_index_capability_echo_works_from_an_independent_client_process()
         .await
         .expect("remote-index client process timeout")
         .expect("wait for remote-index client process");
+    serving
+        .await
+        .unwrap_or_else(|error| panic!("remote-index owner task failed: {error:?}"));
     assert!(
         output.status.success(),
         "remote-index client failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("remote-index-echo-bytes=65536"));
-    serving.await.expect("remote-index owner task");
     endpoint.close().await;
     std::fs::remove_dir_all(directory).expect("remove remote-index test state");
 }
