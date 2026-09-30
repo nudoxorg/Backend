@@ -1385,12 +1385,17 @@ fn store_failure(
         StoreError::PreparedWithSyncPending { .. } | StoreError::PublishedWithSyncPending(_) => {
             SelectedTypedV3HistoryError::RetryableAvailability { operation, detail }
         }
-        StoreError::Bounds | StoreError::OversizedKey => refused(
+        StoreError::Bounds | StoreError::OversizedKey | StoreError::NeedsScopedRebuild => refused(
             operation,
             SelectedTypedV3HistoryRefusal::ResourceLimit,
             detail,
         ),
-        StoreError::Corrupt | StoreError::UnsafePath => refused(
+        StoreError::Corrupt
+        | StoreError::UnsafePath
+        | StoreError::WrongBase
+        | StoreError::BeforeMismatch(_)
+        | StoreError::TargetMismatch
+        | StoreError::MalformedDelta => refused(
             operation,
             SelectedTypedV3HistoryRefusal::IntegrityFailure,
             detail,
@@ -1403,11 +1408,6 @@ fn store_failure(
         StoreError::StaleHead => refused(
             operation,
             SelectedTypedV3HistoryRefusal::HistoryStateMismatch,
-            detail,
-        ),
-        _ => refused(
-            operation,
-            SelectedTypedV3HistoryRefusal::UnclassifiedFailure,
             detail,
         ),
     }
@@ -2084,6 +2084,59 @@ mod tests {
         )
         .expect_err("a successfully read, different selection tuple is stale");
         assert_eq!(movement, SelectedTypedV3HistoryError::StaleSelection);
+    }
+
+    #[test]
+    fn typed_history_store_io_cas_conflict_and_integrity_keep_distinct_outcomes() {
+        let io = store_failure(
+            SelectedTypedV3HistoryOperation::ComposePayloadClosure,
+            backend_store::StoreError::Io("temporary fixture I/O".to_owned()),
+        );
+        assert!(matches!(
+            io,
+            SelectedTypedV3HistoryError::RetryableAvailability {
+                operation: SelectedTypedV3HistoryOperation::ComposePayloadClosure,
+                ..
+            }
+        ));
+
+        let corruption = store_failure(
+            SelectedTypedV3HistoryOperation::ComposePayloadClosure,
+            backend_store::StoreError::Corrupt,
+        );
+        assert!(matches!(
+            corruption,
+            SelectedTypedV3HistoryError::Refused {
+                cause: SelectedTypedV3HistoryRefusal::IntegrityFailure,
+                ..
+            }
+        ));
+
+        let branch_conflict = history_mutation_failure(
+            SelectedTypedV3HistoryOperation::CompareAndSwapRef,
+            crate::ir_generation_store::HistoryMutationError::CompareAndSwapMismatch,
+        );
+        assert!(matches!(
+            branch_conflict,
+            SelectedTypedV3HistoryError::RetryableAvailability {
+                operation: SelectedTypedV3HistoryOperation::CompareAndSwapRef,
+                ..
+            }
+        ));
+
+        let invalid_record = history_mutation_failure(
+            SelectedTypedV3HistoryOperation::CompareAndSwapRef,
+            crate::ir_generation_store::HistoryMutationError::Refused(
+                "invalid history record".to_owned(),
+            ),
+        );
+        assert!(matches!(
+            invalid_record,
+            SelectedTypedV3HistoryError::Refused {
+                cause: SelectedTypedV3HistoryRefusal::UnclassifiedFailure,
+                ..
+            }
+        ));
     }
 
     #[test]
