@@ -1136,6 +1136,23 @@ fn durable_budget_refusal_keeps_a_valid_selected_root_for_later_reopen() {
     let selected = root.join(DURABLE_ROOTS_DIRECTORY).join(key);
     let original_manifest =
         std::fs::read(selected.join(INTEGRITY_FILE)).expect("integrity manifest");
+    let full_root_bytes = crate::engine::test_support::durable_root_bytes_for_test(&selected)
+        .expect("measure published root and marker bytes");
+    let below_full_root = DurableCacheBudget::new(full_root_bytes - 1)
+        .expect("nonzero budget below full selected root");
+    assert!(matches!(
+        TantivySource::open_in_dir_with_budget(
+            &state,
+            Limits::default(),
+            &selected,
+            below_full_root,
+        ),
+        Err(TantivySourceError::BudgetExceeded {
+            budget_bytes,
+            required_bytes,
+        }) if budget_bytes == full_root_bytes - 1 && required_bytes == full_root_bytes
+    ));
+    assert!(selected.is_dir(), "root-byte refusal must preserve the selected root");
     let tiny_budget = DurableCacheBudget::new(1).expect("nonzero cache budget");
 
     assert!(matches!(
@@ -1426,6 +1443,45 @@ fn durable_root_pin_survives_cross_process_pruning_then_releases_for_eviction() 
     assert_eq!(term_hits(&reopened, "revision8"), vec![document(8)]);
     assert!(!old_root.exists(), "released old root should be evicted");
     drop(reopened);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn pinned_and_selected_root_bytes_remain_charged_after_evicting_unretained_roots() {
+    let root = std::env::temp_dir().join(format!(
+        "backend-tantivy-pin-quota-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).expect("create cache root");
+    let root_path = |digit: char| root.join(digit.to_string().repeat(64));
+    let selected = root_path('0');
+    let pinned = root_path('1');
+    let evictable_a = root_path('2');
+    let evictable_b = root_path('3');
+    for path in [&selected, &pinned, &evictable_a, &evictable_b] {
+        std::fs::create_dir(path).expect("create generation root");
+        std::fs::write(path.join(BINDING_FILE), [0_u8; 32]).expect("binding stamp");
+        std::fs::write(path.join(".last-used"), [0_u8; 16]).expect("use stamp");
+    }
+    let lease = crate::engine::test_support::pin_durable_root_for_test(&pinned)
+        .expect("hold independent reader pin");
+    let budget = DurableCacheBudget::new(95).expect("nonzero byte budget");
+    assert!(matches!(
+        crate::engine::test_support::prune_durable_roots_for_test(&root, &selected, budget),
+        Err(TantivySourceError::BudgetExceeded {
+            budget_bytes: 95,
+            required_bytes: 96,
+        })
+    ));
+    assert!(selected.is_dir());
+    assert!(pinned.is_dir());
+    assert!(!evictable_a.exists());
+    assert!(!evictable_b.exists());
+    drop(lease);
     let _ = std::fs::remove_dir_all(root);
 }
 

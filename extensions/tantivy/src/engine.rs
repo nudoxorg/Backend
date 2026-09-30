@@ -1453,6 +1453,9 @@ fn write_projection_manifest(
     budget: DurableCacheBudget,
 ) -> Result<(), TantivySourceError> {
     let files = projection_file_fingerprints(directory, budget)?;
+    let content_bytes = files.values().try_fold(0_u64, |total, (size, _)| {
+        total.checked_add(*size).ok_or(Error::SizeLimit)
+    })?;
     let count = u32::try_from(files.len()).map_err(|_| Error::SizeLimit)?;
     let mut bytes = Vec::new();
     bytes.extend_from_slice(INTEGRITY_MAGIC);
@@ -1471,6 +1474,19 @@ fn write_projection_manifest(
     }
     if bytes.len() as u64 > MAX_PROJECTION_MANIFEST_BYTES {
         return Err(Error::SizeLimit.into());
+    }
+    // Reserve the integrity record and the fixed last-used marker before the
+    // root can be selected. Root leases are zero-length markers; transient
+    // writer locks are likewise zero-length on supported Tantivy versions.
+    let required_bytes = content_bytes
+        .checked_add(u64::try_from(bytes.len()).map_err(|_| Error::SizeLimit)?)
+        .and_then(|total| total.checked_add(16))
+        .ok_or(Error::SizeLimit)?;
+    if required_bytes > budget.max_bytes() {
+        return Err(TantivySourceError::BudgetExceeded {
+            budget_bytes: budget.max_bytes(),
+            required_bytes,
+        });
     }
     let staging = directory.join(format!(".{INTEGRITY_FILE}.tmp"));
     let mut file = backend_platform::durability::open_or_truncate_regular_file_nofollow(&staging)?;
@@ -1581,6 +1597,13 @@ fn verify_projection_manifest(
         return Err(TantivySourceError::Corrupt(
             "durable projection files do not match their integrity manifest",
         ));
+    }
+    let required_bytes = durable_root_size(directory)?;
+    if required_bytes > budget.max_bytes() {
+        return Err(TantivySourceError::BudgetExceeded {
+            budget_bytes: budget.max_bytes(),
+            required_bytes,
+        });
     }
     Ok(())
 }
@@ -2075,9 +2098,7 @@ fn prune_durable_roots(
     }
     for candidate in candidates.iter().filter(|candidate| !candidate.retained) {
         match remove_unpinned_projection_root(&candidate.path) {
-            Ok(()) => {
-                retained_bytes = retained_bytes.saturating_sub(candidate.bytes);
-            }
+            Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 // A reader may have pinned the root after classification. Keep
                 // it; reader leases are outside the root-count limit but remain
@@ -2215,6 +2236,28 @@ pub(crate) mod test_support {
         budget: super::DurableCacheBudget,
     ) -> Result<(), super::TantivySourceError> {
         super::write_projection_manifest(directory, fingerprint, budget)
+    }
+
+    pub(crate) fn prune_durable_roots_for_test(
+        root: &std::path::Path,
+        selected: &std::path::Path,
+        budget: super::DurableCacheBudget,
+    ) -> Result<(), super::TantivySourceError> {
+        super::prune_durable_roots(root, selected, budget)
+    }
+
+    pub(crate) fn pin_durable_root_for_test(
+        root: &std::path::Path,
+    ) -> Result<std::fs::File, std::io::Error> {
+        let lease = super::open_root_lease(root)?;
+        lease.lock_shared()?;
+        Ok(lease)
+    }
+
+    pub(crate) fn durable_root_bytes_for_test(
+        root: &std::path::Path,
+    ) -> Result<u64, std::io::Error> {
+        super::durable_root_size(root)
     }
 }
 
