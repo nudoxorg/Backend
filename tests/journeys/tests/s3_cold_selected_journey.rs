@@ -19,7 +19,7 @@ use backend_semantic::ir::{
     SemanticPlaneRoot,
 };
 use backend_semantic::vocabulary::{LanguageProfile, RustEdition};
-use backend_store::{FileStore, UntrustedObjectId};
+use backend_store::{FileStore, ObjectId, UntrustedObjectId};
 use backend_store_s3::test_support::LoopbackS3;
 use serde_json::Value;
 use std::ffi::{OsStr, OsString};
@@ -469,15 +469,29 @@ fn run_storage_case(
         !selected_members.is_empty(),
         "selected generation has no plane segments"
     );
+    let local_pin = local_store
+        .pin_garbage_collection()
+        .expect("pin selected members during admission checks");
     for member in &selected_members {
         assert!(
             local_store
-                .open_object(UntrustedObjectId::from_bytes(*member))
-                .expect("verify local selected member before cold restart")
-                .is_some(),
+                .contains_object(ObjectId::from_bytes(*member))
+                .expect("inspect local selected member before cold restart"),
             "selected closure member was not local before publication"
         );
+        let expected_id = ObjectId::from_bytes(*member);
+        local_store
+            .with_verified_object_claim_pinned(
+                &local_pin,
+                UntrustedObjectId::from_bytes(*member),
+                |verified| {
+                    assert_eq!(verified.id(), expected_id);
+                    Ok(())
+                },
+            )
+            .expect("admit local selected member before cold restart");
     }
+    drop(local_pin);
 
     if let Some(s3) = s3 {
         let receipt_root = workspace.join("remote-s3-receipts");
@@ -532,26 +546,75 @@ fn run_storage_case(
 
     let cold_store = FileStore::open(workspace.join("semantic-objects"), 512 * 1024 * 1024)
         .expect("reopen FileStore after cold restart");
+    let cold_pin = cold_store
+        .pin_garbage_collection()
+        .expect("pin selected members during cold admission checks");
+    let mut locally_present_members = 0usize;
+    let mut remotely_resident_members = 0usize;
     for member in &selected_members {
+        let expected_id = ObjectId::from_bytes(*member);
         let present = cold_store
-            .open_object(UntrustedObjectId::from_bytes(*member))
-            .expect("inspect selected closure member after restart")
-            .is_some();
+            .contains_object(expected_id)
+            .expect("inspect selected closure member after restart");
         assert_eq!(
             present,
             s3.is_none(),
             "selected plane segment residency did not match the configured storage route"
         );
+        if present {
+            locally_present_members += 1;
+            cold_store
+                .with_verified_object_claim_pinned(
+                    &cold_pin,
+                    UntrustedObjectId::from_bytes(*member),
+                    |verified| {
+                        assert_eq!(verified.id(), expected_id);
+                        Ok(())
+                    },
+                )
+                .expect("admit selected closure member after restart");
+        } else {
+            remotely_resident_members += 1;
+        }
     }
+    assert_eq!(
+        locally_present_members,
+        if s3.is_none() {
+            selected_members.len()
+        } else {
+            0
+        },
+        "cold restart retained the wrong number of selected plane members locally"
+    );
+    assert_eq!(
+        remotely_resident_members,
+        if s3.is_some() {
+            selected_members.len()
+        } else {
+            0
+        },
+        "cold restart left the wrong number of selected plane members remote"
+    );
     for member in &locally_retained {
         assert!(
             cold_store
-                .open_object(UntrustedObjectId::from_bytes(*member))
-                .expect("inspect locally retained metadata/image after restart")
-                .is_some(),
+                .contains_object(ObjectId::from_bytes(*member))
+                .expect("inspect locally retained metadata/image after restart"),
             "selected envelope, compiler metadata, or semantic image was evicted"
         );
+        let expected_id = ObjectId::from_bytes(*member);
+        cold_store
+            .with_verified_object_claim_pinned(
+                &cold_pin,
+                UntrustedObjectId::from_bytes(*member),
+                |verified| {
+                    assert_eq!(verified.id(), expected_id);
+                    Ok(())
+                },
+            )
+            .expect("admit locally retained metadata/image after restart");
     }
+    drop(cold_pin);
 
     // These ordinary product queries run through the cold process before any range hydration.
     let search = cli_json(
