@@ -548,6 +548,14 @@ pub fn fold_at(widths: &[f32], room: f32, gap: f32, fold: impl Fn(usize) -> f32)
     shown
 }
 
+/// Fits the single-line dependency row, keeping its first exact name visible
+/// on a narrow row when even that name and the overflow control cannot share
+/// a line. In that fallback the caller wraps the overflow control below it.
+fn fold_at_wrapping_overflow(widths: &[f32], room: f32, gap: f32, fold: impl Fn(usize) -> f32) -> (usize, bool) {
+    let shown = fold_at(widths, room, gap, fold);
+    if shown == 0 && !widths.is_empty() { (1, true) } else { (shown, false) }
+}
+
 struct FoldState {
     opened: Rc<Cell<Option<Instant>>>,
 }
@@ -578,7 +586,7 @@ impl RenderOnce for DepLine {
         let fold_words = |n: usize| format!("and {n} more");
         let fold_w = |n: usize| f32::from(probe::natural_width(&SharedString::from(fold_words(n)), word_role, 1.0, window));
         let room = f32::from(measure.width()) - on_w;
-        let shown = fold_at(&widths, room, gap, fold_w);
+        let (shown, wrap_overflow) = fold_at_wrapping_overflow(&widths, room, gap, fold_w);
         let hidden = ordered.len() - shown;
         let now = motion::now(cx);
         let open_t = opened_cell.get().map(|at| now.saturating_duration_since(at).as_secs_f32() * 1000.0);
@@ -597,7 +605,7 @@ impl RenderOnce for DepLine {
                 &measure,
                 palette.ink3,
             )));
-        if !open {
+        if !open && !wrap_overflow {
             // Nothing wraps at rest: the line folds instead.
             line = line.flex_nowrap().overflow_hidden();
         }
@@ -659,7 +667,7 @@ impl RenderOnce for DepLine {
 
 #[cfg(test)]
 mod tests {
-    use super::{DepFacts, DepKind, fold_at};
+    use super::{DepFacts, DepKind, fold_at, fold_at_wrapping_overflow};
 
     fn unread(kind: DepKind) -> DepFacts {
         DepFacts {
@@ -699,6 +707,13 @@ mod tests {
         // Everything fits: no token at all.
         assert_eq!(fold_at(&[100.0; 3], 320.0, 10.0, |_| 50.0), 3);
         assert_eq!(fold_at(&[400.0], 300.0, 10.0, |_| 50.0), 0);
+    }
+
+    #[test]
+    fn a_narrow_dependency_row_keeps_one_name_and_wraps_the_fold_below() {
+        assert_eq!(fold_at_wrapping_overflow(&[100.0, 120.0], 80.0, 10.0, |_| 60.0), (1, true));
+        assert_eq!(fold_at_wrapping_overflow(&[100.0, 120.0], 300.0, 10.0, |_| 60.0), (2, false));
+        assert_eq!(fold_at_wrapping_overflow(&[], 80.0, 10.0, |_| 60.0), (0, false));
     }
 }
 
