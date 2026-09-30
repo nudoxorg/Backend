@@ -573,7 +573,10 @@ fn main() {
     shots.push(staged("tokio-berg", &tokio, vec![vec![], vec![Act::Click("weight-label")], vec![Act::Hover("berg-block-2")], vec![]]));
     shots.push(staged("tokio-stamp", &tokio, vec![vec![], vec![Act::Hover("licence-verdict")], vec![]]));
     shots.push(staged("tokio-ticker", &tokio, vec![vec![], vec![Act::Hover("bar-1.28.0")], vec![]]));
-    shots.push(staged("tokio-features", &tokio, vec![vec![], vec![Act::Click("=full")], vec![Act::Away], vec![]]));
+    // Feature previews are read-only. Keep the scene and repeated settled
+    // frame, without dispatching a stale click at a control that no longer
+    // exists.
+    shots.push(staged("tokio-features", &tokio, vec![vec![], vec![], vec![]]));
     shots.push(staged("toml-past", &toml, vec![vec![], vec![Act::Go(Intent::SetRelease(Some(ReleaseId::new("0.5.11").expect("release"))))], vec![Act::Hover("region-de")], vec![]]));
     if percent != 100 {
         for shot in &mut shots {
