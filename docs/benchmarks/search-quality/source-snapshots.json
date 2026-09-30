@@ -16,8 +16,8 @@
     },
     {
       "path": "Cargo.toml",
-      "sha256": "c8f81d4431bfe43892369920b26def7397514e766b582b4f27e6de657e596131",
-      "snapshot_id": "workspace-file:sha256:c8f81d4431bfe43892369920b26def7397514e766b582b4f27e6de657e596131"
+      "sha256": "a771e2303d4a7f01ed47e501ed5b83674a0eb7c7a61c41995183bbfd6f69232e",
+      "snapshot_id": "workspace-file:sha256:a771e2303d4a7f01ed47e501ed5b83674a0eb7c7a61c41995183bbfd6f69232e"
     },
     {
       "path": "crates/advisory/fixtures/rustsec/crates/bincode/RUSTSEC-2025-0141.md",
@@ -56,18 +56,18 @@
     },
     {
       "path": "crates/local-service/Cargo.toml",
-      "sha256": "4f3bc4736883d24f36b919cdb2d7fb44d9d3b4284f414d4a997d17d2b3ae98bf",
-      "snapshot_id": "workspace-file:sha256:4f3bc4736883d24f36b919cdb2d7fb44d9d3b4284f414d4a997d17d2b3ae98bf"
+      "sha256": "5fa2623cdd677824ded782957ebcf465cfd815d1d15eeffdce846b3c77172b5e",
+      "snapshot_id": "workspace-file:sha256:5fa2623cdd677824ded782957ebcf465cfd815d1d15eeffdce846b3c77172b5e"
     },
     {
       "path": "crates/local-service/src/builtin.rs",
-      "sha256": "0827827917c824d9e3da07810bdf22f2ffb351f83e799a122e29d354f4f89f83",
-      "snapshot_id": "workspace-file:sha256:0827827917c824d9e3da07810bdf22f2ffb351f83e799a122e29d354f4f89f83"
+      "sha256": "7882b440301468ab49f03770127c4e8eebddae58134e25c88b42e853544c2873",
+      "snapshot_id": "workspace-file:sha256:7882b440301468ab49f03770127c4e8eebddae58134e25c88b42e853544c2873"
     },
     {
       "path": "crates/local-service/src/lib.rs",
-      "sha256": "dc9fa13e775084689f703c1e681ca2e85a20b63b769da4350a66fa6b554e806e",
-      "snapshot_id": "workspace-file:sha256:dc9fa13e775084689f703c1e681ca2e85a20b63b769da4350a66fa6b554e806e"
+      "sha256": "34628de03437c558647548bc1094e4efcbb4ec51d948c2cdcfe42a82b2a5084e",
+      "snapshot_id": "workspace-file:sha256:34628de03437c558647548bc1094e4efcbb4ec51d948c2cdcfe42a82b2a5084e"
     },
     {
       "path": "docs/benchmarks/search-quality/adapter/Cargo.toml",
