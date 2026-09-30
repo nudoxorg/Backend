@@ -94,7 +94,10 @@ impl DocumentState {
     ) -> Result<Self, Error> {
         let limits = limits.validate()?;
         let coverage = state.coverage();
-        if !matches!(coverage, CoverageWitness::Complete(_) | CoverageWitness::Closed(_)) {
+        if !matches!(
+            coverage,
+            CoverageWitness::Complete(_) | CoverageWitness::Closed(_)
+        ) {
             return Err(Error::IncompleteCoverage);
         }
         validate_document_state(&state, limits)?;
@@ -126,6 +129,10 @@ impl DocumentState {
         self.state
             .iter()
             .map(|(id, fields)| (*id, fields.as_slice()))
+    }
+
+    pub(crate) fn fields_for(&self, id: EntityId) -> Option<&[(String, String)]> {
+        self.state.get(&id).map(Vec::as_slice)
     }
 
     /// Prepares a checked exact delta from this state.

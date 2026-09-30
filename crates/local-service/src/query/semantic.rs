@@ -2,7 +2,7 @@ use super::local::{
     CoverageBasis, Freshness, Lane, LaneReport, LocalAnswer, QueryResult, RankedRow, SourceBasis,
 };
 use backend_extension_qdrant as semantic;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fmt;
 
 /// Closed policy for composing admitted semantic candidates with the
@@ -149,7 +149,10 @@ fn compose(
     answer: &LocalAnswer,
     policy: CompositionPolicy,
     result: &semantic::VectorSearchResult,
-    lexical: &BTreeMap<backend_semantic::EntityId, backend_extension_tantivy::Relevance>,
+    lexical: &[(
+        backend_semantic::EntityId,
+        backend_extension_tantivy::Relevance,
+    )],
 ) -> Composition {
     let qualified = !answer.query.qualified_clauses().is_empty();
     let mut ranked = Vec::with_capacity(answer.query.limit());
@@ -163,7 +166,10 @@ fn compose(
             suppressed = suppressed.saturating_add(1);
             continue;
         };
-        let relevance = lexical.get(&entity).copied();
+        let relevance = lexical
+            .binary_search_by_key(&entity, |(candidate, _)| *candidate)
+            .ok()
+            .map(|index| lexical[index].1);
         if relevance.is_none() {
             if qualified {
                 suppressed = suppressed.saturating_add(1);

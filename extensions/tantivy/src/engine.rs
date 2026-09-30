@@ -14,13 +14,12 @@ use std::{
 };
 use tantivy::columnar::BytesColumn;
 use tantivy::{
-    DocAddress, DocId, DocSet, Index, IndexReader, TERMINATED, TantivyDocument, Term,
+    DocAddress, DocId, DocSet, Index, IndexReader, ReloadPolicy, TERMINATED, TantivyDocument, Term,
     query::{
         AllQuery, BooleanQuery, EnableScoring, FuzzyTermQuery, Occur, Query as TantivyQuery,
         Scorer, TermQuery,
     },
     schema::{BytesOptions, FAST, Field, INDEXED, IndexRecordOption, STRING, Schema},
-    ReloadPolicy,
 };
 
 const WRITER_MEMORY_BYTES: usize = 15_000_000;
@@ -578,7 +577,7 @@ impl TantivySource {
             .try_into()?;
         let mut documents =
             read_ordinal_map(state, projection_fingerprint(state.binding()), directory)?;
-        bind_document_addresses(&reader, &mut documents, limits)?;
+        bind_document_addresses(&reader, &mut documents, limits, state, projected.fields)?;
         let fields = projected.fields;
         let identity_ordinals = documents.identity_index();
         Ok(Self {
@@ -1013,7 +1012,7 @@ impl TantivySource {
             .reader_builder()
             .reload_policy(ReloadPolicy::Manual)
             .try_into()?;
-        bind_document_addresses(&reader, &mut documents, limits)?;
+        bind_document_addresses(&reader, &mut documents, limits, state, fields)?;
         let identity_ordinals = documents.identity_index();
         Ok(Self {
             binding: state.binding(),
@@ -1348,7 +1347,9 @@ impl TantivySource {
                 return Err(error.into());
             }
         };
-        if let Err(error) = bind_document_addresses(&self.reader, &mut documents, self.limits) {
+        if let Err(error) =
+            bind_document_addresses(&self.reader, &mut documents, self.limits, next, fields)
+        {
             self.poisoned = true;
             return Err(error);
         }
@@ -1439,7 +1440,7 @@ impl TantivySource {
         &self,
         query: &Query,
         candidates: &[EntityId],
-    ) -> Result<BTreeMap<EntityId, Relevance>, TantivySourceError> {
+    ) -> Result<Vec<(EntityId, Relevance)>, TantivySourceError> {
         self.ensure_live()?;
         query.validate(self.limits)?;
         if candidates.len() > self.limits.max_page {
@@ -1450,19 +1451,29 @@ impl TantivySource {
             .len()
             .checked_mul(std::mem::size_of::<Option<Relevance>>())
             .ok_or(Error::SizeLimit)?;
-        let result_bound_bytes = candidates.len().checked_mul(128).ok_or(Error::SizeLimit)?;
+        let result_bound_bytes = candidates
+            .len()
+            .checked_mul(std::mem::size_of::<(EntityId, Relevance)>())
+            .ok_or(Error::SizeLimit)?;
         preflight_query_scratch(
             query,
             result_bound_bytes,
             self.rank_budget.max_scratch_bytes,
         )?;
         let searcher = self.reader.searcher();
-        let mut relevance = BTreeMap::new();
+        let mut relevance = Vec::new();
+        relevance
+            .try_reserve_exact(candidates.len())
+            .map_err(|_| Error::SizeLimit)?;
+        let result_capacity_bytes = relevance
+            .capacity()
+            .checked_mul(std::mem::size_of::<(EntityId, Relevance)>())
+            .ok_or(Error::SizeLimit)?;
         let mut scratch = Vec::new();
         let mut best = Vec::new();
         best.try_reserve_exact(query.terms.len())
             .map_err(|_| Error::SizeLimit)?;
-        let base_scratch_bytes = query_scratch_bytes(query, result_bound_bytes)?;
+        let base_scratch_bytes = query_scratch_bytes(query, result_capacity_bytes)?;
         let actual_clause_bytes = best
             .capacity()
             .checked_mul(std::mem::size_of::<Option<Relevance>>())
@@ -1528,9 +1539,11 @@ impl TantivySource {
             let score =
                 self.score_rank_material(query, ordinal as u32, address, material, &mut best)?;
             if let Some(score) = score {
-                relevance.insert(candidate, score.relevance);
+                relevance.push((candidate, score.relevance));
             }
         }
+        relevance.sort_unstable_by_key(|(entity, _)| *entity);
+        relevance.dedup_by_key(|(entity, _)| *entity);
         Ok(relevance)
     }
 
@@ -1859,6 +1872,7 @@ struct ProjectedSchema {
     fields: ProjectionFields,
 }
 
+#[derive(Clone, Copy)]
 struct ProjectionFields {
     raw_token: Field,
     folded_token: Field,
@@ -3056,6 +3070,141 @@ pub(crate) mod test_support {
         Ok(())
     }
 
+    pub(crate) fn write_projection_mismatch_fixture(
+        state: &super::DocumentState,
+        directory: &std::path::Path,
+        indexed_fields: &[(String, String)],
+        rank_fields: &[(String, String)],
+    ) -> Result<(), super::TantivySourceError> {
+        let mut rows = state.iter();
+        let Some((id, fields)) = rows.next() else {
+            return Err(super::Error::MalformedInput.into());
+        };
+        if rows.next().is_some()
+            || indexed_fields.len() != fields.len()
+            || rank_fields.len() != fields.len()
+        {
+            return Err(super::Error::MalformedInput.into());
+        }
+        let projected = super::projection_schema();
+        let index = super::Index::create_in_dir(directory, projected.schema)?;
+        let mut writer = index.writer(super::WRITER_MEMORY_BYTES)?;
+        let mut document = super::TantivyDocument::default();
+        let mut postings = 0_u32;
+        for (field, text) in indexed_fields {
+            for token in super::searchable_tokens(text) {
+                postings = postings.checked_add(1).ok_or(super::Error::SizeLimit)?;
+                let folded = token.searchable.to_ascii_lowercase();
+                document.add_text(projected.fields.raw_token, token.searchable);
+                document.add_text(projected.fields.folded_token, folded.as_str());
+                document.add_text(
+                    projected.fields.field_raw_token,
+                    super::field_token_value(field, token.searchable, false),
+                );
+                document.add_text(
+                    projected.fields.field_folded_token,
+                    super::field_token_value(field, token.searchable, true),
+                );
+            }
+        }
+        let mut material = Vec::new();
+        super::append_rank_material(
+            &mut material,
+            super::RANK_MATERIAL_MAGIC,
+            super::MAX_RANK_MATERIAL_BYTES,
+        )?;
+        super::append_rank_material(
+            &mut material,
+            &0_u64.to_le_bytes(),
+            super::MAX_RANK_MATERIAL_BYTES,
+        )?;
+        super::append_rank_material(&mut material, id.as_bytes(), super::MAX_RANK_MATERIAL_BYTES)?;
+        super::append_rank_material(
+            &mut material,
+            &super::document_fields_digest(fields),
+            super::MAX_RANK_MATERIAL_BYTES,
+        )?;
+        super::append_rank_material_len(
+            &mut material,
+            rank_fields.len(),
+            super::MAX_RANK_MATERIAL_BYTES,
+        )?;
+        for (field, text) in rank_fields {
+            let tokens = super::searchable_tokens(text);
+            super::append_rank_material_len(
+                &mut material,
+                field.len(),
+                super::MAX_RANK_MATERIAL_BYTES,
+            )?;
+            super::append_rank_material(
+                &mut material,
+                field.as_bytes(),
+                super::MAX_RANK_MATERIAL_BYTES,
+            )?;
+            super::append_rank_material(
+                &mut material,
+                &[
+                    u8::try_from(super::field_weight(field))
+                        .map_err(|_| super::Error::SizeLimit)?,
+                ],
+                super::MAX_RANK_MATERIAL_BYTES,
+            )?;
+            super::append_rank_material_len(
+                &mut material,
+                tokens.len(),
+                super::MAX_RANK_MATERIAL_BYTES,
+            )?;
+            for token in tokens {
+                super::append_rank_material_len(
+                    &mut material,
+                    token.searchable.len(),
+                    super::MAX_RANK_MATERIAL_BYTES,
+                )?;
+                super::append_rank_material(
+                    &mut material,
+                    token.searchable.as_bytes(),
+                    super::MAX_RANK_MATERIAL_BYTES,
+                )?;
+                super::append_rank_material_len(
+                    &mut material,
+                    token.ranking_bytes,
+                    super::MAX_RANK_MATERIAL_BYTES,
+                )?;
+            }
+        }
+        document.add_u64(projected.fields.ordinal, 0);
+        document.add_bytes(projected.fields.rank_material, &material);
+        document.add_u64(
+            projected.fields.rank_material_len,
+            u64::try_from(material.len()).map_err(|_| super::Error::SizeLimit)?,
+        );
+        writer.add_document(document)?;
+        writer.commit()?;
+        writer.wait_merging_threads()?;
+
+        let fingerprint = super::projection_fingerprint(state.binding());
+        let documents = super::DocumentTable::from_live(
+            1,
+            vec![super::OrdinalDocument {
+                ordinal: 0,
+                document: super::LiveDocument {
+                    id,
+                    fields_digest: super::document_fields_digest(fields),
+                    postings,
+                },
+                address: None,
+            }],
+        )?;
+        super::write_ordinal_map(directory, fingerprint, &documents)?;
+        super::write_binding_stamp(directory, fingerprint)?;
+        super::write_projection_manifest(
+            directory,
+            fingerprint,
+            super::DurableCacheBudget::default(),
+        )?;
+        Ok(())
+    }
+
     pub(crate) fn prune_durable_roots_for_test(
         root: &std::path::Path,
         selected: &std::path::Path,
@@ -3600,6 +3749,46 @@ fn validate_rank_material_tail(
     Ok(postings)
 }
 
+fn hash_rank_material_length(
+    hasher: &mut blake3::Hasher,
+    length: usize,
+) -> Result<(), TantivySourceError> {
+    let mut value = u32::try_from(length).map_err(|_| Error::SizeLimit)?;
+    loop {
+        let continuation = value > 0x7f;
+        hasher.update(&[(value as u8 & 0x7f) | if continuation { 0x80 } else { 0 }]);
+        if !continuation {
+            return Ok(());
+        }
+        value >>= 7;
+    }
+}
+
+fn canonical_rank_material_tail(
+    fields: &[(String, String)],
+) -> Result<(u32, [u8; 32]), TantivySourceError> {
+    let mut hasher = blake3::Hasher::new();
+    let mut postings = 0_u32;
+    for (field, text) in fields {
+        let weight = field_weight(field);
+        if field.is_empty() || weight == 0 {
+            return Err(Error::MalformedInput.into());
+        }
+        let tokens = searchable_tokens(text);
+        hash_rank_material_length(&mut hasher, field.len())?;
+        hasher.update(field.as_bytes());
+        hasher.update(&[u8::try_from(weight).map_err(|_| Error::SizeLimit)?]);
+        hash_rank_material_length(&mut hasher, tokens.len())?;
+        for token in tokens {
+            postings = postings.checked_add(1).ok_or(Error::SizeLimit)?;
+            hash_rank_material_length(&mut hasher, token.searchable.len())?;
+            hasher.update(token.searchable.as_bytes());
+            hash_rank_material_length(&mut hasher, token.ranking_bytes)?;
+        }
+    }
+    Ok((postings, *hasher.finalize().as_bytes()))
+}
+
 fn query_token_matches(query: &Query, term: &str, token: &str) -> bool {
     let term = term.as_bytes();
     let token = token.as_bytes();
@@ -3613,10 +3802,33 @@ fn query_token_matches(query: &Query, term: &str, token: &str) -> bool {
     }
 }
 
+fn require_document_posting(
+    segment: &tantivy::SegmentReader,
+    field: Field,
+    value: &str,
+    doc_id: DocId,
+) -> Result<(), TantivySourceError> {
+    let term = Term::from_field_text(field, value);
+    let inverted_index = segment.inverted_index(field)?;
+    let Some(mut postings) = inverted_index.read_postings(&term, IndexRecordOption::Basic)? else {
+        return Err(
+            TantivySource::corrupt("Tantivy term dictionary omits a source-bound token").into(),
+        );
+    };
+    if postings.seek(doc_id) != doc_id {
+        return Err(
+            TantivySource::corrupt("Tantivy postings omit a source-bound document token").into(),
+        );
+    }
+    Ok(())
+}
+
 fn bind_document_addresses(
     reader: &IndexReader,
     documents: &mut DocumentTable,
     limits: Limits,
+    state: &DocumentState,
+    fields: ProjectionFields,
 ) -> Result<(), TantivySourceError> {
     for entry in &mut documents.live {
         entry.address = None;
@@ -3678,15 +3890,41 @@ fn bind_document_addresses(
                 .live
                 .get_mut(index)
                 .ok_or_else(|| TantivySource::corrupt("Tantivy row ordinal is missing"))?;
+            let source_fields = state.fields_for(entry.document.id).ok_or_else(|| {
+                TantivySource::corrupt(
+                    "Tantivy row identity is outside the selected document state",
+                )
+            })?;
+            let (source_postings, source_tail_digest) =
+                canonical_rank_material_tail(source_fields)?;
             if entry.address.is_some()
                 || id != *entry.document.id.as_bytes()
                 || digest != entry.document.fields_digest
                 || postings != entry.document.postings
+                || postings != source_postings
+                || field_count != source_fields.len()
+                || blake3::hash(&bytes[offset..]).as_bytes() != &source_tail_digest
             {
                 return Err(TantivySource::corrupt(
-                    "Tantivy row identity or payload disagrees with the selected generation",
+                    "Tantivy row identity or rank material disagrees with the selected generation",
                 )
                 .into());
+            }
+            for (field, text) in source_fields {
+                for token in searchable_tokens(text) {
+                    require_document_posting(segment, fields.raw_token, token.searchable, doc)?;
+                    let folded = token.searchable.to_ascii_lowercase();
+                    require_document_posting(segment, fields.folded_token, &folded, doc)?;
+                    let qualified_raw = field_token_value(field, token.searchable, false);
+                    require_document_posting(segment, fields.field_raw_token, &qualified_raw, doc)?;
+                    let qualified_folded = field_token_value(field, token.searchable, true);
+                    require_document_posting(
+                        segment,
+                        fields.field_folded_token,
+                        &qualified_folded,
+                        doc,
+                    )?;
+                }
             }
             entry.address = Some(address);
             bound = bound.checked_add(1).ok_or(Error::SizeLimit)?;
@@ -3764,7 +4002,7 @@ impl crate::Adapter<TantivySource> {
         &self,
         query: &Query,
         candidates: &[EntityId],
-    ) -> Result<BTreeMap<EntityId, Relevance>, TantivySourceError> {
+    ) -> Result<Vec<(EntityId, Relevance)>, TantivySourceError> {
         self.source().relevance_for_candidates(query, candidates)
     }
 

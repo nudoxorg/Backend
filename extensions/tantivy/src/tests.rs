@@ -1174,6 +1174,37 @@ fn oversized_query_scratch_is_refused_before_scorer_compilation() {
 }
 
 #[test]
+fn direct_candidate_relevance_returns_sorted_unique_exact_rows() {
+    let expected_documents = [document(41), document(7)];
+    let state = state_for(
+        expected_documents
+            .iter()
+            .map(|id| (*id, vec![("name".into(), "map".into())]))
+            .collect(),
+        [0x73; 32],
+    );
+    let source = TantivySource::build(&state, Limits::default()).expect("selected projection");
+    let query = Query::new(vec!["map".into()], Limits::default()).expect("query");
+    let mut expected = expected_documents.to_vec();
+    expected.sort_unstable();
+
+    let actual = source
+        .relevance_for_candidates(
+            &query,
+            &[document(7), document(99), document(41), document(7)],
+        )
+        .expect("score only the requested identities");
+    assert_eq!(
+        actual.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        expected,
+        "candidate duplicates and input order do not affect the sorted exact result"
+    );
+    assert!(actual
+        .iter()
+        .all(|(_, relevance)| *relevance == Relevance::exact(4)));
+}
+
+#[test]
 fn field_qualified_query_admission_accounts_for_coexisting_prefix_copies() {
     const FIELD_BYTES: usize = 8_192;
     const SCRATCH_BUDGET: usize = 10_000;
@@ -1375,6 +1406,69 @@ fn concrete_tantivy_can_commit_its_projection_to_disk() {
         Err(TantivySourceError::Contract(Error::StaleRoot))
     ));
     std::fs::remove_dir_all(directory).expect("remove test index directory");
+}
+
+#[test]
+fn cold_reopen_rejects_rank_material_changed_under_a_refreshed_manifest() {
+    let authoritative_fields = vec![("name".into(), "map".into())];
+    let documents = vec![(document(17), authoritative_fields.clone())];
+    let state = state_for(documents, [0x4d; 32]);
+    let expected = TantivySource::build(&state, Limits::default())
+        .expect("build authoritative projection")
+        .search(&Query::new(vec!["map".into()], Limits::default()).expect("query"))
+        .expect("search authoritative source");
+    assert_eq!(
+        expected.iter().map(|hit| hit.document).collect::<Vec<_>>(),
+        vec![document(17)],
+        "the selected source row with name=map is an independent membership oracle"
+    );
+
+    let directory = std::env::temp_dir().join(format!(
+        "backend-tantivy-rank-tail-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).expect("create projection directory");
+    let forged_rank_fields = vec![("name".into(), "zap".into())];
+    crate::engine::test_support::write_projection_mismatch_fixture(
+        &state,
+        &directory,
+        &authoritative_fields,
+        &forged_rank_fields,
+    )
+    .expect("write the indexed map term with a same-length zap rank tail");
+    assert!(directory.join(INTEGRITY_FILE).is_file());
+    assert!(matches!(
+        TantivySource::open_in_dir(&state, Limits::default(), &directory),
+        Err(TantivySourceError::Corrupt(_))
+    ));
+    std::fs::remove_dir_all(directory).expect("remove test projection directory");
+
+    let directory = std::env::temp_dir().join(format!(
+        "backend-tantivy-posting-mismatch-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).expect("create projection directory");
+    crate::engine::test_support::write_projection_mismatch_fixture(
+        &state,
+        &directory,
+        &forged_rank_fields,
+        &authoritative_fields,
+    )
+    .expect("write a rank payload whose source term is omitted from postings");
+    assert!(directory.join(INTEGRITY_FILE).is_file());
+    assert!(matches!(
+        TantivySource::open_in_dir(&state, Limits::default(), &directory),
+        Err(TantivySourceError::Corrupt(_))
+    ));
+    std::fs::remove_dir_all(directory).expect("remove test projection directory");
 }
 
 fn state_for(
@@ -2234,7 +2328,13 @@ fn deleting_and_prepending_documents_keeps_untouched_ordinals() {
             OverlayLimits::default(),
         )
         .expect("delete");
+    let deleted_query_visits = source.rank_docs_visited();
     assert!(term_hits(&source, "beta").is_empty());
+    assert_eq!(
+        source.rank_docs_visited() - deleted_query_visits,
+        1,
+        "the raw Tantivy scorer must encounter the deleted beta row before the live-doc filter"
+    );
     let with_predecessor = vec![
         (document(1), vec![("name".into(), "alpha".into())]),
         (document(3), vec![("name".into(), "gamma".into())]),

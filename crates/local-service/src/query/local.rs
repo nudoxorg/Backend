@@ -555,12 +555,15 @@ impl LocalAnswer {
     pub(super) fn lexical_relevance_for_candidates(
         &self,
         entities: &[EntityId],
-    ) -> Result<BTreeMap<EntityId, lexical::Relevance>, QueryError> {
+    ) -> Result<Vec<(EntityId, lexical::Relevance)>, QueryError> {
         let mut remaining = BTreeSet::new();
-        let mut relevance = BTreeMap::new();
+        let mut relevance = Vec::new();
+        relevance
+            .try_reserve_exact(entities.len())
+            .map_err(|_| QueryError::LexicalProvider)?;
         for entity in entities {
             if let Some(score) = self.lexical_relevance(*entity) {
-                relevance.insert(*entity, score);
+                relevance.push((*entity, score));
             } else {
                 remaining.insert(*entity);
             }
@@ -588,9 +591,11 @@ impl LocalAnswer {
                     &self.corpus.semantic_evidence,
                 )
             {
-                relevance.insert(entity, score);
+                relevance.push((entity, score));
             }
         }
+        relevance.sort_unstable_by_key(|(entity, _)| *entity);
+        relevance.dedup_by_key(|(entity, _)| *entity);
         Ok(relevance)
     }
 
