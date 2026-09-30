@@ -1476,7 +1476,7 @@ mod tests {
         .expect("claim-only history manifest retains a partial input declaration");
         assert_eq!(partial.input_claim(), partial_claim);
         assert_eq!(
-            SemanticTypedPlaneManifestV2::decode(&partial.encode().expect("encode manifest"))
+            SemanticTypedPlaneManifestV2::decode(&partial.canonical_bytes().expect("encode manifest"))
                 .expect("decode partial input claim")
                 .input_claim(),
             partial_claim
