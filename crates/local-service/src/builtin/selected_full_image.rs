@@ -318,9 +318,10 @@ pub(super) struct SelectedFullImagePlan {
 
 /// Live selected authority and storage operations used by the page service.
 ///
-/// Production methods reopen Turso on every `current_image` call. Tests use
-/// an independent source that can flip selection or corrupt its backing image
-/// between the pre-read and post-read checks.
+/// Production methods resolve the exact committed product selection on every
+/// `current_image` call. Tests use an independent source that can flip
+/// selection or corrupt its backing image between the pre-read and post-read
+/// checks.
 pub(super) trait SelectedFullImageAuthority {
     /// Resolves the exact currently selected full-image metadata.
     fn current_image(

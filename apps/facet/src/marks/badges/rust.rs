@@ -1,8 +1,7 @@
 //! Rust's signature grammar: `fn`, `trait`, `type`, `struct`/`enum`/`union`,
 //! `const`/`static`, `macro_rules!`.
 
-use super::{Badge, Glyph, Ink, Item, Reading, Shape, between, find_word, has_word, ident, last_name, names_word, split_top, type_params};
-use crate::icons::Lang;
+use super::{Badge, Glyph, Ink, Item, Lang, Reading, Shape, between, find_word, has_word, ident, last_name, names_word, split_top, type_params};
 
 /// Reads a normalised Rust declaration.
 pub(super) fn read(item: &Item<'_>, text: &str) -> Reading {

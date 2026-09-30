@@ -13,8 +13,9 @@ use crate::overlay::text::{Decor, Link, font, words};
 use crate::semantics::types::{Piece, Spelled, Target};
 use crate::tokens::{Palette, TypeRole};
 use gpui::{
-    AnyElement, ElementId, Hsla, InteractiveElement, IntoElement, MouseButton, MouseUpEvent, ParentElement,
-    SharedString, StyledText, TextRun,
+    AnyElement, App, Element, ElementId, GlobalElementId, Hsla, InspectorElementId, InteractiveElement,
+    IntoElement, LayoutId, MouseButton, MouseUpEvent, ParentElement, Refineable, SharedString, Style,
+    StyleRefinement, Styled, StyledText, TextRun, Window,
 };
 use std::ops::Range;
 use std::rc::Rc;
@@ -302,7 +303,14 @@ impl Line {
             root.child(element)
         };
         if !marks.is_empty() {
-            root = root.child(Marks { layout: layout.clone(), ranges: marks, color: palette.peri.base.hsla() });
+            let mut overlay = Marks {
+                layout: layout.clone(),
+                ranges: marks,
+                color: palette.peri.base.hsla(),
+                style: StyleRefinement::default(),
+            };
+            overlay.absolute().size_0();
+            root = root.child(overlay);
         }
         if targets.is_empty() {
             return root.into_any_element();
@@ -342,30 +350,76 @@ struct Marks {
     layout: gpui::TextLayout,
     ranges: Vec<Range<usize>>,
     color: Hsla,
+    style: StyleRefinement,
 }
 
-impl IntoElement for Marks {
-    type Element = gpui::Canvas<()>;
-
-    fn into_element(self) -> Self::Element {
-        let Self { layout, ranges, color } = self;
-        gpui::canvas(
-            |_, _, _| {},
-            move |_, (), window, _| {
-                for range in &ranges {
-                    if let Some(rect) = crate::overlay::text::range_rect(&layout, range) {
-                        let bar = gpui::Bounds::new(
-                            gpui::point(rect.origin.x, rect.bottom() - gpui::px(1.5)),
-                            gpui::size(rect.size.width, gpui::px(1.5)),
-                        );
-                        window.paint_quad(gpui::fill(bar, color));
-                    }
-                }
-            },
-        )
-        .absolute()
-        .size_0()
+impl Styled for Marks {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.style
     }
 }
 
-use gpui::Styled as _;
+impl IntoElement for Marks {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for Marks {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let mut style = Style::default();
+        style.refine(&self.style);
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: gpui::Bounds<gpui::Pixels>,
+        _request_layout: &mut (),
+        _window: &mut Window,
+        _cx: &mut App,
+    ) {
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: gpui::Bounds<gpui::Pixels>,
+        _request_layout: &mut (),
+        _prepaint: &mut (),
+        window: &mut Window,
+        _cx: &mut App,
+    ) {
+        for range in &self.ranges {
+            if let Some(rect) = crate::overlay::text::range_rect(&self.layout, range) {
+                let bar = gpui::Bounds::new(
+                    gpui::point(rect.origin.x, rect.bottom() - gpui::px(1.5)),
+                    gpui::size(rect.size.width, gpui::px(1.5)),
+                );
+                window.paint_quad(gpui::fill(bar, self.color));
+            }
+        }
+    }
+}

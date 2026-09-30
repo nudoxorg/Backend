@@ -168,8 +168,40 @@ pub struct Version {
     pub at: SharedString,
     /// Yanked from the registry.
     pub yanked: bool,
-    /// Its source is on this machine (so its API can be compared).
-    pub local: bool,
+    /// Whether its source is physically available on this machine.
+    pub source: SourceAvailability,
+}
+
+/// Whether a release's source is present in the current owner's cache.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceAvailability {
+    /// The source tree or archive is available locally.
+    Available,
+    /// The release has metadata, but its source is not available locally.
+    Unavailable,
+}
+
+/// What is known about comparing a release with the workspace's pinned one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ComparisonStatus {
+    /// The exact release pair has a known comparison.
+    Compared,
+    /// The viewed release's source is absent, so its API cannot be compared.
+    SourceUnavailable,
+    /// The viewed release's source is present, but this exact comparison is absent.
+    DiffUnavailable,
+}
+
+impl ComparisonStatus {
+    fn for_release(krate: &Crate, from: &str, to: &str) -> Self {
+        if from == to || krate.diff(from, to).is_some() {
+            return Self::Compared;
+        }
+        match krate.versions.iter().find(|version| version.v.as_ref() == to).map(|version| version.source) {
+            Some(SourceAvailability::Available) => Self::DiffUnavailable,
+            Some(SourceAvailability::Unavailable) | None => Self::SourceUnavailable,
+        }
+    }
 }
 
 /// One place your workspace uses one of the crate's items.
@@ -734,8 +766,8 @@ pub fn marked(before: &str, after: &str, resolve: &dyn Resolve) -> (Marked, Mark
 /// · none of your 80 uses change".
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Summary {
-    /// The release viewed is on this machine (its API could be compared).
-    pub local: bool,
+    /// Whether the release's source and this exact comparison are available.
+    pub status: ComparisonStatus,
     /// Breaking changes that really change something.
     pub breaking: usize,
     /// Additive changes.
@@ -755,8 +787,14 @@ impl Summary {
     /// emphasized, the words and separators are not.
     #[must_use]
     pub fn segments(&self, to: &str) -> Vec<(String, bool)> {
-        if !self.local {
-            return vec![(format!("{} is not on this machine; only its date is known", short(to)), false)];
+        match self.status {
+            ComparisonStatus::Compared => {}
+            ComparisonStatus::SourceUnavailable => {
+                return vec![(format!("{} is not on this machine; only its date is known", short(to)), false)];
+            }
+            ComparisonStatus::DiffUnavailable => {
+                return vec![(format!("{} is on this machine; its comparison is unavailable", short(to)), false)];
+            }
         }
         let mut out = Vec::new();
         if self.breaking > 0 {
@@ -798,8 +836,9 @@ impl Summary {
 /// The shelf line for moving `krate` from `from` to `to`.
 #[must_use]
 pub fn summary(krate: &Crate, from: &str, to: &str) -> Summary {
+    let status = ComparisonStatus::for_release(krate, from, to);
     let Some(diff) = krate.diff(from, to) else {
-        return Summary { local: false, breaking: 0, added: 0, respelled: 0, uses: krate.uses.len(), changing: 0, slip: None };
+        return Summary { status, breaking: 0, added: 0, respelled: 0, uses: krate.uses.len(), changing: 0, slip: None };
     };
     let changes = krate.changes(from, to);
     let respelled = changes.iter().filter(|c| c.respelled()).count();
@@ -808,7 +847,7 @@ pub fn summary(krate: &Crate, from: &str, to: &str) -> Summary {
     let changing = krate.impact(from, to).iter().filter(|u| !u.change.respelled()).count();
     let (a, b) = (semver(from), semver(to));
     let slip = diff.semver_slip.then_some(if a.0 == b.0 && a.1 == b.1 { "patch" } else { "minor" });
-    Summary { local: true, breaking, added, respelled, uses: krate.uses.len(), changing, slip }
+    Summary { status, breaking, added, respelled, uses: krate.uses.len(), changing, slip }
 }
 
 // ------------------------------------------------------------------ the page's section
@@ -844,8 +883,8 @@ pub struct Lens {
     pub forward: bool,
     /// The release viewed, as people read it.
     pub to: SharedString,
-    /// The release viewed is on this machine.
-    pub local: bool,
+    /// Whether the release's source and this exact comparison are available.
+    pub status: ComparisonStatus,
     /// Your uses of the crate.
     pub uses: usize,
     /// Your uses whose item really changes (the first 4 are shown).
@@ -872,7 +911,7 @@ impl Lens {
     /// Whether the section says anything beyond "not on this machine".
     #[must_use]
     pub fn compared(&self) -> bool {
-        self.local
+        self.status == ComparisonStatus::Compared
     }
 
     /// "none of the 80 places your code uses toml change" (`None` when your
@@ -974,7 +1013,7 @@ pub fn lens(krate: &Crate, symbol: &str, to: &str, resolve: &dyn Resolve) -> Len
         krate: krate.name.clone(),
         forward,
         to: SharedString::from(short(to).to_owned()),
-        local: krate.diff(from, to).is_some(),
+        status: ComparisonStatus::for_release(krate, from, to),
         uses: krate.uses.len(),
         affected,
         respelled,

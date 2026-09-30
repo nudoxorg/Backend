@@ -4,11 +4,11 @@
 //!
 //! One control, four states. An **offer** is a teal `+` and where the source
 //! is: on this machine, or only in the registry (which needs a download, so
-//! the offer says so and does nothing). **Adding** is the seam, one stage per
-//! step the work really takes (find the source, unpack its archive when that
-//! is all there is, index it), marching on the ambient pulse: no timer of its
-//! own. **Added** says so and opens the package. **Failed** says why in the
-//! owner's words and offers the same `+` again.
+//! the offer says so and passes the request to the shell). **Adding** is the
+//! seam, one stage per step the work really takes (find the source, unpack
+//! its archive when that is all there is, index it), marching on the ambient
+//! pulse: no timer of its own. **Added** says so and opens the package.
+//! **Failed** says why in the owner's words and offers the same `+` again.
 //!
 //! The component never contacts anything: the shell supplies the state and
 //! the two actions.
@@ -22,10 +22,11 @@ use crate::measure::{Control, Measure, Space};
 use crate::theme::ActiveFacet;
 use crate::tokens::ty;
 use gpui::{AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, Window, div};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 /// Where an offered release's source is.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum Place {
     /// Unpacked on this machine.
     Unpacked,
@@ -33,23 +34,37 @@ pub enum Place {
     Archive,
     /// Only in the registry: adding it needs a download.
     Download,
+    /// More than one local source matches; choose the intended file first.
+    Ambiguous { indexes: Vec<PathBuf> },
+    /// A local archive is present, but its contents have not been verified.
+    UnverifiedArchive(PathBuf),
 }
 
 impl Place {
     /// What the offer says about where the source is.
     #[must_use]
-    pub const fn words(self) -> &'static str {
+    pub fn words(&self) -> String {
         match self {
-            Self::Unpacked => "on this machine",
-            Self::Archive => "on this machine, packed",
-            Self::Download => "needs a download",
+            Self::Unpacked => "on this machine".to_owned(),
+            Self::Archive => "on this machine, packed".to_owned(),
+            Self::Download => "needs a download".to_owned(),
+            Self::Ambiguous { indexes } => format!(
+                "choose one matching source before adding: {}",
+                indexes.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join(", ")
+            ),
+            Self::UnverifiedArchive(path) => format!(
+                "verify this archive before adding: {}",
+                path.display()
+            ),
         }
     }
 
-    /// Whether adding reads nothing from the network.
+    /// Whether this source has a safe add action. The shell remains the
+    /// authority on whether a requested download can proceed under the user's
+    /// policy.
     #[must_use]
-    pub const fn offline(self) -> bool {
-        !matches!(self, Self::Download)
+    pub const fn addable(&self) -> bool {
+        matches!(self, Self::Unpacked | Self::Archive | Self::Download)
     }
 }
 
@@ -119,10 +134,11 @@ pub struct AddActions {
 
 /// The seam's stages for `offer` at `step`: only the steps its source needs.
 #[must_use]
-pub fn seam_stages(place: Place, step: Step) -> Vec<Stage> {
+pub fn seam_stages(place: &Place, step: Step) -> Vec<Stage> {
     let steps: &[Step] = match place {
         Place::Archive => &[Step::Resolving, Step::Unpacking, Step::Indexing],
         Place::Unpacked | Place::Download => &[Step::Resolving, Step::Indexing],
+        Place::Ambiguous { .. } | Place::UnverifiedArchive(_) => &[],
     };
     // Waiting: nothing has started.
     let at = steps.iter().position(|known| *known == step).unwrap_or(usize::MAX);
@@ -159,7 +175,7 @@ pub fn add_control(id: impl Into<ElementId>, offer: &Offer, actions: &AddActions
                 .primary()
                 .size(Control::Small)
                 .glyph(Glyph::Plus)
-                .disabled(!offer.place.offline())
+                .disabled(!offer.place.addable())
                 .on_click(move |window, cx| add(release.clone(), window, cx));
             row.child(button).child(caption("where", format!("{} · {}", offer.label, offer.place.words()).into())).into_any_element()
         }
@@ -168,7 +184,7 @@ pub fn add_control(id: impl Into<ElementId>, offer: &Offer, actions: &AddActions
             .flex_col()
             .gap(measure.space(Space::Tight))
             .child(row.child(caption("step", format!("{} · {}", step.words(), offer.label).into())))
-            .child(div().w_full().child(seam(child(&id, "seam"), seam_stages(offer.place, step), measure)))
+            .child(div().w_full().child(seam(child(&id, "seam"), seam_stages(&offer.place, step), measure)))
             .into_any_element(),
         Adding::Added { open: target } => {
             let open = Rc::clone(&actions.open);
@@ -189,7 +205,7 @@ pub fn add_control(id: impl Into<ElementId>, offer: &Offer, actions: &AddActions
                 .edge()
                 .size(Control::Small)
                 .glyph(Glyph::Plus)
-                .disabled(!offer.place.offline())
+                .disabled(!offer.place.addable())
                 .on_click(move |window, cx| add(release.clone(), window, cx));
             div()
                 .flex()

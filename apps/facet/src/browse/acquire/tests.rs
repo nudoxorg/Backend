@@ -70,10 +70,10 @@ fn an_offer_on_this_machine_is_added_by_its_button(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn an_offer_that_needs_a_download_says_so_and_cannot_be_added(cx: &mut TestAppContext) {
+fn an_offer_that_needs_a_download_says_so_and_routes_the_request_to_the_shell(cx: &mut TestAppContext) {
     let (texts, added) = drawn(offer(Place::Download), Adding::Idle, Some("add"), cx);
     assert!(said(&texts).contains(&"anyhow 1.0.104 · needs a download"), "{texts:?}");
-    assert!(added.is_empty(), "nothing is fetched: the button is disabled");
+    assert_eq!(added, [SharedString::from("pkg:cargo/anyhow@1.0.104")], "the shell decides whether the download can proceed");
 }
 
 #[gpui::test]
@@ -81,9 +81,24 @@ fn adding_says_the_step_it_is_on(cx: &mut TestAppContext) {
     let (texts, _) = drawn(offer(Place::Archive), Adding::Working(Step::Unpacking), None, cx);
     assert!(said(&texts).contains(&"Unpacking its archive · anyhow 1.0.104"), "{texts:?}");
     assert!(!said(&texts).contains(&"Add to library"), "no second add while one runs");
-    let unpacking = seam_stages(Place::Archive, Step::Unpacking);
+    let unpacking = seam_stages(&Place::Archive, Step::Unpacking);
     assert_eq!(unpacking.iter().map(|stage| stage.state).collect::<Vec<_>>(), [StageState::Done, StageState::Now, StageState::Todo]);
-    assert_eq!(seam_stages(Place::Unpacked, Step::Indexing).len(), 2, "no unpack step when cargo unpacked it");
+    assert_eq!(seam_stages(&Place::Unpacked, Step::Indexing).len(), 2, "no unpack step when cargo unpacked it");
+}
+
+#[test]
+fn uncertain_local_sources_are_actionable_and_never_addable() {
+    let ambiguous = Place::Ambiguous {
+        indexes: vec!["/cache/a/index.json".into(), "/cache/b/index.json".into()],
+    };
+    assert!(!ambiguous.addable());
+    assert!(ambiguous.words().contains("choose one matching source"));
+    assert!(seam_stages(&ambiguous, Step::Resolving).is_empty());
+
+    let unverified = Place::UnverifiedArchive("/cache/pkg.crate".into());
+    assert!(!unverified.addable());
+    assert!(unverified.words().contains("verify this archive"));
+    assert!(seam_stages(&unverified, Step::Unpacking).is_empty());
 }
 
 #[gpui::test]

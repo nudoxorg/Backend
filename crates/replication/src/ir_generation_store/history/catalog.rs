@@ -1,6 +1,7 @@
 // Ref publication and admitted-generation bindings share one owner.
 use super::codec::*;
 use super::provenance::*;
+use super::v3::load_typed_v3_history_locator;
 use super::*;
 use std::collections::HashSet;
 
@@ -62,12 +63,14 @@ pub(super) fn validate_history_commit_node(
         return Err("semantic history commit belongs to another target".to_owned());
     }
     super::v2::validate_typed_v2_locator_binding(target_root, &record)?;
+    super::v3::validate_typed_v3_locator_binding(target_root, &record)?;
     let generation = load_record(target_root, record.generation, target)?;
     validate_commit_generation(&record, &generation)?;
     validate_parent_set(commits_root, &record)?;
     for parent in &record.parents {
         let parent_record = load_history_commit(commits_root, *parent)?;
         super::v2::validate_typed_v2_locator_binding(target_root, &parent_record)?;
+        super::v3::validate_typed_v3_locator_binding(target_root, &parent_record)?;
         let parent_generation = load_record(target_root, parent_record.generation, target)?;
         validate_commit_generation(&parent_record, &parent_generation)?;
     }
@@ -233,18 +236,34 @@ impl LocalSemanticGenerationFiles {
                 }
                 let record =
                     validate_history_commit_node(&target_root, target, &commits_root, identity)?;
-                if let HistoryGenerationRoot::TypedV2(claim) = record.generation_root {
-                    let payload =
-                        read_history_payload_root(&target_root, identity)?.ok_or_else(|| {
-                            "typed V2 history commit payload closure is missing".to_owned()
-                        })?;
-                    if payload.closure.as_bytes() != claim.closure.as_bytes() {
-                        return Err(
-                            "typed V2 history payload closure differs from its commit root"
-                                .to_owned(),
-                        );
+                match record.generation_root {
+                    HistoryGenerationRoot::TypedV2(claim) => {
+                        let payload = read_history_payload_root(&target_root, identity)?
+                            .ok_or_else(|| {
+                                "typed V2 history commit payload closure is missing".to_owned()
+                            })?;
+                        if payload.closure.as_bytes() != claim.closure.as_bytes() {
+                            return Err(
+                                "typed V2 history payload closure differs from its commit root"
+                                    .to_owned(),
+                            );
+                        }
+                        roots.push(claim.closure);
                     }
-                    roots.push(claim.closure);
+                    HistoryGenerationRoot::TypedV3(claim) => {
+                        let payload = read_history_payload_root(&target_root, identity)?
+                            .ok_or_else(|| {
+                                "typed V3 history commit payload closure is missing".to_owned()
+                            })?;
+                        if payload.closure.as_bytes() != claim.closure().as_bytes() {
+                            return Err(
+                                "typed V3 history payload closure differs from its commit root"
+                                    .to_owned(),
+                            );
+                        }
+                        roots.push(claim.closure());
+                    }
+                    HistoryGenerationRoot::NxfiV1(_) => {}
                 }
                 next = record.parents.first().copied();
             }
@@ -410,6 +429,7 @@ impl LocalSemanticGenerationFiles {
             created,
             _gc_pin: None,
             typed_v2_proof: None,
+            typed_v3_proof: None,
         })
     }
 
@@ -507,9 +527,12 @@ impl LocalSemanticGenerationFiles {
             &target_root.join("history").join("commits"),
             identity,
         )?;
-        if matches!(record.generation_root, HistoryGenerationRoot::TypedV2(_)) {
+        if matches!(
+            record.generation_root,
+            HistoryGenerationRoot::TypedV2(_) | HistoryGenerationRoot::TypedV3(_)
+        ) {
             return Err(
-                "typed V2 history requires proof-bearing cold replay, not V1 materialization"
+                "typed history requires proof-bearing cold replay, not V1 materialization"
                     .to_owned(),
             );
         }
@@ -525,7 +548,7 @@ impl LocalSemanticGenerationFiles {
         expected: Option<HistoryCommitId>,
         next: Option<HistoryCommitId>,
     ) -> Result<HistoryRefUpdateReceipt, String> {
-        self.compare_and_swap_history_ref_inner(target, kind, name, expected, next, None)
+        self.compare_and_swap_history_ref_inner(target, kind, name, expected, next, None, None)
     }
 
     pub(crate) fn compare_and_swap_typed_v2_history_ref(
@@ -547,6 +570,30 @@ impl LocalSemanticGenerationFiles {
             expected,
             Some(next),
             Some(admission),
+            None,
+        )
+    }
+
+    pub(crate) fn compare_and_swap_typed_v3_history_ref(
+        &self,
+        target: &SemanticTargetKey,
+        kind: HistoryRefKind,
+        name: HistoryRefName,
+        expected: Option<HistoryCommitId>,
+        next: HistoryCommitId,
+        admission: &TypedV3HistoryPublicationAdmission<'_>,
+    ) -> Result<HistoryRefUpdateReceipt, String> {
+        if admission.identity() != next {
+            return Err("typed V3 publication receipt names another commit".to_owned());
+        }
+        self.compare_and_swap_history_ref_inner(
+            target,
+            kind,
+            name,
+            expected,
+            Some(next),
+            None,
+            Some(admission),
         )
     }
 
@@ -557,7 +604,8 @@ impl LocalSemanticGenerationFiles {
         name: HistoryRefName,
         expected: Option<HistoryCommitId>,
         next: Option<HistoryCommitId>,
-        typed_admission: Option<&TypedV2HistoryPublicationAdmission<'_>>,
+        typed_v2_admission: Option<&TypedV2HistoryPublicationAdmission<'_>>,
+        typed_v3_admission: Option<&TypedV3HistoryPublicationAdmission<'_>>,
     ) -> Result<HistoryRefUpdateReceipt, String> {
         let target_root = self.target_root(target);
         super::retention::recover_pending_delete(&target_root)?;
@@ -570,19 +618,27 @@ impl LocalSemanticGenerationFiles {
                 validate_history_commit_node(&target_root, target, &commits_root, identity)?;
             if kind == HistoryRefKind::Branch
                 && name.as_str() == "local-cache"
-                && matches!(record.generation_root, HistoryGenerationRoot::TypedV2(_))
+                && matches!(
+                    record.generation_root,
+                    HistoryGenerationRoot::TypedV2(_) | HistoryGenerationRoot::TypedV3(_)
+                )
             {
                 return Err(
-                    "typed V2 history cannot be published as the production local-cache ref"
+                    "typed history cannot be published as the production local-cache ref"
                         .to_owned(),
                 );
             }
             match record.generation_root {
                 HistoryGenerationRoot::TypedV2(claim) => {
-                    let admission = typed_admission.ok_or_else(|| {
+                    let admission = typed_v2_admission.ok_or_else(|| {
                         "typed V2 ref publication requires its live proof-bearing admission receipt"
                             .to_owned()
                     })?;
+                    if typed_v3_admission.is_some() {
+                        return Err(
+                            "typed V3 publication receipt cannot publish a V2 commit".to_owned()
+                        );
+                    }
                     let content = admission.content();
                     if admission.identity() != identity
                         || admission.closure().as_bytes() != claim.closure().as_bytes()
@@ -608,17 +664,72 @@ impl LocalSemanticGenerationFiles {
                         );
                     }
                 }
-                HistoryGenerationRoot::NxfiV1(_) => {
-                    if typed_admission.is_some() {
+                HistoryGenerationRoot::TypedV3(claim) => {
+                    let admission = typed_v3_admission.ok_or_else(|| {
+                        "typed V3 ref publication requires its proof-bearing admission receipt"
+                            .to_owned()
+                    })?;
+                    if typed_v2_admission.is_some() {
                         return Err(
-                            "typed V2 publication receipt cannot publish a V1 history commit"
+                            "typed V2 publication receipt cannot publish a V3 commit".to_owned()
+                        );
+                    }
+                    let content = admission.content();
+                    if admission.identity() != identity
+                        || admission.closure().as_bytes() != claim.closure().as_bytes()
+                        || admission.locator() != claim.locator()
+                        || !claim.content_root_claim().matches(content.content_root())
+                        || !claim
+                            .generation_root_claim()
+                            .matches(content.generation_root())
+                    {
+                        return Err(
+                            "typed V3 publication receipt differs from the immutable commit"
+                                .to_owned(),
+                        );
+                    }
+                    let locator =
+                        load_typed_v3_history_locator(&target_root, identity, claim.locator())?;
+                    let manifest = locator.validate()?;
+                    if manifest.input_claim() != admission.input_claim() {
+                        return Err(
+                            "typed V3 publication input claim differs from its locator".to_owned()
+                        );
+                    }
+                    let generation = load_record(&target_root, record.generation, target)?;
+                    let selected_input = backend_semantic::ir::SemanticInputClaimV2::from_witness(
+                        &generation.manifest.input(),
+                    );
+                    if manifest.build() != generation.manifest.build()
+                        || selected_input != admission.input_claim()
+                    {
+                        return Err(
+                            "typed V3 publication no longer matches the selected native generation"
+                                .to_owned(),
+                        );
+                    }
+                    let payload =
+                        read_history_payload_root(&target_root, identity)?.ok_or_else(|| {
+                            "typed V3 history commit payload closure is missing".to_owned()
+                        })?;
+                    if payload.closure.as_bytes() != claim.closure().as_bytes() {
+                        return Err(
+                            "typed V3 history payload closure differs from its commit root"
+                                .to_owned(),
+                        );
+                    }
+                }
+                HistoryGenerationRoot::NxfiV1(_) => {
+                    if typed_v2_admission.is_some() || typed_v3_admission.is_some() {
+                        return Err(
+                            "typed publication receipt cannot publish a V1 history commit"
                                 .to_owned(),
                         );
                     }
                 }
             }
         }
-        if typed_admission.is_some() && actual == next {
+        if (typed_v2_admission.is_some() || typed_v3_admission.is_some()) && actual == next {
             return Ok(HistoryRefUpdateReceipt {
                 previous: actual,
                 current: next,
@@ -674,10 +785,12 @@ impl LocalSemanticGenerationFiles {
                 &target_root.join("history").join("commits"),
                 expected,
             )?;
-            if matches!(record.generation_root, HistoryGenerationRoot::TypedV2(_)) {
+            if matches!(
+                record.generation_root,
+                HistoryGenerationRoot::TypedV2(_) | HistoryGenerationRoot::TypedV3(_)
+            ) {
                 return Err(
-                    "typed V2 history cannot be published as the production local-cache ref"
-                        .to_owned(),
+                    "typed history cannot be renamed as the production local-cache ref".to_owned(),
                 );
             }
         }
@@ -719,6 +832,7 @@ impl LocalSemanticGenerationFiles {
                     created: false,
                     _gc_pin: None,
                     typed_v2_proof: None,
+                    typed_v3_proof: None,
                 });
             }
         }
@@ -823,7 +937,7 @@ pub(crate) fn validate_commit_generation(
             HistoryGenerationRoot::NxfiV1(generation.image.semantic_generation())
                 == HistoryGenerationRoot::NxfiV1(root)
         }
-        HistoryGenerationRoot::TypedV2(_) => true,
+        HistoryGenerationRoot::TypedV2(_) | HistoryGenerationRoot::TypedV3(_) => true,
     };
     if generation.identity != commit.generation
         || !root_matches_generation

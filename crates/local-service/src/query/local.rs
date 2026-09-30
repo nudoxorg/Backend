@@ -3,9 +3,13 @@ use backend_extension_tantivy as lexical;
 use backend_extension_trustfall::{SemanticQueryCorpus, SemanticQueryPresentation};
 use backend_semantic::{Entity, EntityId, Source};
 use backend_version::{CoverageWitness, RelationState};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::num::NonZeroUsize;
+
+const MAX_SEMANTIC_DOCUMENT_PAGE_ROWS: usize = 256;
 
 /// One whitespace clause whose lexical term is the leaf and whose owner
 /// segments must match the presentation parent chain.
@@ -125,16 +129,39 @@ impl Placement {
     /// typed, then in any case); a row whose package another word names; a
     /// kind that is the named thing before one that only mentions it.
     pub(crate) fn key(&self, words: &[String]) -> (bool, u8, bool, u8) {
-        let named = words.iter().position(|word| *word == self.name).map(|at| (2, at)).or_else(|| {
-            words.iter().position(|word| word.eq_ignore_ascii_case(&self.name)).map(|at| (1, at))
-        });
-        let package_named = self.package.as_deref().is_some_and(|package| {
-            words.iter().enumerate().any(|(at, word)| {
-                named.is_none_or(|(_, name_at)| at != name_at) && word.eq_ignore_ascii_case(package)
-            })
-        });
-        (!self.external, named.map_or(0, |(strength, _)| strength), package_named, self.kind)
+        placement_key(&self.name, self.package.as_deref(), self.external, self.kind, words)
     }
+}
+
+fn placement_key(
+    name: &str,
+    package: Option<&str>,
+    external: bool,
+    kind: u8,
+    words: &[String],
+) -> (bool, u8, bool, u8) {
+    let named = words
+        .iter()
+        .position(|word| word == name)
+        .map(|at| (2, at))
+        .or_else(|| {
+            words
+                .iter()
+                .position(|word| word.eq_ignore_ascii_case(name))
+                .map(|at| (1, at))
+        });
+    let package_named = package.is_some_and(|package| {
+        words.iter().enumerate().any(|(at, word)| {
+            named.is_none_or(|(_, name_at)| at != name_at)
+                && word.eq_ignore_ascii_case(package)
+        })
+    });
+    (
+        !external,
+        named.map_or(0, |(strength, _)| strength),
+        package_named,
+        kind,
+    )
 }
 
 /// A package's name from its label: the last part of its path, less the
@@ -293,21 +320,137 @@ pub struct SemanticDocument {
     pub text: String,
 }
 
+/// Re-iterable bounded materialization of the document texts owned by one
+/// selected corpus. Only the current page allocates strings.
+pub(crate) struct SemanticDocumentPages<'a> {
+    corpus: &'a Corpus,
+    offset: usize,
+    page_rows: NonZeroUsize,
+}
+
+impl Iterator for SemanticDocumentPages<'_> {
+    type Item = Vec<SemanticDocument>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let selected = &self.corpus.selected;
+        let order = &selected.document_order;
+        if self.offset >= order.len() {
+            return None;
+        }
+        let end = self
+            .offset
+            .saturating_add(self.page_rows.get())
+            .min(order.len());
+        let mut page = Vec::with_capacity(end - self.offset);
+        for selected_index in &order[self.offset..end] {
+            let selected = selected.entities[*selected_index];
+            let fact = &self.corpus.semantic_evidence.facts()[selected.fact_index];
+            page.push(SemanticDocument {
+                row: selected.row,
+                text: semantic_text(fact.presentation()),
+            });
+        }
+        self.offset = end;
+        Some(page)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self
+            .corpus
+            .selected
+            .document_order
+            .len()
+            .saturating_sub(self.offset);
+        let pages = remaining.div_ceil(self.page_rows.get());
+        (pages, Some(pages))
+    }
+}
+
+impl ExactSizeIterator for SemanticDocumentPages<'_> {}
+
 pub(crate) struct Corpus {
     pub(crate) workspace: WorkspaceRoot,
     pub(crate) view: ViewRoot,
     pub(crate) coverage: CoverageWitness,
     pub(crate) lexical: lexical::TantivyAdapter,
     pub(crate) lexical_binding: lexical::Binding,
-    pub(crate) entities: BTreeMap<EntityId, RowId>,
-    pub(crate) candidates: BTreeMap<backend_extension_qdrant::CandidateId, EntityId>,
-    pub(crate) semantic_documents: Box<[SemanticDocument]>,
+    pub(crate) selected: SelectedCorpus,
     pub(crate) semantic_evidence: SemanticQueryCorpus,
-    pub(crate) left_out: LeftOut,
-    pub(crate) placements: BTreeMap<EntityId, Placement>,
+}
+
+#[derive(Clone, Copy)]
+struct SelectedEntity {
+    entity: EntityId,
+    row: RowId,
+    candidate: backend_extension_qdrant::CandidateId,
+    fact_index: usize,
+}
+
+struct SelectedCorpus {
+    entities: Box<[SelectedEntity]>,
+    candidate_order: Box<[usize]>,
+    document_order: Box<[usize]>,
+    fact_order: Box<[usize]>,
+    left_out: LeftOut,
+}
+
+impl SelectedCorpus {
+    fn entity(&self, entity: EntityId) -> Option<SelectedEntity> {
+        self.entities
+            .binary_search_by_key(&entity, |entry| entry.entity)
+            .ok()
+            .map(|index| self.entities[index])
+    }
+
+    fn row(&self, row: RowId, workspace: WorkspaceRoot) -> Option<SelectedEntity> {
+        let entity = entity_id(workspace, row).ok()?;
+        self.entity(entity).filter(|entry| entry.row == row)
+    }
+
+    fn candidate(&self, candidate: backend_extension_qdrant::CandidateId) -> Option<SelectedEntity> {
+        let order_index = self
+            .candidate_order
+            .binary_search_by_key(&candidate, |index| self.entities[*index].candidate)
+            .ok()?;
+        self.entities.get(self.candidate_order[order_index]).copied()
+    }
+
+    fn fact_index(&self, evidence: &SemanticQueryCorpus, id: &str) -> Option<usize> {
+        let order_index = self
+            .fact_order
+            .binary_search_by(|index| evidence.facts()[*index].presentation().id.as_str().cmp(id))
+            .ok()?;
+        self.fact_order.get(order_index).copied()
+    }
 }
 
 impl Corpus {
+    fn placement_key(
+        &self,
+        entity: EntityId,
+        words: &[String],
+    ) -> Option<(bool, u8, bool, u8)> {
+        let selected = self.selected.entity(entity)?;
+        let presentation = self.semantic_evidence.facts()[selected.fact_index].presentation();
+        let package = presentation
+            .project
+            .as_deref()
+            .and_then(|project| self.selected.fact_index(&self.semantic_evidence, project))
+            .map(|index| package_name(&self.semantic_evidence.facts()[index].presentation().name));
+        let name = if presentation.kind == "project" {
+            package_name(&presentation.name)
+        } else {
+            presentation.name.as_str()
+        };
+        Some(placement_key(
+            name,
+            package,
+            presentation.kind == "external",
+            kind_weight(&presentation.kind),
+            words,
+        ))
+    }
+
     pub(super) fn semantic_binding_matches(
         &self,
         binding: &backend_extension_qdrant::Binding,
@@ -333,15 +476,6 @@ impl Corpus {
         backend_extension_qdrant::Frontier::from_value(self.view.frontier().root.as_bytes())
     }
 }
-
-type SelectedDocuments = (
-    Vec<(EntityId, Vec<(String, String)>)>,
-    BTreeMap<EntityId, RowId>,
-    BTreeMap<backend_extension_qdrant::CandidateId, EntityId>,
-    Box<[SemanticDocument]>,
-    LeftOut,
-    BTreeMap<EntityId, Placement>,
-);
 
 /// Where the selected view and its typed search evidence did not pair up.
 ///
@@ -372,6 +506,7 @@ impl LeftOut {
 pub struct LocalAnswer {
     pub(crate) corpus: Arc<Corpus>,
     pub(crate) query: LocalQuery,
+    /// Bounded display-page membership sorted by entity for point lookup.
     pub(crate) matches: Vec<(EntityId, lexical::Relevance)>,
     /// First bounded local page.
     pub rows: Vec<RankedRow>,
@@ -383,17 +518,122 @@ pub struct LocalAnswer {
 }
 
 impl LocalAnswer {
-    /// Returns the complete relevance-ordered canonical identity set.
+    /// Returns the bounded local page's canonical identities in display order.
     ///
     /// The coordinator resolves provider identities through its selected
     /// immutable view, so missing projection entries cannot cross into a
     /// command reply.
     #[must_use]
     pub fn ranked_row_ids(&self) -> Vec<RowId> {
+        self.rows.iter().map(|ranked| ranked.row.id).collect()
+    }
+
+    pub(crate) fn lexical_relevance(&self, entity: EntityId) -> Option<lexical::Relevance> {
         self.matches
-            .iter()
-            .filter_map(|(entity, _)| self.corpus.entities.get(entity).copied())
-            .collect()
+            .binary_search_by_key(&entity, |(candidate, _)| *candidate)
+            .ok()
+            .map(|index| self.matches[index].1)
+    }
+
+    /// Resolves a bounded ANN page against the exact lexical query without
+    /// retaining the full lexical hit set in this answer.
+    pub(super) fn lexical_relevance_for_candidates(
+        &self,
+        entities: &[EntityId],
+    ) -> Result<BTreeMap<EntityId, lexical::Relevance>, QueryError> {
+        let mut remaining = BTreeSet::new();
+        let mut relevance = BTreeMap::new();
+        for entity in entities {
+            if let Some(score) = self.lexical_relevance(*entity) {
+                relevance.insert(*entity, score);
+            } else {
+                remaining.insert(*entity);
+            }
+        }
+        if remaining.is_empty() {
+            return Ok(relevance);
+        }
+
+        let mut cursor = None;
+        let mut reported_total = None;
+        let mut seen_hits = 0usize;
+        loop {
+            let request = lexical::QueryRequest {
+                binding: self.corpus.lexical_binding,
+                query: self.query.lexical().clone(),
+                cursor,
+                limit: lexical::Limits::default().max_page,
+            };
+            let page = self
+                .corpus
+                .lexical
+                .query(&request)
+                .map_err(|_| QueryError::LexicalProvider)?;
+            if reported_total.is_some_and(|total| total != page.total) {
+                return Err(QueryError::LexicalProvider);
+            }
+            reported_total = Some(page.total);
+            seen_hits = seen_hits
+                .checked_add(page.hits.len())
+                .ok_or(QueryError::CorpusLimit)?;
+            for hit in page.hits {
+                let Some(selected) = self.corpus.selected.entity(hit.document) else {
+                    return Err(QueryError::LexicalProvider);
+                };
+                if !remaining.remove(&hit.document) {
+                    continue;
+                }
+                let row_id = selected.row.stable_key();
+                if self.query.qualified_clauses().is_empty()
+                    || qualified_row_matches(
+                        row_id.as_str(),
+                        self.query.qualified_clauses(),
+                        &self.corpus.selected,
+                        &self.corpus.semantic_evidence,
+                    )
+                {
+                    relevance.insert(hit.document, hit.relevance);
+                }
+            }
+            cursor = page.next;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        if reported_total != Some(seen_hits) {
+            return Err(QueryError::LexicalProvider);
+        }
+        Ok(relevance)
+    }
+
+    pub(super) fn candidate_row(
+        &self,
+        candidate: backend_extension_qdrant::CandidateId,
+    ) -> Option<(EntityId, Row)> {
+        let selected = self.corpus.selected.candidate(candidate)?;
+        let row = self.corpus.view.row(selected.row)?;
+        Some((selected.entity, row))
+    }
+
+    pub(super) fn candidate_for_entity(
+        &self,
+        entity: EntityId,
+    ) -> Option<backend_extension_qdrant::CandidateId> {
+        self.corpus
+            .selected
+            .entity(entity)
+            .map(|selected| selected.candidate)
+    }
+
+    pub(super) fn entity_for_row(&self, row: RowId) -> Option<EntityId> {
+        self.corpus
+            .selected
+            .row(row, self.corpus.workspace)
+            .map(|selected| selected.entity)
+    }
+
+    pub(super) fn selected_row_count(&self) -> usize {
+        self.corpus.selected.entities.len()
     }
 
     /// Converts the local answer into the final result without attempting a
@@ -436,6 +676,8 @@ pub struct QueryCoordinator {
 pub(crate) enum SnapshotMaintenance {
     /// The published selection already matched the resident snapshot.
     Reused,
+    /// An immutable selected root was restored from the durable cache.
+    Restored,
     /// Lexical fields were unchanged, so only the binding stamp moved.
     Rebound,
     /// A bounded document edit was written into the resident Tantivy index.
@@ -457,13 +699,26 @@ pub(crate) enum SnapshotMaintenance {
 #[derive(Default)]
 pub struct SearchSnapshotOwner {
     selected: Option<QueryCoordinator>,
+    durable_root: Option<PathBuf>,
     builds: u64,
+    opens: u64,
     maintenance: Option<SnapshotMaintenance>,
     corpus: Option<SemanticQueryCorpus>,
     corpus_builds: u64,
 }
 
 impl SearchSnapshotOwner {
+    /// Uses a workspace-local durable projection cache for cold restarts.
+    /// Every opened projection is still admitted against the exact selected
+    /// view and complete lexical binding supplied by the owner.
+    #[must_use]
+    pub fn with_durable_root(root: impl Into<PathBuf>) -> Self {
+        Self {
+            durable_root: Some(root.into()),
+            ..Self::default()
+        }
+    }
+
     /// Selects the coordinator for one exact immutable product snapshot.
     ///
     /// # Errors
@@ -484,31 +739,63 @@ impl SearchSnapshotOwner {
             return self.selected.as_ref().ok_or(QueryError::InvalidView);
         }
         let revised = match self.selected.as_mut() {
-            Some(selected) => selected.try_revise(workspace, &view, coverage, &semantic_evidence),
+            Some(selected) => selected.try_revise(
+                workspace,
+                &view,
+                coverage,
+                &semantic_evidence,
+                self.durable_root.as_deref(),
+            ),
             None => Ok(None),
         };
         match revised {
             Ok(Some(maintenance)) => {
+                match maintenance {
+                    SnapshotMaintenance::Rebuilt => {
+                        self.builds = self.builds.saturating_add(1);
+                    }
+                    SnapshotMaintenance::Restored => {
+                        self.opens = self.opens.saturating_add(1);
+                    }
+                    SnapshotMaintenance::Reused
+                    | SnapshotMaintenance::Rebound
+                    | SnapshotMaintenance::Revised { .. } => {}
+                }
                 self.maintenance = Some(maintenance);
                 return self.selected.as_ref().ok_or(QueryError::InvalidView);
             }
             Ok(None) => {}
             Err(error) => {
-                if matches!(error, QueryError::LexicalProvider) {
+                if matches!(error, QueryError::LexicalProvider) && self.durable_root.is_none() {
                     self.selected = None;
                 } else {
                     return Err(error);
                 }
             }
         }
-        self.selected = Some(QueryCoordinator::new(
+        let (selected, action) = QueryCoordinator::new_with_durable_root(
             workspace,
             view,
             coverage,
             semantic_evidence,
-        )?);
-        self.builds = self.builds.saturating_add(1);
-        self.maintenance = Some(SnapshotMaintenance::Rebuilt);
+            self.durable_root.clone(),
+        )?;
+        self.selected = Some(selected);
+        match action {
+            lexical::DurableProjectionAction::Opened => {
+                self.opens = self.opens.saturating_add(1);
+                self.maintenance = Some(SnapshotMaintenance::Restored);
+            }
+            lexical::DurableProjectionAction::Built => {
+                self.builds = self.builds.saturating_add(1);
+                self.maintenance = Some(SnapshotMaintenance::Rebuilt);
+            }
+            lexical::DurableProjectionAction::Revised => {
+                self.maintenance = Some(SnapshotMaintenance::Revised {
+                    rewritten_documents: 0,
+                });
+            }
+        }
         self.selected.as_ref().ok_or(QueryError::InvalidView)
     }
 
@@ -522,6 +809,12 @@ impl SearchSnapshotOwner {
     #[must_use]
     pub(crate) fn projection_builds(&self) -> u64 {
         self.builds
+    }
+
+    /// Returns how many durable selected roots this owner restored from disk.
+    #[must_use]
+    pub(crate) fn projection_opens(&self) -> u64 {
+        self.opens
     }
 
     /// Returns the corpus admitted for `workspace`, building it at most once.
@@ -582,8 +875,6 @@ impl SearchSnapshotOwner {
 }
 
 impl QueryCoordinator {
-    const MAX_QUERY_ROWS: u64 = 65_536;
-
     /// Builds the exact local lexical materialization for a selected view.
     ///
     /// The supplied witness must come from the workspace owner. A digest or
@@ -592,32 +883,49 @@ impl QueryCoordinator {
     /// # Errors
     ///
     /// Returns a typed [`QueryError`] when ownership is incomplete, the view
-    /// is incoherent or too large, or the lexical projection rejects input.
+    /// is incoherent, a document exceeds its lexical budget, or the lexical
+    /// projection rejects input.
     pub fn new(
         workspace: WorkspaceRoot,
         view: ViewRoot,
         coverage: CoverageWitness,
         semantic_evidence: SemanticQueryCorpus,
     ) -> Result<Self, QueryError> {
+        Self::new_with_durable_root(workspace, view, coverage, semantic_evidence, None)
+            .map(|(coordinator, _)| coordinator)
+    }
+
+    fn new_with_durable_root(
+        workspace: WorkspaceRoot,
+        view: ViewRoot,
+        coverage: CoverageWitness,
+        semantic_evidence: SemanticQueryCorpus,
+        durable_root: Option<PathBuf>,
+    ) -> Result<(Self, lexical::DurableProjectionAction), QueryError> {
         let prepared = prepare_corpus(workspace, view, coverage, semantic_evidence)?;
-        let lexical =
-            lexical::TantivySource::local_adapter(&prepared.state, lexical::Limits::default())
-                .map_err(|_| QueryError::LexicalProvider)?;
-        Ok(Self {
+        let (source, action) = match durable_root.as_deref() {
+            Some(root) => lexical::TantivySource::open_or_build_in_dir_with_action(
+                &prepared.state,
+                lexical::Limits::default(),
+                root,
+            ),
+            None => lexical::TantivySource::build(&prepared.state, lexical::Limits::default())
+                .map(|source| (source, lexical::DurableProjectionAction::Built)),
+        }
+        .map_err(|_| QueryError::LexicalProvider)?;
+        let lexical = lexical::TantivyAdapter::new(source, lexical::Limits::default())
+            .map_err(|_| QueryError::LexicalProvider)?;
+        Ok((Self {
             corpus: Arc::new(Corpus {
                 workspace: prepared.workspace,
                 view: prepared.view,
                 coverage: prepared.coverage,
                 lexical,
                 lexical_binding: prepared.binding,
-                entities: prepared.entities,
-                candidates: prepared.candidates,
-                semantic_documents: prepared.semantic_documents,
+                selected: prepared.selected,
                 semantic_evidence: prepared.semantic_evidence,
-                left_out: prepared.left_out,
-                placements: prepared.placements,
             }),
-        })
+        }, action))
     }
 
     fn try_revise(
@@ -626,40 +934,80 @@ impl QueryCoordinator {
         view: &ViewRoot,
         coverage: CoverageWitness,
         semantic_evidence: &SemanticQueryCorpus,
+        durable_root: Option<&Path>,
     ) -> Result<Option<SnapshotMaintenance>, QueryError> {
         let prepared =
             prepare_corpus(workspace, view.clone(), coverage, semantic_evidence.clone())?;
+        let previous_state = if durable_root.is_some() {
+            Some(
+                prepare_corpus(
+                    self.corpus.workspace,
+                    self.corpus.view.clone(),
+                    self.corpus.coverage,
+                    self.corpus.semantic_evidence.clone(),
+                )?
+                .state,
+            )
+        } else {
+            None
+        };
         let Some(corpus) = Arc::get_mut(&mut self.corpus) else {
             return Ok(None);
         };
-        let outcome = corpus
-            .lexical
-            .maintain(&prepared.state, lexical::OverlayLimits::default())
-            .map_err(|error| match error {
-                lexical::TantivySourceError::Contract(error) => QueryError::Lexical(error),
-                lexical::TantivySourceError::Backend(_)
-                | lexical::TantivySourceError::Io(_)
-                | lexical::TantivySourceError::Corrupt(_) => QueryError::LexicalProvider,
-            })?;
-        let maintenance = match outcome {
-            lexical::MaintainOutcome::RebuildRequired => return Ok(None),
-            lexical::MaintainOutcome::Applied(revision) => match revision.kind {
-                lexical::ProjectionKind::Rebound => SnapshotMaintenance::Rebound,
-                lexical::ProjectionKind::Revised => SnapshotMaintenance::Revised {
-                    rewritten_documents: revision.rewritten_documents,
+        let durable_publication = match (durable_root, previous_state.as_ref()) {
+            (Some(root), Some(previous)) => Some(
+                lexical::TantivySource::open_or_advance_in_dir_with_action(
+                    previous,
+                    &prepared.state,
+                    lexical::Limits::default(),
+                    lexical::OverlayLimits::default(),
+                    root,
+                )
+                .map_err(|_| QueryError::LexicalProvider)?,
+            ),
+            _ => None,
+        };
+        let maintenance = if let Some((source, revision, action)) = durable_publication {
+            corpus.lexical = lexical::TantivyAdapter::new(source, lexical::Limits::default())
+                .map_err(|_| QueryError::LexicalProvider)?;
+            match (revision, action) {
+                (Some(revision), _) => match revision.kind {
+                    lexical::ProjectionKind::Rebound => SnapshotMaintenance::Rebound,
+                    lexical::ProjectionKind::Revised => SnapshotMaintenance::Revised {
+                        rewritten_documents: revision.rewritten_documents,
+                    },
                 },
-            },
+                (None, lexical::DurableProjectionAction::Opened) => {
+                    SnapshotMaintenance::Restored
+                }
+                (None, _) => SnapshotMaintenance::Rebuilt,
+            }
+        } else {
+            match corpus
+                .lexical
+                .maintain(&prepared.state, lexical::OverlayLimits::default())
+                .map_err(|error| match error {
+                    lexical::TantivySourceError::Contract(error) => QueryError::Lexical(error),
+                    lexical::TantivySourceError::Backend(_)
+                    | lexical::TantivySourceError::Io(_)
+                    | lexical::TantivySourceError::Corrupt(_) => QueryError::LexicalProvider,
+                })?
+            {
+                lexical::MaintainOutcome::RebuildRequired => return Ok(None),
+                lexical::MaintainOutcome::Applied(revision) => match revision.kind {
+                    lexical::ProjectionKind::Rebound => SnapshotMaintenance::Rebound,
+                    lexical::ProjectionKind::Revised => SnapshotMaintenance::Revised {
+                        rewritten_documents: revision.rewritten_documents,
+                    },
+                },
+            }
         };
         corpus.workspace = prepared.workspace;
         corpus.view = prepared.view;
         corpus.coverage = prepared.coverage;
         corpus.lexical_binding = prepared.binding;
-        corpus.entities = prepared.entities;
-        corpus.candidates = prepared.candidates;
-        corpus.semantic_documents = prepared.semantic_documents;
+        corpus.selected = prepared.selected;
         corpus.semantic_evidence = prepared.semantic_evidence;
-        corpus.left_out = prepared.left_out;
-        corpus.placements = prepared.placements;
         Ok(Some(maintenance))
     }
 
@@ -684,9 +1032,12 @@ impl QueryCoordinator {
     /// Returns [`QueryError::LexicalProvider`] if the admitted local Tantivy
     /// projection cannot serve a page.
     pub fn search_local(&self, query: LocalQuery) -> Result<LocalAnswer, QueryError> {
-        let mut hits = Vec::new();
+        let mut top_matches = Vec::with_capacity(query.limit());
         let mut cursor = None;
         let mut reported_total = None;
+        let mut seen_hits = 0usize;
+        let mut total_matches = 0usize;
+        let words = query.words();
         loop {
             let request = lexical::QueryRequest {
                 binding: self.corpus.lexical_binding,
@@ -703,57 +1054,79 @@ impl QueryCoordinator {
                 return Err(QueryError::LexicalProvider);
             }
             reported_total = Some(page.total);
-            hits.extend(page.hits);
+            seen_hits = seen_hits
+                .checked_add(page.hits.len())
+                .ok_or(QueryError::CorpusLimit)?;
+            for hit in page.hits {
+                let Some(selected) = self.corpus.selected.entity(hit.document) else {
+                    return Err(QueryError::LexicalProvider);
+                };
+                if !query.qualified_clauses().is_empty()
+                    && !qualified_row_matches(
+                        selected.row.stable_key().as_str(),
+                        query.qualified_clauses(),
+                        &self.corpus.selected,
+                        &self.corpus.semantic_evidence,
+                    )
+                {
+                    continue;
+                }
+                total_matches = total_matches
+                    .checked_add(1)
+                    .ok_or(QueryError::CorpusLimit)?;
+                let ranked = (hit.document, hit.relevance);
+                let insertion = top_matches.partition_point(|known| {
+                    let known_key = self.corpus.placement_key(known.0, words);
+                    let ranked_key = self.corpus.placement_key(ranked.0, words);
+                    known_key
+                        .cmp(&ranked_key)
+                        .reverse()
+                        .then_with(|| known.1.cmp(&ranked.1).reverse())
+                        .then_with(|| known.0.cmp(&ranked.0))
+                        .is_lt()
+                });
+                if insertion < query.limit() {
+                    top_matches.insert(insertion, ranked);
+                    if top_matches.len() > query.limit() {
+                        top_matches.pop();
+                    }
+                }
+            }
             cursor = page.next;
             if cursor.is_none() {
                 break;
             }
         }
-        if reported_total != Some(hits.len()) {
+        if reported_total != Some(seen_hits) {
             return Err(QueryError::LexicalProvider);
         }
-        let mut matches = hits
-            .into_iter()
-            .map(|hit| (hit.document, hit.relevance))
-            .collect::<Vec<_>>();
-        if !query.qualified_clauses().is_empty() {
-            let presentations = presentation_index(&self.corpus.semantic_evidence);
-            matches.retain(|(entity, _)| {
-                self.corpus.entities.get(entity).is_some_and(|row_id| {
-                    qualified_row_matches(
-                        row_id.stable_key().as_str(),
-                        query.qualified_clauses(),
-                        &presentations,
-                    )
-                })
+        let mut rows = Vec::with_capacity(top_matches.len());
+        for (entity, relevance) in &top_matches {
+            let selected = self
+                .corpus
+                .selected
+                .entity(*entity)
+                .ok_or(QueryError::LexicalProvider)?;
+            let row = self
+                .corpus
+                .view
+                .row(selected.row)
+                .ok_or(QueryError::LexicalProvider)?;
+            rows.push(RankedRow {
+                row,
+                lexical_relevance: Some(*relevance),
             });
         }
-        // Placed by what the words name, then by lexical relevance (the
-        // sort is stable, so equal placements keep the lexical order).
-        let words = query.words();
-        matches.sort_by_key(|(entity, _)| {
-            std::cmp::Reverse(self.corpus.placements.get(entity).map(|placement| placement.key(words)))
-        });
-        let total_matches = matches.len();
-        let rows = matches
-            .iter()
-            .take(query.limit())
-            .filter_map(|(entity, relevance)| {
-                self.corpus
-                    .entities
-                    .get(entity)
-                    .and_then(|id| self.corpus.view.row(*id))
-                    .map(|row| RankedRow {
-                        row,
-                        lexical_relevance: Some(*relevance),
-                    })
-            })
-            .collect();
-        let selected_rows = self.corpus.entities.len();
-        let considered = if self.corpus.left_out.is_empty() {
+        let mut matches = top_matches;
+        matches.sort_unstable_by_key(|(entity, _)| *entity);
+        let selected_rows = self.corpus.selected.entities.len();
+        let considered = if self.corpus.selected.left_out.is_empty() {
             CoverageBasis::CompleteView { selected_rows }
         } else {
-            CoverageBasis::PartialView { selected_rows, left_out: self.corpus.left_out }
+            CoverageBasis::PartialView {
+                selected_rows,
+                left_out: self.corpus.selected.left_out,
+            }
         };
         let canonical = SourceBasis::Canonical {
             workspace: self.corpus.workspace,
@@ -789,22 +1162,34 @@ impl QueryCoordinator {
         })
     }
 
-    /// Returns the exact document inputs selected by this coordinator.
-    ///
-    /// The coordinator has already validated the view and bounded its rows,
-    /// so callers can safely pass these inputs to an optional semantic
-    /// producer. A bounded lexical edit keeps this coordinator and rewrites
-    /// only the affected Tantivy postings.
-    #[must_use]
-    pub fn semantic_documents(&self) -> &[SemanticDocument] {
-        &self.corpus.semantic_documents
+    /// Iterates the selected document inputs in stable row order. Each page
+    /// owns only its bounded text strings, and a caller can create another
+    /// iterator over the same immutable selection.
+    pub(crate) fn semantic_document_pages(
+        &self,
+        page_rows: NonZeroUsize,
+    ) -> Result<SemanticDocumentPages<'_>, QueryError> {
+        if page_rows.get() > MAX_SEMANTIC_DOCUMENT_PAGE_ROWS {
+            return Err(QueryError::InvalidLimit);
+        }
+        Ok(SemanticDocumentPages {
+            corpus: &self.corpus,
+            offset: 0,
+            page_rows,
+        })
     }
 
     /// Returns the exact number of rows requiring document embeddings for
     /// this immutable selection.
     #[must_use]
     pub fn semantic_document_count(&self) -> usize {
-        self.corpus.semantic_documents.len()
+        self.corpus.selected.document_order.len()
+    }
+
+    /// Returns the exact workspace selected by the owner for this corpus.
+    #[must_use]
+    pub(crate) fn workspace_root(&self) -> WorkspaceRoot {
+        self.corpus.workspace
     }
 
     /// Checks the non-root portion of a semantic binding against this exact
@@ -846,42 +1231,34 @@ impl QueryCoordinator {
         let candidate =
             candidate_id(entity, self.corpus.semantic_evidence.evidence_digest()).ok()?;
         self.corpus
-            .candidates
-            .get(&candidate)
-            .is_some_and(|selected| *selected == entity)
-            .then_some(candidate)
+            .selected
+            .row(row, self.corpus.workspace)
+            .filter(|selected| selected.entity == entity && selected.candidate == candidate)
+            .map(|_| candidate)
     }
-}
-
-fn presentation_index<'a>(
-    semantic_evidence: &'a SemanticQueryCorpus,
-) -> BTreeMap<&'a str, &'a SemanticQueryPresentation> {
-    semantic_evidence
-        .facts()
-        .iter()
-        .map(|fact| {
-            let presentation = fact.presentation();
-            (presentation.id.as_str(), presentation)
-        })
-        .collect()
 }
 
 fn qualified_row_matches(
     row_id: &str,
     clauses: &[QualifiedClause],
-    presentations: &BTreeMap<&str, &SemanticQueryPresentation>,
+    selected: &SelectedCorpus,
+    evidence: &SemanticQueryCorpus,
 ) -> bool {
     clauses
         .iter()
-        .all(|clause| qualified_clause_matches(row_id, clause, presentations))
+        .all(|clause| qualified_clause_matches(row_id, clause, selected, evidence))
 }
 
 fn qualified_clause_matches(
     row_id: &str,
     clause: &QualifiedClause,
-    presentations: &BTreeMap<&str, &SemanticQueryPresentation>,
+    selected: &SelectedCorpus,
+    evidence: &SemanticQueryCorpus,
 ) -> bool {
-    let Some(mut current) = presentations.get(row_id).copied() else {
+    let Some(mut current) = selected
+        .fact_index(evidence, row_id)
+        .map(|index| evidence.facts()[index].presentation())
+    else {
         return false;
     };
     if !current
@@ -895,7 +1272,10 @@ fn qualified_clause_matches(
         let Some(parent_id) = current.parent.as_deref() else {
             return false;
         };
-        let Some(parent) = presentations.get(parent_id).copied() else {
+        let Some(parent) = selected
+            .fact_index(evidence, parent_id)
+            .map(|index| evidence.facts()[index].presentation())
+        else {
             return false;
         };
         if parent.name.to_ascii_lowercase() != *owner {
@@ -912,12 +1292,8 @@ struct PreparedCorpus {
     coverage: CoverageWitness,
     binding: lexical::Binding,
     state: lexical::DocumentState,
-    entities: BTreeMap<EntityId, RowId>,
-    candidates: BTreeMap<backend_extension_qdrant::CandidateId, EntityId>,
-    semantic_documents: Box<[SemanticDocument]>,
+    selected: SelectedCorpus,
     semantic_evidence: SemanticQueryCorpus,
-    left_out: LeftOut,
-    placements: BTreeMap<EntityId, Placement>,
 }
 
 fn prepare_corpus(
@@ -941,23 +1317,19 @@ fn prepare_corpus(
     {
         return Err(QueryError::IncompleteCoverage);
     }
-    if view.row_count() > QueryCoordinator::MAX_QUERY_ROWS {
-        return Err(QueryError::CorpusLimit);
-    }
     if semantic_evidence.workspace() != workspace {
         return Err(QueryError::InvalidSemanticEvidence);
     }
-    let (documents, entities, candidates, semantic_documents, left_out, placements) =
-        collect_selected_documents(workspace, &view, &semantic_evidence)?;
+    let (documents, selected) = collect_selected_documents(workspace, &view, &semantic_evidence)?;
+    let left_out = selected.left_out;
     if !left_out.is_empty() {
         eprintln!(
             "locald search: the view and its search evidence disagree ({} rows without evidence, {} evidence without a row); those are left out of search",
             left_out.rows_without_evidence, left_out.evidence_without_row
         );
     }
-    let state =
-        RelationState::<lexical::IndexRelation>::from_entries(documents.iter().cloned(), coverage)
-            .map_err(|_| QueryError::InvalidView)?;
+    let state = RelationState::<lexical::IndexRelation>::from_entries(documents, coverage)
+        .map_err(|_| QueryError::InvalidView)?;
     let binding = lexical::Binding::new(
         workspace,
         state.root(),
@@ -971,21 +1343,20 @@ fn prepare_corpus(
     .with_frontier(lexical::Frontier::from_value(
         view.frontier().root.as_bytes(),
     ));
-    let state =
-        lexical::DocumentState::new(binding, coverage, documents, lexical::Limits::default())
-            .map_err(QueryError::Lexical)?;
+    let state = lexical::DocumentState::from_relation(
+        binding,
+        state,
+        lexical::Limits::default(),
+    )
+    .map_err(QueryError::Lexical)?;
     Ok(PreparedCorpus {
         workspace,
         view,
         coverage,
         binding,
         state,
-        entities,
-        candidates,
-        semantic_documents,
+        selected,
         semantic_evidence,
-        left_out,
-        placements,
     })
 }
 
@@ -993,12 +1364,10 @@ fn collect_selected_documents(
     workspace: WorkspaceRoot,
     view: &ViewRoot,
     semantic_evidence: &SemanticQueryCorpus,
-) -> Result<SelectedDocuments, QueryError> {
-    let capacity = usize::try_from(view.row_count()).map_err(|_| QueryError::CorpusLimit)?;
-    let mut documents = Vec::with_capacity(capacity);
-    let mut entities = BTreeMap::new();
-    let mut candidates = BTreeMap::new();
-    let mut document_bytes = 0usize;
+) -> Result<(Vec<(EntityId, Vec<(String, String)>)>, SelectedCorpus), QueryError> {
+    let mut documents = Vec::new();
+    let mut selected = Vec::new();
+    let mut candidate_ids = BTreeSet::new();
     let mut selected_rows = BTreeMap::new();
     let mut cursor = backend_engine::ViewPageCursor::first(view);
     loop {
@@ -1040,17 +1409,8 @@ fn collect_selected_documents(
             (presentation.id.as_str(), presentation)
         })
         .collect();
-    let mut semantic_documents = Vec::with_capacity(semantic_evidence.facts().len());
     let mut left_out = LeftOut::default();
-    let packages = semantic_evidence
-        .facts()
-        .iter()
-        .map(backend_extension_trustfall::SemanticQueryFact::presentation)
-        .filter(|presentation| presentation.kind == "project")
-        .map(|presentation| (presentation.id.as_str(), package_name(&presentation.name)))
-        .collect::<BTreeMap<_, _>>();
-    let mut placements = BTreeMap::new();
-    for fact in semantic_evidence.facts() {
+    for (fact_index, fact) in semantic_evidence.facts().iter().enumerate() {
         let presentation = fact.presentation();
         let Some(row) = selected_rows.remove(&presentation.id) else {
             left_out.evidence_without_row += 1;
@@ -1059,11 +1419,15 @@ fn collect_selected_documents(
         {
             let entity = entity_id(workspace, row)?;
             let candidate = candidate_id(entity, semantic_evidence.evidence_digest())?;
-            if entities.insert(entity, row).is_some()
-                || candidates.insert(candidate, entity).is_some()
-            {
+            if !candidate_ids.insert(candidate) {
                 return Err(QueryError::IdentityCollision);
             }
+            selected.push(SelectedEntity {
+                entity,
+                row,
+                candidate,
+                fact_index,
+            });
             let is_synthetic_result_slot = presentation.kind == "variable"
                 && presentation
                     .parent
@@ -1083,42 +1447,45 @@ fn collect_selected_documents(
             // lane are unaffected.
             if !is_synthetic_result_slot {
                 let row_fields = fields(presentation);
-                document_bytes = checked_document_bytes(document_bytes, &row_fields)?;
+                checked_document_bytes(0, &row_fields)?;
                 documents.push((entity, row_fields));
             }
-            semantic_documents.push(SemanticDocument {
-                row,
-                text: semantic_text(presentation),
-            });
-            placements.insert(
-                entity,
-                Placement {
-                    // A package's row is named by its package's name, not
-                    // its path.
-                    name: if presentation.kind == "project" {
-                        package_name(&presentation.name).to_owned()
-                    } else {
-                        presentation.name.clone()
-                    },
-                    package: presentation
-                        .project
-                        .as_deref()
-                        .and_then(|project| packages.get(project))
-                        .map(|name| (*name).to_owned()),
-                    external: presentation.kind == "external",
-                    kind: kind_weight(&presentation.kind),
-                },
-            );
         }
     }
     left_out.rows_without_evidence = selected_rows.len();
+    selected.sort_unstable_by_key(|entry| entry.entity);
+    if selected
+        .windows(2)
+        .any(|pair| pair[0].entity == pair[1].entity)
+    {
+        return Err(QueryError::IdentityCollision);
+    }
+    let mut candidate_order = (0..selected.len()).collect::<Vec<_>>();
+    candidate_order.sort_unstable_by_key(|index| selected[*index].candidate);
+    if candidate_order
+        .windows(2)
+        .any(|pair| selected[pair[0]].candidate == selected[pair[1]].candidate)
+    {
+        return Err(QueryError::IdentityCollision);
+    }
+    let mut document_order = (0..selected.len()).collect::<Vec<_>>();
+    document_order.sort_unstable_by_key(|index| selected[*index].row);
+    let mut fact_order = (0..semantic_evidence.facts().len()).collect::<Vec<_>>();
+    fact_order.sort_unstable_by(|left, right| {
+        semantic_evidence.facts()[*left]
+            .presentation()
+            .id
+            .cmp(&semantic_evidence.facts()[*right].presentation().id)
+    });
     Ok((
         documents,
-        entities,
-        candidates,
-        semantic_documents.into_boxed_slice(),
-        left_out,
-        placements,
+        SelectedCorpus {
+            entities: selected.into_boxed_slice(),
+            candidate_order: candidate_order.into_boxed_slice(),
+            document_order: document_order.into_boxed_slice(),
+            fact_order: fact_order.into_boxed_slice(),
+            left_out,
+        },
     ))
 }
 
@@ -1220,7 +1587,7 @@ pub enum QueryError {
     /// rows of the right workspace that do not pair are left out of search
     /// instead: [`LeftOut`].)
     InvalidSemanticEvidence,
-    /// The view exceeds the coordinator's explicit materialization bound.
+    /// One document exceeds the lexical field or text budget.
     CorpusLimit,
     /// Typed lexical admission failed.
     Lexical(lexical::Error),

@@ -17,6 +17,7 @@ use crate::ir::versioned_records::aggregate::{
     SemanticTypedPlaneInventoryV2Error, SemanticTypedPlaneVerificationLimitsV2,
     TypedPlaneFamilyPayloadsV2, TypedPlaneSegmentPayloadV2, VerifiedTypedPlaneFamilyV2,
     VerifiedTypedPlaneInventoryV2, VerifiedTypedPlaneSegmentV2,
+    verify_semantic_typed_plane_history_v3_with_segment_source,
     verify_semantic_typed_plane_inventory_v2,
     verify_semantic_typed_plane_inventory_v2_with_admission,
     verify_semantic_typed_plane_inventory_v2_with_segment_source,
@@ -362,11 +363,20 @@ impl VerifiedTypedPlaneContentV2 {
     pub(crate) fn from_verified_inventory(
         inventory: VerifiedTypedPlaneInventoryV2,
     ) -> Result<Self, SemanticGenerationProofError> {
+        Self::from_verified_inventory_with_input_mode(inventory, VerifiedInputMode::Complete)
+    }
+
+    fn from_verified_inventory_with_input_mode(
+        inventory: VerifiedTypedPlaneInventoryV2,
+        input_mode: VerifiedInputMode,
+    ) -> Result<Self, SemanticGenerationProofError> {
         let build = inventory.build();
         let image_facts = inventory.image_facts();
         let input_claim = SemanticInputClaimV2::from_witness(&inventory.input_witness());
         validate_image_facts(build, image_facts)?;
-        validate_input_claim(input_claim)?;
+        if matches!(input_mode, VerifiedInputMode::Complete) {
+            validate_input_claim(input_claim)?;
+        }
 
         let summaries = inventory.families();
         let commitments = summaries
@@ -434,6 +444,68 @@ impl VerifiedTypedPlaneContentV2 {
     #[must_use]
     pub const fn generation_root(&self) -> SemanticGenerationRootV2 {
         self.generation_root
+    }
+}
+
+#[derive(Clone, Copy)]
+enum VerifiedInputMode {
+    Complete,
+    PersistedHistory,
+}
+
+/// Seven-family output proof used exclusively by durable semantic history.
+/// It preserves the selected generation's input claim but cannot be passed as
+/// `VerifiedTypedPlaneContentV2`, which remains the complete-input proof type.
+/// The output family census and cross references are verified by the same
+/// aggregate verifier, while this wrapper keeps the independent read-frontier
+/// authority boundary intact.
+///
+/// ```compile_fail
+/// use backend_semantic::ir::{
+///     VerifiedTypedPlaneContentV2, VerifiedTypedPlaneHistoryContentV3,
+/// };
+/// fn reuse(content: VerifiedTypedPlaneContentV2) {}
+/// fn misuse(history: VerifiedTypedPlaneHistoryContentV3) { reuse(history); }
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VerifiedTypedPlaneHistoryContentV3 {
+    content: VerifiedTypedPlaneContentV2,
+}
+
+impl VerifiedTypedPlaneHistoryContentV3 {
+    fn from_verified_inventory(
+        inventory: VerifiedTypedPlaneInventoryV2,
+    ) -> Result<Self, SemanticGenerationProofError> {
+        let content = VerifiedTypedPlaneContentV2::from_verified_inventory_with_input_mode(
+            inventory,
+            VerifiedInputMode::PersistedHistory,
+        )?;
+        Ok(Self { content })
+    }
+
+    /// The selected generation's canonical build identity.
+    #[must_use]
+    pub const fn build(&self) -> &SemanticBuildIdentity {
+        self.content.build()
+    }
+
+    /// The exact persisted claim, with its original coverage state.
+    #[must_use]
+    pub const fn input_claim(&self) -> SemanticInputClaimV2 {
+        self.content.input_claim()
+    }
+
+    /// The verified seven-family typed content identity.
+    #[must_use]
+    pub const fn content_root(&self) -> SemanticContentRootV2 {
+        self.content.content_root()
+    }
+
+    /// The deterministic history generation identity, including the input
+    /// claim state but carrying no read-frontier reuse authority.
+    #[must_use]
+    pub const fn generation_root(&self) -> SemanticGenerationRootV2 {
+        self.content.generation_root()
     }
 }
 
@@ -550,6 +622,55 @@ where
     Ok(content)
 }
 
+/// Independently verifies a c007 typed plane for durable history while
+/// preserving the manifest's persisted input-coverage claim. This runs the
+/// same bounded seven-family verifier as the complete-input V2 path and
+/// returns a history-only proof type. It does not establish that the manifest
+/// belongs to the current selected compiler image or authorize read-frontier
+/// reuse; the history owner must bind it to a selected generation.
+pub fn verify_typed_plane_history_content_v3_with_jumbo_segment_source<S, P>(
+    manifest: &SemanticTypedPlaneManifestV2,
+    tier: SemanticTypedPlaneVerificationTierV2,
+    jumbo_limits: JumboRopeLimits,
+    source: &mut S,
+    jumbo_source: &mut P,
+) -> Result<VerifiedTypedPlaneHistoryContentV3, SemanticGenerationProofError>
+where
+    S: TypedPlaneSegmentSourceV2 + ?Sized,
+    P: JumboRopeObjectSource + ?Sized,
+    S::Error: core::fmt::Display,
+    P::Error: core::fmt::Display,
+{
+    let limits = typed_plane_verification_limits(tier);
+    let mut jumbo_admission =
+        JumboObjectClosureAdmissionV2::new(jumbo_source, jumbo_limits, limits);
+    let inventory = verify_semantic_typed_plane_history_v3_with_segment_source(
+        manifest.build(),
+        manifest.image_facts(),
+        manifest.input_claim().as_claimed_witness(),
+        manifest.families(),
+        source,
+        limits,
+        Some(&mut jumbo_admission),
+    )
+    .map_err(map_inventory_verification_error)?;
+    validate_inventory_matches_manifest(&inventory, manifest)?;
+    let content = VerifiedTypedPlaneHistoryContentV3::from_verified_inventory(inventory)?;
+    if !manifest
+        .content_root_claim()
+        .matches(content.content_root())
+    {
+        return Err(SemanticGenerationProofError::ContentRootClaimMismatch);
+    }
+    if !manifest
+        .generation_root_claim()
+        .matches(content.generation_root())
+    {
+        return Err(SemanticGenerationProofError::GenerationRootClaimMismatch);
+    }
+    Ok(content)
+}
+
 /// Derives V2 semantic roots from the exact durable segment family claims
 /// emitted from one complete reader, before those roots have been written into
 /// a c007 manifest. The caller must provide the same live complete read
@@ -595,6 +716,43 @@ where
     )
     .map_err(map_inventory_verification_error)?;
     VerifiedTypedPlaneContentV2::from_verified_inventory(inventory)
+}
+
+/// Derives the seven-family history roots from exact durable payloads while
+/// retaining an already-persisted input claim and its coverage state. This is
+/// content verification only; the caller must independently prove that the
+/// image and claim came from the exact current selected generation before
+/// admitting or publishing a history commit.
+pub fn derive_typed_plane_history_content_v3<S, P>(
+    build: SemanticBuildIdentity,
+    image_facts: SemanticImageFacts,
+    input_claim: SemanticInputClaimV2,
+    families: &[SemanticTypedPlaneFamilyDescriptorV2; IR_FAMILY_COUNT],
+    tier: SemanticTypedPlaneVerificationTierV2,
+    jumbo_limits: JumboRopeLimits,
+    source: &mut S,
+    jumbo_source: &mut P,
+) -> Result<VerifiedTypedPlaneHistoryContentV3, SemanticGenerationProofError>
+where
+    S: TypedPlaneSegmentSourceV2 + ?Sized,
+    P: JumboRopeObjectSource + ?Sized,
+    S::Error: core::fmt::Display,
+    P::Error: core::fmt::Display,
+{
+    let limits = typed_plane_verification_limits(tier);
+    let mut jumbo_admission =
+        JumboObjectClosureAdmissionV2::new(jumbo_source, jumbo_limits, limits);
+    let inventory = verify_semantic_typed_plane_history_v3_with_segment_source(
+        build,
+        image_facts,
+        input_claim.as_claimed_witness(),
+        families,
+        source,
+        limits,
+        Some(&mut jumbo_admission),
+    )
+    .map_err(map_inventory_verification_error)?;
+    VerifiedTypedPlaneHistoryContentV3::from_verified_inventory(inventory)
 }
 
 fn verify_typed_plane_content_v2_with_admission(

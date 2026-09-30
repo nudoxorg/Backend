@@ -107,6 +107,10 @@ impl ProductState {
             .ok_or_else(|| "product state path has no parent workspace".to_owned())
     }
 
+    pub(super) fn search_projection_path(&self) -> Result<PathBuf, String> {
+        Ok(self.workspace_path()?.join("catalog-search-forge-v1"))
+    }
+
     pub(super) fn open(path: PathBuf) -> Result<Self, String> {
         let state = match fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes)
@@ -335,7 +339,8 @@ impl ProductState {
                                 &forge_documents,
                                 &forge_source_pin_documents,
                             )?,
-                            None => DiscoverySearchIndex::open_forge_only_with_source_pins(
+                            None => DiscoverySearchIndex::open_forge_only_with_source_pins_at(
+                                self.search_projection_path()?,
                                 &forge_documents,
                                 &forge_source_pin_documents,
                             )?,
@@ -4254,6 +4259,9 @@ mod tests {
                         name: "needle-native-feature".to_owned(),
                         members: Box::new(["dep:needle-dependency".to_owned()]),
                     }]),
+                    features2: Box::new([]),
+                    published_at: None,
+                    rust_version: None,
                 },
             ),
         };
@@ -4318,6 +4326,9 @@ mod tests {
                         name: "alpha".to_owned(),
                         members: Box::new([]),
                     }]),
+                    features2: Box::new([]),
+                    published_at: None,
+                    rust_version: None,
                 },
             ),
         };
@@ -4341,6 +4352,9 @@ mod tests {
                         name: "beta".to_owned(),
                         members: Box::new([]),
                     }]),
+                    features2: Box::new([]),
+                    published_at: None,
+                    rust_version: None,
                 },
             ),
         };

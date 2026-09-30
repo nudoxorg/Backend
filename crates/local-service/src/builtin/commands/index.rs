@@ -31,7 +31,8 @@ use backend_semantic::vocabulary::{Language, LanguageProfile};
 use backend_version::{Coverage, ScopeRoot};
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -42,7 +43,7 @@ pub(super) fn index_project_intent(
     request_id: u64,
     compiler: &LocalCompilerClient,
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
-) -> Result<Option<BuiltinIntent>, BuiltinModelError> {
+) -> Result<Option<PreparedProductSelection>, BuiltinModelError> {
     index_project_intent_at_with_cluster(
         daemon,
         package,
@@ -66,7 +67,7 @@ pub(super) fn index_project_intent_with_cluster(
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
     owner_cluster: Option<&super::super::cluster_dispatch::OwnerCompilerClusterRuntime>,
     pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
-) -> Result<Option<BuiltinIntent>, BuiltinModelError> {
+) -> Result<Option<PreparedProductSelection>, BuiltinModelError> {
     index_project_intent_at_with_cluster(
         daemon,
         package,
@@ -91,7 +92,7 @@ pub(super) fn index_project_intent_with_cluster_and_intent(
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
     owner_cluster: Option<&super::super::cluster_dispatch::OwnerCompilerClusterRuntime>,
     pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
-) -> Result<Option<BuiltinIntent>, BuiltinModelError> {
+) -> Result<Option<PreparedProductSelection>, BuiltinModelError> {
     index_project_intent_at_with_cluster_and_intent(
         daemon,
         package,
@@ -107,13 +108,11 @@ pub(super) fn index_project_intent_with_cluster_and_intent(
     )
 }
 
-/// Prepares indexing a local project folder on the owner loop: the scan and
-/// the source frontier's commit, as [`index_project_intent_with_cluster_and_intent`]
-/// does them. When a local compile is needed (and no compiler cluster may take
-/// it), the compile is handed back as a [`DeferredIndex`] instead of run: the
-/// caller runs it off the loop ([`run_deferred_compile`]) and publishes it on
-/// the loop ([`finish_deferred_index`]), and the loop answers reads from the
-/// last publication meanwhile.
+/// Prepares indexing a local project folder on the owner loop without changing
+/// the selected product. When a local compile is needed (and no compiler
+/// cluster may take it), the compile is handed back as a [`DeferredIndex`]:
+/// the caller runs it off the loop and finishes the whole product transaction
+/// on the loop afterward.
 pub(super) fn prepare_index_project(
     daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     package: backend_engine::PackageKey,
@@ -148,7 +147,7 @@ pub(super) fn index_project_intent_at(
     request_id: u64,
     compiler: &LocalCompilerClient,
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
-) -> Result<Option<BuiltinIntent>, BuiltinModelError> {
+) -> Result<Option<PreparedProductSelection>, BuiltinModelError> {
     index_project_intent_at_with_cluster(
         daemon,
         package,
@@ -174,7 +173,7 @@ fn index_project_intent_at_with_cluster(
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
     owner_cluster: Option<&super::super::cluster_dispatch::OwnerCompilerClusterRuntime>,
     pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
-) -> Result<Option<BuiltinIntent>, BuiltinModelError> {
+) -> Result<Option<PreparedProductSelection>, BuiltinModelError> {
     index_project_intent_at_with_cluster_and_intent(
         daemon,
         package,
@@ -202,7 +201,7 @@ fn index_project_intent_at_with_cluster_and_intent(
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
     owner_cluster: Option<&super::super::cluster_dispatch::OwnerCompilerClusterRuntime>,
     pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
-) -> Result<Option<BuiltinIntent>, BuiltinModelError> {
+) -> Result<Option<PreparedProductSelection>, BuiltinModelError> {
     match prepare_index_project_at(
         daemon,
         package,
@@ -217,7 +216,7 @@ fn index_project_intent_at_with_cluster_and_intent(
         pending_stored_acks,
         false,
     )? {
-        PreparedIndex::Ready(intent) => Ok(intent),
+        PreparedIndex::Ready(prepared) => Ok(prepared.into_option()),
         PreparedIndex::Compile(_) => Err(BuiltinModelError(
             "an index compile was deferred on a path that runs it in place".to_owned(),
         )),
@@ -239,6 +238,43 @@ fn prepare_index_project_at(
     pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
     defer: bool,
 ) -> Result<PreparedIndex, BuiltinModelError> {
+    let work = capture_index_scan(
+        daemon,
+        package,
+        label,
+        source_root,
+        coordinate,
+        request_id,
+        execution_intent,
+        owner_cluster.is_some(),
+        Arc::new(AtomicBool::new(false)),
+    )?;
+    finish_index_scan(
+        daemon,
+        run_index_scan(work).map_err(IndexScanFailure::into_model_error)?,
+        compiler,
+        semantic_authority,
+        owner_cluster,
+        pending_stored_acks,
+        defer,
+    )
+}
+
+/// Captures the owner-backed source frontier and workspace root before an
+/// index scan is handed to a worker. This copies only bounded relation data;
+/// filesystem discovery stays outside the owner loop.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn capture_index_scan(
+    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    package: backend_engine::PackageKey,
+    label: &str,
+    source_root: &Path,
+    coordinate: Option<&PackageUrl>,
+    request_id: u64,
+    execution_intent: CompileExecutionIntent,
+    capture_workspace_snapshot: bool,
+    cancellation: Arc<AtomicBool>,
+) -> Result<IndexScanWork, BuiltinModelError> {
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let relation = snapshot
         .relation::<BuiltinWorkspaceRelation>()
@@ -256,6 +292,11 @@ fn prepare_index_project_at(
             })?,
         None => Vec::new(),
     };
+    if old_files.len() > ProductSourceRecord::MAX_PROJECT_FILES {
+        return Err(BuiltinModelError(
+            "project source frontier exceeds its bounded file limit".to_owned(),
+        ));
+    }
     let mut reusable = BTreeMap::new();
     for key in &old_files {
         let record = relation
@@ -271,15 +312,51 @@ fn prepare_index_project_at(
         }
         reusable.insert(*key, record);
     }
-    let source_coordinate = source_root.to_string_lossy();
-    let scan =
-        ingest::scan_project_for_unproven_authorities(&source_coordinate, project_key, &reusable)
-            .map_err(BuiltinModelError)?;
+    Ok(IndexScanWork {
+        package,
+        label: label.to_owned(),
+        source_root: source_root.to_path_buf(),
+        coordinate: coordinate.cloned(),
+        request_id,
+        execution_intent,
+        project_key,
+        workspace_root: daemon.engine().daemon().owner().head().root(),
+        before,
+        old_files,
+        reusable,
+        capture_workspace_snapshot,
+        cancellation,
+    })
+}
+
+/// Performs filesystem discovery and optional full compiler-workspace capture
+/// using only the immutable input copied from the owner.
+pub(super) fn run_index_scan(work: IndexScanWork) -> Result<IndexScanResult, IndexScanFailure> {
+    if work.cancellation.load(Ordering::Acquire) {
+        return Err(IndexScanFailure::Cancelled);
+    }
+    let source_coordinate = work.source_root.to_string_lossy();
+    let scan = ingest::scan_project_for_unproven_authorities_cancellable(
+        &source_coordinate,
+        work.project_key,
+        &work.reusable,
+        &work.cancellation,
+    )
+    .map_err(|error| {
+        if work.cancellation.load(Ordering::Acquire) {
+            IndexScanFailure::Cancelled
+        } else {
+            IndexScanFailure::Refused(BuiltinModelError(error))
+        }
+    })?;
     // Remote execution is available only when a complete, confined workspace
     // inventory can be captured. Failure to build that optional evidence
     // leaves the existing local compile path available.
-    let workspace_snapshot = owner_cluster.and_then(|_| {
-        match ingest::CompilerWorkspaceSnapshot::open(source_root) {
+    let workspace_snapshot = work.capture_workspace_snapshot.then(|| {
+        match ingest::CompilerWorkspaceSnapshot::open_with_cancellation(
+            &work.source_root,
+            Some(&work.cancellation),
+        ) {
             Ok(snapshot) => Some(snapshot),
             Err(error) => {
                 eprintln!(
@@ -288,12 +365,97 @@ fn prepare_index_project_at(
                 None
             }
         }
-    });
+    }).flatten();
+    if work.cancellation.load(Ordering::Acquire) {
+        return Err(IndexScanFailure::Cancelled);
+    }
+    let workspace_is_current = match workspace_snapshot.as_ref() {
+        Some(snapshot) => snapshot
+            .revalidate_with_cancellation(Some(&work.cancellation))
+            .map_err(|error| {
+                if work.cancellation.load(Ordering::Acquire) {
+                    IndexScanFailure::Cancelled
+                } else {
+                    IndexScanFailure::Refused(BuiltinModelError(error))
+                }
+            })?,
+        None => true,
+    };
+    if !ingest::compiler_revision_is_current_with_cancellation(
+        &scan.revision_fence,
+        Some(&work.cancellation),
+    )
+    .map_err(|error| {
+        if work.cancellation.load(Ordering::Acquire) {
+            IndexScanFailure::Cancelled
+        } else {
+            IndexScanFailure::Refused(BuiltinModelError(error))
+        }
+    })? || !workspace_is_current
+    {
+        return Err(IndexScanFailure::Refused(BuiltinModelError(
+            "project files changed while the index scan was running; retry indexing".to_owned(),
+        )));
+    }
+    Ok(IndexScanResult {
+        work,
+        scan,
+        workspace_snapshot,
+    })
+}
+
+/// Completes source and semantic admission on the owner after a worker scan.
+/// The captured workspace root fences the immutable scan input from a newer
+/// owner selection before any candidate observations are prepared.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn finish_index_scan(
+    daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    result: IndexScanResult,
+    compiler: &LocalCompilerClient,
+    semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
+    owner_cluster: Option<&super::super::cluster_dispatch::OwnerCompilerClusterRuntime>,
+    pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
+    defer: bool,
+) -> Result<PreparedIndex, BuiltinModelError> {
+    let current_root = daemon.engine().daemon().owner().head().root();
+    if current_root != result.work.workspace_root {
+        return Err(BuiltinModelError(
+            "workspace selection changed while the project scan was running; retry indexing"
+                .to_owned(),
+        ));
+    }
+    let IndexScanResult {
+        work,
+        scan,
+        workspace_snapshot,
+    } = result;
+    let relation = daemon
+        .engine()
+        .daemon()
+        .owner()
+        .snapshot()
+        .relation::<BuiltinWorkspaceRelation>()
+        .map_err(|error| BuiltinModelError(format!("open product source: {error}")))?;
+    let IndexScanWork {
+        package,
+        label,
+        source_root,
+        coordinate,
+        request_id,
+        execution_intent,
+        project_key,
+        before,
+        old_files,
+        reusable,
+        ..
+    } = work;
+    let source_root = source_root.as_path();
+    let coordinate = coordinate.as_ref();
     let revision_fence = &scan.revision_fence;
     let inputs = compiler_input_admissions(source_root, &scan, compiler);
     let semantic_context = SemanticCompilationContext::admit(
         package,
-        label,
+        &label,
         source_root,
         coordinate,
         request_id,
@@ -308,9 +470,9 @@ fn prepare_index_project_at(
         ingest::present_compiler_paths(&scan.compiler_sources, &scan.reused_compiler_files);
     let lost = ingest::lost_compiler_profiles(source_root, &reusable, &present)
         .map_err(BuiltinModelError)?;
-    // Persist the new source observation before advancing the workspace source
-    // relation. If that relation transaction fails, the previous semantic head
-    // is conservatively historical on both the live and cold-reopened paths.
+    // Persist candidate observations first. They fence compilation but remain
+    // private to freshness and query paths until the combined product intent
+    // commits.
     let mut observed_profiles = live.clone();
     observed_profiles.extend(lost.iter().copied());
     let mut observations = BTreeMap::new();
@@ -343,7 +505,7 @@ fn prepare_index_project_at(
         );
     }
     let file_keys = scan.files.iter().map(|(key, _)| *key).collect::<Vec<_>>();
-    let project = ProductSourceRecord::project(label, scan.source_version, file_keys.clone())
+    let project = ProductSourceRecord::project(&label, scan.source_version, file_keys.clone())
         .map_err(BuiltinModelError)?;
     let mut changes = Vec::new();
     if before.as_ref() != Some(&project) {
@@ -370,20 +532,14 @@ fn prepare_index_project_at(
             .filter(|key| !selected.contains(key))
             .map(|key| BuiltinSourceChange { key, after: None }),
     );
-    // Commit the source frontier before a semantic authority head can move.
-    // A crash between these two commits leaves the old semantic selection
-    // visible against the new source input; a crash after Turso selection is
-    // repaired from the selected closure before view-journal recovery.
-    if !changes.is_empty() {
-        let source_intent =
-            BuiltinIntent::index_with_semantics(package, label, changes, Vec::new())?;
-        super::commit_builtin_intent(daemon, request_id.wrapping_add(1), &source_intent)?;
-    }
+    // Keep these source rows private until every semantic profile has been
+    // admitted. The eventual BuiltinIntent carries source and semantic roots
+    // in one workspace transition.
     // This compiler owner does not expose a complete typed present-and-negative
     // read set, so its source/configuration digest cannot authorize reuse.
     // Every live semantic profile rebuilds until the authority can prove its
     // complete input closure.
-    let semantic_changes = {
+    let (semantic_changes, selected) = {
         let fresh_profiles = scan
             .compiler_sources
             .iter()
@@ -396,7 +552,7 @@ fn prepare_index_project_at(
             if compiler_exact_witness_is_current(
                 daemon,
                 package,
-                label,
+                &label,
                 coordinate,
                 compiler,
                 source_root,
@@ -420,14 +576,15 @@ fn prepare_index_project_at(
             &dirty,
         );
         if dirty.is_empty() {
-            Vec::new()
+            (Vec::new(), Vec::new())
         } else {
             let sources = ingest::admit_compiler_sources(source_root, fresh, reused)
                 .map_err(BuiltinModelError)?;
             if defer && owner_cluster.is_none() {
                 return prepare_deferred_compile(
                     package,
-                    label,
+                    &label,
+                    changes,
                     &semantic_context,
                     sources,
                     revision_fence.clone(),
@@ -450,27 +607,91 @@ fn prepare_index_project_at(
             )?
         }
     };
-    if semantic_changes.is_empty() {
-        return Ok(PreparedIndex::Ready(None));
+    let intent = if changes.is_empty() && semantic_changes.is_empty() {
+        None
+    } else {
+        Some(BuiltinIntent::index_with_semantics(
+            package,
+            &label,
+            changes,
+            semantic_changes,
+        )?)
+    };
+    Ok(PreparedIndex::Ready(PreparedProductSelection {
+        intent,
+        selected,
+    }))
+}
+
+/// Owner-captured immutable inputs for one filesystem scan.
+pub(super) struct IndexScanWork {
+    package: backend_engine::PackageKey,
+    label: String,
+    source_root: PathBuf,
+    coordinate: Option<PackageUrl>,
+    request_id: u64,
+    execution_intent: CompileExecutionIntent,
+    project_key: [u8; 32],
+    workspace_root: [u8; 32],
+    before: Option<ProductSourceRecord>,
+    old_files: Vec<[u8; 32]>,
+    reusable: BTreeMap<[u8; 32], ProductSourceRecord>,
+    capture_workspace_snapshot: bool,
+    cancellation: Arc<AtomicBool>,
+}
+
+/// Worker scan outcome, distinguishing an explicit job cancellation from an
+/// invalid or unreadable project.
+pub(super) enum IndexScanFailure {
+    Cancelled,
+    Refused(BuiltinModelError),
+}
+
+impl IndexScanFailure {
+    fn into_model_error(self) -> BuiltinModelError {
+        match self {
+            Self::Cancelled => BuiltinModelError("index scan was cancelled".to_owned()),
+            Self::Refused(error) => error,
+        }
     }
-    BuiltinIntent::index_with_semantics(package, label, Vec::new(), semantic_changes)
-        .map(|intent| PreparedIndex::Ready(Some(intent)))
+}
+
+/// Filesystem scan output paired with the owner state it was captured for.
+pub(super) struct IndexScanResult {
+    work: IndexScanWork,
+    scan: ingest::IndexSnapshot,
+    workspace_snapshot: Option<ingest::CompilerWorkspaceSnapshot>,
+}
+
+/// The complete candidate product transaction. Its intent is the one durable
+/// source-plus-semantic selection marker; `selected` advances serving only
+/// after that intent commits.
+pub(super) struct PreparedProductSelection {
+    pub(super) intent: Option<BuiltinIntent>,
+    pub(super) selected: Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>,
+}
+
+impl PreparedProductSelection {
+    fn into_option(self) -> Option<Self> {
+        (self.intent.is_some() || !self.selected.is_empty()).then_some(self)
+    }
 }
 
 /// What preparing an index job came to.
 pub(super) enum PreparedIndex {
-    /// Nothing to compile off the loop: the semantic intent, if any.
-    Ready(Option<BuiltinIntent>),
+    /// All required planes were admitted; the transaction is ready to commit.
+    Ready(PreparedProductSelection),
     /// A compile to run off the owner loop, then publish on it.
     Compile(DeferredIndex),
 }
 
 /// The compile an index job hands off the owner loop, and everything its
-/// publication needs afterwards, owned: the source frontier is committed,
-/// each profile's candidate attempt is begun, and nothing is selected yet.
+/// publication needs afterwards. Source changes and authority observations
+/// remain private until the candidate transaction succeeds.
 pub(super) struct DeferredIndex {
     package: backend_engine::PackageKey,
     label: String,
+    source_changes: Vec<BuiltinSourceChange>,
     revision_fence: ingest::CompilerRevisionFence,
     profiles: Vec<DeferredProfile>,
 }
@@ -498,6 +719,7 @@ impl DeferredIndex {
 fn prepare_deferred_compile(
     package: backend_engine::PackageKey,
     label: &str,
+    source_changes: Vec<BuiltinSourceChange>,
     context: &SemanticCompilationContext<'_>,
     sources: Vec<ingest::CompilerSource>,
     revision_fence: ingest::CompilerRevisionFence,
@@ -567,6 +789,7 @@ fn prepare_deferred_compile(
     Ok(DeferredIndex {
         package,
         label: label.to_owned(),
+        source_changes,
         revision_fence,
         profiles,
     })
@@ -602,16 +825,15 @@ pub(super) fn deferred_compile_was_cancelled(
     })
 }
 
-/// Publishes a deferred index's compile on the owner loop, exactly as the
-/// in-place local route does: each profile's output is admitted, selected
-/// while its source is still the source on disk, and recorded. Returns the
-/// semantic intent the caller commits and publishes.
-pub(super) fn finish_deferred_index(
+/// Publishes a deferred compile's semantic candidates on the owner loop and
+/// returns one source-plus-semantic intent. The caller commits that intent
+/// before advancing the process-local serving selector.
+pub(super) fn finish_deferred_index<E: std::fmt::Display>(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
     job: DeferredIndex,
-    compiled: Vec<Result<StagedSemanticPackage, PackageSemanticRuntimeError>>,
-) -> Result<Option<BuiltinIntent>, BuiltinModelError> {
+    compiled: Vec<Result<StagedSemanticPackage, E>>,
+) -> Result<PreparedProductSelection, BuiltinModelError> {
     if compiled.len() != job.profiles.len() {
         return Err(BuiltinModelError(
             "the deferred compile did not answer every profile; prior selected semantic generation was preserved"
@@ -626,6 +848,7 @@ pub(super) fn finish_deferred_index(
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic publications: {error}")))?;
     let mut changes = Vec::with_capacity(job.profiles.len().saturating_mul(2));
+    let mut selected = Vec::with_capacity(job.profiles.len());
     for (profile, compiled) in job.profiles.into_iter().zip(compiled) {
         let DeferredProfile {
             key,
@@ -641,12 +864,26 @@ pub(super) fn finish_deferred_index(
             &staged,
             &job.revision_fence,
         )?;
-        record_semantic_publication(&relation, key, publication_coverage, claim, &mut changes)?;
+        record_semantic_publication(
+            &relation,
+            key.clone(),
+            publication_coverage,
+            claim,
+            &mut changes,
+        )?;
+        selected.push((key, claim));
     }
-    if changes.is_empty() {
-        return Ok(None);
-    }
-    BuiltinIntent::index_with_semantics(job.package, &job.label, Vec::new(), changes).map(Some)
+    let intent = if job.source_changes.is_empty() && changes.is_empty() {
+        None
+    } else {
+        Some(BuiltinIntent::index_with_semantics(
+            job.package,
+            &job.label,
+            job.source_changes,
+            changes,
+        )?)
+    };
+    Ok(PreparedProductSelection { intent, selected })
 }
 
 struct SemanticCompilationContext<'request> {
@@ -888,7 +1125,13 @@ fn compile_semantic_publications(
     owner_cluster: Option<&super::super::cluster_dispatch::OwnerCompilerClusterRuntime>,
     pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
     execution_intent: CompileExecutionIntent,
-) -> Result<Vec<BuiltinSemanticChange>, BuiltinModelError> {
+) -> Result<
+    (
+        Vec<BuiltinSemanticChange>,
+        Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>,
+    ),
+    BuiltinModelError,
+> {
     let mut by_profile = BTreeMap::<LanguageProfile, Vec<OwnedPackageSource>>::new();
     let mut source_paths_by_profile = BTreeMap::<LanguageProfile, BTreeSet<String>>::new();
     for source in sources {
@@ -910,6 +1153,7 @@ fn compile_semantic_publications(
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic publications: {error}")))?;
     let mut changes = Vec::with_capacity(by_profile.len().saturating_mul(2));
+    let mut selected_claims = Vec::with_capacity(by_profile.len());
     for (profile, sources) in by_profile {
         let expected_artifacts = u32::try_from(sources.len())
             .map_err(|_| BuiltinModelError("semantic source count exceeds u32".to_owned()))?;
@@ -1523,10 +1767,17 @@ fn compile_semantic_publications(
             }
             SemanticExecutionRoute::LocalOnly => {}
         }
-        record_semantic_publication(&relation, key, publication_coverage, claim, &mut changes)?;
+        record_semantic_publication(
+            &relation,
+            key.clone(),
+            publication_coverage,
+            claim,
+            &mut changes,
+        )?;
+        selected_claims.push((key, claim));
         let _ = selected;
     }
-    Ok(changes)
+    Ok((changes, selected_claims))
 }
 
 /// Admits one local compile's output: every expected source is accounted

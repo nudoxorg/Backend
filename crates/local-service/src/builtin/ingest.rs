@@ -19,6 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{OnceLock, mpsc};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -45,6 +46,15 @@ pub(super) const MAX_COMPILER_CONFIGURATION_FILE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_COMPILER_CONFIGURATION_BYTES_PER_LANGUAGE: usize = 32 * 1024 * 1024;
 const MAX_WORKERS: usize = 8;
 const RESULT_QUEUE_PER_WORKER: usize = 2;
+const INDEX_SCAN_CANCELLED: &str = "index scan cancelled";
+
+fn check_scan_cancellation(cancellation: Option<&AtomicBool>) -> Result<(), String> {
+    if cancellation.is_some_and(|cancellation| cancellation.load(Ordering::Acquire)) {
+        Err(INDEX_SCAN_CANCELLED.to_owned())
+    } else {
+        Ok(())
+    }
+}
 
 /// One complete, deterministic project scan before comparison with the
 /// selected versioned relation.
@@ -442,6 +452,14 @@ impl CompilerWorkspaceSnapshot {
     /// Opens and inventories every path admitted by the versioned workspace
     /// policy. The root itself is represented by an empty relative path.
     pub(super) fn open(root: &Path) -> Result<Self, String> {
+        Self::open_with_cancellation(root, None)
+    }
+
+    pub(super) fn open_with_cancellation(
+        root: &Path,
+        cancellation: Option<&AtomicBool>,
+    ) -> Result<Self, String> {
+        check_scan_cancellation(cancellation)?;
         #[cfg(not(windows))]
         {
             let requested_metadata = fs::symlink_metadata(root)
@@ -466,7 +484,9 @@ impl CompilerWorkspaceSnapshot {
         let policy = source_selection_policy();
         #[cfg(not(windows))]
         let root_capability = ProjectRoot::open(&root)?;
-        let entries = capture_compiler_workspace_entries(&root, &policy, &root_capability)?;
+        let entries =
+            capture_compiler_workspace_entries(&root, &policy, &root_capability, cancellation)?;
+        check_scan_cancellation(cancellation)?;
         if entries.first().map(|entry| entry.revision) != Some(root_capability.revision()?) {
             return Err("compiler workspace root changed during inventory capture".to_owned());
         }
@@ -614,14 +634,26 @@ impl CompilerWorkspaceSnapshot {
     /// `Ok(false)` means the admitted workspace changed; traversal failures
     /// remain errors so callers cannot mistake an incomplete scan for fresh.
     pub(super) fn revalidate(&self) -> Result<bool, String> {
+        self.revalidate_with_cancellation(None)
+    }
+
+    pub(super) fn revalidate_with_cancellation(
+        &self,
+        cancellation: Option<&AtomicBool>,
+    ) -> Result<bool, String> {
+        check_scan_cancellation(cancellation)?;
         #[cfg(windows)]
         if open_canonical_project_root(&self.root)?.1.revision()?
             != self.root_capability.revision()?
         {
             return Ok(false);
         }
-        let current =
-            capture_compiler_workspace_entries(&self.root, &self.policy, &self.root_capability)?;
+        let current = capture_compiler_workspace_entries(
+            &self.root,
+            &self.policy,
+            &self.root_capability,
+            cancellation,
+        )?;
         #[cfg(windows)]
         if open_canonical_project_root(&self.root)?.1.revision()?
             != self.root_capability.revision()?
@@ -714,6 +746,7 @@ fn capture_compiler_workspace_entries(
     root: &Path,
     policy: &DiscoveryPolicy,
     _root_capability: &ProjectRoot,
+    cancellation: Option<&AtomicBool>,
 ) -> Result<Vec<CompilerWorkspaceEntry>, String> {
     let mut entries = Vec::new();
     #[cfg(windows)]
@@ -732,6 +765,7 @@ fn capture_compiler_workspace_entries(
     let mut case_keys = BTreeSet::new();
     let mut canonical_paths = BTreeSet::new();
     for result in policy.clone().walk_workspace_entries(root) {
+        check_scan_cancellation(cancellation)?;
         let discovered = result.map_err(|error| error.to_string())?;
         if discovered.path() == root {
             continue;
@@ -798,6 +832,7 @@ fn capture_compiler_workspace_entries(
             revision,
         });
     }
+    check_scan_cancellation(cancellation)?;
     entries.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(entries)
 }
@@ -1156,6 +1191,7 @@ fn scan_source_paths(
     reusable: &BTreeMap<[u8; 32], ProductSourceRecord>,
     frontends: &FrontendSet,
     delta: Option<&source_frontier::SourceDelta>,
+    cancellation: Option<&AtomicBool>,
 ) -> Result<Vec<ScannedFile>, String> {
     let workers = thread::available_parallelism()
         .map_or(1, usize::from)
@@ -1172,8 +1208,13 @@ fn scan_source_paths(
             let root = root;
             let root_capability = root_capability;
             let sender = sender.clone();
+            let cancellation = cancellation;
             handles.push(scope.spawn(move || {
                 for path in group {
+                    if let Err(error) = check_scan_cancellation(cancellation) {
+                        let _ = sender.send(Err(error));
+                        break;
+                    }
                     let result = if let Some(cached) = delta
                         .filter(|delta| delta.is_current())
                         .and_then(|delta| delta.unchanged.get(path))
@@ -1228,6 +1269,9 @@ fn scan_source_paths(
         let mut budget = IngestBudget::default();
         let mut failure = None;
         for result in receiver {
+            if failure.is_none() {
+                failure = check_scan_cancellation(cancellation).err();
+            }
             match result {
                 Ok(Some(file)) if failure.is_none() => {
                     if let Err(error) = budget.charge(&file) {
@@ -1333,6 +1377,27 @@ pub(super) fn scan_project_for_unproven_authorities(
     )
 }
 
+/// Cancellable variant used by asynchronous local index jobs. Cancellation is
+/// checked during directory discovery, source analysis, and configuration
+/// capture so a large project scan can stop without cancelling compiler work.
+pub(super) fn scan_project_for_unproven_authorities_cancellable(
+    coordinate: &str,
+    project: [u8; 32],
+    reusable: &BTreeMap<[u8; 32], ProductSourceRecord>,
+    cancellation: &AtomicBool,
+) -> Result<IndexSnapshot, String> {
+    check_scan_cancellation(Some(cancellation))?;
+    scan_project_with_configuration_policy_attempt(
+        coordinate,
+        project,
+        reusable,
+        source_selection_policy(),
+        false,
+        true,
+        Some(cancellation),
+    )
+}
+
 /// Reads supported sources under one shared discovery policy.
 ///
 /// Keeping the policy as an argument makes the same selection contract usable
@@ -1361,6 +1426,7 @@ fn scan_project_with_configuration_policy(
         discovery,
         capture_configuration_contents,
         true,
+        None,
     )
 }
 
@@ -1371,7 +1437,9 @@ fn scan_project_with_configuration_policy_attempt(
     discovery: DiscoveryPolicy,
     capture_configuration_contents: bool,
     allow_frontier_reuse: bool,
+    cancellation: Option<&AtomicBool>,
 ) -> Result<IndexSnapshot, String> {
+    check_scan_cancellation(cancellation)?;
     let root = Path::new(coordinate)
         .canonicalize()
         .map_err(|error| format!("open project {coordinate}: {error}"))?;
@@ -1381,8 +1449,14 @@ fn scan_project_with_configuration_policy_attempt(
     let root_capability = ProjectRoot::open(&root)?;
     let frontends = frontends()?;
     let frontier_policy_allowed = discovery == source_selection_policy();
-    let mut project_paths =
-        project_paths_with_policy(&root, &root_capability, Some(frontends), discovery.clone())?;
+    let mut project_paths = project_paths_with_policy(
+        &root,
+        &root_capability,
+        Some(frontends),
+        discovery.clone(),
+        cancellation,
+    )?;
+    check_scan_cancellation(cancellation)?;
     let mut paths = std::mem::take(&mut project_paths.sources);
     paths.sort();
     let directories = std::mem::take(&mut project_paths.directories);
@@ -1515,7 +1589,7 @@ fn scan_project_with_configuration_policy_attempt(
     } else {
         None
     };
-    preflight_source_bytes(&paths)?;
+    preflight_source_bytes(&paths, cancellation)?;
     let mut scanned = scan_source_paths(
         &root,
         &root_capability,
@@ -1524,6 +1598,7 @@ fn scan_project_with_configuration_policy_attempt(
         reusable,
         frontends,
         source_delta.as_ref(),
+        cancellation,
     )?;
     let mut source_bytes_read = scanned
         .iter()
@@ -1542,7 +1617,9 @@ fn scan_project_with_configuration_policy_attempt(
             .is_some_and(|(before, after)| {
                 source_frontier::git_states_same_during_scan(before, after)
             });
-        if !stable || !compiler_revision_is_current(&revision_fence)? {
+        if !stable
+            || !compiler_revision_is_current_with_cancellation(&revision_fence, cancellation)?
+        {
             let mut full = scan_project_with_configuration_policy_attempt(
                 coordinate,
                 project,
@@ -1550,6 +1627,7 @@ fn scan_project_with_configuration_policy_attempt(
                 discovery,
                 capture_configuration_contents,
                 false,
+                cancellation,
             )?;
             full.source_bytes_read = full.source_bytes_read.saturating_add(source_bytes_read);
             return Ok(full);
@@ -1598,6 +1676,7 @@ fn scan_project_with_configuration_policy_attempt(
             project_paths.configurations,
             project_paths.incomplete_configurations,
             relevant_languages,
+            cancellation,
         )?
     } else {
         CompilerConfigurationSnapshot::default()
@@ -1626,6 +1705,13 @@ fn scan_project_with_configuration_policy_attempt(
 /// Revalidates the scanner's source/configuration revision without a second
 /// recursive discovery pass or another source-content read.
 pub(super) fn compiler_revision_is_current(fence: &CompilerRevisionFence) -> Result<bool, String> {
+    compiler_revision_is_current_with_cancellation(fence, None)
+}
+
+pub(super) fn compiler_revision_is_current_with_cancellation(
+    fence: &CompilerRevisionFence,
+    cancellation: Option<&AtomicBool>,
+) -> Result<bool, String> {
     #[cfg(windows)]
     {
         let root_capability = match ProjectRoot::open(&fence.root) {
@@ -1633,11 +1719,13 @@ pub(super) fn compiler_revision_is_current(fence: &CompilerRevisionFence) -> Res
             Err(_) => return Ok(false),
         };
         for (relative, expected) in &fence.directories {
+            check_scan_cancellation(cancellation)?;
             if expected.is_none() || root_capability.revision_relative(relative).ok() != *expected {
                 return Ok(false);
             }
         }
         for file in &fence.files {
+            check_scan_cancellation(cancellation)?;
             if file.metadata.is_none()
                 || root_capability.revision_relative(&file.relative_path).ok() != file.metadata
             {
@@ -1649,6 +1737,7 @@ pub(super) fn compiler_revision_is_current(fence: &CompilerRevisionFence) -> Res
     #[cfg(not(windows))]
     {
         for (relative, expected) in &fence.directories {
+            check_scan_cancellation(cancellation)?;
             let path = if relative.as_os_str().is_empty() {
                 fence.root.clone()
             } else {
@@ -1659,6 +1748,7 @@ pub(super) fn compiler_revision_is_current(fence: &CompilerRevisionFence) -> Res
             }
         }
         for file in &fence.files {
+            check_scan_cancellation(cancellation)?;
             let path = fence.root.join(&file.relative_path);
             if file.metadata.is_none() || file_system_revision(&path) != file.metadata {
                 return Ok(false);
@@ -1738,7 +1828,10 @@ fn supported_paths_with_policy(
     discovery: DiscoveryPolicy,
 ) -> Result<Vec<PathBuf>, String> {
     let root_capability = ProjectRoot::open(root)?;
-    Ok(project_paths_with_policy(root, &root_capability, Some(frontends), discovery)?.sources)
+    Ok(
+        project_paths_with_policy(root, &root_capability, Some(frontends), discovery, None)?
+            .sources,
+    )
 }
 
 struct ProjectPaths {
@@ -1754,6 +1847,7 @@ fn project_paths_with_policy(
     _root_capability: &ProjectRoot,
     frontends: Option<&FrontendSet>,
     discovery: DiscoveryPolicy,
+    cancellation: Option<&AtomicBool>,
 ) -> Result<ProjectPaths, String> {
     let mut sources = Vec::new();
     let mut configurations = Vec::new();
@@ -1769,6 +1863,7 @@ fn project_paths_with_policy(
     let mut current_directory = None;
     let mut directory_entries = 0_usize;
     for entry in discover_source_entries(root, discovery) {
+        check_scan_cancellation(cancellation)?;
         let entry = entry.map_err(|error| error.to_string())?;
         if entry.path() == root {
             continue;
@@ -1844,6 +1939,7 @@ fn read_compiler_configuration_snapshot(
     configurations: Vec<(Language, PathBuf)>,
     incomplete: BTreeSet<Language>,
     relevant_languages: BTreeSet<Language>,
+    cancellation: Option<&AtomicBool>,
 ) -> Result<CompilerConfigurationSnapshot, String> {
     let mut complete_languages = relevant_languages
         .into_iter()
@@ -1852,6 +1948,7 @@ fn read_compiler_configuration_snapshot(
     let mut used_bytes = BTreeMap::<Language, usize>::new();
     let mut files = Vec::with_capacity(configurations.len());
     for (language, path) in configurations {
+        check_scan_cancellation(cancellation)?;
         if !complete_languages.contains(&language) {
             continue;
         }
@@ -2008,9 +2105,13 @@ fn compiler_configuration_language(path: &Path) -> Option<Language> {
 /// project: it is charged as zero bytes here and reported per file by
 /// [`scan_file`].  Only the aggregate budget, which protects the process
 /// rather than describing a file, can still stop the scan.
-fn preflight_source_bytes(paths: &[PathBuf]) -> Result<(), String> {
+fn preflight_source_bytes(
+    paths: &[PathBuf],
+    cancellation: Option<&AtomicBool>,
+) -> Result<(), String> {
     let mut total = 0_usize;
     for path in paths {
+        check_scan_cancellation(cancellation)?;
         let Ok(metadata) = fs::metadata(path) else {
             continue;
         };
@@ -2618,6 +2719,19 @@ fn dialect(language: SourceLanguage, extension: &str) -> Option<LanguageProfile>
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn cancellable_project_scan_stops_before_opening_the_workspace() {
+        let cancellation = AtomicBool::new(true);
+        let error = scan_project_for_unproven_authorities_cancellable(
+            "workspace-cancelled-before-open",
+            [17; 32],
+            &BTreeMap::new(),
+            &cancellation,
+        )
+        .expect_err("a pre-cancelled scan must not proceed to filesystem access");
+        assert_eq!(error, INDEX_SCAN_CANCELLED);
+    }
 
     #[test]
     fn aggregate_budgets_reject_the_first_byte_beyond_each_limit() {

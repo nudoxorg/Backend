@@ -25,6 +25,107 @@ pub enum AdvisorySource {
     Ghsa,
 }
 
+/// OSV ecosystem partition selected for one bounded snapshot download.
+///
+/// The OSV global archive contains records across every ecosystem, while the
+/// registry-adjacent archives are partitioned by these names. Keeping this
+/// selection typed prevents a partial per-ecosystem ZIP from being treated as
+/// global clean coverage.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OsvEcosystem {
+    /// OSV's `crates.io` ecosystem.
+    Cargo,
+    /// OSV's `npm` ecosystem.
+    Npm,
+    /// OSV's `PyPI` ecosystem.
+    Pypi,
+    /// OSV's `Maven` ecosystem.
+    Maven,
+    /// OSV's `NuGet` ecosystem.
+    Nuget,
+    /// OSV's `Go` ecosystem.
+    Go,
+}
+
+impl OsvEcosystem {
+    /// Parses one registry ecosystem spelling or official OSV archive name.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "cargo" | "crates.io" => Some(Self::Cargo),
+            "npm" => Some(Self::Npm),
+            "pypi" | "python" => Some(Self::Pypi),
+            "maven" => Some(Self::Maven),
+            "nuget" => Some(Self::Nuget),
+            "go" | "golang" => Some(Self::Go),
+            _ => None,
+        }
+    }
+
+    /// Canonical package identity ecosystem used by the advisory matcher.
+    #[must_use]
+    pub const fn package_ecosystem(self) -> &'static str {
+        match self {
+            Self::Cargo => "cargo",
+            Self::Npm => "npm",
+            Self::Pypi => "pypi",
+            Self::Maven => "maven",
+            Self::Nuget => "nuget",
+            Self::Go => "go",
+        }
+    }
+
+    /// Official ecosystem directory name used by OSV's GCS exports.
+    #[must_use]
+    pub const fn storage_directory(self) -> &'static str {
+        match self {
+            Self::Cargo => "crates.io",
+            Self::Npm => "npm",
+            Self::Pypi => "PyPI",
+            Self::Maven => "Maven",
+            Self::Nuget => "NuGet",
+            Self::Go => "Go",
+        }
+    }
+}
+
+/// Coverage scope selected by product policy for one OSV source.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OsvFeedScope {
+    /// The configured source is selected to cover every ecosystem.
+    All,
+    /// The configured source is selected for this ecosystem.
+    Ecosystem(OsvEcosystem),
+}
+
+impl OsvFeedScope {
+    /// Parses `all` or a supported OSV ecosystem selection.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        if value.trim().eq_ignore_ascii_case("all") {
+            Some(Self::All)
+        } else {
+            OsvEcosystem::parse(value).map(Self::Ecosystem)
+        }
+    }
+
+    /// Stable user-facing spelling for configuration and status surfaces.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Ecosystem(OsvEcosystem::Cargo) => "cargo",
+            Self::Ecosystem(OsvEcosystem::Npm) => "npm",
+            Self::Ecosystem(OsvEcosystem::Pypi) => "pypi",
+            Self::Ecosystem(OsvEcosystem::Maven) => "maven",
+            Self::Ecosystem(OsvEcosystem::Nuget) => "nuget",
+            Self::Ecosystem(OsvEcosystem::Go) => "go",
+        }
+    }
+}
+
 /// A source-qualified identifier.  The source is never inferred from an alias.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct NativeAdvisoryId {

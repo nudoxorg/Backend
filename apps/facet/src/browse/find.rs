@@ -475,7 +475,13 @@ fn inspector(id: &ElementId, candidate: &Candidate, answer: Option<&Answer>, _st
     let p = cx.palette();
     let mut detail = div().flex().flex_col().gap(m.space(Space::Base)).py(m.space(Space::Base));
     let care = match &candidate.offer {
-        Some(offer) if offer.library.is_none() => if offer.place.offline() { "ON THIS MACHINE" } else { "IN THE REGISTRY" },
+        Some(offer) if offer.library.is_none() => match &offer.place {
+            super::acquire::Place::Unpacked => "ON THIS MACHINE",
+            super::acquire::Place::Archive => "ON THIS MACHINE · PACKED",
+            super::acquire::Place::Download => "IN THE REGISTRY",
+            super::acquire::Place::Ambiguous { .. } => "MULTIPLE LOCAL SOURCES",
+            super::acquire::Place::UnverifiedArchive(_) => "UNVERIFIED ARCHIVE",
+        },
         _ if candidate.indexed => "INDEXED HERE",
         _ => "CATALOG RECORD",
     };

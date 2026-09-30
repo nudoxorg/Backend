@@ -579,7 +579,7 @@ impl Element for Berg {
         ));
         if probe::enabled(cx) {
             for (at, content, role, natural, name) in published {
-                probe::record_text(
+                probe::record_text_in(
                     cx,
                     &ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::from(name)),
                     at,
@@ -587,6 +587,7 @@ impl Element for Berg {
                         key: String::new(),
                         bounds: probe::BoundsSample { key: String::new(), x: 0.0, y: 0.0, width: 0.0, height: 0.0 },
                         paint_clip: None,
+                        scroll_ancestors: probe::current_scroll_ancestors(),
                         natural_width: natural,
                         overflow: TextOverflow::Clip,
                         content: content.to_string(),
@@ -596,6 +597,7 @@ impl Element for Berg {
                         weight: role.weight,
                         region: probe::current_region(),
                     },
+                    window,
                 );
             }
             for (i, p) in placed.iter().enumerate() {

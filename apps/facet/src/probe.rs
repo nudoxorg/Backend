@@ -158,6 +158,8 @@ pub struct TextSample {
     pub bounds: BoundsSample,
     /// Actual ancestor content mask at native paint; intrinsic layout stays in `bounds`.
     pub paint_clip: Option<BoundsSample>,
+    /// Scroll containers whose actual child paint contains this text, outermost first.
+    pub scroll_ancestors: Vec<String>,
     /// The width the text would take with no box constraint, in logical px.
     pub natural_width: f32,
     /// The declared overflow handling.
@@ -273,6 +275,10 @@ pub struct TargetSample {
     pub key: String,
     /// Painted bounds in logical px.
     pub bounds: BoundsSample,
+    /// Actual renderer content mask at native paint; `None` is not evidence of visibility.
+    pub paint_clip: Option<BoundsSample>,
+    /// Scroll containers whose actual child paint contains this target, outermost first.
+    pub scroll_ancestors: Vec<String>,
     /// What the component believes.
     pub state: Target,
 }
@@ -299,6 +305,8 @@ pub struct ScrollSample {
     /// would be laid out at scroll offset zero (i.e. everything reachable by
     /// scrolling this container, not just what is visible right now).
     pub content: BoundsSample,
+    /// Actual ancestor scroll identities, outermost first.
+    pub ancestors: Vec<String>,
 }
 
 impl ScrollSample {
@@ -309,7 +317,13 @@ impl ScrollSample {
     /// bounds it). A container whose content does not exceed its viewport on
     /// either axis does not scroll at all, so it reaches nothing extra.
     #[must_use]
-    pub fn reaches(&self, bounds: &BoundsSample) -> bool {
+    pub fn reaches(&self, bounds: &BoundsSample, ancestors: &[String]) -> bool {
+        let Some(position) = ancestors.iter().position(|ancestor| ancestor == &self.key) else {
+            return false;
+        };
+        if ancestors[..position] != self.ancestors {
+            return false;
+        }
         let scrolls_y = self.content.height > self.viewport.height + 0.5;
         let scrolls_x = self.content.width > self.viewport.width + 0.5;
         if !scrolls_x && !scrolls_y {
@@ -524,13 +538,30 @@ pub fn publish_stack(stack: &impl StackProbe, cx: &mut App) {
     record_stack(cx, || stack.stack_sample());
 }
 
-/// Publishes an interactive element's bounds and believed state while
-/// recording.
+/// Publishes interactive bounds and state without a native clip sample.
+/// Visual coverage must not treat this as proof that the target was visible;
+/// element code with a `Window` should use [`record_target_in`].
 pub fn record_target(cx: &mut App, key: &ElementId, bounds: Bounds<Pixels>, state: Target) {
     if enabled(cx) {
         let sample = TargetSample {
             key: key.to_string(),
             bounds: bounds_sample(key, bounds),
+            paint_clip: None,
+            scroll_ancestors: current_scroll_ancestors(),
+            state,
+        };
+        cx.default_global::<Probe>().ledger.targets.push(sample);
+    }
+}
+
+/// Publishes an interactive element with the actual native renderer mask.
+pub fn record_target_in(cx: &mut App, key: &ElementId, bounds: Bounds<Pixels>, state: Target, window: &Window) {
+    if enabled(cx) {
+        let sample = TargetSample {
+            key: key.to_string(),
+            bounds: bounds_sample(key, bounds),
+            paint_clip: Some(bounds_sample(key, window.content_mask().bounds)),
+            scroll_ancestors: current_scroll_ancestors(),
             state,
         };
         cx.default_global::<Probe>().ledger.targets.push(sample);
@@ -552,6 +583,7 @@ pub fn record_scroll(
             key: key.to_string(),
             viewport: bounds_sample(key, viewport),
             content: bounds_sample(key, content),
+            ancestors: current_scroll_ancestors(),
         };
         cx.default_global::<Probe>().ledger.scrolls.push(sample);
     }
@@ -613,7 +645,7 @@ impl Element for TargetProbe {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        record_target(cx, &self.key, bounds, self.state);
+        record_target_in(cx, &self.key, bounds, self.state, window);
         self.child.prepaint(window, cx);
     }
 
@@ -628,6 +660,17 @@ impl Element for TargetProbe {
         cx: &mut App,
     ) {
         self.child.paint(window, cx);
+        if enabled(cx) {
+            let clip = bounds_sample(&self.key, window.content_mask().bounds);
+            let key = self.key.to_string();
+            for target in cx.default_global::<Probe>().ledger.targets.iter_mut().rev() {
+                if target.key == key {
+                    target.paint_clip = Some(clip);
+                    target.scroll_ancestors = current_scroll_ancestors();
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -701,6 +744,29 @@ pub fn record_text(cx: &mut App, key: &ElementId, bounds: Bounds<Pixels>, sample
     }
 }
 
+/// Publishes text with the current native renderer mask and scroll ancestry.
+/// Use this for custom elements that report their shaped text from `paint`.
+pub fn record_text_in(
+    cx: &mut App,
+    key: &ElementId,
+    bounds: Bounds<Pixels>,
+    sample: TextSample,
+    window: &Window,
+) {
+    if enabled(cx) {
+        record_text(
+            cx,
+            key,
+            bounds,
+            TextSample {
+                paint_clip: Some(bounds_sample(key, window.content_mask().bounds)),
+                scroll_ancestors: current_scroll_ancestors(),
+                ..sample
+            },
+        );
+    }
+}
+
 /// Marks the start of a draw: a window root calls it first thing in its
 /// `render`. Geometry (bounds, texts, targets, stacks) describes one painted
 /// frame, so what earlier, unobserved draws published is dropped (GPUI also
@@ -730,6 +796,98 @@ pub fn rendered(cx: &mut App) {
 thread_local! {
     static GROUP: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static REGION: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    static SCROLL_ANCESTORS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Runs `f` under a scroll container's actual child paint. Text and targets
+/// published in that subtree carry `key` in their scroll ancestry, allowing
+/// the linter to match them only to that container's measured extent.
+pub fn scroll_scope(key: impl Into<String>, child: impl IntoElement) -> ScrollScope {
+    ScrollScope { key: key.into(), child: child.into_any_element() }
+}
+
+struct ScrollAncestorGuard;
+
+impl Drop for ScrollAncestorGuard {
+    fn drop(&mut self) {
+        SCROLL_ANCESTORS.with(|stack| {
+            stack.borrow_mut().pop();
+        });
+    }
+}
+
+fn with_scroll_ancestor<R>(key: &str, f: impl FnOnce() -> R) -> R {
+    SCROLL_ANCESTORS.with(|stack| stack.borrow_mut().push(key.to_owned()));
+    let _guard = ScrollAncestorGuard;
+    f()
+}
+
+/// The scroll scopes active for this native element subtree, outermost first.
+#[must_use]
+pub fn current_scroll_ancestors() -> Vec<String> {
+    SCROLL_ANCESTORS.with(|stack| stack.borrow().clone())
+}
+
+/// A native element boundary that stamps its descendants with scroll identity.
+pub struct ScrollScope {
+    key: String,
+    child: AnyElement,
+}
+
+impl IntoElement for ScrollScope {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for ScrollScope {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        (self.child.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        with_scroll_ancestor(&self.key, || self.child.prepaint(window, cx));
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        _prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        with_scroll_ancestor(&self.key, || self.child.paint(window, cx));
+    }
 }
 
 /// Runs `f` with `name` as the active layout region: every [`text`] built
@@ -860,7 +1018,7 @@ impl Element for Measure {
 
 #[cfg(test)]
 mod grouping_tests {
-    use super::{BoundsSample, TextOverflow, TextSample, current_group, grouped};
+    use super::{BoundsSample, TextOverflow, TextSample, current_group, current_scroll_ancestors, grouped};
 
     #[gpui::test]
     fn draw_start_discards_old_scroll_geometry_keeps_new_scroll_and_event_tracks(
@@ -924,6 +1082,25 @@ mod grouping_tests {
         assert_eq!(current_group(), None);
     }
 
+    #[test]
+    fn nested_scroll_ancestry_is_ordered_and_unwinds_even_after_panic() {
+        assert!(current_scroll_ancestors().is_empty());
+        super::with_scroll_ancestor("outer", || {
+            assert_eq!(current_scroll_ancestors(), vec!["outer".to_owned()]);
+            super::with_scroll_ancestor("inner", || {
+                assert_eq!(current_scroll_ancestors(), vec!["outer".to_owned(), "inner".to_owned()]);
+            });
+            assert_eq!(current_scroll_ancestors(), vec!["outer".to_owned()]);
+        });
+        assert!(current_scroll_ancestors().is_empty());
+
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            super::with_scroll_ancestor("panicking", || panic!("scope canary"));
+        }));
+        assert!(panic.is_err());
+        assert!(current_scroll_ancestors().is_empty(), "a panicking child cannot leak scroll ancestry into the next paint");
+    }
+
     fn bounds(x: f32, y: f32, width: f32, height: f32) -> BoundsSample {
         BoundsSample {
             key: "k".to_owned(),
@@ -949,6 +1126,7 @@ mod grouping_tests {
             key: "t".to_owned(),
             bounds: bounds(0.0, 0.0, 40.0, 16.0),
             paint_clip: None,
+            scroll_ancestors: Vec::new(),
             natural_width: 120.0,
             overflow: TextOverflow::Clip,
             content: "a long label".to_owned(),
@@ -1112,6 +1290,7 @@ impl Element for Text {
                 key: String::new(),
                 bounds: bounds_sample(&self.key, bounds),
                 paint_clip: None,
+                scroll_ancestors: current_scroll_ancestors(),
                 natural_width: f32::from(natural),
                 overflow: self.overflow,
                 content: self.content.to_string(),
@@ -1142,6 +1321,7 @@ impl Element for Text {
             for text in cx.default_global::<Probe>().ledger.texts.iter_mut().rev() {
                 if text.key == key {
                     text.paint_clip = Some(clip);
+                    text.scroll_ancestors = current_scroll_ancestors();
                     break;
                 }
             }

@@ -1,7 +1,7 @@
-//! Current-head selection and bounded CAS reads for versioned semantic planes.
+//! Committed product selection and bounded CAS reads for versioned semantic planes.
 //!
-//! Turso's selected frontier is re-read for every request and once more before
-//! bytes are exposed. Logical semantic segment IDs stay separate from physical
+//! The workspace root selects the served generation. Turso's selected frontier
+//! is a repairable projection and cannot override that root. Logical semantic segment IDs stay separate from physical
 //! FileStore object IDs, so the same cursor works across storage layouts.
 
 use super::{BuiltinModelError, SemanticAuthority};
@@ -12,9 +12,13 @@ use backend_extension_turso::{
 };
 use backend_replication::{
     ByteRange, IrHydrationRequest, SelectedGenerationSource, SelectedGenerationStamp,
+    SelectedNativeHistoryImage, SelectedNativeImagePublicationFence, SelectedNativeImageSource,
     SemanticCatalogChunk, SemanticCatalogGet, SemanticManifestChunk, SemanticManifestGet,
+    SemanticTargetKey,
 };
-use backend_semantic::ir::{SemanticPlaneImageKey, SemanticPlaneManifest, SemanticRangeRequest};
+use backend_semantic::ir::{
+    SemanticImageIdentity, SemanticPlaneImageKey, SemanticPlaneManifest, SemanticRangeRequest,
+};
 use backend_store::{ArtifactBudget, FileStore, UntrustedObjectId};
 use core::fmt;
 use hashlink::LruCache;
@@ -32,8 +36,9 @@ const OBJECT_READ_CHUNK_BYTES: usize = 16 * 1024;
 /// Bounded process-local cache of bytes admitted from immutable CAS objects.
 ///
 /// The physical object ID is the reuse key: identical content is useful across
-/// selected generations. A hit is still checked against the *current* Turso
-/// selection and its exact logical segment identity before any bytes escape.
+/// selected generations. A hit is still checked against the *current committed
+/// product* selection and its exact logical segment identity before any bytes
+/// escape.
 #[derive(Debug, Default)]
 pub(super) struct VerifiedSegmentCache {
     state: Mutex<VerifiedSegmentCacheState>,
@@ -103,7 +108,7 @@ impl VerifiedSegmentCache {
     }
 }
 
-/// Metadata-only view of one exact Turso-selected compiler generation.
+/// Metadata-only view of one exact product-selected compiler generation.
 #[derive(Clone, Debug)]
 pub(super) struct SelectedVersionedPlanePublication {
     stamp: SelectedGenerationStamp,
@@ -179,7 +184,7 @@ impl SelectedVersionedPlanePublication {
         })
     }
 
-    /// Exact current-head stamp built from one Turso selected frontier.
+    /// Exact stamp built from the committed product selection.
     #[must_use]
     pub(super) const fn stamp(&self) -> SelectedGenerationStamp {
         self.stamp
@@ -214,7 +219,7 @@ impl SelectedVersionedPlanePublication {
 /// Live resolver for the selected semantic generation and its closure-backed
 /// plane inventory.
 pub(super) trait VersionedPlaneSelectionResolver: SelectedGenerationSource {
-    /// Re-reads Turso's current selected frontier and its exact metadata.
+    /// Re-reads the committed product selection and its exact metadata.
     fn current_selected_plane(&mut self) -> Result<SelectedVersionedPlanePublication, Self::Error>;
 }
 
@@ -234,6 +239,16 @@ impl<'authority> SemanticAuthoritySelectionSource<'authority> {
     ) -> Self {
         Self { authority, key }
     }
+
+    /// Returns the canonical product target bound by this selected source.
+    pub(super) fn target(&self) -> Result<SemanticTargetKey, BuiltinModelError> {
+        SemanticTargetKey::new(
+            self.key.package().as_str(),
+            self.key.coordinate().as_str(),
+            self.key.profile(),
+        )
+        .map_err(|error| BuiltinModelError(format!("admit semantic target: {error}")))
+    }
 }
 
 impl SelectedGenerationSource for SemanticAuthoritySelectionSource<'_> {
@@ -252,6 +267,87 @@ impl SelectedGenerationSource for SemanticAuthoritySelectionSource<'_> {
         let current = self.current_selected_plane()?;
         Ok(current.stamp() == expected_stamp
             && current.metadata().artifact_for_image(image).is_some())
+    }
+}
+
+impl SelectedNativeImageSource for SemanticAuthoritySelectionSource<'_> {
+    type PublicationFence<'fence>
+        = SemanticAuthorityPublicationFence<'fence>
+    where
+        Self: 'fence;
+
+    fn selected_semantic_target(&mut self) -> Result<SemanticTargetKey, Self::Error> {
+        self.target()
+    }
+
+    fn selected_native_image_identity(
+        &mut self,
+        image: SemanticPlaneImageKey,
+    ) -> Result<backend_semantic::ir::SemanticImageIdentity, Self::Error> {
+        self.authority
+            .selected_native_image_identity(&self.key, image)
+    }
+
+    fn acquire_publication_fence<'fence>(
+        &'fence mut self,
+        selected: &SelectedNativeHistoryImage<'_>,
+    ) -> Result<Self::PublicationFence<'fence>, Self::Error> {
+        let target = self.target()?;
+        if selected.target() != &target {
+            return Err(BuiltinModelError(
+                "typed V3 history target differs from its committed product key".to_owned(),
+            ));
+        }
+        let lease = self.authority.committed_selection_lease(&self.key)?;
+        let publication = lease.selected_plane()?;
+        let image = selected.image_key();
+        if publication.stamp() != selected.selected_stamp()
+            || publication.metadata().artifact_for_image(image).is_none()
+        {
+            return Err(BuiltinModelError(
+                "typed V3 history image is no longer the committed product selection".to_owned(),
+            ));
+        }
+        let image_identity = lease.selected_native_image_identity(image)?;
+        if image_identity != selected.image_identity() {
+            return Err(BuiltinModelError(
+                "typed V3 history image identity differs from the committed product selection"
+                    .to_owned(),
+            ));
+        }
+        Ok(SemanticAuthorityPublicationFence {
+            _lease: lease,
+            target,
+            stamp: publication.stamp(),
+            image,
+            image_identity,
+        })
+    }
+}
+
+struct SemanticAuthorityPublicationFence<'a> {
+    _lease: super::semantic_authority::CommittedSemanticSelectionLease<'a>,
+    target: SemanticTargetKey,
+    stamp: SelectedGenerationStamp,
+    image: SemanticPlaneImageKey,
+    image_identity: SemanticImageIdentity,
+}
+
+impl SelectedNativeImagePublicationFence for SemanticAuthorityPublicationFence<'_> {
+    fn selected_target(&self) -> &SemanticTargetKey {
+        &self.target
+    }
+
+    fn selected_stamp(&self) -> SelectedGenerationStamp {
+        self.stamp
+    }
+
+    fn selected_image(&self) -> SemanticPlaneImageKey {
+        self.image
+    }
+
+    fn selected_image_identity(&self) -> SemanticImageIdentity {
+        self.image_identity
     }
 }
 
@@ -495,8 +591,8 @@ impl<'hydrator> VersionedPlaneService<'hydrator> {
     /// Serves one decoded wire range after rebinding it to current authority.
     ///
     /// This is the local RPC entry point. The wire's selected stamp is only a
-    /// claim: the resolver reconstructs the selected frontier and exact
-    /// manifest from Turso before the request is admitted.
+    /// claim: the resolver reconstructs the committed selection and exact
+    /// manifest before the request is admitted.
     pub(super) fn serve_range_claim<R: VersionedPlaneSelectionResolver>(
         &self,
         resolver: &mut R,

@@ -57,22 +57,21 @@ pub(super) use gc::{
     HistoryReachabilityClass, history_gc_epoch_root, history_gc_marked, history_index_id_at,
     read_history_gc_state,
 };
-pub(super) use provenance::decode_hex_digest;
-pub(crate) use v2::{TypedV2HistoryLocator, TypedV2HistoryPublicationSnapshot};
-pub(crate) use v3::TypedV3HistoryLocator;
-pub use v3::{HistoryTypedV3LocatorId, HistoryTypedV3RootClaim};
 pub use lineage::{
     BorrowedTypedLineageEdgeSetV1, LineageAttestationId, LineageAttestationVerifierV1,
-    LineageConfirmationStatementV1,
-    LineageCandidateGroupIdV1, LineageEdgeSetErrorV1, LineageEdgeV1, LineageEdgeViewV1,
-    LineageHistoryEvidenceV1, LineageKindV1, LineageSourceV1, LineageStatusV1,
-    LineageStatusViewV1, LineageEdgeIterV1, OwnedTypedLineageEdgeSetV1,
-    RejectLineageConfirmationsV1, UnresolvedLineageReasonV1, UnprovenTypedLineageEdgeSetV1,
-    VerifiedLineageEdgeIterV1, VerifiedLineageEdgeViewV1, VerifiedLineageStatusV1,
-    VerifiedTypedLineageEdgeSetV1, VerifiedLineageRootV2,
-    MAX_LINEAGE_CANDIDATES_PER_GROUP_V1, MAX_TYPED_LINEAGE_EDGES_V1,
-    MAX_TYPED_LINEAGE_EDGE_SET_V1_BYTES,
+    LineageCandidateGroupIdV1, LineageConfirmationStatementV1, LineageEdgeIterV1,
+    LineageEdgeSetErrorV1, LineageEdgeV1, LineageEdgeViewV1, LineageHistoryEvidenceV1,
+    LineageKindV1, LineageSourceV1, LineageStatusV1, LineageStatusViewV1,
+    MAX_LINEAGE_CANDIDATES_PER_GROUP_V1, MAX_TYPED_LINEAGE_EDGE_SET_V1_BYTES,
+    MAX_TYPED_LINEAGE_EDGES_V1, OwnedTypedLineageEdgeSetV1, RejectLineageConfirmationsV1,
+    UnprovenTypedLineageEdgeSetV1, UnresolvedLineageReasonV1, VerifiedLineageEdgeIterV1,
+    VerifiedLineageEdgeViewV1, VerifiedLineageRootV2, VerifiedLineageStatusV1,
+    VerifiedTypedLineageEdgeSetV1,
 };
+pub(super) use provenance::decode_hex_digest;
+pub(crate) use v2::{TypedV2HistoryLocator, TypedV2HistoryPublicationSnapshot};
+pub use v3::{HistoryTypedV3LocatorId, HistoryTypedV3RootClaim};
+pub(crate) use v3::{TypedV3HistoryLocator, TypedV3HistoryPublicationSnapshot};
 
 pub(super) fn compact_history_tombstones(target_root: &Path) -> Result<(), String> {
     let history_root = target_root.join("history");
@@ -91,4 +90,11 @@ pub(super) fn compact_history_tombstones(target_root: &Path) -> Result<(), Strin
 
 pub(super) fn recover_pending_retention_delete(target_root: &Path) -> Result<(), String> {
     retention::recover_pending_delete(target_root)
+}
+
+#[cfg(test)]
+pub(super) fn read_retention_stats_for_test(
+    target_root: &Path,
+) -> Result<Option<HistoryGcStats>, String> {
+    retention::read_stats(target_root)
 }

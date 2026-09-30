@@ -4,7 +4,7 @@
 //! and scenes never read the prototype's file.
 
 use super::json::{self, Json};
-use super::{Change, Crate, Impacted, ReleaseDiff, Severity, UseSite, Version, What};
+use super::{Change, Crate, Impacted, ReleaseDiff, Severity, SourceAvailability, UseSite, Version, What};
 use gpui::SharedString;
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -130,7 +130,11 @@ fn krate(name: &str, c: &Json) -> Crate {
             v: word(v.get("v")),
             at: word(v.get("at")),
             yanked: v.get("yanked").is_some_and(Json::truthy),
-            local: v.get("local").is_some_and(Json::truthy),
+            source: if v.get("local").is_some_and(Json::truthy) {
+                SourceAvailability::Available
+            } else {
+                SourceAvailability::Unavailable
+            },
         })
         .collect();
     // Every public path of every local release → its declared path (itself,

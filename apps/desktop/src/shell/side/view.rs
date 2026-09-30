@@ -76,7 +76,10 @@ impl Shelf {
         .size_full()
         .track_scroll(&self.scroll);
         column
-            .child(div().relative().flex_1().min_h(px(0.0)).child(list).children(self.sticky(measure, palette, cx)))
+            .child(facet::probe::scroll_scope(
+                "shelf-rows",
+                div().relative().flex_1().min_h(px(0.0)).child(list).children(self.sticky(measure, palette, cx)),
+            ))
             .child(scroll_probe("shelf-rows", self.scroll.0.borrow().base_handle.clone()))
             .children((!head.trail.is_empty()).then(|| self.trail_block(&head.trail, measure, palette, cx)))
             .into_any_element()

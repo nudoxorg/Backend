@@ -29,8 +29,8 @@ pub use contracts::{
 };
 pub use delta::{DocumentChange, DocumentDelta, DocumentState};
 pub use engine::{
-    MaintainOutcome, ProjectionKind, ProjectionRevision, TantivyAdapter, TantivySource,
-    TantivySourceError,
+    DurableProjectionAction, MaintainOutcome, ProjectionKind, ProjectionRevision, TantivyAdapter,
+    TantivySource, TantivySourceError,
 };
 pub use identity::{
     Authority, AuthoritySchema, Binding, Frontier, FrontierSchema, IndexRelation, Limits,

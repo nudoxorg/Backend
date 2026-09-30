@@ -22,15 +22,16 @@ const WORD: TypeRole = TypeRole { weight: 520.0, ..ty::BUTTON };
 /// The sentence that opens.
 const TIP: TypeRole = TypeRole { weight: 400.0, ..ty::SMALL };
 
-const fn icon_lang(lang: Lang) -> crate::icons::Lang {
+const fn badge_lang(lang: Lang) -> badges::Lang {
     match lang {
-        Lang::Rust | Lang::Other => crate::icons::Lang::Rust,
-        Lang::TypeScript => crate::icons::Lang::Typescript,
-        Lang::Go => crate::icons::Lang::Go,
-        Lang::Python => crate::icons::Lang::Python,
-        Lang::Java => crate::icons::Lang::Java,
-        Lang::CSharp => crate::icons::Lang::Csharp,
-        Lang::Cpp => crate::icons::Lang::Cpp,
+        Lang::Rust => badges::Lang::Rust,
+        Lang::TypeScript => badges::Lang::Typescript,
+        Lang::Go => badges::Lang::Go,
+        Lang::Python => badges::Lang::Python,
+        Lang::Java => badges::Lang::Java,
+        Lang::CSharp => badges::Lang::Csharp,
+        Lang::Cpp => badges::Lang::Cpp,
+        Lang::Other => badges::Lang::Unknown,
     }
 }
 
@@ -58,7 +59,7 @@ const fn icon_kind(kind: DeclKind) -> Option<crate::icons::Kind> {
 #[must_use]
 pub fn kind_word(plan: &PagePlan) -> &'static str {
     let hero = &plan.hero;
-    let item = Item::new(&hero.name, icon_lang(hero.lang)).kind(icon_kind(hero.kind)).signature(hero.signature.as_deref());
+    let item = Item::new(&hero.name, badge_lang(hero.lang)).kind(icon_kind(hero.kind)).signature(hero.signature.as_deref());
     let word = badges::read(&item).word;
     if hero.kind == DeclKind::Method && word == "fn" { "method" } else { word }
 }
@@ -85,7 +86,7 @@ fn facts(plan: &PagePlan) -> Vec<badges::Badge> {
         }
         Spec::Callable(_) | Spec::None => {}
     }
-    let item = Item::new(&hero.name, icon_lang(hero.lang)).kind(icon_kind(hero.kind)).signature(hero.signature.as_deref());
+    let item = Item::new(&hero.name, badge_lang(hero.lang)).kind(icon_kind(hero.kind)).signature(hero.signature.as_deref());
     out.extend(badges::read(&item).badges);
     out
 }

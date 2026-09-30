@@ -8,7 +8,7 @@
 
 use std::{
     fs::{self, OpenOptions},
-    io::Seek,
+    io::{Read, Seek},
     path::{Path, PathBuf},
 };
 
@@ -24,7 +24,8 @@ use super::{
     validate_commit_generation, write_history_segment_map_count,
 };
 
-const RETENTION_STATE_TAG: u8 = 10;
+const LEGACY_RETENTION_STATE_TAG: u8 = 10;
+const RETENTION_STATE_TAG: u8 = 11;
 const RETENTION_DELETE_INTENT_TAG: u8 = 11;
 const MAX_RETENTION_STATE_BYTES: usize = 512;
 const MAX_RETENTION_DELETE_INTENT_BYTES: usize = 512;
@@ -265,7 +266,16 @@ fn encode_state(state: RetentionState) -> Result<Vec<u8>, String> {
 fn decode_state(bytes: &[u8]) -> Result<RetentionState, String> {
     let body = super::checked_body(bytes, MAX_RETENTION_STATE_BYTES)?;
     let mut reader = super::Reader::new(body);
-    reader.header(RETENTION_STATE_TAG)?;
+    if reader.header(RETENTION_STATE_TAG).is_err() {
+        let mut legacy_reader = super::Reader::new(body);
+        if legacy_reader.header(LEGACY_RETENTION_STATE_TAG).is_ok() {
+            return Err(
+                "semantic history retention state predates exact accounting; migration is unsupported"
+                    .to_owned(),
+            );
+        }
+        return Err("semantic history retention state header is invalid".to_owned());
+    }
     let input_digest = reader.fixed()?;
     let phase = RetentionPhase::from_wire(reader.u8()?)?;
     let mark_offset = reader.u64()?;
@@ -580,6 +590,12 @@ fn recover_delete_intent(target_root: &Path, state: &mut RetentionState) -> Resu
                 return Err("semantic history file changed during retention sweep".to_owned());
             }
             remove_file(&path)?;
+            if intent.kind == DeleteKind::Commit {
+                #[cfg(test)]
+                super::super::trip_history_test_fault(
+                    super::super::HistoryTestFault::AfterHistoryCommitUnlink,
+                )?;
+            }
             if intent.kind == DeleteKind::Map {
                 #[cfg(test)]
                 super::super::trip_history_test_fault(
@@ -601,11 +617,31 @@ fn recover_delete_intent(target_root: &Path, state: &mut RetentionState) -> Resu
         let raw = decode_hex_digest(identity)?;
         let commit = HistoryCommitId::from_bytes(raw);
         remove_file(&history_payload_root_path(target_root, commit))?;
+        #[cfg(test)]
+        super::super::trip_history_test_fault(
+            super::super::HistoryTestFault::AfterHistoryPayloadRootUnlink,
+        )?;
+        // Locator cleanup shares the commit delete intent so a crash cannot
+        // leave an unaccounted unlink outside the durable retention counters.
+        super::v2::remove_typed_v2_locator_for_commit(target_root, commit)?;
+        #[cfg(test)]
+        super::super::trip_history_test_fault(
+            super::super::HistoryTestFault::AfterTypedV2LocatorUnlink,
+        )?;
+        super::v3::remove_typed_v3_locator_for_commit(target_root, commit)?;
+        #[cfg(test)]
+        super::super::trip_history_test_fault(
+            super::super::HistoryTestFault::AfterTypedV3LocatorUnlink,
+        )?;
         remove_file(
             &target_root
                 .join("history")
                 .join("indexed")
                 .join(format!("{identity}.indexed")),
+        )?;
+        #[cfg(test)]
+        super::super::trip_history_test_fault(
+            super::super::HistoryTestFault::AfterHistoryIndexedUnlink,
         )?;
     }
     if let Some(old_count) = intent.old_map_count {
@@ -642,6 +678,12 @@ fn recover_delete_intent(target_root: &Path, state: &mut RetentionState) -> Resu
             *reclaimed_count = next_count;
             *reclaimed_bytes = next_bytes;
             write_state(target_root, *state)?;
+            if intent.kind == DeleteKind::Commit {
+                #[cfg(test)]
+                super::super::trip_history_test_fault(
+                    super::super::HistoryTestFault::AfterHistoryRetentionStatsWrite,
+                )?;
+            }
         } else if *reclaimed_count != next_count || *reclaimed_bytes != next_bytes {
             return Err(
                 "semantic history delete intent conflicts with retention counters".to_owned(),
@@ -649,6 +691,12 @@ fn recover_delete_intent(target_root: &Path, state: &mut RetentionState) -> Resu
         }
     }
     remove_candidate_marker(target_root, state, intent.kind, &intent.name)?;
+    if intent.kind == DeleteKind::Commit {
+        #[cfg(test)]
+        super::super::trip_history_test_fault(
+            super::super::HistoryTestFault::AfterHistoryDeleteCandidateUnlink,
+        )?;
+    }
     remove_file(&retention_delete_intent_path(target_root))?;
     Ok(true)
 }
@@ -686,7 +734,6 @@ fn first_candidate(root: &Path, kind: DeleteKind) -> Result<Option<(PathBuf, Str
     for entry in fs::read_dir(&directory).map_err(super::display_io)? {
         let entry = entry.map_err(super::display_io)?;
         let path = entry.path();
-        ensure_regular_file(&path)?;
         let file_name = entry
             .file_name()
             .into_string()
@@ -697,8 +744,23 @@ fn first_candidate(root: &Path, kind: DeleteKind) -> Result<Option<(PathBuf, Str
         if stem.len() != 64 {
             return Err("semantic history candidate marker name is malformed".to_owned());
         }
-        let name = String::from_utf8(fs::read(&path).map_err(super::display_io)?)
+        let marker = backend_platform::durability::open_regular_file_nofollow(&path)
+            .map_err(super::display_io)?;
+        let metadata = marker.metadata().map_err(super::display_io)?;
+        if metadata.len() > RETENTION_DELETE_INTENT_NAME_BYTES as u64 {
+            return Err("semantic history candidate marker exceeds its filename bound".to_owned());
+        }
+        let mut marker_bytes = Vec::with_capacity(metadata.len() as usize);
+        let mut bounded_marker = marker.take((RETENTION_DELETE_INTENT_NAME_BYTES + 1) as u64);
+        bounded_marker
+            .read_to_end(&mut marker_bytes)
+            .map_err(super::display_io)?;
+        if marker_bytes.len() > RETENTION_DELETE_INTENT_NAME_BYTES {
+            return Err("semantic history candidate marker exceeds its filename bound".to_owned());
+        }
+        let name = String::from_utf8(marker_bytes)
             .map_err(|_| "semantic history candidate value is not UTF-8".to_owned())?;
+        validate_delete_name(kind, &name)?;
         if candidate_marker_name(&name) != file_name {
             return Err("semantic history candidate marker differs from its name".to_owned());
         }
@@ -914,6 +976,12 @@ fn complete_delete(
         old_map_count,
     };
     write_delete_intent(target_root, &intent)?;
+    if kind == DeleteKind::Commit {
+        #[cfg(test)]
+        super::super::trip_history_test_fault(
+            super::super::HistoryTestFault::AfterHistoryDeleteIntent,
+        )?;
+    }
     let _ = recover_delete_intent(target_root, state)?;
     Ok(())
 }
@@ -1498,9 +1566,9 @@ pub(super) fn advance_retention(
                     && state.compact_input_offset == source_length
                     && state.compact_output_offset == source_length
                 {
-                    // The input and output lengths are equal, so the filtered
-                    // index was already identical and its staging file was
-                    // removed before the last state write.
+                    // The final cursor was durable before the no-op staging
+                    // file was removed, so recovery can finish this phase
+                    // without replacing an identical index.
                     super::compact_history_tombstones(target_root)?;
                     state.phase = RetentionPhase::Cleanup;
                     state.input_digest = retention_input_digest(target_root)?;
@@ -1564,10 +1632,25 @@ pub(super) fn advance_retention(
                             "semantic history compaction ended before the input index".to_owned()
                         );
                     }
+                    staging.sync_all().map_err(super::display_io)?;
+                    backend_platform::durable::sync_parent(&staging_path)
+                        .map_err(super::display_io)?;
+                    // The cursor must never get ahead of the staging file's
+                    // data or directory entry. Recovery depends on seeing the
+                    // complete output at this exact persisted offset.
+                    write_state(target_root, state)?;
+                    #[cfg(test)]
+                    super::super::trip_history_test_fault(
+                        super::super::HistoryTestFault::AfterHistoryIndexCompactCursorWrite,
+                    )?;
                     if state.compact_output_offset == source_length {
+                        drop(staging);
                         remove_file(&staging_path)?;
+                        #[cfg(test)]
+                        super::super::trip_history_test_fault(
+                            super::super::HistoryTestFault::AfterHistoryIndexCompactNoopRemoval,
+                        )?;
                     } else {
-                        staging.sync_all().map_err(super::display_io)?;
                         drop(staging);
                         fs::rename(&staging_path, &index_path).map_err(super::display_io)?;
                         backend_platform::durable::sync_parent(&index_path)
@@ -1580,8 +1663,22 @@ pub(super) fn advance_retention(
                     super::compact_history_tombstones(target_root)?;
                     state.phase = RetentionPhase::Cleanup;
                     state.input_digest = retention_input_digest(target_root)?;
+                } else {
+                    // Persist both staging contents and a newly created
+                    // staging-directory entry before committing this page's
+                    // cursor. Otherwise a crash can leave a cursor whose
+                    // output file never became visible on disk.
+                    staging.sync_all().map_err(super::display_io)?;
+                    backend_platform::durable::sync_parent(&staging_path)
+                        .map_err(super::display_io)?;
                 }
                 write_state(target_root, state)?;
+                if !done {
+                    #[cfg(test)]
+                    super::super::trip_history_test_fault(
+                        super::super::HistoryTestFault::AfterHistoryIndexCompactCursorWrite,
+                    )?;
+                }
                 if done {
                     continue;
                 }
@@ -1683,6 +1780,95 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn oversized_candidate_value_is_rejected_with_a_bounded_read() {
+        let directory = TestDirectory::create();
+        let digest = [0x6d; 32];
+        let work_root =
+            ensure_work_layout(&directory.0, &digest).expect("create retention candidate layout");
+        let name = format!("{}.commit", "ab".repeat(32));
+        let marker_path =
+            candidate_directory(&work_root, DeleteKind::Commit).join(candidate_marker_name(&name));
+        let oversized = vec![b'x'; RETENTION_DELETE_INTENT_NAME_BYTES + 1];
+        fs::write(&marker_path, &oversized).expect("write oversized candidate marker");
+
+        assert!(
+            first_candidate(&work_root, DeleteKind::Commit)
+                .expect_err("candidate data cannot exceed the filename bound")
+                .contains("exceeds its filename bound")
+        );
+        assert_eq!(
+            fs::read(&marker_path).expect("oversized marker remains intact"),
+            oversized,
+            "the rejected candidate is preserved for diagnosis"
+        );
+    }
+
+    #[test]
+    fn legacy_retention_state_fails_closed_before_delete_recovery() {
+        let directory = TestDirectory::create();
+        let history_root = directory.0.join("history");
+        let commits_root = history_root.join("commits");
+        fs::create_dir_all(&commits_root).expect("create history commit directory");
+        let identity = "ab".repeat(32);
+        let commit_name = format!("{identity}.commit");
+        let commit_path = commits_root.join(&commit_name);
+        fs::write(
+            &commit_path,
+            b"commit bytes remain until an exact-accounting state is available",
+        )
+        .expect("write protected commit fixture");
+
+        let mut old_state = init_state([0x75; 32]);
+        old_state.stats.reclaimed_commits = 1;
+        // Tag 10 can contain an unlink count without the corresponding exact
+        // byte total. The new format must not invent the missing history.
+        let mut legacy_state =
+            encode_state(old_state).expect("encode current-format state fixture");
+        legacy_state[5] = LEGACY_RETENTION_STATE_TAG;
+        let checksum_offset = legacy_state.len() - 32;
+        let checksum = blake3::hash(&legacy_state[..checksum_offset]);
+        legacy_state[checksum_offset..].copy_from_slice(checksum.as_bytes());
+        fs::write(retention_state_path(&directory.0), &legacy_state)
+            .expect("persist checksummed pre-accounting state");
+        write_delete_intent(
+            &directory.0,
+            &RetentionDeleteIntent {
+                kind: DeleteKind::Commit,
+                name: commit_name,
+                byte_length: fs::metadata(&commit_path)
+                    .expect("inspect protected commit")
+                    .len(),
+                old_reclaimed_count: 1,
+                old_reclaimed_bytes: 0,
+                old_map_count: None,
+            },
+        )
+        .expect("persist otherwise-valid delete intent");
+        let intent_before = fs::read(retention_delete_intent_path(&directory.0))
+            .expect("snapshot protected delete intent");
+
+        assert!(
+            recover_pending_delete(&directory.0)
+                .expect_err("old stats cannot be claimed as exact")
+                .contains("predates exact accounting")
+        );
+        assert_eq!(
+            fs::read(&commit_path).expect("legacy state cannot unlink the commit"),
+            b"commit bytes remain until an exact-accounting state is available"
+        );
+        assert_eq!(
+            fs::read(retention_state_path(&directory.0))
+                .expect("legacy state is preserved for diagnosis"),
+            legacy_state
+        );
+        assert_eq!(
+            fs::read(retention_delete_intent_path(&directory.0))
+                .expect("delete intent is preserved for diagnosis"),
+            intent_before
+        );
     }
 
     #[test]
