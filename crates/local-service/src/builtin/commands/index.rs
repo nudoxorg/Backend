@@ -14,7 +14,8 @@ use backend_engine::application::{
     FullWorkspaceInputVerifier, LocalCompilerAvailability, LocalCompilerClient, OwnedPackageSource,
     OwnedPackageSourceSet, PackageLineageId, PackageSemanticError, PackageSemanticRuntimeError,
     StagedSemanticPackage, VerifiedCompilerInput, VerifiedCompilerInputAdmission,
-    VerifierAcceptedFullWorkspaceInput, capture_full_workspace_v2_with_prior,
+    VerifierAcceptedFullWorkspaceInput,
+    capture_full_workspace_v2_with_prior,
 };
 use backend_engine::builtin::{
     PartialSemanticCoverage, ProductSemanticPublicationKey, ProductSemanticPublicationRecord,
@@ -22,14 +23,14 @@ use backend_engine::builtin::{
 };
 use backend_extension_turso::SourceObservationReceipt;
 use backend_library::CompileExecutionIntent;
-use backend_library::interface::{CompilerRuntimeCause, CompilerTerminal};
 use backend_library::interface::{
-    CorrelationId, GenerateTarget, PackageCompileRequest, PackageUrl,
+    CompilerRuntimeCause, CompilerTerminal, CorrelationId, GenerateTarget, PackageCompileRequest,
+    PackageUrl,
 };
 use backend_semantic::ir::SemanticInputWitness;
 use backend_semantic::vocabulary::{Language, LanguageProfile};
 use backend_version::{Coverage, ScopeRoot, WorkspaceRoot};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -429,6 +430,7 @@ pub(super) fn finish_index_scan(
         scan,
         workspace_snapshot,
     } = result;
+    let final_revision_fence = scan.revision_fence.clone();
     let relation = daemon
         .engine()
         .daemon()
@@ -620,6 +622,7 @@ pub(super) fn finish_index_scan(
     Ok(PreparedIndex::Ready(PreparedProductSelection {
         intent,
         selected,
+        revision_fence: Some(final_revision_fence),
     }))
 }
 
@@ -669,6 +672,9 @@ pub(super) struct IndexScanResult {
 pub(super) struct PreparedProductSelection {
     pub(super) intent: Option<BuiltinIntent>,
     pub(super) selected: Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>,
+    /// Source/configuration frontier validated immediately before the one
+    /// durable product marker commit.
+    pub(super) revision_fence: Option<ingest::CompilerRevisionFence>,
 }
 
 impl PreparedProductSelection {
@@ -686,30 +692,54 @@ pub(super) enum PreparedIndex {
 }
 
 /// The compile an index job hands off the owner loop, and everything its
-/// publication needs afterwards. Source changes and authority observations
-/// remain private until the candidate transaction succeeds.
+/// publication needs afterwards. Immutable candidates may be retained by the
+/// authority, while source changes and serving selections remain private until
+/// the combined workspace marker commits.
 pub(super) struct DeferredIndex {
     package: backend_engine::PackageKey,
     label: String,
     source_changes: Vec<BuiltinSourceChange>,
     revision_fence: ingest::CompilerRevisionFence,
-    profiles: Vec<DeferredProfile>,
+    profiles: VecDeque<DeferredProfile>,
+    expected_profiles: usize,
+    completed_profiles: usize,
+    semantic_changes: Vec<BuiltinSemanticChange>,
+    selected: Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>,
 }
 
 struct DeferredProfile {
     key: ProductSemanticPublicationKey,
     expected_artifacts: u32,
     attempt: backend_extension_turso::CandidateAttempt,
-    sources: Option<OwnedPackageSourceSet>,
+    sources: OwnedPackageSourceSet,
+}
+
+pub(super) struct DeferredProfileTicket {
+    key: ProductSemanticPublicationKey,
+    expected_artifacts: u32,
+    attempt: backend_extension_turso::CandidateAttempt,
 }
 
 impl DeferredIndex {
-    /// The sources each profile compiles, in profile order, taken once.
-    pub(super) fn take_work(&mut self) -> Vec<OwnedPackageSourceSet> {
-        self.profiles
-            .iter_mut()
-            .filter_map(|profile| profile.sources.take())
-            .collect()
+    /// Takes one profile so its staged output can be admitted and dropped
+    /// before the next profile consumes compiler output credits.
+    pub(super) fn take_next_work(
+        &mut self,
+    ) -> Option<(DeferredProfileTicket, OwnedPackageSourceSet)> {
+        self.profiles.pop_front().map(|profile| {
+            (
+                DeferredProfileTicket {
+                    key: profile.key,
+                    expected_artifacts: profile.expected_artifacts,
+                    attempt: profile.attempt,
+                },
+                profile.sources,
+            )
+        })
+    }
+
+    pub(super) fn has_pending_profiles(&self) -> bool {
+        !self.profiles.is_empty()
     }
 }
 
@@ -783,36 +813,37 @@ fn prepare_deferred_compile(
             key,
             expected_artifacts,
             attempt,
-            sources: Some(sources),
+            sources,
         });
     }
+    let expected_profiles = profiles.len();
     Ok(DeferredIndex {
         package,
         label: label.to_owned(),
         source_changes,
         revision_fence,
-        profiles,
+        profiles: profiles.into(),
+        expected_profiles,
+        completed_profiles: 0,
+        semantic_changes: Vec::with_capacity(expected_profiles.saturating_mul(2)),
+        selected: Vec::with_capacity(expected_profiles),
     })
 }
 
-/// Compiles a deferred index's sources, off the owner loop: the compiler
-/// runtime does the work; this thread only waits for it.
+/// Compiles one deferred profile off the owner loop. The returned package
+/// retains its compiler credit lease only until the owner admits this result.
 pub(super) fn run_deferred_compile(
     compiler: &LocalCompilerClient,
-    work: Vec<OwnedPackageSourceSet>,
-    cancelled: Arc<std::sync::atomic::AtomicBool>,
-) -> Vec<Result<StagedSemanticPackage, PackageSemanticRuntimeError>> {
-    work.into_iter()
-        .map(|sources| {
-            compiler.compile_package_sources_staged_cancellable(sources, Arc::clone(&cancelled))
-        })
-        .collect()
+    sources: OwnedPackageSourceSet,
+    cancelled: Arc<AtomicBool>,
+) -> Result<StagedSemanticPackage, PackageSemanticRuntimeError> {
+    compiler.compile_package_sources_staged_cancellable(sources, cancelled)
 }
 
 pub(super) fn deferred_compile_was_cancelled(
-    compiled: &[Result<StagedSemanticPackage, PackageSemanticRuntimeError>],
+    result: &Result<StagedSemanticPackage, PackageSemanticRuntimeError>,
 ) -> bool {
-    compiled.iter().any(|result| match result {
+    match result {
         Err(PackageSemanticRuntimeError::Runtime(CompilerTerminal::Runtime {
             cause: CompilerRuntimeCause::RequestCancelled,
             ..
@@ -822,21 +853,22 @@ pub(super) fn deferred_compile_was_cancelled(
             ..
         })) => matches!(terminal.as_ref(), CompilerTerminal::PackageCancelled { .. }),
         _ => false,
-    })
+    }
 }
 
-/// Publishes a deferred compile's semantic candidates on the owner loop and
-/// returns one source-plus-semantic intent. The caller commits that intent
-/// before advancing the process-local serving selector.
-pub(super) fn finish_deferred_index<E: std::fmt::Display>(
+/// Admits exactly one profile candidate on the owner loop and then drops its
+/// staged output, releasing the package compiler's bounded output credits.
+/// The serving selector remains untouched until every profile has succeeded.
+pub(super) fn finish_deferred_profile<E: std::fmt::Display>(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
-    job: DeferredIndex,
-    compiled: Vec<Result<StagedSemanticPackage, E>>,
-) -> Result<PreparedProductSelection, BuiltinModelError> {
-    if compiled.len() != job.profiles.len() {
+    job: &mut DeferredIndex,
+    profile: DeferredProfileTicket,
+    compiled: Result<StagedSemanticPackage, E>,
+) -> Result<(), BuiltinModelError> {
+    if job.completed_profiles >= job.expected_profiles {
         return Err(BuiltinModelError(
-            "the deferred compile did not answer every profile; prior selected semantic generation was preserved"
+            "the deferred compile answered more profiles than requested; prior selected semantic generation was preserved"
                 .to_owned(),
         ));
     }
@@ -847,43 +879,56 @@ pub(super) fn finish_deferred_index<E: std::fmt::Display>(
         .snapshot()
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic publications: {error}")))?;
-    let mut changes = Vec::with_capacity(job.profiles.len().saturating_mul(2));
-    let mut selected = Vec::with_capacity(job.profiles.len());
-    for (profile, compiled) in job.profiles.into_iter().zip(compiled) {
-        let DeferredProfile {
-            key,
-            expected_artifacts,
-            attempt,
-            ..
-        } = profile;
-        let (staged, publication_coverage) = admit_local_compile(compiled, expected_artifacts)?;
-        let (claim, _selected) = publish_local_compile(
-            semantic_authority,
-            &key,
-            attempt,
-            &staged,
-            &job.revision_fence,
-        )?;
-        record_semantic_publication(
-            &relation,
-            key.clone(),
-            publication_coverage,
-            claim,
-            &mut changes,
-        )?;
-        selected.push((key, claim));
+    let (staged, publication_coverage) = admit_local_compile(compiled, profile.expected_artifacts)?;
+    let (claim, _selected) = publish_local_compile(
+        semantic_authority,
+        &profile.key,
+        profile.attempt,
+        &staged,
+        &job.revision_fence,
+    )?;
+    record_semantic_publication(
+        &relation,
+        profile.key.clone(),
+        publication_coverage,
+        claim,
+        &mut job.semantic_changes,
+    )?;
+    job.selected.push((profile.key, claim));
+    job.completed_profiles += 1;
+    // `staged` owns the compiler output credit lease. It is dropped here,
+    // before the adapter asks the compiler to start the next profile.
+    drop(staged);
+    Ok(())
+}
+
+/// Builds the final source-plus-semantic intent after all profile candidates
+/// have been admitted. The caller commits this one intent before advancing
+/// the process-local serving selector.
+pub(super) fn finish_deferred_index(
+    job: DeferredIndex,
+) -> Result<PreparedProductSelection, BuiltinModelError> {
+    if !job.profiles.is_empty() || job.completed_profiles != job.expected_profiles {
+        return Err(BuiltinModelError(
+            "the deferred compile did not answer every profile; prior selected semantic generation was preserved"
+                .to_owned(),
+        ));
     }
-    let intent = if job.source_changes.is_empty() && changes.is_empty() {
+    let intent = if job.source_changes.is_empty() && job.semantic_changes.is_empty() {
         None
     } else {
         Some(BuiltinIntent::index_with_semantics(
             job.package,
             &job.label,
             job.source_changes,
-            changes,
+            job.semantic_changes,
         )?)
     };
-    Ok(PreparedProductSelection { intent, selected })
+    Ok(PreparedProductSelection {
+        intent,
+        selected: job.selected,
+        revision_fence: Some(job.revision_fence),
+    })
 }
 
 struct SemanticCompilationContext<'request> {
@@ -3644,7 +3689,7 @@ pub(super) fn semantic_versions(
                     generations.push((
                         target,
                         selected_key,
-                        claim,
+                        *claim,
                         semantic_version_record(
                             key,
                             coverage,

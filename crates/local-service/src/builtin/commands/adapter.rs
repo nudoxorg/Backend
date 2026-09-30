@@ -821,7 +821,11 @@ impl CommandAdapter {
         request_id: u64,
         requested_package: backend_engine::PackageKey,
     ) -> Result<AdmittedReply, BuiltinModelError> {
-        let PreparedProductSelection { intent, selected } = prepared;
+        let PreparedProductSelection {
+            intent,
+            selected,
+            revision_fence,
+        } = prepared;
         let removals = intent
             .as_ref()
             .map(selected_semantic_removals)
@@ -829,6 +833,15 @@ impl CommandAdapter {
         let committed =
             self.semantic_authority
                 .commit_product_selection_changes(selected, removals, || {
+                    if let Some(revision_fence) = revision_fence.as_ref()
+                        && !super::super::ingest::compiler_revision_is_current(revision_fence)
+                            .map_err(BuiltinModelError)?
+                    {
+                        return Err(BuiltinModelError(
+                            "compiler source or configuration revision changed before product selection; retry indexing"
+                                .to_owned(),
+                        ));
+                    }
                     intent
                         .map(|intent| {
                             commit_builtin_intent(daemon, request_id, &intent).map_err(
@@ -1272,6 +1285,7 @@ impl CommandAdapter {
                 Ok(prepared) => prepared.unwrap_or(PreparedProductSelection {
                     intent: None,
                     selected: Vec::new(),
+                    revision_fence: None,
                 }),
                 Err(refusal) => return Err(refusal),
             },
@@ -1280,9 +1294,14 @@ impl CommandAdapter {
                 .unwrap_or(PreparedProductSelection {
                     intent: None,
                     selected: Vec::new(),
+                    revision_fence: None,
                 }),
         };
-        let PreparedProductSelection { intent, selected } = prepared;
+        let PreparedProductSelection {
+            intent,
+            selected,
+            revision_fence,
+        } = prepared;
         let removals = intent
             .as_ref()
             .map(selected_semantic_removals)
@@ -1290,6 +1309,15 @@ impl CommandAdapter {
         let committed =
             self.semantic_authority
                 .commit_product_selection_changes(selected, removals, || {
+                    if let Some(revision_fence) = revision_fence.as_ref()
+                        && !super::super::ingest::compiler_revision_is_current(revision_fence)
+                            .map_err(BuiltinModelError)?
+                    {
+                        return Err(BuiltinModelError(
+                            "compiler source or configuration revision changed before product selection; retry indexing"
+                                .to_owned(),
+                        ));
+                    }
                     intent
                         .map(|intent| {
                             commit_builtin_intent(daemon, request_id, &intent).map_err(
@@ -1332,6 +1360,7 @@ impl CommandAdapter {
                 Some(PreparedProductSelection {
                     intent: Some(intent),
                     selected: Vec::new(),
+                    revision_fence: None,
                 })
             });
         };
