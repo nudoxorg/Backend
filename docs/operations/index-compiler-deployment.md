@@ -161,6 +161,14 @@ A payload-free `CapabilityRevoked` notice may still be sent if its own exact
 bytes fit the remaining grant budget. A corrupt ledger disables remote reads
 while local CLI, MCP, and compiler operation remain available.
 
+Owner forwarding uses a separate eight-slot blocking-work bound in addition to
+the eight authenticated Iroh connection slots. Each admitted request keeps its
+work slot through grant metering, the local owner call, and response metering;
+if a QUIC caller times out, the slot remains held until the blocking operation
+returns or panics. The owner socket dial is limited to five seconds and each
+local request/response read or write to twenty seconds. A reconnect therefore
+cannot create unbounded detached owner work.
+
 ### Remote-client regression matrix
 
 Run these checks against binaries built from the same reviewed source revision.
@@ -173,6 +181,7 @@ and use a separate Iroh client identity.
 | Product-root/index-search snapshot, pagination cursor resume across owner restart, bounded catalog response budget, and persistent per-grant revoke | `tests/journeys/run-remote-index-catalog-client.sh` with the frozen journal and independent labels | All 96 expected coordinates appear exactly once; each page matches the signed snapshot; request/byte and RSS ceilings hold; after restart, the revoked client is rejected without charging another request and the typed notice is byte-metered. |
 | Exact canonical frame metering for large stale-root outcomes | `prepared_response_reports_the_exact_canonical_wire_frame_size` and `stale_root_response_reserves_its_full_canonical_wire_size` | The charged size equals the typed postcard frame actually sent, including both 32-byte roots and the frame prefix. |
 | Revoke before/after result admission | `response_admission_is_the_revoke_linearization_point` and `concurrent_revoke_and_response_admission_has_one_durable_winner` | Revoke-first refuses result admission; permit-first retains a valid in-flight send permit, while later request admission is denied. |
+| Withheld local owner response, caller timeout, and blocking-work permit lifetime | `withheld_local_owner_response_hits_the_configured_socket_deadline`, `detached_blocking_owner_work_keeps_its_slot_until_completion`, and `blocking_work_slot_is_released_after_worker_panic` | The local response read times out; a detached blocked call continues to consume its bounded slot and releases it only on completion or panic. |
 | Interrupted/corrupt semantic range reconnect and resume over two processes | Extend the real client journey with a dropped range stream, corrupted range, owner restart, and resumed `semantic-hydrate` | No unverified bytes become complete; the client resumes the exact selected generation and finishes within signed request/byte budgets. |
 | Root/snapshot publication race during live query | Mutate the selected root or discovery snapshot while the installed remote query is in flight | The client receives a typed stale result or a closed refusal; no response is attached to a different current root/snapshot. |
 

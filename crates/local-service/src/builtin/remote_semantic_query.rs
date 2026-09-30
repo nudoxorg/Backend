@@ -22,11 +22,15 @@ use std::io::{self, Read};
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 const MAX_REMOTE_INDEX_CONNECTIONS: usize = 8;
+const MAX_REMOTE_INDEX_OWNER_WORK: usize = 8;
 const MAX_REMOTE_INDEX_REQUESTS_PER_SESSION: u32 = 4_096;
 const MAX_REMOTE_INDEX_RESPONSE_BYTES: u64 = MAX_REMOTE_INDEX_BODY_BYTES as u64;
+const REMOTE_INDEX_LOCAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const REMOTE_INDEX_LOCAL_IO_TIMEOUT: Duration = Duration::from_secs(20);
 const REMOTE_CONTROL_LIMITS: LocalControlLimits = LocalControlLimits {
     max_frame: backend_replication::LOCAL_CONTROL_MAX_FRAME,
     max_cursor: backend_replication::LOCAL_CONTROL_MAX_CURSOR,
@@ -102,6 +106,32 @@ pub struct RemoteIndexUsage {
     path: Option<Arc<PathBuf>>,
     owner: Option<backend_engine::cluster_transport::EndpointId>,
     disabled: bool,
+}
+
+fn remote_index_owner_work_slots() -> &'static Arc<tokio::sync::Semaphore> {
+    static SLOTS: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+    SLOTS.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(MAX_REMOTE_INDEX_OWNER_WORK)))
+}
+
+async fn acquire_remote_index_work() -> Option<Arc<tokio::sync::OwnedSemaphorePermit>> {
+    tokio::time::timeout(
+        backend_engine::cluster_transport::REMOTE_INDEX_SESSION_TIMEOUT,
+        Arc::clone(remote_index_owner_work_slots()).acquire_owned(),
+    )
+    .await
+    .ok()?
+    .ok()
+    .map(Arc::new)
+}
+
+fn spawn_bounded_remote_index_work<T: Send + 'static>(
+    permit: Arc<tokio::sync::OwnedSemaphorePermit>,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> tokio::task::JoinHandle<T> {
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        work()
+    })
 }
 
 impl Default for RemoteIndexUsage {
@@ -614,12 +644,16 @@ pub(crate) async fn serve_connection(
             Ok(Ok(request)) => request,
             _ => return,
         };
+        let Some(work_permit) = acquire_remote_index_work().await else {
+            return;
+        };
         let next_request = requests.saturating_add(1);
         if next_request > MAX_REMOTE_INDEX_REQUESTS_PER_SESSION {
             let _ = send_remote_response(
                 &mut session,
                 &usage,
                 &capability,
+                Arc::clone(&work_permit),
                 RemoteIndexResponse {
                     request_id: request.request_id,
                     outcome: RemoteIndexOutcome::Rejected(RemoteIndexReject::ReplayOrBudget),
@@ -635,16 +669,26 @@ pub(crate) async fn serve_connection(
         // revoke wins before that result is admitted.
         let meter = usage.clone();
         let request_capability = capability.clone();
-        let charged =
-            tokio::task::spawn_blocking(move || meter.charge_request(&request_capability))
-                .await
-                .unwrap_or(Err(RemoteIndexReject::OwnerUnavailable));
+        let request_work = Arc::clone(&work_permit);
+        let charge_task = spawn_bounded_remote_index_work(request_work, move || {
+            meter.charge_request(&request_capability)
+        });
+        let charged = match tokio::time::timeout(
+            backend_engine::cluster_transport::REMOTE_INDEX_SESSION_TIMEOUT,
+            charge_task,
+        )
+        .await
+        {
+            Ok(Ok(charged)) => charged,
+            _ => return,
+        };
         if charged.is_err() {
             let reason = charged.err().unwrap_or(RemoteIndexReject::ReplayOrBudget);
             let _ = send_remote_response(
                 &mut session,
                 &usage,
                 &capability,
+                Arc::clone(&work_permit),
                 RemoteIndexResponse {
                     request_id: request.request_id,
                     outcome: RemoteIndexOutcome::Rejected(reason),
@@ -657,7 +701,8 @@ pub(crate) async fn serve_connection(
         let channel = session.channel();
         let claims = capability.clone();
         let endpoint = local_endpoint.clone();
-        let task = tokio::task::spawn_blocking(move || match channel {
+        let query_work = Arc::clone(&work_permit);
+        let task = spawn_bounded_remote_index_work(query_work, move || match channel {
             RemoteIndexChannel::ProductQuery => serve_product_request(&endpoint, &claims, request),
             RemoteIndexChannel::SemanticHydration => {
                 serve_semantic_request(&endpoint, &claims, request)
@@ -672,9 +717,15 @@ pub(crate) async fn serve_connection(
             Ok(Ok(response)) => response,
             _ => return,
         };
-        if send_remote_response(&mut session, &usage, &capability, response)
-            .await
-            .is_err()
+        if send_remote_response(
+            &mut session,
+            &usage,
+            &capability,
+            Arc::clone(&work_permit),
+            response,
+        )
+        .await
+        .is_err()
         {
             return;
         }
@@ -685,10 +736,19 @@ async fn send_remote_response(
     session: &mut RemoteIndexSession,
     usage: &RemoteIndexUsage,
     capability: &RemoteIndexCapability,
+    work_permit: Arc<tokio::sync::OwnedSemaphorePermit>,
     response: RemoteIndexResponse,
 ) -> Result<(), RemoteIndexReject> {
     let request_id = response.request_id;
-    match admit_and_send_remote_response(session, usage, capability, response).await {
+    match admit_and_send_remote_response(
+        session,
+        usage,
+        capability,
+        Arc::clone(&work_permit),
+        response,
+    )
+    .await
+    {
         Ok(()) => Ok(()),
         Err(RemoteResponseFailure::Transport) => Err(RemoteIndexReject::OwnerUnavailable),
         Err(RemoteResponseFailure::Admission(reason)) => {
@@ -700,7 +760,7 @@ async fn send_remote_response(
                 request_id,
                 outcome: RemoteIndexOutcome::Rejected(reason),
             };
-            admit_and_send_remote_response(session, usage, capability, rejected)
+            admit_and_send_remote_response(session, usage, capability, work_permit, rejected)
                 .await
                 .map_err(|failure| match failure {
                     RemoteResponseFailure::Admission(reason) => reason,
@@ -714,6 +774,7 @@ async fn admit_and_send_remote_response(
     session: &mut RemoteIndexSession,
     usage: &RemoteIndexUsage,
     capability: &RemoteIndexCapability,
+    work_permit: Arc<tokio::sync::OwnedSemaphorePermit>,
     response: RemoteIndexResponse,
 ) -> Result<(), RemoteResponseFailure> {
     let revocation_notice = matches!(
@@ -725,16 +786,24 @@ async fn admit_and_send_remote_response(
     let wire_bytes = prepared.wire_bytes();
     let meter = usage.clone();
     let response_capability = capability.clone();
-    let permit = tokio::task::spawn_blocking(move || {
+    let response_work = Arc::clone(&work_permit);
+    let admission = spawn_bounded_remote_index_work(response_work, move || {
         if revocation_notice {
             meter.admit_revocation_notice(&response_capability, wire_bytes)
         } else {
             meter.admit_response(&response_capability, wire_bytes)
         }
-    })
+    });
+    let permit = match tokio::time::timeout(
+        backend_engine::cluster_transport::REMOTE_INDEX_SESSION_TIMEOUT,
+        admission,
+    )
     .await
-    .unwrap_or(Err(RemoteIndexReject::OwnerUnavailable))
-    .map_err(RemoteResponseFailure::Admission)?;
+    {
+        Ok(Ok(Ok(permit))) => permit,
+        Ok(Ok(Err(reason))) => return Err(RemoteResponseFailure::Admission(reason)),
+        _ => return Err(RemoteResponseFailure::Transport),
+    };
     if permit.grant_id != capability.claims.grant_id
         || usize::try_from(permit.wire_bytes).ok() != Some(wire_bytes)
     {
@@ -830,7 +899,11 @@ fn serve_product_request(
     } else {
         None
     };
-    let mut transport = match UnixCommandTransport::connect(endpoint) {
+    let mut transport = match UnixCommandTransport::connect_with_timeouts(
+        endpoint,
+        REMOTE_INDEX_LOCAL_CONNECT_TIMEOUT,
+        REMOTE_INDEX_LOCAL_IO_TIMEOUT,
+    ) {
         Ok(transport) => transport,
         Err(_) => return owner_unavailable(request.request_id),
     };
@@ -929,7 +1002,12 @@ fn serve_product_request(
 }
 
 fn product_revision(endpoint: &Path) -> Result<backend_library::RevisionReceipt, ()> {
-    let mut transport = UnixCommandTransport::connect(endpoint).map_err(|_| ())?;
+    let mut transport = UnixCommandTransport::connect_with_timeouts(
+        endpoint,
+        REMOTE_INDEX_LOCAL_CONNECT_TIMEOUT,
+        REMOTE_INDEX_LOCAL_IO_TIMEOUT,
+    )
+    .map_err(|_| ())?;
     match transport
         .request(CommandDto::new(1, Command::Revision))
         .map_err(|_| ())?
@@ -941,7 +1019,13 @@ fn product_revision(endpoint: &Path) -> Result<backend_library::RevisionReceipt,
 }
 
 fn product_index_search_snapshot(endpoint: &Path) -> Result<[u8; 32], ()> {
-    let mut session = Session::connect(endpoint).map_err(|_| ())?;
+    let transport = UnixCommandTransport::connect_with_timeouts(
+        endpoint,
+        REMOTE_INDEX_LOCAL_CONNECT_TIMEOUT,
+        REMOTE_INDEX_LOCAL_IO_TIMEOUT,
+    )
+    .map_err(|_| ())?;
+    let mut session = Session::from_transport(endpoint.to_path_buf(), transport);
     match session
         .surface(SurfaceCommand::IndexSearch {
             query: ProductText::from_static("__remote-index-capability-snapshot__"),
@@ -1179,9 +1263,23 @@ fn stamp_matches(
 fn connect_local_control(
     endpoint: &Path,
 ) -> Result<LocalControlClient<backend_replication::LocalStream>, io::Error> {
+    connect_local_control_with_deadlines(
+        endpoint,
+        REMOTE_INDEX_LOCAL_CONNECT_TIMEOUT,
+        REMOTE_INDEX_LOCAL_IO_TIMEOUT,
+    )
+}
+
+fn connect_local_control_with_deadlines(
+    endpoint: &Path,
+    connect_timeout: Duration,
+    io_timeout: Duration,
+) -> Result<LocalControlClient<backend_replication::LocalStream>, io::Error> {
     let endpoint_ref = backend_replication::UnixEndpointRef::new(endpoint)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid local endpoint"))?;
-    let stream = backend_replication::LocalStream::connect(endpoint_ref.as_path())?;
+    let stream = backend_platform::local::connect_timeout(endpoint_ref.as_path(), connect_timeout)?;
+    stream.set_read_timeout(Some(io_timeout))?;
+    stream.set_write_timeout(Some(io_timeout))?;
     backend_replication::AuthenticatedLocalPeer::authenticate(&stream, endpoint_ref.as_path())
         .map_err(|error| io::Error::new(io::ErrorKind::PermissionDenied, error.to_string()))?;
     Ok(LocalControlClient::new(stream, REMOTE_CONTROL_LIMITS))
@@ -1241,6 +1339,92 @@ mod tests {
                 now,
             )
             .expect("signed test grant")
+    }
+
+    #[tokio::test]
+    async fn detached_blocking_owner_work_keeps_its_slot_until_completion() {
+        let slots = Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = Arc::new(
+            Arc::clone(&slots)
+                .acquire_owned()
+                .await
+                .expect("work semaphore is open"),
+        );
+        let (release, blocked) = std::sync::mpsc::channel();
+        let mut task = spawn_bounded_remote_index_work(permit, move || {
+            blocked.recv().expect("test releases withheld owner work");
+        });
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut task)
+                .await
+                .is_err(),
+            "the fake owner must remain blocked past the caller deadline"
+        );
+        assert_eq!(slots.available_permits(), 0);
+        release.send(()).expect("release withheld owner work");
+        task.await.expect("owner work completes");
+        assert_eq!(slots.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn blocking_work_slot_is_released_after_worker_panic() {
+        let slots = Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = Arc::new(
+            Arc::clone(&slots)
+                .acquire_owned()
+                .await
+                .expect("work semaphore is open"),
+        );
+        let task = spawn_bounded_remote_index_work(permit, || panic!("injected worker panic"));
+        assert!(task.await.is_err());
+        assert_eq!(slots.available_permits(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn withheld_local_owner_response_hits_the_configured_socket_deadline() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::time::Instant;
+
+        let root = scratch("withheld-owner");
+        let endpoint = root.join("owner.sock");
+        let listener =
+            backend_replication::LocalListener::bind(&endpoint).expect("bind withheld test owner");
+        fs::set_permissions(&endpoint, fs::Permissions::from_mode(0o600))
+            .expect("make owner socket private");
+        let (accepted, accepted_rx) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept local client");
+            accepted.send(()).expect("signal accepted local client");
+            let _ = release_rx.recv_timeout(Duration::from_secs(2));
+            drop(stream);
+        });
+
+        let mut client = connect_local_control_with_deadlines(
+            &endpoint,
+            Duration::from_secs(1),
+            Duration::from_millis(100),
+        )
+        .expect("connect and authenticate local owner");
+        accepted_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("local owner accepted the request stream");
+        let start = Instant::now();
+        let result = client.request(&LocalControlRequest::Complete {
+            request_id: 1,
+            work_key: [1; 32],
+            output: [2; 32],
+            ordinal: 1,
+            fence: [3; 32],
+        });
+        assert!(result.is_err(), "withheld owner response must time out");
+        assert!(start.elapsed() < Duration::from_secs(1));
+
+        release.send(()).expect("release withheld owner thread");
+        server.join().expect("join withheld owner thread");
+        fs::remove_dir_all(root).expect("remove withheld owner test directory");
     }
 
     #[test]
