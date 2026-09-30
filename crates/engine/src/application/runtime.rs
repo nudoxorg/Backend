@@ -2198,9 +2198,27 @@ impl LocalCompilerClient {
         &self,
         request: OwnedPackageSourceSet,
     ) -> Result<StagedSemanticPackage, PackageSemanticRuntimeError> {
+        self.compile_package_sources_staged_cancellable(request, Arc::new(AtomicBool::new(false)))
+    }
+
+    /// Compiles one staged package using the caller's exact per-operation cancellation token.
+    ///
+    /// The token is registered to this request only. Cancelling it cannot interrupt an
+    /// unrelated compiler request from the same client or another compiler lane.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same bounded runtime, authority, and compilation failures as staged package
+    /// compilation, including a typed cancellation terminal when this token is set.
+    pub fn compile_package_sources_staged_cancellable(
+        &self,
+        request: OwnedPackageSourceSet,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<StagedSemanticPackage, PackageSemanticRuntimeError> {
         let facts = request.facts();
-        let lease = RequestLease::acquire(&self.shared, self.client_id, facts)
-            .map_err(PackageSemanticRuntimeError::Runtime)?;
+        let lease =
+            RequestLease::acquire_with_cancelled(&self.shared, self.client_id, facts, cancelled)
+                .map_err(PackageSemanticRuntimeError::Runtime)?;
         self.wait_for_toolchain(facts, &lease.cancelled)
             .map_err(PackageSemanticRuntimeError::Runtime)?;
         let (response, returned) = sync_channel(1);
@@ -2406,11 +2424,19 @@ impl<'shared> RequestLease<'shared> {
         client_id: u64,
         facts: RequestFacts,
     ) -> Result<Self, CompilerTerminal> {
+        Self::acquire_with_cancelled(shared, client_id, facts, Arc::new(AtomicBool::new(false)))
+    }
+
+    fn acquire_with_cancelled(
+        shared: &'shared RuntimeShared,
+        client_id: u64,
+        facts: RequestFacts,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<Self, CompilerTerminal> {
         if !shared.alive.load(Ordering::Acquire) {
             return Err(facts.terminal(CompilerRuntimeCause::RequestOwnerStopped));
         }
         let request_id = shared.next_request.fetch_add(1, Ordering::Relaxed);
-        let cancelled = Arc::new(AtomicBool::new(false));
         let mut requests = shared
             .requests
             .lock()

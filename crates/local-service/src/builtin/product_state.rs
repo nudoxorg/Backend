@@ -539,8 +539,12 @@ impl ProductState {
                 true,
             ),
             // The command adapter answers these before product state is asked.
-            SurfaceCommand::ProjectTree { .. } | SurfaceCommand::AdvisoryRefresh => {
-                return Err("the command adapter owns project-tree and advisory-refresh".to_owned());
+            SurfaceCommand::ProjectTree { .. }
+            | SurfaceCommand::AdvisoryRefresh
+            | SurfaceCommand::IndexStart { .. }
+            | SurfaceCommand::IndexAwait { .. }
+            | SurfaceCommand::IndexCancel { .. } => {
+                return Err("the command adapter owns this surface command".to_owned());
             }
         };
         Ok((reply, changed))

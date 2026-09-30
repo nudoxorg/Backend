@@ -9,9 +9,10 @@ use super::super::{
 use super::diff::execute_semantic_diff;
 use super::graph::{execute_certified_graph_query, execute_search};
 use super::index::{
-    DeferredIndex, PreparedIndex, finish_deferred_index, index_project_intent,
-    index_project_intent_at, index_project_intent_with_cluster_and_intent, prepare_index_project,
-    remove_project_intent, run_deferred_compile, semantic_version_record, semantic_versions,
+    DeferredIndex, PreparedIndex, deferred_compile_was_cancelled, finish_deferred_index,
+    index_project_intent, index_project_intent_at, index_project_intent_with_cluster_and_intent,
+    prepare_index_project, remove_project_intent, run_deferred_compile, semantic_version_record,
+    semantic_versions,
 };
 use super::semantic_query::{
     execute_references, execute_semantic_graph, execute_structural_call_graph,
@@ -20,11 +21,42 @@ use backend_engine::application::LocalCompilerClient;
 use backend_engine::builtin::{ProductSemanticPublicationKey, ProductSemanticPublicationRecord};
 use backend_library::CompileExecutionIntent;
 use backend_library::interface::PackageUrl;
+use std::num::NonZeroU64;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+
+const MAX_RETAINED_INDEX_TERMINALS: usize = 64;
+
+fn new_index_owner_epoch() -> [u8; 16] {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.local-service.index-owner-epoch.v1\0");
+    hasher.update(&std::process::id().to_be_bytes());
+    hasher.update(&nanos.to_be_bytes());
+    let digest = hasher.finalize();
+    let mut epoch = [0_u8; 16];
+    epoch.copy_from_slice(&digest.as_bytes()[..16]);
+    epoch
+}
 
 type ProductDaemon = crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>;
 type AdmittedReply = (CommandReply, Option<WireCertificate>);
+
+fn bounded_index_detail(value: impl std::fmt::Display) -> backend_library::ProductText {
+    let mut value = value.to_string().replace('\0', " ");
+    if value.len() > backend_library::MAX_PRODUCT_TEXT_BYTES {
+        let mut boundary = backend_library::MAX_PRODUCT_TEXT_BYTES;
+        while !value.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        value.truncate(boundary);
+    }
+    backend_library::ProductText::new(value)
+        .unwrap_or_else(|_| backend_library::ProductText::from_static("index job failed"))
+}
 
 const ADD_TARGET_REQUIRED: &str =
     "add target must be an admitted local directory or version-pinned package URL";
@@ -72,6 +104,12 @@ pub(in crate::builtin) struct CommandAdapter {
     browse: super::super::browse::BrowseCache,
     /// The index job whose compile runs off the owner loop, if one does.
     indexing: Option<IndexJob>,
+    /// Recently completed owner-issued index tickets, for late await/cancel requests.
+    index_terminals: std::collections::VecDeque<backend_library::IndexJobTerminal>,
+    /// Next owner-local index job identity.
+    next_index_ticket: u64,
+    /// Process epoch included in every ticket so stale client tickets cannot match after restart.
+    index_owner_epoch: [u8; 16],
     /// Commands that change state, waiting for that job: one writer at a
     /// time, in arrival order. Reads never wait here.
     waiting: std::collections::VecDeque<(u64, Vec<u8>)>,
@@ -79,12 +117,23 @@ pub(in crate::builtin) struct CommandAdapter {
 
 /// An `Add` of a local folder whose compile runs off the owner loop.
 struct IndexJob {
-    ticket: u64,
+    owner_ticket: backend_library::IndexJobTicket,
+    /// Legacy Add request waiting for its committed Added reply.
+    legacy_add: Option<(u64, u64)>,
+    /// Owner-issued IndexAwait request listeners waiting for this terminal.
+    awaiters: Vec<(u64, u64)>,
+    /// Cancellation token registered to this exact compiler request only.
+    cancelled: Arc<AtomicBool>,
     request_id: u64,
     requested_package: backend_engine::PackageKey,
     job: DeferredIndex,
     compiled: std::sync::mpsc::Receiver<
-        Vec<Result<backend_engine::application::StagedSemanticPackage, String>>,
+        Vec<
+            Result<
+                backend_engine::application::StagedSemanticPackage,
+                backend_engine::application::PackageSemanticRuntimeError,
+            >,
+        >,
     >,
 }
 
@@ -130,6 +179,8 @@ fn answers_while_indexing(command: &Command) -> bool {
                 | S::Projects
                 | S::Tree
                 | S::ProjectTree { .. }
+                | S::IndexAwait { .. }
+                | S::IndexCancel { .. }
         ),
         Command::Add { .. } | Command::Remove { .. } => false,
     }
@@ -207,6 +258,9 @@ impl CommandAdapter {
             dependencies: None,
             browse: super::super::browse::BrowseCache::default(),
             indexing: None,
+            index_terminals: std::collections::VecDeque::new(),
+            next_index_ticket: 1,
+            index_owner_epoch: new_index_owner_epoch(),
             waiting: std::collections::VecDeque::new(),
         }
     }
@@ -219,14 +273,41 @@ impl CommandAdapter {
         &mut self,
         daemon: &mut ProductDaemon,
         body: &[u8],
-        ticket: u64,
+        transport_ticket: u64,
     ) -> Result<Executed, BuiltinModelError> {
         let owner = daemon.engine().daemon().library().cursor();
         let request = backend_engine::decode_command_dto_for_owner(body, owner)
             .map_err(|error| BuiltinModelError(format!("decode command DTO: {error}")))?;
+        if let Command::Surface(backend_library::SurfaceCommand::IndexAwait { ticket }) =
+            &request.command
+        {
+            return self.await_index_job(
+                daemon,
+                ticket.clone(),
+                request.request_id,
+                transport_ticket,
+            );
+        }
+        if let Command::Surface(backend_library::SurfaceCommand::IndexCancel { ticket }) =
+            &request.command
+        {
+            return self.cancel_index_job(daemon, ticket.clone(), request.request_id);
+        }
         if self.indexing.is_some() && !answers_while_indexing(&request.command) {
-            self.waiting.push_back((ticket, body.to_vec()));
+            self.waiting.push_back((transport_ticket, body.to_vec()));
             return Ok(Executed::Deferred);
+        }
+        if let Command::Surface(backend_library::SurfaceCommand::IndexStart {
+            package,
+            execution_intent,
+        }) = request.command
+        {
+            return self.start_owner_index_job(
+                daemon,
+                package,
+                execution_intent,
+                request.request_id,
+            );
         }
         if let Command::Add {
             package,
@@ -235,19 +316,198 @@ impl CommandAdapter {
             && self.owner_cluster.is_none()
         {
             let certificate = request.certificate().cloned();
+            let label = certified_package_label(certificate.as_ref(), package)?;
+            let owner_ticket = self.issue_index_ticket(
+                backend_library::PackageReference::parse(label)
+                    .map_err(|error| BuiltinModelError(error.to_string()))?,
+            )?;
             if let Some(started) = self.start_index_job(
                 daemon,
                 package,
                 execution_intent,
                 certificate.as_ref(),
                 request.request_id,
-                ticket,
+                owner_ticket,
+                Some(transport_ticket),
             )? {
-                return Self::encode(daemon, request.request_id, started, None).map(Executed::Reply);
+                return Self::encode(daemon, request.request_id, started, None)
+                    .map(Executed::Reply);
             }
             return Ok(Executed::Deferred);
         }
         self.execute(daemon, body).map(Executed::Reply)
+    }
+
+    fn start_owner_index_job(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        package: backend_library::PackageReference,
+        execution_intent: CompileExecutionIntent,
+        request_id: u64,
+    ) -> Result<Executed, BuiltinModelError> {
+        let owner_ticket = self.issue_index_ticket(package.clone())?;
+        let package_key = backend_engine::package_key(package.as_str());
+        let certificate = WireCertificate::new().with_claim(WireClaim::Key {
+            schema: backend_engine::WireSchema::Package,
+            id: backend_engine::encode_id(package_key.as_bytes()),
+            value: package.as_str().to_owned(),
+        });
+        let result = if self.owner_cluster.is_some() {
+            self.add(
+                daemon,
+                package_key,
+                execution_intent,
+                Some(&certificate),
+                request_id,
+            )
+            .map(|_| Some(()))
+        } else {
+            self.start_index_job(
+                daemon,
+                package_key,
+                execution_intent,
+                Some(&certificate),
+                request_id,
+                owner_ticket.clone(),
+                None,
+            )
+            .map(|reply| reply.map(|_| ()))
+        };
+        let result = match result {
+            Ok(Some(())) => {
+                let terminal = backend_library::IndexJobTerminal {
+                    ticket: owner_ticket,
+                    outcome: backend_library::IndexJobOutcome::Published,
+                };
+                self.retain_index_terminal(terminal.clone());
+                backend_library::IndexStartResult::Terminal(terminal)
+            }
+            Ok(None) => {
+                return Self::encode(
+                    daemon,
+                    request_id,
+                    (
+                        CommandReply::Surface(backend_library::SurfaceReply::IndexStarted(
+                            backend_library::IndexStartResult::Started {
+                                ticket: owner_ticket,
+                                stage: backend_library::IndexJobStage::Compiling,
+                            },
+                        )),
+                        None,
+                    ),
+                    None,
+                )
+                .map(Executed::Reply);
+            }
+            Err(error) => {
+                let terminal = backend_library::IndexJobTerminal {
+                    ticket: owner_ticket,
+                    outcome: backend_library::IndexJobOutcome::Failed(bounded_index_detail(error)),
+                };
+                self.retain_index_terminal(terminal.clone());
+                backend_library::IndexStartResult::Terminal(terminal)
+            }
+        };
+        Self::encode(
+            daemon,
+            request_id,
+            (
+                CommandReply::Surface(backend_library::SurfaceReply::IndexStarted(result)),
+                None,
+            ),
+            None,
+        )
+        .map(Executed::Reply)
+    }
+
+    fn issue_index_ticket(
+        &mut self,
+        package: backend_library::PackageReference,
+    ) -> Result<backend_library::IndexJobTicket, BuiltinModelError> {
+        let id = NonZeroU64::new(self.next_index_ticket).ok_or_else(|| {
+            BuiltinModelError("owner index ticket sequence is exhausted".to_owned())
+        })?;
+        self.next_index_ticket = self.next_index_ticket.checked_add(1).unwrap_or(0);
+        Ok(backend_library::IndexJobTicket::new(
+            id,
+            self.index_owner_epoch,
+            package,
+        ))
+    }
+
+    fn retain_index_terminal(&mut self, terminal: backend_library::IndexJobTerminal) {
+        self.index_terminals.push_back(terminal);
+        while self.index_terminals.len() > MAX_RETAINED_INDEX_TERMINALS {
+            let _ = self.index_terminals.pop_front();
+        }
+    }
+
+    fn await_index_job(
+        &mut self,
+        daemon: &ProductDaemon,
+        ticket: backend_library::IndexJobTicket,
+        request_id: u64,
+        transport_ticket: u64,
+    ) -> Result<Executed, BuiltinModelError> {
+        if let Some(indexing) = &mut self.indexing
+            && indexing.owner_ticket == ticket
+        {
+            indexing.awaiters.push((transport_ticket, request_id));
+            return Ok(Executed::Deferred);
+        }
+        if let Some(terminal) = self
+            .index_terminals
+            .iter()
+            .find(|terminal| terminal.ticket == ticket)
+            .cloned()
+        {
+            return Self::encode(
+                daemon,
+                request_id,
+                (
+                    CommandReply::Surface(backend_library::SurfaceReply::IndexTerminal(terminal)),
+                    None,
+                ),
+                None,
+            )
+            .map(Executed::Reply);
+        }
+        Err(BuiltinModelError(
+            "index job ticket is unknown, expired, or belongs to another package".to_owned(),
+        ))
+    }
+
+    fn cancel_index_job(
+        &mut self,
+        daemon: &ProductDaemon,
+        ticket: backend_library::IndexJobTicket,
+        request_id: u64,
+    ) -> Result<Executed, BuiltinModelError> {
+        let status = if let Some(indexing) = &self.indexing
+            && indexing.owner_ticket == ticket
+        {
+            indexing.cancelled.store(true, Ordering::Release);
+            backend_library::IndexCancelStatus::Requested
+        } else if let Some(terminal) = self
+            .index_terminals
+            .iter()
+            .find(|terminal| terminal.ticket == ticket)
+            .cloned()
+        {
+            backend_library::IndexCancelStatus::Terminal(terminal)
+        } else {
+            backend_library::IndexCancelStatus::Unknown
+        };
+        Self::encode(
+            daemon,
+            request_id,
+            (
+                CommandReply::Surface(backend_library::SurfaceReply::IndexCancellation(status)),
+                None,
+            ),
+            None,
+        )
+        .map(Executed::Reply)
     }
 
     /// Publishes the index job's compile once it is done, then runs the
@@ -265,7 +525,10 @@ impl CommandAdapter {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
             };
             let Some(IndexJob {
-                ticket,
+                owner_ticket,
+                legacy_add,
+                awaiters,
+                cancelled,
                 request_id,
                 requested_package,
                 job,
@@ -274,22 +537,68 @@ impl CommandAdapter {
             else {
                 return ready;
             };
-            let reply = match compiled {
-                Some(compiled) => finish_deferred_index(daemon, &mut self.semantic_authority, job, compiled),
-                None => Err(BuiltinModelError(
-                    "the compile stopped before it answered; prior selected semantic generation was preserved"
-                        .to_owned(),
-                )),
+            let mut legacy_reply = None;
+            let outcome = match compiled {
+                Some(_) if cancelled.load(Ordering::Acquire) => {
+                    backend_library::IndexJobOutcome::Cancelled
+                }
+                Some(compiled) if deferred_compile_was_cancelled(&compiled) => {
+                    backend_library::IndexJobOutcome::Cancelled
+                }
+                Some(compiled) => {
+                    match finish_deferred_index(daemon, &mut self.semantic_authority, job, compiled)
+                    {
+                        Ok(intent) => {
+                            match self.finish_add(daemon, intent, request_id, requested_package) {
+                                Ok(reply) => {
+                                    legacy_reply =
+                                        Some(Self::encode(daemon, request_id, reply, None));
+                                    backend_library::IndexJobOutcome::Published
+                                }
+                                Err(error) => backend_library::IndexJobOutcome::Failed(
+                                    bounded_index_detail(error),
+                                ),
+                            }
+                        }
+                        Err(refusal) => {
+                            backend_library::IndexJobOutcome::Refused(bounded_index_detail(refusal))
+                        }
+                    }
+                }
+                None => backend_library::IndexJobOutcome::Failed(
+                    backend_library::ProductText::from_static(
+                        "compiler worker ended without a terminal receipt",
+                    ),
+                ),
+            };
+            let terminal = backend_library::IndexJobTerminal {
+                ticket: owner_ticket,
+                outcome,
+            };
+            self.retain_index_terminal(terminal.clone());
+            if let Some((ticket, _)) = legacy_add {
+                let reply = legacy_reply.unwrap_or_else(|| {
+                    Err(BuiltinModelError(format!(
+                        "index job did not publish: {:?}",
+                        terminal.outcome
+                    )))
+                });
+                ready.push((ticket, reply));
             }
-            .and_then(|intent| self.finish_add(daemon, intent, request_id, requested_package))
-            .or_else(|refusal| {
-                // As in place: the committed source frontier is published, so
-                // the refused project is listed with its reason.
-                let _ = self.publish_view(daemon, None);
-                Err(refusal)
-            })
-            .and_then(|admitted| Self::encode(daemon, request_id, admitted, None));
-            ready.push((ticket, reply));
+            for (ticket, request_id) in awaiters {
+                let reply = Self::encode(
+                    daemon,
+                    request_id,
+                    (
+                        CommandReply::Surface(backend_library::SurfaceReply::IndexTerminal(
+                            terminal.clone(),
+                        )),
+                        None,
+                    ),
+                    None,
+                );
+                ready.push((ticket, reply));
+            }
         }
         while self.indexing.is_none()
             && let Some((ticket, body)) = self.waiting.pop_front()
@@ -313,14 +622,21 @@ impl CommandAdapter {
         execution_intent: CompileExecutionIntent,
         certificate: Option<&WireCertificate>,
         request_id: u64,
-        ticket: u64,
+        owner_ticket: backend_library::IndexJobTicket,
+        legacy_add: Option<u64>,
     ) -> Result<Option<AdmittedReply>, BuiltinModelError> {
         let label = certified_package_label(certificate, package)?;
         let requested_package = package;
         let (package, label) = canonical_local_package(package, label)?;
         if !matches!(classify_add_target(&label)?, AddTarget::LocalDirectory) {
             return self
-                .add(daemon, requested_package, execution_intent, certificate, request_id)
+                .add(
+                    daemon,
+                    requested_package,
+                    execution_intent,
+                    certificate,
+                    request_id,
+                )
                 .map(Some);
         }
         let prepared = match prepare_index_project(
@@ -339,21 +655,29 @@ impl CommandAdapter {
             }
         };
         match prepared {
-            PreparedIndex::Ready(intent) => {
-                self.finish_add(daemon, intent, request_id, requested_package).map(Some)
-            }
+            PreparedIndex::Ready(intent) => self
+                .finish_add(daemon, intent, request_id, requested_package)
+                .map(Some),
             PreparedIndex::Compile(mut job) => {
                 let work = job.take_work();
                 let compiler = self.compiler.clone();
+                let cancelled = Arc::new(AtomicBool::new(false));
+                let thread_cancelled = Arc::clone(&cancelled);
                 let (sender, compiled) = std::sync::mpsc::sync_channel(1);
                 std::thread::Builder::new()
                     .name("locald-index-compile".to_owned())
                     .spawn(move || {
-                        let _ = sender.send(run_deferred_compile(&compiler, work));
+                        let _ =
+                            sender.send(run_deferred_compile(&compiler, work, thread_cancelled));
                     })
-                    .map_err(|error| BuiltinModelError(format!("start the index compile: {error}")))?;
+                    .map_err(|error| {
+                        BuiltinModelError(format!("start the index compile: {error}"))
+                    })?;
                 self.indexing = Some(IndexJob {
-                    ticket,
+                    owner_ticket,
+                    legacy_add: legacy_add.map(|ticket| (ticket, request_id)),
+                    awaiters: Vec::new(),
+                    cancelled,
                     request_id,
                     requested_package,
                     job,

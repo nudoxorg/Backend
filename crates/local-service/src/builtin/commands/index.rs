@@ -12,8 +12,8 @@ use backend_engine::application::{
     CompilerPackageTargetV2, CompilerResourceCredits, CompilerSessionLineage, CompilerWorkIdentity,
     CompilerWorkspaceEntryV2, ExactInputWitness, FullWorkspaceInputClaim, FullWorkspaceInputError,
     FullWorkspaceInputVerifier, LocalCompilerAvailability, LocalCompilerClient, OwnedPackageSource,
-    OwnedPackageSourceSet, PackageLineageId, StagedSemanticPackage, VerifiedCompilerInput,
-    VerifiedCompilerInputAdmission,
+    OwnedPackageSourceSet, PackageLineageId, PackageSemanticError, PackageSemanticRuntimeError,
+    StagedSemanticPackage, VerifiedCompilerInput, VerifiedCompilerInputAdmission,
     VerifierAcceptedFullWorkspaceInput, capture_full_workspace_v2_with_prior,
 };
 use backend_engine::builtin::{
@@ -22,6 +22,7 @@ use backend_engine::builtin::{
 };
 use backend_extension_turso::SourceObservationReceipt;
 use backend_library::CompileExecutionIntent;
+use backend_library::interface::{CompilerRuntimeCause, CompilerTerminal};
 use backend_library::interface::{
     CorrelationId, GenerateTarget, PackageCompileRequest, PackageUrl,
 };
@@ -576,14 +577,29 @@ fn prepare_deferred_compile(
 pub(super) fn run_deferred_compile(
     compiler: &LocalCompilerClient,
     work: Vec<OwnedPackageSourceSet>,
-) -> Vec<Result<StagedSemanticPackage, String>> {
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+) -> Vec<Result<StagedSemanticPackage, PackageSemanticRuntimeError>> {
     work.into_iter()
         .map(|sources| {
-            compiler
-                .compile_package_sources_staged(sources)
-                .map_err(|error| error.to_string())
+            compiler.compile_package_sources_staged_cancellable(sources, Arc::clone(&cancelled))
         })
         .collect()
+}
+
+pub(super) fn deferred_compile_was_cancelled(
+    compiled: &[Result<StagedSemanticPackage, PackageSemanticRuntimeError>],
+) -> bool {
+    compiled.iter().any(|result| match result {
+        Err(PackageSemanticRuntimeError::Runtime(CompilerTerminal::Runtime {
+            cause: CompilerRuntimeCause::RequestCancelled,
+            ..
+        })) => true,
+        Err(PackageSemanticRuntimeError::Package(PackageSemanticError::Compile {
+            terminal,
+            ..
+        })) => matches!(terminal.as_ref(), CompilerTerminal::PackageCancelled { .. }),
+        _ => false,
+    })
 }
 
 /// Publishes a deferred index's compile on the owner loop, exactly as the
@@ -594,7 +610,7 @@ pub(super) fn finish_deferred_index(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
     job: DeferredIndex,
-    compiled: Vec<Result<StagedSemanticPackage, String>>,
+    compiled: Vec<Result<StagedSemanticPackage, PackageSemanticRuntimeError>>,
 ) -> Result<Option<BuiltinIntent>, BuiltinModelError> {
     if compiled.len() != job.profiles.len() {
         return Err(BuiltinModelError(
@@ -1489,8 +1505,13 @@ fn compile_semantic_publications(
                     }
                 }
             }
-            let publication =
-                publish_local_compile(semantic_authority, &key, local_attempt, &staged, revision_fence)?;
+            let publication = publish_local_compile(
+                semantic_authority,
+                &key,
+                local_attempt,
+                &staged,
+                revision_fence,
+            )?;
             (publication.0, publication.1, publication_coverage)
         };
         match execution_route {
@@ -1582,7 +1603,13 @@ fn publish_local_compile(
     attempt: backend_extension_turso::CandidateAttempt,
     staged: &StagedSemanticPackage,
     revision_fence: &ingest::CompilerRevisionFence,
-) -> Result<(SemanticPublicationClaim, backend_extension_turso::SelectedGeneration), BuiltinModelError> {
+) -> Result<
+    (
+        SemanticPublicationClaim,
+        backend_extension_turso::SelectedGeneration,
+    ),
+    BuiltinModelError,
+> {
     if !ingest::compiler_revision_is_current(revision_fence).map_err(BuiltinModelError)? {
         return Err(BuiltinModelError(
             "compiler source or configuration revision changed during semantic compilation; retry indexing"
