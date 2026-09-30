@@ -26,5 +26,9 @@ tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "r
 name = "cluster-peer"
 path = "src/bin/cluster-peer.rs"
 
+[[bin]]
+name = "remote-index-peer"
+path = "src/bin/remote-index-peer.rs"
+
 [lints]
 workspace = true

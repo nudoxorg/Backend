@@ -1,6 +1,11 @@
 //! Locald transport and durable admission for selected semantic byte ranges.
 
 use crate::{ClientError, MAX_FRAME};
+use backend_engine::cluster_transport::{
+    Endpoint, EndpointAddr, RemoteIndexCapability, RemoteIndexChannel, RemoteIndexOutcome,
+    RemoteIndexRequest, RemoteIndexSession, RemoteIndexSessionHello, SecretKey, TransportError,
+    bind_direct, connect_remote_index, remote_index_now,
+};
 use backend_replication::{
     AdaptiveIrResidency, ByteRange, DurableSemanticRangeStore, FileSemanticRangeStore,
     HydrationCredits, IrHydrationCursor, IrHydrationError, IrHydrationPoll, IrHydrationRequest,
@@ -19,6 +24,7 @@ use backend_semantic::ir::{
     MappedSemanticImage, SemanticPlaneCatalog, SemanticPlaneImageKey, SemanticPlaneKind,
     SemanticPlaneManifest, SemanticPlaneSegment, SemanticSegmentId,
 };
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -306,11 +312,175 @@ fn map_control_error(error: LocalControlError) -> ClientError {
 /// checkpoint and never expose segment bytes.
 #[cfg(any(unix, windows))]
 pub struct LocalSemanticRangeTransport {
-    client: LocalControlClient<backend_replication::LocalStream>,
+    client: Option<LocalControlClient<backend_replication::LocalStream>>,
+    remote: Option<RemoteSemanticRangeConnection>,
     peer: Option<backend_replication::AuthenticatedLocalPeer>,
     endpoint: Option<PathBuf>,
     frames_on_connection: usize,
     next_request_id: u64,
+}
+
+struct RemoteSemanticRangeConnection {
+    runtime: tokio::runtime::Runtime,
+    endpoint: Endpoint,
+    owner_address: EndpointAddr,
+    capability: RemoteIndexCapability,
+    session: Option<RemoteIndexSession>,
+}
+
+impl RemoteSemanticRangeConnection {
+    fn connect(
+        secret: SecretKey,
+        owner: backend_engine::cluster_transport::EndpointId,
+        address: SocketAddr,
+        capability: RemoteIndexCapability,
+    ) -> Result<Self, ClientError> {
+        if capability.claims.semantic.is_none() {
+            return Err(ClientError::Protocol(
+                "remote semantic transport needs a semantic-hydration capability".to_owned(),
+            ));
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| ClientError::Io(error.to_string()))?;
+        let bind_address = match address {
+            SocketAddr::V4(_) => SocketAddr::from(([0, 0, 0, 0], 0)),
+            SocketAddr::V6(_) => SocketAddr::from(([0_u16; 8], 0)),
+        };
+        let endpoint = runtime
+            .block_on(bind_direct(secret, bind_address))
+            .map_err(|error| ClientError::Io(error.to_string()))?;
+        capability
+            .verify(
+                owner,
+                endpoint.id(),
+                remote_index_now().map_err(map_transport_error)?,
+            )
+            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        let mut result = Self {
+            runtime,
+            endpoint,
+            owner_address: EndpointAddr::new(owner).with_ip_addr(address),
+            capability,
+            session: None,
+        };
+        result.open()?;
+        Ok(result)
+    }
+
+    fn open(&mut self) -> Result<(), ClientError> {
+        let hello = RemoteIndexSessionHello::new(
+            self.capability.clone(),
+            RemoteIndexChannel::SemanticHydration,
+        )
+        .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        let session = self
+            .runtime
+            .block_on(connect_remote_index(
+                &self.endpoint,
+                self.owner_address.clone(),
+                hello,
+            ))
+            .map_err(map_remote_index_transport_error)?;
+        self.session = Some(session);
+        Ok(())
+    }
+
+    fn reconnect(&mut self) -> Result<(), ClientError> {
+        self.session = None;
+        self.open()
+    }
+
+    fn request(
+        &mut self,
+        request: &LocalControlRequest,
+    ) -> Result<LocalControlResponse, ClientError> {
+        let body = backend_replication::encode_request(request, control_limits())
+            .map_err(map_control_error)?;
+        let request_id = request.request_id();
+        if self.session.is_none() {
+            self.open()?;
+        }
+        let result = {
+            let session = self.session.as_mut().ok_or_else(|| {
+                ClientError::Io("remote semantic session was not opened".to_owned())
+            })?;
+            self.runtime.block_on(async {
+                session
+                    .send_request(&RemoteIndexRequest {
+                        request_id,
+                        body: body.into_boxed_slice(),
+                    })
+                    .await?;
+                session.receive_response(request_id).await
+            })
+        };
+        let response = match result {
+            Ok(response) => Ok(response),
+            Err(error) if retryable_remote_index_transport(&error) => {
+                self.reconnect()?;
+                let session = self.session.as_mut().ok_or_else(|| {
+                    ClientError::Io("remote semantic session was not reopened".to_owned())
+                })?;
+                let body = backend_replication::encode_request(request, control_limits())
+                    .map_err(map_control_error)?;
+                self.runtime.block_on(async {
+                    session
+                        .send_request(&RemoteIndexRequest {
+                            request_id,
+                            body: body.into_boxed_slice(),
+                        })
+                        .await?;
+                    session.receive_response(request_id).await
+                })
+            }
+            Err(error) => return Err(map_remote_index_transport_error(error)),
+        }
+        .map_err(map_remote_index_transport_error)?;
+        match response.outcome {
+            RemoteIndexOutcome::Payload(body) => {
+                backend_replication::decode_response(&body, control_limits())
+                    .map_err(map_control_error)
+            }
+            RemoteIndexOutcome::StaleSemanticSelection => {
+                Ok(LocalControlResponse::SemanticStaleSelection { request_id })
+            }
+            RemoteIndexOutcome::StaleProductRoot { expected, observed } => {
+                Err(ClientError::StaleRemoteRoot { expected, observed })
+            }
+            RemoteIndexOutcome::StaleProductSnapshot { .. } => {
+                Err(ClientError::StaleRemoteCapability)
+            }
+            RemoteIndexOutcome::Rejected(
+                backend_engine::cluster_transport::RemoteIndexReject::StaleCapability,
+            ) => Err(ClientError::StaleRemoteCapability),
+            RemoteIndexOutcome::Rejected(
+                backend_engine::cluster_transport::RemoteIndexReject::CapabilityRevoked,
+            ) => Err(ClientError::RemoteCapabilityRevoked),
+            RemoteIndexOutcome::Rejected(reason) => Err(ClientError::Protocol(format!(
+                "remote semantic request was rejected: {reason:?}"
+            ))),
+        }
+    }
+}
+
+fn map_transport_error(error: impl std::fmt::Display) -> ClientError {
+    ClientError::Io(error.to_string())
+}
+
+fn retryable_remote_index_transport(error: &TransportError) -> bool {
+    matches!(error, TransportError::Iroh(_) | TransportError::Io(_))
+}
+
+fn map_remote_index_transport_error(error: TransportError) -> ClientError {
+    match error {
+        TransportError::Iroh(_) | TransportError::Io(_) => {
+            ClientError::Disconnected(std::io::ErrorKind::ConnectionReset)
+        }
+        TransportError::Frame(message) => ClientError::Protocol(message),
+        other => ClientError::Protocol(other.to_string()),
+    }
 }
 
 #[cfg(any(unix, windows))]
@@ -325,7 +495,8 @@ impl LocalSemanticRangeTransport {
         let peer = backend_replication::AuthenticatedLocalPeer::authenticate(&stream, path)
             .map_err(crate::map_peer_authentication_error)?;
         Ok(Self {
-            client: LocalControlClient::new(stream, control_limits()),
+            client: Some(LocalControlClient::new(stream, control_limits())),
+            remote: None,
             peer: Some(peer),
             endpoint: Some(path.to_path_buf()),
             frames_on_connection: 0,
@@ -338,12 +509,32 @@ impl LocalSemanticRangeTransport {
     pub fn from_stream(stream: backend_replication::LocalStream) -> Self {
         configure_stream(&stream);
         Self {
-            client: LocalControlClient::new(stream, control_limits()),
+            client: Some(LocalControlClient::new(stream, control_limits())),
+            remote: None,
             peer: None,
             endpoint: None,
             frames_on_connection: 0,
             next_request_id: 1,
         }
+    }
+
+    /// Opens a direct remote semantic-hydration channel under an exact owner grant.
+    pub fn connect_remote(
+        client_secret: SecretKey,
+        owner: backend_engine::cluster_transport::EndpointId,
+        address: SocketAddr,
+        capability: RemoteIndexCapability,
+    ) -> Result<Self, ClientError> {
+        let remote =
+            RemoteSemanticRangeConnection::connect(client_secret, owner, address, capability)?;
+        Ok(Self {
+            client: None,
+            remote: Some(remote),
+            peer: None,
+            endpoint: None,
+            frames_on_connection: 0,
+            next_request_id: 1,
+        })
     }
 
     /// Returns the same-user proof bound to an authenticated local connection.
@@ -760,13 +951,10 @@ impl LocalSemanticRangeTransport {
         let payload = get
             .encode()
             .map_err(|error| ClientError::Protocol(error.to_string()))?;
-        let response = self
-            .client
-            .request(&LocalControlRequest::SemanticRangeGet {
-                request_id: get.request_id,
-                payload: payload.into_boxed_slice(),
-            })
-            .map_err(map_control_error)?;
+        let response = self.request_control(&LocalControlRequest::SemanticRangeGet {
+            request_id: get.request_id,
+            payload: payload.into_boxed_slice(),
+        })?;
         self.frames_on_connection = self.frames_on_connection.saturating_add(1);
         let (request_id, payload) = match response {
             LocalControlResponse::SemanticRangeChunk {
@@ -806,13 +994,10 @@ impl LocalSemanticRangeTransport {
     ) -> Result<SemanticCatalogChunk, ClientError> {
         self.prepare_request()?;
         let payload = get.encode().map_err(map_wire_error)?;
-        let response = self
-            .client
-            .request(&LocalControlRequest::SemanticMetadataGet {
-                request_id: get.request_id,
-                payload: payload.into_boxed_slice(),
-            })
-            .map_err(map_control_error)?;
+        let response = self.request_control(&LocalControlRequest::SemanticMetadataGet {
+            request_id: get.request_id,
+            payload: payload.into_boxed_slice(),
+        })?;
         self.frames_on_connection = self.frames_on_connection.saturating_add(1);
         let (request_id, payload) = match response {
             LocalControlResponse::SemanticMetadataChunk {
@@ -844,13 +1029,10 @@ impl LocalSemanticRangeTransport {
     ) -> Result<SemanticManifestChunk, ClientError> {
         self.prepare_request()?;
         let payload = get.encode().map_err(map_wire_error)?;
-        let response = self
-            .client
-            .request(&LocalControlRequest::SemanticMetadataGet {
-                request_id: get.request_id,
-                payload: payload.into_boxed_slice(),
-            })
-            .map_err(map_control_error)?;
+        let response = self.request_control(&LocalControlRequest::SemanticMetadataGet {
+            request_id: get.request_id,
+            payload: payload.into_boxed_slice(),
+        })?;
         self.frames_on_connection = self.frames_on_connection.saturating_add(1);
         let (request_id, payload) = match response {
             LocalControlResponse::SemanticMetadataChunk {
@@ -882,13 +1064,10 @@ impl LocalSemanticRangeTransport {
     ) -> Result<SelectedSemanticImageChunk, ClientError> {
         self.prepare_request()?;
         let payload = get.encode().map_err(map_wire_error)?;
-        let response = self
-            .client
-            .request(&LocalControlRequest::SemanticMetadataGet {
-                request_id: get.request_id,
-                payload: payload.into_boxed_slice(),
-            })
-            .map_err(map_control_error)?;
+        let response = self.request_control(&LocalControlRequest::SemanticMetadataGet {
+            request_id: get.request_id,
+            payload: payload.into_boxed_slice(),
+        })?;
         self.frames_on_connection = self.frames_on_connection.saturating_add(1);
         let (request_id, payload) = match response {
             LocalControlResponse::SemanticMetadataChunk {
@@ -955,8 +1134,27 @@ impl LocalSemanticRangeTransport {
         Ok(request_id)
     }
 
+    fn request_control(
+        &mut self,
+        request: &LocalControlRequest,
+    ) -> Result<LocalControlResponse, ClientError> {
+        if let Some(remote) = self.remote.as_mut() {
+            return remote.request(request);
+        }
+        self.client
+            .as_mut()
+            .ok_or_else(|| ClientError::Io("semantic control channel is unavailable".to_owned()))?
+            .request(request)
+            .map_err(map_control_error)
+    }
+
     fn prepare_request(&mut self) -> Result<(), ClientError> {
         if self.frames_on_connection < CONNECTION_FRAME_BUDGET {
+            return Ok(());
+        }
+        if let Some(remote) = self.remote.as_mut() {
+            remote.reconnect()?;
+            self.frames_on_connection = 0;
             return Ok(());
         }
         let endpoint = self.endpoint.as_deref().ok_or_else(|| {
@@ -965,7 +1163,7 @@ impl LocalSemanticRangeTransport {
         let stream = connect_stream(endpoint)?;
         let peer = backend_replication::AuthenticatedLocalPeer::authenticate(&stream, endpoint)
             .map_err(crate::map_peer_authentication_error)?;
-        self.client = LocalControlClient::new(stream, control_limits());
+        self.client = Some(LocalControlClient::new(stream, control_limits()));
         self.peer = Some(peer);
         self.frames_on_connection = 0;
         Ok(())
@@ -995,6 +1193,55 @@ impl LocalSemanticIndexClient {
     pub fn connect(path: impl AsRef<Path>, target: SemanticTargetKey) -> Result<Self, ClientError> {
         let transfer = LocalSemanticRangeTransport::connect(path.as_ref())?;
         let authority = LocalSemanticRangeTransport::connect(path)?;
+        Ok(Self {
+            target,
+            transfer,
+            authority,
+            selected_catalog: None,
+            selected_images: SelectedImageResidence::new(),
+            segment_residency: AdaptiveIrResidency::default(),
+        })
+    }
+
+    /// Opens the same hydration API over two signed direct remote channels.
+    pub fn connect_remote(
+        client_secret: SecretKey,
+        owner: backend_engine::cluster_transport::EndpointId,
+        address: SocketAddr,
+        capability: RemoteIndexCapability,
+        target: SemanticTargetKey,
+    ) -> Result<Self, ClientError> {
+        capability
+            .verify(
+                owner,
+                client_secret.public(),
+                remote_index_now().map_err(map_transport_error)?,
+            )
+            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        let scope = capability.claims.semantic.as_ref().ok_or_else(|| {
+            ClientError::Protocol(
+                "remote semantic client needs a semantic-hydration capability".to_owned(),
+            )
+        })?;
+        if scope.package != target.package()
+            || scope.coordinate != target.coordinate()
+            || scope.profile != <[u8; 2]>::from(target.profile())
+        {
+            return Err(ClientError::StaleRemoteCapability);
+        }
+        let secret = client_secret.to_bytes();
+        let transfer = LocalSemanticRangeTransport::connect_remote(
+            SecretKey::from_bytes(&secret),
+            owner,
+            address,
+            capability.clone(),
+        )?;
+        let authority = LocalSemanticRangeTransport::connect_remote(
+            SecretKey::from_bytes(&secret),
+            owner,
+            address,
+            capability,
+        )?;
         Ok(Self {
             target,
             transfer,

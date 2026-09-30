@@ -6,11 +6,15 @@
 #![forbid(unsafe_code)]
 
 #[cfg(any(unix, windows))]
+mod remote_command;
+#[cfg(any(unix, windows))]
 mod semantic_range_local;
 mod subscription;
 #[cfg(any(unix, windows))]
 mod subscription_local;
 
+#[cfg(any(unix, windows))]
+pub use remote_command::RemoteIndexCommandTransport;
 #[cfg(any(unix, windows))]
 pub use semantic_range_local::{
     LocalSemanticIndexClient, LocalSemanticRangeTransport, SemanticCatalogSnapshot,
@@ -96,6 +100,17 @@ pub enum ClientError {
     StaleCursor,
     /// The exact selected semantic generation changed during a read or range admission.
     StaleSelection,
+    /// The signed remote grant names a product root that is no longer selected.
+    StaleRemoteRoot {
+        /// Exact view root authorized by the grant.
+        expected: [u8; 32],
+        /// Current owner view root.
+        observed: [u8; 32],
+    },
+    /// The owner rejected an expired or replaced remote grant.
+    StaleRemoteCapability,
+    /// The owner revoked this exact remote grant.
+    RemoteCapabilityRevoked,
 }
 
 impl fmt::Display for ClientError {
@@ -123,6 +138,15 @@ impl fmt::Display for ClientError {
             Self::StaleSelection => {
                 formatter.write_str("selected semantic generation is no longer current")
             }
+            Self::StaleRemoteRoot { .. } => {
+                formatter.write_str("remote grant is stale; renew it for the current view root")
+            }
+            Self::StaleRemoteCapability => {
+                formatter.write_str("remote grant is stale or expired; renew the grant")
+            }
+            Self::RemoteCapabilityRevoked => {
+                formatter.write_str("remote grant was revoked by its owner")
+            }
         }
     }
 }
@@ -136,6 +160,14 @@ pub trait CommandTransport {
     /// # Errors
     /// Returns a transport, protocol, correlation, or freshness error.
     fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError>;
+
+    /// Replaces the underlying connection while retaining this transport's endpoint and grant.
+    ///
+    /// Connectionless transports may keep their existing state. Implementations that own a
+    /// socket or remote session should open a fresh authenticated session here.
+    fn reconnect(&mut self) -> Result<(), ClientError> {
+        Ok(())
+    }
 }
 
 /// Command transport with an explicit coverage-capability path.
@@ -192,6 +224,9 @@ impl<E: LocalEngine + ?Sized> CertifiedCommandTransport for InProcessTransport<'
 pub struct UnixCommandTransport {
     stream: backend_replication::LocalStream,
     peer: Option<backend_replication::AuthenticatedLocalPeer>,
+    endpoint: Option<std::path::PathBuf>,
+    connect_timeout: Duration,
+    io_timeout: Duration,
 }
 
 #[cfg(any(unix, windows))]
@@ -201,17 +236,42 @@ impl UnixCommandTransport {
     /// # Errors
     /// Returns an error when the endpoint is invalid, unavailable, or cannot authenticate.
     pub fn connect(path: impl AsRef<Path>) -> Result<Self, ClientError> {
+        Self::connect_with_timeouts(path, LOCAL_CONNECT_TIMEOUT, CLIENT_REQUEST_TIMEOUT)
+    }
+
+    /// Connects and authenticates the local endpoint owner within `timeout`.
+    ///
+    /// # Errors
+    /// Returns an error when the endpoint is invalid, unavailable, times out, or cannot authenticate.
+    pub fn connect_timeout(path: impl AsRef<Path>, timeout: Duration) -> Result<Self, ClientError> {
+        Self::connect_with_timeouts(path, timeout, CLIENT_REQUEST_TIMEOUT)
+    }
+
+    /// Connects and authenticates the endpoint with independent dial and I/O deadlines.
+    ///
+    /// # Errors
+    /// Returns an error when the endpoint is invalid, unavailable, times out, or cannot authenticate.
+    pub fn connect_with_timeouts(
+        path: impl AsRef<Path>,
+        connect_timeout: Duration,
+        io_timeout: Duration,
+    ) -> Result<Self, ClientError> {
         let endpoint = backend_replication::UnixEndpointRef::new(path.as_ref())
             .map_err(|_| ClientError::Transport(ReplicationError::MessageTooLarge))?;
         let path = endpoint.as_path();
-        let stream =
-            backend_replication::LocalStream::connect(path).map_err(map_endpoint_connect_error)?;
+        let stream = backend_replication::connect_local_timeout(path, connect_timeout)
+            .map_err(map_endpoint_connect_error)?;
+        // Authentication also touches the new stream, so establish its I/O
+        // deadlines before asking the local peer proof helper to inspect it.
+        configure_timeout(&stream, io_timeout)?;
         let peer = backend_replication::AuthenticatedLocalPeer::authenticate(&stream, path)
             .map_err(map_peer_authentication_error)?;
-        configure(&stream)?;
         Ok(Self {
             stream,
             peer: Some(peer),
+            endpoint: Some(path.to_path_buf()),
+            connect_timeout,
+            io_timeout,
         })
     }
 
@@ -219,7 +279,13 @@ impl UnixCommandTransport {
     #[must_use]
     pub fn from_stream(stream: backend_replication::LocalStream) -> Self {
         let _ = configure(&stream);
-        Self { stream, peer: None }
+        Self {
+            stream,
+            peer: None,
+            endpoint: None,
+            connect_timeout: LOCAL_CONNECT_TIMEOUT,
+            io_timeout: CLIENT_REQUEST_TIMEOUT,
+        }
     }
 
     /// Decodes one reply against a caller-owned exact expectation.
@@ -232,7 +298,12 @@ impl UnixCommandTransport {
         expected: &ReplyDto,
     ) -> Result<ReplyDto, ClientError> {
         let accepted = request.clone();
-        configure_request(&self.stream, request)?;
+        configure_request_with_timeouts(
+            &self.stream,
+            request,
+            self.io_timeout,
+            CLIENT_MUTATION_TIMEOUT,
+        )?;
         let body = encode_request(request)?;
         write_body(&mut self.stream, &body)?;
         let body = read_body(&mut self.stream)?;
@@ -252,12 +323,29 @@ impl UnixCommandTransport {
 #[cfg(any(unix, windows))]
 impl CommandTransport for UnixCommandTransport {
     fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
-        configure_request(&self.stream, &request)?;
+        configure_request_with_timeouts(
+            &self.stream,
+            &request,
+            self.io_timeout,
+            CLIENT_MUTATION_TIMEOUT,
+        )?;
         let body = encode_request(&request)?;
         write_body(&mut self.stream, &body)?;
         let body = read_body(&mut self.stream)?;
         let reply = self.decode(&body)?;
         admit_reply(&request, reply)
+    }
+
+    fn reconnect(&mut self) -> Result<(), ClientError> {
+        let endpoint = self.endpoint.clone().ok_or_else(|| {
+            ClientError::Protocol(
+                "stream-backed command transport has no reconnect endpoint".to_owned(),
+            )
+        })?;
+        let connect_timeout = self.connect_timeout;
+        let io_timeout = self.io_timeout;
+        *self = Self::connect_with_timeouts(endpoint, connect_timeout, io_timeout)?;
+        Ok(())
     }
 }
 
@@ -268,7 +356,12 @@ impl CertifiedCommandTransport for UnixCommandTransport {
         request: CommandDto,
         capability: Option<CoverageCapability>,
     ) -> Result<ReplyDto, ClientError> {
-        configure_request(&self.stream, &request)?;
+        configure_request_with_timeouts(
+            &self.stream,
+            &request,
+            self.io_timeout,
+            CLIENT_MUTATION_TIMEOUT,
+        )?;
         let body = encode_request(&request)?;
         write_body(&mut self.stream, &body)?;
         let body = read_body(&mut self.stream)?;
@@ -290,7 +383,7 @@ impl CertifiedCommandTransport for UnixCommandTransport {
 #[cfg(any(unix, windows))]
 pub struct Session {
     endpoint: std::path::PathBuf,
-    transport: UnixCommandTransport,
+    transport: Box<dyn CommandTransport + Send>,
     next_request_id: u64,
     continuations: BTreeMap<backend_library::Cursor, WireCertificate>,
 }
@@ -337,11 +430,24 @@ impl Session {
     pub fn connect(path: impl AsRef<Path>) -> Result<Self, ClientError> {
         let endpoint = path.as_ref().to_path_buf();
         Ok(Self {
-            transport: UnixCommandTransport::connect(&endpoint)?,
+            transport: Box::new(UnixCommandTransport::connect(&endpoint)?),
             endpoint,
             next_request_id: 1,
             continuations: BTreeMap::new(),
         })
+    }
+
+    /// Builds the same revision-aware product session over another admitted command transport.
+    pub fn from_transport(
+        endpoint: impl Into<std::path::PathBuf>,
+        transport: impl CommandTransport + Send + 'static,
+    ) -> Self {
+        Self {
+            endpoint: endpoint.into(),
+            transport: Box::new(transport),
+            next_request_id: 1,
+            continuations: BTreeMap::new(),
+        }
     }
 
     /// Returns the endpoint this session was connected to.
@@ -432,7 +538,7 @@ impl Session {
     /// Returns an error when the endpoint is unavailable or cannot
     /// authenticate.
     pub fn reconnect(&mut self) -> Result<(), ClientError> {
-        self.transport = UnixCommandTransport::connect(&self.endpoint)?;
+        self.transport.reconnect()?;
         self.next_request_id = 1;
         Ok(())
     }
@@ -1237,9 +1343,24 @@ fn configure_request(
     stream: &backend_replication::LocalStream,
     request: &CommandDto,
 ) -> Result<(), ClientError> {
+    configure_request_with_timeouts(
+        stream,
+        request,
+        CLIENT_REQUEST_TIMEOUT,
+        CLIENT_MUTATION_TIMEOUT,
+    )
+}
+
+#[cfg(any(unix, windows))]
+fn configure_request_with_timeouts(
+    stream: &backend_replication::LocalStream,
+    request: &CommandDto,
+    read_timeout: Duration,
+    mutation_timeout: Duration,
+) -> Result<(), ClientError> {
     let timeout = match backend_library::command_spec(request.command.id()).mutation {
-        CommandMutation::Write => CLIENT_MUTATION_TIMEOUT,
-        CommandMutation::Read => CLIENT_REQUEST_TIMEOUT,
+        CommandMutation::Write => mutation_timeout,
+        CommandMutation::Read => read_timeout,
     };
     configure_timeout(stream, timeout)
 }
@@ -1309,6 +1430,7 @@ fn map_peer_authentication_error(
 /// Every request re-arms this value, so a long mutation cannot make a later
 /// health or query call wait on the mutation lease.
 const CLIENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const LOCAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Owner lease for durable writes that may synchronously compile or acquire a
 /// package before publishing their receipt.
@@ -1582,6 +1704,78 @@ mod tests {
             Some(CLIENT_REQUEST_TIMEOUT)
         );
         let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_local_connect_keeps_authenticated_peer_and_io_deadlines() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let path = std::path::PathBuf::from(format!(
+            "/tmp/backend-client-connect-timeout-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let listener =
+            std::os::unix::net::UnixListener::bind(&path).expect("authenticated timeout listener");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .expect("make listener owner-private");
+        let (accepted, accepted_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (peer, _) = listener.accept().expect("accept authenticated client");
+                accepted.send(()).expect("signal accepted client");
+                drop(peer);
+            }
+        });
+
+        let io_timeout = Duration::from_millis(125);
+        let client =
+            UnixCommandTransport::connect_with_timeouts(&path, Duration::from_secs(1), io_timeout)
+                .expect("connect and authenticate inside dial deadline");
+        accepted_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("server accepted client");
+        assert!(client.peer.is_some(), "owner peer proof must be retained");
+        assert_eq!(
+            client.stream.read_timeout().expect("read timeout"),
+            Some(io_timeout)
+        );
+        assert_eq!(
+            client.stream.write_timeout().expect("write timeout"),
+            Some(io_timeout)
+        );
+        configure_request_with_timeouts(
+            &client.stream,
+            &CommandDto::new(1, Command::Revision),
+            io_timeout,
+            CLIENT_MUTATION_TIMEOUT,
+        )
+        .expect("re-arm the same bounded read deadline for a real request");
+        assert_eq!(
+            client.stream.read_timeout().expect("re-armed read timeout"),
+            Some(io_timeout)
+        );
+
+        client.reconnect().expect("reconnect with same deadlines");
+        accepted_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("server accepted reconnected client");
+        assert!(client.peer.is_some(), "reconnect must re-authenticate peer");
+        assert_eq!(
+            client
+                .stream
+                .read_timeout()
+                .expect("reconnected read timeout"),
+            Some(io_timeout)
+        );
+
+        drop(client);
+        server.join().expect("join authenticated owner");
+        std::fs::remove_file(path).expect("remove test socket");
     }
 
     #[cfg(target_os = "macos")]
