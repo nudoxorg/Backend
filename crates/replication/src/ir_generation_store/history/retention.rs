@@ -601,6 +601,9 @@ fn recover_delete_intent(target_root: &Path, state: &mut RetentionState) -> Resu
         let raw = decode_hex_digest(identity)?;
         let commit = HistoryCommitId::from_bytes(raw);
         remove_file(&history_payload_root_path(target_root, commit))?;
+        // Locator cleanup shares the commit delete intent so a crash cannot
+        // leave an unaccounted unlink outside the durable retention counters.
+        super::v2::remove_typed_v2_locator_for_commit(target_root, commit)?;
         remove_file(
             &target_root
                 .join("history")

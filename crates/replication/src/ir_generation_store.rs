@@ -5643,6 +5643,17 @@ mod tests {
             scratch_bytes > 0,
             "the reclaimed commit had real durable bytes"
         );
+        assert_eq!(
+            progress.stats().reclaimed_commits(),
+            u64::try_from(commits_before.len() - commits_after_restart.len())
+                .expect("small fixture commit count"),
+            "durable counters agree with the independent physical inventory"
+        );
+        assert_eq!(
+            progress.stats().reclaimed_commit_bytes(),
+            scratch_bytes,
+            "durable byte accounting agrees with the deleted commit's pre-GC size"
+        );
 
         let history_root = reopened.target_root(&base.target).join("history");
         assert_eq!(

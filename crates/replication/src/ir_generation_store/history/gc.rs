@@ -400,24 +400,13 @@ pub(super) fn advance_history_gc(
                     });
                 }
                 while state.sweep_offset < length && processed < MAX_HISTORY_GC_BATCH_RECORDS {
-                    let identity =
+                    let _identity =
                         history_index_id_at(&mut index, state.sweep_offset, HISTORY_INDEX_DOMAIN)?;
-                    if history_gc_marked(
-                        &epoch_root,
-                        identity,
-                        HistoryReachabilityClass::Candidate,
-                    )? && !history_gc_marked(
-                        &epoch_root,
-                        identity,
-                        HistoryReachabilityClass::Live,
-                    )? {
-                        remove_file(&history_commit_path(
-                            &history_root.join("commits"),
-                            identity,
-                        ))?;
-                        remove_file(&history_payload_root_path(target_root, identity))?;
-                        super::v2::remove_typed_v2_locator_for_commit(target_root, identity)?;
-                    }
+                    // Keep immutable commit objects until retention has written
+                    // its durable delete intent. That journal owns the unlink
+                    // and reclaimed-byte/count update as one recoverable step.
+                    // The candidate/live marks here still prove and validate the
+                    // complete unreachable ancestry before retention prunes it.
                     state.sweep_offset = state
                         .sweep_offset
                         .checked_add(HISTORY_INDEX_ENTRY_BYTES)
