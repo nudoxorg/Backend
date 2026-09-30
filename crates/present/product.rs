@@ -1717,11 +1717,13 @@ pub(crate) fn semantic_history_details(status: &SemanticHistoryPublicationStatus
             selection_id,
             commit,
             reference,
+            proof,
         } => format!(
-            "Derived history is published for committed selection {} at commit {} (reference: {}).",
+            "Derived history is published for committed selection {} at commit {} (reference: {}, verified tip: {}). Compiler input replay remains unproven.",
             full_digest(selection_id),
             full_digest(commit),
             single_line(reference),
+            full_digest(&proof.reference_tip),
         ),
         SemanticHistoryPublicationStatus::Refused {
             selection_id,
@@ -1965,6 +1967,32 @@ mod tests {
         ))
     }
 
+    fn published_history_proof(
+        commit: [u8; 32],
+    ) -> backend_library::SemanticHistoryPublicationProof {
+        backend_library::SemanticHistoryPublicationProof {
+            selection: backend_library::SemanticHistorySelectionStamp {
+                namespace: [0x12; 16],
+                profile: SemanticLanguageProfile::from_name("rust").expect("Rust profile"),
+                source_coordinate: [0x13; 32],
+                selection_revision: 17,
+                selected_root: [0x14; 32],
+                closure_id: [0x15; 32],
+                catalog_root: [0x16; 32],
+            },
+            image: backend_library::SemanticHistoryImageIdentity {
+                artifact_ordinal: 0,
+                semantic_generation: [0x17; 32],
+                manifest_root: [0x18; 32],
+                image_identity: [0x19; 32],
+            },
+            reference_tip: commit,
+            reachable_commit: commit,
+            parent_commits: Box::new([]),
+            input_replay_status: backend_library::SemanticHistoryInputReplayStatus::Unproven,
+        }
+    }
+
     #[test]
     fn every_semantic_history_state_survives_the_typed_product_projection() {
         let cases = [
@@ -2000,6 +2028,7 @@ mod tests {
                     selection_id: [0x40; 32],
                     commit: [0x41; 32],
                     reference: "selected-native-v3".to_owned(),
+                    proof: published_history_proof([0x41; 32]),
                 },
                 true,
                 "derived history published",
@@ -2093,6 +2122,7 @@ mod tests {
             selection_id: [0x6b; 32],
             commit: [0x7c; 32],
             reference: reference.clone(),
+            proof: published_history_proof([0x7c; 32]),
         };
         let view = semantic_versions_view(semantic_version(
             status.clone(),
@@ -2112,6 +2142,9 @@ mod tests {
         assert!(!row.tags().iter().any(|tag| tag == "complete"));
         assert!(!row.tags().iter().any(|tag| tag == "current source input"));
         assert!(crate::markdown::product(&view).contains(&reference));
+        let details = semantic_history_details(&status);
+        assert!(details.contains(&format!("verified tip: {}", "7c".repeat(32))));
+        assert!(details.contains("Compiler input replay remains unproven"));
 
         let dto = crate::dto::ProductDto::new(&view);
         assert_eq!(dto.records[0].history_status, Some(status.clone()));
