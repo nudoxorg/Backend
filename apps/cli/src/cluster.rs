@@ -12,9 +12,9 @@ use backend_engine::cluster_transport::{
     RemoteIndexSemanticSelection, ScopedClusterInvite, SecretKey, remote_index_now,
 };
 use backend_engine::{
-    IndexSearchCursor, PackageReference, ProductText, SurfaceCommand, SurfaceReply,
+    PackageReference, ProductText, SurfaceCommand, SurfaceReply,
 };
-use backend_library::interface::PackageUrl;
+use backend_library::{interface::PackageUrl, IndexSearchCursor};
 use backend_local_service::builtin::{
     ProductCompilerScope, ProductCompilerTargetKind, RemoteIndexUsage, product_compiler_scope,
 };
