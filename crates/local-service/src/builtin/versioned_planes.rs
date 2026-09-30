@@ -27,6 +27,7 @@ use backend_semantic::ir::{
 use backend_store::{ArtifactBudget, FileStore, UntrustedObjectId};
 use core::fmt;
 use hashlink::LruCache;
+use std::cell::RefCell;
 use std::sync::{Arc, Mutex, RwLockReadGuard};
 
 const MAX_RANGE_BYTES: u64 = 16 * 1024;
@@ -745,6 +746,53 @@ enum NativeHistoryPublicationError {
     Refused(String),
 }
 
+fn committed_native_history_pair(
+    loader: &super::semantic_authority::SelectedClosureImageLoader,
+    key: &ProductSemanticPublicationKey,
+) -> Result<Option<(SemanticPublicationClaim, SelectedGeneration)>, NativeHistoryPublicationError> {
+    let selections = loader.acquire_publication_read().map_err(|error| {
+        NativeHistoryPublicationError::Refused(format!(
+            "read committed semantic selection for native history: {error}"
+        ))
+    })?;
+    super::semantic_authority::SelectedClosureImageLoader::committed_pair_optional_in(
+        &selections,
+        key,
+    )
+    .map_err(|error| {
+        NativeHistoryPublicationError::Refused(format!(
+            "validate committed semantic selection projection for native history: {error}"
+        ))
+    })
+}
+
+fn require_committed_native_history_pair(
+    loader: &super::semantic_authority::SelectedClosureImageLoader,
+    key: &ProductSemanticPublicationKey,
+) -> Result<(SemanticPublicationClaim, SelectedGeneration), NativeHistoryPublicationError> {
+    committed_native_history_pair(loader, key)?.ok_or(NativeHistoryPublicationError::Superseded)
+}
+
+fn ensure_native_history_selection(
+    loader: &super::semantic_authority::SelectedClosureImageLoader,
+    key: &ProductSemanticPublicationKey,
+    expected_claim: SemanticPublicationClaim,
+    expected_stamp: SelectedGenerationStamp,
+) -> Result<(), NativeHistoryPublicationError> {
+    let Some((claim, selected)) = committed_native_history_pair(loader, key)? else {
+        return Err(NativeHistoryPublicationError::Superseded);
+    };
+    if claim != expected_claim {
+        return Err(NativeHistoryPublicationError::Superseded);
+    }
+    let stamp = SemanticAuthority::selected_generation_stamp(key, &selected)
+        .map_err(|error| NativeHistoryPublicationError::Refused(error.0))?;
+    if stamp != expected_stamp {
+        return Err(NativeHistoryPublicationError::Superseded);
+    }
+    Ok(())
+}
+
 fn map_typed_history_publication_error(
     error: SelectedTypedV3HistoryError,
 ) -> NativeHistoryPublicationError {
@@ -800,10 +848,7 @@ pub(super) fn publish_native_history(
 fn publish_native_history_commit(
     work: super::semantic_authority::NativeHistoryPublicationWork,
 ) -> Result<NativeHistoryPublicationReceipt, NativeHistoryPublicationError> {
-    let (claim, selected) = match work.loader.committed_pair(&work.key) {
-        Ok(pair) => pair,
-        Err(_) => return Err(NativeHistoryPublicationError::Superseded),
-    };
+    let (claim, selected) = require_committed_native_history_pair(&work.loader, &work.key)?;
     if claim != work.expected_claim {
         return Err(NativeHistoryPublicationError::Superseded);
     }
@@ -875,8 +920,14 @@ fn publish_native_history_commit(
         work.store.clone(),
         work.key.clone(),
     );
-    let binding = SelectedNativeHistoryBinding::bind(&mut source, catalog, image_key, manifest)
-        .map_err(NativeHistoryPublicationError::Refused)?;
+    let binding =
+        match SelectedNativeHistoryBinding::bind(&mut source, catalog, image_key, manifest) {
+            Ok(binding) => binding,
+            Err(reason) => {
+                ensure_native_history_selection(&work.loader, &work.key, claim, work.stamp)?;
+                return Err(NativeHistoryPublicationError::Refused(reason));
+            }
+        };
     if binding.selected_stamp() != work.stamp {
         return Err(NativeHistoryPublicationError::Superseded);
     }
@@ -919,12 +970,7 @@ fn publish_native_history_commit(
                     .to_owned(),
             ));
         }
-        if !work
-            .loader
-            .matches_committed_selection(&work.key, claim, work.stamp)
-        {
-            return Err(NativeHistoryPublicationError::Superseded);
-        }
+        ensure_native_history_selection(&work.loader, &work.key, claim, work.stamp)?;
         let proof = native_history_publication_proof(
             binding.selected_stamp(),
             binding.image_key(),
@@ -949,30 +995,27 @@ fn publish_native_history_commit(
             "selected image exceeds the 128 MiB publication bound".to_owned(),
         ));
     }
-    if !work
-        .loader
-        .matches_committed_selection(&work.key, claim, work.stamp)
-    {
-        return Err(NativeHistoryPublicationError::Superseded);
-    }
+    ensure_native_history_selection(&work.loader, &work.key, claim, work.stamp)?;
     let max_image_bytes =
         usize::try_from(backend_replication::MAX_SEMANTIC_IMAGE_BYTES).map_err(|_| {
             NativeHistoryPublicationError::Refused(
                 "selected image byte bound does not fit this process".to_owned(),
             )
         })?;
+    let selection_error = RefCell::new(None);
     let (mapped_image, range_metrics) = backend_semantic::ir::load_semantic_image_mmap_from_ranges(
         plan.total_length,
         plan.identity,
         image_key.semantic_generation(),
         max_image_bytes,
         |offset, output| {
-            if !work
-                .loader
-                .matches_committed_selection(&work.key, claim, work.stamp)
+            if let Err(error) =
+                ensure_native_history_selection(&work.loader, &work.key, claim, work.stamp)
             {
+                *selection_error.borrow_mut() = Some(error);
                 return Err(SelectedImageRangeReadError::Refused(
-                    "committed product selection moved during selected image read".to_owned(),
+                    "failed to revalidate committed product selection during selected image read"
+                        .to_owned(),
                 ));
             }
             let range_len = u64::try_from(output.len()).map_err(|_| {
@@ -987,30 +1030,33 @@ fn publish_native_history_commit(
             })?;
             work.image_ranges.read_range_into(&plan, range, output)
         },
-        || {
-            !work
-                .loader
-                .matches_committed_selection(&work.key, claim, work.stamp)
+        || match ensure_native_history_selection(&work.loader, &work.key, claim, work.stamp) {
+            Ok(()) => false,
+            Err(error) => {
+                *selection_error.borrow_mut() = Some(error);
+                true
+            }
         },
     )
     .map_err(|error| match error {
-        backend_semantic::ir::MappedSemanticImageRangeError::Cancelled => {
-            NativeHistoryPublicationError::Superseded
-        }
+        backend_semantic::ir::MappedSemanticImageRangeError::Cancelled => selection_error
+            .borrow_mut()
+            .take()
+            .unwrap_or(NativeHistoryPublicationError::Superseded),
         backend_semantic::ir::MappedSemanticImageRangeError::Read { source, .. } => {
-            if !work
-                .loader
-                .matches_committed_selection(&work.key, claim, work.stamp)
-            {
-                NativeHistoryPublicationError::Superseded
+            if let Some(error) = selection_error.borrow_mut().take() {
+                error
             } else {
-                match source {
-                    SelectedImageRangeReadError::Deferred(reason) => {
-                        NativeHistoryPublicationError::Deferred(reason)
-                    }
-                    SelectedImageRangeReadError::Refused(reason) => {
-                        NativeHistoryPublicationError::Refused(reason)
-                    }
+                match ensure_native_history_selection(&work.loader, &work.key, claim, work.stamp) {
+                    Err(error) => error,
+                    Ok(()) => match source {
+                        SelectedImageRangeReadError::Deferred(reason) => {
+                            NativeHistoryPublicationError::Deferred(reason)
+                        }
+                        SelectedImageRangeReadError::Refused(reason) => {
+                            NativeHistoryPublicationError::Refused(reason)
+                        }
+                    },
                 }
             }
         }
@@ -1042,9 +1088,13 @@ fn publish_native_history_commit(
             "selected image mapping did not account for its exact byte extent".to_owned(),
         ));
     }
-    let selected_image = binding
-        .bind_mapped_image(&mapped_image)
-        .map_err(NativeHistoryPublicationError::Refused)?;
+    let selected_image = match binding.bind_mapped_image(&mapped_image) {
+        Ok(selected_image) => selected_image,
+        Err(reason) => {
+            ensure_native_history_selection(&work.loader, &work.key, claim, work.stamp)?;
+            return Err(NativeHistoryPublicationError::Refused(reason));
+        }
+    };
     let policy = SemanticPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(512, 1024, 4096)
         .map_err(|error| NativeHistoryPublicationError::Refused(error.to_string()))?;
     let policies = backend_replication::SemanticTypedPlaneBoundaryPoliciesV3::new(
@@ -1061,22 +1111,9 @@ fn publish_native_history_commit(
         &mut source,
     ) {
         Ok(receipt) => receipt,
-        Err(error) => {
-            if !work
-                .loader
-                .matches_committed_selection(&work.key, claim, work.stamp)
-            {
-                return Err(NativeHistoryPublicationError::Superseded);
-            }
-            return Err(map_typed_history_publication_error(error));
-        }
+        Err(error) => return Err(map_typed_history_publication_error(error)),
     };
-    if !work
-        .loader
-        .matches_committed_selection(&work.key, claim, work.stamp)
-    {
-        return Err(NativeHistoryPublicationError::Superseded);
-    }
+    ensure_native_history_selection(&work.loader, &work.key, claim, work.stamp)?;
     let commit = receipt.current().ok_or_else(|| {
         NativeHistoryPublicationError::Refused(
             "typed V3 branch publication returned no current commit".to_owned(),
@@ -1096,12 +1133,7 @@ fn publish_native_history_commit(
             "typed V3 branch ancestry did not prove its CAS commit".to_owned(),
         ));
     }
-    if !work
-        .loader
-        .matches_committed_selection(&work.key, claim, work.stamp)
-    {
-        return Err(NativeHistoryPublicationError::Superseded);
-    }
+    ensure_native_history_selection(&work.loader, &work.key, claim, work.stamp)?;
     let parent_commits = receipt.previous().into_iter().collect::<Vec<_>>();
     let proof = native_history_publication_proof(
         selected_image.selected_stamp(),
@@ -1914,6 +1946,53 @@ mod tests {
         ));
 
         drop(source);
+        drop(authority);
+        std::fs::remove_dir_all(directory).expect("remove temporary authority workspace");
+    }
+
+    #[test]
+    fn native_history_pair_distinguishes_absence_from_selector_lock_failure() {
+        let directory = path();
+        let package = backend_engine::PackageReference::parse(
+            "pkg:cargo/native-history-pair-state@1.0.0".to_owned(),
+        )
+        .expect("valid product package");
+        let coordinate = backend_library::interface::PackageUrl::parse(
+            "pkg:cargo/native-history-pair-state@1.0.0".to_owned(),
+        )
+        .expect("valid product coordinate");
+        let key = ProductSemanticPublicationKey::new(
+            package,
+            coordinate,
+            backend_semantic::ir::LanguageProfile::Rust(
+                backend_semantic::ir::RustEdition::Rust2021,
+            ),
+        )
+        .expect("valid product selection key");
+        let authority = SemanticAuthority::open(&directory).expect("open semantic authority");
+        let loader = authority.native_history_loader_for_test();
+        assert!(matches!(
+            require_committed_native_history_pair(&loader, &key),
+            Err(NativeHistoryPublicationError::Superseded),
+        ));
+
+        let poison_loader = Arc::clone(&loader);
+        let poison = std::thread::spawn(move || {
+            let _write = poison_loader
+                .selections
+                .write()
+                .expect("acquire selector lock before poisoning it");
+            panic!("intentional native-history selector poison");
+        });
+        assert!(
+            poison.join().is_err(),
+            "fault injection must poison the lock"
+        );
+        assert!(matches!(
+            require_committed_native_history_pair(&loader, &key),
+            Err(NativeHistoryPublicationError::Refused(_)),
+        ));
+
         drop(authority);
         std::fs::remove_dir_all(directory).expect("remove temporary authority workspace");
     }
