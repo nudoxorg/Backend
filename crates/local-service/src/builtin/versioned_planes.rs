@@ -683,6 +683,7 @@ impl SelectedNativeImageSource for OwnedSemanticAuthoritySelectionSource {
             &selected,
             image,
         )
+        .map_err(Into::into)
     }
 
     fn acquire_publication_fence<'fence>(
@@ -1140,7 +1141,7 @@ fn native_history_publication_proof(
             artifact_ordinal: image.artifact_ordinal(),
             semantic_generation: *image.semantic_generation().as_bytes(),
             manifest_root: *image.manifest_root().as_bytes(),
-            image_identity: *image_identity.as_bytes(),
+            image_identity: *image_identity.as_ref(),
         },
         reference_tip: *reference_tip.as_bytes(),
         reachable_commit: *reachable_commit.as_bytes(),

@@ -1625,7 +1625,7 @@ mod tests {
                 let row = backend_engine::ProductSourceRecord::file_within_row_capacity(
                     project,
                     *path,
-                    SourceLanguage::C,
+                    SourceLanguage::Clang,
                     identity,
                     [0x62; 32],
                     Vec::new(),
@@ -1702,10 +1702,9 @@ mod tests {
 
         use backend_engine::application::StagedSemanticPackage;
         use backend_engine::{DaemonConfig, RelationAdmissionRegistry};
-        use backend_library::TypedV3HistoryInputReplayStatus;
         use backend_replication::{
             FileSemanticRangeStore, HistoryRefKind, HistoryRefName, SemanticTargetKey,
-            TransportLimits,
+            TransportLimits, TypedV3HistoryInputReplayStatus,
         };
         use backend_semantic::ir::{JumboRopeLimits, SemanticTypedPlaneVerificationTierV2};
         use std::time::{Duration, Instant};
