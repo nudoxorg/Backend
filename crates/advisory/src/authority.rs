@@ -24,9 +24,12 @@ use super::{
     AcquisitionDecision, AcquisitionGate, Advisory, AdvisoryCoverage, AdvisoryDelta,
     AdvisoryJournal, AdvisoryJournalError, AdvisoryObservation, AdvisorySource, AdvisorySync,
     Alias, AliasGraph, AliasGraphError, Checkpoint, FeedFreshness, FreshnessState, GhsaParseError,
-    MAX_ADVISORY_BATCH_OBJECTS, MAX_ADVISORY_DOCUMENT_BYTES, MalwareCoverage, OsvEcosystem,
-    OsvFeedScope, PackageIdentity, ParseError, RustSecParseError, SyncMode,
+    MAX_ADVISORY_BATCH_OBJECTS, MAX_ADVISORY_DOCUMENT_BYTES, MalwareCoverage, OsvFeedScope,
+    PackageIdentity, ParseError, RustSecParseError, SyncMode,
 };
+
+#[cfg(test)]
+use super::OsvEcosystem;
 
 /// Default hard ceiling for one persisted advisory authority JSON state file.
 pub const MAX_ADVISORY_AUTHORITY_STATE_BYTES: u64 = 512 * 1024 * 1024;

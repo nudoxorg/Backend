@@ -45,6 +45,14 @@ pub struct DirectoryCapability {
     handle: Arc<crate::win32::workspace_fs::WorkspaceRoot>,
 }
 
+impl std::fmt::Debug for DirectoryCapability {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DirectoryCapability")
+            .finish_non_exhaustive()
+    }
+}
+
 impl DirectoryCapability {
     /// Creates or opens a private directory at a local path, then retains a
     /// handle to the resulting directory. Existing path components are walked

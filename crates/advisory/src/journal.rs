@@ -197,13 +197,7 @@ impl AdvisoryJournal {
                 .all(|entry| matches!(entry, AdvisoryDelta::Upsert(_)))
         {
             entries.sort_by(|left, right| {
-                let native_id = |entry: &AdvisoryDelta| match entry {
-                    AdvisoryDelta::Upsert(advisory) => &advisory.key.native.id,
-                    AdvisoryDelta::Withdraw { .. }
-                    | AdvisoryDelta::Delete { .. }
-                    | AdvisoryDelta::Tombstone { .. } => unreachable!("upserts only"),
-                };
-                native_id(left).cmp(native_id(right))
+                advisory_delta_native_id(left).cmp(advisory_delta_native_id(right))
             });
         }
         for entry in entries {
@@ -311,6 +305,15 @@ impl AdvisoryJournal {
             }
         }
         *hasher.finalize().as_bytes()
+    }
+}
+
+fn advisory_delta_native_id(entry: &AdvisoryDelta) -> &str {
+    match entry {
+        AdvisoryDelta::Upsert(advisory) => advisory.key.native.id.as_str(),
+        AdvisoryDelta::Withdraw { .. }
+        | AdvisoryDelta::Delete { .. }
+        | AdvisoryDelta::Tombstone { .. } => unreachable!("upserts only"),
     }
 }
 

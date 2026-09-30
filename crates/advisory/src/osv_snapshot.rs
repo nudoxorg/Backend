@@ -1007,7 +1007,7 @@ impl OsvSnapshotBuilder {
                 }
             };
         let mut reference = OsvSnapshotRef {
-            generation,
+            generation: generation.clone(),
             scope: self.scope,
             source_digest,
             package_index_digest,
@@ -1130,7 +1130,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn read_manifest(directory: &DirectoryCapability) -> Result<OsvSnapshotManifest, OsvSnapshotError> {
-    let mut file = directory.open_private_file("manifest.json")?;
+    let file = directory.open_private_file("manifest.json")?;
     let metadata = file.metadata()?;
     if metadata.len() > 4096 {
         return Err(OsvSnapshotError::Invalid("snapshot manifest file"));
@@ -1354,7 +1354,7 @@ fn prune_unreferenced_generations_at(
             ".osv-delete-{}-{}-{}",
             &name[..16],
             std::process::id(),
-            DELETE_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            DELETE_NONCE.fetch_add(1, Ordering::Relaxed)
         );
         drop(leases);
         drop(generation);
