@@ -27,7 +27,7 @@
 //!   a card never loses it.
 //! - **Placement.** Preferred side, flip, shift to stay 8 px inside, height
 //!   cap with internal scroll, a hairline connector to the anchor rect; a
-//!   full-width bottom sheet at `Room::Narrow`.
+//!   full-width bottom sheet on a phone (a `Float::Sheet` mode).
 //! - **Chain.** A rest on a trigger inside an open card opens a child beside
 //!   it with the crumb row and the focus bevel; three deep, then the deepest
 //!   card offers "open". [`step_back`] (Esc) closes one.
@@ -1882,7 +1882,7 @@ fn pins_header(measure: &Measure, palette: &Palette) -> AnyElement {
 }
 
 /// The pinned column's contents (the shell's chrome draws the column frame
-/// and shows it at `Room::Vast`): "Pinned", then one row per pin, newest
+/// and shows it in a big window, `tokens::fluid::PINS`): "Pinned", then one row per pin, newest
 /// first. Keys show only while ⌘ is held.
 pub fn pinned_column(measure: &Measure, window: &mut Window, cx: &mut App) -> AnyElement {
     let layer = state(window, cx);

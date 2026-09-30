@@ -378,8 +378,6 @@ const KNOWN: &[&str] = &[
     "facet/src/anatomy/page.rs",
     "facet/src/anatomy/page/gallery.rs",
     "facet/src/anatomy/prism.rs",
-    // The legacy class enum, kept until nothing calls `Measure::room`.
-    "facet/src/measure.rs",
 ];
 
 /// Files that are checks or harness code, not layout: a width compared with a
