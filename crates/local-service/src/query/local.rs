@@ -700,6 +700,7 @@ pub(crate) enum SnapshotMaintenance {
 pub struct SearchSnapshotOwner {
     selected: Option<QueryCoordinator>,
     durable_root: Option<PathBuf>,
+    durable_budget: lexical::DurableCacheBudget,
     builds: u64,
     opens: u64,
     maintenance: Option<SnapshotMaintenance>,
@@ -717,6 +718,13 @@ impl SearchSnapshotOwner {
             durable_root: Some(root.into()),
             ..Self::default()
         }
+    }
+
+    /// Sets the typed byte budget used by this owner's durable index role.
+    #[must_use]
+    pub fn with_durable_cache_budget(mut self, budget: lexical::DurableCacheBudget) -> Self {
+        self.durable_budget = budget;
+        self
     }
 
     /// Selects the coordinator for one exact immutable product snapshot.
@@ -745,6 +753,7 @@ impl SearchSnapshotOwner {
                 coverage,
                 &semantic_evidence,
                 self.durable_root.as_deref(),
+                self.durable_budget,
             ),
             None => Ok(None),
         };
@@ -779,6 +788,7 @@ impl SearchSnapshotOwner {
             coverage,
             semantic_evidence,
             self.durable_root.clone(),
+            self.durable_budget,
         )?;
         self.selected = Some(selected);
         match action {
@@ -891,8 +901,15 @@ impl QueryCoordinator {
         coverage: CoverageWitness,
         semantic_evidence: SemanticQueryCorpus,
     ) -> Result<Self, QueryError> {
-        Self::new_with_durable_root(workspace, view, coverage, semantic_evidence, None)
-            .map(|(coordinator, _)| coordinator)
+        Self::new_with_durable_root(
+            workspace,
+            view,
+            coverage,
+            semantic_evidence,
+            None,
+            lexical::DurableCacheBudget::default(),
+        )
+        .map(|(coordinator, _)| coordinator)
     }
 
     fn new_with_durable_root(
@@ -901,13 +918,15 @@ impl QueryCoordinator {
         coverage: CoverageWitness,
         semantic_evidence: SemanticQueryCorpus,
         durable_root: Option<PathBuf>,
+        durable_budget: lexical::DurableCacheBudget,
     ) -> Result<(Self, lexical::DurableProjectionAction), QueryError> {
         let prepared = prepare_corpus(workspace, view, coverage, semantic_evidence)?;
         let (source, action) = match durable_root.as_deref() {
-            Some(root) => lexical::TantivySource::open_or_build_in_dir_with_action(
+            Some(root) => lexical::TantivySource::open_or_build_in_dir_with_budget_and_action(
                 &prepared.state,
                 lexical::Limits::default(),
                 root,
+                durable_budget,
             ),
             None => lexical::TantivySource::build(&prepared.state, lexical::Limits::default())
                 .map(|source| (source, lexical::DurableProjectionAction::Built)),
@@ -935,6 +954,7 @@ impl QueryCoordinator {
         coverage: CoverageWitness,
         semantic_evidence: &SemanticQueryCorpus,
         durable_root: Option<&Path>,
+        durable_budget: lexical::DurableCacheBudget,
     ) -> Result<Option<SnapshotMaintenance>, QueryError> {
         let prepared =
             prepare_corpus(workspace, view.clone(), coverage, semantic_evidence.clone())?;
@@ -956,12 +976,13 @@ impl QueryCoordinator {
         };
         let durable_publication = match (durable_root, previous_state.as_ref()) {
             (Some(root), Some(previous)) => Some(
-                lexical::TantivySource::open_or_advance_in_dir_with_action(
+                lexical::TantivySource::open_or_advance_in_dir_with_budget_and_action(
                     previous,
                     &prepared.state,
                     lexical::Limits::default(),
                     lexical::OverlayLimits::default(),
                     root,
+                    durable_budget,
                 )
                 .map_err(|_| QueryError::LexicalProvider)?,
             ),
@@ -990,7 +1011,10 @@ impl QueryCoordinator {
                     lexical::TantivySourceError::Contract(error) => QueryError::Lexical(error),
                     lexical::TantivySourceError::Backend(_)
                     | lexical::TantivySourceError::Io(_)
-                    | lexical::TantivySourceError::Corrupt(_) => QueryError::LexicalProvider,
+                    | lexical::TantivySourceError::Corrupt(_)
+                    | lexical::TantivySourceError::BudgetExceeded { .. } => {
+                        QueryError::LexicalProvider
+                    }
                 })?
             {
                 lexical::MaintainOutcome::RebuildRequired => return Ok(None),
