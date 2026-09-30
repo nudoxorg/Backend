@@ -596,6 +596,20 @@ fn exercise_remote_s3_range_interrupt(
         10_000,
         64 * 1024 * 1024,
     );
+    let scope = capability
+        .claims
+        .semantic
+        .as_ref()
+        .expect("owner-issued capability has semantic-only scope");
+    assert_eq!(scope.package, target.package());
+    assert_eq!(scope.coordinate, target.coordinate());
+    assert_eq!(scope.selected_root, *selected.target_root());
+    assert_eq!(scope.closure_id, *selected.closure_id());
+    assert_eq!(
+        Some(&scope.catalog_root),
+        selected.semantic_catalog_root(),
+        "grant scope does not bind the selected semantic catalog root"
+    );
 
     let mut quota_client = LocalSemanticIndexClient::connect_remote(
         SecretKey::from_bytes(&client_secret_bytes),
