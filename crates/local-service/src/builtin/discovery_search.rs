@@ -6288,13 +6288,13 @@ mod tests {
         entries
             .filter_map(Result::ok)
             .map(|entry| {
-                let Ok(metadata) = entry.metadata() else {
+                let Ok(file_type) = entry.file_type() else {
                     return 0;
                 };
-                if metadata.is_dir() {
+                if file_type.is_dir() {
                     measured_directory_bytes(&entry.path())
-                } else if metadata.is_file() {
-                    metadata.len()
+                } else if file_type.is_file() {
+                    entry.metadata().map_or(0, |metadata| metadata.len())
                 } else {
                     0
                 }
