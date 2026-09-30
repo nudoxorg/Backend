@@ -6256,6 +6256,13 @@ mod tests {
         samples[index].as_micros()
     }
 
+    fn percentile_u64(samples: &[u64], percentile: usize) -> u64 {
+        let mut sorted = samples.to_vec();
+        sorted.sort_unstable();
+        let index = sorted.len().saturating_sub(1).saturating_mul(percentile) / 100;
+        sorted[index]
+    }
+
     #[cfg(unix)]
     fn resident_set_kib() -> Option<u64> {
         let pid = std::process::id().to_string();
@@ -6272,6 +6279,410 @@ mod tests {
     #[cfg(not(unix))]
     fn resident_set_kib() -> Option<u64> {
         None
+    }
+
+    fn measured_directory_bytes(path: &std::path::Path) -> u64 {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return 0;
+        };
+        entries
+            .filter_map(Result::ok)
+            .map(|entry| {
+                let Ok(metadata) = entry.metadata() else {
+                    return 0;
+                };
+                if metadata.is_dir() {
+                    measured_directory_bytes(&entry.path())
+                } else if metadata.is_file() {
+                    metadata.len()
+                } else {
+                    0
+                }
+            })
+            .sum()
+    }
+
+    fn direct_maven_chain(
+        index: &DiscoverySearchIndex,
+        store: &DiscoveryStore,
+        query: &str,
+        page_limit: usize,
+    ) -> (Vec<String>, Vec<usize>, usize, SearchResultCount, u64) {
+        let started = std::time::Instant::now();
+        let mut cursor = None;
+        let mut coordinates = Vec::new();
+        let mut page_sizes = Vec::new();
+        let mut posting_candidates = 0usize;
+        let mut result_count = SearchResultCount::Unknown;
+        let mut pages = 0usize;
+        loop {
+            let page = index
+                .search_after_with_store(
+                    store,
+                    DiscoverySearchRequest {
+                        text: query,
+                        ecosystem: Some(RegistryEcosystem::Maven),
+                    },
+                    page_limit,
+                    cursor.as_ref(),
+                )
+                .unwrap_or_else(|error| panic!("direct search failed for {query:?}: {error}"));
+            if pages == 0 {
+                result_count = page.result_count;
+            }
+            pages += 1;
+            assert!(
+                pages <= 10_000,
+                "cursor chain did not terminate for {query:?}"
+            );
+            posting_candidates = posting_candidates.saturating_add(page.posting_candidates);
+            page_sizes.push(page.hits.len());
+            coordinates.extend(
+                page.hits
+                    .into_iter()
+                    .map(|hit| hit.key.coordinate.as_str().to_owned()),
+            );
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        (
+            coordinates,
+            page_sizes,
+            posting_candidates,
+            result_count,
+            started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
+        )
+    }
+
+    #[test]
+    #[ignore = "manual production-index benchmark; requires pinned Maven journal and independent labels"]
+    fn direct_maven_discovery_index_benchmark_from_pinned_inputs() {
+        use sha2::{Digest, Sha256};
+
+        let journal_path = std::path::PathBuf::from(
+            std::env::var_os("BACKEND_DISCOVERY_BENCH_JOURNAL")
+                .expect("BACKEND_DISCOVERY_BENCH_JOURNAL"),
+        );
+        let labels_path = std::path::PathBuf::from(
+            std::env::var_os("BACKEND_DISCOVERY_BENCH_LABELS")
+                .expect("BACKEND_DISCOVERY_BENCH_LABELS"),
+        );
+        let cache_root = std::path::PathBuf::from(
+            std::env::var_os("BACKEND_DISCOVERY_BENCH_CACHE")
+                .expect("BACKEND_DISCOVERY_BENCH_CACHE"),
+        );
+        let report_path = std::path::PathBuf::from(
+            std::env::var_os("BACKEND_DISCOVERY_BENCH_REPORT")
+                .expect("BACKEND_DISCOVERY_BENCH_REPORT"),
+        );
+        let source_commit = std::env::var("BACKEND_DISCOVERY_BENCH_SOURCE_COMMIT")
+            .unwrap_or_else(|_| "unspecified".to_owned());
+        const EXPECTED_JOURNAL_SHA256: &str =
+            "7b156608e0427b60a7fd394f1d4d0c4b68aa7d7df6d55f0b12a1da80f9f36899";
+        const WARM_CHAINS_PER_QUERY: usize = 100;
+        const PAGE_LIMIT: usize = 10;
+
+        let journal_bytes = std::fs::read(&journal_path).expect("read pinned journal copy");
+        let journal_sha256 = hex(&Sha256::digest(&journal_bytes));
+        assert_eq!(
+            journal_bytes.len(),
+            722_663,
+            "unexpected Maven journal size"
+        );
+        assert_eq!(
+            journal_sha256, EXPECTED_JOURNAL_SHA256,
+            "journal is not pinned input"
+        );
+        let labels_bytes = std::fs::read(&labels_path).expect("read independent query labels");
+        let labels_sha256 = hex(&Sha256::digest(&labels_bytes));
+        let labels: serde_json::Value =
+            serde_json::from_slice(&labels_bytes).expect("decode independent query labels");
+        assert_eq!(labels["journal_sha256"], EXPECTED_JOURNAL_SHA256);
+        let scope = labels["scope"].as_str().expect("label scope");
+        let query_labels = labels["queries"]
+            .as_array()
+            .expect("independent query list");
+        assert_eq!(query_labels.len(), 9, "unexpected independent query set");
+        assert!(!cache_root.exists(), "benchmark cache must start empty");
+
+        let rss_before = resident_set_kib();
+        let replay_started = std::time::Instant::now();
+        let store = DiscoveryStore::open(journal_path.clone()).expect("replay pinned journal");
+        let journal_replay_ns = replay_started.elapsed().as_nanos() as u64;
+        let rss_after_replay = resident_set_kib();
+
+        let build_started = std::time::Instant::now();
+        let index =
+            DiscoverySearchIndex::open_with_forge_and_source_pins_at(&cache_root, &store, &[], &[])
+                .expect("build durable production discovery index");
+        let projection_build_ns = build_started.elapsed().as_nanos() as u64;
+        let built_snapshot_root = hex(&index.snapshot_root());
+        let rss_after_build = resident_set_kib();
+
+        // Exercise every independent label against the freshly built snapshot
+        // before timing a true on-disk reopen.
+        let mut build_checks = Vec::with_capacity(query_labels.len());
+        for label in query_labels {
+            let query = label["query"].as_str().expect("query text");
+            let expected: BTreeSet<String> = label["expected"]
+                .as_array()
+                .expect("expected coordinates")
+                .iter()
+                .map(|value| value.as_str().expect("coordinate").to_owned())
+                .collect();
+            let (observed, _, _, count, _) = direct_maven_chain(&index, &store, query, PAGE_LIMIT);
+            let exact_count = count == SearchResultCount::Exact(expected.len());
+            build_checks.push(serde_json::json!({
+                "query": query,
+                "exact_membership": observed.iter().cloned().collect::<BTreeSet<_>>() == expected,
+                "duplicate_free": observed.len() == observed.iter().collect::<BTreeSet<_>>().len(),
+                "exact_count_matches_labels": exact_count,
+                "result_count": match count {
+                    SearchResultCount::Exact(value) => serde_json::json!({"kind":"exact","value":value}),
+                    SearchResultCount::AtLeast(value) => serde_json::json!({"kind":"at_least","value":value}),
+                    SearchResultCount::Unknown => serde_json::json!({"kind":"unknown"}),
+                },
+            }));
+        }
+        drop(index);
+        drop(store);
+
+        let reopen_replay_started = std::time::Instant::now();
+        let store = DiscoveryStore::open(journal_path.clone()).expect("replay journal for reopen");
+        let reopen_journal_replay_ns = reopen_replay_started.elapsed().as_nanos() as u64;
+        let cold_open_started = std::time::Instant::now();
+        let index =
+            DiscoverySearchIndex::open_with_forge_and_source_pins_at(&cache_root, &store, &[], &[])
+                .expect("cold-open durable production discovery index");
+        let cold_projection_open_ns = cold_open_started.elapsed().as_nanos() as u64;
+        assert_eq!(hex(&index.snapshot_root()), built_snapshot_root);
+        let rss_after_cold_open = resident_set_kib();
+
+        let mut first_page_ns_by_query = Vec::with_capacity(query_labels.len());
+        let mut first_chain_ns_by_query = Vec::with_capacity(query_labels.len());
+        let mut timed_queries = Vec::with_capacity(query_labels.len());
+        let mut first_observed = Vec::with_capacity(query_labels.len());
+        for label in query_labels {
+            let query = label["query"].as_str().expect("query text");
+            let first_page_started = std::time::Instant::now();
+            let first_page = index
+                .search_after_with_store(
+                    &store,
+                    DiscoverySearchRequest {
+                        text: query,
+                        ecosystem: Some(RegistryEcosystem::Maven),
+                    },
+                    PAGE_LIMIT,
+                    None,
+                )
+                .unwrap_or_else(|error| panic!("first-page search failed for {query:?}: {error}"));
+            let first_page_ns = first_page_started.elapsed().as_nanos() as u64;
+            let first_page_size = first_page.hits.len();
+            let first_page_posting_candidates = first_page.posting_candidates;
+            let first_page_result_count = match first_page.result_count {
+                SearchResultCount::Exact(value) => {
+                    serde_json::json!({"kind":"exact","value":value})
+                }
+                SearchResultCount::AtLeast(value) => {
+                    serde_json::json!({"kind":"at_least","value":value})
+                }
+                SearchResultCount::Unknown => serde_json::json!({"kind":"unknown"}),
+            };
+            // Complete the first query chain from its already timed first page.
+            let chain_started = std::time::Instant::now();
+            let mut cursor = first_page.next_cursor;
+            let mut observed: Vec<String> = first_page
+                .hits
+                .into_iter()
+                .map(|hit| hit.key.coordinate.as_str().to_owned())
+                .collect();
+            let mut page_sizes = vec![first_page_size];
+            let mut posting_candidates = first_page_posting_candidates;
+            while let Some(after) = cursor {
+                let page = index
+                    .search_after_with_store(
+                        &store,
+                        DiscoverySearchRequest {
+                            text: query,
+                            ecosystem: Some(RegistryEcosystem::Maven),
+                        },
+                        PAGE_LIMIT,
+                        Some(&after),
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("continued search failed for {query:?}: {error}")
+                    });
+                assert!(page_sizes.len() < 10_000, "cursor chain did not terminate");
+                page_sizes.push(page.hits.len());
+                posting_candidates = posting_candidates.saturating_add(page.posting_candidates);
+                observed.extend(
+                    page.hits
+                        .into_iter()
+                        .map(|hit| hit.key.coordinate.as_str().to_owned()),
+                );
+                cursor = page.next_cursor;
+            }
+            let first_chain_ns =
+                first_page_ns.saturating_add(
+                    chain_started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
+                );
+            first_chain_ns_by_query.push(first_chain_ns);
+            let expected: BTreeSet<String> = label["expected"]
+                .as_array()
+                .expect("expected coordinates")
+                .iter()
+                .map(|value| value.as_str().expect("coordinate").to_owned())
+                .collect();
+            let observed_set: BTreeSet<String> = observed.iter().cloned().collect();
+            let duplicate_free = observed.len() == observed_set.len();
+            let exact_membership = observed_set == expected;
+            let exact_count = first_page.result_count == SearchResultCount::Exact(expected.len());
+            first_page_ns_by_query.push(first_page_ns);
+            first_observed.push(observed.clone());
+            timed_queries.push(serde_json::json!({
+                "query": query,
+                "expected_count": expected.len(),
+                "observed_count": observed.len(),
+                "exact_membership": exact_membership,
+                "duplicate_free": duplicate_free,
+                "exact_count_matches_labels": exact_count,
+                "result_count": first_page_result_count,
+                "first_page_ns": first_page_ns,
+                "first_page_count": first_page_size,
+                "first_page_posting_candidates": first_page_posting_candidates,
+                "first_full_chain_ns": first_chain_ns,
+                "page_sizes": page_sizes,
+                "posting_candidates_summed_across_pages": posting_candidates,
+                "result_order": observed,
+            }));
+        }
+        let all_first_query_chains_ns = first_chain_ns_by_query
+            .iter()
+            .copied()
+            .fold(0u64, u64::saturating_add);
+        let rss_after_first_queries = resident_set_kib();
+        let query_checks_pass = timed_queries.iter().all(|row| {
+            row["exact_membership"].as_bool() == Some(true)
+                && row["duplicate_free"].as_bool() == Some(true)
+                && row["exact_count_matches_labels"].as_bool() == Some(true)
+        });
+        let build_checks_pass = build_checks.iter().all(|row| {
+            row["exact_membership"].as_bool() == Some(true)
+                && row["duplicate_free"].as_bool() == Some(true)
+                && row["exact_count_matches_labels"].as_bool() == Some(true)
+        });
+        let warm_started = std::time::Instant::now();
+        for (query_index, label) in query_labels.iter().enumerate() {
+            let query = label["query"].as_str().expect("query text");
+            let mut warm_ns = Vec::with_capacity(WARM_CHAINS_PER_QUERY);
+            for _ in 0..WARM_CHAINS_PER_QUERY {
+                let (warm_observed, _, _, _, elapsed_ns) =
+                    direct_maven_chain(&index, &store, query, PAGE_LIMIT);
+                assert_eq!(
+                    warm_observed, first_observed[query_index],
+                    "warm ordering changed for {query:?}"
+                );
+                warm_ns.push(elapsed_ns);
+            }
+            timed_queries[query_index]["warm_full_chain_ns"] = serde_json::json!(warm_ns);
+            timed_queries[query_index]["warm_full_chain_p50_ns"] =
+                serde_json::json!(percentile_u64(&warm_ns, 50));
+            timed_queries[query_index]["warm_full_chain_p95_ns"] =
+                serde_json::json!(percentile_u64(&warm_ns, 95));
+            timed_queries[query_index]["warm_full_chain_p99_ns"] =
+                serde_json::json!(percentile_u64(&warm_ns, 99));
+        }
+        let all_warm_query_chains_ns = warm_started.elapsed().as_nanos() as u64;
+        let rss_after_warm_queries = resident_set_kib();
+        let warm_samples: Vec<u64> = timed_queries
+            .iter()
+            .flat_map(|row| row["warm_full_chain_ns"].as_array().into_iter().flatten())
+            .filter_map(serde_json::Value::as_u64)
+            .collect();
+        let mut sorted_warm_samples = warm_samples.clone();
+        sorted_warm_samples.sort_unstable();
+        let percentile_ns = |percentile: usize| -> Option<u64> {
+            if sorted_warm_samples.is_empty() {
+                return None;
+            }
+            let index = sorted_warm_samples
+                .len()
+                .saturating_sub(1)
+                .saturating_mul(percentile)
+                / 100;
+            sorted_warm_samples.get(index).copied()
+        };
+        let report = serde_json::json!({
+            "schema": "nudox.direct-discovery-index-benchmark.v1",
+            "correct": build_checks_pass && query_checks_pass,
+            "provenance": {
+                "source_commit": source_commit,
+                "profile": if cfg!(debug_assertions) { "debug" } else { "release" },
+                "journal_path": journal_path.display().to_string(),
+                "journal_sha256": journal_sha256,
+                "journal_bytes": journal_bytes.len(),
+                "labels_path": labels_path.display().to_string(),
+                "labels_sha256": labels_sha256,
+                "independent_label_scope": scope,
+                "cache_root": cache_root.display().to_string(),
+                "snapshot_root": built_snapshot_root,
+            },
+            "configuration": {
+                "page_limit": PAGE_LIMIT,
+                "warm_full_chains_per_query": WARM_CHAINS_PER_QUERY,
+                "query_count": query_labels.len(),
+                "measured_boundary": "direct production DiscoverySearchIndex API; includes Tantivy ranking, pagination, and authoritative standing hydration; excludes CLI process and local socket",
+                "cold_open_boundary": "drop and reopen the durable projection in the same process; OS page cache is not flushed",
+                "projection_bytes": measured_directory_bytes(&cache_root),
+            },
+            "memory_kib": {
+                "before": rss_before,
+                "after_journal_replay": rss_after_replay,
+                "after_projection_build": rss_after_build,
+                "after_cold_projection_open": rss_after_cold_open,
+                "after_first_queries": rss_after_first_queries,
+                "after_first_and_warm_queries": rss_after_warm_queries,
+            },
+            "timings_ns": {
+                "journal_replay_before_build": journal_replay_ns,
+                "durable_projection_build": projection_build_ns,
+                "journal_replay_before_cold_open": reopen_journal_replay_ns,
+                "same_process_cold_projection_open": cold_projection_open_ns,
+                "all_first_query_chains_after_cold_open": all_first_query_chains_ns,
+                "all_warm_query_chains": all_warm_query_chains_ns,
+                "warm_full_chain_samples_total": warm_samples.len(),
+                "warm_full_chain_p50": percentile_ns(50),
+                "warm_full_chain_p95": percentile_ns(95),
+                "warm_full_chain_p99": percentile_ns(99),
+                "warm_full_chain_mean": if warm_samples.is_empty() { None } else {
+                    Some(warm_samples.iter().map(|sample| u128::from(*sample)).sum::<u128>() / warm_samples.len() as u128)
+                },
+            },
+            "first_page_latency_ns_by_query": first_page_ns_by_query,
+            "first_full_chain_latency_ns_by_query": first_chain_ns_by_query,
+            "build_validation_queries": build_checks,
+            "queries": timed_queries,
+        });
+        if let Some(parent) = report_path.parent() {
+            std::fs::create_dir_all(parent).expect("create benchmark report directory");
+        }
+        std::fs::write(
+            &report_path,
+            serde_json::to_vec_pretty(&report).expect("serialize benchmark report"),
+        )
+        .expect("persist direct benchmark report");
+        assert!(
+            build_checks_pass,
+            "freshly built production index missed labels; report: {}",
+            report_path.display()
+        );
+        assert!(
+            query_checks_pass,
+            "cold-open production index missed labels; report: {}",
+            report_path.display()
+        );
     }
 
     #[test]
