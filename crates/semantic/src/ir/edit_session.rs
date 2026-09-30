@@ -1558,7 +1558,9 @@ const fn family_bit(family: RowFamily) -> u8 {
     1 << (family.code() - 1)
 }
 
-fn capacity_bytes<T>(values: &[T]) -> u64 {
+// This counter measures allocated slots, including unused vector capacity.
+#[allow(clippy::ptr_arg)]
+fn capacity_bytes<T>(values: &Vec<T>) -> u64 {
     u64::try_from(values.capacity().saturating_mul(size_of::<T>())).unwrap_or(u64::MAX)
 }
 
