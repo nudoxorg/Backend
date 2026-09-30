@@ -805,6 +805,18 @@ fn semantic_lane_only_reorders_local_matches_and_suppresses_unknown_ids() {
     let semantic_only_row = RowId::Symbol(backend_engine::symbol_key("meaning::related"));
     let semantic_only_entity = local::entity_id(workspace, semantic_only_row).expect("entity");
     assert!(!lexical_entities.contains(&semantic_only_entity));
+    let mut mixed_candidates = known_candidates.clone();
+    mixed_candidates.push(semantic_only_entity);
+    mixed_candidates.reverse();
+    mixed_candidates.push(semantic_only_entity);
+    assert_eq!(
+        local
+            .lexical_relevance_for_candidates(&mixed_candidates)
+            .expect("resolve cached and provider candidates")
+            .as_slice(),
+        local.matches.as_slice(),
+        "cached and fallback candidate scores share the same sorted unique result contract"
+    );
     let semantic_only = coordinator
         .semantic_candidate(semantic_only_row)
         .expect("semantic-only candidate");
