@@ -91,3 +91,10 @@ pub(super) fn compact_history_tombstones(target_root: &Path) -> Result<(), Strin
 pub(super) fn recover_pending_retention_delete(target_root: &Path) -> Result<(), String> {
     retention::recover_pending_delete(target_root)
 }
+
+#[cfg(test)]
+pub(super) fn read_retention_stats_for_test(
+    target_root: &Path,
+) -> Result<Option<HistoryGcStats>, String> {
+    retention::read_stats(target_root)
+}
