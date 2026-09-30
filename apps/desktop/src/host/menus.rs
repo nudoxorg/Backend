@@ -83,13 +83,4 @@ pub(crate) fn install(cx: &mut App) {
         }
     })
     .detach();
-    cx.on_reopen(|cx| {
-        cx.activate(true);
-        let window = cx
-            .active_window()
-            .or_else(|| cx.windows().into_iter().next());
-        if let Some(window) = window {
-            let _ = window.update(cx, |_, window, _| window.activate_window());
-        }
-    });
 }
