@@ -3342,7 +3342,7 @@ const fn package_authority_projection(
 
     match cause {
         PackageAuthorityError::SourceOutsidePackage { .. }
-        | PackageAuthorityError::TypeScriptEntryPath { .. }
+        | PackageAuthorityError::TypeScriptSourcePath { .. }
         | PackageAuthorityError::CompilationUnitMismatch { .. }
         | PackageAuthorityError::CompilationUnitSourceMismatch { .. }
         | PackageAuthorityError::RustToolchainExecutableMismatch { .. }
