@@ -637,7 +637,9 @@ fn open_unix_path(path: &Path) -> io::Result<File> {
                 })?;
                 current = File::from(child);
                 #[cfg(target_os = "macos")]
-                at_system_root = false;
+                {
+                    at_system_root = false;
+                }
             }
             Component::ParentDir | Component::Prefix(_) => return Err(invalid("unsafe root path")),
         }
