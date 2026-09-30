@@ -1460,14 +1460,13 @@ fn posting_cover_work_budget_counts_deleted_edges_and_is_not_corruption() {
     );
     let mut source = TantivySource::build(&initial, Limits::default()).expect("initial source");
     let _no_automatic_merges = crate::engine::test_support::no_automatic_merges_for_test();
-    let initial_searcher = source.reader.searcher();
     assert_eq!(
-        initial_searcher.segment_readers().len(),
-        1,
-        "the two initial rows must share the segment whose tombstone remains observable"
+        crate::engine::test_support::resident_segment_id(&source, id)
+            .expect("changing row is bound to its initial segment"),
+        crate::engine::test_support::resident_segment_id(&source, stable_id)
+            .expect("canary row is bound to its initial segment"),
+        "the unchanged canary must keep the changing row's original segment alive"
     );
-    assert_eq!(initial_searcher.segment_readers()[0].max_doc(), 2);
-    drop(initial_searcher);
     let (initial_edges, initial_work_units) =
         crate::engine::test_support::validate_posting_cover_with_work_budget(
             &source,

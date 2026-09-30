@@ -1547,7 +1547,7 @@ impl TantivySource {
             .into());
         }
 
-        let mut writer = self._index.writer(WRITER_MEMORY_BYTES)?;
+        let mut writer = self._index.writer::<TantivyDocument>(WRITER_MEMORY_BYTES)?;
         writer.set_merge_policy(Box::new(tantivy::merge_policy::NoMergePolicy));
         if writer.merge(&segment_ids).wait()?.is_none() {
             return Err(Self::corrupt(
