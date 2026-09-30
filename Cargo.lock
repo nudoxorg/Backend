@@ -787,9 +787,12 @@ dependencies = [
 name = "backend-advisory"
 version = "0.1.0"
 dependencies = [
+ "backend-platform",
  "blake3",
+ "fs4",
  "serde",
  "serde_json",
+ "tempfile",
  "toml 0.8.23",
 ]
 
@@ -934,9 +937,9 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "proptest",
  "rustix 1.1.4",
+ "semver",
  "serde",
  "serde_json",
- "semver",
  "sha2 0.10.9",
  "toml 0.8.23",
  "windows 0.61.3",
