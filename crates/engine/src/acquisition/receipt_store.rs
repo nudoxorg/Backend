@@ -1295,13 +1295,15 @@ mod tests {
         let store = AcquisitionReceiptStore::open(root.join("receipts")).expect("store");
         let locks = LeaseStore::open(root.join("leases")).expect("lease store");
         let mut stale = locks
-            .acquire(request.receipt_work_key(), Duration::ZERO)
-            .expect("acquire expired lease")
+            .acquire(request.receipt_work_key(), Duration::from_secs(30))
+            .expect("acquire a valid lease")
             .expect("first lease");
+        stale.expire_for_test().expect("persist the expired lease");
         let mut current = locks
             .acquire(request.receipt_work_key(), Duration::from_secs(30))
             .expect("take over expired lease")
             .expect("current lease");
+        assert_ne!(stale.lease().token, current.lease().token);
         assert!(
             store
                 .publish(record.clone(), &mut stale)
@@ -1331,14 +1333,20 @@ mod tests {
     #[test]
     fn oversized_head_is_rejected_after_a_fixed_width_read() {
         let root = temporary("oversized-head");
-        let (record, request) = published_fixture();
+        let (mut record, request) = published_fixture();
         let store = AcquisitionReceiptStore::open(root.join("receipts")).expect("store");
         let (_locks, mut lease) = lease(&root, &request);
-        store
+        record.id = store
             .publish(record.clone(), &mut lease)
             .expect("publish")
             .expect("current lease");
         drop(lease);
+        assert_eq!(
+            store
+                .recover(&request, record.owner_cursor, record.facts_frontier, 7)
+                .expect("admit the valid receipt before tampering"),
+            Some(record.clone())
+        );
 
         let head = store.head_path(request.source_intent());
         fs::write(&head, vec![0_u8; ID_BYTES + 1]).expect("write oversized head");
@@ -1376,14 +1384,20 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let root = temporary("symlinked-head");
-        let (record, request) = published_fixture();
+        let (mut record, request) = published_fixture();
         let store = AcquisitionReceiptStore::open(root.join("receipts")).expect("store");
         let (_locks, mut lease) = lease(&root, &request);
-        store
+        record.id = store
             .publish(record.clone(), &mut lease)
             .expect("publish")
             .expect("current lease");
         drop(lease);
+        assert_eq!(
+            store
+                .recover(&request, record.owner_cursor, record.facts_frontier, 7)
+                .expect("admit the valid receipt before tampering"),
+            Some(record.clone())
+        );
 
         let head = store.head_path(request.source_intent());
         let external_head = root.join("external-head");
@@ -1398,6 +1412,12 @@ mod tests {
 
         fs::remove_file(&head).expect("remove symlink head");
         fs::write(&head, record.id.to_bytes()).expect("restore regular head");
+        assert_eq!(
+            store
+                .recover(&request, record.owner_cursor, record.facts_frontier, 7)
+                .expect("restoring the regular head restores admission"),
+            Some(record.clone())
+        );
         let record_path = store.root.join("records").join(hex(record.id.as_bytes()));
         let external_record = root.join("external-record");
         fs::copy(&record_path, &external_record).expect("copy record outside store");
@@ -1410,6 +1430,13 @@ mod tests {
         );
 
         fs::remove_file(&record_path).expect("remove symlink record");
+        fs::rename(&external_record, &record_path).expect("restore the valid managed record");
+        assert_eq!(
+            store
+                .recover(&request, record.owner_cursor, record.facts_frontier, 7)
+                .expect("restoring the regular record restores admission"),
+            Some(record.clone())
+        );
         let heads = store.root.join("heads");
         let moved_heads = store.root.join("heads-real");
         fs::rename(&heads, &moved_heads).expect("move managed heads directory");
