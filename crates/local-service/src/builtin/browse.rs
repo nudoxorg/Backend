@@ -40,6 +40,7 @@ const CARGO_DEADLINE: Duration = Duration::from_secs(90);
 const MAX_CARGO_OBSERVATION_PATHS: usize = 21_024;
 const MAX_CARGO_OBSERVATION_FILE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CARGO_OBSERVATION_TOTAL_BYTES: usize = 256 * 1024 * 1024;
+const MAX_CARGO_TOOL_BINARY_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_CARGO_CONFIG_BYTES: usize = 1024 * 1024;
 const MAX_CARGO_CONFIG_INPUTS: usize = 256;
 const MAX_CARGO_CONFIG_DEPTH: usize = 16;
@@ -599,7 +600,7 @@ struct CoherentMetadata {
 /// absent lock/config file invalidates the cache too.
 fn observation_witness(workspace: &Path, files: &[PathBuf]) -> Result<InputObservation, String> {
     let environment = cargo_environment_witness()?;
-    let tool = current_cargo_tool_witness().unwrap_or_else(unavailable_tool_witness);
+    let tool = current_cargo_tool_witness(workspace).unwrap_or_else(unavailable_tool_witness);
     observation_witness_with_context(workspace, files, environment, tool)
 }
 
@@ -608,7 +609,7 @@ fn strict_observation_witness(
     files: &[PathBuf],
 ) -> Result<InputObservation, String> {
     let environment = cargo_environment_witness()?;
-    let tool = current_cargo_tool_witness()?;
+    let tool = current_cargo_tool_witness(workspace)?;
     observation_witness_with_context(workspace, files, environment, tool)
 }
 
@@ -768,52 +769,258 @@ fn cargo_environment_witness() -> Result<[u8; 32], String> {
     Ok(*hasher.finalize().as_bytes())
 }
 
-fn current_cargo_tool_witness() -> Result<[u8; 32], String> {
+fn current_cargo_tool_witness(workspace: &Path) -> Result<[u8; 32], String> {
     let cargo = cargo_program().ok_or_else(|| "cargo was not found".to_owned())?;
-    let version = run(&cargo, Path::new("/"), &["-vV"], 64 * 1024)?;
-    metadata_tool_witness(&cargo, &version)
+    let version = run(&cargo, workspace, &["-vV"], 64 * 1024)?;
+    metadata_tool_witness(workspace, &cargo, &version)
 }
 
-fn metadata_tool_witness(cargo: &Path, version: &[u8]) -> Result<[u8; 32], String> {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"backend.cargo-source-tools.v1\0");
-    for path in [Some(cargo.to_path_buf()), rustc_program(cargo)]
-        .into_iter()
-        .flatten()
-    {
-        let resolved = path
-            .canonicalize()
-            .map_err(|error| format!("cannot resolve Cargo metadata tool: {error}"))?;
-        let metadata = std::fs::metadata(&resolved)
-            .map_err(|error| format!("cannot inspect Cargo metadata tool: {error}"))?;
-        hasher.update(resolved.as_os_str().as_encoded_bytes());
-        hasher.update(&metadata.len().to_le_bytes());
-        if let Ok(modified) = metadata.modified()
-            && let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH)
-        {
-            hasher.update(&duration.as_secs().to_le_bytes());
-            hasher.update(&duration.subsec_nanos().to_le_bytes());
-        }
+fn metadata_tool_witness(
+    workspace: &Path,
+    cargo: &Path,
+    cargo_version: &[u8],
+) -> Result<[u8; 32], String> {
+    reject_unresolved_rustc_selection(workspace)?;
+
+    let cargo_executable = effective_cargo_executable(cargo, workspace, cargo_version)?;
+    let cargo_executable_witness = tool_executable_witness(&cargo_executable)?;
+
+    let selected_rustc = rustc_program(cargo, workspace)?;
+    let selected_rustc_version = run(&selected_rustc, workspace, &["-vV"], 64 * 1024)?;
+    let selected_sysroot = run(
+        &selected_rustc,
+        workspace,
+        &["--print", "sysroot"],
+        64 * 1024,
+    )?;
+    let selected_sysroot = std::str::from_utf8(&selected_sysroot)
+        .map_err(|_| "selected rustc returned a non-UTF-8 sysroot".to_owned())?
+        .trim();
+    if selected_sysroot.is_empty() || selected_sysroot.len() > 4 * 1024 {
+        return Err("selected rustc returned an invalid sysroot".to_owned());
     }
-    hasher.update(&(version.len() as u64).to_le_bytes());
-    hasher.update(version);
+    let sysroot = PathBuf::from(selected_sysroot)
+        .canonicalize()
+        .map_err(|_| "selected rustc sysroot cannot be resolved".to_owned())?;
+    let rustc_name = format!("rustc{}", std::env::consts::EXE_SUFFIX);
+    let effective_rustc = sysroot.join("bin").join(rustc_name);
+    let effective_rustc = effective_rustc
+        .canonicalize()
+        .map_err(|_| "selected rustc sysroot has no verifiable compiler executable".to_owned())?;
+    let effective_rustc_version = run(&effective_rustc, workspace, &["-vV"], 64 * 1024)?;
+    if effective_rustc_version != selected_rustc_version {
+        return Err("selected rustc does not match its reported sysroot compiler".to_owned());
+    }
+    let selected_rustc_witness = tool_executable_witness(&selected_rustc)?;
+    let effective_rustc_witness = tool_executable_witness(&effective_rustc)?;
+
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.cargo-source-tools.v2\0");
+    hasher.update(&cargo_executable_witness);
+    hasher.update(&(cargo_version.len() as u64).to_le_bytes());
+    hasher.update(cargo_version);
+    hasher.update(&selected_rustc_witness);
+    hasher.update(&effective_rustc_witness);
+    hasher.update(&(selected_rustc_version.len() as u64).to_le_bytes());
+    hasher.update(&selected_rustc_version);
+    hasher.update(sysroot.as_os_str().as_encoded_bytes());
     Ok(*hasher.finalize().as_bytes())
 }
 
-fn rustc_program(cargo: &Path) -> Option<PathBuf> {
+fn effective_cargo_executable(
+    cargo: &Path,
+    workspace: &Path,
+    expected_version: &[u8],
+) -> Result<PathBuf, String> {
+    let resolved = cargo
+        .canonicalize()
+        .map_err(|_| "Cargo executable path cannot be resolved".to_owned())?;
+    let is_rustup_proxy = cargo.file_stem() == Some(std::ffi::OsStr::new("cargo"))
+        && resolved.file_stem() == Some(std::ffi::OsStr::new("rustup"));
+    if !is_rustup_proxy {
+        return Ok(resolved);
+    }
+    let selected = run(&resolved, workspace, &["which", "cargo"], 16 * 1024)?;
+    let selected = std::str::from_utf8(&selected)
+        .map_err(|_| "rustup returned a non-UTF-8 Cargo path".to_owned())?
+        .trim();
+    if selected.is_empty() || selected.len() > 4 * 1024 {
+        return Err("rustup returned an invalid Cargo path".to_owned());
+    }
+    let selected = PathBuf::from(selected);
+    if !selected.is_absolute() {
+        return Err("rustup returned a non-absolute Cargo path".to_owned());
+    }
+    let selected_version = run(&selected, workspace, &["-vV"], 64 * 1024)?;
+    if selected_version != expected_version {
+        return Err("rustup-selected Cargo differs from the observed Cargo invocation".to_owned());
+    }
+    selected
+        .canonicalize()
+        .map_err(|_| "rustup-selected Cargo path cannot be resolved".to_owned())
+}
+
+/// Hashes the exact bounded native executable bytes reached through a
+/// no-follow parent capability. Size and mtime are not treated as identity.
+fn tool_executable_witness(path: &Path) -> Result<[u8; 32], String> {
+    let resolved = path
+        .canonicalize()
+        .map_err(|_| "tool executable path cannot be resolved".to_owned())?;
+    let parent = resolved
+        .parent()
+        .ok_or_else(|| "tool executable has no parent directory".to_owned())?;
+    let name = resolved
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .ok_or_else(|| "tool executable name is not UTF-8".to_owned())?;
+    let directory = DirectoryCapability::open_read_only_source(parent).map_err(|_| {
+        "tool executable directory cannot be held without following links".to_owned()
+    })?;
+    let mut file = directory
+        .open_file_read(name)
+        .map_err(|_| "tool executable cannot be opened without following links".to_owned())?;
+    let before = file
+        .metadata()
+        .map_err(|_| "tool executable metadata cannot be read".to_owned())?;
+    if !before.is_file() || before.len() == 0 || before.len() > MAX_CARGO_TOOL_BINARY_BYTES {
+        return Err("tool executable is not a bounded regular file".to_owned());
+    }
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.cargo-tool-executable.v1\0");
+    hasher.update(resolved.as_os_str().as_encoded_bytes());
+    hasher.update(&before.len().to_le_bytes());
+    let mut prefix = [0_u8; 4];
+    file.read_exact(&mut prefix)
+        .map_err(|_| "tool executable is shorter than its format header".to_owned())?;
+    if !is_supported_executable_header(prefix) {
+        return Err("selected Cargo/Rust tool is not a verifiable native executable".to_owned());
+    }
+    hasher.update(&prefix);
+    let mut total = prefix.len() as u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|_| "tool executable bytes could not be read".to_owned())?;
+        if read == 0 {
+            break;
+        }
+        total = total.saturating_add(read as u64);
+        if total > MAX_CARGO_TOOL_BINARY_BYTES {
+            return Err("tool executable exceeds its byte limit".to_owned());
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let after = file
+        .metadata()
+        .map_err(|_| "tool executable could not be rechecked".to_owned())?;
+    if before.len() != after.len() || total != before.len() {
+        return Err("tool executable changed while its bytes were observed".to_owned());
+    }
+    Ok(*hasher.finalize().as_bytes())
+}
+
+fn is_supported_executable_header(header: [u8; 4]) -> bool {
+    header == *b"\x7fELF"
+        || &header[..2] == b"MZ"
+        || matches!(
+            header,
+            [0xfe, 0xed, 0xfa, 0xce]
+                | [0xce, 0xfa, 0xed, 0xfe]
+                | [0xfe, 0xed, 0xfa, 0xcf]
+                | [0xcf, 0xfa, 0xed, 0xfe]
+                | [0xca, 0xfe, 0xba, 0xbe]
+                | [0xbe, 0xba, 0xfe, 0xca]
+                | [0xca, 0xfe, 0xba, 0xbf]
+                | [0xbf, 0xba, 0xfe, 0xca]
+        )
+}
+
+/// Cargo wrappers and config-selected compilers can execute a different
+/// compiler than the path discoverable from `RUSTC`; until their full
+/// effective chain can be admitted, source metadata authority fails closed.
+fn reject_unresolved_rustc_selection(workspace: &Path) -> Result<(), String> {
+    for variable in [
+        "RUSTC_WRAPPER",
+        "RUSTC_WORKSPACE_WRAPPER",
+        "CARGO_BUILD_RUSTC",
+        "CARGO_BUILD_RUSTC_WRAPPER",
+        "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
+    ] {
+        if std::env::var_os(variable).is_some_and(|value| !value.is_empty()) {
+            return Err(format!(
+                "Cargo source authority cannot verify active {variable} selection"
+            ));
+        }
+    }
+    for path in cargo_config_paths(workspace)? {
+        if path.extension() == Some(std::ffi::OsStr::new("json")) {
+            continue;
+        }
+        let Some(bytes) = read_observation_file(&path, MAX_CARGO_CONFIG_BYTES)? else {
+            continue;
+        };
+        let document: toml::Value = std::str::from_utf8(&bytes)
+            .map_err(|_| "Cargo config is not UTF-8 during tool admission".to_owned())?
+            .parse()
+            .map_err(|_| "Cargo config is malformed during tool admission".to_owned())?;
+        if cargo_config_selects_unresolved_rustc(&document) {
+            return Err(
+                "Cargo source authority cannot verify a rustc or wrapper selected by Cargo config"
+                    .to_owned(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn cargo_config_selects_unresolved_rustc(document: &toml::Value) -> bool {
+    let build_selects_rustc = document
+        .get("build")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|build| {
+            ["rustc", "rustc-wrapper", "rustc-workspace-wrapper"]
+                .iter()
+                .any(|key| build.contains_key(*key))
+        });
+    let env_selects_rustc = document
+        .get("env")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|env| {
+            ["RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"]
+                .iter()
+                .any(|key| env.contains_key(*key))
+        });
+    build_selects_rustc || env_selects_rustc
+}
+
+fn find_executable_on_path(name: &std::ffi::OsStr) -> Option<PathBuf> {
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(std::env::split_paths)
+        .map(|directory| directory.join(name))
+        .find(|path| path.is_file())
+}
+
+fn rustc_program(cargo: &Path, workspace: &Path) -> Result<PathBuf, String> {
     if let Some(rustc) = std::env::var_os("RUSTC") {
-        return Some(PathBuf::from(rustc));
+        let rustc = PathBuf::from(rustc);
+        if rustc.is_absolute() {
+            return Ok(rustc);
+        }
+        if rustc.components().count() > 1 {
+            return Ok(workspace.join(rustc));
+        }
+        return find_executable_on_path(rustc.as_os_str())
+            .ok_or_else(|| "the configured RUSTC executable was not found".to_owned());
     }
     if let Some(sibling) = cargo.parent().map(|bin| bin.join("rustc"))
         && sibling.is_file()
     {
-        return Some(sibling);
+        return Ok(sibling);
     }
-    std::env::var_os("PATH")
-        .into_iter()
-        .flat_map(std::env::split_paths)
-        .map(|directory| directory.join("rustc"))
-        .find(|path| path.is_file())
+    find_executable_on_path(std::ffi::OsStr::new("rustc"))
+        .ok_or_else(|| "the Cargo-selected rustc executable was not found".to_owned())
 }
 
 /// The tree input and its observed paths. The first metadata call discovers
@@ -1245,7 +1452,7 @@ fn cargo_metadata(workspace: &Path) -> Result<(Vec<u8>, String, [u8; 32]), Strin
                 .map(ToOwned::to_owned)
         })
         .ok_or_else(|| "cargo -vV named no host".to_owned())?;
-    let tool_before = metadata_tool_witness(&cargo, &version)?;
+    let tool_before = metadata_tool_witness(workspace, &cargo, &version)?;
     let metadata = run(
         &cargo,
         workspace,
@@ -1260,7 +1467,7 @@ fn cargo_metadata(workspace: &Path) -> Result<(Vec<u8>, String, [u8; 32]), Strin
         ],
         MAX_METADATA_BYTES,
     )?;
-    let tool_after = metadata_tool_witness(&cargo, &version)?;
+    let tool_after = metadata_tool_witness(workspace, &cargo, &version)?;
     let environment_after = cargo_environment_witness()?;
     if tool_before != tool_after || environment_before != environment_after {
         return Err("Cargo tools or selection environment changed during metadata".to_owned());
@@ -1844,6 +2051,74 @@ mod tests {
             "the second Cargo pass must not run on an incomplete input set"
         );
         assert_eq!(observations, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tool_identity_detects_same_size_same_mtime_executable_replacement() {
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let scratch = Scratch(std::env::temp_dir().join(format!(
+            "backend-cargo-tool-witness-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        )));
+        std::fs::create_dir_all(&scratch.0).expect("tool directory");
+        let tool = scratch.0.join("cargo-fixture");
+        let replacement = scratch.0.join("replacement");
+        std::fs::write(&tool, b"\x7fELFfirst-image").expect("initial executable bytes");
+        let modified = std::fs::metadata(&tool)
+            .expect("initial metadata")
+            .modified()
+            .expect("initial modified time");
+        std::fs::write(&replacement, b"\x7fELFother-image").expect("replacement bytes");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&replacement)
+            .expect("replacement file")
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .expect("preserve mtime");
+        let before_metadata = std::fs::metadata(&tool).expect("initial metadata");
+        let replacement_metadata = std::fs::metadata(&replacement).expect("replacement metadata");
+        assert_eq!(before_metadata.len(), replacement_metadata.len());
+        assert_eq!(
+            before_metadata.modified().unwrap(),
+            replacement_metadata.modified().unwrap()
+        );
+
+        let before = tool_executable_witness(&tool).expect("initial executable witness");
+        std::fs::rename(&replacement, &tool).expect("atomic same-path replacement");
+        let after = tool_executable_witness(&tool).expect("replacement executable witness");
+        assert_ne!(
+            before, after,
+            "executable content, not stat metadata, identifies the tool"
+        );
+    }
+
+    #[test]
+    fn config_selected_rustc_and_wrappers_fail_closed_until_the_chain_is_proven() {
+        for config in [
+            "[build]\nrustc = '/opt/custom/rustc'\n",
+            "[build]\nrustc-wrapper = 'cache-wrapper'\n",
+            "[build]\nrustc-workspace-wrapper = 'workspace-wrapper'\n",
+            "[env]\nRUSTC = '/opt/custom/rustc'\n",
+            "[env]\nRUSTC_WRAPPER = 'cache-wrapper'\n",
+            "[env]\nRUSTC_WORKSPACE_WRAPPER = 'workspace-wrapper'\n",
+        ] {
+            let document = config.parse::<toml::Value>().expect("valid Cargo config");
+            assert!(cargo_config_selects_unresolved_rustc(&document), "{config}");
+        }
+        let ordinary = "[build]\ntarget = 'x86_64-unknown-linux-gnu'\n"
+            .parse::<toml::Value>()
+            .expect("ordinary config");
+        assert!(!cargo_config_selects_unresolved_rustc(&ordinary));
     }
 
     #[test]
