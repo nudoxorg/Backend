@@ -5,6 +5,7 @@ use crate::core::VersionedRoot;
 use crate::model::AppSnapshot;
 use crate::model::pages::{PackageRef, PageKey, SymbolRef};
 use crate::navigation::{Route, View};
+use crate::runtime::indexed_world::Origin;
 use backend_library::DeclarationKind;
 use std::sync::Arc;
 
@@ -18,7 +19,11 @@ pub(crate) struct GraphFocus {
     pub package: Arc<str>,
     pub module: Arc<str>,
     pub kind: DeclarationKind,
-    /// Only an actual indexed coordinate admitted by the exact identity join.
+    /// Provenance of the projection that supplied this focus. Fixtures keep
+    /// their label through the same resolver without claiming owner data.
+    pub origin: Origin,
+    /// Exact coordinate admitted by this projection's identity join. Tests
+    /// tag their owner as synthetic; production values come from the index.
     pub indexed: Option<(PackageRef, SymbolRef)>,
 }
 
@@ -38,13 +43,14 @@ impl GraphFocus {
     }
 
     pub(crate) fn caption_path(&self) -> String {
-        format!("{} › {} · indexed graph", self.package, self.module)
+        format!("{} › {} · {}", self.package, self.module, self.origin.lower_label())
     }
 
-    /// Plain indexed provenance, deliberately without a navigation scheme.
+    /// Plain provenance, deliberately without a navigation scheme.
     pub(crate) fn status(&self) -> String {
         format!(
-            "Indexed graph · {}::{}::{}",
+            "{} · {}::{}::{}",
+            self.origin.label(),
             self.package, self.module, self.name
         )
     }

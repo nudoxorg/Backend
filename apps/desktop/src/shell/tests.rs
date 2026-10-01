@@ -344,7 +344,6 @@ pub(crate) fn rig_with_engine(
     cx.update(|cx| {
         gpui_component::init(cx);
         let _ = facet::fonts::install(cx);
-        super::bodies::graph::install_test_fixture(cx);
     });
     let mut snapshot = AppSnapshot::empty(VersionedRoot::synthetic(
         backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]),
@@ -387,6 +386,10 @@ pub(crate) fn rig_with_engine(
         cx: visual,
         patience: Duration::from_secs(20),
     };
+    rig.settle();
+    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    rig.cx.update(|_, cx| super::bodies::graph::install_test_fixture(root, cx));
+    rig.repaint();
     rig.settle();
     if let Some(route) = route {
         rig.go(Intent::Navigate(route));

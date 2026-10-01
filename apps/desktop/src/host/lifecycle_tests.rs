@@ -271,7 +271,6 @@ fn window_before_its_owner(cx: &mut TestAppContext, gate: &OwnerGate) -> (UiEnti
     cx.update(|cx| {
         gpui_component::init(cx);
         let _ = facet::fonts::install(cx);
-        crate::shell::bodies::graph::install_test_fixture(cx);
     });
     let snapshot = AppSnapshot::empty(VersionedRoot::unserved());
     let runtime = DesktopRuntime::new(snapshot, EngineActor::start(WaitsForOwner(gate.clone()), 8).expect("actor"));

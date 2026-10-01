@@ -4,17 +4,15 @@
 //! (`IdentityAdapter`, file + line + name), and every assertion reads what
 //! was painted (the probe ledger), never the model it was built from.
 
-use super::tests::{PACKAGE, Fixture, Rig, dossier, page_route, rig, rig_with_reads};
-use crate::model::pages::{DeclRef, Known, OutlineNode, OutlineTree, PackageRef, PageValue, ReadFailure};
+use super::tests::{PACKAGE, Rig, page_route, rig};
+use crate::model::pages::PackageRef;
 use crate::navigation::Intent;
-use crate::runtime::reads::{PageReader, ReadContext, ReadPool, ReadRequest};
 use crate::shell::bodies::graph::identity::IdentityAdapter;
-use backend_library::DeclarationKind;
 use facet::graph::{Edge, Kind, Module, Node, Package, Rel, World};
 use facet::probe::Ledger;
 use gpui::{Modifiers, TestAppContext, point, px};
 use std::collections::HashMap;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// The caller's file: `print_labels` (lines 3–6) uses `RelationLabel`.
@@ -124,7 +122,16 @@ pub(super) fn install(rig: &mut Rig) {
     let world = world();
     let identities = Arc::new(IdentityAdapter::synthetic(&world, PackageRef::parse(PACKAGE).expect("package")));
     let files = HashMap::from([("glyph.rs".to_owned(), Arc::<str>::from(GLYPH))]);
+    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
     rig.cx.update(|_, cx| {
+        crate::runtime::indexed_world::install_test_projection(
+            root,
+            "single-package anatomy fixture",
+            Arc::clone(&world),
+            Arc::clone(&identities),
+            None,
+            cx,
+        );
         crate::runtime::fixture_world::install(world, identities, files, cx);
         facet::probe::enable(cx);
     });
@@ -136,71 +143,33 @@ pub(super) fn painted(rig: &mut Rig) -> Ledger {
     rig.cx.update(|_, cx| facet::probe::take(cx))
 }
 
-/// A worker barrier makes the package outline arrive only after the mounted
-/// shell has navigated away. Releasing on unwind also keeps the pool finite.
-#[derive(Default)]
-struct PackageGate {
-    state: Mutex<(bool, bool)>, // entered, released
-    wake: Condvar,
-}
-
-impl PackageGate {
-    fn hold(&self) {
-        let mut state = self.state.lock().expect("package gate");
-        state.0 = true;
-        self.wake.notify_all();
-        while !state.1 {
-            let (next, timed) = self.wake.wait_timeout(state, Duration::from_secs(10)).expect("package barrier");
-            state = next;
-            assert!(!timed.timed_out() || state.1, "the test never released its package read");
-        }
-    }
-
-    fn entered(&self) -> bool { self.state.lock().expect("package gate").0 }
-    fn release(&self) {
-        self.state.lock().expect("package gate").1 = true;
-        self.wake.notify_all();
-    }
-}
-
-struct ReleasePackage(Arc<PackageGate>);
-impl Drop for ReleasePackage {
+/// A worker barrier holds the exact graph projection that anatomy must join.
+/// It exercises the same bounded resolver as the hand and graph views.
+struct ReleaseProjection(Arc<crate::runtime::indexed_world::TestProjectionGate>);
+impl Drop for ReleaseProjection {
     fn drop(&mut self) { self.0.release(); }
-}
-
-struct CrossPackageFixture { gate: Arc<PackageGate> }
-impl PageReader for CrossPackageFixture {
-    fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
-        if let ReadRequest::Package(package) = request
-            && package.as_str() == "/fixture/app"
-        {
-            self.gate.hold();
-            let mut page = dossier();
-            page.package = package.clone();
-            let decl = DeclRef::from_label("/fixture/app::app.rs:1::main", None, Some(DeclarationKind::Function), Some(("app.rs", 1))).expect("exact main");
-            page.outline = Known::Known(OutlineTree {
-                roots: Arc::from([OutlineNode { decl, children: Arc::from([]) }]),
-                complete: true,
-            });
-            return Ok(PageValue::Package(page));
-        }
-        Fixture.read(request, context)
-    }
 }
 
 #[gpui::test]
 fn late_cross_package_outline_cannot_open_after_back_away_but_a_fresh_click_can(cx: &mut TestAppContext) {
-    let gate = Arc::new(PackageGate::default());
-    let worker_gate = gate.clone();
-    let pool = ReadPool::start(2, move |_| CrossPackageFixture { gate: worker_gate.clone() }).expect("package pool");
-    let mut rig = rig_with_reads(cx, Some(page_route("RelationLabel")), 1440.0, 900.0, pool);
-    let _release_on_unwind = ReleasePackage(gate.clone());
+    let gate = Arc::new(crate::runtime::indexed_world::TestProjectionGate::default());
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    let _release_on_unwind = ReleaseProjection(gate.clone());
     let world = world();
-    let identities = Arc::new(IdentityAdapter::synthetic_catalog(&world, vec![
+    let identities = Arc::new(IdentityAdapter::synthetic_exact_catalog(&world, vec![
         PackageRef::parse(PACKAGE).expect("present"),
         PackageRef::parse("/fixture/app").expect("app"),
     ]));
+    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
     rig.cx.update(|_, cx| {
+        crate::runtime::indexed_world::install_test_projection(
+            root,
+            "late cross-package anatomy fixture",
+            Arc::clone(&world),
+            Arc::clone(&identities),
+            Some(gate.clone()),
+            cx,
+        );
         crate::runtime::fixture_world::install(world, identities, HashMap::new(), cx);
         facet::probe::enable(cx);
     });
@@ -211,10 +180,12 @@ fn late_cross_package_outline_cannot_open_after_back_away_but_a_fresh_click_can(
     let deadline = Instant::now() + Duration::from_secs(3);
     while !gate.entered() {
         rig.frame(16);
-        assert!(Instant::now() < deadline, "cross-package outline never entered its worker");
+        assert!(Instant::now() < deadline, "cross-package graph projection never entered its worker");
         std::thread::sleep(Duration::from_millis(1));
     }
     assert_eq!(rig.route(), page_route("RelationLabel"), "no guessed route while the exact outline is cold");
+    let notice = rig.graph.store.read_with(rig.cx, |store, _| store.notice().map(|notice| notice.message.to_string()));
+    assert!(notice.as_deref().is_some_and(|message| message.contains("graph is still being read")), "the cold exact projection remains provisional: {notice:?}");
 
     let away = page_route("SemanticLinkKind");
     rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(away.clone()), cx));
@@ -244,7 +215,19 @@ fn an_anatomy_link_the_index_lacks_speaks_through_the_notice_instead_of_moving(c
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     install(&mut rig); // single-package identity: `app`/`main` (node 7) is not admitted
     let open = || facet::anatomy::Open { target: facet::semantics::Target::Node(7) };
-    rig.cx.update(|window, cx| window.dispatch_action(Box::new(open()), cx));
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        rig.cx.update(|window, cx| window.dispatch_action(Box::new(open()), cx));
+        let notice = rig.graph.store.read_with(rig.cx, |store, _| store.notice().map(|notice| notice.message.to_string()));
+        assert_eq!(rig.route(), page_route("RelationLabel"), "an unresolved anatomy link never guesses a route");
+        if notice.as_deref() == Some("main isn't in the index") {
+            break;
+        }
+        assert!(notice.as_deref().is_some_and(|message| message.contains("graph is still being read")), "the projection is either pending or has the exact miss: {notice:?}");
+        assert!(Instant::now() < deadline, "the exact graph projection did not complete: {notice:?}");
+        rig.frame(16);
+        std::thread::sleep(Duration::from_millis(1));
+    }
     rig.settle();
     assert_eq!(rig.route(), page_route("RelationLabel"), "an unresolvable link does not move the page");
     let message = rig.graph.store.read_with(rig.cx, |store, _| store.notice().map(|notice| notice.message.to_string()));

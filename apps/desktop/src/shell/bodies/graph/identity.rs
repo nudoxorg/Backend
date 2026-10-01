@@ -208,6 +208,53 @@ impl IdentityAdapter {
         )
     }
 
+    /// An explicit test owner that admits every node under the supplied
+    /// package coordinates. Production projections receive exact locators
+    /// from the owner; this constructor models those locators for resolver
+    /// lifecycle tests without making the ordinary synthetic fixture
+    /// implicitly routable.
+    #[cfg(test)]
+    pub(crate) fn synthetic_exact_catalog(world: &World, packages: Vec<PackageRef>) -> Self {
+        let package_index: BTreeMap<PackageRef, u32> = packages
+            .iter()
+            .cloned()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, package)| {
+                u32::try_from(index).ok().map(|index| (package, index))
+            })
+            .collect();
+        let package_by_index = packages;
+        let exact = world
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, node)| {
+                let package = package_by_index.get(node.pkg as usize)?;
+                let line = Some(node.line);
+                let file = node
+                    .file
+                    .as_ref()
+                    .unwrap_or(&world.modules[node.module as usize].file);
+                let symbol = SymbolRef::new(format!(
+                    "{}::{}:{}::{}",
+                    package.as_str(), file, node.line, node.name
+                ))
+                .ok()?;
+                let node = u32::try_from(index).ok()?;
+                Some((
+                    node,
+                    ResolvedSymbol {
+                        symbol,
+                        package: (*package).clone(),
+                        line,
+                    },
+                ))
+            })
+            .collect();
+        Self::indexed(world, &package_index, exact)
+    }
+
     pub(crate) fn candidates(&self, decl: &DeclRef, package: &PackageRef) -> Vec<NodeId> {
         let exact = self.exact_candidates(&decl.coordinate, package);
         if !exact.is_empty() {

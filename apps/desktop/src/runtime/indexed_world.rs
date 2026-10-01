@@ -20,6 +20,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(test)]
+use std::sync::{Condvar, Mutex};
 
 const WORLD_READS: usize = 4;
 const MAX_PACKAGES: usize = 64;
@@ -30,12 +34,83 @@ const MAX_RELATION_ROOTS: usize = 128;
 const MAX_RELATIONS: usize = 12_000;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+enum OwnerIdentity {
+    Indexed(PathBuf),
+    #[cfg(test)]
+    Synthetic(u64),
+}
+
+#[derive(Clone)]
 pub(crate) struct Key {
     root: VersionedRoot,
-    endpoint: PathBuf,
+    owner: OwnerIdentity,
     /// Keep the current project in the bounded projection when a workspace
     /// has more indexed packages than the graph can represent at once.
     preferred: Option<PackageRef>,
+    #[cfg(test)]
+    synthetic: Option<Arc<TestProjection>>,
+}
+
+impl std::fmt::Debug for Key {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Key")
+            .field("root", &self.root)
+            .field("owner", &self.owner)
+            .field("preferred", &self.preferred)
+            .finish()
+    }
+}
+
+impl PartialEq for Key {
+    fn eq(&self, other: &Self) -> bool {
+        self.root == other.root
+            && self.owner == other.owner
+            && self.preferred == other.preferred
+    }
+}
+
+impl Eq for Key {}
+
+impl std::hash::Hash for Key {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&self.root, state);
+        std::hash::Hash::hash(&self.owner, state);
+        std::hash::Hash::hash(&self.preferred, state);
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Origin {
+    IndexedOwner,
+    #[cfg(test)]
+    SyntheticFixture(Arc<str>),
+}
+
+impl Origin {
+    pub(crate) fn label(&self) -> &'static str {
+        match self {
+            Self::IndexedOwner => "Indexed graph",
+            #[cfg(test)]
+            Self::SyntheticFixture(_) => "Graph fixture",
+        }
+    }
+
+    pub(crate) fn lower_label(&self) -> &'static str {
+        match self {
+            Self::IndexedOwner => "indexed graph",
+            #[cfg(test)]
+            Self::SyntheticFixture(_) => "graph fixture",
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture_identity(&self) -> Option<&str> {
+        match self {
+            Self::IndexedOwner => None,
+            Self::SyntheticFixture(identity) => Some(identity),
+        }
+    }
 }
 
 pub(crate) struct Projection {
@@ -43,6 +118,7 @@ pub(crate) struct Projection {
     pub(crate) scene: Arc<facet::graph::scene::Scene>,
     pub(crate) identities: Arc<IdentityAdapter>,
     pub(crate) coverage: Coverage,
+    pub(crate) origin: Origin,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -81,9 +157,10 @@ pub(crate) struct RelationKindCoverage {
 }
 
 impl Coverage {
-    pub(crate) fn words(&self) -> String {
+    pub(crate) fn words(&self, origin: &Origin) -> String {
         let mut words = format!(
-            "Indexed graph · {} packages · {} declarations · {} relations",
+            "{} · {} packages · {} declarations · {} relations",
+            origin.label(),
             self.packages, self.declarations, self.relations
         );
         let gaps = self
@@ -116,13 +193,23 @@ impl Coverage {
         }
         if self.bounded {
             if let Some(total) = self.packages_total {
-                words.push_str(&format!(" · bounded from {total} indexed packages"));
+                let noun = if matches!(origin, Origin::IndexedOwner) {
+                    "indexed packages"
+                } else {
+                    "fixture packages"
+                };
+                words.push_str(&format!(" · bounded from {total} {noun}"));
             } else {
-            words.push_str(&format!(
-                    " · bounded after {} package rows; the owner reports more",
+                let source = if matches!(origin, Origin::IndexedOwner) {
+                    "the owner reports more"
+                } else {
+                    "the fixture provides more"
+                };
+                words.push_str(&format!(
+                    " · bounded after {} package rows; {source}",
                     self.package_rows_scanned
-            ));
-        }
+                ));
+            }
         }
         words
     }
@@ -161,6 +248,59 @@ const SEMANTIC_LINK_KINDS: [SemanticLinkKind; 11] = [
 struct Reads(Memo<Key, Result<Arc<Projection>, Arc<str>>>);
 impl Global for Reads {}
 
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct TestProjectionGate {
+    state: Mutex<(bool, bool)>, // entered, released
+    wake: Condvar,
+}
+
+#[cfg(test)]
+impl TestProjectionGate {
+    pub(crate) fn wait_for_read(&self, cancellation: &Cancellation) -> Result<(), Arc<str>> {
+        let mut state = self.state.lock().expect("projection gate");
+        state.0 = true;
+        self.wake.notify_all();
+        while !state.1 {
+            if cancellation.is_cancelled() {
+                return Err(Arc::from("the synthetic graph read was superseded"));
+            }
+            let (next, _) = self
+                .wake
+                .wait_timeout(state, std::time::Duration::from_millis(10))
+                .expect("projection gate");
+            state = next;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn entered(&self) -> bool {
+        self.state.lock().expect("projection gate").0
+    }
+
+    pub(crate) fn release(&self) {
+        self.state.lock().expect("projection gate").1 = true;
+        self.wake.notify_all();
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct TestProjection {
+    id: u64,
+    root: VersionedRoot,
+    label: Arc<str>,
+    world: Arc<World>,
+    identities: Arc<IdentityAdapter>,
+    gate: Option<Arc<TestProjectionGate>>,
+}
+
+#[cfg(test)]
+impl Global for TestProjection {}
+
+#[cfg(test)]
+static NEXT_TEST_PROJECTION: AtomicU64 = AtomicU64::new(1);
+
 impl Reads {
     fn new() -> Self {
         Self(Memo::new_cancellable(
@@ -182,18 +322,58 @@ pub(crate) fn key<T: 'static>(
     preferred: Option<PackageRef>,
     cx: &mut Context<T>,
 ) -> Option<Key> {
-    let composition = crate::host::registry::composed()?;
+    #[cfg(test)]
+    let synthetic = cx
+        .try_global::<TestProjection>()
+        .filter(|projection| projection.root == root)
+        .cloned()
+        .map(Arc::new);
+    #[cfg(test)]
+    let owner = if let Some(synthetic) = synthetic.as_ref() {
+        OwnerIdentity::Synthetic(synthetic.id)
+    } else {
+        let composition = crate::host::registry::composed()?;
+        OwnerIdentity::Indexed(composition.endpoint.clone())
+    };
+    #[cfg(not(test))]
+    let owner = {
+        let composition = crate::host::registry::composed()?;
+        OwnerIdentity::Indexed(composition.endpoint.clone())
+    };
     if cx.try_global::<Reads>().is_none() {
         cx.set_global(Reads::new());
     }
-    let endpoint = composition.endpoint.clone();
     let memo = cx.global::<Reads>().0.clone();
-    memo.retain_keys(|previous| previous.endpoint == endpoint && previous.root == root);
+    memo.retain_keys(|previous| previous.owner == owner && previous.root == root);
     Some(Key {
         root,
-        endpoint,
+        owner,
         preferred,
+        #[cfg(test)]
+        synthetic,
     })
+}
+
+#[cfg(test)]
+pub(crate) fn install_test_projection(
+    root: VersionedRoot,
+    label: impl Into<Arc<str>>,
+    world: Arc<World>,
+    identities: Arc<IdentityAdapter>,
+    gate: Option<Arc<TestProjectionGate>>,
+    cx: &mut gpui::App,
+) {
+    let id = NEXT_TEST_PROJECTION
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| next.checked_add(1))
+        .expect("synthetic owner identity space exhausted");
+    cx.set_global(TestProjection {
+        id,
+        root,
+        label: label.into(),
+        world,
+        identities,
+        gate,
+    });
 }
 
 pub(crate) fn get<T: 'static>(key: &Key, cx: &mut Context<T>) -> State {
@@ -214,8 +394,37 @@ pub(crate) fn get<T: 'static>(key: &Key, cx: &mut Context<T>) -> State {
 
 fn read(key: &Key, cancellation: &Cancellation) -> Result<Arc<Projection>, Arc<str>> {
     ensure_active(cancellation)?;
+    #[cfg(test)]
+    if let OwnerIdentity::Synthetic(id) = &key.owner {
+        let synthetic = key
+            .synthetic
+            .as_ref()
+            .filter(|projection| projection.id == *id && projection.root == key.root)
+            .ok_or_else(|| Arc::<str>::from("the synthetic graph owner changed before its read"))?;
+        if let Some(gate) = &synthetic.gate {
+            gate.wait_for_read(cancellation)?;
+        }
+        ensure_active(cancellation)?;
+        let world = Arc::clone(&synthetic.world);
+        let layout = facet::graph::layout::layout_of(&world);
+        let scene = Arc::new(facet::graph::scene::Scene::new(Arc::clone(&world), layout));
+        return Ok(Arc::new(Projection {
+            world,
+            scene,
+            identities: Arc::clone(&synthetic.identities),
+            coverage: Coverage::default(),
+            origin: Origin::SyntheticFixture(Arc::clone(&synthetic.label)),
+        }));
+    }
+    let endpoint = match &key.owner {
+        OwnerIdentity::Indexed(endpoint) => endpoint,
+        #[cfg(test)]
+        OwnerIdentity::Synthetic(_) => {
+            return Err(Arc::from("the synthetic graph owner is unsupported"));
+        }
+    };
     let composition = crate::host::registry::composed()
-        .filter(|composition| composition.endpoint == key.endpoint)
+        .filter(|composition| composition.endpoint == *endpoint)
         .ok_or_else(|| {
             Arc::from("the local service connection changed before the graph was read")
         })?;
@@ -580,6 +789,7 @@ fn read(key: &Key, cancellation: &Cancellation) -> Result<Arc<Projection>, Arc<s
         scene,
         identities,
         coverage,
+        origin: Origin::IndexedOwner,
     }))
 }
 
@@ -681,7 +891,7 @@ fn module_path(file: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Coverage, MAX_PACKAGES, PackageRef, RelationCompleteness, RelationKindCoverage,
+        Coverage, MAX_PACKAGES, Origin, PackageRef, RelationCompleteness, RelationKindCoverage,
         relation_gap, retain_package,
     };
     use backend_library::SemanticLinkKind;
@@ -726,8 +936,28 @@ mod tests {
         assert_eq!(calls.completeness, RelationCompleteness::Unknown);
         assert!(
             coverage
-                .words()
+                .words(&Origin::IndexedOwner)
                 .contains("calls 0 observed, 1 unavailable, completeness unknown")
         );
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn synthetic_projection_cache_identity_contains_exact_root_and_owner() {
+        let root = crate::core::VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("graph".into(), "fixture-a".into())]),
+            1,
+        );
+        let next_root = root.with_generation(2);
+        let key = |root, id| Key {
+            root,
+            owner: OwnerIdentity::Synthetic(id),
+            preferred: None,
+            synthetic: None,
+        };
+
+        assert_ne!(key(root, 1), key(root, 2), "distinct test owners cannot share a projection");
+        assert_ne!(key(root, 1), key(next_root, 1), "a projection never crosses its exact root");
+        assert_eq!(key(root, 1), key(root, 1));
     }
 }

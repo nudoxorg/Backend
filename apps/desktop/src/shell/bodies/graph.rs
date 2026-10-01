@@ -35,6 +35,7 @@ pub(crate) struct Map {
         Coverage,
     )>,
     world_key: Option<WorldKey>,
+    projection_origin: Option<indexed_world::Origin>,
     coverage: Option<Coverage>,
     identities: Option<Arc<IdentityAdapter>>,
     /// The last tour ask flown (the store's ask number).
@@ -58,18 +59,6 @@ pub(crate) struct Map {
     _events: Subscription,
 }
 
-/// Unit integration tests inject a versioned synthetic map. They never
-/// derive expected declaration values from the mutable live world fixture.
-#[cfg(test)]
-#[derive(Clone)]
-struct TestFixture {
-    scene: Arc<facet::graph::scene::Scene>,
-    identities: Arc<IdentityAdapter>,
-    coverage: Coverage,
-}
-#[cfg(test)]
-impl gpui::Global for TestFixture {}
-
 #[cfg(test)]
 #[derive(Clone, Copy)]
 pub(crate) struct TestCanvasLayer {
@@ -81,7 +70,7 @@ pub(crate) struct TestCanvasLayer {
 impl gpui::Global for TestCanvasLayer {}
 
 #[cfg(test)]
-pub(crate) fn install_test_fixture(cx: &mut App) {
+pub(crate) fn install_test_fixture(root: VersionedRoot, cx: &mut App) {
     use facet::graph::{Kind, Module, Node, Package};
     let mut nodes = vec![
         Node::new(Kind::Enum, "RelationLabel", 0, 0),
@@ -114,28 +103,26 @@ pub(crate) fn install_test_fixture(cx: &mut App) {
         &world,
         PackageRef::parse("/fixture/present").expect("typed package"),
     ));
-    let layout = facet::graph::layout::layout_of(&world);
-    cx.set_global(TestFixture {
-        scene: Arc::new(facet::graph::scene::Scene::new(world, layout)),
+    indexed_world::install_test_projection(
+        root,
+        "generic graph shell test world",
+        world,
         identities,
-        coverage: Coverage::default(),
-    });
+        None,
+        cx,
+    );
 }
 
 /// Mounts `world` as the graph's fixture for the next map (tests): the
 /// same world the page's anatomy reads, joined by `identities`.
 #[cfg(test)]
 pub(crate) fn install_test_world(
+    root: VersionedRoot,
     world: Arc<World>,
     identities: Arc<IdentityAdapter>,
     cx: &mut App,
 ) {
-    let layout = facet::graph::layout::layout_of(&world);
-    cx.set_global(TestFixture {
-        scene: Arc::new(facet::graph::scene::Scene::new(world, layout)),
-        identities,
-        coverage: Coverage::default(),
-    });
+    indexed_world::install_test_projection(root, "shell graph fixture", world, identities, None, cx);
 }
 
 impl Map {
@@ -179,22 +166,13 @@ impl Map {
                 },
             )
         });
-        #[cfg(test)]
-        let (ready_scene, world_key) = if let Some(fixture) = cx.try_global::<TestFixture>().cloned() {
-            (
-                Some((fixture.scene, fixture.identities, fixture.coverage)),
-                None,
-            )
-        } else {
-            (None, None)
-        };
-        #[cfg(not(test))]
         let (ready_scene, world_key) = (None, None);
         Self {
             links,
             graph: None,
             ready_scene,
             world_key,
+            projection_origin: None,
             coverage: None,
             identities: None,
             entry_origin: None,
@@ -222,6 +200,7 @@ impl Map {
         self.graph = None;
         self.ready_scene = None;
         self.world_key = None;
+        self.projection_origin = None;
         self.coverage = None;
         self.identities = None;
         self.resolved.clear();
@@ -231,26 +210,11 @@ impl Map {
         self._graph_events = None;
         self.load_error = None;
         self.toured = 0;
-        #[cfg(test)]
-        if let Some(fixture) = cx.try_global::<TestFixture>() {
-            self.ready_scene = Some((
-                fixture.scene.clone(),
-                fixture.identities.clone(),
-                fixture.coverage.clone(),
-            ));
-        }
-        #[cfg(not(test))]
         let _ = cx;
     }
 
     fn request_world(&mut self, cx: &mut Context<Self>) {
         if !self.visible {
-            return;
-        }
-        #[cfg(test)]
-        if cx.try_global::<TestFixture>().is_some()
-            && (self.graph.is_some() || self.ready_scene.is_some())
-        {
             return;
         }
         let snapshot = self.links.snapshot(cx);
@@ -266,6 +230,7 @@ impl Map {
             self.world_key = None;
             self.coverage = None;
             self.identities = None;
+            self.projection_origin = None;
             self.resolved.clear();
             self.load_error = Some("Waiting for the local index connection.".into());
             return;
@@ -275,6 +240,7 @@ impl Map {
             self.ready_scene = None;
             self.coverage = None;
             self.identities = None;
+            self.projection_origin = None;
             self.resolved.clear();
             self.world_key = Some(key.clone());
             self.load_error = None;
@@ -292,6 +258,7 @@ impl Map {
             }
             indexed_world::State::Ready(projection) => {
                 self.load_error = None;
+                self.projection_origin = Some(projection.origin.clone());
                 self.ready_scene = Some((
                     Arc::clone(&projection.scene),
                     Arc::clone(&projection.identities),
@@ -326,9 +293,18 @@ impl Map {
             |graph| {
                 let entity = graph.entity_id();
                 let graph = graph.read(cx);
+                let described_count = match self.projection_origin.as_ref() {
+                    Some(indexed_world::Origin::IndexedOwner) => {
+                        format!("indexed {} declarations", graph.world().len())
+                    }
+                    #[cfg(test)]
+                    Some(indexed_world::Origin::SyntheticFixture(_)) => {
+                        format!("fixture {} nodes", graph.world().len())
+                    }
+                    None => format!("{} declarations", graph.world().len()),
+                };
                 format!(
-                    "indexed {} declarations, entity {entity:?}, focus {:?}, camera {:?}{}",
-                    graph.world().len(),
+                    "{described_count}, entity {entity:?}, focus {:?}, camera {:?}{}",
                     graph.focused(),
                     graph.camera(),
                     self.error
@@ -663,6 +639,7 @@ impl Map {
                     G::Other => D::Unknown,
                 },
                 indexed,
+                origin: self.projection_origin.clone()?,
             })
         });
         let notice = (!self.visible)
@@ -1335,10 +1312,15 @@ impl Render for Map {
                             if self.pending.is_some() {
                                 "Resolving this indexed symbol…".into()
                             } else {
-                                self.coverage
-                                    .as_ref()
-                                    .map(Coverage::words)
-                                    .unwrap_or_else(|| "Indexed graph".into())
+                                self.coverage.as_ref().map_or_else(
+                                    || "Indexed graph".into(),
+                                    |coverage| {
+                                        self.projection_origin.as_ref().map_or_else(
+                                            || "Indexed graph".into(),
+                                            |origin| coverage.words(origin),
+                                        )
+                                    },
+                                )
                             }
                         }),
                 ),

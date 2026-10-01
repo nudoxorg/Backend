@@ -185,8 +185,6 @@ fn a_window_before_its_owner_holds_its_reads_then_says_why_the_owner_failed(cx: 
     cx.update(|cx| {
         gpui_component::init(cx);
         let _ = facet::fonts::install(cx);
-        // The graph body's pinned test world: never the live world.json.
-        crate::shell::bodies::graph::install_test_fixture(cx);
     });
     let gate = OwnerGate::starting();
     let package = PackageRef::parse(PACKAGE).expect("package");
@@ -563,7 +561,6 @@ mod launch_snapshot {
         cx.update(|cx| {
             gpui_component::init(cx);
             let _ = facet::fonts::install(cx);
-            crate::shell::bodies::graph::install_test_fixture(cx);
         });
         let route = page_route(NAME);
         let keep = Keep {
