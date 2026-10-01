@@ -444,7 +444,8 @@ impl RenderOnce for HeadsUp {
             .fill(mix(palette.plate.into(), palette.plate2.into(), open.min(1.0)))
             .w(px(plate_width))
             .min_h(base_h)
-            .child(hand);
+            .child(hand)
+            .id(key(&self.id, "control"));
         let package = self.package.clone();
         let for_sheet = findings.clone();
         let plate = wire(plate, &touch, Some(Rc::new(move |window: &mut Window, cx: &mut App| open_sheet(&package, for_sheet.clone(), window, cx))));
