@@ -212,4 +212,97 @@ mod tests {
         assert!(matches!(gate.state(), OwnerState::Ready { .. }));
         drop(thread);
     }
+
+    #[test]
+    fn a_real_attached_owner_restarts_with_page_and_actor_reads_waiting() {
+        use crate::model::pages::{Generation, PageKey, PageValue};
+        use crate::navigation::RequestId;
+        use crate::runtime::actor::{CancellationToken, EngineActor, EngineDto, EngineRequest};
+        use crate::runtime::client::LocalEngineClient;
+        use crate::runtime::mailbox::PushResult;
+        use crate::runtime::reads::{Priority, ReadJob, ReadPool, ReadRequest, SessionReader};
+        use std::sync::mpsc;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).expect("clock").as_nanos();
+        let root = std::path::PathBuf::from("/tmp").join(format!("nudox-owner-restart-{}-{nonce}", std::process::id()));
+        let project = root.join("project");
+        crate::host::private_dir(&project.join("src")).expect("private project");
+        std::fs::write(project.join("Cargo.toml"), b"[package]\nname='owner-retry-proof'\nversion='0.1.0'\nedition='2024'\n").expect("manifest");
+        std::fs::write(project.join("src/lib.rs"), b"pub struct RetryProof;\n").expect("source");
+        let endpoint = root.join("owner.sock");
+        let paths = WorkspacePaths::discover(Some(project.clone()), Some(root.join("data")), Some(endpoint.clone())).expect("paths");
+        let external = DesktopHost::start_with_paths(paths.clone()).expect("external embedded owner");
+        assert_eq!(external.mode(), HostMode::Embedded);
+
+        let gate = OwnerGate::starting();
+        let (retry_tx, retry_rx) = mpsc::channel::<()>();
+        let mut attempts = 0;
+        let thread = spawn_with(gate.clone(), move |gate| {
+            if attempts > 0 { retry_rx.recv().expect("release retry"); }
+            attempts += 1;
+            start(&paths, gate).map(|(host, key)| {
+                let mode = match host.mode() {
+                    HostMode::Embedded => ServiceMode::Embedded,
+                    HostMode::Attached => ServiceMode::Attached,
+                };
+                Started { host, key, mode }
+            })
+        }).expect("GUI owner thread");
+        settle(&gate, |state| matches!(state, OwnerState::Ready { mode: ServiceMode::Attached, .. }));
+
+        let page_gate = gate.clone();
+        let page_endpoint = endpoint.clone();
+        let pool = ReadPool::start(1, move |_| SessionReader::gated(&page_endpoint, page_gate.clone())).expect("page lane");
+        let project_id = crate::core::LocalProjectId::from_path(&project).expect("project identity");
+        let actor = EngineActor::start(LocalEngineClient::gated(&endpoint, project_id, gate.clone()), 8).expect("actor lane");
+        let submit_page = |generation| {
+            assert!(pool.submit(ReadJob {
+                key: PageKey::Health,
+                request: ReadRequest::Health,
+                generation: Generation::new(generation),
+                priority: Priority::Normal,
+                cancel: CancellationToken::new(),
+                affinity: None,
+            }));
+        };
+        let submit_root = |request| {
+            assert!(matches!(actor.try_submit(EngineRequest::Root {
+                request: RequestId::new(request),
+                basis: VersionedRoot::unserved(),
+                cancel: CancellationToken::new(),
+            }), PushResult::Enqueued));
+        };
+        let page = |generation| crate::runtime::wait::until_some("page read completed", ||
+            pool.drain().into_iter().find(|outcome| outcome.generation == Generation::new(generation) && outcome.complete));
+        let root_reply = |request| crate::runtime::wait::until_some("actor request completed", ||
+            actor.drain_events().into_iter().find(|event| event.request == RequestId::new(request)));
+
+        submit_page(1);
+        submit_root(1);
+        assert!(matches!(page(1).result, Ok(PageValue::Health(_))), "the attached owner answered the page lane");
+        assert!(matches!(root_reply(1).result, Ok(EngineDto::Root { .. })), "the attached owner answered the actor lane");
+
+        drop(external);
+        submit_page(2);
+        submit_root(2);
+        settle(&gate, |state| matches!(state, OwnerState::Failed(OwnerFault::Lost(_))));
+        assert!(page(2).result.is_err(), "the dead owner did not answer the page lane");
+        assert!(root_reply(2).result.is_err(), "the dead owner did not answer the actor lane");
+
+        assert!(gate.restart(), "the visible Retry requests a new owner");
+        submit_page(3);
+        submit_root(3);
+        crate::runtime::wait::until("page read is waiting for restart", || pool.running() == 1);
+        assert!(actor.drain_events().is_empty(), "the actor has no result while the owner is starting");
+        retry_tx.send(()).expect("start replacement owner");
+        settle(&gate, |state| matches!(state, OwnerState::Ready { mode: ServiceMode::Embedded, .. }));
+        assert!(matches!(page(3).result, Ok(PageValue::Health(_))), "the waiting page uses the replacement owner");
+        assert!(matches!(root_reply(3).result, Ok(EngineDto::Root { .. })), "the waiting actor uses the replacement owner");
+
+        drop(actor);
+        drop(pool);
+        drop(thread);
+        std::fs::remove_dir_all(&root).expect("remove scratch owner");
+    }
 }

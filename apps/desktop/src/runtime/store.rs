@@ -775,6 +775,7 @@ impl DataStore {
     /// (`UiRootEntity::admit_owner`): every held page, and every page the
     /// route shows, is fetched now, at that root.
     pub(crate) fn owner_ready(&mut self, cx: &mut Context<Self>) {
+        if self.owner.attachment_changed() { self.revoke_inflight(cx); }
         let mut keys = self.owner.answered();
         keys.extend(self.focused.iter().cloned());
         for key in keys {
@@ -785,6 +786,11 @@ impl DataStore {
     /// The owner could not start: every held page, and every page the route
     /// shows, lands as a fault carrying the owner's words.
     pub(crate) fn owner_failed(&mut self, fault: &OwnerFault, cx: &mut Context<Self>) {
+        // A serving attachment can fail while reads are running. Revoke all
+        // of their generations before faulting visible pages: a late reply
+        // from the lost owner must not land after Retry, even at the same
+        // producer root. Quiet snapshot reads keep their last painted value.
+        self.revoke_inflight(cx);
         let mut keys = self.owner.failed(fault.clone());
         keys.extend(self.focused.iter().cloned());
         for key in keys {
@@ -808,6 +814,14 @@ impl DataStore {
             retry: Some(self.focused.iter().next().cloned().unwrap_or(PageKey::Orbit)),
         };
         self.set_notice(Some(notice), cx);
+    }
+
+    fn revoke_inflight(&mut self, cx: &mut Context<Self>) {
+        let running = self.pages.keys().into_iter()
+            .filter(|key| self.pages.inflight(key).is_some())
+            .collect::<Vec<_>>();
+        for key in running { self.cancel_key(&key, cx); }
+        self.prefetching.clear();
     }
 
     /// The owner is starting (again): pages asked from now on are held.
@@ -835,6 +849,7 @@ impl DataStore {
     /// Lands every finished read. Called by the wake task; public so tests
     /// and harnesses can drive it deterministically.
     pub fn drain(&mut self, cx: &mut Context<Self>) -> usize {
+        if self.owner.attachment_changed() { self.revoke_inflight(cx); }
         self.stats.turns = self.stats.turns.saturating_add(1);
         let Some(pool) = &self.pool else {
             return 0;
@@ -1196,6 +1211,21 @@ mod tests {
             rig.store
                 .read_with(cx, |store, _| store.symbol(&symbol("slow-old")).loaded_value().is_none())
         );
+    }
+
+    #[gpui::test]
+    fn lost_owner_revokes_a_running_page_before_its_late_reply(cx: &mut TestAppContext) {
+        let rig = rig(cx, 1);
+        let symbol = symbol("slow-owner-lost");
+        let key = PageKey::Symbol(symbol.clone());
+        rig.store.update(cx, |store, cx| store.focus(vec![key.clone()], cx));
+        rig.until(cx, |store| store.pages.inflight(&key).is_some() && store.pool_activity().running > 0);
+        rig.store.update(cx, |store, cx| store.owner_failed(&OwnerFault::Lost("socket closed".into()), cx));
+        assert!(rig.store.read_with(cx, |store, _| store.pages.inflight(&key)).is_none());
+        rig.open("slow-owner-lost");
+        rig.until(cx, |store| store.pool_activity().is_idle());
+        assert!(rig.store.read_with(cx, |store, _| store.symbol(&symbol).loaded_value().is_none()),
+            "the old owner cannot publish a page after its generation was revoked");
     }
 
     #[gpui::test]

@@ -21,6 +21,7 @@
 //! thread only ever receives finished models.
 
 use super::actor::{ActorStartError, CancellationToken};
+use super::liveness::{report_if_dead, transport_break};
 use super::page_mapping::{self, OutlineIndex, PackageInputs, SymbolInputs};
 use super::wake::{WakeReceiver, WakeSender, wake_channel};
 use crate::core::{ErrorValue, FaultCode, LocalProjectId};
@@ -639,7 +640,7 @@ impl SessionEngine {
                     }
                     Err(error) if attempt == 0 && transport_break(&error) => continue,
                     Err(error) => {
-                        self.signal_if_dead(ready_epoch, &error);
+                        let _ = report_if_dead(self.gate.as_ref(), ready_epoch, &self.endpoint, &error);
                         return Err(error);
                     }
                 }
@@ -657,7 +658,7 @@ impl SessionEngine {
                     if transport_break(&error) {
                         self.session = None;
                         self.session_epoch = None;
-                        self.signal_if_dead(ready_epoch, &error);
+                        let _ = report_if_dead(self.gate.as_ref(), ready_epoch, &self.endpoint, &error);
                     }
                     return Err(error);
                 }
@@ -669,34 +670,9 @@ impl SessionEngine {
         ))
     }
 
-    fn signal_if_dead(&self, ready_epoch: Option<super::owner::Epoch>, terminal: &ClientError) {
-        let (Some(gate), Some(epoch)) = (&self.gate, ready_epoch) else { return; };
-        if !transport_break(terminal) { return; }
-        // A failed page query is not proof that a healthy owner died. Probe a
-        // fresh session on this worker; only independent transport failure
-        // changes the gate and exposes Retry in the window.
-        let liveness = Session::connect(&self.endpoint).and_then(|mut session| session.revision()).map(|_| ());
-        let _ = confirm_attached_loss(gate, epoch, terminal, liveness);
-    }
 }
 
-fn transport_break(error: &ClientError) -> bool {
-    matches!(error, ClientError::Disconnected(_) | ClientError::Io(_) | ClientError::Transport(_) | ClientError::RemoteDeadlineExceeded)
-}
-
-fn confirm_attached_loss(
-    gate: &super::owner::OwnerGate,
-    epoch: super::owner::Epoch,
-    terminal: &ClientError,
-    liveness: Result<(), ClientError>,
-) -> bool {
-    if !transport_break(terminal) || !liveness.is_err_and(|error| transport_break(&error)) {
-        return false;
-    }
-    gate.attached_lost_at(epoch, Arc::from(terminal.to_string()))
-}
-
-const fn read_only(command: &SurfaceCommand) -> bool {
+pub(crate) const fn read_only(command: &SurfaceCommand) -> bool {
     matches!(
         command,
         SurfaceCommand::Advisory { .. }
@@ -1453,33 +1429,8 @@ fn compose_orbit(engine: &mut dyn Engine, context: &ReadContext<'_>) -> Result<P
 mod tests {
     use super::*;
     use crate::model::pages::{HealthModel, IngestModel};
-    use crate::model::ServiceMode;
-    use crate::runtime::owner::{OwnerFault, OwnerGate, OwnerState};
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
-
-    #[test]
-    fn a_query_fault_needs_an_independent_loss_before_failing_an_attachment() {
-        let gate = OwnerGate::ready(crate::core::VersionedRoot::unserved(), ServiceMode::Attached);
-        let epoch = gate.attached_ready_epoch().expect("attached generation");
-        let query = ClientError::Io("query failed".to_owned());
-        assert!(!confirm_attached_loss(&gate, epoch, &query, Ok(())));
-        assert!(matches!(gate.state(), OwnerState::Ready { .. }), "a healthy independent probe keeps the owner ready");
-
-        assert!(confirm_attached_loss(
-            &gate,
-            epoch,
-            &query,
-            Err(ClientError::Io("independent probe failed".to_owned())),
-        ));
-        assert!(matches!(gate.state(), OwnerState::Failed(OwnerFault::Lost(_))));
-        assert!(!confirm_attached_loss(
-            &gate,
-            epoch,
-            &query,
-            Err(ClientError::Io("late probe failed".to_owned())),
-        ), "a stale result cannot fail a later owner generation");
-    }
 
     #[test]
     fn outline_cache_evicts_by_retained_bytes_and_never_caches_incomplete_indexes() {
