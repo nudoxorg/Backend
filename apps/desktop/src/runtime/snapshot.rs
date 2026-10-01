@@ -32,6 +32,7 @@ use crate::model::pages::{PackageRef, PageKey, SeedEntry, SymbolRef};
 use crate::navigation::Route;
 use backend_platform::durable::BoundedWriter;
 use std::fmt;
+use std::fs::File;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -122,18 +123,20 @@ impl Writer {
     /// through one held regular-file handle with a fixed 64KiB scratch buffer.
     fn prepare_this_build() {
         WRITER.get_or_init(|| Self {
-            executable: std::env::current_exe()
-                .ok()
-                .and_then(|path| fingerprint_executable(&path).ok()),
+            executable: fingerprint_running_executable(Self::prepare_this_build).ok(),
         });
     }
 }
 
-fn fingerprint_executable(path: &Path) -> io::Result<Digest> {
-    use sha2::Digest as _;
-    use std::io::Read as _;
+fn fingerprint_running_executable(anchor: fn()) -> io::Result<Digest> {
+    let file = backend_platform::executable_identity::open_running_executable(anchor)?;
+    fingerprint_file(file)
+}
 
-    const MAX_EXECUTABLE_BYTES: u64 = 512 << 20;
+/// A test helper for comparing arbitrary file contents. Production always
+/// fingerprints the platform-verified running-image handle above.
+#[cfg(test)]
+fn fingerprint_executable(path: &Path) -> io::Result<Digest> {
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::other("executable has no parent"))?;
@@ -143,13 +146,34 @@ fn fingerprint_executable(path: &Path) -> io::Result<Digest> {
         .ok_or_else(|| io::Error::other("executable has no Unicode name"))?;
     let directory =
         backend_platform::directory::DirectoryCapability::open_read_only_source(parent)?;
-    let mut file = directory.open_file_read(name)?;
+    fingerprint_file(directory.open_file_read(name)?)
+}
+
+fn fingerprint_file(mut file: File) -> io::Result<Digest> {
+    use sha2::Digest as _;
+    use std::io::Read as _;
+
+    const MAX_EXECUTABLE_BYTES: u64 = 512 << 20;
     let before = file.metadata()?;
+    if !before.is_file() {
+        return Err(io::Error::other("executable is not a regular file"));
+    }
     if before.len() > MAX_EXECUTABLE_BYTES {
         return Err(io::Error::other(
             "executable exceeds fingerprint byte limit",
         ));
     }
+    let before_modified = before.modified()?;
+    #[cfg(unix)]
+    let before_identity = {
+        use std::os::unix::fs::MetadataExt as _;
+        (
+            before.dev(),
+            before.ino(),
+            before.ctime(),
+            before.ctime_nsec(),
+        )
+    };
     let mut hasher = sha2::Sha256::new();
     hasher.update(b"nudox.desktop.mapping.executable.v1\0");
     let mut scratch = [0; 64 << 10];
@@ -168,9 +192,17 @@ fn fingerprint_executable(path: &Path) -> io::Result<Digest> {
         hasher.update(&scratch[..count]);
     }
     let after = file.metadata()?;
+    #[cfg(unix)]
+    let identity_changed = {
+        use std::os::unix::fs::MetadataExt as _;
+        before_identity != (after.dev(), after.ino(), after.ctime(), after.ctime_nsec())
+    };
+    #[cfg(not(unix))]
+    let identity_changed = false;
     if total != before.len()
         || after.len() != before.len()
-        || after.modified()? != before.modified()?
+        || after.modified()? != before_modified
+        || identity_changed
     {
         return Err(io::Error::other(
             "executable changed during fingerprint read",
@@ -189,10 +221,14 @@ pub struct SnapRoot {
 
 impl SnapRoot {
     fn of(root: VersionedRoot) -> Self {
+        Self::with_writer(root, Writer::this_build())
+    }
+
+    fn with_writer(root: VersionedRoot, writer: Writer) -> Self {
         Self {
             epoch: root.producer_epoch(),
             cursor: Control(root.revision().encode_control().into_vec()),
-            writer: Writer::this_build(),
+            writer,
         }
     }
 
@@ -200,7 +236,14 @@ impl SnapRoot {
     /// were read at: then they are current as they are.
     #[must_use]
     pub fn serves(&self, root: VersionedRoot) -> bool {
-        !root.is_unserved() && self.writer.executable.is_some() && *self == Self::of(root)
+        self.serves_with_writer(root, Writer::this_build())
+    }
+
+    fn serves_with_writer(&self, root: VersionedRoot, writer: Writer) -> bool {
+        !root.is_unserved()
+            && self.writer.executable.is_some()
+            && writer.executable.is_some()
+            && *self == Self::with_writer(root, writer)
     }
 }
 
@@ -505,6 +548,14 @@ struct Section {
 
 /// The file's bytes for `pages` read at `root`.
 fn encode(root: VersionedRoot, pages: &[SeedEntry]) -> io::Result<Vec<u8>> {
+    encode_with_writer(root, pages, Writer::this_build())
+}
+
+fn encode_with_writer(
+    root: VersionedRoot,
+    pages: &[SeedEntry],
+    writer: Writer,
+) -> io::Result<Vec<u8>> {
     let mut payload = Vec::new();
     let mut sections = Vec::new();
     for entry in pages {
@@ -540,7 +591,7 @@ fn encode(root: VersionedRoot, pages: &[SeedEntry]) -> io::Result<Vec<u8>> {
     serde_json::to_writer(
         BoundedWriter::new(&mut table, TABLE_CAP)?,
         &Table {
-            root: SnapRoot::of(root),
+            root: SnapRoot::with_writer(root, writer),
             sections,
         },
     )

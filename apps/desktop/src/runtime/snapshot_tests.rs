@@ -408,6 +408,44 @@ fn executable_fingerprint_distinguishes_equal_sizes_and_unknown_identity_never_s
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[test]
+fn snapshot_file_does_not_fast_path_a_same_size_replacement_image() {
+    let root = served("same-size-executable", 1);
+    let saved = pages("same-size-executable");
+    let image_a = b"running image A";
+    let image_b = b"running image B";
+    assert_eq!(
+        image_a.len(),
+        image_b.len(),
+        "the metadata alias is equal-size"
+    );
+    let writer_a = Writer {
+        executable: Some(Digest::of(image_a)),
+    };
+    let writer_b = Writer {
+        executable: Some(Digest::of(image_b)),
+    };
+    let bytes = encode_with_writer(root, &saved, writer_a).expect("snapshot file");
+    let dir = scratch("same-size-executable");
+    let file = SnapshotFile::in_data(&dir);
+    std::fs::write(file.path(), bytes).expect("write snapshot bytes");
+    let restored = file.read(&keys(&saved)).expect("snapshot file read");
+    assert_eq!(
+        restored.pages, saved,
+        "the same wanted sections still rekey"
+    );
+    assert!(
+        !restored.root.serves(root),
+        "a snapshot from the synthetic image cannot fast-path as this running executable"
+    );
+    assert!(restored.root.serves_with_writer(root, writer_a));
+    assert!(
+        !restored.root.serves_with_writer(root, writer_b),
+        "equal-sized image B cannot confirm pages recorded from image A"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 fn encoded_table(table: &Table, payload: &[u8]) -> Vec<u8> {
     let table = serde_json::to_vec(table).expect("table");
     let mut bytes = Vec::new();
