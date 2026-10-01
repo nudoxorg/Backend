@@ -1012,6 +1012,7 @@ fn read(fixture: &Fixture, request: &ReadRequest) -> Result<crate::model::pages:
         worker: 0,
         cancel: &cancel,
         outlines: &outlines,
+        progress: None,
     };
     reader
         .read(request, &context)
@@ -1088,7 +1089,7 @@ fn resolve_symbol_kind(
     let mut reader = SessionReader::connect(fixture.endpoint());
     let cancel = CancellationToken::new();
     let outlines = OutlineCache::default();
-    let context = ReadContext { worker: 0, cancel: &cancel, outlines: &outlines };
+    let context = ReadContext { worker: 0, cancel: &cancel, outlines: &outlines, progress: None };
     let value = reader
         .read(&ReadRequest::Package(package_ref), &context)
         .map_err(|error| format!("read package outline for {package}: {error:?}"))?;

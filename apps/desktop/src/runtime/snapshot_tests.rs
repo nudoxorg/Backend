@@ -47,6 +47,7 @@ fn fixture(request: &ReadRequest) -> PageValue {
         worker: 0,
         cancel: &cancel,
         outlines: &outlines,
+        progress: None,
     };
     Fixture.read(request, &context).expect("fixture page")
 }

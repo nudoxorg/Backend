@@ -96,7 +96,10 @@ impl SnapshotKeeper {
             return None;
         }
         let current = |key: &PageKey| -> Option<SeedEntry> {
-            if pages.is_seeded(key) {
+            // A staged page is useful on screen, but its read is still in
+            // flight. Never replay that partial model as a complete page on
+            // the next launch.
+            if pages.is_seeded(key) || pages.inflight(key).is_some() {
                 return None;
             }
             match key {

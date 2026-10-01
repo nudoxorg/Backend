@@ -46,6 +46,10 @@ const OUTLINE_PAGE: u16 = 200;
 const OUTLINE_PAGES: usize = 200;
 /// Explore page size for the Orbit catalog.
 const EXPLORE_LIMIT: u16 = 64;
+/// Maximum queued page reads across all workers. Running reads have their
+/// own fixed worker slots; a burst of distinct hover targets cannot grow the
+/// queue or its keyed page slots without bound.
+const MAX_QUEUED_READS: usize = 64;
 
 /// What one job reads.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -126,6 +130,8 @@ pub struct ReadOutcome {
     pub worker: usize,
     /// Scheduling class it ran at.
     pub priority: Priority,
+    /// False for a useful partial page; the same generation is still reading.
+    pub complete: bool,
     /// The read model, or why there is none.
     pub result: Result<PageValue, ReadFailure>,
 }
@@ -146,7 +152,6 @@ pub trait PageReader: Send + 'static {
 }
 
 /// Worker-side context for one read.
-#[derive(Debug)]
 pub struct ReadContext<'a> {
     /// Worker index (for continuation affinity).
     pub worker: usize,
@@ -154,6 +159,23 @@ pub struct ReadContext<'a> {
     pub cancel: &'a CancellationToken,
     /// Package outlines shared by every worker.
     pub outlines: &'a OutlineCache,
+    /// Publishes a useful intermediate page before slower probes complete.
+    pub progress: Option<&'a dyn Fn(PageValue)>,
+}
+
+impl std::fmt::Debug for ReadContext<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReadContext").field("worker", &self.worker).finish_non_exhaustive()
+    }
+}
+
+impl ReadContext<'_> {
+    /// Delivers a partial page only while this read still owns its request.
+    pub fn publish(&self, value: PageValue) {
+        if !self.cancel.is_cancelled() {
+            if let Some(progress) = self.progress { progress(value); }
+        }
+    }
 }
 
 /// One cached outline: package, revision root, index.
@@ -290,10 +312,10 @@ impl ReadPool {
 
     /// Queues one job. A queued job for the same key is replaced and
     /// cancelled; a running one is cancelled.
-    pub fn submit(&self, job: ReadJob) {
+    pub fn submit(&self, job: ReadJob) -> bool {
         let mut queue = self.shared.queue();
         if queue.closed {
-            return;
+            return false;
         }
         queue.jobs.retain(|queued| {
             if queued.key == job.key {
@@ -308,9 +330,29 @@ impl ReadPool {
                 running.cancel.cancel();
             }
         }
+        if queue.jobs.len() >= MAX_QUEUED_READS {
+            let victim = (job.priority == Priority::Normal)
+                .then(|| queue.jobs.iter().position(|queued| queued.priority == Priority::Prefetch))
+                .flatten();
+            if let Some(victim) = victim.and_then(|at| queue.jobs.remove(at)) {
+                victim.cancel.cancel();
+                self.shared.results.lock().unwrap_or_else(PoisonError::into_inner).push_back(ReadOutcome {
+                    key: victim.key,
+                    generation: victim.generation,
+                    worker: usize::MAX,
+                    priority: victim.priority,
+                    complete: true,
+                    result: Err(ReadFailure::Cancelled),
+                });
+                self.shared.wake.wake();
+            } else {
+                return false;
+            }
+        }
         queue.jobs.push_back(job);
         drop(queue);
         self.shared.ready.notify_all();
+        true
     }
 
     /// Raises a queued job for `key` to normal priority. Returns whether a
@@ -434,10 +476,22 @@ fn run_worker<R: PageReader>(worker: usize, mut reader: R, shared: &Shared) {
         let result = if job.cancel.is_cancelled() {
             Err(ReadFailure::Cancelled)
         } else {
+            let publish = |value| {
+                shared.results.lock().unwrap_or_else(PoisonError::into_inner).push_back(ReadOutcome {
+                    key: job.key.clone(),
+                    generation: job.generation,
+                    worker,
+                    priority: job.priority,
+                    complete: false,
+                    result: Ok(value),
+                });
+                shared.wake.wake();
+            };
             let context = ReadContext {
                 worker,
                 cancel: &job.cancel,
                 outlines: &shared.outlines,
+                progress: Some(&publish),
             };
             // A panicking reader must not take the worker (and every later
             // read) down with it; it becomes one typed fault.
@@ -471,6 +525,7 @@ fn run_worker<R: PageReader>(worker: usize, mut reader: R, shared: &Shared) {
                 generation: job.generation,
                 worker,
                 priority: job.priority,
+                complete: true,
                 result,
             });
         shared.wake.wake();
@@ -953,6 +1008,18 @@ fn compose_symbol(
     check(context.cancel)?;
     let references = references(engine, symbol);
     check(context.cancel)?;
+    let reading_outline = Err(Gap::new(GapReason::Stale, "Reading the package outline"));
+    context.publish(PageValue::Symbol(page_mapping::symbol_page(&SymbolInputs {
+        coordinate: symbol,
+        document: &document,
+        related: related.as_ref().map(|hood| page_mapping::Neighbourhood {
+            rows: &hood.rows,
+            relations: hood.relations.as_deref(),
+            rich: hood.rich.as_ref(),
+        }).map_err(Clone::clone),
+        references: references.as_ref(),
+        outline: reading_outline,
+    })));
     let outline = symbol.package().map_or_else(
         || {
             Err(Gap::new(
@@ -1040,6 +1107,15 @@ fn compose_package(
     package: &PackageRef,
     context: &ReadContext<'_>,
 ) -> Result<PageValue, ReadFailure> {
+    // An alternate-release route is derived without filesystem work on the
+    // UI lane. Verify the tree here, on the read worker, and report the
+    // missing release instead of painting the pinned package's facts.
+    if package.is_local() && !Path::new(package.as_str()).is_dir() {
+        return Err(ReadFailure::Fault(ErrorValue::new(
+            FaultCode::Missing,
+            format!("This package source is no longer on this machine: {}", package.as_str()),
+        )));
+    }
     let reference = package.reference().clone();
     let records = engine.surface(SurfaceCommand::Package {
         package: reference.clone(),
@@ -1054,8 +1130,6 @@ fn compose_package(
     });
     check(context.cancel)?;
     let dependents = engine.surface(SurfaceCommand::Dependents { package: reference });
-    check(context.cancel)?;
-    let outline = outline(engine, package, context);
     check(context.cancel)?;
     let engine_record = matches!(
         records,
@@ -1082,6 +1156,17 @@ fn compose_package(
     {
         return Err(failure(error));
     }
+    context.publish(PageValue::Package(page_mapping::package_dossier(&PackageInputs {
+        package,
+        records: records.as_ref(),
+        versions: versions.as_ref(),
+        dependencies: dependencies.as_ref(),
+        dependents: dependents.as_ref(),
+        outline: Err(Gap::new(GapReason::Stale, "Reading the package outline")),
+        local: local.as_ref(),
+    })));
+    let outline = outline(engine, package, context);
+    check(context.cancel)?;
     Ok(PageValue::Package(page_mapping::package_dossier(
         &PackageInputs {
             package,
@@ -1228,6 +1313,50 @@ mod tests {
             ready_capabilities: Arc::from([]),
             missing_capabilities: Arc::from([]),
         }
+    }
+
+    #[test]
+    fn worker_publishes_a_partial_page_before_its_slow_probe_finishes() {
+        struct StagedReader {
+            begun: mpsc::Sender<()>,
+            release: Arc<std::sync::atomic::AtomicBool>,
+        }
+        impl PageReader for StagedReader {
+            fn read(&mut self, _: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+                context.publish(PageValue::Health(health()));
+                self.begun.send(()).expect("stage signal");
+                while !self.release.load(std::sync::atomic::Ordering::Acquire) {
+                    if context.cancel.is_cancelled() { return Err(ReadFailure::Cancelled); }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Ok(PageValue::Health(health()))
+            }
+        }
+        let (begun, started) = mpsc::channel();
+        let release = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let pool = ReadPool::start(1, |_| StagedReader { begun: begun.clone(), release: Arc::clone(&release) }).expect("read pool");
+        pool.submit(ReadJob {
+            key: PageKey::Health,
+            request: ReadRequest::Health,
+            generation: Generation::new(1),
+            priority: Priority::Normal,
+            cancel: CancellationToken::new(),
+            affinity: None,
+        });
+        started.recv_timeout(Duration::from_secs(2)).expect("stage reached UI queue");
+        let staged = pool.drain();
+        assert_eq!(staged.len(), 1);
+        assert!(!staged[0].complete);
+        assert_eq!(pool.running(), 1, "the worker continues its slow probe");
+        release.store(true, std::sync::atomic::Ordering::Release);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let final_result = loop {
+            let results = pool.drain();
+            if let Some(result) = results.into_iter().find(|result| result.complete) { break result; }
+            assert!(Instant::now() < deadline, "final read did not finish");
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert!(matches!(final_result.result, Ok(PageValue::Health(_))));
     }
 
     impl PageReader for GatedReader {

@@ -80,6 +80,7 @@ fn a_multi_module_crate_reads_as_a_region_per_module_with_every_name_at_its_line
         worker: 0,
         cancel: &cancel,
         outlines: &outlines,
+        progress: None,
     };
     let package = crate::model::pages::PackageRef::parse(
         &project.canonicalize().expect("canonical").to_string_lossy(),

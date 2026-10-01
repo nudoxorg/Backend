@@ -23,7 +23,7 @@ fn root() -> VersionedRoot {
 fn read(request: &ReadRequest) -> PageValue {
     let cancel = crate::runtime::CancellationToken::new();
     let outlines = OutlineCache::default();
-    let context = ReadContext { worker: 0, cancel: &cancel, outlines: &outlines };
+    let context = ReadContext { worker: 0, cancel: &cancel, outlines: &outlines, progress: None };
     Fixture.read(request, &context).unwrap_or_else(|failure| panic!("the fixture read {request:?}: {failure:?}"))
 }
 
@@ -33,6 +33,24 @@ fn read(request: &ReadRequest) -> PageValue {
 fn land(store: &mut PageStore, key: &PageKey, value: PageValue) -> Landing {
     let generation = store.begin_forced(key, root()).expect("the slot starts a fetch");
     store.land(key, generation, Ok(value))
+}
+
+#[test]
+fn a_partial_page_is_visible_while_its_generation_reads_and_stale_stages_are_dropped() {
+    let mut store = PageStore::default();
+    let key = PageKey::Symbol(symbol("RelationLabel"));
+    let PageValue::Symbol(page) = read(&ReadRequest::for_key(&key)) else { panic!("symbol page") };
+    let first = store.begin(&key, root()).expect("first read");
+    assert_eq!(store.stage(&key, first, PageValue::Symbol(page.clone())), Landing::Applied);
+    assert_eq!(store.symbol(&symbol("RelationLabel")).loaded_value(), Some(&page));
+    assert_eq!(store.inflight(&key), Some(first), "the worker still owns the read");
+    assert_eq!(store.stage(&key, first, PageValue::Symbol(page.clone())), Landing::Unchanged);
+    assert_eq!(store.cancel(&key), Some(first));
+    let second = store.begin(&key, root()).expect("return to page");
+    assert_ne!(first, second);
+    assert_eq!(store.stage(&key, first, PageValue::Symbol(page.clone())), Landing::Superseded);
+    assert_eq!(store.land(&key, second, Ok(PageValue::Symbol(page))), Landing::Applied);
+    assert!(store.symbol(&symbol("RelationLabel")).is_loaded());
 }
 
 #[test]

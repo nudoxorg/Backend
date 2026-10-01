@@ -242,38 +242,31 @@ pub fn route_package(route: &Route) -> Option<PackageRef> {
         Route::Orbit(_) | Route::World => return None,
     };
     let pinned = PackageRef::parse(package.as_str()).ok()?;
-    Some(match at {
-        Some(at) => pinned.at(at.as_str()).or_else(|| release_tree(&pinned, at.as_str())).unwrap_or(pinned),
-        None => pinned,
-    })
+    match at {
+        Some(at) => pinned.at(at.as_str()).or_else(|| release_tree(&pinned, at.as_str())),
+        None => Some(pinned),
+    }
 }
 
 /// The tree of the release `at` of the registry package whose tree `pinned`
 /// is: a registry root is read at another release by reading that release's
 /// own tree (`…/toml-0.5.11` beside `…/toml-0.8.23`), which the library holds
-/// once it is added. `None` for a person's own project, for the pinned
-/// release itself, and for a release this machine does not have.
+/// once it is added. This is lexical only: the worker verifies existence and
+/// index coverage. Route resolution must never touch disk on the UI lane.
 fn release_tree(pinned: &PackageRef, at: &str) -> Option<PackageRef> {
-    use std::collections::HashMap;
-    use std::sync::{Mutex, PoisonError};
-    static TREES: Mutex<Option<HashMap<(String, String), Option<String>>>> = Mutex::new(None);
     let (name, version) = pinned.registry_release()?;
     if version == at {
-        return None;
+        return Some(pinned.clone());
     }
-    let key = (pinned.as_str().to_owned(), at.to_owned());
-    let known = TREES.lock().unwrap_or_else(PoisonError::into_inner).as_ref().and_then(|trees| trees.get(&key).cloned());
-    let tree = match known {
-        Some(tree) => tree,
-        None => {
-            let release = crate::model::release::Release::new(name, at).ok()?;
-            let composed = crate::host::registry::composed()?;
-            let tree = composed.source.tree_of(&release).and_then(|tree| tree.to_str().map(str::to_owned));
-            TREES.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_with(HashMap::new).insert(key, tree.clone());
-            tree
-        }
-    }?;
-    PackageRef::parse(&tree).ok()
+    let current = std::path::Path::new(pinned.as_str());
+    let parent = current.parent()?;
+    let target = format!("{name}-{at}");
+    let tree = if parent.file_name()? == current.file_name()? {
+        parent.parent()?.join(&target).join(&target)
+    } else {
+        parent.join(&target)
+    };
+    PackageRef::parse(tree.to_str()?).ok()
 }
 
 /// The declaration a route reads, scoped to the release it views.
@@ -305,7 +298,7 @@ pub fn route_declaration(route: &Route) -> Result<SymbolRef, Unread> {
         return Ok(symbol);
     };
     let pinned = PackageRef::parse(route.package.as_str()).map_err(|_| Unread::NotADeclaration)?;
-    let viewed = pinned.at(at.as_str()).ok_or_else(|| Unread::ReleaseNotHere(at.clone()))?;
+    let viewed = route_package(&Route::Symbol(route.clone())).ok_or_else(|| Unread::ReleaseNotHere(at.clone()))?;
     Ok(symbol.rebased(&pinned, &viewed).unwrap_or(symbol))
 }
 
@@ -618,7 +611,7 @@ impl DataStore {
     /// rested on a link for 120 ms. Low priority, cancellable, and a no-op
     /// when the page is current or already requested.
     pub fn prefetch(&mut self, key: PageKey, cx: &mut Context<Self>) {
-        if !self.owner.is_serving() {
+        if !self.owner.is_serving() || (self.prefetching.len() >= 16 && !self.prefetching.contains(&key)) {
             return;
         }
         self.keep_focused_resident();
@@ -742,16 +735,28 @@ impl DataStore {
             }
             return;
         };
-        self.stats.submitted = self.stats.submitted.saturating_add(1);
         super::trace::mark("read.submit", format_args!("{key:?} {priority:?}"));
-        pool.submit(ReadJob {
-            key,
+        let accepted = pool.submit(ReadJob {
+            key: key.clone(),
             request,
             generation,
             priority,
             cancel: CancellationToken::new(),
             affinity,
         });
+        if accepted {
+            self.stats.submitted = self.stats.submitted.saturating_add(1);
+        } else if priority == Priority::Prefetch {
+            self.prefetching.remove(&key);
+            let before = self.pages.stamp(&key);
+            let _ = self.pages.cancel(&key);
+            self.emit_moved(key, before, cx);
+        } else if self.pages.land(&key, generation, Err(ReadFailure::Fault(ErrorValue::new(
+            FaultCode::Transport,
+            "The reader is busy with too many pages. Try this page again.",
+        )))) == Landing::Applied {
+            self.emit(StoreEvent::Resource(key), cx);
+        }
     }
 
     /// The owner answered, and its root is already admitted
@@ -826,6 +831,21 @@ impl DataStore {
         let mut applied = 0;
         let mut save = false;
         for outcome in outcomes {
+            if !outcome.complete {
+                match outcome.result {
+                    Ok(value) => match self.pages.stage(&outcome.key, outcome.generation, value) {
+                        Landing::Applied => {
+                            applied += 1;
+                            self.stats.landed = self.stats.landed.saturating_add(1);
+                            self.emit(StoreEvent::Resource(outcome.key), cx);
+                        }
+                        Landing::Superseded => self.stats.superseded = self.stats.superseded.saturating_add(1),
+                        Landing::Unchanged => {}
+                    },
+                    Err(_) => self.stats.superseded = self.stats.superseded.saturating_add(1),
+                }
+                continue;
+            }
             if self.pages.inflight(&outcome.key) == Some(outcome.generation) {
                 self.prefetching.remove(&outcome.key);
             }

@@ -412,6 +412,25 @@ impl<K: Ord + Clone, T> Slots<K, T> {
         Landing::Applied
     }
 
+    /// Publishes a useful partial value while the same generation keeps
+    /// reading. An older or cancelled generation cannot paint over a newer
+    /// route. Quiet snapshot revalidation keeps its already complete page.
+    fn stage(&mut self, key: &K, generation: Generation, value: T) -> Landing
+    where
+        T: PartialEq,
+    {
+        let Some(slot) = self.map.get_mut(key) else { return Landing::Superseded };
+        let Fetch::Running { generation: running, manner } = slot.fetch else { return Landing::Superseded };
+        if running != generation { return Landing::Superseded; }
+        if manner == Manner::Quiet || slot.resource.loaded_value() == Some(&value) {
+            return Landing::Unchanged;
+        }
+        let Some(root) = slot.asked_at else { return Landing::Superseded };
+        slot.resource = Resource::loaded_at(value, root);
+        slot.revision = slot.revision.next();
+        Landing::Applied
+    }
+
     fn cancel(&mut self, key: &K) -> Option<Generation> {
         let slot = self.map.get_mut(key)?;
         let Fetch::Running { generation, manner } = slot.fetch else {
@@ -678,6 +697,16 @@ impl PageStore {
             PageKey::Orbit => self.orbit.land(&(), generation, take(result, PageValue::orbit), replace),
             PageKey::Health => self.health.land(&(), generation, take(result, PageValue::health), replace),
             PageKey::Browse(browse) => self.browse.land(browse, generation, take(result, PageValue::browse), replace),
+        }
+    }
+
+    /// Publishes an intermediate result without ending its read generation.
+    pub fn stage(&mut self, key: &PageKey, generation: Generation, value: PageValue) -> Landing {
+        match key {
+            PageKey::Symbol(symbol) => match value.symbol() { Some(value) => self.symbols.stage(symbol, generation, value), None => Landing::Superseded },
+            PageKey::Package(package) => match value.package() { Some(value) => self.packages.stage(package, generation, value), None => Landing::Superseded },
+            PageKey::Orbit => match value.orbit() { Some(value) => self.orbit.stage(&(), generation, value), None => Landing::Superseded },
+            PageKey::Source(_) | PageKey::Search(_) | PageKey::Health | PageKey::Browse(_) => Landing::Superseded,
         }
     }
 
