@@ -77,7 +77,7 @@ pub use assemble::{
     record_list, record_list_from_rows, shelf_from_root, shelf_from_snapshot,
 };
 pub use browse::{
-    AlertReading, RoleReading, RowReading, TreeReading, TwiceReading, count, display_version,
+    AlertReading, InventoryReading, RoleReading, RowReading, TreeReading, TwiceReading, count, display_version,
     read_tree, role_label, why_line,
 };
 pub use budget::{
