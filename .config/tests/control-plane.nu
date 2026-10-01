@@ -60,7 +60,7 @@ mkdir crates/seed
 let doctor = (^backend doctor | complete)
 assert equal $doctor.exit_code 0 $doctor.stderr
 
-let scope = (^backend scope changed --base HEAD | complete)
+let scope = (^backend scope changed --base HEAD --json | complete)
 assert equal $scope.exit_code 0 $scope.stderr
 
 let purpose = "Defines a generated fixture file. Keeps path ownership explicit. Proves bounded creation behavior."
@@ -123,9 +123,11 @@ assert str contains $luna_lint.stderr "backend::role-tool-mismatch"
 
 let evaluator = $sandbox | path join ".local/opaque-evaluator.nu"
 mkdir ($evaluator | path dirname)
-'#!/usr/bin/env nu
-{schema: 1, status: "RED", feedback: [{code: "fixture", message: "preserve the rejected value"}]} | to json
-' | save --raw $evaluator
+(
+    $"#!($nu.current-exe)\n"
+    + '{schema: 1, status: "RED", feedback: [{code: "fixture", message: "preserve the rejected value"}]} | to json
+'
+) | save --raw $evaluator
 ^chmod "0700" $evaluator
 let opaque = (
     with-env {
@@ -278,9 +280,11 @@ assert not equal $invalid_kind_grade.exit_code 0
 assert str contains $invalid_kind_grade.stderr "backend::invalid-finding-kind"
 
 let green_evaluator = $sandbox | path join ".local/green-evaluator.nu"
-'#!/usr/bin/env nu
-{schema: 1, status: "GREEN", feedback: []} | to json
-' | save --raw $green_evaluator
+(
+    $"#!($nu.current-exe)\n"
+    + '{schema: 1, status: "GREEN", feedback: []} | to json
+'
+) | save --raw $green_evaluator
 ^chmod "0700" $green_evaluator
 let green_run_name = "green-role-toolbox-fixture"
 

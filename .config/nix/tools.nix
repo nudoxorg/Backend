@@ -32,6 +32,9 @@ let
     "vendor/gpui_ce_components"
     "vendor/gpui_ce_components_base"
     "vendor/gpui_ce_macos"
+    "vendor/gpui_ce_scheduler"
+    "vendor/ra_ap_project_model"
+    "vendor/ra_ap_toolchain"
   ];
   workspaceSource =
     if workspaceAvailable then
