@@ -992,8 +992,9 @@ impl RegistryGateway {
             // the durable catalog. A desktop's explicit horizon requires a
             // recent authenticated receipt; standalone locald keeps its
             // original unbounded offline-cache behavior.
+            let cache_max_age_millis = self.config.cache_max_age_millis;
             let service = self.service_for(source)?;
-            match self.config.cache_max_age_millis {
+            match cache_max_age_millis {
                 Some(max_age_millis) => service.ensure_with_max_age(&request, max_age_millis),
                 None => service.ensure(&request),
             }
