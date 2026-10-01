@@ -195,3 +195,47 @@ fn the_rail_goes_under_the_page_without_a_word_painted_over_another(cx: &mut Tes
     }
     assert!(worst.is_none(), "a word was painted over another while the rail went under the page: {worst:?}");
 }
+
+/// Cached destinations still exercise the real owner, region and native
+/// layout. Back/Forward interrupts at one clock instant, then a 200% resize
+/// and reduced-motion change must leave one honest page and no idle frames.
+#[gpui::test]
+fn repeated_route_reversal_survives_large_text_resize_and_stops_requesting_frames(cx: &mut TestAppContext) {
+    use gpui::{px, size};
+    let a = page_route("RelationLabel");
+    let b = page_route("KindGlyph");
+    let mut rig = rig(cx, Some(a.clone()), 1440.0, 900.0);
+    rig.go(Intent::Navigate(b.clone()));
+    rig.go(Intent::Back);
+    let leave = rig.shell.read_with(rig.cx, |shell, cx| {
+        shell.reader_targets(cx).placed().first().map(|(target, _)| target.id.clone())
+    }).expect("the real page has a focus target");
+    rig.shell.update(rig.cx, |shell, cx| {
+        let targets = shell.reader_targets(cx);
+        targets.focus(leave.clone());
+        targets.remember_leave(a.clone(), leave.clone());
+    });
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    let queue = |rig: &mut super::tests::Rig, intent| {
+        rig.graph.root.update(rig.cx, |root, cx| root.queue(intent, cx));
+    };
+    queue(&mut rig, Intent::Forward);
+    rig.frame(80);
+    for intent in [Intent::Back, Intent::Forward, Intent::Back] {
+        queue(&mut rig, intent);
+        rig.frame(0);
+    }
+    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    rig.cx.simulate_resize(size(px(640.0), px(480.0)));
+    queue(&mut rig, Intent::ZoomTo { display, percent: 200 });
+    queue(&mut rig, Intent::SetMotion(MotionPreference::Reduced));
+    rig.settle();
+    assert_eq!(rig.route(), a);
+    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx)), 1);
+    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx).1), Some(leave));
+    let requested = rig.cx.update(|_, cx| facet::motion::frames_requested(cx));
+    for _ in 0..4 {
+        rig.frame(250);
+    }
+    assert_eq!(rig.cx.update(|_, cx| facet::motion::frames_requested(cx)), requested, "settled motion requests no idle frames");
+}
