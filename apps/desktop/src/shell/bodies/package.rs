@@ -23,7 +23,7 @@ use facet::icons::Kind;
 use facet::marks::{DepFacts, DepKind, Eco, EcoFacts, dep_line, ecosystem_mark};
 use facet::tokens::fluid::PACKAGE_GEM;
 use facet::tokens::ty;
-use facet::{Measure, Palette, Space};
+use facet::{Measure, Palette, Set, Space};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, App, AppContext as _, ClickEvent, Context, ElementId, InteractiveElement,
