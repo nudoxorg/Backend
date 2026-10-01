@@ -621,8 +621,11 @@ impl AcquisitionService {
                     } else {
                         None
                     };
+                    // This helper's argument is `online`; inverting the
+                    // `offline` flag would pass the current mode again and
+                    // miss receipts admitted under the other network epoch.
                     let opposite_network_epoch =
-                        owner_guard.policy_epoch_for_network_mode(!offline);
+                        owner_guard.policy_epoch_for_network_mode(offline);
                     let alternate_policy_record = if present.is_some()
                         && recovered_record.is_none()
                         && opposite_network_epoch != current_epoch
