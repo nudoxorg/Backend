@@ -96,7 +96,11 @@ impl PreparedMarkdown {
     pub fn parse(source: &str) -> Result<Self, SharedString> {
         let mut node_cx = NodeContext::default();
         let document = format::markdown::parse(source, &mut node_cx)?;
-        Ok(Self(Arc::new(ParsedContent { document, node_cx })))
+        Ok(Self(Arc::new(ParsedContent {
+            document,
+            node_cx,
+            ..ParsedContent::default()
+        })))
     }
 
     pub(super) fn source(&self) -> SharedString {
@@ -764,6 +768,12 @@ impl Render for TextViewState {
 pub(crate) struct ParsedContent {
     pub(crate) document: ParsedDocument,
     pub(crate) node_cx: node::NodeContext,
+    append_compatible: bool,
+    /// Test-only grammar input volume, not a parse-time estimate. Required
+    /// open-block reparses and conservative full-document reference fallback
+    /// both contribute their actual source bytes.
+    #[cfg(test)]
+    grammar_input_bytes: usize,
 }
 
 struct UpdateFuture {
@@ -814,8 +824,11 @@ impl UpdateFuture {
         }
         ParsedUpdate {
             revision: options.revision,
-            full_parse: !options.append || recover,
-            selection_compatible: !recover && options.mode == ParseMode::Compatible,
+            full_parse: !options.append
+                || recover
+                || res.as_ref().is_ok_and(|content| !content.append_compatible),
+            selection_compatible: !recover
+                && res.as_ref().is_ok_and(|content| content.append_compatible),
             baseline_ack: options.mode == ParseMode::BaselineAck,
             result: res,
         }
@@ -902,6 +915,11 @@ fn parse_content(
         NodeContext::default()
     };
     node_cx.markdown_extensions = options.markdown_extensions.clone();
+    let prior_unresolved = node_cx.unresolved_references;
+    let prior_reference_links = node_cx.reference_links_present;
+    node_cx.link_refs.begin_update();
+    node_cx.unresolved_references = false;
+    node_cx.reference_links_present = false;
 
     // Re-parse the last block together with the appended text, so a block the
     // new text continues (an unclosed list, a fenced code block) is not split
@@ -918,16 +936,39 @@ fn parse_content(
                 .and_then(|block| block.span())
         })
         .flatten();
+    let open_reference_start = options
+        .append
+        .then(|| {
+            node_cx
+                .link_refs
+                .open_tail_definition_start(&content.document.source)
+        })
+        .flatten();
+    let reparse_start = match (last_span.map(|span| span.start), open_reference_start) {
+        (Some(block), Some(reference)) => Some(block.min(reference)),
+        (Some(block), None) => Some(block),
+        (None, Some(reference)) => Some(reference),
+        (None, None) => None,
+    };
 
     let mut source = String::new();
-    if let Some(span) = last_span {
-        content.document.blocks.pop();
-        node_cx.offset = span.start;
+    if let Some(start) = reparse_start {
+        while content
+            .document
+            .blocks
+            .last()
+            .and_then(|block| block.span())
+            .is_some_and(|span| span.start >= start || span.end > start)
+        {
+            content.document.blocks.pop();
+        }
+        node_cx.link_refs.truncate_from(start);
+        node_cx.offset = start;
         source.push_str(
             &content
                 .document
                 .source
-                .get(span.start..content.document.source.len())
+                .get(start..content.document.source.len())
                 .unwrap(),
         );
         source.push_str(&options.pending_text);
@@ -942,6 +983,40 @@ fn parse_content(
         TextViewFormat::Markdown => format::markdown::parse(&source, &mut node_cx),
         TextViewFormat::Html => format::html::parse(&source, &mut node_cx),
     }?;
+
+    #[cfg(test)]
+    {
+        content.grammar_input_bytes += source.len();
+    }
+    let suffix_unresolved = node_cx.unresolved_references;
+    let reference_mapping_changed = node_cx.link_refs.finish_update();
+    if options.append
+        && (((prior_unresolved || prior_reference_links) && reference_mapping_changed)
+            || (suffix_unresolved && !content.node_cx.link_refs.is_empty()))
+    {
+        // A new definition can change previously plain prose into a reference
+        // link. A suffix reference may need definitions outside its parse
+        // window. The Markdown parser owns that grammar, so reproject the true
+        // complete source rather than inventing a separate bracket parser.
+        let mut whole = content.document.source.clone();
+        whole.append(&options.pending_text);
+        let full = UpdateOptions {
+            append: false,
+            pending_text: whole.to_string(),
+            mode: ParseMode::Replace,
+            ..options.clone()
+        };
+        let mut result = parse_content(format, ParsedContent::default(), &full)?;
+        #[cfg(test)]
+        {
+            result.grammar_input_bytes += content.grammar_input_bytes;
+        }
+        result.append_compatible = false;
+        return Ok(result);
+    }
+    node_cx.unresolved_references |= prior_unresolved;
+    node_cx.reference_links_present |= prior_reference_links;
+    content.append_compatible = options.mode == ParseMode::Compatible;
 
     if options.append {
         // Test accounting includes the parse-buffer copy and the temporary
@@ -966,6 +1041,197 @@ mod tests {
     use super::*;
     use crate::text::MarkdownNode;
     use gpui::TestAppContext;
+
+    fn replace_markdown(source: &str) -> ParsedContent {
+        parse_content(
+            TextViewFormat::Markdown,
+            ParsedContent::default(),
+            &UpdateOptions {
+                revision: 1,
+                pending_text: source.to_owned(),
+                append: false,
+                mode: ParseMode::Replace,
+                markdown_extensions: Arc::default(),
+            },
+        )
+        .unwrap()
+    }
+
+    fn append_markdown(content: ParsedContent, source: &str) -> ParsedContent {
+        parse_content(
+            TextViewFormat::Markdown,
+            content,
+            &UpdateOptions {
+                revision: 2,
+                pending_text: source.to_owned(),
+                append: true,
+                mode: ParseMode::Compatible,
+                markdown_extensions: Arc::default(),
+            },
+        )
+        .unwrap()
+    }
+
+    fn first_reference_link(content: &ParsedContent) -> &node::LinkMark {
+        content
+            .document
+            .blocks
+            .iter()
+            .find_map(|block| {
+                let node::BlockNode::Paragraph(paragraph) = block else {
+                    return None;
+                };
+                paragraph
+                    .children
+                    .iter()
+                    .flat_map(|run| &run.marks)
+                    .find_map(|(_, mark)| {
+                        mark.link.as_ref().filter(|link| link.identifier.is_some())
+                    })
+            })
+            .expect("fixture contains a reference link")
+    }
+
+    #[test]
+    fn append_reconciles_a_reference_definition_open_at_eof() {
+        let initial = replace_markdown("[id]: fo");
+        assert_eq!(
+            initial.node_cx.link_refs.get(&"id".into()).unwrap().url,
+            "fo"
+        );
+
+        let appended = append_markdown(initial, "o\n\n[link][id]");
+        let definition = appended
+            .node_cx
+            .resolve_link_mark(first_reference_link(&appended).clone());
+        assert_eq!(definition.url.as_str(), "foo");
+        assert_eq!(appended.document.source.as_str(), "[id]: foo\n\n[link][id]");
+        assert!(appended.append_compatible);
+    }
+
+    #[test]
+    fn appended_definition_reprojects_an_earlier_unresolved_reference() {
+        let initial = replace_markdown("[link][id]\n\nbody\n\n");
+        assert!(initial.node_cx.unresolved_references);
+        assert!(initial.document.text().contains("[link][id]"));
+
+        let appended = append_markdown(initial, "[id]: dest");
+        assert_eq!(
+            appended
+                .node_cx
+                .resolve_link_mark(first_reference_link(&appended).clone())
+                .url
+                .as_str(),
+            "dest"
+        );
+        assert!(!appended.append_compatible);
+        assert_eq!(
+            appended.document.source.as_str(),
+            "[link][id]\n\nbody\n\n[id]: dest"
+        );
+        assert!(appended.grammar_input_bytes > appended.document.source.len());
+    }
+
+    #[test]
+    fn appends_keep_reference_first_wins_order() {
+        let initial = replace_markdown("[link][id]\n\n[id]: first");
+        let appended = append_markdown(initial, "\n\n[id]: second");
+        assert_eq!(
+            appended
+                .node_cx
+                .resolve_link_mark(first_reference_link(&appended).clone())
+                .url
+                .as_str(),
+            "first"
+        );
+        assert_eq!(
+            appended.node_cx.link_refs.get(&"id".into()).unwrap().url,
+            "first"
+        );
+    }
+
+    #[test]
+    fn appended_reference_uses_a_definition_retained_before_the_parse_window() {
+        let initial = replace_markdown("[id]: dest\n\nbody\n\n");
+        let appended = append_markdown(initial, "[link][id]");
+        assert_eq!(
+            appended
+                .node_cx
+                .resolve_link_mark(first_reference_link(&appended).clone())
+                .url
+                .as_str(),
+            "dest"
+        );
+        assert!(!appended.append_compatible);
+        assert!(appended.grammar_input_bytes > appended.document.source.len());
+    }
+
+    #[test]
+    fn changing_an_open_winner_reprojects_existing_reference_links() {
+        let initial = replace_markdown("[link][id]\n\n[id]: old");
+        let appended = append_markdown(initial.clone(), "er");
+        assert_eq!(
+            appended
+                .node_cx
+                .resolve_link_mark(first_reference_link(&appended).clone())
+                .url
+                .as_str(),
+            "older"
+        );
+        assert_eq!(
+            initial.node_cx.link_refs.get(&"id".into()).unwrap().url,
+            "old"
+        );
+        assert!(!appended.append_compatible);
+        assert!(appended.grammar_input_bytes > appended.document.source.len());
+    }
+
+    #[test]
+    fn worker_and_render_reference_work_uses_shared_production_lookup() {
+        let mut source = String::new();
+        for ix in 0..256 {
+            source.push_str(&format!("[ref-{ix}]: dest-{ix}\n\n"));
+        }
+        source.push_str("[link][ref-0]\n\nbody");
+        let mut content = replace_markdown(&source);
+        let entry_clones = content.node_cx.link_refs.copied_entries();
+        let environment_clones = content.node_cx.link_refs.environment_clones();
+
+        // This is the same content clone and append path used by UpdateFuture
+        // before a worker result is published to the UI state.
+        for _ in 0..32 {
+            content = append_markdown(content.clone(), "tail\n\n");
+        }
+        assert_eq!(content.node_cx.link_refs.copied_entries(), entry_clones);
+        assert!(content.node_cx.link_refs.environment_clones() >= environment_clones + 32);
+
+        let lookups = content.node_cx.link_refs.lookups();
+        let resolved = content
+            .node_cx
+            .resolve_link_mark(first_reference_link(&content).clone());
+        assert_eq!(resolved.url.as_str(), "dest-0");
+        assert_eq!(content.node_cx.link_refs.lookups(), lookups + 1);
+    }
+
+    #[test]
+    fn open_paragraph_and_fence_report_grammar_reparse_separately_from_map_clones() {
+        for prefix in ["open", "```rust\ncode"] {
+            let mut content = replace_markdown(prefix);
+            let initial_bytes = content.document.source.len();
+            for _ in 0..24 {
+                content = append_markdown(content, "x");
+            }
+            let final_bytes = content.document.source.len();
+            assert!(
+                content.grammar_input_bytes > final_bytes * 3,
+                "open blocks are reparsed by the Markdown grammar: grammar_input_bytes={} final_source_bytes={final_bytes}",
+                content.grammar_input_bytes
+            );
+            assert!(content.document.source.copied_bytes() > final_bytes);
+            assert!(final_bytes > initial_bytes);
+            assert_eq!(content.node_cx.link_refs.copied_entries(), 0);
+        }
+    }
 
     #[test]
     fn prepared_heading_resolves_parent_reference_definitions_and_preserves_exact_source() {
@@ -996,7 +1262,8 @@ mod tests {
         let projection = custom.data::<PreparedMarkdown>().unwrap();
         assert_eq!(projection.0.document.text().trim(), "Guide");
         assert_eq!(projection.source().as_str(), "[Guide][id]");
-        let reference = projection.0.node_cx.link_refs.get("id").unwrap();
+        assert!(projection.0.node_cx.link_refs.environment_clones() >= 1);
+        let reference = projection.0.node_cx.link_refs.get(&"id".into()).unwrap();
         assert_eq!(reference.url.as_str(), "src/lib.rs#L7");
         let node::BlockNode::Paragraph(paragraph) = &projection.0.document.blocks[0] else {
             panic!("inline missing");
@@ -1153,7 +1420,7 @@ mod tests {
                 .0
                 .node_cx
                 .link_refs
-                .get("target")
+                .get(&"target".into())
                 .unwrap()
                 .url
                 .as_str(),

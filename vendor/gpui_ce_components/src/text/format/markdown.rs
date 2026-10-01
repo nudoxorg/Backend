@@ -26,6 +26,9 @@ pub(crate) fn prepare_inline(
     context: &NodeContext,
 ) -> crate::text::state::PreparedMarkdown {
     let mut node_cx = context.clone();
+    // This is an immutable projection of the current reference table, not part
+    // of its parent parse's before-image bookkeeping.
+    node_cx.link_refs.begin_update();
     node_cx.offset = 0;
     let mut paragraph = Paragraph::default();
     for child in children {
@@ -37,12 +40,14 @@ pub(crate) fn prepare_inline(
         start: 0,
         end: source.len(),
     });
+    node_cx.link_refs.finish_update();
     crate::text::state::PreparedMarkdown::from_content(crate::text::state::ParsedContent {
         document: ParsedDocument {
             source: source.to_string().into(),
             blocks: vec![BlockNode::Paragraph(paragraph)].into(),
         },
         node_cx,
+        ..crate::text::state::ParsedContent::default()
     })
 }
 
@@ -198,6 +203,13 @@ fn parse_paragraph(paragraph: &mut Paragraph, node: &mdast::Node, cx: &mut NodeC
             });
         }
         Node::Text(val) => {
+            // The parser leaves syntactically reference-shaped text as Text
+            // when its label has no definition in this parse. Keep this
+            // conservative candidate bit: an appended definition can change
+            // the meaning of an earlier run of text. False positives only
+            // cause a bounded full-grammar reparse when a winning definition
+            // is later added.
+            cx.unresolved_references |= val.value.contains('[');
             text = val.value.clone();
             paragraph.push_str(&val.value)
         }
@@ -294,10 +306,13 @@ fn parse_paragraph(paragraph: &mut Paragraph, node: &mdast::Node, cx: &mut NodeC
             )]));
         }
         Node::LinkReference(link) => {
+            cx.reference_links_present = true;
+            let identifier: SharedString = link.identifier.clone().into();
+            cx.unresolved_references |= cx.link_refs.get(&identifier).is_none();
             let link_mark = LinkMark {
                 url: "".into(),
                 title: link.label.clone().map(Into::into),
-                identifier: Some(link.identifier.clone().into()),
+                identifier: Some(identifier),
             };
 
             text = merge_children_with_mark(
@@ -328,6 +343,7 @@ fn ast_to_document(source: &str, root: mdast::Node, cx: &mut NodeContext) -> Par
 
     fn references(node: &mdast::Node, context: &mut NodeContext) {
         if let Node::Definition(def) = node {
+            let position = def.position.as_ref();
             context.add_ref(
                 def.identifier.clone().into(),
                 LinkMark {
@@ -335,6 +351,8 @@ fn ast_to_document(source: &str, root: mdast::Node, cx: &mut NodeContext) -> Par
                     identifier: Some(def.identifier.clone().into()),
                     title: def.title.clone().map(Into::into),
                 },
+                context.offset + position.map_or(0, |position| position.start.offset),
+                context.offset + position.map_or(0, |position| position.end.offset),
             );
         }
         if let Some(children) = node.children() {
@@ -530,23 +548,12 @@ fn ast_to_node(source: &str, value: mdast::Node, cx: &mut NodeContext) -> BlockN
             paragraph.span = new_span(def.position, cx);
             BlockNode::Paragraph(paragraph)
         }
-        Node::Definition(def) => {
-            cx.add_ref(
-                def.identifier.clone().into(),
-                LinkMark {
-                    url: def.url.clone().into(),
-                    identifier: Some(def.identifier.clone().into()),
-                    title: def.title.clone().map(Into::into),
-                },
-            );
-
-            BlockNode::Definition {
-                identifier: def.identifier.clone().into(),
-                url: def.url.clone().into(),
-                title: def.title.clone().map(|s| s.into()),
-                span: new_span(def.position, cx),
-            }
-        }
+        Node::Definition(def) => BlockNode::Definition {
+            identifier: def.identifier.clone().into(),
+            url: def.url.clone().into(),
+            title: def.title.clone().map(|s| s.into()),
+            span: new_span(def.position, cx),
+        },
         _ => {
             if cfg!(debug_assertions) {
                 tracing::warn!("unsupported node: {:#?}", value);

@@ -13,6 +13,8 @@ use std::{
 pub(crate) struct SourceSnapshot {
     rope: Rope,
     flat: Arc<OnceLock<SharedString>>,
+    /// Test-only byte-copy volume for rope construction, materialized ranges,
+    /// appends, and explicit whole-source flattening.
     #[cfg(test)]
     copy_work: Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -46,6 +48,44 @@ impl SourceSnapshot {
     pub(crate) fn len(&self) -> usize {
         self.rope.len_bytes()
     }
+
+    /// Check a suffix without materializing the whole rope or allocating a
+    /// temporary string. One trailing line ending still permits a Markdown
+    /// reference definition to take a continuation title on the next line;
+    /// a blank line closes that grammar boundary.
+    pub(crate) fn reference_definition_can_continue(&self, end_offset: usize) -> bool {
+        if end_offset > self.len() {
+            return false;
+        }
+        let start = self.rope.byte_to_char(end_offset);
+        if self.rope.char_to_byte(start) != end_offset {
+            return false;
+        }
+
+        let mut line_endings = 0;
+        let mut previous_was_cr = false;
+        for character in self.rope.slice(start..self.rope.len_chars()).chars() {
+            match character {
+                '\r' => {
+                    line_endings += 1;
+                    previous_was_cr = true;
+                }
+                '\n' => {
+                    if !previous_was_cr {
+                        line_endings += 1;
+                    }
+                    previous_was_cr = false;
+                }
+                ' ' | '\t' => previous_was_cr = false,
+                _ => return false,
+            }
+            if line_endings > 1 {
+                return false;
+            }
+        }
+        true
+    }
+
     pub(crate) fn append(&mut self, text: &str) {
         if text.is_empty() {
             return;
@@ -103,184 +143,86 @@ impl std::fmt::Display for SourceSnapshot {
     }
 }
 
-#[derive(Debug)]
-enum Tree {
-    Leaf(BlockNode),
-    Branch {
-        left: Arc<Tree>,
-        right: Arc<Tree>,
-        len: usize,
-        height: usize,
-    },
-}
-impl Tree {
-    fn len(&self) -> usize {
-        match self {
-            Self::Leaf(_) => 1,
-            Self::Branch { len, .. } => *len,
-        }
+#[derive(Clone, Debug)]
+struct StoredBlock(Arc<BlockNode>);
+#[derive(Clone, Debug, Default)]
+struct BlockCount(usize);
+impl sum_tree::ContextLessSummary for BlockCount {
+    fn zero() -> Self {
+        Self(0)
     }
-    fn height(&self) -> usize {
-        match self {
-            Self::Leaf(_) => 1,
-            Self::Branch { height, .. } => *height,
-        }
-    }
-    fn get(&self, index: usize) -> Option<&BlockNode> {
-        match self {
-            Self::Leaf(block) => (index == 0).then_some(block),
-            Self::Branch { left, right, .. } => {
-                if index < left.len() {
-                    left.get(index)
-                } else {
-                    right.get(index - left.len())
-                }
-            }
-        }
+    fn add_summary(&mut self, other: &Self) {
+        self.0 += other.0;
     }
 }
-fn branch(left: Arc<Tree>, right: Arc<Tree>) -> Arc<Tree> {
-    Arc::new(Tree::Branch {
-        len: left.len() + right.len(),
-        height: left.height().max(right.height()) + 1,
-        left,
-        right,
-    })
+impl sum_tree::Item for StoredBlock {
+    type Summary = BlockCount;
+    fn summary(&self, (): ()) -> BlockCount {
+        BlockCount(1)
+    }
 }
-fn balance(left: Arc<Tree>, right: Arc<Tree>) -> Arc<Tree> {
-    if left.height() > right.height() + 1 {
-        let Tree::Branch {
-            left: ll,
-            right: lr,
-            ..
-        } = left.as_ref()
-        else {
-            unreachable!()
-        };
-        if ll.height() >= lr.height() {
-            return branch(ll.clone(), branch(lr.clone(), right));
-        }
-        let Tree::Branch {
-            left: lrl,
-            right: lrr,
-            ..
-        } = lr.as_ref()
-        else {
-            unreachable!()
-        };
-        return branch(branch(ll.clone(), lrl.clone()), branch(lrr.clone(), right));
+impl<'a> sum_tree::Dimension<'a, BlockCount> for usize {
+    fn zero((): ()) -> Self {
+        0
     }
-    if right.height() > left.height() + 1 {
-        let Tree::Branch {
-            left: rl,
-            right: rr,
-            ..
-        } = right.as_ref()
-        else {
-            unreachable!()
-        };
-        if rr.height() >= rl.height() {
-            return branch(branch(left, rl.clone()), rr.clone());
-        }
-        let Tree::Branch {
-            left: rll,
-            right: rlr,
-            ..
-        } = rl.as_ref()
-        else {
-            unreachable!()
-        };
-        return branch(branch(left, rll.clone()), branch(rlr.clone(), rr.clone()));
-    }
-    branch(left, right)
-}
-fn join(left: Arc<Tree>, right: Arc<Tree>) -> Arc<Tree> {
-    if left.height() > right.height() + 1 {
-        let Tree::Branch {
-            left: ll,
-            right: lr,
-            ..
-        } = left.as_ref()
-        else {
-            unreachable!()
-        };
-        return balance(ll.clone(), join(lr.clone(), right));
-    }
-    if right.height() > left.height() + 1 {
-        let Tree::Branch {
-            left: rl,
-            right: rr,
-            ..
-        } = right.as_ref()
-        else {
-            unreachable!()
-        };
-        return balance(join(left, rl.clone()), rr.clone());
-    }
-    branch(left, right)
-}
-fn remove_last(root: &Arc<Tree>) -> Option<Arc<Tree>> {
-    match root.as_ref() {
-        Tree::Leaf(_) => None,
-        Tree::Branch { left, right, .. } => Some(match remove_last(right) {
-            Some(right) => join(left.clone(), right),
-            None => left.clone(),
-        }),
+    fn add_summary(&mut self, summary: &'a BlockCount, (): ()) {
+        *self += summary.0;
     }
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct BlockSequence(Option<Arc<Tree>>);
+pub(crate) struct BlockSequence(sum_tree::SumTree<StoredBlock>);
 impl From<Vec<BlockNode>> for BlockSequence {
     fn from(blocks: Vec<BlockNode>) -> Self {
-        fn build(mut blocks: std::vec::IntoIter<BlockNode>, count: usize) -> Option<Arc<Tree>> {
-            if count == 0 {
-                return None;
-            }
-            // Build by balanced concatenation; leaves move in, never clone.
-            let mut root = Arc::new(Tree::Leaf(blocks.next().unwrap()));
-            for block in blocks {
-                root = join(root, Arc::new(Tree::Leaf(block)));
-            }
-            Some(root)
-        }
-        let count = blocks.len();
-        Self(build(blocks.into_iter(), count))
+        Self(sum_tree::SumTree::from_iter(
+            blocks.into_iter().map(|block| StoredBlock(Arc::new(block))),
+            (),
+        ))
     }
 }
 impl PartialEq for BlockSequence {
     fn eq(&self, other: &Self) -> bool {
-        match (&self.0, &other.0) {
-            (Some(a), Some(b)) if Arc::ptr_eq(a, b) => true,
-            _ => self.len() == other.len() && self.iter().eq(other.iter()),
-        }
+        self.len() == other.len() && self.iter().eq(other.iter())
     }
 }
 impl BlockSequence {
     pub(crate) fn len(&self) -> usize {
-        self.0.as_ref().map_or(0, |root| root.len())
+        self.0.summary().0
     }
     pub(crate) fn is_empty(&self) -> bool {
-        self.0.is_none()
+        self.0.is_empty()
     }
     pub(crate) fn get(&self, index: usize) -> Option<&BlockNode> {
-        self.0.as_ref()?.get(index)
+        if index >= self.len() {
+            return None;
+        }
+        let mut cursor = self.0.cursor::<usize>(());
+        cursor.seek(&index, sum_tree::Bias::Right);
+        cursor.item().map(|block| block.0.as_ref())
     }
     pub(crate) fn last(&self) -> Option<&BlockNode> {
-        self.get(self.len().checked_sub(1)?)
+        self.0.last().map(|block| block.0.as_ref())
     }
     pub(crate) fn pop(&mut self) {
-        self.0 = self.0.as_ref().and_then(remove_last);
+        if self.is_empty() {
+            return;
+        }
+        let mut cursor = self.0.cursor::<usize>(());
+        let prefix = cursor.slice(&(self.len() - 1), sum_tree::Bias::Left);
+        self.0 = prefix;
     }
     pub(crate) fn append(&mut self, next: Self) {
-        self.0 = match (self.0.take(), next.0) {
-            (Some(left), Some(right)) => Some(join(left, right)),
-            (None, right) => right,
-            (left, None) => left,
-        };
+        self.0.append(next.0, ());
     }
     pub(crate) fn iter(&self) -> impl Iterator<Item = &BlockNode> {
-        (0..self.len()).map(move |index| &self[index])
+        self.0.iter().map(|block| block.0.as_ref())
+    }
+    pub(crate) fn iter_from(&self, index: usize) -> impl Iterator<Item = (usize, &BlockNode)> {
+        let mut cursor = self.0.cursor::<usize>(());
+        cursor.seek(&index, sum_tree::Bias::Right);
+        cursor
+            .enumerate()
+            .map(move |(offset, block)| (index + offset, block.0.as_ref()))
     }
     pub(crate) fn into_vec(self) -> Vec<BlockNode> {
         self.iter().cloned().collect()
@@ -308,7 +250,15 @@ mod tests {
         assert_eq!(grown.get(0).unwrap() as *const BlockNode, first_address);
         assert_eq!(first.len(), 1);
         assert_eq!(grown.len(), 4097);
-        assert!(grown.0.as_ref().unwrap().height() <= 26);
+        assert_eq!(grown.iter().count(), 4097);
+        assert_eq!(
+            grown
+                .iter_from(4094)
+                .take(3)
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>(),
+            [4094, 4095, 4096]
+        );
         for _ in 0..4096 {
             grown.pop();
         }
@@ -332,5 +282,21 @@ mod tests {
         assert!(grown.flat.get().is_none());
         assert_eq!(grown.get(0..4).unwrap(), "🦀");
         assert!(grown.get(1..4).is_none());
+    }
+
+    #[test]
+    fn reference_tail_probe_is_utf8_safe_and_stops_at_a_blank_line() {
+        let source = SourceSnapshot::from("🦀 [id]: fo".to_owned());
+        let definition_end = "🦀 [id]: fo".len();
+        assert!(source.reference_definition_can_continue(definition_end));
+
+        let mut one_line = source.clone();
+        one_line.append(" \r\n");
+        assert!(one_line.reference_definition_can_continue(definition_end));
+
+        let mut closed = one_line.clone();
+        closed.append("\r\n");
+        assert!(!closed.reference_definition_can_continue(definition_end));
+        assert!(!source.reference_definition_can_continue(1));
     }
 }

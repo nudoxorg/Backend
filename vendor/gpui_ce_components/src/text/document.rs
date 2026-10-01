@@ -72,37 +72,41 @@ impl ParsedDocument {
         format: SelectionFormat,
         blocks: Option<RangeInclusive<usize>>,
     ) -> String {
-        let requested_blocks = blocks.clone();
-        let painted = self
-            .blocks
-            .iter()
-            .map(|block| block.has_selection())
-            .collect::<Vec<_>>();
-        let (Some(painted_first), Some(painted_last)) = (
-            painted.iter().position(|painted| *painted),
-            painted.iter().rposition(|painted| *painted),
-        ) else {
+        let last_ix = self.blocks.len().saturating_sub(1);
+        let explicit_range = blocks.is_some();
+        // Virtualized callers may provide a block range even when nothing is
+        // selected. Preserve the old empty-selection contract without
+        // allocating an O(N) bitmap of every block's paint state.
+        let mut painted_first = None;
+        let mut painted_last = None;
+        for (ix, block) in self.blocks.iter().enumerate() {
+            if block.has_selection() {
+                painted_first.get_or_insert(ix);
+                painted_last = Some(ix);
+            }
+        }
+        let (Some(painted_first), Some(painted_last)) = (painted_first, painted_last) else {
             return String::new();
         };
-
-        let last_ix = self.blocks.len().saturating_sub(1);
         let (first, last) = match blocks {
             Some(blocks) => (*blocks.start().min(&last_ix), *blocks.end().min(&last_ix)),
             None => (painted_first, painted_last),
         };
+        if first > last {
+            return String::new();
+        }
 
         if format == SelectionFormat::Plain {
             let mut text = String::new();
-            for (ix, block) in self.blocks.iter().enumerate().take(last + 1).skip(first) {
+            for (ix, block) in self.blocks.iter_from(first).take(last - first + 1) {
+                let is_virtual_endpoint = explicit_range && (ix == first || ix == last);
+                let painted = (!explicit_range || is_virtual_endpoint) && block.has_selection();
                 let selected = block.selected_text(format);
-                let is_virtual_endpoint = requested_blocks
-                    .as_ref()
-                    .is_some_and(|blocks| ix == *blocks.start() || ix == *blocks.end());
-                if requested_blocks.is_some() && !is_virtual_endpoint {
+                if explicit_range && !is_virtual_endpoint {
                     text.push_str(&block.text());
                 } else if !selected.is_empty() {
                     text.push_str(&selected);
-                } else if !painted[ix] {
+                } else if !painted {
                     // Never painted, so it cannot report a selection of its own
                     // even though the span covers it. A painted block that came
                     // up empty really has nothing selected, and stays empty.
@@ -113,14 +117,15 @@ impl ParsedDocument {
         }
 
         let mut out: Vec<String> = Vec::new();
-        for (ix, block) in self.blocks.iter().enumerate().take(last + 1).skip(first) {
+        for (ix, block) in self.blocks.iter_from(first).take(last - first + 1) {
+            let painted = (!explicit_range || ix == first || ix == last) && block.has_selection();
             // The selection is one continuous range, so only the block it
             // starts in and the block it ends in can be partly selected.
             // Everything between them is covered whole, and so is any block
             // that reports nothing — it either scrolled past without painting,
             // or renders no selectable text run at all (a rule, a break, a
             // custom node, a standalone image).
-            let source = if (ix == first || ix == last) && painted[ix] {
+            let source = if (ix == first || ix == last) && painted {
                 block.selected_text(format)
             } else {
                 self.whole_source(block)
@@ -234,5 +239,23 @@ impl ParsedDocument {
             })
             .size_full(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_virtual_block_range_is_empty_without_a_selection() {
+        let document = ParsedDocument {
+            source: "unselected".into(),
+            blocks: vec![BlockNode::Paragraph(Default::default())].into(),
+        };
+
+        assert_eq!(
+            document.selected_text(SelectionFormat::Plain, Some(0..=0)),
+            ""
+        );
     }
 }
