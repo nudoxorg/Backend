@@ -1108,8 +1108,8 @@ impl PersistentState {
                 // Folder disappearance does not prove an in-flight owner
                 // operation stopped. Keep its exact recovery path visible
                 // even when the source is also temporarily unavailable.
-                let interrupted = matches!(item.phase, PersistedProjectPhase::Indexing | PersistedProjectPhase::Cancelling);
-                let phase = if interrupted {
+                let unresolved = matches!(item.phase, PersistedProjectPhase::Indexing | PersistedProjectPhase::Cancelling | PersistedProjectPhase::Unconfirmed);
+                let phase = if unresolved {
                     ProjectPhase::Unconfirmed
                 } else if !path.is_dir() {
                     ProjectPhase::Missing
@@ -1126,10 +1126,10 @@ impl PersistentState {
                     path: display_path,
                     label: item.label.clone().into(),
                     phase,
-                    progress: (!interrupted).then_some(item.progress).flatten().map(|progress| progress.min(100)),
-                    files_indexed: (!interrupted).then_some(item.files_indexed).flatten(),
+                    progress: (!unresolved).then_some(item.progress).flatten().map(|progress| progress.min(100)),
+                    files_indexed: (!unresolved).then_some(item.files_indexed).flatten(),
                     request: None,
-                    error: if interrupted {
+                    error: if unresolved && item.error.is_none() {
                         Some(Arc::from("This index request was interrupted. Check its exact owner operation before starting another."))
                     } else {
                         item.error.clone().map(Into::into)
@@ -1445,12 +1445,12 @@ mod tests {
     fn cold_active_index_and_cancellation_require_exact_reconciliation() {
         let root = fixture("cold-index-outcome");
         let state = PersistedDesktopState {
-            shelf: [PersistedProjectPhase::Indexing, PersistedProjectPhase::Cancelling, PersistedProjectPhase::Indexing]
+            shelf: [PersistedProjectPhase::Indexing, PersistedProjectPhase::Cancelling, PersistedProjectPhase::Indexing, PersistedProjectPhase::Unconfirmed]
                 .into_iter()
                 .enumerate()
                 .map(|(index, phase)| {
                     let path = root.join(format!("project-{index}"));
-                    if index != 2 {
+                    if index < 2 {
                         fs::create_dir(&path).expect("project directory");
                     }
                     PersistedShelfItem {
@@ -1468,7 +1468,7 @@ mod tests {
             ..PersistedDesktopState::default()
         };
         let workspace = PersistentState::at(root.join("desktop.json")).cold_workspace(&state);
-        assert_eq!(workspace.projects.len(), 3);
+        assert_eq!(workspace.projects.len(), 4);
         for project in workspace.projects.iter() {
             assert_eq!(project.phase, ProjectPhase::Unconfirmed);
             assert_eq!(project.progress, None);
