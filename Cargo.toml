@@ -12,6 +12,7 @@ members = [
 ]
 exclude = [
     ".config/dylint",
+    "tests/__pycache__",
 ]
 
 [workspace.package]
