@@ -25,7 +25,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-pub use readme::ReadmeBlock;
+pub use readme::{ReadmeBlock, ReadmeHeading, ReadmeLink};
+
+/// Normalizes a Markdown heading fragment using the README index's spelling.
+pub(crate) fn readme_fragment_slug(value: &str) -> String {
+    readme::heading_slug(value)
+}
 
 /// Every package fact the local dossier renders.
 ///
@@ -59,6 +64,13 @@ pub struct LocalPackage {
     pub categories: Arc<[Arc<str>]>,
     /// README projected into structural blocks.
     pub readme: Arc<[ReadmeBlock]>,
+    /// The bounded Markdown source, retained verbatim for the rich reader.
+    /// `None` means no README source was read.
+    pub readme_markdown: Option<Arc<str>>,
+    /// Bounded Markdown links with only worker-resolved local files admitted.
+    pub readme_links: Arc<[ReadmeLink]>,
+    /// Bounded heading targets matching the README's rendered anchors.
+    pub readme_headings: Arc<[ReadmeHeading]>,
     /// Unique dependency requirements across workspace members.
     pub dependencies: Arc<[LocalDependency]>,
     /// Unique feature definitions across workspace members.
@@ -217,7 +229,21 @@ impl LocalPackageLoader {
     #[allow(clippy::unused_self)]
     pub fn readme(&self, project: &LocalProjectId) -> Option<LocalPackage> {
         let root = project.path();
-        let readme = readme::project_readme(&root);
+        let readme_file = readme::project_readme_file(&root);
+        let markdown = readme_file.as_ref().map(|(_, source)| Arc::clone(source));
+        let readme = markdown
+            .as_deref()
+            .map_or_else(|| Arc::from([]), |source| readme::parse(source).into());
+        let (readme_links, readme_headings) = markdown.as_deref().map_or_else(
+            || (Arc::from([]), Arc::from([])),
+            |source| {
+                readme::navigation_index(
+                    source,
+                    &root,
+                    readme_file.as_ref().map_or(&root, |(path, _)| path),
+                )
+            },
+        );
         let facts = manifest::read_manifest(&root.join("Cargo.toml"))
             .map(|manifest| manifest::package_facts(&root, &manifest));
         let description = facts.as_ref().and_then(|facts| present(facts.description.clone()));
@@ -245,6 +271,9 @@ impl LocalPackageLoader {
             keywords: Arc::from([]),
             categories: Arc::from([]),
             readme,
+            readme_markdown: markdown,
+            readme_links,
+            readme_headings,
             dependencies: Arc::from([]),
             features: Arc::from([]),
             members: 0,
@@ -327,6 +356,7 @@ struct Facts {
     keywords: Vec<String>,
     categories: Vec<String>,
     readme: String,
+    readme_path: Option<PathBuf>,
 }
 
 impl Facts {
@@ -347,6 +377,10 @@ impl Facts {
             let paragraph = readme::first_paragraph(&self.readme);
             (!paragraph.is_empty()).then_some(paragraph)
         });
+        let fallback_readme_path = root.join("README.md");
+        let readme_path = self.readme_path.as_deref().unwrap_or(&fallback_readme_path);
+        let (readme_links, readme_headings) =
+            readme::navigation_index(&self.readme, &root, readme_path);
         LocalPackage {
             source,
             name: Arc::from(name),
@@ -362,6 +396,9 @@ impl Facts {
             keywords: shared(self.keywords),
             categories: shared(self.categories),
             readme: readme::parse(&self.readme).into(),
+            readme_links,
+            readme_headings,
+            readme_markdown: (!self.readme.is_empty()).then(|| Arc::from(self.readme)),
             dependencies: dependencies.into(),
             features: features.into(),
             members,

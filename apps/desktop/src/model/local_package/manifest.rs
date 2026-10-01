@@ -69,6 +69,7 @@ pub(super) fn project(project: LocalProjectId, root: &Path, failure: CargoFailur
     let Some(manifest) = read_manifest(&root.join("Cargo.toml")) else {
         let facts = Facts {
             readme: readme::read(&root.join("README.md")),
+            readme_path: Some(root.join("README.md")),
             ..Facts::empty()
         };
         return facts.into_package(
@@ -150,6 +151,7 @@ pub(super) fn package_facts(root: &Path, manifest: &Manifest) -> Facts {
         keywords: list(|package| package.keywords.as_ref()),
         categories: list(|package| package.categories.as_ref()),
         readme: readme::read(&readme_path),
+        readme_path: Some(readme_path),
     }
 }
 
@@ -187,6 +189,7 @@ impl Facts {
             keywords: Vec::new(),
             categories: Vec::new(),
             readme: String::new(),
+            readme_path: None,
         }
     }
 }

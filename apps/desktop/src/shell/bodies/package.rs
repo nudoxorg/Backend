@@ -8,12 +8,16 @@
 use super::state::{Shown, not_ready, shown};
 use super::{Ctx, Leaf};
 use crate::model::AppSnapshot;
-use crate::model::local_package::{ActiveProject, ReadmeBlock, active_project};
+use crate::model::local_package::{
+    ActiveProject, ReadmeBlock, ReadmeHeading, ReadmeLink, active_project, readme_fragment_slug,
+};
 use crate::model::pages::{
     Dependency, DependencyScope, PackageDossier, PackageRef, PageKey, RecordSource,
 };
 use crate::navigation::{Intent, Route};
+use crate::shell::focus::Target;
 use crate::shell::kit::{HoverIntent, package_route, quiet, text};
+use crate::shell::markdown::FollowMarkdownLink;
 use crate::shell::reader::Reader;
 use facet::icons::Kind;
 use facet::marks::{DepFacts, DepKind, Eco, EcoFacts, dep_line, ecosystem_mark};
@@ -22,10 +26,12 @@ use facet::tokens::ty;
 use facet::{Measure, Palette, Space};
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, div,
-    px,
+    AnyElement, App, AppContext as _, ClickEvent, Context, ElementId, InteractiveElement,
+    IntoElement, ParentElement, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
+    Window, div, point, px,
 };
 use std::rc::Rc;
+use std::sync::Arc;
 
 mod data;
 mod fluid;
@@ -247,7 +253,7 @@ pub(super) fn body(
     {
         leaves.insert(0, Leaf::new(offer));
     }
-    if let Some(leaf) = readme(&dossier, ctx) {
+    if let Some(leaf) = readme(&dossier, place, ctx) {
         leaves.push(leaf);
     }
     leaves
@@ -612,11 +618,15 @@ fn open_dependency(
     }
 }
 
-fn readme(dossier: &PackageDossier, ctx: &mut Ctx<'_>) -> Option<Leaf> {
+fn readme(dossier: &PackageDossier, place: &Route, ctx: &mut Ctx<'_>) -> Option<Leaf> {
     let measure = ctx.measure;
     let palette = ctx.palette;
-    let blocks = dossier.readme.known()?;
-    if blocks.is_empty() {
+    let blocks = dossier.readme.known();
+    let source = dossier
+        .readme_markdown
+        .known()
+        .filter(|source| !source.trim().is_empty());
+    if source.is_none() && blocks.is_none_or(|blocks| blocks.is_empty()) {
         return None;
     }
     let heading = ctx.say("Read me");
@@ -626,10 +636,423 @@ fn readme(dossier: &PackageDossier, ctx: &mut Ctx<'_>) -> Option<Leaf> {
         .gap(measure.space(Space::Base))
         .max_w(px(680.0 * measure.scale()))
         .child(head(heading, &measure, palette));
-    for block in blocks.iter().filter(|block| !matches!(block, ReadmeBlock::Paragraph(words) if crate::model::source_facts::docs::nav_row(words))).take(24) {
+    if let Some(source) = source {
+        let readme_links = dossier
+            .readme_links
+            .known()
+            .cloned()
+            .unwrap_or_else(|| Arc::from([]));
+        let headings = dossier
+            .readme_headings
+            .known()
+            .cloned()
+            .unwrap_or_else(|| Arc::from([]));
+        let outline = dossier.outline.known().cloned();
+        let package = dossier.package.clone();
+        let restore_target = ctx.targets.left_by(place);
+        let shell_links = ctx.links.clone();
+        let recall = ctx.targets.recall();
+        let reader_scroll = ctx.reader_scroll.clone();
+        let action_links = Arc::clone(&readme_links);
+        let action_headings = Arc::clone(&headings);
+        let action_outline = outline.clone();
+        let action_package = package.clone();
+        let action_shell_links = shell_links.clone();
+        let action_recall = recall.clone();
+        let action_scroll = reader_scroll.clone();
+        let rich = crate::shell::markdown::view(
+            ElementId::Name(SharedString::from("package-readme-markdown")),
+            SharedString::from(source.to_string()),
+            Arc::clone(&headings),
+        )
+        .w_full();
+        let rich = div()
+            .w_full()
+            .on_action::<FollowMarkdownLink>(move |action, window, app| {
+                activate_readme_link(
+                    &action.destination,
+                    &action_links,
+                    &action_headings,
+                    action_outline.as_ref(),
+                    &action_package,
+                    &action_shell_links,
+                    &action_recall,
+                    &action_scroll,
+                    window,
+                    app,
+                );
+            })
+            .child(rich);
+        column = column.child(rich);
+        if !headings.is_empty() {
+            column =
+                column.child(text(ty::MONO_SMALL, &measure, palette.ink3).child("On this page"));
+            for (index, target) in headings.iter().enumerate() {
+                let id: SharedString = format!("readme-heading-link-{index}").into();
+                let destination = format!("#{}", target.slug);
+                let heading_links = Arc::clone(&readme_links);
+                let heading_rows = Arc::clone(&headings);
+                let heading_outline = outline.clone();
+                let heading_package = package.clone();
+                let heading_shell_links = shell_links.clone();
+                let heading_recall = recall.clone();
+                let heading_scroll = reader_scroll.clone();
+                let act_destination = destination.clone();
+                let act = Rc::new(move |window: &mut Window, app: &mut App| {
+                    activate_readme_link(
+                        &act_destination,
+                        &heading_links,
+                        &heading_rows,
+                        heading_outline.as_ref(),
+                        &heading_package,
+                        &heading_shell_links,
+                        &heading_recall,
+                        &heading_scroll,
+                        window,
+                        app,
+                    );
+                });
+                ctx.targets.push(Target {
+                    id: id.clone(),
+                    label: format!("Go to {}", target.title).into(),
+                    act: act.clone(),
+                    peek: None,
+                    source: None,
+                });
+                if restore_target.as_ref() == Some(&id) {
+                    ctx.targets.focus(id.clone());
+                }
+                let row = div()
+                    .id(id.clone())
+                    .w_full()
+                    .pl(px(f32::from(target.level.saturating_sub(1)) * 8.0))
+                    .cursor_pointer()
+                    .text_color(palette.ink2.hsla())
+                    .child(text(ty::PROSE, &measure, palette.ink2).child(target.title.to_string()))
+                    .on_click(move |_: &ClickEvent, window, app| act(window, app));
+                column = column.child(ctx.targets.track(id, row));
+            }
+        }
+        if !readme_links.is_empty() {
+            column = column.child(text(ty::MONO_SMALL, &measure, palette.ink3).child("Links"));
+            for (index, link) in readme_links.iter().enumerate() {
+                let resolution = readme_link_kind(
+                    &link.destination,
+                    Some(link),
+                    &headings,
+                    outline.as_ref(),
+                    &package,
+                );
+                let label = if link.label.is_empty() {
+                    link.destination.to_string()
+                } else {
+                    link.label.to_string()
+                };
+                let id: SharedString = format!("readme-link-{index}").into();
+                let result_note = match &resolution {
+                    Some(ReadmeLinkKind::External(_)) => None,
+                    Some(ReadmeLinkKind::Anchor(_)) => None,
+                    Some(ReadmeLinkKind::File { .. }) => None,
+                    Some(ReadmeLinkKind::Route(_)) => None,
+                    None => Some("Target isn't available from this package"),
+                };
+                let destination = link.destination.to_string();
+                if resolution.is_some() {
+                    let action_links = Arc::clone(&readme_links);
+                    let action_headings = Arc::clone(&headings);
+                    let action_outline = outline.clone();
+                    let action_package = package.clone();
+                    let action_shell_links = shell_links.clone();
+                    let action_recall = recall.clone();
+                    let action_scroll = reader_scroll.clone();
+                    let act_destination = destination.clone();
+                    let act = Rc::new(move |window: &mut Window, app: &mut App| {
+                        activate_readme_link(
+                            &act_destination,
+                            &action_links,
+                            &action_headings,
+                            action_outline.as_ref(),
+                            &action_package,
+                            &action_shell_links,
+                            &action_recall,
+                            &action_scroll,
+                            window,
+                            app,
+                        );
+                    });
+                    let peek = match resolution.as_ref().expect("resolved link") {
+                        ReadmeLinkKind::Route(route) => route_page_key(route),
+                        _ => None,
+                    };
+                    let source = match resolution.as_ref().expect("resolved link") {
+                        ReadmeLinkKind::Route(Route::Symbol(route))
+                            if route.view == crate::navigation::View::Code =>
+                        {
+                            crate::model::pages::SymbolRef::new(route.id.as_str()).ok()
+                        }
+                        _ => None,
+                    };
+                    ctx.targets.push(Target {
+                        id: id.clone(),
+                        label: label.clone().into(),
+                        act: act.clone(),
+                        peek,
+                        source,
+                    });
+                    if restore_target.as_ref() == Some(&id) {
+                        ctx.targets.focus(id.clone());
+                    }
+                    let row = div()
+                        .id(id.clone())
+                        .w_full()
+                        .cursor_pointer()
+                        .text_color(palette.cyan.base.hsla())
+                        .child(text(ty::PROSE, &measure, palette.cyan.base).child(label))
+                        .on_click(move |_: &ClickEvent, window, app| act(window, app));
+                    column = column.child(ctx.targets.track(id, row));
+                } else {
+                    column = column.child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(text(ty::PROSE, &measure, palette.ink2).child(label))
+                            .child(quiet(
+                                result_note.unwrap_or("Target unavailable"),
+                                &measure,
+                                palette,
+                            )),
+                    );
+                }
+            }
+        }
+        return Some(Leaf::new(column));
+    }
+    for block in blocks?.iter().filter(|block| !matches!(block, ReadmeBlock::Paragraph(words) if crate::model::source_facts::docs::nav_row(words))).take(24) {
         column = column.child(readme_block(block, ctx));
     }
     Some(Leaf::new(column))
+}
+
+#[derive(Clone, Debug)]
+enum ReadmeLinkKind {
+    External(String),
+    Anchor(ReadmeHeading),
+    File { path: String, line: u32 },
+    Route(Route),
+}
+
+fn readme_link_kind(
+    destination: &str,
+    indexed: Option<&ReadmeLink>,
+    headings: &[ReadmeHeading],
+    outline: Option<&crate::model::pages::OutlineTree>,
+    package: &PackageRef,
+) -> Option<ReadmeLinkKind> {
+    let trimmed = destination.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("mailto:")
+    {
+        return Some(ReadmeLinkKind::External(trimmed.to_owned()));
+    }
+    if let Some(fragment) = trimmed.strip_prefix('#') {
+        let slug = readme_fragment_slug(&decode_fragment(fragment)?);
+        return headings
+            .iter()
+            .find(|heading| heading.slug.as_ref() == slug)
+            .cloned()
+            .map(ReadmeLinkKind::Anchor);
+    }
+    if trimmed.starts_with("pkg:") {
+        return PackageRef::parse(trimmed)
+            .ok()
+            .and_then(|package| package_route(&package))
+            .map(ReadmeLinkKind::Route);
+    }
+    if let Some(path) = indexed.and_then(|link| link.local_file.as_deref()) {
+        let line = indexed.and_then(|link| link.line).unwrap_or(1);
+        if let Some(symbol_route) = exact_file_declaration_route(path, line, outline, package) {
+            return Some(ReadmeLinkKind::Route(symbol_route));
+        }
+        return Some(ReadmeLinkKind::File {
+            path: path.to_owned(),
+            line,
+        });
+    }
+    rustdoc_symbol_route(trimmed, outline, package).map(ReadmeLinkKind::Route)
+}
+
+fn activate_readme_link(
+    destination: &str,
+    indexed: &[ReadmeLink],
+    headings: &[ReadmeHeading],
+    outline: Option<&crate::model::pages::OutlineTree>,
+    package: &PackageRef,
+    shell_links: &crate::shell::region::Links,
+    recall: &crate::shell::focus::Recall,
+    scroll: &ScrollHandle,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let link = indexed
+        .iter()
+        .find(|link| link.destination.as_ref() == destination);
+    match readme_link_kind(destination, link, headings, outline, package) {
+        Some(ReadmeLinkKind::External(url)) => cx.open_url(&url),
+        Some(ReadmeLinkKind::Anchor(heading)) => {
+            let key = ElementId::Name(SharedString::from(heading.element_id.to_string()));
+            if let Some(bounds) = facet::motion::shared::last_bounds(key, window, cx) {
+                let offset = scroll.offset();
+                let top = scroll.bounds().origin.y + px(24.0);
+                scroll.set_offset(point(
+                    offset.x,
+                    (offset.y + top - bounds.origin.y).min(px(0.0)),
+                ));
+            }
+        }
+        Some(ReadmeLinkKind::File { path, line }) => {
+            // The path was canonicalized, kept under the local package root,
+            // and checked as a file on the package-read worker.
+            shell_links.dispatch(
+                Intent::OpenSource {
+                    path: Arc::from(path),
+                    line,
+                },
+                cx,
+            );
+        }
+        Some(ReadmeLinkKind::Route(route)) => {
+            let leaving = shell_links.snapshot(cx).route().clone();
+            let id = indexed
+                .iter()
+                .position(|candidate| candidate.destination.as_ref() == destination)
+                .map(|index| SharedString::from(format!("readme-link-{index}")))
+                .unwrap_or_else(|| SharedString::from("readme-inline-link"));
+            recall.focus(id.clone());
+            recall.remember_leave(leaving, id);
+            shell_links.dispatch(Intent::Navigate(route), cx);
+        }
+        None => {}
+    }
+}
+
+fn decode_fragment(fragment: &str) -> Option<String> {
+    let bytes = fragment.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let (Some(high), Some(low)) = (bytes.get(index + 1), bytes.get(index + 2)) else {
+                return None;
+            };
+            decoded.push((hex(*high)? << 4) | hex(*low)?);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
+const fn hex(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn rustdoc_symbol_route(
+    destination: &str,
+    outline: Option<&crate::model::pages::OutlineTree>,
+    package: &PackageRef,
+) -> Option<Route> {
+    let path = destination.split(['#', '?']).next()?;
+    if path.starts_with('/')
+        || path.contains('\\')
+        || path.split('/').any(|part| part == "..")
+        || path.contains("://")
+    {
+        return None;
+    }
+    let leaf = path.rsplit('/').next()?;
+    let stem = leaf.strip_suffix(".html")?;
+    let (name, kind) = rustdoc_item_name(stem);
+    let declaration = outline?.complete_names()?.unique_name(name, kind)?;
+    crate::shell::kit::symbol_route(package.as_str(), &declaration.decl.coordinate)
+}
+
+fn rustdoc_item_name(stem: &str) -> (&str, Option<backend_library::DeclarationKind>) {
+    use backend_library::DeclarationKind as Kind;
+
+    [
+        ("struct.", Some(Kind::Struct)),
+        ("enum.", Some(Kind::Enum)),
+        ("trait.", Some(Kind::Trait)),
+        ("union.", Some(Kind::Union)),
+        ("type.", Some(Kind::Type)),
+        ("fn.", Some(Kind::Function)),
+        ("method.", Some(Kind::Method)),
+        ("associatedtype.", Some(Kind::Type)),
+        ("associatedconstant.", Some(Kind::Constant)),
+        ("macro.", Some(Kind::Macro)),
+        ("constant.", Some(Kind::Constant)),
+        ("static.", Some(Kind::Constant)),
+        ("mod.", Some(Kind::Module)),
+    ]
+    .into_iter()
+    .find_map(|(prefix, kind)| stem.strip_prefix(prefix).map(|name| (name, kind)))
+    .unwrap_or((stem, None))
+}
+
+fn exact_file_declaration_route(
+    path: &str,
+    line: u32,
+    outline: Option<&crate::model::pages::OutlineTree>,
+    package: &PackageRef,
+) -> Option<Route> {
+    let root = std::path::Path::new(package.as_str());
+    let relative = std::path::Path::new(path)
+        .strip_prefix(root)
+        .ok()?
+        .to_string_lossy()
+        .replace('\\', "/");
+    let mut declarations = outline?.walk().filter(|node| {
+        node.decl.path.as_deref() == Some(relative.as_str()) && node.decl.line == Some(line)
+    });
+    let declaration = declarations.next()?;
+    if declarations.next().is_some() {
+        return None;
+    }
+    let mut route = crate::shell::kit::symbol_view_route(
+        package.as_str(),
+        &declaration.decl.coordinate,
+        crate::navigation::View::Code,
+        Some(line),
+    )?;
+    if let Route::Symbol(ref mut route) = route {
+        route.at = None;
+    }
+    Some(route)
+}
+
+fn route_page_key(route: &Route) -> Option<crate::model::pages::PageKey> {
+    match route {
+        Route::Package(route) => PackageRef::parse(route.package.as_str())
+            .ok()
+            .map(crate::model::pages::PageKey::Package),
+        Route::Symbol(route) => crate::model::pages::SymbolRef::new(route.id.as_str())
+            .ok()
+            .map(|symbol| {
+                if route.view == crate::navigation::View::Code {
+                    crate::model::pages::PageKey::Source(symbol)
+                } else {
+                    crate::model::pages::PageKey::Symbol(symbol)
+                }
+            }),
+        Route::Orbit(_) | Route::World => None,
+    }
 }
 
 fn readme_block(block: &ReadmeBlock, ctx: &mut Ctx<'_>) -> AnyElement {

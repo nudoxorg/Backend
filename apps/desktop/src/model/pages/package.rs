@@ -1,7 +1,7 @@
 //! The Package (Territory) board's read model: one package as a dossier.
 
 use super::common::{DeclRef, Known, PackageRef};
-use crate::model::local_package::ReadmeBlock;
+use crate::model::local_package::{ReadmeBlock, ReadmeHeading, ReadmeLink};
 use std::sync::Arc;
 
 /// Everything the Package board renders about one package.
@@ -21,6 +21,37 @@ pub struct PackageDossier {
     pub outline: Known<OutlineTree>,
     /// README, as structured blocks.
     pub readme: Known<Arc<[ReadmeBlock]>>,
+    /// Original README Markdown, when a local reader retained its source.
+    /// Registry replies do not claim this field unless their owner serves it.
+    #[serde(default = "readme_source_not_captured")]
+    pub readme_markdown: Known<Arc<str>>,
+    /// Worker-resolved link actions and heading anchors for the Markdown.
+    #[serde(default = "readme_links_not_captured")]
+    pub readme_links: Known<Arc<[ReadmeLink]>>,
+    /// Heading identity index matching the Markdown block renderer.
+    #[serde(default = "readme_headings_not_captured")]
+    pub readme_headings: Known<Arc<[ReadmeHeading]>>,
+}
+
+fn readme_source_not_captured() -> Known<Arc<str>> {
+    Known::unknown(
+        super::common::GapReason::NotCaptured,
+        "README Markdown source was not captured",
+    )
+}
+
+fn readme_links_not_captured() -> Known<Arc<[ReadmeLink]>> {
+    Known::unknown(
+        super::common::GapReason::NotCaptured,
+        "README link targets were not captured",
+    )
+}
+
+fn readme_headings_not_captured() -> Known<Arc<[ReadmeHeading]>> {
+    Known::unknown(
+        super::common::GapReason::NotCaptured,
+        "README heading targets were not captured",
+    )
 }
 
 /// Where a record's facts came from.
@@ -214,5 +245,35 @@ impl OutlineTree {
             stack.extend(node.children.iter().rev());
             Some(node)
         })
+    }
+
+    /// Grants name-only lookup only when the entire outline was read.
+    #[must_use]
+    pub fn complete_names(&self) -> Option<CompleteOutlineNames<'_>> {
+        self.complete.then_some(CompleteOutlineNames { outline: self })
+    }
+}
+
+/// Borrowed proof that name-only resolution covers the complete outline.
+/// Exact file/line links remain positive evidence even when this is absent.
+pub struct CompleteOutlineNames<'a> {
+    outline: &'a OutlineTree,
+}
+
+impl CompleteOutlineNames<'_> {
+    /// Returns the unique declaration of `name`, optionally constrained by
+    /// the kind encoded in a Rustdoc filename. Ambiguous names stay unresolved.
+    #[must_use]
+    pub fn unique_name(
+        &self,
+        name: &str,
+        expected_kind: Option<backend_library::DeclarationKind>,
+    ) -> Option<&OutlineNode> {
+        let mut candidates = self.outline.walk().filter(|node| {
+            node.decl.name.as_ref() == name
+                && expected_kind.is_none_or(|kind| node.decl.kind == Some(kind))
+        });
+        let first = candidates.next()?;
+        candidates.next().is_none().then_some(first)
     }
 }

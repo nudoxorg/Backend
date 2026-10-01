@@ -33,6 +33,33 @@ fn has(ledger: &Ledger, part: &str) -> bool {
 }
 
 #[test]
+fn rustdoc_filename_resolves_only_a_complete_unique_kind_matched_outline() {
+    let dossier = dossier();
+    let outline = dossier.outline.known().expect("fixture outline");
+    assert!(super::rustdoc_symbol_route(
+        "struct.Outline.html",
+        Some(outline),
+        &dossier.package,
+    )
+    .is_some());
+    assert!(super::rustdoc_symbol_route(
+        "struct.RelationLabel.html",
+        Some(outline),
+        &dossier.package,
+    )
+    .is_none());
+
+    let mut partial = outline.clone();
+    partial.complete = false;
+    assert!(super::rustdoc_symbol_route(
+        "struct.Outline.html",
+        Some(&partial),
+        &dossier.package,
+    )
+    .is_none());
+}
+
+#[test]
 fn package_hero_stacks_when_text_scale_leaves_no_readable_side_column() {
     assert!(super::hero_stacks(px(320.0), 2.0));
     assert!(super::hero_stacks(px(390.0), 2.0));

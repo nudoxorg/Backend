@@ -246,6 +246,9 @@ fn dossier(package: &PackageRef) -> Option<PackageDossier> {
         dependents: Known::Unknown(unknown(GapReason::NotServed)),
         outline: Known::Known(outline(package, &facts.modules)),
         readme: Known::Unknown(unknown(GapReason::NotCaptured)),
+        readme_markdown: Known::Unknown(unknown(GapReason::NotCaptured)),
+        readme_links: Known::Unknown(unknown(GapReason::NotCaptured)),
+        readme_headings: Known::Unknown(unknown(GapReason::NotCaptured)),
     })
 }
 

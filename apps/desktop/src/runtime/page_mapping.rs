@@ -1917,6 +1917,21 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
         dependents,
         outline,
         readme,
+        readme_markdown: match inputs.local {
+            Some(manifest) => manifest.readme_markdown.clone().map_or_else(
+                || Known::unknown(GapReason::NotRecorded, "the project has no retained README Markdown source"),
+                Known::Known,
+            ),
+            None => Known::Unknown(not_served("README Markdown source")),
+        },
+        readme_links: inputs.local.map_or_else(
+            || Known::Unknown(not_served("README link targets")),
+            |manifest| Known::Known(Arc::clone(&manifest.readme_links)),
+        ),
+        readme_headings: inputs.local.map_or_else(
+            || Known::Unknown(not_served("README heading targets")),
+            |manifest| Known::Known(Arc::clone(&manifest.readme_headings)),
+        ),
     }
 }
 
