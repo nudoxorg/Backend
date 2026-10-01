@@ -484,6 +484,41 @@ fn capture(
         },
     )
     .expect("capture");
+    // Keep the paired native pixels/tree when a semantic assertion fails:
+    // the artifact is the evidence needed to diagnose the actual mounted UI.
+    let mut config = CaptureConfig::deterministic(viewport);
+    config.theme = match shot.appearance {
+        AppearancePreference::Abyss => ThemeState::Abyss,
+        AppearancePreference::Glacier => ThemeState::Glacier,
+        AppearancePreference::System => {
+            panic!("resolve System appearance before writing a capture manifest")
+        }
+    };
+    config.data_revision = format!("locald-root:{snapshot_key}");
+    let route_name = match &shot.route {
+        Route::Orbit(_) => "orbit",
+        Route::Package(_) => "package",
+        Route::Symbol(_) => "symbol",
+        _ => "other",
+    };
+    let script_name = match shot.script {
+        Script::Still => "still",
+        Script::Descent => "descent",
+        Script::HoldCommand => "command-hold",
+        Script::HoldOption => "option-hold",
+        Script::Walk => "keyboard-walk",
+        Script::Narrow => "resize-narrow",
+        Script::Ask => "ask-modal",
+        Script::ShelfFocus => "shelf-focus",
+    };
+    let script_id = format!(
+        "real-locald-shell|shot={}|route={route_name}|text-scale={}|density={:?}|actions={script_name}",
+        shot.name, shot.percent, shot.density
+    );
+    let session = CaptureSession::new(config, out).expect("capture artifact session");
+    session
+        .write_set(&mut set, Some(&script_id), None)
+        .expect("write PNG, paired native tree, and provenance manifest");
     if shot.name == "orbit-two-real-projects" {
         // This is the mounted production shell over two projects the embedded
         // owner actually indexed. Both frames must expose the same controls;
@@ -552,39 +587,6 @@ fn capture(
         assert_eq!(fields.len(), 1, "the live Ask input needs one named TextInput node");
         assert_eq!(after.tree["accesskit_focus"].as_str(), Some(fields[0].0.as_str()));
     }
-    let mut config = CaptureConfig::deterministic(viewport);
-    config.theme = match shot.appearance {
-        AppearancePreference::Abyss => ThemeState::Abyss,
-        AppearancePreference::Glacier => ThemeState::Glacier,
-        AppearancePreference::System => {
-            panic!("resolve System appearance before writing a capture manifest")
-        }
-    };
-    config.data_revision = format!("locald-root:{snapshot_key}");
-    let route_name = match &shot.route {
-        Route::Orbit(_) => "orbit",
-        Route::Package(_) => "package",
-        Route::Symbol(_) => "symbol",
-        _ => "other",
-    };
-    let script_name = match shot.script {
-        Script::Still => "still",
-        Script::Descent => "descent",
-        Script::HoldCommand => "command-hold",
-        Script::HoldOption => "option-hold",
-        Script::Walk => "keyboard-walk",
-        Script::Narrow => "resize-narrow",
-        Script::Ask => "ask-modal",
-        Script::ShelfFocus => "shelf-focus",
-    };
-    let script_id = format!(
-        "real-locald-shell|shot={}|route={route_name}|text-scale={}|density={:?}|actions={script_name}",
-        shot.name, shot.percent, shot.density
-    );
-    let session = CaptureSession::new(config, out).expect("capture artifact session");
-    session
-        .write_set(&mut set, Some(&script_id), None)
-        .expect("write PNG, paired native tree, and provenance manifest");
     assert!(built.get(), "the mounted shell graph survived through the final frame");
     eprintln!("captured {} ({} frames)", shot.name, set.frames.len());
 }
