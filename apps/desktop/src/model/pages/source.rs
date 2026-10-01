@@ -58,13 +58,13 @@ pub struct SourceText {
     pub complete: bool,
 }
 
-// The sparse index and live-read coverage are derived/runtime-only state.
-// Equality describes the persisted text/source facts, so a warm read and its
-// cold-restored form remain equal even though the latter must revalidate live
-// file coverage before enabling source links.
+// The sparse index is derived/runtime-only state. Coverage is also omitted
+// from persistence, but it affects whether links are enabled and therefore
+// participates in semantic equality so a fresh revalidation redraws the page.
 impl PartialEq for SourceText {
     fn eq(&self, other: &Self) -> bool {
         self.text == other.text
+            && self.coverage == other.coverage
             && self.first_line == other.first_line
             && self.origin == other.origin
             && self.complete == other.complete
@@ -368,7 +368,12 @@ mod tests {
         });
         let restored: SourceText = serde_json::from_value(wire).expect("rebuild source view");
         assert_eq!(restored.line_count(), 2);
-        assert_eq!(restored, source);
+        assert_eq!(
+            serde_json::to_value(&restored).expect("serialize restored source"),
+            serde_json::to_value(&source).expect("serialize original source"),
+            "the persisted source projection round-trips without runtime proof"
+        );
+        assert_ne!(restored, source, "runtime coverage is part of semantic equality");
         assert_eq!(
             restored
                 .line_span(2)

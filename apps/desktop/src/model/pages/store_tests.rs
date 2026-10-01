@@ -11,7 +11,7 @@
 
 use super::*;
 use crate::core::{FaultCode, ResourceTerminal};
-use crate::model::pages::SearchQuery;
+use crate::model::pages::{ByteSpan, Known, SearchQuery, SourceCoverage, SourceText};
 use crate::runtime::reads::{OutlineCache, PageReader, ReadContext, ReadRequest};
 use crate::shell::tests::{Fixture, PACKAGE, symbol};
 
@@ -92,6 +92,68 @@ fn a_value_read_for_a_key_is_the_value_its_slot_shows() {
     let PageValue::Health(health) = read(&ReadRequest::Health) else { panic!("a health read answers the health model") };
     assert_eq!(land(&mut store, &PageKey::Health, PageValue::Health(health.clone())), Landing::Applied);
     assert_eq!(store.health().loaded_value(), Some(&health));
+}
+
+#[test]
+fn quiet_source_revalidation_replaces_saved_unverified_coverage() {
+    let source_ref = symbol("RelationLabel");
+    let key = PageKey::Source(source_ref.clone());
+    let PageValue::Source(mut saved) = read(&ReadRequest::Source(source_ref.clone())) else {
+        panic!("a source read answers a source page");
+    };
+    let saved_text = saved.text.known().expect("fixture source text");
+    let wire = serde_json::to_value(saved_text).expect("serialize saved source text");
+    let restored_text: SourceText =
+        serde_json::from_value(wire).expect("restore saved source text");
+    assert_eq!(restored_text.coverage(), SourceCoverage::Unverified);
+    saved.text = Known::Known(restored_text);
+
+    let mut store = PageStore::default();
+    assert!(store.seed(
+        SeedEntry::Source(source_ref.clone(), Arc::new(saved)),
+        root()
+    ));
+    let seeded_stamp = store.stamp(&key);
+    let next_root = root().with_generation(2);
+    let generation = store
+        .begin(&key, next_root)
+        .expect("new authority quietly revalidates the snapshot source");
+    assert_eq!(
+        store.stamp(&key),
+        seeded_stamp,
+        "quiet revalidation keeps the saved view visible"
+    );
+
+    let PageValue::Source(mut fresh) = read(&ReadRequest::Source(source_ref.clone())) else {
+        panic!("a source read answers a source page");
+    };
+    let fresh_text = fresh.text.known().expect("fresh source text").clone();
+    let start = fresh_text.text().find("pub enum").expect("declaration excerpt start");
+    let end = fresh_text.text().find("\n// tail").expect("declaration excerpt end");
+    let verified = fresh_text.with_verified_local_excerpt(
+        ByteSpan::new(
+            u32::try_from(start).expect("bounded source offset"),
+            u32::try_from(end).expect("bounded source offset"),
+        )
+        .expect("valid excerpt"),
+    );
+    fresh.text = Known::Known(verified);
+
+    assert_eq!(
+        store.land(&key, generation, Ok(PageValue::Source(fresh))),
+        Landing::Applied,
+        "the coverage change is visible even when source bytes are unchanged"
+    );
+    assert_ne!(
+        store.stamp(&key),
+        seeded_stamp,
+        "the visible proof transition redraws the source page"
+    );
+    let admitted = store.source(&source_ref);
+    assert!(matches!(
+        admitted.loaded_value().and_then(|page| page.text.known()).map(SourceText::coverage),
+        Some(SourceCoverage::LiveFileExcerptVerified { .. })
+    ));
 }
 
 #[test]
