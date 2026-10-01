@@ -9,6 +9,7 @@ use backend_advisory::{
     normalize_package,
 };
 use std::collections::BTreeSet;
+use std::path::Path;
 
 const METADATA: &[u8] = include_bytes!("fixtures/tree-2026-09-27/metadata.json");
 const LOCKFILE: &str = include_str!("fixtures/tree-2026-09-27/Cargo.lock");
@@ -51,6 +52,49 @@ fn path(hops: &[WhyHop]) -> String {
         })
         .collect::<Vec<_>>()
         .join(" → ")
+}
+
+#[test]
+fn owner_tree_binding_accepts_requested_subdirectory_and_rejects_other_projects() {
+    let mut tree = tree(&rustsec());
+    let requested = Path::new("/workspace/backend/crates/library");
+    tree.request_binding = Some(
+        ProjectTreeRequestBindingV1::for_paths(requested, &tree.root)
+            .expect("the requested directory and workspace root are absolute"),
+    );
+
+    assert!(tree.has_admissible_shape());
+    let binding = tree.request_binding.expect("owner bound request");
+    assert!(binding.matches_requested_root(requested));
+    assert_eq!(
+        ProjectTreeRequestBindingV1::requested_root_digest_for(requested),
+        Some(binding.requested_root_digest)
+    );
+    assert!(binding.matches_effective_workspace_root(&tree.root));
+    assert!(
+        !binding.matches_requested_root(Path::new("/workspace/backend/crates/present")),
+        "a response for a different requested project must not rehydrate"
+    );
+}
+
+#[test]
+fn project_tree_request_binding_separates_subdirectory_from_effective_workspace() {
+    let requested = Path::new("/work/crates/present");
+    let binding = ProjectTreeRequestBindingV1::for_paths(requested, "/work")
+        .expect("absolute UTF-8 requested and effective roots");
+
+    assert!(binding.has_admissible_shape());
+    assert!(binding.matches_requested_root(requested));
+    assert!(binding.matches_effective_workspace_root("/work"));
+    assert!(!binding.matches_requested_root(Path::new("/work/crates/runtime")));
+    assert!(
+        !binding.matches_effective_workspace_root("/work/crates/present"),
+        "the requested package directory must not be confused with Cargo's workspace root"
+    );
+    assert!(
+        !binding.matches_effective_workspace_root("/other-workspace"),
+        "a response from a different workspace must fail the binding"
+    );
 }
 
 #[test]

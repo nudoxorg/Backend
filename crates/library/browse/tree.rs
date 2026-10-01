@@ -9,10 +9,124 @@ use backend_advisory::{
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Wire schema of [`ProjectTree`].
-pub const PROJECT_TREE_SCHEMA: u16 = 7;
+pub const PROJECT_TREE_SCHEMA: u16 = 8;
+
+/// Wire schema of [`ProjectTreeRequestBindingV1`].
+pub const PROJECT_TREE_REQUEST_BINDING_SCHEMA: u16 = 1;
+
+/// Exact request address and effective workspace root for one tree read.
+///
+/// The requested directory may be a member/package subdirectory. The owner
+/// binds both that exact request and the workspace Cargo resolved from it;
+/// clients compare the request digest to their submitted `LocalProjectId` and
+/// compare package source receipts to the effective root. The digests are
+/// commitments, not encryption.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectTreeRequestBindingV1 {
+    /// Binding schema.
+    pub schema: u16,
+    /// Commitment to the exact directory string submitted by the caller.
+    pub requested_root_digest: [u8; 32],
+    /// Commitment to Cargo's effective workspace root in this tree reply.
+    pub effective_workspace_root_digest: [u8; 32],
+}
+
+impl ProjectTreeRequestBindingV1 {
+    /// Binds the exact submitted directory to the workspace root returned by
+    /// Cargo. Returns `None` for non-absolute or non-UTF-8 paths.
+    #[must_use]
+    pub fn for_paths(requested_root: &Path, effective_workspace_root: &str) -> Option<Self> {
+        let requested_root = requested_root
+            .is_absolute()
+            .then(|| requested_root.to_str())
+            .flatten()?;
+        let effective = Path::new(effective_workspace_root);
+        if !effective.is_absolute() || effective.to_str().is_none() {
+            return None;
+        }
+        let binding = Self {
+            schema: PROJECT_TREE_REQUEST_BINDING_SCHEMA,
+            requested_root_digest: project_tree_path_digest(
+                b"backend.project-tree.requested-root.v1\0",
+                requested_root.as_bytes(),
+            ),
+            effective_workspace_root_digest: project_tree_path_digest(
+                b"cargo-workspace-root.v1",
+                effective_workspace_root.as_bytes(),
+            ),
+        };
+        binding.has_admissible_shape().then_some(binding)
+    }
+
+    /// Whether this receipt belongs to the exact path string submitted by a
+    /// caller. This intentionally does not require the submitted directory
+    /// to equal Cargo's resolved workspace root.
+    #[must_use]
+    pub fn matches_requested_root(&self, requested_root: &Path) -> bool {
+        requested_root.is_absolute()
+            && requested_root.to_str().is_some_and(|path| {
+                self.requested_root_digest
+                    == project_tree_path_digest(
+                        b"backend.project-tree.requested-root.v1\0",
+                        path.as_bytes(),
+                    )
+            })
+    }
+
+    /// Makes the request-side commitment for a local project directory. The
+    /// effective workspace root is owner-resolved and is not guessed by the
+    /// caller.
+    #[must_use]
+    pub fn requested_root_digest_for(requested_root: &Path) -> Option<[u8; 32]> {
+        let requested_root = requested_root
+            .is_absolute()
+            .then(|| requested_root.to_str())
+            .flatten()?;
+        Some(project_tree_path_digest(
+            b"backend.project-tree.requested-root.v1\0",
+            requested_root.as_bytes(),
+        ))
+    }
+
+    /// Whether this receipt agrees with the effective root spelled in the
+    /// returned tree.
+    #[must_use]
+    pub fn matches_effective_workspace_root(&self, root: &str) -> bool {
+        let path = Path::new(root);
+        path.is_absolute()
+            && path.to_str().is_some()
+            && self.effective_workspace_root_digest
+                == project_tree_path_digest(b"cargo-workspace-root.v1", root.as_bytes())
+    }
+
+    /// Whether an exact Cargo source authority proves this same workspace
+    /// root. The authority stores this commitment in its root identity.
+    #[must_use]
+    pub const fn matches_workspace_root_identity(&self, digest: [u8; 32]) -> bool {
+        self.effective_workspace_root_digest == digest
+    }
+
+    /// Whether the binding itself is well-formed.
+    #[must_use]
+    pub const fn has_admissible_shape(&self) -> bool {
+        self.schema == PROJECT_TREE_REQUEST_BINDING_SCHEMA
+            && self.requested_root_digest != [0; 32]
+            && self.effective_workspace_root_digest != [0; 32]
+    }
+}
+
+fn project_tree_path_digest(domain: &[u8], path: &[u8]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&(domain.len() as u64).to_le_bytes());
+    hasher.update(domain);
+    hasher.update(&(path.len() as u64).to_le_bytes());
+    hasher.update(path);
+    *hasher.finalize().as_bytes()
+}
 
 /// The most packages one tree reply admits.
 pub const MAX_TREE_PACKAGES: usize = 20_000;
@@ -294,6 +408,11 @@ pub struct ProjectTree {
     pub source: TreeSource,
     /// The workspace root.
     pub root: String,
+    /// The exact submitted directory and Cargo-resolved workspace binding.
+    /// Library-only tree construction leaves this absent; an owner reply must
+    /// attach it before the value crosses the surface boundary.
+    #[serde(default)]
+    pub request_binding: Option<ProjectTreeRequestBindingV1>,
     /// The project's display name (the root folder's name).
     pub name: String,
     /// Your own packages.
@@ -359,6 +478,10 @@ impl ProjectTree {
             || self.packages.len() > MAX_TREE_PACKAGES
             || self.direct.len() > self.packages.len()
             || !self.packages.iter().all(TreePackage::has_admissible_shape)
+            || !self.request_binding.is_some_and(|binding| {
+                binding.has_admissible_shape()
+                    && binding.matches_effective_workspace_root(&self.root)
+            })
         {
             return false;
         }
@@ -969,6 +1092,7 @@ pub fn build_tree(input: &TreeInput, advisories: &dyn AdvisoryObserver) -> Proje
         schema: PROJECT_TREE_SCHEMA,
         source: input.source.clone(),
         root: input.root.clone(),
+        request_binding: None,
         name: std::path::Path::new(&input.root).file_name().map_or_else(
             || input.root.clone(),
             |name| name.to_string_lossy().into_owned(),

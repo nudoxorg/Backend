@@ -21,6 +21,7 @@ use backend_library::{
 };
 use std::collections::BTreeMap;
 use std::num::NonZeroU64;
+use std::path::Path;
 
 /// The escape hatch that takes one tagged `SurfaceCommand` JSON object.
 pub const SURFACE_VERB: &str = "surface";
@@ -191,7 +192,11 @@ fn take_json(
         other => vec![other.clone()],
     };
     for scalar in scalars {
-        let text = if spec.kind() == ArgumentKind::IndexJobTicket && scalar.is_object() {
+        let text = if matches!(
+            spec.kind(),
+            ArgumentKind::IndexJobTicket | ArgumentKind::CargoPackageReadmeOrigin
+        ) && scalar.is_object()
+        {
             serde_json::to_string(&scalar).ok()
         } else {
             scalar_text(&scalar)
@@ -337,6 +342,37 @@ pub fn lower(invocation: &Invocation, project: &str) -> Result<Request, Fault> {
             let root = ProductText::new(root.as_str())
                 .map_err(|error| Fault::admission(error, Operand::Argument(root.clone())))?;
             admit(&SurfaceCommand::ProjectTree { root })
+                .map(|command| Request::Surface(Box::new(command)))
+        }
+        CommandId::CargoPackageReadme => {
+            let request = backend_library::CargoPackageReadmeRequestV1::for_requested_root(
+                package(invocation, 0)?,
+                Path::new(project),
+            )
+            .ok_or_else(|| {
+                Fault::usage(
+                    "project",
+                    "the README request needs the exact absolute project directory",
+                )
+            })?;
+            admit(&SurfaceCommand::CargoPackageReadme { request })
+                .map(|command| Request::Surface(Box::new(command)))
+        }
+        CommandId::CargoPackageReadmeLink => {
+            let origin = serde_json::from_str::<backend_library::CargoPackageReadmeOriginV1>(
+                invocation.require(0)?,
+            )
+            .map_err(|error| {
+                Fault::usage(
+                    "origin",
+                    format!("use the exact README origin object returned by the owner: {error}"),
+                )
+            })?;
+            let request = backend_library::CargoPackageReadmeLinkRequestV1 {
+                origin,
+                href: invocation.require(1)?.to_owned(),
+            };
+            admit(&SurfaceCommand::CargoPackageReadmeLink { request })
                 .map(|command| Request::Surface(Box::new(command)))
         }
         _ => surface(invocation, spec.id).map(|command| Request::Surface(Box::new(command))),
@@ -602,6 +638,29 @@ fn surface(invocation: &Invocation, id: CommandId) -> Result<SurfaceCommand, Fau
         CommandId::CargoPackageSourceInventory => SurfaceCommand::CargoPackageSourceInventory {
             package: package(invocation, 0)?,
         },
+        CommandId::CargoPackageReadme => {
+            return Err(Fault::usage(
+                "cargo-package-readme",
+                "README reads require local project context",
+            ));
+        }
+        CommandId::CargoPackageReadmeLink => {
+            let origin = serde_json::from_str::<backend_library::CargoPackageReadmeOriginV1>(
+                invocation.require(0)?,
+            )
+            .map_err(|error| {
+                Fault::usage(
+                    "origin",
+                    format!("use the exact README origin object returned by the owner: {error}"),
+                )
+            })?;
+            SurfaceCommand::CargoPackageReadmeLink {
+                request: backend_library::CargoPackageReadmeLinkRequestV1 {
+                    origin,
+                    href: invocation.require(1)?.to_owned(),
+                },
+            }
+        }
         CommandId::Owner => SurfaceCommand::Owner {
             owner: text(invocation, 0)?,
         },

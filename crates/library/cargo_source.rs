@@ -7,6 +7,7 @@
 //! package coordinate; the owner must still match the receipt against its
 //! current Cargo observation before it reads from the source.
 
+use crate::browse::ProjectTreeRequestBindingV1;
 use crate::surface::{PackageCoordinate, PackageReference, ProductText};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -19,6 +20,10 @@ pub const MAX_CARGO_SOURCE_COORDINATE_BYTES: usize = 256;
 pub const MAX_CARGO_SOURCE_DETAIL_BYTES: usize = 2_048;
 /// Maximum bytes read from one package-relative source file.
 pub const MAX_CARGO_PACKAGE_SOURCE_FILE_BYTES: usize = 1024 * 1024;
+/// Maximum UTF-8 Markdown bytes admitted from one Cargo package README.
+pub const MAX_CARGO_PACKAGE_README_BYTES: usize = 512 * 1024;
+/// Maximum bytes in one relative Markdown link submitted for owner resolution.
+pub const MAX_CARGO_PACKAGE_README_LINK_BYTES: usize = 2_048;
 /// Maximum bytes in a package-relative source path.
 pub const MAX_CARGO_PACKAGE_SOURCE_PATH_BYTES: usize = 1_024;
 /// Maximum source addresses returned by one inventory read.
@@ -346,6 +351,631 @@ impl CargoPackageSourceFileResultV1 {
             Self::Unavailable { package, .. } => package.as_ref().is_none_or(|package| {
                 CargoPackageSourceAuthorityV1::digest_from_package_reference(package).is_some()
             }),
+        }
+    }
+}
+
+/// README declaration parsed from the exact package manifest admitted by the
+/// current Cargo metadata observation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CargoPackageReadmeManifestV1 {
+    /// The exact package manifest omits a README declaration; apply Cargo's
+    /// supported conventional package-root lookup.
+    Unspecified,
+    /// The manifest declares an exact relative README path.
+    Path(String),
+    /// The manifest declares `readme = true`, selecting `README.md`.
+    Enabled,
+    /// The manifest explicitly disables its README.
+    Disabled,
+    /// The manifest inherits its README from `[workspace.package]`.
+    WorkspaceInherited,
+}
+
+impl Default for CargoPackageReadmeManifestV1 {
+    fn default() -> Self {
+        Self::Unspecified
+    }
+}
+
+/// How the owner resolved Cargo's README path for one exact package release.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CargoPackageReadmeSelectionV1 {
+    /// The package manifest supplied an explicit path.
+    ManifestPath,
+    /// The package manifest set `readme = true`, selecting `README.md`.
+    ManifestTrueDefault,
+    /// Cargo's conventional README lookup selected a package-root file.
+    CargoConventionalDefault,
+    /// A package manifest explicitly inherited its workspace package README.
+    WorkspaceInherited,
+}
+
+/// Which owner-held root anchors a selected package README and its relative
+/// links. Workspace scope is admitted only for an exact manifest inheritance.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CargoPackageReadmeRootScopeV1 {
+    /// The exact package source root from Cargo's package row.
+    Package,
+    /// The effective local Cargo workspace root bound by the tree request.
+    EffectiveWorkspace,
+}
+
+/// Exact package and project binding for a README read.
+///
+/// GUI callers should send the full binding from the same `ProjectTree`.
+/// Command-line callers can bind the requested directory and leave the
+/// effective-root expectation empty; the owner still requires its current
+/// cached tree binding and returns that complete binding in the result.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CargoPackageReadmeRequestV1 {
+    /// Exact source-qualified package route from the current tree.
+    pub package: PackageReference,
+    /// Commitment to the exact requested local project directory.
+    pub requested_root_digest: [u8; 32],
+    /// Optional expected effective-workspace commitment from a prior tree.
+    pub expected_workspace_root_digest: Option<[u8; 32]>,
+}
+
+impl CargoPackageReadmeRequestV1 {
+    /// Makes a GUI request bound to the complete exact tree receipt.
+    #[must_use]
+    pub fn from_tree(package: PackageReference, binding: ProjectTreeRequestBindingV1) -> Self {
+        Self {
+            package,
+            requested_root_digest: binding.requested_root_digest,
+            expected_workspace_root_digest: Some(binding.effective_workspace_root_digest),
+        }
+    }
+
+    /// Makes a CLI request bound to its submitted project directory. The
+    /// owner resolves and returns the effective workspace root.
+    #[must_use]
+    pub fn for_requested_root(package: PackageReference, requested_root: &Path) -> Option<Self> {
+        Some(Self {
+            package,
+            requested_root_digest: ProjectTreeRequestBindingV1::requested_root_digest_for(
+                requested_root,
+            )?,
+            expected_workspace_root_digest: None,
+        })
+    }
+
+    /// Checks bounded source and binding selectors.
+    #[must_use]
+    pub fn has_admissible_shape(&self) -> bool {
+        CargoPackageSourceAuthorityV1::digest_from_package_reference(&self.package).is_some()
+            && self.requested_root_digest != [0; 32]
+            && self
+                .expected_workspace_root_digest
+                .is_none_or(|digest| digest != [0; 32])
+    }
+}
+
+/// Why the exact package manifest declares no README.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CargoPackageReadmeAbsenceV1 {
+    /// The package manifest explicitly disabled its README.
+    ManifestDisabled,
+    /// The manifest omitted a README and Cargo's supported default files were absent.
+    NoCargoDefault,
+}
+
+/// Why a selected README could not be returned as bounded UTF-8 Markdown.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CargoPackageReadmeFailureV1 {
+    /// The package route did not carry one exact Cargo source authority.
+    InvalidPackageReference,
+    /// No current Cargo owner observation can revalidate this source.
+    AuthorityUnavailable,
+    /// The watched Cargo metadata/manifests could not be re-observed safely.
+    SourceObservationUnavailable,
+    /// The exact package metadata row has no retained local package root.
+    PackageRootUnavailable,
+    /// The manifest's selected README path is not a canonical package-relative path.
+    InvalidReadmePath,
+    /// The manifest selected a path outside its exact owner-held root.
+    ReadmeOutsideAuthorizedRoot,
+    /// Workspace-inherited README selection could not be resolved from the admitted manifests.
+    WorkspaceReadmeUnresolved,
+    /// The exact package manifest could not be read safely from its held root.
+    PackageManifestUnavailable,
+    /// The exact package manifest was too large for README admission.
+    PackageManifestTooLarge,
+    /// The exact package manifest was invalid or had a malformed README value.
+    PackageManifestMalformed,
+    /// Cargo selected a README path that is absent, non-regular, unreadable, or linked.
+    SelectedFileUnavailable,
+    /// The selected README exceeded the fixed content bound; no prefix was returned.
+    ContentTooLarge,
+    /// The selected bytes were not bounded UTF-8 Markdown text.
+    NotUtf8Text,
+}
+
+/// Bounded Markdown content selected by the exact Cargo package manifest.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CargoPackageReadmeV1 {
+    /// Owner-held root used for this exact package README and its relative
+    /// links. This is derived from the package manifest, never caller input.
+    pub root_scope: CargoPackageReadmeRootScopeV1,
+    /// Exact path relative to `root_scope` selected by Cargo semantics.
+    pub path: CargoPackageSourcePathV1,
+    /// Which Cargo/manifest rule selected this path.
+    pub selection: CargoPackageReadmeSelectionV1,
+    /// BLAKE3 of the exact returned UTF-8 Markdown bytes.
+    pub content_digest: [u8; 32],
+    /// Bounded Markdown; links are hints until each target is owner-read.
+    pub contents: Box<str>,
+    /// README text does not itself prove semantic indexing.
+    pub semantic: CargoPackageSourceSemanticStatusV1,
+}
+
+impl CargoPackageReadmeV1 {
+    /// Validates the path, content bound, semantic state, and byte digest.
+    #[must_use]
+    pub fn has_admissible_shape(&self) -> bool {
+        self.path.has_admissible_shape()
+            && self.contents.len() <= MAX_CARGO_PACKAGE_README_BYTES
+            && !self.contents.as_bytes().contains(&0)
+            && blake3::hash(self.contents.as_bytes()).as_bytes() == &self.content_digest
+            && self.semantic == CargoPackageSourceSemanticStatusV1::NotIndexed
+    }
+
+    /// Checks that the root scope is consistent with the admitted selection.
+    #[must_use]
+    pub fn has_admissible_scope(&self) -> bool {
+        self.has_admissible_shape()
+            && match (self.root_scope, self.selection) {
+                (
+                    CargoPackageReadmeRootScopeV1::Package,
+                    CargoPackageReadmeSelectionV1::WorkspaceInherited,
+                )
+                | (
+                    CargoPackageReadmeRootScopeV1::EffectiveWorkspace,
+                    CargoPackageReadmeSelectionV1::ManifestPath
+                    | CargoPackageReadmeSelectionV1::ManifestTrueDefault
+                    | CargoPackageReadmeSelectionV1::CargoConventionalDefault,
+                ) => false,
+                _ => true,
+            }
+    }
+
+    /// Checks that this README came from the exact owner-held root identified
+    /// by the source receipt and the caller's tree request.
+    #[must_use]
+    pub fn matches_authority_scope(
+        &self,
+        authority: &CargoPackageSourceAuthorityV1,
+        request_binding: &ProjectTreeRequestBindingV1,
+    ) -> bool {
+        if !self.has_admissible_scope()
+            || !request_binding.matches_workspace_root_identity(authority.roots().workspace_root)
+        {
+            return false;
+        }
+        match self.root_scope {
+            CargoPackageReadmeRootScopeV1::Package => authority.roots().package_root != [0; 32],
+            CargoPackageReadmeRootScopeV1::EffectiveWorkspace => {
+                self.selection == CargoPackageReadmeSelectionV1::WorkspaceInherited
+                    && authority.roots().workspace_root
+                        == request_binding.effective_workspace_root_digest
+            }
+        }
+    }
+}
+
+/// Small origin receipt used to resolve links from one exact owner-returned
+/// README without resending its Markdown body.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CargoPackageReadmeOriginV1 {
+    /// Exact source-qualified package release that supplied the README.
+    pub package: PackageReference,
+    /// Exact request roots that admitted the source package.
+    pub request_binding: ProjectTreeRequestBindingV1,
+    /// Owner-held root in which the README path is relative.
+    pub root_scope: CargoPackageReadmeRootScopeV1,
+    /// Exact selected path relative to the owner-held root.
+    pub path: CargoPackageSourcePathV1,
+    /// Cargo rule that selected the README.
+    pub selection: CargoPackageReadmeSelectionV1,
+    /// Digest of the exact README bytes returned by the owner.
+    pub content_digest: [u8; 32],
+}
+
+/// One locally resolved target of a README Markdown href.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CargoPackageReadmeLinkTargetV1 {
+    /// A fragment on the current README page.
+    Anchor { fragment: Box<str> },
+    /// A normalized same-root file path and optional fragment.
+    File {
+        path: CargoPackageSourcePathV1,
+        fragment: Option<Box<str>>,
+    },
+}
+
+impl CargoPackageReadmeOriginV1 {
+    /// Extracts the small owner origin from one admitted README reply.
+    #[must_use]
+    pub fn from_result(result: &CargoPackageReadmeResultV1) -> Option<Self> {
+        if !result.has_admissible_shape() {
+            return None;
+        }
+        let CargoPackageReadmeResultV1::Read {
+            package,
+            request_binding,
+            readme,
+            ..
+        } = result
+        else {
+            return None;
+        };
+        let origin = Self {
+            package: package.clone(),
+            request_binding: *request_binding,
+            root_scope: readme.root_scope,
+            path: readme.path.clone(),
+            selection: readme.selection,
+            content_digest: readme.content_digest,
+        };
+        origin.has_admissible_shape().then_some(origin)
+    }
+
+    /// Checks the compact owner-issued route and scope selector.
+    #[must_use]
+    pub fn has_admissible_shape(&self) -> bool {
+        CargoPackageSourceAuthorityV1::digest_from_package_reference(&self.package).is_some()
+            && self.request_binding.has_admissible_shape()
+            && self.path.has_admissible_shape()
+            && self.content_digest != [0; 32]
+            && match (self.root_scope, self.selection) {
+                (
+                    CargoPackageReadmeRootScopeV1::Package,
+                    CargoPackageReadmeSelectionV1::WorkspaceInherited,
+                )
+                | (
+                    CargoPackageReadmeRootScopeV1::EffectiveWorkspace,
+                    CargoPackageReadmeSelectionV1::ManifestPath
+                    | CargoPackageReadmeSelectionV1::ManifestTrueDefault
+                    | CargoPackageReadmeSelectionV1::CargoConventionalDefault,
+                ) => false,
+                _ => true,
+            }
+    }
+
+    /// Resolves a relative Markdown href against the admitted README path.
+    /// The returned path remains relative to this origin's typed root scope;
+    /// parent segments may not escape that root.
+    pub fn resolve_relative_href(
+        &self,
+        href: &str,
+    ) -> Result<CargoPackageReadmeLinkTargetV1, CargoPackageReadmeLinkFailureV1> {
+        if !self.has_admissible_shape()
+            || href.is_empty()
+            || href.len() > MAX_CARGO_PACKAGE_README_LINK_BYTES
+            || href.chars().any(char::is_control)
+            || href.trim() != href
+        {
+            return Err(CargoPackageReadmeLinkFailureV1::InvalidRequest);
+        }
+        let (before_fragment, raw_fragment) = href
+            .split_once('#')
+            .map_or((href, None), |(path, fragment)| (path, Some(fragment)));
+        let raw_path = before_fragment
+            .split_once('?')
+            .map_or(before_fragment, |(path, _)| path);
+        let fragment = raw_fragment
+            .filter(|fragment| !fragment.is_empty())
+            .map(decode_markdown_uri_component)
+            .transpose()?
+            .map(String::into_boxed_str);
+        if raw_path.is_empty() {
+            return fragment
+                .map(|fragment| CargoPackageReadmeLinkTargetV1::Anchor { fragment })
+                .ok_or(CargoPackageReadmeLinkFailureV1::InvalidRequest);
+        }
+        let decoded = decode_markdown_uri_component(raw_path)?;
+        if decoded.starts_with('/')
+            || decoded.starts_with('\\')
+            || decoded.contains('\\')
+            || decoded
+                .find(':')
+                .is_some_and(|colon| decoded[..colon].find('/').is_none())
+        {
+            return Err(CargoPackageReadmeLinkFailureV1::NotRelative);
+        }
+        let mut segments = self.path.as_str().split('/').collect::<Vec<_>>();
+        segments.pop();
+        for segment in decoded.split('/') {
+            match segment {
+                "" => return Err(CargoPackageReadmeLinkFailureV1::NotRelative),
+                "." => {}
+                ".." => {
+                    if segments.pop().is_none() {
+                        return Err(CargoPackageReadmeLinkFailureV1::OutsideScope);
+                    }
+                }
+                value => segments.push(value),
+            }
+        }
+        let joined = segments.join("/");
+        let path = CargoPackageSourcePathV1::new(joined)
+            .map_err(|_| CargoPackageReadmeLinkFailureV1::NotRelative)?;
+        Ok(CargoPackageReadmeLinkTargetV1::File { path, fragment })
+    }
+}
+
+fn decode_markdown_uri_component(
+    component: &str,
+) -> Result<String, CargoPackageReadmeLinkFailureV1> {
+    let bytes = component.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let Some(pair) = bytes.get(index + 1..index + 3) else {
+                return Err(CargoPackageReadmeLinkFailureV1::NotRelative);
+            };
+            let high = markdown_hex(pair[0]).ok_or(CargoPackageReadmeLinkFailureV1::NotRelative)?;
+            let low = markdown_hex(pair[1]).ok_or(CargoPackageReadmeLinkFailureV1::NotRelative)?;
+            decoded.push((high << 4) | low);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    let decoded =
+        String::from_utf8(decoded).map_err(|_| CargoPackageReadmeLinkFailureV1::NotRelative)?;
+    if decoded.chars().any(char::is_control) {
+        return Err(CargoPackageReadmeLinkFailureV1::NotRelative);
+    }
+    Ok(decoded)
+}
+
+fn markdown_hex(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Request to follow one relative link from an owner-admitted README.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CargoPackageReadmeLinkRequestV1 {
+    /// Exact README origin returned by the owner.
+    pub origin: CargoPackageReadmeOriginV1,
+    /// Relative Markdown target; the owner resolves it against the exact
+    /// README directory and refuses schemes, absolute paths, and root escape.
+    pub href: String,
+}
+
+impl CargoPackageReadmeLinkRequestV1 {
+    /// Checks bounded origin and link spelling before owner dispatch.
+    #[must_use]
+    pub fn has_admissible_shape(&self) -> bool {
+        self.origin.has_admissible_shape()
+            && !self.href.is_empty()
+            && self.href.len() <= MAX_CARGO_PACKAGE_README_LINK_BYTES
+            && !self.href.chars().any(char::is_control)
+            && self.href.trim() == self.href
+    }
+}
+
+/// Stable failure when a README link cannot be read under its exact root.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CargoPackageReadmeLinkFailureV1 {
+    /// The caller supplied a malformed README origin or href.
+    InvalidRequest,
+    /// The origin no longer matches the current manifest-selected README.
+    StaleOrigin,
+    /// The href is a scheme, absolute address, or otherwise not a local link.
+    NotRelative,
+    /// Dot segments would escape the exact package/workspace root.
+    OutsideScope,
+    /// The selected path is not an admitted source/document text kind.
+    UnsupportedFileKind,
+    /// The exact held-root target is absent, linked, or unreadable.
+    TargetUnavailable,
+    /// The target is larger than the bounded source-file limit.
+    TargetTooLarge,
+    /// The target is not valid bounded UTF-8 text.
+    NotUtf8Text,
+    /// The owner could not revalidate the current project/source observation.
+    ObservationUnavailable,
+}
+
+/// Result of following one relative README link through its same held scope.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum CargoPackageReadmeLinkResultV1 {
+    /// A same-README fragment; no filesystem read was needed.
+    Anchor {
+        /// Exact origin whose Markdown contained this fragment.
+        origin: CargoPackageReadmeOriginV1,
+        /// Bounded decoded fragment without the leading hash.
+        fragment: Box<str>,
+    },
+    /// Current UTF-8 target bytes under the origin's exact held root.
+    Read {
+        /// Exact origin whose link was followed.
+        origin: CargoPackageReadmeOriginV1,
+        /// Current owner source authority for the package release.
+        authority: CargoPackageSourceAuthorityV1,
+        /// Same package/workspace scope as the README origin.
+        root_scope: CargoPackageReadmeRootScopeV1,
+        /// Resolved path relative to the admitted root scope.
+        path: CargoPackageSourcePathV1,
+        /// Optional target fragment without the leading hash.
+        fragment: Option<Box<str>>,
+        /// Digest of the exact returned UTF-8 target bytes.
+        content_digest: [u8; 32],
+        /// Bounded text read through the owner-held directory capability.
+        contents: Box<str>,
+        /// Source text does not itself prove semantic indexing.
+        semantic: CargoPackageSourceSemanticStatusV1,
+    },
+    /// The README or project source authority changed after the origin was issued.
+    Stale {
+        /// Exact origin supplied by the caller.
+        origin: CargoPackageReadmeOriginV1,
+    },
+    /// No target bytes were returned; the failure remains typed.
+    Unavailable {
+        /// Exact origin if its shape was valid.
+        origin: Option<CargoPackageReadmeOriginV1>,
+        /// Stable reason the owner could not read this relative target.
+        reason: CargoPackageReadmeLinkFailureV1,
+    },
+}
+
+impl CargoPackageReadmeLinkResultV1 {
+    /// Validates target content and its exact package/project/scope binding.
+    #[must_use]
+    pub fn has_admissible_shape(&self) -> bool {
+        match self {
+            Self::Anchor { origin, fragment } => {
+                origin.has_admissible_shape()
+                    && !fragment.is_empty()
+                    && fragment.len() <= MAX_CARGO_PACKAGE_README_LINK_BYTES
+                    && !fragment.chars().any(char::is_control)
+            }
+            Self::Read {
+                origin,
+                authority,
+                root_scope,
+                path,
+                fragment,
+                content_digest,
+                contents,
+                semantic,
+            } => {
+                origin.has_admissible_shape()
+                    && authority.matches_package_reference(&origin.package)
+                    && authority.has_admissible_shape()
+                    && authority.roots().workspace_root
+                        == origin.request_binding.effective_workspace_root_digest
+                    && *root_scope == origin.root_scope
+                    && path.has_admissible_shape()
+                    && fragment.as_ref().is_none_or(|fragment| {
+                        !fragment.is_empty()
+                            && fragment.len() <= MAX_CARGO_PACKAGE_README_LINK_BYTES
+                            && !fragment.chars().any(char::is_control)
+                    })
+                    && contents.len() <= MAX_CARGO_PACKAGE_SOURCE_FILE_BYTES
+                    && !contents.as_bytes().contains(&0)
+                    && blake3::hash(contents.as_bytes()).as_bytes() == content_digest
+                    && *semantic == CargoPackageSourceSemanticStatusV1::NotIndexed
+            }
+            Self::Stale { origin } => origin.has_admissible_shape(),
+            Self::Unavailable { origin, .. } => origin
+                .as_ref()
+                .is_none_or(CargoPackageReadmeOriginV1::has_admissible_shape),
+        }
+    }
+}
+
+/// Result of reading the README chosen by one currently admitted Cargo source.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum CargoPackageReadmeResultV1 {
+    /// Current README bytes selected under this exact source receipt.
+    Read {
+        /// Exact source-qualified package route requested.
+        package: PackageReference,
+        /// Current Cargo authority revalidated by the owner.
+        authority: CargoPackageSourceAuthorityV1,
+        /// Exact local project tree request that admitted this source.
+        request_binding: ProjectTreeRequestBindingV1,
+        /// Selected path, rule, bytes, and digest.
+        readme: CargoPackageReadmeV1,
+    },
+    /// The exact current package manifest establishes that no README applies.
+    Absent {
+        /// Exact source-qualified package route requested.
+        package: PackageReference,
+        /// Current Cargo authority revalidated by the owner.
+        authority: CargoPackageSourceAuthorityV1,
+        /// Exact local project tree request that admitted this source.
+        request_binding: ProjectTreeRequestBindingV1,
+        /// Whether disabled explicitly or absent by Cargo's defaults.
+        reason: CargoPackageReadmeAbsenceV1,
+    },
+    /// The owner observation no longer matches the route's source receipt.
+    Stale {
+        /// Exact source-qualified package reference requested.
+        package: PackageReference,
+        /// Exact request context when the owner had an admitted tree.
+        request_binding: Option<ProjectTreeRequestBindingV1>,
+    },
+    /// No README was returned; the reason remains typed and no partial body is exposed.
+    Unavailable {
+        /// Exact source-qualified package reference when it was valid.
+        package: Option<PackageReference>,
+        /// Exact request context when available.
+        request_binding: Option<ProjectTreeRequestBindingV1>,
+        /// Stable reason the owner could not produce the README.
+        reason: CargoPackageReadmeFailureV1,
+    },
+}
+
+impl CargoPackageReadmeResultV1 {
+    /// Validates route/authority association and bounded README content.
+    #[must_use]
+    pub fn has_admissible_shape(&self) -> bool {
+        match self {
+            Self::Read {
+                package,
+                authority,
+                request_binding,
+                readme,
+            } => {
+                authority.matches_package_reference(package)
+                    && authority.has_admissible_shape()
+                    && request_binding.has_admissible_shape()
+                    && request_binding
+                        .matches_workspace_root_identity(authority.roots().workspace_root)
+                    && readme.matches_authority_scope(authority, request_binding)
+            }
+            Self::Absent {
+                package,
+                authority,
+                request_binding,
+                ..
+            } => {
+                authority.matches_package_reference(package)
+                    && authority.has_admissible_shape()
+                    && request_binding.has_admissible_shape()
+                    && request_binding
+                        .matches_workspace_root_identity(authority.roots().workspace_root)
+            }
+            Self::Stale {
+                package,
+                request_binding,
+            } => {
+                CargoPackageSourceAuthorityV1::digest_from_package_reference(package).is_some()
+                    && request_binding.is_none_or(|binding| binding.has_admissible_shape())
+            }
+            Self::Unavailable {
+                package,
+                request_binding,
+                ..
+            } => {
+                package.as_ref().is_none_or(|package| {
+                    CargoPackageSourceAuthorityV1::digest_from_package_reference(package).is_some()
+                }) && request_binding.is_none_or(|binding| binding.has_admissible_shape())
+            }
         }
     }
 }
@@ -1134,5 +1764,153 @@ mod tests {
         let mut value = serde_json::to_value(receipt).expect("serialize");
         value["authority_digest"] = serde_json::json!([0; 32]);
         assert!(serde_json::from_value::<CargoPackageSourceAuthorityV1>(value).is_err());
+    }
+
+    #[test]
+    fn readme_result_binds_exact_package_authority_path_and_content_digest() {
+        let authority = authority(Some("registry+https://example.test/index"));
+        let package = authority.package_reference().expect("exact package route");
+        let request_binding = ProjectTreeRequestBindingV1::for_paths(
+            Path::new("/workspace/crates/app"),
+            "/workspace",
+        )
+        .expect("tree request binding");
+        assert_eq!(
+            request_binding.effective_workspace_root_digest,
+            authority.roots().workspace_root,
+            "the tree and exact source receipt must bind the same workspace root"
+        );
+        let contents = "# serde\n\nA real release README.\n";
+        let result = CargoPackageReadmeResultV1::Read {
+            package: package.clone(),
+            authority: authority.clone(),
+            request_binding,
+            readme: CargoPackageReadmeV1 {
+                root_scope: CargoPackageReadmeRootScopeV1::Package,
+                path: CargoPackageSourcePathV1::new("crates-io.md").expect("canonical README path"),
+                selection: CargoPackageReadmeSelectionV1::ManifestPath,
+                content_digest: *blake3::hash(contents.as_bytes()).as_bytes(),
+                contents: contents.into(),
+                semantic: CargoPackageSourceSemanticStatusV1::NotIndexed,
+            },
+        };
+        assert!(result.has_admissible_shape());
+
+        let mut mismatched_scope = result.clone();
+        let CargoPackageReadmeResultV1::Read { readme, .. } = &mut mismatched_scope else {
+            unreachable!()
+        };
+        readme.root_scope = CargoPackageReadmeRootScopeV1::EffectiveWorkspace;
+        assert!(!mismatched_scope.has_admissible_shape());
+
+        let mut mismatched_project = result.clone();
+        let CargoPackageReadmeResultV1::Read {
+            request_binding, ..
+        } = &mut mismatched_project
+        else {
+            unreachable!()
+        };
+        request_binding.effective_workspace_root_digest = [42; 32];
+        assert!(!mismatched_project.has_admissible_shape());
+
+        let absent = CargoPackageReadmeResultV1::Absent {
+            package: package.clone(),
+            authority: authority.clone(),
+            request_binding,
+            reason: CargoPackageReadmeAbsenceV1::NoCargoDefault,
+        };
+        assert!(absent.has_admissible_shape());
+
+        let stale = CargoPackageReadmeResultV1::Stale {
+            package,
+            request_binding: Some(request_binding),
+        };
+        assert!(stale.has_admissible_shape());
+
+        let mut tampered = result;
+        let CargoPackageReadmeResultV1::Read { readme, .. } = &mut tampered else {
+            unreachable!()
+        };
+        readme.content_digest = [0; 32];
+        assert!(!tampered.has_admissible_shape());
+    }
+
+    #[test]
+    fn readme_link_resolution_is_relative_bounded_and_root_scoped() {
+        let authority = authority(Some("registry+https://example.test/index"));
+        let package = authority.package_reference().expect("exact package route");
+        let request_binding = ProjectTreeRequestBindingV1::for_paths(
+            Path::new("/workspace/crates/app"),
+            "/workspace",
+        )
+        .expect("tree request binding");
+        let contents = "# app\n";
+        let readme = CargoPackageReadmeResultV1::Read {
+            package,
+            authority,
+            request_binding,
+            readme: CargoPackageReadmeV1 {
+                root_scope: CargoPackageReadmeRootScopeV1::Package,
+                path: CargoPackageSourcePathV1::new("docs/README.md")
+                    .expect("canonical README path"),
+                selection: CargoPackageReadmeSelectionV1::ManifestPath,
+                content_digest: *blake3::hash(contents.as_bytes()).as_bytes(),
+                contents: contents.into(),
+                semantic: CargoPackageSourceSemanticStatusV1::NotIndexed,
+            },
+        };
+        let origin = CargoPackageReadmeOriginV1::from_result(&readme).expect("owner origin");
+        assert_eq!(
+            origin
+                .resolve_relative_href("../guide.md#start")
+                .expect("scoped link"),
+            CargoPackageReadmeLinkTargetV1::File {
+                path: CargoPackageSourcePathV1::new("guide.md").expect("normalized path"),
+                fragment: Some("start".into()),
+            }
+        );
+        assert_eq!(
+            origin.resolve_relative_href("#overview").expect("anchor"),
+            CargoPackageReadmeLinkTargetV1::Anchor {
+                fragment: "overview".into(),
+            }
+        );
+        assert_eq!(
+            origin
+                .resolve_relative_href("guide.md?view=1#api")
+                .expect("query and fragment"),
+            CargoPackageReadmeLinkTargetV1::File {
+                path: CargoPackageSourcePathV1::new("docs/guide.md").expect("normalized path"),
+                fragment: Some("api".into()),
+            }
+        );
+        for href in [
+            "https://example.test/guide.md",
+            "//example.test/guide.md",
+            "/absolute/guide.md",
+            "../../outside.md",
+            "%2e%2e/%2e%2e/outside.md",
+            "bad\\path.md",
+            "guide.md%00",
+        ] {
+            assert!(
+                origin.resolve_relative_href(href).is_err(),
+                "unexpectedly admitted {href:?}"
+            );
+        }
+
+        let request = CargoPackageReadmeLinkRequestV1 {
+            origin: origin.clone(),
+            href: "../guide.md".to_owned(),
+        };
+        assert!(request.has_admissible_shape());
+        let mut foreign_origin = request.clone();
+        foreign_origin.origin.request_binding.requested_root_digest = [7; 32];
+        assert!(foreign_origin.has_admissible_shape());
+        assert_ne!(
+            foreign_origin.origin.request_binding.requested_root_digest,
+            origin.request_binding.requested_root_digest,
+            "the owner must compare the request binding against its retained current tree"
+        );
     }
 }

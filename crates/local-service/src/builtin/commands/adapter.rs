@@ -225,6 +225,8 @@ fn answers_while_indexing(command: &Command) -> bool {
                 | S::ProjectTree { .. }
                 | S::CargoPackageSourceFile { .. }
                 | S::CargoPackageSourceInventory { .. }
+                | S::CargoPackageReadme { .. }
+                | S::CargoPackageReadmeLink { .. }
                 | S::IndexAwait { .. }
                 | S::IndexProgress { .. }
                 | S::IndexCancel { .. }
@@ -2190,6 +2192,16 @@ impl CommandAdapter {
             backend_engine::SurfaceCommand::CargoPackageSourceInventory { package } => {
                 CommandReply::Surface(backend_engine::SurfaceReply::CargoPackageSourceInventory(
                     self.browse.source_inventory(package),
+                ))
+            }
+            backend_engine::SurfaceCommand::CargoPackageReadme { request } => {
+                CommandReply::Surface(backend_engine::SurfaceReply::CargoPackageReadme(
+                    self.browse.package_readme(request),
+                ))
+            }
+            backend_engine::SurfaceCommand::CargoPackageReadmeLink { request } => {
+                CommandReply::Surface(backend_engine::SurfaceReply::CargoPackageReadmeLink(
+                    self.browse.package_readme_link(request),
                 ))
             }
             backend_engine::SurfaceCommand::AdvisoryRefresh => match self.registry.as_mut() {

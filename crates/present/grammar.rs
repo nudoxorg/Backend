@@ -59,6 +59,8 @@ pub enum ArgumentKind {
     Flag,
     /// The exact JSON object returned by an owner-issued indexing job.
     IndexJobTicket,
+    /// The exact JSON origin returned by a Cargo package README read.
+    CargoPackageReadmeOrigin,
     /// A non-negative progress event sequence.
     Sequence,
 }
@@ -82,6 +84,7 @@ impl ArgumentKind {
             Self::LanguageProfile => "PROFILE",
             Self::ExecutionIntent => "INTENT",
             Self::IndexJobTicket => "TICKET",
+            Self::CargoPackageReadmeOrigin => "ORIGIN_JSON",
             Self::Sequence => "SEQUENCE",
             Self::Generation => "GENERATION",
             Self::GraphDirection => "DIRECTION",
@@ -97,7 +100,7 @@ impl ArgumentKind {
         match self {
             Self::NodeId | Self::Limit | Self::Sequence => "integer",
             Self::Flag => "boolean",
-            Self::IndexJobTicket => "object",
+            Self::IndexJobTicket | Self::CargoPackageReadmeOrigin => "object",
             _ => "string",
         }
     }
@@ -355,6 +358,8 @@ impl CommandGrammar {
             | CommandId::ProjectTree
             | CommandId::CargoPackageSourceFile
             | CommandId::CargoPackageSourceInventory
+            | CommandId::CargoPackageReadme
+            | CommandId::CargoPackageReadmeLink
             | CommandId::AdvisoryRefresh
             | CommandId::IndexStart
             | CommandId::IndexAwait
@@ -1098,6 +1103,37 @@ pub const GRAMMARS: [CommandGrammar; 48] = [
         )],
         options: &[],
         when: "Use to list a bounded set of owner-observed source and documentation paths. Each address must be read separately; the inventory is not proof that a file is indexed.",
+    },
+    CommandGrammar {
+        name: "cargo-package-readme",
+        tool: "backend.cargo_package_readme",
+        aliases: &[],
+        positional: &[ArgumentSpec::required(
+            "package",
+            ArgumentKind::PackageReference,
+            "Exact source-qualified package reference copied from the current ProjectTree row.",
+        )],
+        options: &[],
+        when: "Read the bounded README selected by this exact package manifest under the current project-tree request; README text does not prove semantic indexing.",
+    },
+    CommandGrammar {
+        name: "cargo-package-readme-link",
+        tool: "backend.cargo_package_readme_link",
+        aliases: &[],
+        positional: &[
+            ArgumentSpec::required(
+                "origin",
+                ArgumentKind::CargoPackageReadmeOrigin,
+                "Exact origin object from an owner-returned cargo-package-readme result.",
+            ),
+            ArgumentSpec::required(
+                "href",
+                ArgumentKind::Text,
+                "Relative Markdown href copied from that README.",
+            ),
+        ],
+        options: &[],
+        when: "Follow one relative file or fragment from the exact current README under the package or inherited workspace root; the owner revalidates the README origin and never follows external links.",
     },
     CommandGrammar {
         name: "index_start",

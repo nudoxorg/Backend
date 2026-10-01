@@ -1103,6 +1103,90 @@ fn session_view(reply: &SurfaceReply) -> ProductView {
                 format!("The owner could not list this source: {reason:?}."),
             ),
         },
+        SurfaceReply::CargoPackageReadme(result) => match result {
+            backend_library::CargoPackageReadmeResultV1::Read {
+                package,
+                request_binding,
+                readme,
+                ..
+            } => {
+                let origin = backend_library::CargoPackageReadmeOriginV1 {
+                    package,
+                    request_binding,
+                    root_scope: readme.root_scope,
+                    path: readme.path.clone(),
+                    selection: readme.selection,
+                    content_digest: readme.content_digest,
+                };
+                let origin = origin
+                    .has_admissible_shape()
+                    .then(|| serde_json::to_string(&origin).ok())
+                    .flatten()
+                    .unwrap_or_else(|| "unavailable".to_owned());
+                ProductView::scalar(
+                    "cargo-package-readme",
+                    format!(
+                        "{:?}/{} · {:?}\nOrigin JSON: {}\n\n{}",
+                        readme.root_scope,
+                        readme.path.as_str(),
+                        readme.selection,
+                        origin,
+                        readme.contents
+                    ),
+                )
+            }
+            backend_library::CargoPackageReadmeResultV1::Absent { reason, .. } => {
+                ProductView::scalar(
+                    "cargo-package-readme",
+                    format!("This exact Cargo package release has no README ({reason:?})."),
+                )
+            }
+            backend_library::CargoPackageReadmeResultV1::Stale { .. } => ProductView::scalar(
+                "cargo-package-readme",
+                "The Cargo source receipt is stale. Reload the package tree before opening its README.",
+            ),
+            backend_library::CargoPackageReadmeResultV1::Unavailable { reason, .. } => {
+                ProductView::scalar(
+                    "cargo-package-readme",
+                    format!("The owner could not read this package README: {reason:?}."),
+                )
+            }
+        },
+        SurfaceReply::CargoPackageReadmeLink(result) => match result {
+            backend_library::CargoPackageReadmeLinkResultV1::Anchor { fragment, .. } => {
+                ProductView::scalar(
+                    "cargo-package-readme-link",
+                    format!("README anchor #{fragment}"),
+                )
+            }
+            backend_library::CargoPackageReadmeLinkResultV1::Read {
+                root_scope,
+                path,
+                fragment,
+                contents,
+                ..
+            } => ProductView::scalar(
+                "cargo-package-readme-link",
+                format!(
+                    "{root_scope:?}/{}{}\n\n{}",
+                    path.as_str(),
+                    fragment
+                        .as_deref()
+                        .map_or_else(String::new, |fragment| format!("#{fragment}")),
+                    contents
+                ),
+            ),
+            backend_library::CargoPackageReadmeLinkResultV1::Stale { .. } => ProductView::scalar(
+                "cargo-package-readme-link",
+                "The README link origin is stale. Reload the package README before following its links.",
+            ),
+            backend_library::CargoPackageReadmeLinkResultV1::Unavailable { reason, .. } => {
+                ProductView::scalar(
+                    "cargo-package-readme-link",
+                    format!("The owner could not follow this README link: {reason:?}."),
+                )
+            }
+        },
         other => ProductView::scalar("surface", format!("{:?}", other.id())),
     }
 }

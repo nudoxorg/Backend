@@ -17,13 +17,18 @@ use backend_library::browse::{
     TreeSource, build_tree, lockfile_input, metadata_input_with_stable_source_witness,
 };
 use backend_library::{
-    CargoPackageSourceAuthorityFailureV1, CargoPackageSourceAuthorityStateV1,
-    CargoPackageSourceAuthorityV1, CargoPackageSourceFileResultV1,
-    CargoPackageSourceInventoryCoverageV1, CargoPackageSourceInventoryFailureV1,
-    CargoPackageSourceInventoryGapV1, CargoPackageSourceInventoryResultV1,
-    CargoPackageSourceInventoryV1, CargoPackageSourcePathV1, CargoPackageSourceReadFailureV1,
-    CargoPackageSourceSemanticStatusV1, MAX_CARGO_PACKAGE_SOURCE_INVENTORY_PATHS,
-    MAX_CARGO_PACKAGE_SOURCE_INVENTORY_SCAN_ENTRIES, PackageReference,
+    CargoPackageReadmeAbsenceV1, CargoPackageReadmeFailureV1, CargoPackageReadmeLinkFailureV1,
+    CargoPackageReadmeLinkRequestV1, CargoPackageReadmeLinkResultV1,
+    CargoPackageReadmeLinkTargetV1, CargoPackageReadmeManifestV1, CargoPackageReadmeOriginV1,
+    CargoPackageReadmeRequestV1, CargoPackageReadmeResultV1, CargoPackageReadmeRootScopeV1,
+    CargoPackageReadmeSelectionV1, CargoPackageReadmeV1, CargoPackageSourceAuthorityFailureV1,
+    CargoPackageSourceAuthorityStateV1, CargoPackageSourceAuthorityV1,
+    CargoPackageSourceFileResultV1, CargoPackageSourceInventoryCoverageV1,
+    CargoPackageSourceInventoryFailureV1, CargoPackageSourceInventoryGapV1,
+    CargoPackageSourceInventoryResultV1, CargoPackageSourceInventoryV1, CargoPackageSourcePathV1,
+    CargoPackageSourceReadFailureV1, CargoPackageSourceSemanticStatusV1,
+    MAX_CARGO_PACKAGE_SOURCE_INVENTORY_PATHS, MAX_CARGO_PACKAGE_SOURCE_INVENTORY_SCAN_ENTRIES,
+    PackageReference,
 };
 use backend_platform::directory::{DirectoryCapability, EntryKind};
 use std::collections::BTreeSet;
@@ -59,6 +64,8 @@ struct CacheEntry {
     witness: [u8; 32],
     watched: Vec<PathBuf>,
     input: TreeInput,
+    /// Exact request roots that admitted the last returned tree.
+    request_binding: Option<backend_library::browse::ProjectTreeRequestBindingV1>,
     tool_witness_reuse: Option<CargoToolWitnessReuse>,
 }
 
@@ -87,7 +94,17 @@ impl BrowseCache {
                 });
             authority.observe(&package, version, false, false, now, false)
         };
-        Ok(build_tree(&input, &observe))
+        let mut tree = build_tree(&input, &observe);
+        let binding =
+            backend_library::browse::ProjectTreeRequestBindingV1::for_paths(root, &tree.root)
+                .ok_or_else(|| {
+                    "Cargo project tree could not bind its requested and resolved roots".to_owned()
+                })?;
+        if let Some(entry) = self.entry.as_mut() {
+            entry.request_binding = Some(binding);
+        }
+        tree.request_binding = Some(binding);
+        Ok(tree)
     }
 
     /// Reads one source-only text file from the currently revalidated Cargo
@@ -200,6 +217,424 @@ impl BrowseCache {
             path,
             content_digest,
             contents,
+            semantic: CargoPackageSourceSemanticStatusV1::NotIndexed,
+        }
+    }
+
+    /// Reads the manifest-selected README for the exact source release and
+    /// currently admitted project-tree request. The request supplies no path.
+    pub(super) fn package_readme(
+        &mut self,
+        request: CargoPackageReadmeRequestV1,
+    ) -> CargoPackageReadmeResultV1 {
+        if !request.has_admissible_shape() {
+            return unavailable_package_readme(
+                Some(request.package),
+                None,
+                CargoPackageReadmeFailureV1::InvalidPackageReference,
+            );
+        }
+        let package = request.package;
+        let Some((workspace, request_binding)) = self
+            .entry
+            .as_ref()
+            .and_then(|entry| Some((entry.workspace.clone(), entry.request_binding?)))
+        else {
+            return unavailable_package_readme(
+                Some(package),
+                None,
+                CargoPackageReadmeFailureV1::AuthorityUnavailable,
+            );
+        };
+        if request.requested_root_digest != request_binding.requested_root_digest
+            || request
+                .expected_workspace_root_digest
+                .is_some_and(|expected| expected != request_binding.effective_workspace_root_digest)
+        {
+            return CargoPackageReadmeResultV1::Stale {
+                package,
+                request_binding: Some(request_binding),
+            };
+        }
+        let input = match self.input(&workspace) {
+            Ok(input) => input,
+            Err(_) => {
+                return unavailable_package_readme(
+                    Some(package),
+                    Some(request_binding),
+                    CargoPackageReadmeFailureV1::SourceObservationUnavailable,
+                );
+            }
+        };
+        if self.entry.as_ref().and_then(|entry| entry.request_binding) != Some(request_binding)
+            || !request_binding.matches_effective_workspace_root(&input.root)
+        {
+            return CargoPackageReadmeResultV1::Stale {
+                package,
+                request_binding: Some(request_binding),
+            };
+        }
+        let Some(package_row) = input.packages.iter().find(|row| {
+            matches!(
+                &row.source_authority,
+                CargoPackageSourceAuthorityStateV1::Admitted(authority)
+                    if authority.matches_package_reference(&package)
+            )
+        }) else {
+            return CargoPackageReadmeResultV1::Stale {
+                package,
+                request_binding: Some(request_binding),
+            };
+        };
+        let CargoPackageSourceAuthorityStateV1::Admitted(authority) = &package_row.source_authority
+        else {
+            unreachable!("the predicate admitted only source authority rows")
+        };
+        let Some(package_root) = package_row.source_root.as_deref() else {
+            return unavailable_package_readme(
+                Some(package),
+                Some(request_binding),
+                CargoPackageReadmeFailureV1::PackageRootUnavailable,
+            );
+        };
+        if !authority.has_admissible_shape()
+            || !authority.matches_package_root_path(package_root)
+            || !authority.matches_workspace_root_path(Path::new(&input.root))
+            || !request_binding.matches_workspace_root_identity(authority.roots().workspace_root)
+        {
+            return unavailable_package_readme(
+                Some(package),
+                Some(request_binding),
+                CargoPackageReadmeFailureV1::AuthorityUnavailable,
+            );
+        }
+        let authority = authority.clone();
+        let declaration = match package_readme_manifest(package_root) {
+            Ok(declaration) => declaration,
+            Err(reason) => {
+                return unavailable_package_readme(Some(package), Some(request_binding), reason);
+            }
+        };
+        let selected = match select_and_read_package_readme(
+            package_root,
+            Path::new(&input.root),
+            &declaration,
+        ) {
+            Ok(selected) => selected,
+            Err(reason) => {
+                return unavailable_package_readme(Some(package), Some(request_binding), reason);
+            }
+        };
+
+        // Revalidate all manifests/configuration after the bounded file read.
+        let current = match self.input(&workspace) {
+            Ok(input) => input,
+            Err(_) => {
+                return unavailable_package_readme(
+                    Some(package),
+                    Some(request_binding),
+                    CargoPackageReadmeFailureV1::SourceObservationUnavailable,
+                );
+            }
+        };
+        if self.entry.as_ref().and_then(|entry| entry.request_binding) != Some(request_binding) {
+            return CargoPackageReadmeResultV1::Stale {
+                package,
+                request_binding: Some(request_binding),
+            };
+        }
+        let current_declaration = match package_readme_manifest(package_root) {
+            Ok(declaration) => declaration,
+            Err(_) => {
+                return CargoPackageReadmeResultV1::Stale {
+                    package,
+                    request_binding: Some(request_binding),
+                };
+            }
+        };
+        let current_selected = match select_and_read_package_readme(
+            package_root,
+            Path::new(&current.root),
+            &current_declaration,
+        ) {
+            Ok(selected) => selected,
+            Err(_) => {
+                return CargoPackageReadmeResultV1::Stale {
+                    package,
+                    request_binding: Some(request_binding),
+                };
+            }
+        };
+        if current_declaration != declaration || current_selected != selected {
+            return CargoPackageReadmeResultV1::Stale {
+                package,
+                request_binding: Some(request_binding),
+            };
+        }
+        let still_current = current.packages.iter().any(|row| {
+            matches!(
+                &row.source_authority,
+                CargoPackageSourceAuthorityStateV1::Admitted(current)
+                    if current.authority_digest() == authority.authority_digest()
+            )
+        });
+        if !still_current {
+            return CargoPackageReadmeResultV1::Stale {
+                package,
+                request_binding: Some(request_binding),
+            };
+        }
+
+        match selected {
+            SelectedPackageReadme::Absent(reason) => CargoPackageReadmeResultV1::Absent {
+                package,
+                authority,
+                request_binding,
+                reason,
+            },
+            SelectedPackageReadme::Read {
+                root_scope,
+                path,
+                selection,
+                contents,
+            } => {
+                let contents = match readme_text(contents) {
+                    Ok(contents) => contents,
+                    Err(reason) => {
+                        return unavailable_package_readme(
+                            Some(package),
+                            Some(request_binding),
+                            reason,
+                        );
+                    }
+                };
+                let readme = CargoPackageReadmeV1 {
+                    root_scope,
+                    path,
+                    selection,
+                    content_digest: *blake3::hash(contents.as_bytes()).as_bytes(),
+                    contents,
+                    semantic: CargoPackageSourceSemanticStatusV1::NotIndexed,
+                };
+                CargoPackageReadmeResultV1::Read {
+                    package,
+                    authority,
+                    request_binding,
+                    readme,
+                }
+            }
+        }
+    }
+
+    /// Follows one relative link only while its exact package README origin,
+    /// requested project, effective workspace, and Cargo source authority are
+    /// still current. Both README and target files are read through held,
+    /// no-follow directory capabilities.
+    pub(super) fn package_readme_link(
+        &mut self,
+        request: CargoPackageReadmeLinkRequestV1,
+    ) -> CargoPackageReadmeLinkResultV1 {
+        if !request.has_admissible_shape() {
+            return unavailable_package_readme_link(
+                Some(request.origin),
+                CargoPackageReadmeLinkFailureV1::InvalidRequest,
+            );
+        }
+        let origin = request.origin;
+        let href = request.href;
+        let Some(workspace) = self.entry.as_ref().map(|entry| entry.workspace.clone()) else {
+            return unavailable_package_readme_link(
+                Some(origin),
+                CargoPackageReadmeLinkFailureV1::ObservationUnavailable,
+            );
+        };
+        let readme_request =
+            CargoPackageReadmeRequestV1::from_tree(origin.package.clone(), origin.request_binding);
+        let readme = match self.package_readme(readme_request) {
+            CargoPackageReadmeResultV1::Read {
+                package,
+                authority,
+                request_binding,
+                readme,
+            } if package == origin.package
+                && request_binding == origin.request_binding
+                && readme.root_scope == origin.root_scope
+                && readme.path == origin.path
+                && readme.selection == origin.selection
+                && readme.content_digest == origin.content_digest =>
+            {
+                (authority, readme)
+            }
+            CargoPackageReadmeResultV1::Stale { .. }
+            | CargoPackageReadmeResultV1::Read { .. }
+            | CargoPackageReadmeResultV1::Absent { .. } => {
+                return CargoPackageReadmeLinkResultV1::Stale { origin };
+            }
+            CargoPackageReadmeResultV1::Unavailable { .. } => {
+                return unavailable_package_readme_link(
+                    Some(origin),
+                    CargoPackageReadmeLinkFailureV1::ObservationUnavailable,
+                );
+            }
+        };
+        let (authority, _readme) = readme;
+        let target = match origin.resolve_relative_href(&href) {
+            Ok(target) => target,
+            Err(reason) => {
+                return unavailable_package_readme_link(Some(origin), reason);
+            }
+        };
+        let (path, fragment) = match target {
+            CargoPackageReadmeLinkTargetV1::Anchor { fragment } => {
+                return CargoPackageReadmeLinkResultV1::Anchor { origin, fragment };
+            }
+            CargoPackageReadmeLinkTargetV1::File { path, fragment } => (path, fragment),
+        };
+        let root_scope = origin.root_scope;
+        if !supported_source_path(path.as_str()) {
+            return unavailable_package_readme_link(
+                Some(origin),
+                CargoPackageReadmeLinkFailureV1::UnsupportedFileKind,
+            );
+        }
+
+        let input = match self.input(&workspace) {
+            Ok(input) => input,
+            Err(_) => {
+                return unavailable_package_readme_link(
+                    Some(origin),
+                    CargoPackageReadmeLinkFailureV1::ObservationUnavailable,
+                );
+            }
+        };
+        if self.entry.as_ref().and_then(|entry| entry.request_binding)
+            != Some(origin.request_binding)
+            || !origin
+                .request_binding
+                .matches_effective_workspace_root(&input.root)
+        {
+            return CargoPackageReadmeLinkResultV1::Stale { origin };
+        }
+        let Some(package_row) = input.packages.iter().find(|row| {
+            matches!(
+                &row.source_authority,
+                CargoPackageSourceAuthorityStateV1::Admitted(current)
+                    if current.matches_package_reference(&origin.package)
+                        && current.authority_digest() == authority.authority_digest()
+            )
+        }) else {
+            return CargoPackageReadmeLinkResultV1::Stale { origin };
+        };
+        let CargoPackageSourceAuthorityStateV1::Admitted(current_authority) =
+            &package_row.source_authority
+        else {
+            unreachable!("the predicate admitted only source authority rows")
+        };
+        let Some(package_root) = package_row.source_root.as_deref() else {
+            return unavailable_package_readme_link(
+                Some(origin),
+                CargoPackageReadmeLinkFailureV1::ObservationUnavailable,
+            );
+        };
+        if !current_authority.has_admissible_shape()
+            || !current_authority.matches_package_root_path(package_root)
+            || !current_authority.matches_workspace_root_path(Path::new(&input.root))
+        {
+            return unavailable_package_readme_link(
+                Some(origin),
+                CargoPackageReadmeLinkFailureV1::ObservationUnavailable,
+            );
+        }
+        let target_root = match origin.root_scope {
+            CargoPackageReadmeRootScopeV1::Package => package_root,
+            CargoPackageReadmeRootScopeV1::EffectiveWorkspace
+                if origin.selection == CargoPackageReadmeSelectionV1::WorkspaceInherited
+                    && Path::new(package_root).starts_with(Path::new(&input.root)) =>
+            {
+                input.root.as_str()
+            }
+            CargoPackageReadmeRootScopeV1::EffectiveWorkspace => {
+                return CargoPackageReadmeLinkResultV1::Stale { origin };
+            }
+        };
+        let first = match read_source_file_under_limit(
+            Path::new(target_root),
+            &path,
+            backend_library::MAX_CARGO_PACKAGE_SOURCE_FILE_BYTES,
+        ) {
+            Ok(Some(contents)) => contents,
+            Ok(None) => {
+                return unavailable_package_readme_link(
+                    Some(origin),
+                    CargoPackageReadmeLinkFailureV1::TargetUnavailable,
+                );
+            }
+            Err(CargoPackageSourceReadFailureV1::FileTooLarge) => {
+                return unavailable_package_readme_link(
+                    Some(origin),
+                    CargoPackageReadmeLinkFailureV1::TargetTooLarge,
+                );
+            }
+            Err(_) => {
+                return unavailable_package_readme_link(
+                    Some(origin),
+                    CargoPackageReadmeLinkFailureV1::TargetUnavailable,
+                );
+            }
+        };
+        let contents = match String::from_utf8(first.clone()) {
+            Ok(contents) if !contents.as_bytes().contains(&0) => contents,
+            _ => {
+                return unavailable_package_readme_link(
+                    Some(origin),
+                    CargoPackageReadmeLinkFailureV1::NotUtf8Text,
+                );
+            }
+        };
+
+        // Repeat the manifest-selected README check after following the link;
+        // a changed manifest, source authority, or tree request invalidates
+        // the origin instead of returning bytes from a neighboring release.
+        match self.package_readme(CargoPackageReadmeRequestV1::from_tree(
+            origin.package.clone(),
+            origin.request_binding,
+        )) {
+            CargoPackageReadmeResultV1::Read {
+                package,
+                authority: current,
+                request_binding,
+                readme,
+            } if package == origin.package
+                && current.authority_digest() == authority.authority_digest()
+                && request_binding == origin.request_binding
+                && readme.root_scope == origin.root_scope
+                && readme.path == origin.path
+                && readme.selection == origin.selection
+                && readme.content_digest == origin.content_digest => {}
+            _ => return CargoPackageReadmeLinkResultV1::Stale { origin },
+        }
+        let second = match read_source_file_under_limit(
+            Path::new(target_root),
+            &path,
+            backend_library::MAX_CARGO_PACKAGE_SOURCE_FILE_BYTES,
+        ) {
+            Ok(Some(contents)) => contents,
+            _ => return CargoPackageReadmeLinkResultV1::Stale { origin },
+        };
+        if first != second
+            || self.entry.as_ref().and_then(|entry| entry.request_binding)
+                != Some(origin.request_binding)
+        {
+            return CargoPackageReadmeLinkResultV1::Stale { origin };
+        }
+        CargoPackageReadmeLinkResultV1::Read {
+            origin,
+            authority,
+            root_scope,
+            path,
+            fragment,
+            content_digest: *blake3::hash(contents.as_bytes()).as_bytes(),
+            contents: contents.into_boxed_str(),
             semantic: CargoPackageSourceSemanticStatusV1::NotIndexed,
         }
     }
@@ -343,6 +778,7 @@ impl BrowseCache {
             witness,
             watched,
             input: input.clone(),
+            request_binding: None,
             tool_witness_reuse,
         });
         Ok(input)
@@ -354,6 +790,25 @@ fn unavailable_source_file(
     reason: CargoPackageSourceReadFailureV1,
 ) -> CargoPackageSourceFileResultV1 {
     CargoPackageSourceFileResultV1::Unavailable { package, reason }
+}
+
+fn unavailable_package_readme(
+    package: Option<PackageReference>,
+    request_binding: Option<backend_library::browse::ProjectTreeRequestBindingV1>,
+    reason: CargoPackageReadmeFailureV1,
+) -> CargoPackageReadmeResultV1 {
+    CargoPackageReadmeResultV1::Unavailable {
+        package,
+        request_binding,
+        reason,
+    }
+}
+
+fn unavailable_package_readme_link(
+    origin: Option<CargoPackageReadmeOriginV1>,
+    reason: CargoPackageReadmeLinkFailureV1,
+) -> CargoPackageReadmeLinkResultV1 {
+    CargoPackageReadmeLinkResultV1::Unavailable { origin, reason }
 }
 
 fn unavailable_source_inventory(
@@ -549,10 +1004,265 @@ fn supported_source_path(path: &str) -> bool {
         })
 }
 
+#[derive(Debug, PartialEq)]
+enum SelectedPackageReadme {
+    Absent(CargoPackageReadmeAbsenceV1),
+    Read {
+        root_scope: CargoPackageReadmeRootScopeV1,
+        path: CargoPackageSourcePathV1,
+        selection: CargoPackageReadmeSelectionV1,
+        contents: Vec<u8>,
+    },
+}
+
+fn package_readme_manifest(
+    package_root: &Path,
+) -> Result<CargoPackageReadmeManifestV1, CargoPackageReadmeFailureV1> {
+    let manifest_path = CargoPackageSourcePathV1::new("Cargo.toml")
+        .map_err(|_| CargoPackageReadmeFailureV1::PackageManifestMalformed)?;
+    let bytes = read_source_file_under_limit(
+        package_root,
+        &manifest_path,
+        backend_library::MAX_CARGO_PACKAGE_SOURCE_FILE_BYTES,
+    )
+    .map_err(|error| match error {
+        CargoPackageSourceReadFailureV1::FileTooLarge => {
+            CargoPackageReadmeFailureV1::PackageManifestTooLarge
+        }
+        _ => CargoPackageReadmeFailureV1::PackageManifestUnavailable,
+    })?
+    .ok_or(CargoPackageReadmeFailureV1::PackageManifestUnavailable)?;
+    let manifest = std::str::from_utf8(&bytes)
+        .ok()
+        .and_then(|manifest| toml::from_str::<toml::Value>(manifest).ok())
+        .ok_or(CargoPackageReadmeFailureV1::PackageManifestMalformed)?;
+    let Some(package) = manifest.get("package") else {
+        return Err(CargoPackageReadmeFailureV1::PackageManifestMalformed);
+    };
+    let Some(readme) = package.get("readme") else {
+        return Ok(CargoPackageReadmeManifestV1::Unspecified);
+    };
+    match readme {
+        toml::Value::String(path)
+            if !path.is_empty()
+                && path.len() <= backend_library::MAX_CARGO_PACKAGE_SOURCE_PATH_BYTES =>
+        {
+            Ok(CargoPackageReadmeManifestV1::Path(path.clone()))
+        }
+        toml::Value::Boolean(true) => Ok(CargoPackageReadmeManifestV1::Enabled),
+        toml::Value::Boolean(false) => Ok(CargoPackageReadmeManifestV1::Disabled),
+        toml::Value::Table(fields)
+            if fields.len() == 1
+                && fields.get("workspace") == Some(&toml::Value::Boolean(true)) =>
+        {
+            Ok(CargoPackageReadmeManifestV1::WorkspaceInherited)
+        }
+        _ => Err(CargoPackageReadmeFailureV1::PackageManifestMalformed),
+    }
+}
+
+fn select_and_read_package_readme(
+    package_root: &Path,
+    workspace_root: &Path,
+    readme: &CargoPackageReadmeManifestV1,
+) -> Result<SelectedPackageReadme, CargoPackageReadmeFailureV1> {
+    match readme {
+        CargoPackageReadmeManifestV1::Path(path) => read_explicit_package_readme(
+            package_root,
+            manifest_readme_path(package_root, path)?,
+            CargoPackageReadmeSelectionV1::ManifestPath,
+        ),
+        CargoPackageReadmeManifestV1::Disabled => Ok(SelectedPackageReadme::Absent(
+            CargoPackageReadmeAbsenceV1::ManifestDisabled,
+        )),
+        CargoPackageReadmeManifestV1::Enabled => read_explicit_package_readme(
+            package_root,
+            CargoPackageSourcePathV1::new("README.md")
+                .map_err(|_| CargoPackageReadmeFailureV1::InvalidReadmePath)?,
+            CargoPackageReadmeSelectionV1::ManifestTrueDefault,
+        ),
+        CargoPackageReadmeManifestV1::WorkspaceInherited => {
+            read_workspace_inherited_readme(package_root, workspace_root)
+        }
+        CargoPackageReadmeManifestV1::Unspecified => read_cargo_conventional_readme(package_root),
+    }
+}
+
+fn read_workspace_inherited_readme(
+    package_root: &Path,
+    workspace_root: &Path,
+) -> Result<SelectedPackageReadme, CargoPackageReadmeFailureV1> {
+    if package_root.strip_prefix(workspace_root).is_err() {
+        return Err(CargoPackageReadmeFailureV1::WorkspaceReadmeUnresolved);
+    }
+    let manifest_path = CargoPackageSourcePathV1::new("Cargo.toml")
+        .map_err(|_| CargoPackageReadmeFailureV1::WorkspaceReadmeUnresolved)?;
+    let bytes = read_source_file_under_limit(
+        workspace_root,
+        &manifest_path,
+        backend_library::MAX_CARGO_PACKAGE_SOURCE_FILE_BYTES,
+    )
+    .map_err(|_| CargoPackageReadmeFailureV1::WorkspaceReadmeUnresolved)?
+    .ok_or(CargoPackageReadmeFailureV1::WorkspaceReadmeUnresolved)?;
+    let manifest = std::str::from_utf8(&bytes)
+        .ok()
+        .and_then(|manifest| toml::from_str::<toml::Value>(manifest).ok())
+        .ok_or(CargoPackageReadmeFailureV1::WorkspaceReadmeUnresolved)?;
+    let value = manifest
+        .get("workspace")
+        .and_then(|workspace| workspace.get("package"))
+        .and_then(|package| package.get("readme"))
+        .ok_or(CargoPackageReadmeFailureV1::WorkspaceReadmeUnresolved)?;
+    let workspace_path = match value {
+        toml::Value::String(path) => path.as_str(),
+        toml::Value::Boolean(true) => "README.md",
+        toml::Value::Boolean(false) => {
+            return Ok(SelectedPackageReadme::Absent(
+                CargoPackageReadmeAbsenceV1::ManifestDisabled,
+            ));
+        }
+        _ => return Err(CargoPackageReadmeFailureV1::WorkspaceReadmeUnresolved),
+    };
+    let path = manifest_readme_path(workspace_root, workspace_path)?;
+    read_explicit_readme(
+        workspace_root,
+        CargoPackageReadmeRootScopeV1::EffectiveWorkspace,
+        path,
+        CargoPackageReadmeSelectionV1::WorkspaceInherited,
+    )
+}
+
+fn read_cargo_conventional_readme(
+    package_root: &Path,
+) -> Result<SelectedPackageReadme, CargoPackageReadmeFailureV1> {
+    for name in ["README.md", "README.txt", "README"] {
+        let path = CargoPackageSourcePathV1::new(name)
+            .map_err(|_| CargoPackageReadmeFailureV1::InvalidReadmePath)?;
+        match read_source_file_under_limit(
+            package_root,
+            &path,
+            backend_library::MAX_CARGO_PACKAGE_README_BYTES,
+        ) {
+            Ok(Some(contents)) => {
+                return Ok(SelectedPackageReadme::Read {
+                    root_scope: CargoPackageReadmeRootScopeV1::Package,
+                    path,
+                    selection: CargoPackageReadmeSelectionV1::CargoConventionalDefault,
+                    contents,
+                });
+            }
+            Ok(None) => {}
+            Err(CargoPackageSourceReadFailureV1::FileTooLarge) => {
+                return Err(CargoPackageReadmeFailureV1::ContentTooLarge);
+            }
+            Err(_) => return Err(CargoPackageReadmeFailureV1::SelectedFileUnavailable),
+        }
+    }
+    Ok(SelectedPackageReadme::Absent(
+        CargoPackageReadmeAbsenceV1::NoCargoDefault,
+    ))
+}
+
+fn read_explicit_package_readme(
+    package_root: &Path,
+    path: CargoPackageSourcePathV1,
+    selection: CargoPackageReadmeSelectionV1,
+) -> Result<SelectedPackageReadme, CargoPackageReadmeFailureV1> {
+    read_explicit_readme(
+        package_root,
+        CargoPackageReadmeRootScopeV1::Package,
+        path,
+        selection,
+    )
+}
+
+fn read_explicit_readme(
+    root: &Path,
+    root_scope: CargoPackageReadmeRootScopeV1,
+    path: CargoPackageSourcePathV1,
+    selection: CargoPackageReadmeSelectionV1,
+) -> Result<SelectedPackageReadme, CargoPackageReadmeFailureV1> {
+    let contents = read_selected_readme(root, &path)?;
+    Ok(SelectedPackageReadme::Read {
+        root_scope,
+        path,
+        selection,
+        contents,
+    })
+}
+
+fn read_selected_readme(
+    package_root: &Path,
+    path: &CargoPackageSourcePathV1,
+) -> Result<Vec<u8>, CargoPackageReadmeFailureV1> {
+    read_source_file_under_limit(
+        package_root,
+        path,
+        backend_library::MAX_CARGO_PACKAGE_README_BYTES,
+    )
+    .map_err(|error| match error {
+        CargoPackageSourceReadFailureV1::FileTooLarge => {
+            CargoPackageReadmeFailureV1::ContentTooLarge
+        }
+        _ => CargoPackageReadmeFailureV1::SelectedFileUnavailable,
+    })?
+    .ok_or(CargoPackageReadmeFailureV1::SelectedFileUnavailable)
+}
+
+fn readme_text(contents: Vec<u8>) -> Result<Box<str>, CargoPackageReadmeFailureV1> {
+    let contents =
+        String::from_utf8(contents).map_err(|_| CargoPackageReadmeFailureV1::NotUtf8Text)?;
+    if contents.as_bytes().contains(&0) {
+        return Err(CargoPackageReadmeFailureV1::NotUtf8Text);
+    }
+    Ok(contents.into_boxed_str())
+}
+
+fn package_relative_path(
+    path: &Path,
+) -> Result<CargoPackageSourcePathV1, CargoPackageReadmeFailureV1> {
+    let path = path
+        .to_str()
+        .ok_or(CargoPackageReadmeFailureV1::InvalidReadmePath)?;
+    let path = if std::path::MAIN_SEPARATOR == '/' {
+        path.to_owned()
+    } else {
+        path.replace(std::path::MAIN_SEPARATOR, "/")
+    };
+    CargoPackageSourcePathV1::new(path).map_err(|_| CargoPackageReadmeFailureV1::InvalidReadmePath)
+}
+
+fn manifest_readme_path(
+    allowed_root: &Path,
+    declared_path: &str,
+) -> Result<CargoPackageSourcePathV1, CargoPackageReadmeFailureV1> {
+    let path = Path::new(declared_path);
+    let relative = if path.is_absolute() {
+        path.strip_prefix(allowed_root)
+            .map_err(|_| CargoPackageReadmeFailureV1::ReadmeOutsideAuthorizedRoot)?
+    } else {
+        path
+    };
+    package_relative_path(relative)
+}
+
 fn read_source_file_under(
     package_root: &Path,
     path: &CargoPackageSourcePathV1,
 ) -> Result<Vec<u8>, CargoPackageSourceReadFailureV1> {
+    read_source_file_under_limit(
+        package_root,
+        path,
+        backend_library::MAX_CARGO_PACKAGE_SOURCE_FILE_BYTES,
+    )?
+    .ok_or(CargoPackageSourceReadFailureV1::FileUnavailable)
+}
+
+fn read_source_file_under_limit(
+    package_root: &Path,
+    path: &CargoPackageSourcePathV1,
+    maximum: usize,
+) -> Result<Option<Vec<u8>>, CargoPackageSourceReadFailureV1> {
     let mut segments = path.as_str().split('/').peekable();
     let mut directory = DirectoryCapability::open_read_only_source(package_root)
         .map_err(|_| CargoPackageSourceReadFailureV1::FileUnavailable)?;
@@ -562,24 +1272,29 @@ fn read_source_file_under(
                 .open_dir(segment)
                 .map_err(|_| CargoPackageSourceReadFailureV1::FileUnavailable)?;
         } else {
-            let mut file = directory
-                .open_file_read(segment)
-                .map_err(|_| CargoPackageSourceReadFailureV1::FileUnavailable)?;
+            let mut file = match directory.open_file_read(segment) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(_) => return Err(CargoPackageSourceReadFailureV1::FileUnavailable),
+            };
             let metadata = file
                 .metadata()
                 .map_err(|_| CargoPackageSourceReadFailureV1::FileUnavailable)?;
-            if metadata.len() > backend_library::MAX_CARGO_PACKAGE_SOURCE_FILE_BYTES as u64 {
+            if metadata.len() > maximum as u64 {
                 return Err(CargoPackageSourceReadFailureV1::FileTooLarge);
             }
             let mut bytes = Vec::new();
             file.by_ref()
-                .take(backend_library::MAX_CARGO_PACKAGE_SOURCE_FILE_BYTES as u64 + 1)
+                .take(maximum as u64 + 1)
                 .read_to_end(&mut bytes)
                 .map_err(|_| CargoPackageSourceReadFailureV1::FileUnavailable)?;
-            if bytes.len() > backend_library::MAX_CARGO_PACKAGE_SOURCE_FILE_BYTES {
+            if bytes.len() > maximum {
                 return Err(CargoPackageSourceReadFailureV1::FileTooLarge);
             }
-            return Ok(bytes);
+            if !metadata.is_file() || metadata.len() != bytes.len() as u64 {
+                return Err(CargoPackageSourceReadFailureV1::FileUnavailable);
+            }
+            return Ok(Some(bytes));
         }
     }
     Err(CargoPackageSourceReadFailureV1::InvalidRelativePath)
@@ -2473,6 +3188,25 @@ fn run_with_default_rustc(
 mod tests {
     use super::*;
 
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn scratch(prefix: &str) -> Scratch {
+        Scratch(std::env::temp_dir().join(format!(
+            "{prefix}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        )))
+    }
+
     #[test]
     fn the_workspace_root_is_the_outermost_workspace_manifest() {
         let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -2495,6 +3229,332 @@ mod tests {
             .project_tree(Path::new("/"), None)
             .expect_err("no project at the root");
         assert!(error.contains("is not inside a Cargo project"), "{error}");
+    }
+
+    #[test]
+    fn package_readme_uses_manifest_path_and_cargo_default_order() {
+        let scratch = scratch("backend-package-readme-selection");
+        let package = scratch.0.join("package");
+        std::fs::create_dir_all(&package).expect("package root");
+        std::fs::write(package.join("crates-io.md"), "# Serde release\n").expect("declared README");
+        let selected = select_and_read_package_readme(
+            &package,
+            &scratch.0,
+            &CargoPackageReadmeManifestV1::Path("crates-io.md".to_owned()),
+        )
+        .expect("manifest-selected README");
+        let SelectedPackageReadme::Read {
+            root_scope,
+            path,
+            selection,
+            contents,
+        } = selected
+        else {
+            panic!("declared README must be returned")
+        };
+        assert_eq!(root_scope, CargoPackageReadmeRootScopeV1::Package);
+        assert_eq!(path.as_str(), "crates-io.md");
+        assert_eq!(selection, CargoPackageReadmeSelectionV1::ManifestPath);
+        assert_eq!(
+            readme_text(contents).expect("UTF-8 README").as_ref(),
+            "# Serde release\n"
+        );
+
+        std::fs::write(package.join("README.md"), "markdown first\n").expect("default README");
+        std::fs::write(package.join("README.txt"), "text second\n").expect("second default");
+        let selected = select_and_read_package_readme(
+            &package,
+            &scratch.0,
+            &CargoPackageReadmeManifestV1::Unspecified,
+        )
+        .expect("Cargo default README");
+        let SelectedPackageReadme::Read {
+            root_scope,
+            path,
+            selection,
+            contents,
+        } = selected
+        else {
+            panic!("default README must be returned")
+        };
+        assert_eq!(root_scope, CargoPackageReadmeRootScopeV1::Package);
+        assert_eq!(path.as_str(), "README.md");
+        assert_eq!(
+            selection,
+            CargoPackageReadmeSelectionV1::CargoConventionalDefault
+        );
+        assert_eq!(
+            readme_text(contents).expect("UTF-8 README").as_ref(),
+            "markdown first\n"
+        );
+    }
+
+    #[test]
+    fn package_readme_reports_absence_bad_content_and_oversize_without_prefixes() {
+        let scratch = scratch("backend-package-readme-absence");
+        let package = scratch.0.join("package");
+        std::fs::create_dir_all(&package).expect("package root");
+        assert!(matches!(
+            select_and_read_package_readme(
+                &package,
+                &scratch.0,
+                &CargoPackageReadmeManifestV1::Unspecified,
+            ),
+            Ok(SelectedPackageReadme::Absent(
+                CargoPackageReadmeAbsenceV1::NoCargoDefault
+            ))
+        ));
+        assert!(matches!(
+            select_and_read_package_readme(
+                &package,
+                &scratch.0,
+                &CargoPackageReadmeManifestV1::Disabled,
+            ),
+            Ok(SelectedPackageReadme::Absent(
+                CargoPackageReadmeAbsenceV1::ManifestDisabled
+            ))
+        ));
+
+        std::fs::write(package.join("README.md"), [0xff]).expect("non-UTF8 README");
+        let selected = select_and_read_package_readme(
+            &package,
+            &scratch.0,
+            &CargoPackageReadmeManifestV1::Unspecified,
+        )
+        .expect("file selection is independent from text decoding");
+        let SelectedPackageReadme::Read { contents, .. } = selected else {
+            panic!("present default README must be returned")
+        };
+        assert_eq!(
+            readme_text(contents),
+            Err(CargoPackageReadmeFailureV1::NotUtf8Text)
+        );
+
+        std::fs::write(
+            package.join("README.md"),
+            vec![b'x'; backend_library::MAX_CARGO_PACKAGE_README_BYTES + 1],
+        )
+        .expect("oversize README");
+        assert_eq!(
+            select_and_read_package_readme(
+                &package,
+                &scratch.0,
+                &CargoPackageReadmeManifestV1::Unspecified,
+            ),
+            Err(CargoPackageReadmeFailureV1::ContentTooLarge)
+        );
+    }
+
+    #[test]
+    fn exact_manifest_readme_false_overrides_conventional_files() {
+        let scratch = scratch("backend-package-readme-false");
+        let package = scratch.0.join("package");
+        std::fs::create_dir_all(&package).expect("package root");
+        std::fs::write(
+            package.join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"1.0.0\"\nreadme = false\n",
+        )
+        .expect("manifest");
+        std::fs::write(package.join("README.md"), "not selected\n").expect("conventional README");
+        let declaration = package_readme_manifest(&package).expect("exact manifest declaration");
+        assert_eq!(declaration, CargoPackageReadmeManifestV1::Disabled);
+        assert_eq!(
+            select_and_read_package_readme(&package, &scratch.0, &declaration),
+            Ok(SelectedPackageReadme::Absent(
+                CargoPackageReadmeAbsenceV1::ManifestDisabled
+            ))
+        );
+    }
+
+    #[test]
+    fn malformed_or_missing_package_manifest_fails_closed() {
+        let scratch = scratch("backend-package-readme-manifest");
+        let package = scratch.0.join("package");
+        std::fs::create_dir_all(&package).expect("package root");
+        assert_eq!(
+            package_readme_manifest(&package),
+            Err(CargoPackageReadmeFailureV1::PackageManifestUnavailable)
+        );
+        std::fs::write(package.join("Cargo.toml"), "[package\nreadme = false")
+            .expect("bad manifest");
+        assert_eq!(
+            package_readme_manifest(&package),
+            Err(CargoPackageReadmeFailureV1::PackageManifestMalformed)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_inheritance_uses_its_bound_root_and_rejects_escape_or_links() {
+        let scratch = scratch("backend-package-readme-authority");
+        let package = scratch.0.join("workspace/crates/present");
+        let workspace = scratch.0.join("workspace");
+        std::fs::create_dir_all(&package).expect("package root");
+        std::fs::write(workspace.join("README.md"), "workspace overview\n")
+            .expect("workspace README");
+        std::fs::write(
+            workspace.join("Cargo.toml"),
+            "[workspace]\n[workspace.package]\nreadme = \"README.md\"\n",
+        )
+        .expect("workspace manifest");
+        std::fs::write(
+            package.join("Cargo.toml"),
+            "[package]\nname = \"present\"\nversion = \"1.0.0\"\nreadme = { workspace = true }\n",
+        )
+        .expect("member manifest");
+        let declaration = package_readme_manifest(&package).expect("manifest inheritance");
+        assert_eq!(
+            declaration,
+            CargoPackageReadmeManifestV1::WorkspaceInherited
+        );
+        let inherited = select_and_read_package_readme(&package, &workspace, &declaration)
+            .expect("explicit workspace inheritance");
+        let SelectedPackageReadme::Read {
+            root_scope,
+            path,
+            selection,
+            contents,
+        } = inherited
+        else {
+            panic!("workspace README should be selected")
+        };
+        assert_eq!(
+            root_scope,
+            CargoPackageReadmeRootScopeV1::EffectiveWorkspace
+        );
+        assert_eq!(path.as_str(), "README.md");
+        assert_eq!(selection, CargoPackageReadmeSelectionV1::WorkspaceInherited);
+        assert_eq!(
+            readme_text(contents)
+                .expect("workspace README text")
+                .as_ref(),
+            "workspace overview\n"
+        );
+
+        let outside_workspace = scratch.0.join("outside-workspace.md");
+        std::fs::write(&outside_workspace, "outside\n").expect("outside workspace file");
+        std::fs::write(
+            workspace.join("Cargo.toml"),
+            "[workspace]\n[workspace.package]\nreadme = \"../outside-workspace.md\"\n",
+        )
+        .expect("workspace manifest with escape");
+        assert_eq!(
+            read_workspace_inherited_readme(&package, &workspace),
+            Err(CargoPackageReadmeFailureV1::ReadmeOutsideAuthorizedRoot)
+        );
+
+        let outside = scratch.0.join("outside.md");
+        std::fs::write(&outside, "outside README\n").expect("outside file");
+        std::os::unix::fs::symlink(&outside, package.join("README.md")).expect("README link");
+        assert_eq!(
+            select_and_read_package_readme(
+                &package,
+                &workspace,
+                &CargoPackageReadmeManifestV1::Unspecified,
+            ),
+            Err(CargoPackageReadmeFailureV1::SelectedFileUnavailable)
+        );
+    }
+
+    #[test]
+    fn owner_follows_readme_links_only_from_the_current_metadata_admitted_release() {
+        let scratch = scratch("backend-package-readme-link-owner");
+        let project = scratch.0.join("project");
+        let helper = scratch.0.join("helper");
+        std::fs::create_dir_all(project.join("src")).expect("project source");
+        std::fs::create_dir_all(helper.join("src")).expect("helper source");
+        std::fs::create_dir_all(helper.join("docs")).expect("helper docs");
+        std::fs::write(
+            project.join("Cargo.toml"),
+            "[package]\nname = \"link-project\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nreadme-helper = { path = \"../helper\" }\n",
+        )
+        .expect("project manifest");
+        std::fs::write(
+            project.join("Cargo.lock"),
+            "version = 4\n\n[[package]]\nname = \"link-project\"\nversion = \"0.1.0\"\ndependencies = [\n \"readme-helper\",\n]\n\n[[package]]\nname = \"readme-helper\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("locked local graph");
+        std::fs::write(project.join("src/lib.rs"), "").expect("project library");
+        std::fs::write(
+            helper.join("Cargo.toml"),
+            "[package]\nname = \"readme-helper\"\nversion = \"0.1.0\"\nedition = \"2021\"\nreadme = \"docs/README.md\"\n",
+        )
+        .expect("helper manifest");
+        std::fs::write(helper.join("src/lib.rs"), "").expect("helper library");
+        std::fs::write(
+            helper.join("docs/README.md"),
+            "# helper\n\n[guide](../guide.md#entry) [top](#helper)\n",
+        )
+        .expect("declared helper README");
+        std::fs::write(helper.join("guide.md"), "# entry\nowner bytes\n")
+            .expect("linked helper document");
+        let project = project.canonicalize().expect("canonical project root");
+
+        let mut owner = BrowseCache::default();
+        let tree = owner
+            .project_tree(&project, None)
+            .expect("real offline Cargo metadata tree");
+        let package = tree
+            .direct
+            .iter()
+            .find(|dependency| dependency.name == "readme-helper")
+            .and_then(|dependency| dependency.package_references.first())
+            .and_then(Option::as_ref)
+            .cloned()
+            .expect("exact source-qualified path package row");
+        let binding = tree.request_binding.expect("exact project tree request");
+        let readme = owner.package_readme(CargoPackageReadmeRequestV1::from_tree(package, binding));
+        assert!(
+            readme.has_admissible_shape(),
+            "owner README receipt: {readme:?}"
+        );
+        let origin = CargoPackageReadmeOriginV1::from_result(&readme)
+            .expect("compact exact owner README origin");
+        assert_eq!(origin.path.as_str(), "docs/README.md");
+        assert_eq!(origin.root_scope, CargoPackageReadmeRootScopeV1::Package);
+
+        let link = owner.package_readme_link(CargoPackageReadmeLinkRequestV1 {
+            origin: origin.clone(),
+            href: "../guide.md#entry".to_owned(),
+        });
+        assert!(link.has_admissible_shape(), "owner link receipt: {link:?}");
+        assert!(matches!(
+            link,
+            CargoPackageReadmeLinkResultV1::Read {
+                root_scope: CargoPackageReadmeRootScopeV1::Package,
+                ref path,
+                ref contents,
+                ref fragment,
+                ..
+            } if path.as_str() == "guide.md"
+                && contents.as_ref() == "# entry\nowner bytes\n"
+                && fragment.as_deref() == Some("entry")
+        ));
+
+        let escaped = owner.package_readme_link(CargoPackageReadmeLinkRequestV1 {
+            origin: origin.clone(),
+            href: "../../outside.md".to_owned(),
+        });
+        assert!(matches!(
+            escaped,
+            CargoPackageReadmeLinkResultV1::Unavailable {
+                reason: CargoPackageReadmeLinkFailureV1::OutsideScope,
+                ..
+            }
+        ));
+
+        std::fs::write(
+            helper.join("docs/README.md"),
+            "# helper changed\n\n[guide](../guide.md)\n",
+        )
+        .expect("replace manifest-selected README");
+        assert!(matches!(
+            owner.package_readme_link(CargoPackageReadmeLinkRequestV1 {
+                origin,
+                href: "../guide.md".to_owned(),
+            }),
+            CargoPackageReadmeLinkResultV1::Stale { .. }
+        ));
     }
 
     #[cfg(unix)]
@@ -2673,7 +3733,7 @@ mod tests {
                 coverage: LockfileGraphCoverage::Complete,
                 workspace_membership: backend_library::browse::LockfileWorkspaceMembership::Unknown,
             },
-            root: "sentinel-root".to_owned(),
+            root: root.to_string_lossy().into_owned(),
             packages: Vec::new(),
             edges: Vec::new(),
             locked_inactive: 0,
@@ -2685,12 +3745,17 @@ mod tests {
             witness: witness(&watched),
             watched: watched.clone(),
             input: sentinel.clone(),
+            request_binding: None,
             tool_witness_reuse: None,
         });
 
         let untouched = cache.project_tree(&root, None).expect("untouched read");
         assert_eq!(
-            untouched.root, "sentinel-root",
+            match &untouched.source {
+                TreeSource::Lockfile { reason, .. } => reason.as_str(),
+                TreeSource::CargoMetadata { .. } => "real read unexpectedly replaced the sentinel",
+            },
+            "planted by the test, never a real read",
             "an untouched workspace must be served from the cache, not recomputed: {untouched:?}"
         );
 
@@ -2705,7 +3770,11 @@ mod tests {
         .expect("changed lockfile");
         let touched = cache.project_tree(&root, None).expect("lockfile-only read");
         assert_ne!(
-            touched.root, "sentinel-root",
+            match &touched.source {
+                TreeSource::Lockfile { reason, .. } => reason.as_str(),
+                TreeSource::CargoMetadata { .. } => "real metadata replaced sentinel as expected",
+            },
+            "real metadata replaced sentinel as expected",
             "a changed lockfile alone must invalidate the cache and force a real read"
         );
 
@@ -2716,6 +3785,7 @@ mod tests {
             witness: witness(&watched),
             watched,
             input: sentinel,
+            request_binding: None,
             tool_witness_reuse: None,
         });
         std::fs::write(

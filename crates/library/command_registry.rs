@@ -57,6 +57,8 @@ impl CommandSpec {
                 | CommandId::ProjectTree
                 | CommandId::CargoPackageSourceFile
                 | CommandId::CargoPackageSourceInventory
+                | CommandId::CargoPackageReadme
+                | CommandId::CargoPackageReadmeLink
                 | CommandId::IndexStart
                 | CommandId::IndexAwait
                 | CommandId::IndexCancel
@@ -93,7 +95,7 @@ pub enum CommandDomain {
 }
 
 /// The closed registry in stable display order.
-pub const COMMANDS: [CommandSpec; 49] = [
+pub const COMMANDS: [CommandSpec; 51] = [
     CommandSpec {
         id: CommandId::Advisory,
         name: "advisory",
@@ -486,6 +488,22 @@ pub const COMMANDS: [CommandSpec; 49] = [
         mutation: CommandMutation::Read,
         domain: CommandDomain::Library,
     },
+    CommandSpec {
+        id: CommandId::CargoPackageReadme,
+        name: "cargo-package-readme",
+        title: "Cargo Package README",
+        description: "Read the bounded README Cargo selects from one exact package release's observed manifest and source authority.",
+        mutation: CommandMutation::Read,
+        domain: CommandDomain::Library,
+    },
+    CommandSpec {
+        id: CommandId::CargoPackageReadmeLink,
+        name: "cargo-package-readme-link",
+        title: "Cargo README Link",
+        description: "Read one bounded relative link from a current owner-admitted package README under its exact package or workspace root.",
+        mutation: CommandMutation::Read,
+        domain: CommandDomain::Library,
+    },
 ];
 
 /// Finds one registry row.
@@ -541,6 +559,8 @@ pub fn command_spec(id: CommandId) -> CommandSpec {
         CommandId::IndexProgress => 47,
         CommandId::PackageGraphPage => 42,
         CommandId::CargoPackageSourceInventory => 48,
+        CommandId::CargoPackageReadme => 49,
+        CommandId::CargoPackageReadmeLink => 50,
     };
     COMMANDS[index]
 }
