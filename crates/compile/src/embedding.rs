@@ -4505,17 +4505,15 @@ while True:
         let (root, _, runtime) = runtime_with_call_counter(&counter)?;
         let first_directory = root.join("workspace-a-cache");
         let second_directory = root.join("workspace-b-cache");
-        fs::create_dir(&first_directory)?;
-        fs::create_dir(&second_directory)?;
+        let first_capability =
+            backend_platform::DirectoryCapability::open_or_create_private(&first_directory)?;
+        let second_capability =
+            backend_platform::DirectoryCapability::open_or_create_private(&second_directory)?;
         let first = runtime
-            .open_durable_cache_session(backend_platform::DirectoryCapability::open(
-                &first_directory,
-            )?)
+            .open_durable_cache_session(first_capability)
             .ok_or("first cache actor admission failed")?;
         let second = runtime
-            .open_durable_cache_session(backend_platform::DirectoryCapability::open(
-                &second_directory,
-            )?)
+            .open_durable_cache_session(second_capability)
             .ok_or("second cache actor admission failed")?;
         let cancelled = AtomicBool::new(false);
         let text = "shared runtime, separate workspace cache";
