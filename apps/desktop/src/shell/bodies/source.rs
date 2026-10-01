@@ -10,13 +10,13 @@ use crate::shell::focus::Target;
 use crate::shell::kit::{gap_words, quiet, symbol_route, text};
 use crate::shell::reader::Reader;
 use facet::tokens::ty;
-use facet::Space;
+use facet::{Set as _, Space};
 use gpui::{
     App, AppContext as _, ClickEvent, Context, ElementId, InteractiveElement, InteractiveText,
     IntoElement, ParentElement, SharedString, StatefulInteractiveElement, Styled, StyledText,
     Window, div, px,
 };
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -62,7 +62,9 @@ pub(super) fn body(
     }
     crumb.push(view.symbol.name.to_string());
     let crumb = ctx.say(crumb.join("  ›  "));
-    leaves.push(Leaf::new(text(ty::MONO_ROW, &measure, palette.ink2).child(crumb)));
+    leaves.push(Leaf::new(
+        text(ty::MONO_ROW, &measure, palette.ink2).child(crumb),
+    ));
     match view.text.known() {
         Some(source) => {
             let note = margin(&view, store, &symbol, route, ctx);
@@ -130,16 +132,18 @@ fn code(
     let mut numbers = Vec::new();
     let mut raw_lines = Vec::new();
     let mut source_starts = Vec::new();
-    let mut clipped = HashSet::new();
-    for (index, raw) in source.text.lines().enumerate() {
-        let number = first_line.saturating_add(u32::try_from(index).unwrap_or(u32::MAX));
-        if number < from || number > to {
-            continue;
-        }
+    let mut clipped = BTreeSet::new();
+    let first_index = usize::try_from(from.saturating_sub(first_line)).unwrap_or(usize::MAX);
+    let wanted_lines = usize::try_from(to.saturating_sub(from).saturating_add(1))
+        .unwrap_or(MAX_SOURCE_LINES)
+        .min(MAX_SOURCE_LINES);
+    let line_spans = source.line_spans_in(first_index, wanted_lines);
+    for (source_index, span) in line_spans.iter().copied().enumerate() {
         if numbers.len() >= MAX_SOURCE_LINES {
             break;
         }
-        let line = raw.strip_suffix('\r').unwrap_or(raw);
+        let number = from.saturating_add(u32::try_from(source_index).unwrap_or(u32::MAX));
+        let line = source.text.get(span.range()).unwrap_or_default();
         let visible = utf8_prefix(line, MAX_SOURCE_LINE_BYTES);
         if shown.len().saturating_add(visible.len()).saturating_add(1) > MAX_SOURCE_BYTES {
             break;
@@ -147,12 +151,7 @@ fn code(
         if visible.len() < line.len() {
             clipped.insert(numbers.len());
         }
-        source_starts.push(
-            source
-                .line_span(number)
-                .and_then(|span| usize::try_from(span.start).ok())
-                .unwrap_or_default(),
-        );
+        source_starts.push(usize::try_from(span.start).unwrap_or_default());
         numbers.push(number);
         // Line copy follows the bounded visible excerpt, so a single enormous
         // source line cannot be retained again by a keyboard target.
@@ -188,21 +187,45 @@ fn code(
         column = column.child(quiet(format!("{above} lines above"), &measure, palette));
     }
     let mut rows = div().flex().flex_col();
-    let references = source_reference_routes(view, route.package.as_str())
-        .into_iter()
-        .take(32)
-        .collect::<Vec<_>>();
     let mut visible_references = Vec::<(SymbolRef, Route)>::new();
     let leaving = Route::Symbol(route.clone());
     let restore_target = ctx.targets.left_by(&leaving);
+    // The producer emits identifier spans in byte order. Select the visible
+    // spans once for each source row, then use a binary interval search per
+    // wrapped visual row. This avoids rescanning the entire file's identifier
+    // table for every line (and every wrapped line) on each render frame.
+    let mut identifiers_by_line =
+        vec![Vec::<&crate::model::pages::IdentifierSpan>::new(); numbers.len()];
+    if let Some(identifiers) = view.identifiers.known() {
+        let mut cursor = 0;
+        for (source_index, line_start) in source_starts.iter().copied().enumerate() {
+            let line_end = line_start.saturating_add(raw_lines[source_index].len());
+            while cursor < identifiers.len()
+                && usize::try_from(identifiers[cursor].span.end).unwrap_or(usize::MAX) <= line_start
+            {
+                cursor += 1;
+            }
+            let mut end = cursor;
+            while end < identifiers.len()
+                && usize::try_from(identifiers[end].span.start).unwrap_or(usize::MAX) < line_end
+            {
+                identifiers_by_line[source_index].push(&identifiers[end]);
+                end += 1;
+            }
+            cursor = end;
+        }
+    }
     for (source_index, number) in numbers.iter().copied().enumerate() {
         let pieces = grouped.remove(&source_index).unwrap_or_default();
-        let id = super::reader::source_line_shared_id(number);
-        if requested_line == Some(number) {
+        let id = crate::shell::reader::source_line_shared_id(number);
+        let focus_key = (ctx.place_key, number, ctx.source_generation);
+        if requested_line == Some(number)
+            && ctx.active
+            && ctx.source_focus_applied.get() != Some(focus_key)
+        {
             ctx.targets.focus(id.clone());
-            if ctx.active {
-                ctx.reader_reveal.set(true);
-            }
+            ctx.reader_reveal.set(true);
+            ctx.source_focus_applied.set(Some(focus_key));
         }
         let raw_line: Arc<str> = Arc::from(raw_lines[source_index].clone());
         let copy_line_text = Arc::clone(&raw_line);
@@ -225,8 +248,16 @@ fn code(
             let line_start = source_starts[source_index];
             let piece_start = line_start.saturating_add(line.source_range.start);
             let piece_end = line_start.saturating_add(line.source_range.end);
-            if let Some(identifiers) = view.identifiers.known() {
-                for identifier in identifiers.iter() {
+            {
+                let line_identifiers = &identifiers_by_line[source_index];
+                let first = line_identifiers.partition_point(|identifier| {
+                    usize::try_from(identifier.span.end).unwrap_or(usize::MAX) <= piece_start
+                });
+                let rest = &line_identifiers[first..];
+                let count = rest.partition_point(|identifier| {
+                    usize::try_from(identifier.span.start).unwrap_or(usize::MAX) < piece_end
+                });
+                for identifier in &rest[..count] {
                     let start = usize::try_from(identifier.span.start).unwrap_or(usize::MAX);
                     let end = usize::try_from(identifier.span.end).unwrap_or(usize::MAX);
                     if clipped.contains(&source_index)
@@ -248,15 +279,13 @@ fn code(
                     if line.text.get(text_from..text_to).is_none() {
                         continue;
                     }
-                    let Some((target, target_route)) = references
-                        .iter()
-                        .find(|(target, _)| *target == identifier.link.target)
-                    else {
+                    let target = identifier.link.target.clone();
+                    let Some(target_route) = symbol_route(route.package.as_str(), &target) else {
                         continue;
                     };
                     let target_index = visible_references
                         .iter()
-                        .position(|(seen, _)| seen == target)
+                        .position(|(seen, _)| seen == &target)
                         .unwrap_or_else(|| {
                             visible_references.push((target.clone(), target_route.clone()));
                             visible_references.len() - 1
@@ -277,24 +306,27 @@ fn code(
                 declaration.is_some_and(|span| span.first <= number && number <= span.last);
             let requested = requested_line == Some(number);
             let copy_gutter = copy_line.clone();
-            let line_number = text(
-                ty::CODE,
-                &measure,
-                if declared {
-                    palette.mint.base
-                } else if requested {
-                    palette.peri.base
-                } else {
-                    palette.ink3
-                },
-            )
-            .flex_none()
-            .w(number_width)
-            .flex()
-            .justify_end()
-            .child(label)
-            .cursor_pointer()
-            .on_click(move |_: &ClickEvent, window, app| copy_gutter(window, app));
+            let line_number = div()
+                .flex_none()
+                .w(number_width)
+                .flex()
+                .justify_end()
+                .child(
+                    text(
+                        ty::CODE,
+                        &measure,
+                        if declared {
+                            palette.mint.base
+                        } else if requested {
+                            palette.peri.base
+                        } else {
+                            palette.ink3
+                        },
+                    )
+                    .child(label),
+                )
+                .cursor_pointer()
+                .on_click(move |_: &ClickEvent, window, app| copy_gutter(window, app));
             let shared_text: SharedString = line.text.clone().into();
             let styled = StyledText::new(shared_text.clone()).with_highlights(line.runs);
             let body: gpui::AnyElement = if link_ranges.is_empty() {
@@ -329,7 +361,9 @@ fn code(
                     .gap(gap)
                     .child(line_number)
                     .child(
-                        text(ty::CODE, &measure, palette.ink1)
+                        div()
+                            .set(ty::CODE, &measure)
+                            .text_color(palette.ink1.hsla())
                             .min_w(px(0.0))
                             .whitespace_nowrap()
                             .child(body),
@@ -405,8 +439,8 @@ fn code(
         let button = div()
             .id(id.clone())
             .cursor_pointer()
-            .text_color(palette.cyan.base.hsla())
-            .child(text(ty::SMALL, &measure, palette.cyan.base).child("Open in editor"))
+            .text_color(palette.peri.base.hsla())
+            .child(text(ty::SMALL, &measure, palette.peri.base).child("Open in editor"))
             .on_click(move |_: &ClickEvent, window, app| act(window, app));
         column = column.child(ctx.targets.track(id, button));
     }
@@ -440,8 +474,8 @@ fn code(
             let row = div()
                 .id(id.clone())
                 .cursor_pointer()
-                .text_color(palette.cyan.base.hsla())
-                .child(text(ty::PROSE, &measure, palette.cyan.base).child(label))
+                .text_color(palette.peri.base.hsla())
+                .child(text(ty::PROSE, &measure, palette.peri.base).child(label))
                 .on_click(move |_: &ClickEvent, window, app| act(window, app));
             column = column.child(ctx.targets.track(id, row));
         }
@@ -449,7 +483,7 @@ fn code(
     let snippet = shown.clone();
     let copy_id: SharedString = "source-copy-excerpt".into();
     let copy: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
-        app.write_to_clipboard(gpui::ClipboardItem::new_string(snippet.clone()));
+        app.write_to_clipboard(gpui::ClipboardItem::new_string(snippet.to_string()));
     });
     ctx.targets.push(Target {
         id: copy_id.clone(),
@@ -461,8 +495,8 @@ fn code(
     let copy_button = div()
         .id(copy_id.clone())
         .cursor_pointer()
-        .text_color(palette.cyan.base.hsla())
-        .child(text(ty::SMALL, &measure, palette.cyan.base).child("Copy excerpt"))
+        .text_color(palette.peri.base.hsla())
+        .child(text(ty::SMALL, &measure, palette.peri.base).child("Copy excerpt"))
         .on_click(move |_: &ClickEvent, window, app| copy(window, app));
     column = column.child(ctx.targets.track(copy_id, copy_button));
     column.into_any_element()
@@ -474,23 +508,6 @@ fn utf8_prefix(text: &str, max_bytes: usize) -> &str {
         end = end.saturating_sub(1);
     }
     &text[..end]
-}
-
-fn source_reference_routes(view: &SourceView, package: &str) -> Vec<(SymbolRef, Route)> {
-    let Some(identifiers) = view.identifiers.known() else {
-        return Vec::new();
-    };
-    let mut seen = HashSet::new();
-    identifiers
-        .iter()
-        .filter_map(|identifier| {
-            let target = identifier.link.target.clone();
-            if !seen.insert(target.clone()) {
-                return None;
-            }
-            Some((target.clone(), symbol_route(package, &target)?))
-        })
-        .collect()
 }
 
 /// The producer's language is authoritative. JavaScript is the TypeScript

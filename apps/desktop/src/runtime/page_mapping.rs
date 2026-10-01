@@ -221,7 +221,8 @@ impl OutlineIndex {
         name: &str,
         accept: impl Fn(Option<DeclarationKind>) -> bool,
     ) -> Option<&Row> {
-        self.complete_names()?.resolve(name, accept)
+        let complete = self.complete_names()?;
+        complete.resolve(name, accept)
     }
 
     /// Builds the mosaic forest.
@@ -1524,18 +1525,18 @@ pub fn source_view(
         ),
     };
     let text = match (verified, &excerpt, &location) {
-        (Some(file_text), Some(excerpt), _) => Known::Known(SourceText {
-            text: Arc::from(file_text),
-            first_line: 1,
-            origin: SourceOrigin::LocalFile,
-            complete: excerpt.complete,
-        }),
-        (None, Some(excerpt), location) => Known::Known(SourceText {
-            text: Arc::clone(&excerpt.text),
-            first_line: location.as_ref().map_or(1, |location| location.line),
-            origin: SourceOrigin::Excerpt,
-            complete: excerpt.complete,
-        }),
+        (Some(file_text), Some(excerpt), _) => Known::Known(SourceText::new(
+            Arc::from(file_text),
+            1,
+            SourceOrigin::LocalFile,
+            excerpt.complete,
+        )),
+        (None, Some(excerpt), location) => Known::Known(SourceText::new(
+            Arc::clone(&excerpt.text),
+            location.as_ref().map_or(1, |location| location.line),
+            SourceOrigin::Excerpt,
+            excerpt.complete,
+        )),
         (_, None, _) => Known::Unknown(
             site.excerpt
                 .gap()
@@ -2841,6 +2842,9 @@ mod tests {
             keywords: Arc::from([]),
             categories: Arc::from([]),
             readme: Arc::from([]),
+            readme_markdown: None,
+            readme_links: Arc::from([]),
+            readme_headings: Arc::from([]),
             dependencies: Arc::from([]),
             features: Arc::from([]),
             members: 0,
@@ -2885,6 +2889,9 @@ mod tests {
             keywords: Arc::from([]),
             categories: Arc::from([]),
             readme: Arc::from([ReadmeBlock::Paragraph(Arc::from("Presentation model."))]),
+            readme_markdown: None,
+            readme_links: Arc::from([]),
+            readme_headings: Arc::from([]),
             dependencies: Arc::from([LocalDependency {
                 name: Arc::from("backend-library"),
                 requirement: Arc::from("*"),
@@ -2962,6 +2969,9 @@ mod tests {
             keywords: Arc::from([]),
             categories: Arc::from([]),
             readme: Arc::from([ReadmeBlock::Paragraph(Arc::from("From the checkout."))]),
+            readme_markdown: None,
+            readme_links: Arc::from([]),
+            readme_headings: Arc::from([]),
             dependencies: Arc::from([LocalDependency {
                 name: Arc::from("local-only"),
                 requirement: Arc::from("0.1"),
@@ -3036,6 +3046,9 @@ mod tests {
             keywords: Arc::from([]),
             categories: Arc::from([]),
             readme: Arc::from([ReadmeBlock::Paragraph(Arc::from("Visible."))]),
+            readme_markdown: None,
+            readme_links: Arc::from([]),
+            readme_headings: Arc::from([]),
             dependencies: Arc::from([]),
             features: Arc::from([]),
             members: 0,

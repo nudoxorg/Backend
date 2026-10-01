@@ -396,6 +396,9 @@ pub(crate) struct Reader {
     /// Bring the focused target into view in the next frame's prepaint (a
     /// keyboard walk, or a reflow that may have moved it).
     reveal: Rc<Cell<bool>>,
+    /// Initial source-line focus, latched once per exact place and resource
+    /// revision so ordinary frames never steal focus back from the user.
+    source_focus_applied: Rc<Cell<Option<(u64, u32, Option<crate::core::VersionedRoot>)>>>,
     /// What the last frame was laid out for: width, height, text scale,
     /// density. A change is a reflow.
     laid_out: Option<(Pixels, Pixels, f32, facet::Density)>,
@@ -454,6 +457,7 @@ impl Reader {
             scroll_memory: Vec::new(),
             pending_scroll_restore: None,
             reveal: Rc::new(Cell::new(false)),
+            source_focus_applied: Rc::new(Cell::new(None)),
             laid_out: None,
             lens: Lens::Reference,
             route: snapshot.route().clone(),
@@ -1434,6 +1438,8 @@ impl Reader {
         let mut hero = Vec::new();
         let mut scratch_hover = HoverIntent::default();
         let mut hover = if current { std::mem::take(&mut self.hover) } else { HoverIntent::default() };
+        let source_generation = route_symbol(&place.route)
+            .and_then(|symbol| pages.source(&symbol).value_root());
         let leaves = {
             let symbol_disclosure = route_symbol(&place.route).map(|symbol| self.symbol_disclosure(&symbol)).unwrap_or_default();
             let mut ctx = Ctx {
@@ -1450,6 +1456,9 @@ impl Reader {
                 targets: &targets,
                 reader_scroll: self.scroll.clone(),
                 reader_reveal: Rc::clone(&self.reveal),
+                source_focus_applied: Rc::clone(&self.source_focus_applied),
+                place_key: place.key,
+                source_generation,
                 lens: if current { self.lens } else { place.lens },
                 said: &mut said,
                 hero: &mut hero,

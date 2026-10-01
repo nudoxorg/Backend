@@ -220,7 +220,7 @@ pub(super) fn project(
             Some(directory.join(file))
         })
         .unwrap_or_else(|| root.join("README.md"));
-    let readme = readme::read(&readme_path);
+    let readme = readme::read(root, &readme_path);
     let facts = Facts {
         name: selected.map(|package| package.name.clone()),
         version: selected.map(|package| package.version.clone()),

@@ -428,9 +428,9 @@ fn readme_projection_retains_document_structure() {
 #[test]
 fn readme_navigation_index_uses_gfm_links_and_contains_local_targets() -> Outcome {
     let scratch = Scratch::new("readme-navigation")?;
-    scratch.write("README.md", "# Start\n\n## API\n\n## API\n\n[Guide][guide] and <https://example.test/docs>.\n\n`[code](missing.md)`\n\n```md\n[also code](missing.md)\n```\n\n[guide]: docs/guide%20one.md#L12-L14\n[outside]: ../outside.md\n")?;
+    scratch.write("README.md", "# Start\n\n## API\n\n## API\n\n## C API\n\n## C-API\n\n## C API 1\n\n[Guide][guide] and <https://example.test/docs>.\n\n`[code](missing.md)`\n\n```md\n[also code](missing.md)\n```\n\n[guide]: docs/guide%20one.md#L12-L14\n[outside]: ../outside.md\n")?;
     scratch.write("docs/guide one.md", "# Guide\n")?;
-    let source = readme::read(&scratch.0.join("README.md"));
+    let source = readme::read(&scratch.0, &scratch.0.join("README.md"));
     let (links, headings) = readme::navigation_index(&source, &scratch.0, &scratch.0.join("README.md"));
     let guide = links.iter().find(|link| link.destination.as_ref() == "docs/guide%20one.md#L12-L14").expect("reference link");
     let expected_guide = scratch.0.join("docs/guide one.md").canonicalize().map_err(text)?;
@@ -439,7 +439,10 @@ fn readme_navigation_index_uses_gfm_links_and_contains_local_targets() -> Outcom
     assert_eq!(guide.line, Some(12));
     assert!(links.iter().any(|link| link.destination.as_ref() == "https://example.test/docs"));
     assert!(!links.iter().any(|link| link.destination.contains("missing.md")), "code spans and fences are not links");
-    assert_eq!(headings.iter().map(|heading| heading.slug.as_ref()).collect::<Vec<_>>(), ["start", "api", "api-1"]);
+    assert_eq!(
+        headings.iter().map(|heading| heading.slug.as_ref()).collect::<Vec<_>>(),
+        ["start", "api", "api-1", "c-api", "c-api-1", "c-api-1-1"]
+    );
     assert!(headings[0].element_id.starts_with("readme-heading-"));
     Ok(())
 }

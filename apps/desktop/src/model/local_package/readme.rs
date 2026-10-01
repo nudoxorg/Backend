@@ -3,7 +3,11 @@
 //! The dossier renders headings, prose, bullets, and fenced code. Inline
 //! markup is kept verbatim; the projection only recovers document structure.
 
-use std::io::Read as _;
+use super::files::{
+    editor_hint_for_opened_file, open_relative_source, read_bytes_under, read_text_under,
+};
+use backend_platform::directory::DirectoryCapability;
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -14,9 +18,9 @@ pub struct ReadmeLink {
     pub label: Arc<str>,
     /// The exact destination from the Markdown AST.
     pub destination: Arc<str>,
-    /// A canonical file beneath the local project root, when the README
-    /// target names a readable file. This is admitted on the local-read
-    /// worker; consumers must not reinterpret an unresolved URL as a path.
+    /// A canonical editor/display path hint beneath the local project root,
+    /// when the README target named a readable file at read time. This is not
+    /// filesystem authority; source reads still use a held directory handle.
     pub local_file: Option<Arc<str>>,
     /// One-based source line from a `#L…` or `#L…-L…` fragment.
     pub line: Option<u32>,
@@ -68,15 +72,10 @@ pub enum ReadmeBlock {
 }
 
 /// Reads at most [`MAX_README_BYTES`] of a README, lossily decoded.
-pub(super) fn read(path: &Path) -> String {
-    let Ok(file) = std::fs::File::open(path) else {
-        return String::new();
-    };
-    let mut bytes = Vec::new();
-    if file.take(MAX_README_BYTES).read_to_end(&mut bytes).is_err() {
-        return String::new();
-    }
-    String::from_utf8_lossy(&bytes).into_owned()
+pub(super) fn read(root: &Path, path: &Path) -> String {
+    read_bytes_under(root, path, MAX_README_BYTES)
+        .map(|(bytes, _)| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_default()
 }
 
 /// Returns the first prose paragraph, skipping headings and fences.
@@ -144,10 +143,7 @@ pub(super) fn project_readme_source(root: &Path) -> Option<Arc<str>> {
 pub(super) fn project_readme_file(root: &Path) -> Option<(std::path::PathBuf, Arc<str>)> {
     for name in ["README.md", "README.markdown", "README", "readme.md"] {
         let path = root.join(name);
-        if !path.is_file() {
-            continue;
-        }
-        let text = read(&path);
+        let text = read(root, &path);
         if text.is_empty() {
             continue;
         }
@@ -173,23 +169,30 @@ pub(super) fn navigation_index(
     collect_definitions(&ast, &mut definitions);
     let mut links = Vec::new();
     let mut headings = Vec::new();
-    let mut used_slugs = std::collections::BTreeMap::<String, usize>::new();
+    let mut slug_counts = std::collections::BTreeMap::<String, usize>::new();
+    let mut used_slugs = BTreeSet::<String>::new();
     collect_navigation(
         &ast,
         &definitions,
+        &mut slug_counts,
         &mut used_slugs,
         &mut links,
         &mut headings,
     );
-    let project_root = project_root.canonicalize().ok();
-    let readme_directory = readme_path
-        .parent()
-        .and_then(|path| path.canonicalize().ok());
+    let Ok(root_capability) = DirectoryCapability::open_read_only_source(project_root) else {
+        return (links.into(), headings.into());
+    };
+    let readme_relative = match readme_path.strip_prefix(project_root) {
+        Ok(relative) => relative,
+        Err(_) => return (links.into(), headings.into()),
+    };
+    let readme_directory = readme_relative.parent().unwrap_or_else(|| Path::new(""));
     for link in &mut links {
         let (local_file, line) = resolve_local_file(
             &link.destination,
-            project_root.as_deref(),
-            readme_directory.as_deref(),
+            project_root,
+            readme_directory,
+            &root_capability,
         );
         link.local_file = local_file.map(Arc::from);
         link.line = line;
@@ -199,15 +202,10 @@ pub(super) fn navigation_index(
 
 fn resolve_local_file(
     destination: &str,
-    project_root: Option<&Path>,
-    readme_directory: Option<&Path>,
+    project_root: &Path,
+    readme_directory: &Path,
+    root_capability: &DirectoryCapability,
 ) -> (Option<String>, Option<u32>) {
-    let Some(project_root) = project_root else {
-        return (None, None);
-    };
-    let Some(readme_directory) = readme_directory else {
-        return (None, None);
-    };
     let destination = destination.trim();
     if destination.is_empty()
         || destination.starts_with('#')
@@ -232,15 +230,43 @@ fn resolve_local_file(
     if decoded.is_empty() {
         return (None, fragment.and_then(source_line_fragment));
     }
-    let candidate = readme_directory.join(decoded);
-    let Ok(canonical) = candidate.canonicalize() else {
+    let Some(relative) = project_relative_target(readme_directory, &decoded) else {
         return (None, None);
     };
-    if !canonical.starts_with(project_root) || !canonical.is_file() {
+    let Ok(file) = open_relative_source(root_capability, &relative) else {
         return (None, None);
-    }
-    let path = canonical.to_str().map(str::to_owned);
+    };
+    let Ok(metadata) = file.metadata() else {
+        return (None, None);
+    };
+    // This path is for a later, explicit editor handoff only. The no-follow
+    // descriptor above is the evidence used to read the file.
+    let path = editor_hint_for_opened_file(project_root, &relative, &metadata)
+        .and_then(|candidate| candidate.to_str().map(str::to_owned));
     (path, fragment.and_then(source_line_fragment))
+}
+
+fn project_relative_target(readme_directory: &Path, target: &str) -> Option<std::path::PathBuf> {
+    let mut components = readme_directory
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(value) => value.to_str().map(str::to_owned),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if components.len() != readme_directory.components().count() {
+        return None;
+    }
+    for component in target.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                components.pop()?;
+            }
+            value => components.push(value.to_owned()),
+        }
+    }
+    (!components.is_empty()).then(|| components.into_iter().collect())
 }
 
 fn has_uri_scheme(value: &str) -> bool {
@@ -324,7 +350,8 @@ fn collect_definitions(
 fn collect_navigation(
     node: &markdown::mdast::Node,
     definitions: &std::collections::BTreeMap<String, String>,
-    used_slugs: &mut std::collections::BTreeMap<String, usize>,
+    slug_counts: &mut std::collections::BTreeMap<String, usize>,
+    used_slugs: &mut BTreeSet<String>,
     links: &mut Vec<ReadmeLink>,
     headings: &mut Vec<ReadmeHeading>,
 ) {
@@ -343,13 +370,18 @@ fn collect_navigation(
             let title = plain_children(&heading.children);
             let base = heading_slug(&title);
             if !base.is_empty() {
-                let occurrence = used_slugs.entry(base.clone()).or_default();
-                let slug = if *occurrence == 0 {
-                    base
+                let occurrence = slug_counts.entry(base.clone()).or_default();
+                let mut slug = if *occurrence == 0 {
+                    base.clone()
                 } else {
                     format!("{base}-{}", *occurrence)
                 };
+                while used_slugs.contains(&slug) {
+                    *occurrence = occurrence.saturating_add(1);
+                    slug = format!("{base}-{}", *occurrence);
+                }
                 *occurrence = occurrence.saturating_add(1);
+                used_slugs.insert(slug.clone());
                 let offset = heading
                     .position
                     .as_ref()
@@ -369,18 +401,20 @@ fn collect_navigation(
     // recorded, preserving nested formatting while avoiding duplicate links.
     if let Some(children) = node.children() {
         for child in children {
-            collect_navigation(child, definitions, used_slugs, links, headings);
+            collect_navigation(child, definitions, slug_counts, used_slugs, links, headings);
         }
     }
 }
 
 fn push_link(links: &mut Vec<ReadmeLink>, label: String, destination: &str) {
-    if destination.is_empty() {
+    if destination.is_empty()
+        || destination.len() > super::MAX_README_LINK_DESTINATION_BYTES
+    {
         return;
     }
     links.push(ReadmeLink {
         label: bounded(&label),
-        destination: bounded(destination),
+        destination: Arc::from(destination),
         local_file: None,
         line: None,
     });

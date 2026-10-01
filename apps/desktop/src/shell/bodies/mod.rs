@@ -107,6 +107,14 @@ pub(crate) struct Ctx<'a> {
     pub reader_scroll: gpui::ScrollHandle,
     /// Signal the reader to reveal an explicitly routed source line.
     pub reader_reveal: std::rc::Rc<std::cell::Cell<bool>>,
+    /// One-time initial focus for the exact arriving place, requested line,
+    /// and source revision. It is deliberately separate from live keyboard
+    /// focus so later user navigation is never pulled back on rerender.
+    pub source_focus_applied: std::rc::Rc<std::cell::Cell<Option<(u64, u32, Option<crate::core::VersionedRoot>)>>>,
+    /// Exact Reader place whose content this body represents.
+    pub place_key: u64,
+    /// Owner revision of the source resource, when available.
+    pub source_generation: Option<crate::core::VersionedRoot>,
     /// The page's lens (tab) for declaration pages.
     pub lens: Lens,
     /// The text each body renders, recorded for content assertions.

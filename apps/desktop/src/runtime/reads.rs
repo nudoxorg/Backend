@@ -37,7 +37,6 @@ use backend_library::{
 };
 use backend_present::{Engine, Probe};
 use std::collections::VecDeque;
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
@@ -1201,42 +1200,28 @@ fn compose_symbol(
 /// own files are read, and only by package-relative path.
 struct LocalSourceFile {
     text: String,
-    canonical_path: String,
+    editor_path_hint: Option<String>,
 }
 
 const MAX_LOCAL_SOURCE_FILE_BYTES: u64 = 4 * 1024 * 1024;
 
 fn local_file(package: &PackageRef, path: &str) -> Option<LocalSourceFile> {
-    if !package.is_local() || path.split(['/', '\\']).any(|part| part == "..") {
+    if !package.is_local() {
         return None;
     }
     let root = Path::new(package.as_str());
     if !root.is_absolute() {
         return None;
     }
-    let root = root.canonicalize().ok()?;
-    let file = root.join(path).canonicalize().ok()?;
-    if !file.starts_with(&root) {
-        return None;
-    }
-    let metadata = std::fs::metadata(&file).ok()?;
-    if !metadata.is_file() || metadata.len() > MAX_LOCAL_SOURCE_FILE_BYTES {
-        return None;
-    }
-    let canonical_path = file.to_str()?.to_owned();
-    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).ok()?);
-    std::fs::File::open(file)
-        .ok()?
-        .take(MAX_LOCAL_SOURCE_FILE_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    if u64::try_from(bytes.len()).ok()? > MAX_LOCAL_SOURCE_FILE_BYTES {
-        return None;
-    }
-    let text = String::from_utf8(bytes).ok()?;
+    let (text, editor_path) = crate::model::local_package::files::read_text_under(
+        root,
+        Path::new(path),
+        MAX_LOCAL_SOURCE_FILE_BYTES,
+    )
+    .ok()?;
     Some(LocalSourceFile {
         text,
-        canonical_path,
+        editor_path_hint: editor_path.and_then(|path| path.to_str().map(str::to_owned)),
     })
 }
 
@@ -1266,7 +1251,9 @@ fn compose_source(
         symbol,
         &document,
         local_file.as_ref().map(|file| file.text.as_str()),
-        local_file.as_ref().map(|file| file.canonical_path.as_str()),
+        local_file
+            .as_ref()
+            .and_then(|file| file.editor_path_hint.as_deref()),
         &references,
         outline_index.map(AsRef::as_ref),
     )))
@@ -1832,7 +1819,10 @@ mod tests {
             .join("src/lib.rs")
             .canonicalize()
             .expect("canonical source");
-        assert_eq!(std::path::Path::new(&opened.canonical_path), expected.as_path());
+        assert_eq!(
+            std::path::Path::new(opened.editor_path_hint.as_deref().expect("editor hint")),
+            expected.as_path()
+        );
         assert!(local_file(&package, "../outside.rs").is_none());
 
         #[cfg(unix)]
@@ -1844,6 +1834,57 @@ mod tests {
             assert!(local_file(&package, "src/outside.rs").is_none());
             std::fs::remove_file(outside).expect("remove outside fixture");
         }
+        std::fs::remove_dir_all(root).expect("remove source fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn held_source_capability_rejects_replaced_links_and_special_files() {
+        use std::io::Read as _;
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "nudox-source-held-{}",
+            std::process::id()
+        ));
+        let _removed = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).expect("source directory");
+        std::fs::write(root.join("src/lib.rs"), "inside").expect("source file");
+        let capability = backend_platform::directory::DirectoryCapability::open_read_only_source(&root)
+            .expect("pin package root");
+
+        let mut held = crate::model::local_package::files::open_relative_source(
+            &capability,
+            Path::new("src/lib.rs"),
+        )
+        .expect("open source relative to held root");
+        let mut content = String::new();
+        held.read_to_string(&mut content).expect("read opened source");
+        assert_eq!(content, "inside");
+
+        std::fs::remove_file(root.join("src/lib.rs")).expect("remove original path");
+        let outside = root.with_extension("outside.rs");
+        std::fs::write(&outside, "outside").expect("outside file");
+        symlink(&outside, root.join("src/lib.rs")).expect("replace with symlink");
+        assert!(crate::model::local_package::files::open_relative_source(
+            &capability,
+            Path::new("src/lib.rs"),
+        )
+        .is_err());
+
+        let fifo = root.join("src/fifo");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo is available on Unix");
+        assert!(status.success(), "create FIFO fixture");
+        assert!(crate::model::local_package::files::open_relative_source(
+            &capability,
+            Path::new("src/fifo"),
+        )
+        .is_err());
+
+        std::fs::remove_file(outside).expect("remove outside fixture");
         std::fs::remove_dir_all(root).expect("remove source fixture");
     }
 }

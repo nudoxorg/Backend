@@ -14,10 +14,14 @@
 //! through the ordinary engine-event mapping.
 
 mod cargo;
+pub(crate) mod files;
 mod manifest;
 mod readme;
 #[cfg(test)]
 mod tests;
+
+/// Maximum exact destination retained for a local Markdown link action.
+pub(crate) const MAX_README_LINK_DESTINATION_BYTES: usize = 4 * 1024;
 
 use crate::core::LocalProjectId;
 use std::collections::BTreeSet;
@@ -231,10 +235,10 @@ impl LocalPackageLoader {
         let root = project.path();
         let readme_file = readme::project_readme_file(&root);
         let markdown = readme_file.as_ref().map(|(_, source)| Arc::clone(source));
-        let readme = markdown
+        let readme: Arc<[ReadmeBlock]> = markdown
             .as_deref()
             .map_or_else(|| Arc::from([]), |source| readme::parse(source).into());
-        let (readme_links, readme_headings) = markdown.as_deref().map_or_else(
+        let (readme_links, readme_headings): (Arc<[ReadmeLink]>, Arc<[ReadmeHeading]>) = markdown.as_deref().map_or_else(
             || (Arc::from([]), Arc::from([])),
             |source| {
                 readme::navigation_index(
