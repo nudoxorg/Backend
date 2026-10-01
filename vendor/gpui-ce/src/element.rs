@@ -284,7 +284,7 @@ pub struct Drawable<E: Element> {
     /// The drawn element.
     pub element: E,
     phase: ElementDrawPhase<E::RequestLayoutState, E::PrepaintState>,
-    owner_path: Option<crate::window::ElementOwnerPath>,
+    owner_tracking: crate::window::ElementOwnerTracking,
     owner_child_count: usize,
 }
 
@@ -322,7 +322,7 @@ impl<E: Element> Drawable<E> {
         Drawable {
             element,
             phase: ElementDrawPhase::Start,
-            owner_path: None,
+            owner_tracking: crate::window::ElementOwnerTracking::Rejected,
             owner_child_count: 0,
         }
     }
@@ -352,7 +352,7 @@ impl<E: Element> Drawable<E> {
                     inspector_id = None;
                 }
 
-                let ((layout_id, request_layout), owner_path, owner_child_count) = window
+                let ((layout_id, request_layout), owner_tracking, owner_child_count) = window
                     .with_new_element_owner(element_id, |window| {
                         self.element.request_layout(
                             global_id.as_ref(),
@@ -361,7 +361,7 @@ impl<E: Element> Drawable<E> {
                             cx,
                         )
                     });
-                self.owner_path = owner_path;
+                self.owner_tracking = owner_tracking;
                 self.owner_child_count = owner_child_count;
 
                 if global_id.is_some() {
@@ -445,7 +445,7 @@ impl<E: Element> Drawable<E> {
 
                 let node_id = window.next_frame.dispatch_tree.push_node();
                 let mut prepaint = window.with_element_owner(
-                    self.owner_path.clone(),
+                    self.owner_tracking.clone(),
                     self.owner_child_count,
                     |window| {
                         self.element.prepaint(
@@ -529,7 +529,7 @@ impl<E: Element> Drawable<E> {
 
                 window.next_frame.dispatch_tree.set_active_node(node_id);
                 window.with_element_owner(
-                    self.owner_path.clone(),
+                    self.owner_tracking.clone(),
                     self.owner_child_count,
                     |window| {
                         self.element.paint(
@@ -547,7 +547,7 @@ impl<E: Element> Drawable<E> {
                 // painting descendants. The committed Frame owns the paths used for cached
                 // range replay and captures, so retaining one here would pin an old arena in a
                 // cached Drawable indefinitely.
-                self.owner_path = None;
+                self.owner_tracking = crate::window::ElementOwnerTracking::Rejected;
                 self.owner_child_count = 0;
 
                 if global_id.is_some() {

@@ -676,13 +676,19 @@ struct FrameCallback {
 enum FrameCallbackOwner {
     Element(ElementOwnerPath),
     View(EntityId),
+    /// Structural ownership exceeded the tracking bound. Treat this as rejected work rather
+    /// than silently promoting it to a view/window callback.
+    Rejected,
 }
 
 /// One frame-local compact arena for structural element paths. Paths are handles into a single
 /// `Vec`, so each drawable contributes an inline node rather than a separate heap allocation.
 /// The arena is UI-thread-local: callback and hitbox ownership never crosses threads.
 #[derive(Clone)]
-struct ElementOwnerPathArena(Rc<RefCell<ElementOwnerPathNodes>>);
+struct ElementOwnerPathArena(
+    Rc<RefCell<ElementOwnerPathNodes>>,
+    Rc<RefCell<ElementOwnerPathWork>>,
+);
 
 #[derive(Default)]
 struct ElementOwnerPathNodes {
@@ -697,17 +703,17 @@ pub(crate) struct ElementOwnerPathWork {
     pub(crate) nodes_created: usize,
     pub(crate) node_storage_growths: usize,
     pub(crate) cached_handles_reused: usize,
+    /// Logical path segments visited by structural owner equality/hash operations. These count
+    /// actual traversal work, not elapsed time or allocated bytes.
+    pub(crate) path_equality_segments: usize,
+    pub(crate) path_hash_segments: usize,
+    /// Hitbox-owner candidates considered while exactly rebinding a capture after a frame.
+    pub(crate) capture_owner_candidates: usize,
 }
 
 impl Default for ElementOwnerPathArena {
     fn default() -> Self {
-        Self(Rc::new(RefCell::new(ElementOwnerPathNodes {
-            work: ElementOwnerPathWork {
-                arenas_created: 1,
-                ..ElementOwnerPathWork::default()
-            },
-            ..ElementOwnerPathNodes::default()
-        })))
+        Self::with_operations(Rc::new(RefCell::new(ElementOwnerPathWork::default())))
     }
 }
 
@@ -733,12 +739,49 @@ struct ElementOwnerSegment {
 const MAX_ELEMENT_OWNER_PATH_DEPTH: usize = 128;
 
 impl ElementOwnerPathArena {
+    fn with_operations(operations: Rc<RefCell<ElementOwnerPathWork>>) -> Self {
+        Self(
+            Rc::new(RefCell::new(ElementOwnerPathNodes {
+                work: ElementOwnerPathWork {
+                    arenas_created: 1,
+                    ..ElementOwnerPathWork::default()
+                },
+                ..ElementOwnerPathNodes::default()
+            })),
+            operations,
+        )
+    }
+
     fn work(&self) -> ElementOwnerPathWork {
-        self.0.borrow().work
+        let mut work = self.0.borrow().work;
+        let operations = self.1.borrow();
+        work.path_equality_segments = operations.path_equality_segments;
+        work.path_hash_segments = operations.path_hash_segments;
+        work.capture_owner_candidates = operations.capture_owner_candidates;
+        work
     }
 
     fn record_cached_handle_reuse(&self) {
         self.0.borrow_mut().work.cached_handles_reused += 1;
+    }
+
+    fn record_path_equality_segments(&self, count: usize) {
+        self.1.borrow_mut().path_equality_segments += count;
+    }
+
+    fn record_path_hash_segments(&self, count: usize) {
+        self.1.borrow_mut().path_hash_segments += count;
+    }
+
+    fn record_capture_owner_candidates(&self, count: usize) {
+        self.1.borrow_mut().capture_owner_candidates += count;
+    }
+
+    fn reset_operation_work(&self) {
+        let mut work = self.1.borrow_mut();
+        work.path_equality_segments = 0;
+        work.path_hash_segments = 0;
+        work.capture_owner_candidates = 0;
     }
 
     fn reset_or_replace(&mut self) {
@@ -750,7 +793,8 @@ impl ElementOwnerPathArena {
                 ..ElementOwnerPathWork::default()
             };
         } else {
-            *self = Self::default();
+            let operations = self.1.clone();
+            *self = Self::with_operations(operations);
         }
     }
 }
@@ -812,56 +856,79 @@ impl ElementOwnerPath {
         let right_nodes = other.arena.0.borrow();
         let mut left_index = self.index;
         let mut right_index = other.index;
-        loop {
+        let mut compared_segments = 0;
+        let same_owner = loop {
             let left = &left_nodes.nodes[left_index];
             let right = &right_nodes.nodes[right_index];
+            compared_segments += 1;
             if left.depth != right.depth || !Self::same_segment(&left.segment, &right.segment) {
-                return false;
+                break false;
             }
             match (left.parent, right.parent) {
                 (Some(left), Some(right)) => {
                     left_index = left;
                     right_index = right;
                 }
-                (None, None) => return true,
-                _ => return false,
+                (None, None) => break true,
+                _ => break false,
             }
-        }
+        };
+        let compared_segments = compared_segments.saturating_mul(2);
+        drop(right_nodes);
+        drop(left_nodes);
+        self.arena.record_path_equality_segments(compared_segments);
+        same_owner
     }
 
     /// Whether this prior-frame owner falls within a currently inert boundary. The boundary path
     /// is projected onto the exact wrapped child's root identity, so keyed children remain matched
     /// across sibling reordering while anonymous children use their structural slot.
     fn is_within_inert_boundary(&self, boundary: &Self) -> bool {
-        if self.depth < boundary.depth {
-            return false;
-        }
         let owner_nodes = self.arena.0.borrow();
         let boundary_nodes = boundary.arena.0.borrow();
-        let mut owner_index = self.index;
-        while owner_nodes.nodes[owner_index].depth > boundary.depth {
-            let Some(parent) = owner_nodes.nodes[owner_index].parent else {
-                return false;
-            };
-            owner_index = parent;
-        }
-        let mut left_index = owner_index;
-        let mut right_index = boundary.index;
-        loop {
-            let left = &owner_nodes.nodes[left_index];
-            let right = &boundary_nodes.nodes[right_index];
-            if left.depth != right.depth || !Self::same_segment(&left.segment, &right.segment) {
-                return false;
+        let mut visited_segments = 0;
+        let is_within = if self.depth < boundary.depth {
+            false
+        } else {
+            let mut owner_index = self.index;
+            let mut reaches_boundary_depth = true;
+            while owner_nodes.nodes[owner_index].depth > boundary.depth {
+                visited_segments += 1;
+                let Some(parent) = owner_nodes.nodes[owner_index].parent else {
+                    reaches_boundary_depth = false;
+                    break;
+                };
+                owner_index = parent;
             }
-            match (left.parent, right.parent) {
-                (Some(left), Some(right)) => {
-                    left_index = left;
-                    right_index = right;
+            if !reaches_boundary_depth {
+                false
+            } else {
+                let mut left_index = owner_index;
+                let mut right_index = boundary.index;
+                loop {
+                    let left = &owner_nodes.nodes[left_index];
+                    let right = &boundary_nodes.nodes[right_index];
+                    visited_segments += 2;
+                    if left.depth != right.depth
+                        || !Self::same_segment(&left.segment, &right.segment)
+                    {
+                        break false;
+                    }
+                    match (left.parent, right.parent) {
+                        (Some(left), Some(right)) => {
+                            left_index = left;
+                            right_index = right;
+                        }
+                        (None, None) => break true,
+                        _ => break false,
+                    }
                 }
-                (None, None) => return true,
-                _ => return false,
             }
-        }
+        };
+        drop(boundary_nodes);
+        drop(owner_nodes);
+        self.arena.record_path_equality_segments(visited_segments);
+        is_within
     }
 
     fn same_segment(left: &ElementOwnerSegment, right: &ElementOwnerSegment) -> bool {
@@ -883,11 +950,17 @@ impl Eq for ElementOwnerPath {}
 
 impl Hash for ElementOwnerPath {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        fn hash_node<H: Hasher>(nodes: &[ElementOwnerNode], index: usize, state: &mut H) {
+        fn hash_node<H: Hasher>(
+            nodes: &[ElementOwnerNode],
+            index: usize,
+            state: &mut H,
+            segments_hashed: &mut usize,
+        ) {
             let node = &nodes[index];
             if let Some(parent) = node.parent {
-                hash_node(nodes, parent, state);
+                hash_node(nodes, parent, state, segments_hashed);
             }
+            *segments_hashed += 1;
             match &node.segment.element_id {
                 Some(element_id) => {
                     1u8.hash(state);
@@ -900,7 +973,13 @@ impl Hash for ElementOwnerPath {
             }
         }
 
-        hash_node(&self.arena.0.borrow().nodes, self.index, state);
+        let segments_hashed = {
+            let nodes = self.arena.0.borrow();
+            let mut segments_hashed = 0;
+            hash_node(&nodes.nodes, self.index, state, &mut segments_hashed);
+            segments_hashed
+        };
+        self.arena.record_path_hash_segments(segments_hashed);
     }
 }
 
@@ -915,8 +994,12 @@ impl std::fmt::Debug for ElementOwnerPath {
 
 #[cfg(test)]
 mod element_owner_path_tests {
-    use super::{ElementOwnerPath, ElementOwnerPathArena, MAX_ELEMENT_OWNER_PATH_DEPTH};
-    use std::rc::Rc;
+    use super::{
+        ElementOwnerPath, ElementOwnerPathArena, ElementOwnerPathWork, ElementOwnerTracking,
+        FrameCallbackOwner, HitboxOwner, MAX_ELEMENT_OWNER_PATH_DEPTH,
+        frame_callback_owner_from_tracking, pointer_capture_owner, unique_hitbox_for_owner,
+    };
+    use std::{cell::RefCell, rc::Rc};
 
     fn child(
         arena: &ElementOwnerPathArena,
@@ -1000,14 +1083,65 @@ mod element_owner_path_tests {
     }
 
     #[test]
-    fn owner_paths_have_a_fixed_depth_limit() {
+    fn the_maximum_depth_is_tracked_and_all_deeper_descendants_are_rejected() {
         let arena = ElementOwnerPathArena::default();
-        let mut path = None;
-        for index in 0..MAX_ELEMENT_OWNER_PATH_DEPTH {
-            path = ElementOwnerPath::child(&arena, path.as_ref(), index, None);
-            assert!(path.is_some());
+        let mut tracking = None;
+        for depth in 1..=MAX_ELEMENT_OWNER_PATH_DEPTH {
+            tracking = Some(ElementOwnerTracking::child(
+                &arena,
+                tracking.as_ref(),
+                depth,
+                None,
+            ));
+            let Some(ElementOwnerTracking::Tracked(path)) = tracking.as_ref() else {
+                panic!("depth {depth} must remain structurally tracked");
+            };
+            assert_eq!(path.depth, depth);
         }
-        assert!(ElementOwnerPath::child(&arena, path.as_ref(), 0, None).is_none());
+        assert!(matches!(
+            ElementOwnerTracking::child(&arena, tracking.as_ref(), 129, None),
+            ElementOwnerTracking::Rejected
+        ));
+        let rejected = ElementOwnerTracking::Rejected;
+        assert!(matches!(
+            ElementOwnerTracking::child(&arena, Some(&rejected), 130, None),
+            ElementOwnerTracking::Rejected
+        ));
+        assert_eq!(arena.work().nodes_created, MAX_ELEMENT_OWNER_PATH_DEPTH);
+        assert!(matches!(
+            frame_callback_owner_from_tracking(&rejected),
+            FrameCallbackOwner::Rejected
+        ));
+        assert!(pointer_capture_owner(Some(HitboxOwner::Rejected), None).is_err());
+    }
+
+    #[test]
+    fn rejected_owner_never_becomes_a_view_callback() {
+        let owner = frame_callback_owner_from_tracking(&ElementOwnerTracking::Rejected);
+        assert!(matches!(owner, FrameCallbackOwner::Rejected));
+    }
+
+    #[test]
+    fn rejected_structural_owner_cannot_capture_pointer() {
+        assert!(pointer_capture_owner(Some(HitboxOwner::Rejected), None).is_err());
+        assert!(pointer_capture_owner(None, Some(ElementOwnerTracking::Rejected)).is_err());
+        assert!(
+            pointer_capture_owner(
+                None,
+                Some(ElementOwnerTracking::child(
+                    &ElementOwnerPathArena::default(),
+                    None,
+                    0,
+                    None,
+                )),
+            )
+            .is_err()
+        );
+        assert!(
+            pointer_capture_owner(Some(HitboxOwner::Unowned), None)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -1023,6 +1157,47 @@ mod element_owner_path_tests {
         assert!(before_reuse.node_storage_growths <= 2);
         assert_eq!(arena.work().cached_handles_reused, 2);
         assert!(anonymous.same_owner(&child(&arena, Some(&root), 0, None)));
+        assert!(arena.work().path_equality_segments > 0);
+        assert!(arena.work().path_hash_segments > 0);
+    }
+
+    #[test]
+    fn path_traversal_work_is_aggregated_across_frame_arenas() {
+        let operations = Rc::new(RefCell::new(ElementOwnerPathWork::default()));
+        let prior = ElementOwnerPathArena::with_operations(operations.clone());
+        let current = ElementOwnerPathArena::with_operations(operations);
+        let prior_root = child(&prior, None, 0, Some("root"));
+        let current_root = child(&current, None, 0, Some("root"));
+        let prior_child = child(&prior, Some(&prior_root), 0, None);
+        let current_child = child(&current, Some(&current_root), 0, None);
+
+        assert!(prior_child.same_owner(&current_child));
+        assert_eq!(current.work().path_equality_segments, 4);
+        let owners = std::collections::HashSet::from([prior_child]);
+        assert!(owners.contains(&current_child));
+        assert_eq!(current.work().path_hash_segments, 4);
+    }
+
+    #[test]
+    fn capture_owner_remapping_requires_one_exact_current_hitbox() {
+        let arena = ElementOwnerPathArena::default();
+        let owner = child(&arena, None, 0, Some("captured"));
+        let first = HitboxOwner::Tracked(owner.clone());
+        let second = HitboxOwner::Tracked(owner.clone());
+        let unrelated = HitboxOwner::Tracked(child(&arena, None, 1, Some("other")));
+
+        let (unique, scanned) = unique_hitbox_for_owner([(HitboxId(1), &first)], &owner);
+        assert_eq!(unique, Some(HitboxId(1)));
+        assert_eq!(scanned, 1);
+
+        let (ambiguous, scanned) =
+            unique_hitbox_for_owner([(HitboxId(1), &first), (HitboxId(2), &second)], &owner);
+        assert_eq!(ambiguous, None);
+        assert_eq!(scanned, 2);
+
+        let (missing, scanned) = unique_hitbox_for_owner([(HitboxId(3), &unrelated)], &owner);
+        assert_eq!(missing, None);
+        assert_eq!(scanned, 1);
     }
 
     #[test]
@@ -1051,6 +1226,98 @@ mod element_owner_path_tests {
 struct ElementOwnerStack {
     frames: Vec<ElementOwnerFrame>,
     next_root_slot: usize,
+}
+
+/// A structural element either has a complete tracked path or exceeded the bounded arena depth.
+/// The rejected state is deliberately distinct from the absence of an element scope: callbacks
+/// and pointer capture under an untracked owner must fail closed instead of becoming window work.
+#[derive(Clone)]
+pub(crate) enum ElementOwnerTracking {
+    Tracked(ElementOwnerPath),
+    Rejected,
+}
+
+impl ElementOwnerTracking {
+    fn child(
+        arena: &ElementOwnerPathArena,
+        parent: Option<&Self>,
+        slot: usize,
+        element_id: Option<ElementId>,
+    ) -> Self {
+        match parent {
+            Some(Self::Tracked(parent)) => {
+                ElementOwnerPath::child(arena, Some(parent), slot, element_id)
+                    .map(Self::Tracked)
+                    .unwrap_or(Self::Rejected)
+            }
+            Some(Self::Rejected) => Self::Rejected,
+            None => ElementOwnerPath::child(arena, None, slot, element_id)
+                .map(Self::Tracked)
+                .unwrap_or(Self::Rejected),
+        }
+    }
+
+    fn path(&self) -> Option<&ElementOwnerPath> {
+        match self {
+            Self::Tracked(path) => Some(path),
+            Self::Rejected => None,
+        }
+    }
+}
+
+fn frame_callback_owner_from_tracking(tracking: &ElementOwnerTracking) -> FrameCallbackOwner {
+    match tracking {
+        ElementOwnerTracking::Tracked(owner) => FrameCallbackOwner::Element(owner.clone()),
+        ElementOwnerTracking::Rejected => FrameCallbackOwner::Rejected,
+    }
+}
+
+fn pointer_capture_owner(
+    registered_owner: Option<HitboxOwner>,
+    current_tracking: Option<ElementOwnerTracking>,
+) -> Result<Option<ElementOwnerPath>, ()> {
+    if matches!(registered_owner.as_ref(), Some(HitboxOwner::Rejected))
+        || matches!(
+            current_tracking.as_ref(),
+            Some(ElementOwnerTracking::Rejected)
+        )
+    {
+        return Err(());
+    }
+    Ok(match registered_owner {
+        Some(HitboxOwner::Tracked(owner)) => Some(owner),
+        Some(HitboxOwner::Unowned) => None,
+        Some(HitboxOwner::Rejected) => unreachable!("rejected owners return above"),
+        None if current_tracking.is_none() => None,
+        // If an ID is absent from both frames while the caller is inside an element, tagging it
+        // with the current scope could accidentally assign another owner's hitbox.
+        None => return Err(()),
+    })
+}
+
+fn unique_hitbox_for_owner<'a>(
+    hitbox_owners: impl IntoIterator<Item = (HitboxId, &'a HitboxOwner)>,
+    owner: &ElementOwnerPath,
+) -> (Option<HitboxId>, usize) {
+    let mut candidate = None;
+    let mut scanned = 0;
+    for (hitbox_id, hitbox_owner) in hitbox_owners {
+        scanned += 1;
+        if matches!(hitbox_owner, HitboxOwner::Tracked(current) if current.same_owner(owner)) {
+            if candidate.is_some() {
+                return (None, scanned);
+            }
+            candidate = Some(hitbox_id);
+        }
+    }
+    (candidate, scanned)
+}
+
+#[derive(Clone)]
+enum HitboxOwner {
+    Tracked(ElementOwnerPath),
+    Rejected,
+    Unowned,
 }
 
 /// A scoped mapping from a wrapper's actual child path to the equivalent path with that exact
@@ -1082,7 +1349,7 @@ impl InertOwnerBoundary {
 }
 
 struct ElementOwnerFrame {
-    path: Option<ElementOwnerPath>,
+    tracking: ElementOwnerTracking,
     next_child_slot: usize,
 }
 
@@ -1373,10 +1640,10 @@ pub(crate) struct Frame {
     pub(crate) dispatch_tree: DispatchTree,
     pub(crate) scene: Scene,
     pub(crate) hitboxes: Vec<Hitbox>,
-    /// Stable element paths parallel to `hitboxes`. `None` means this hitbox's
-    /// owning drawable has no stable element ID, so it cannot be matched to a
-    /// different frame without risking an unrelated capture.
-    hitbox_owners: Vec<Option<ElementOwnerPath>>,
+    /// Owner state parallel to `hitboxes`. `Unowned` is a genuine hitbox outside any drawable
+    /// scope; `Rejected` means a drawable exceeded the structural tracking bound and must never
+    /// be treated as unowned/window-level work.
+    hitbox_owners: Vec<HitboxOwner>,
     /// Exact cached hitboxes whose prepaint range was reused under an inert boundary.
     inert_hitbox_ids: Vec<HitboxId>,
     pub(crate) window_control_hitboxes: Vec<(WindowControlArea, Hitbox)>,
@@ -1441,7 +1708,10 @@ impl Drop for InertSubtreeScope {
 }
 
 impl Frame {
-    pub(crate) fn new(dispatch_tree: DispatchTree) -> Self {
+    pub(crate) fn new(
+        dispatch_tree: DispatchTree,
+        owner_path_operations: Rc<RefCell<ElementOwnerPathWork>>,
+    ) -> Self {
         Frame {
             focus: None,
             inert_focus_ids: FxHashSet::default(),
@@ -1451,7 +1721,7 @@ impl Frame {
             inert_owner_paths: FxHashSet::default(),
             live_element_owner_paths: FxHashSet::default(),
             live_element_owner_path_order: Vec::new(),
-            owner_path_arena: ElementOwnerPathArena::default(),
+            owner_path_arena: ElementOwnerPathArena::with_operations(owner_path_operations),
             window_active: false,
             element_states: FxHashMap::default(),
             accessed_element_states: Vec::new(),
@@ -2167,21 +2437,12 @@ impl Window {
                     .any(|callback| callback.owner.is_some());
                 let mut frame_reconciled_before_callbacks = false;
                 if draw_was_already_pending && has_scoped_callbacks {
-                    // Window-level callbacks retain their existing before-draw timing. Scoped
-                    // callbacks wait until this already-pending frame commits its ownership
-                    // state, so callbacks from a subtree that just became inert can be skipped.
-                    let (window_callbacks, scoped_callbacks): (Vec<_>, Vec<_>) =
-                        next_frame_callbacks
-                            .into_iter()
-                            .partition(|callback| callback.owner.is_none());
-                    if !window_callbacks.is_empty() {
-                        handle
-                            .update(&mut cx, |_, window, cx| {
-                                window.run_frame_callbacks(window_callbacks, cx);
-                            })
-                            .log_err();
-                    }
-
+                    // Commit ownership before delivering any callback so a subtree that became
+                    // inert cannot run stale work. Keep the original registration order across
+                    // window and element callbacks; `on_next_frame` callbacks are delivered as
+                    // one after-frame batch whenever scoped ownership must be reconciled. This
+                    // intentionally moves a window callback in a mixed batch from the legacy
+                    // pre-draw point to the documented after-frame boundary.
                     measure("frame duration", || {
                         handle
                             .update(&mut cx, |_, window, cx| {
@@ -2194,11 +2455,13 @@ impl Window {
                     });
                     frame_reconciled_before_callbacks = true;
 
-                    if !scoped_callbacks.is_empty() {
+                    if !next_frame_callbacks.is_empty() {
                         handle
                             .update(&mut cx, |_, window, cx| {
-                                window
-                                    .run_scoped_frame_callbacks_and_reconcile(scoped_callbacks, cx);
+                                window.run_scoped_frame_callbacks_and_reconcile(
+                                    next_frame_callbacks,
+                                    cx,
+                                );
                             })
                             .log_err();
                     }
@@ -2399,6 +2662,7 @@ impl Window {
         }
 
         platform_window.map_window().unwrap();
+        let element_owner_path_operations = Rc::new(RefCell::new(ElementOwnerPathWork::default()));
 
         Ok(Window {
             handle,
@@ -2425,8 +2689,14 @@ impl Window {
             group_opacity: 1.0,
             painted_texts: Vec::new(),
             requested_autoscroll: None,
-            rendered_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
-            next_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
+            rendered_frame: Frame::new(
+                DispatchTree::new(cx.keymap.clone(), cx.actions.clone()),
+                element_owner_path_operations.clone(),
+            ),
+            next_frame: Frame::new(
+                DispatchTree::new(cx.keymap.clone(), cx.actions.clone()),
+                element_owner_path_operations.clone(),
+            ),
             next_frame_callbacks,
             next_hitbox_id: HitboxId(0),
             next_tooltip_id: TooltipId::default(),
@@ -2937,15 +3207,14 @@ impl Window {
         if self.is_inert_subtree() {
             return;
         }
-        let owner = self
-            .current_element_owner()
-            .map(FrameCallbackOwner::Element)
-            .or_else(|| {
-                self.rendered_entity_stack
-                    .last()
-                    .copied()
-                    .map(FrameCallbackOwner::View)
-            });
+        let owner = match self.current_element_owner_tracking() {
+            Some(tracking) => Some(frame_callback_owner_from_tracking(&tracking)),
+            None => self
+                .rendered_entity_stack
+                .last()
+                .copied()
+                .map(FrameCallbackOwner::View),
+        };
         RefCell::borrow_mut(&self.next_frame_callbacks).push(FrameCallback {
             owner,
             callback: Box::new(callback),
@@ -3410,26 +3679,16 @@ impl Window {
     /// The capture is automatically released on mouse up.
     pub fn capture_pointer(&mut self, hitbox_id: HitboxId) {
         if !self.is_inert_subtree() {
+            let owner = self
+                .hitbox_owner(&self.next_frame, hitbox_id)
+                .or_else(|| self.hitbox_owner(&self.rendered_frame, hitbox_id));
+            let Ok(capture_owner) =
+                pointer_capture_owner(owner, self.current_element_owner_tracking())
+            else {
+                return;
+            };
             self.captured_hitbox = Some(hitbox_id);
-            self.captured_hitbox_owner = self
-                .next_frame
-                .hitboxes
-                .iter()
-                .position(|hitbox| hitbox.id == hitbox_id)
-                .and_then(|index| self.next_frame.hitbox_owners.get(index).cloned().flatten())
-                .or_else(|| {
-                    self.rendered_frame
-                        .hitboxes
-                        .iter()
-                        .position(|hitbox| hitbox.id == hitbox_id)
-                        .and_then(|index| {
-                            self.rendered_frame
-                                .hitbox_owners
-                                .get(index)
-                                .cloned()
-                                .flatten()
-                        })
-                });
+            self.captured_hitbox_owner = capture_owner;
         }
     }
 
@@ -3442,6 +3701,20 @@ impl Window {
     /// Returns the hitbox that has captured the pointer, if any.
     pub fn captured_hitbox(&self) -> Option<HitboxId> {
         self.captured_hitbox
+    }
+
+    fn hitbox_owner(&self, frame: &Frame, hitbox_id: HitboxId) -> Option<HitboxOwner> {
+        frame
+            .hitboxes
+            .iter()
+            .position(|hitbox| hitbox.id == hitbox_id)
+            .map(|index| {
+                frame
+                    .hitbox_owners
+                    .get(index)
+                    .cloned()
+                    .unwrap_or(HitboxOwner::Rejected)
+            })
     }
 
     /// The current state of the keyboard's modifiers
@@ -3469,6 +3742,7 @@ impl Window {
     #[profiling::function]
     pub fn draw(&mut self, cx: &mut App) -> ArenaClearNeeded {
         self.painted_texts.clear();
+        self.next_frame.owner_path_arena.reset_operation_work();
         // Drain unconditionally so a stale first-invalidation timestamp can't
         // leak into a later frame across enable/disable of frame tracing.
         let frame_dirty = self.invalidator.take_frame_dirty();
@@ -3620,33 +3894,56 @@ impl Window {
         let Some(captured_hitbox) = self.captured_hitbox else {
             return;
         };
-
-        // A hitbox may still be captured by a live sibling in the same frame.
-        // Prefer any live registration over a matching inert candidate so shared
-        // idless ancestors cannot revoke another subtree's capture.
-        let still_live = self
-            .next_frame
-            .hitboxes
-            .iter()
-            .any(|hitbox| hitbox.id == captured_hitbox)
-            || self
-                .captured_hitbox_owner
-                .as_ref()
-                .is_some_and(|captured_owner| {
-                    self.next_frame
-                        .hitbox_owners
-                        .iter()
-                        .flatten()
-                        .any(|owner| owner.same_owner(captured_owner))
-                });
+        let owner = self.captured_hitbox_owner.clone();
         let became_inert = self.next_frame.inert_hitbox_ids.contains(&captured_hitbox)
-            || self.next_frame.inert_owner_paths.iter().any(|boundary| {
-                self.captured_hitbox_owner
-                    .as_ref()
-                    .is_some_and(|owner| owner.is_within_inert_boundary(boundary))
+            || owner.as_ref().is_some_and(|owner| {
+                self.next_frame
+                    .inert_owner_paths
+                    .iter()
+                    .any(|boundary| owner.is_within_inert_boundary(boundary))
             });
-        if !still_live && (self.captured_hitbox_owner.is_some() || became_inert) {
+        if became_inert {
             self.release_pointer();
+            return;
+        }
+
+        match owner.as_ref() {
+            Some(owner) => {
+                if matches!(
+                    self.hitbox_owner(&self.next_frame, captured_hitbox).as_ref(),
+                    Some(HitboxOwner::Tracked(current)) if current.same_owner(owner)
+                ) {
+                    return;
+                }
+
+                // Hitbox IDs are regenerated on a normal active draw. Rebind only if this exact
+                // structural owner has one current hitbox; zero or multiple candidates mean that
+                // the old capture cannot be routed without guessing.
+                let (candidate, candidates_scanned) = unique_hitbox_for_owner(
+                    self.next_frame
+                        .hitboxes
+                        .iter()
+                        .map(|hitbox| hitbox.id)
+                        .zip(&self.next_frame.hitbox_owners),
+                    owner,
+                );
+                self.next_frame
+                    .owner_path_arena
+                    .record_capture_owner_candidates(candidates_scanned);
+                if let Some(candidate) = candidate {
+                    self.captured_hitbox = Some(candidate);
+                } else {
+                    self.release_pointer();
+                }
+            }
+            None => {
+                // Truly unowned captures can survive only by their exact hitbox ID. They have
+                // no structural identity that would make remapping to a new ID safe.
+                match self.hitbox_owner(&self.next_frame, captured_hitbox) {
+                    Some(HitboxOwner::Unowned) => {}
+                    _ => self.release_pointer(),
+                }
+            }
         }
     }
 
@@ -4333,6 +4630,9 @@ impl Window {
     /// Work spent tracking structural callback/capture ownership in the committed frame.
     /// `nodes_created` counts inline arena entries, `node_storage_growths` counts Vec capacity
     /// expansions, and `cached_handles_reused` counts cached owner paths replayed by handle.
+    /// Equality/hash counters count path-segment visits; capture candidates count hitboxes scanned
+    /// during unique owner remapping. Traversal counters aggregate both frame arenas and reset at
+    /// the start of each draw. These are operation counts, not runtime benchmarks.
     pub(crate) fn element_owner_path_work(&self) -> ElementOwnerPathWork {
         self.rendered_frame.owner_path_arena.work()
     }
@@ -4341,34 +4641,30 @@ impl Window {
         &mut self,
         element_id: Option<ElementId>,
         f: impl FnOnce(&mut Self) -> R,
-    ) -> (R, Option<ElementOwnerPath>, usize) {
-        let (path, previous_len) = {
+    ) -> (R, ElementOwnerTracking, usize) {
+        let (tracking, previous_len) = {
             let mut owner_stack = self.element_owner_stack.borrow_mut();
-            let (parent, slot, has_parent) = if let Some(parent) = owner_stack.frames.last_mut() {
+            let (parent, slot) = if let Some(parent) = owner_stack.frames.last_mut() {
                 let slot = parent.next_child_slot;
                 parent.next_child_slot = parent.next_child_slot.saturating_add(1);
-                (parent.path.clone(), slot, true)
+                (Some(parent.tracking.clone()), slot)
             } else {
                 let slot = owner_stack.next_root_slot;
                 owner_stack.next_root_slot = owner_stack.next_root_slot.saturating_add(1);
-                (None, slot, false)
+                (None, slot)
             };
-            let path = if has_parent && parent.is_none() {
-                None
-            } else {
-                ElementOwnerPath::child(
-                    &self.next_frame.owner_path_arena,
-                    parent.as_ref(),
-                    slot,
-                    element_id,
-                )
-            };
+            let tracking = ElementOwnerTracking::child(
+                &self.next_frame.owner_path_arena,
+                parent.as_ref(),
+                slot,
+                element_id,
+            );
             let previous_len = owner_stack.frames.len();
             owner_stack.frames.push(ElementOwnerFrame {
-                path: path.clone(),
+                tracking: tracking.clone(),
                 next_child_slot: 0,
             });
-            (path, previous_len)
+            (tracking, previous_len)
         };
         let scope = ElementOwnerScope {
             stack: self.element_owner_stack.clone(),
@@ -4382,23 +4678,23 @@ impl Window {
             .last()
             .map_or(0, |frame| frame.next_child_slot);
         drop(scope);
-        (result, path, child_count)
+        (result, tracking, child_count)
     }
 
     pub(crate) fn with_element_owner<R>(
         &mut self,
-        path: Option<ElementOwnerPath>,
+        tracking: ElementOwnerTracking,
         next_child_slot: usize,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        if let Some(path) = path.as_ref() {
+        if let Some(path) = tracking.path() {
             self.record_live_element_owner(path);
         }
         let previous_len = {
             let mut owner_stack = self.element_owner_stack.borrow_mut();
             let previous_len = owner_stack.frames.len();
             owner_stack.frames.push(ElementOwnerFrame {
-                path,
+                tracking,
                 next_child_slot,
             });
             previous_len
@@ -4427,7 +4723,15 @@ impl Window {
             .borrow()
             .frames
             .last()
-            .and_then(|frame| frame.path.clone())
+            .and_then(|frame| frame.tracking.path().cloned())
+    }
+
+    fn current_element_owner_tracking(&self) -> Option<ElementOwnerTracking> {
+        self.element_owner_stack
+            .borrow()
+            .frames
+            .last()
+            .map(|frame| frame.tracking.clone())
     }
 
     fn callback_owner_is_inert(&self, owner: &FrameCallbackOwner) -> bool {
@@ -4443,6 +4747,7 @@ impl Window {
                 self.rendered_frame.inert_view_ids.contains(view_id)
                     || !self.rendered_frame.dispatch_tree.contains_view(*view_id)
             }
+            FrameCallbackOwner::Rejected => true,
         }
     }
 
@@ -6239,7 +6544,11 @@ impl Window {
             },
         };
         if !self.is_inert_subtree() {
-            let owner = self.current_element_owner();
+            let owner = match self.current_element_owner_tracking() {
+                Some(ElementOwnerTracking::Tracked(owner)) => HitboxOwner::Tracked(owner),
+                Some(ElementOwnerTracking::Rejected) => HitboxOwner::Rejected,
+                None => HitboxOwner::Unowned,
+            };
             self.next_frame.hitboxes.push(hitbox.clone());
             self.next_frame.hitbox_owners.push(owner);
         }
