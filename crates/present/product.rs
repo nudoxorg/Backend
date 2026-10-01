@@ -1033,8 +1033,58 @@ fn session_view(reply: &SurfaceReply) -> ProductView {
         SurfaceReply::TreeClosed(count) => {
             ProductView::scalar("tree-close", format!("{count} node(s) closed"))
         }
+        SurfaceReply::CargoPackageSourceFile(result) => match result {
+            backend_library::CargoPackageSourceFileResultV1::Read {
+                path,
+                contents,
+                semantic: backend_library::CargoPackageSourceSemanticStatusV1::NotIndexed,
+                ..
+            } => ProductView::scalar(
+                "cargo-source-file",
+                format!(
+                    "{} · source-only, not indexed\n\n{}",
+                    path.as_str(),
+                    fenced_source_text(contents)
+                ),
+            ),
+            backend_library::CargoPackageSourceFileResultV1::Stale { .. } => ProductView::scalar(
+                "cargo-source-file",
+                "The Cargo source receipt is stale. Reload the package tree before opening this file.",
+            ),
+            backend_library::CargoPackageSourceFileResultV1::Unavailable { reason, .. } => {
+                ProductView::scalar(
+                    "cargo-source-file",
+                    format!("The owner could not read this source file: {reason:?}."),
+                )
+            }
+        },
         other => ProductView::scalar("surface", format!("{:?}", other.id())),
     }
+}
+
+fn fenced_source_text(contents: &str) -> String {
+    let longest_run = |needle: char| {
+        contents
+            .chars()
+            .fold((0_usize, 0_usize), |(longest, current), character| {
+                if character == needle {
+                    let current = current.saturating_add(1);
+                    (longest.max(current), current)
+                } else {
+                    (longest, 0)
+                }
+            })
+            .0
+    };
+    let backticks = longest_run('`');
+    let tildes = longest_run('~');
+    let (marker, length) = if backticks <= tildes {
+        ('`', backticks.saturating_add(1).max(3))
+    } else {
+        ('~', tildes.saturating_add(1).max(3))
+    };
+    let fence = std::iter::repeat_n(marker, length).collect::<String>();
+    format!("{fence}text\n{contents}\n{fence}")
 }
 
 /// A project's tree: the lede, what affects it, each role, then each package

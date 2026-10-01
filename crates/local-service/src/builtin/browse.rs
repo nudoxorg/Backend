@@ -13,9 +13,15 @@
 //! refresh shows at once.
 
 use backend_library::browse::{
-    LockedInactiveCoverage, LockfileGraphCoverage, ProjectTree, TreeInput, TreeSource, build_tree,
-    lockfile_input, metadata_input,
+    LockedInactiveCoverage, LockfileGraphCoverage, ProjectTree, TreeInput, TreeInputPackage,
+    TreeSource, build_tree, lockfile_input, metadata_input_with_stable_source_witness,
 };
+use backend_library::{
+    CargoPackageSourceAuthorityFailureV1, CargoPackageSourceAuthorityStateV1,
+    CargoPackageSourceAuthorityV1, CargoPackageSourceFileResultV1, CargoPackageSourcePathV1,
+    CargoPackageSourceReadFailureV1, CargoPackageSourceSemanticStatusV1, PackageReference,
+};
+use backend_platform::directory::DirectoryCapability;
 use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -25,9 +31,14 @@ use std::time::{Duration, Instant};
 /// Largest `cargo metadata` document admitted.
 const MAX_METADATA_BYTES: usize = 64 * 1024 * 1024;
 /// Largest `Cargo.lock` admitted.
-const MAX_LOCKFILE_BYTES: u64 = 16 * 1024 * 1024;
 /// How long Cargo may take to answer.
 const CARGO_DEADLINE: Duration = Duration::from_secs(90);
+const MAX_CARGO_OBSERVATION_PATHS: usize = 21_024;
+const MAX_CARGO_OBSERVATION_FILE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_CARGO_OBSERVATION_TOTAL_BYTES: usize = 256 * 1024 * 1024;
+const MAX_CARGO_CONFIG_BYTES: usize = 1024 * 1024;
+const MAX_CARGO_CONFIG_INPUTS: usize = 256;
+const MAX_CARGO_CONFIG_DEPTH: usize = 16;
 
 /// The last tree input read from Cargo, and the file bytes it was read from.
 #[derive(Default)]
@@ -71,26 +82,146 @@ impl BrowseCache {
         Ok(build_tree(&input, &observe))
     }
 
-    fn input(&mut self, root: &Path) -> Result<TreeInput, String> {
-        let workspace = workspace_root(root).ok_or_else(|| {
-            format!(
-                "{} is not inside a Cargo project (no Cargo.toml above it)",
-                root.display()
+    /// Reads one source-only text file from the currently revalidated Cargo
+    /// package observation. Neither the route nor the request supplies a root
+    /// path; the owner recovers it from the admitted metadata row.
+    pub(super) fn source_file(
+        &mut self,
+        package: PackageReference,
+        path: CargoPackageSourcePathV1,
+    ) -> CargoPackageSourceFileResultV1 {
+        if !path.has_admissible_shape()
+            || CargoPackageSourceAuthorityV1::digest_from_package_reference(&package).is_none()
+        {
+            return unavailable_source_file(
+                Some(package),
+                CargoPackageSourceReadFailureV1::InvalidPackageReference,
+            );
+        }
+        if !supported_source_path(path.as_str()) {
+            return unavailable_source_file(
+                Some(package),
+                CargoPackageSourceReadFailureV1::UnsupportedFileKind,
+            );
+        }
+        let Some(workspace) = self.entry.as_ref().map(|entry| entry.workspace.clone()) else {
+            return unavailable_source_file(
+                Some(package),
+                CargoPackageSourceReadFailureV1::AuthorityUnavailable,
+            );
+        };
+        let input = match self.input(&workspace) {
+            Ok(input) => input,
+            Err(_) => {
+                return unavailable_source_file(
+                    Some(package),
+                    CargoPackageSourceReadFailureV1::SourceObservationUnavailable,
+                );
+            }
+        };
+        let Some(package_row) = input.packages.iter().find(|row| {
+            matches!(
+                &row.source_authority,
+                CargoPackageSourceAuthorityStateV1::Admitted(authority)
+                    if authority.matches_package_reference(&package)
             )
-        })?;
+        }) else {
+            return CargoPackageSourceFileResultV1::Stale { package };
+        };
+        let CargoPackageSourceAuthorityStateV1::Admitted(authority) = &package_row.source_authority
+        else {
+            unreachable!("the predicate admitted only source authority rows")
+        };
+        let Some(package_root) = package_row.source_root.as_deref() else {
+            return unavailable_source_file(
+                Some(package),
+                CargoPackageSourceReadFailureV1::PackageRootUnavailable,
+            );
+        };
+        if !authority.has_admissible_shape()
+            || !authority.matches_package_root_path(package_root)
+            || !authority.matches_workspace_root_path(Path::new(&input.root))
+        {
+            return unavailable_source_file(
+                Some(package),
+                CargoPackageSourceReadFailureV1::AuthorityUnavailable,
+            );
+        }
+        let authority = authority.clone();
+        let contents = match read_source_file_under(package_root, &path) {
+            Ok(contents) => contents,
+            Err(reason) => return unavailable_source_file(Some(package), reason),
+        };
+        let contents = match String::from_utf8(contents) {
+            Ok(contents) if !contents.as_bytes().contains(&0) => contents,
+            _ => {
+                return unavailable_source_file(
+                    Some(package),
+                    CargoPackageSourceReadFailureV1::NotUtf8Text,
+                );
+            }
+        };
+
+        // Recheck the complete metadata input set after opening and reading.
+        // A changed manifest/config/source authority invalidates these bytes;
+        // the next request must use a fresh tree receipt.
+        let current = match self.input(&workspace) {
+            Ok(input) => input,
+            Err(_) => {
+                return unavailable_source_file(
+                    Some(package),
+                    CargoPackageSourceReadFailureV1::SourceObservationUnavailable,
+                );
+            }
+        };
+        let still_current = current.packages.iter().any(|row| {
+            matches!(
+                &row.source_authority,
+                CargoPackageSourceAuthorityStateV1::Admitted(current)
+                    if current.authority_digest() == authority.authority_digest()
+            )
+        });
+        if !still_current {
+            return CargoPackageSourceFileResultV1::Stale { package };
+        }
+        let contents = contents.into_boxed_str();
+        let content_digest = *blake3::hash(contents.as_bytes()).as_bytes();
+        CargoPackageSourceFileResultV1::Read {
+            package,
+            authority,
+            path,
+            content_digest,
+            contents,
+            semantic: CargoPackageSourceSemanticStatusV1::NotIndexed,
+        }
+    }
+
+    fn input(&mut self, root: &Path) -> Result<TreeInput, String> {
+        let workspace = workspace_root(root)?
+            .ok_or_else(|| {
+                format!(
+                    "{} is not inside a Cargo project (no Cargo.toml above it)",
+                    root.display()
+                )
+            })?
+            .canonicalize()
+            .map_err(|error| {
+                format!("cannot resolve Cargo workspace root without following links: {error}")
+            })?;
         // The same project, and none of the files it was read from moved.
         // (A nested workspace is another project: compare the resolved
         // directory, never a path prefix.)
         if let Some(entry) = &self.entry
             && entry.workspace == workspace
-            && witness(&entry.watched) == entry.witness
+            && observation_witness(&workspace, &entry.watched)
+                .is_ok_and(|observed| observed.digest == entry.witness)
         {
             return Ok(entry.input.clone());
         }
-        let (input, watched) = read_project(&workspace)?;
+        let (input, watched, witness) = read_project(&workspace)?;
         self.entry = Some(CacheEntry {
             workspace,
-            witness: witness(&watched),
+            witness,
             watched,
             input: input.clone(),
         });
@@ -98,137 +229,700 @@ impl BrowseCache {
     }
 }
 
-/// Hashes the files a tree was read from; a missing file hashes as absent.
-fn witness(files: &[PathBuf]) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new();
-    for file in files {
-        hasher.update(file.as_os_str().as_encoded_bytes());
-        match std::fs::read(file) {
-            Ok(bytes) => {
-                hasher.update(&[1]);
-                hasher.update(&(bytes.len() as u64).to_le_bytes());
-                hasher.update(&bytes);
+fn unavailable_source_file(
+    package: Option<PackageReference>,
+    reason: CargoPackageSourceReadFailureV1,
+) -> CargoPackageSourceFileResultV1 {
+    CargoPackageSourceFileResultV1::Unavailable { package, reason }
+}
+
+fn supported_source_path(path: &str) -> bool {
+    if path.split('/').any(|segment| {
+        [".git", ".hg", ".svn", ".cargo", "target", "build"]
+            .iter()
+            .any(|internal| segment.eq_ignore_ascii_case(internal))
+    }) {
+        return false;
+    }
+    let name = path.rsplit('/').next().unwrap_or(path);
+    if name == "Cargo.toml" || name.eq_ignore_ascii_case("README") {
+        return true;
+    }
+    Path::new(name)
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "rs" | "md"
+                    | "markdown"
+                    | "rst"
+                    | "txt"
+                    | "c"
+                    | "h"
+                    | "cc"
+                    | "cpp"
+                    | "cxx"
+                    | "hpp"
+                    | "hh"
+                    | "cs"
+                    | "go"
+                    | "java"
+                    | "kt"
+                    | "kts"
+                    | "py"
+                    | "pyi"
+                    | "js"
+                    | "jsx"
+                    | "mjs"
+                    | "cjs"
+                    | "ts"
+                    | "tsx"
+                    | "mts"
+                    | "cts"
+                    | "swift"
+                    | "scala"
+                    | "sh"
+                    | "toml"
+                    | "yaml"
+                    | "yml"
+            )
+        })
+}
+
+fn read_source_file_under(
+    package_root: &Path,
+    path: &CargoPackageSourcePathV1,
+) -> Result<Vec<u8>, CargoPackageSourceReadFailureV1> {
+    let mut segments = path.as_str().split('/').peekable();
+    let mut directory = DirectoryCapability::open_read_only_source(package_root)
+        .map_err(|_| CargoPackageSourceReadFailureV1::FileUnavailable)?;
+    while let Some(segment) = segments.next() {
+        if segments.peek().is_some() {
+            directory = directory
+                .open_dir(segment)
+                .map_err(|_| CargoPackageSourceReadFailureV1::FileUnavailable)?;
+        } else {
+            let mut file = directory
+                .open_file_read(segment)
+                .map_err(|_| CargoPackageSourceReadFailureV1::FileUnavailable)?;
+            let metadata = file
+                .metadata()
+                .map_err(|_| CargoPackageSourceReadFailureV1::FileUnavailable)?;
+            if metadata.len() > backend_library::MAX_CARGO_PACKAGE_SOURCE_FILE_BYTES as u64 {
+                return Err(CargoPackageSourceReadFailureV1::FileTooLarge);
             }
-            Err(_) => {
-                hasher.update(&[0]);
+            let mut bytes = Vec::new();
+            file.by_ref()
+                .take(backend_library::MAX_CARGO_PACKAGE_SOURCE_FILE_BYTES as u64 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|_| CargoPackageSourceReadFailureV1::FileUnavailable)?;
+            if bytes.len() > backend_library::MAX_CARGO_PACKAGE_SOURCE_FILE_BYTES {
+                return Err(CargoPackageSourceReadFailureV1::FileTooLarge);
             }
+            return Ok(bytes);
         }
     }
+    Err(CargoPackageSourceReadFailureV1::InvalidRelativePath)
+}
+
+struct InputObservation {
+    digest: [u8; 32],
+    lockfile: Option<String>,
+    manifest: Option<Vec<u8>>,
+}
+
+struct CoherentMetadata {
+    metadata: Vec<u8>,
+    host: String,
+    input_witness: [u8; 32],
+    lockfile: Option<String>,
+    watched: Vec<PathBuf>,
+}
+
+/// Hashes a bounded, exact Cargo input set through no-follow capabilities.
+/// A missing candidate is part of the witness, so creating a previously
+/// absent lock/config file invalidates the cache too.
+fn observation_witness(workspace: &Path, files: &[PathBuf]) -> Result<InputObservation, String> {
+    let environment = cargo_environment_witness()?;
+    let tool = current_cargo_tool_witness().unwrap_or_else(unavailable_tool_witness);
+    observation_witness_with_context(workspace, files, environment, tool)
+}
+
+fn strict_observation_witness(
+    workspace: &Path,
+    files: &[PathBuf],
+) -> Result<InputObservation, String> {
+    let environment = cargo_environment_witness()?;
+    let tool = current_cargo_tool_witness()?;
+    observation_witness_with_context(workspace, files, environment, tool)
+}
+
+fn unavailable_tool_witness(error: String) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.cargo-tool-unavailable.v1\0");
+    hasher.update(error.as_bytes());
     *hasher.finalize().as_bytes()
 }
 
-/// The tree input of the project at `workspace`, and the files it depends on.
-fn read_project(workspace: &Path) -> Result<(TreeInput, Vec<PathBuf>), String> {
-    let workspace = workspace.to_path_buf();
-    let lockfile = read_bounded(&workspace.join("Cargo.lock"));
-    match cargo_metadata(&workspace) {
-        Ok((metadata, host)) => {
-            let input = metadata_input(&metadata, &host, lockfile.as_deref())
-                .map_err(|error| error.to_string())?;
-            let mut watched = vec![
-                PathBuf::from(&input.root).join("Cargo.lock"),
-                PathBuf::from(&input.root).join("Cargo.toml"),
-            ];
-            watched.extend(member_manifests(&metadata));
-            Ok((input, watched))
+fn observation_witness_with_context(
+    workspace: &Path,
+    files: &[PathBuf],
+    environment: [u8; 32],
+    tool: [u8; 32],
+) -> Result<InputObservation, String> {
+    if files.len() > MAX_CARGO_OBSERVATION_PATHS {
+        return Err("Cargo source observation has too many input paths".to_owned());
+    }
+    let mut ordered = files.to_vec();
+    ordered.sort();
+    ordered.dedup();
+    if ordered.len() > MAX_CARGO_OBSERVATION_PATHS {
+        return Err("Cargo source observation has too many unique input paths".to_owned());
+    }
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.cargo-source-input-witness.v1\0");
+    let mut total = 0_usize;
+    let mut lockfile = None;
+    let mut manifest = None;
+    for file in ordered {
+        if !file.is_absolute() {
+            return Err("Cargo source observation contains a non-absolute path".to_owned());
         }
-        Err(reason) => {
-            let lockfile = lockfile.ok_or_else(|| {
-                format!("{reason}; and {} has no Cargo.lock", workspace.display())
-            })?;
-            let patched = patched_names(&workspace.join("Cargo.toml"));
-            let input = lockfile_input(&lockfile, &workspace.to_string_lossy(), &patched, &reason)
-                .map_err(|error| error.to_string())?;
-            Ok((
-                input,
-                vec![workspace.join("Cargo.lock"), workspace.join("Cargo.toml")],
-            ))
+        let encoded = file.as_os_str().as_encoded_bytes();
+        hasher.update(&(encoded.len() as u64).to_le_bytes());
+        hasher.update(encoded);
+        match read_observation_file(&file, MAX_CARGO_OBSERVATION_FILE_BYTES)? {
+            Some(bytes) => {
+                total = total.saturating_add(bytes.len());
+                if total > MAX_CARGO_OBSERVATION_TOTAL_BYTES {
+                    return Err("Cargo source observation exceeds its byte budget".to_owned());
+                }
+                hasher.update(&[1]);
+                hasher.update(&(bytes.len() as u64).to_le_bytes());
+                hasher.update(&bytes);
+                if file == workspace.join("Cargo.lock") {
+                    lockfile = Some(String::from_utf8(bytes).map_err(|_| {
+                        "Cargo.lock is not valid UTF-8 during source observation".to_owned()
+                    })?);
+                } else if file == workspace.join("Cargo.toml") {
+                    manifest = Some(bytes);
+                }
+            }
+            None => hasher.update(&[0]),
         }
     }
+    hasher.update(&environment);
+    hasher.update(&tool);
+    Ok(InputObservation {
+        digest: *hasher.finalize().as_bytes(),
+        lockfile,
+        manifest,
+    })
+}
+
+/// Reads one absolute regular file without following any ancestor or final
+/// symlink. Missing files are recorded as absent; other failures make the
+/// observation unavailable.
+fn read_observation_file(path: &Path, maximum: usize) -> Result<Option<Vec<u8>>, String> {
+    let Some(parent) = path.parent() else {
+        return Err("Cargo observation path has no parent".to_owned());
+    };
+    let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
+        return Err("Cargo observation path is not UTF-8".to_owned());
+    };
+    let directory = match DirectoryCapability::open_read_only_source(parent) {
+        Ok(directory) => directory,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("cannot hold Cargo input directory: {error}")),
+    };
+    let mut file = match directory.open_file_read(name) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "cannot open Cargo input without following links: {error}"
+            ));
+        }
+    };
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("cannot inspect Cargo input: {error}"))?;
+    if !metadata.is_file() {
+        return Err("Cargo observation input is not a regular file".to_owned());
+    }
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(u64::try_from(maximum).unwrap_or(u64::MAX).saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("cannot read Cargo input: {error}"))?;
+    if bytes.len() > maximum {
+        return Err("Cargo observation file exceeds its byte limit".to_owned());
+    }
+    let after = file
+        .metadata()
+        .map_err(|error| format!("cannot recheck Cargo input: {error}"))?;
+    if metadata.len() != after.len() || metadata.len() != bytes.len() as u64 {
+        return Err("Cargo input changed while it was observed".to_owned());
+    }
+    Ok(Some(bytes))
+}
+
+fn cargo_environment_witness() -> Result<[u8; 32], String> {
+    let mut entries = Vec::new();
+    let mut total = 0_usize;
+    for (key, value) in std::env::vars_os() {
+        let named = key.to_string_lossy();
+        if !(named.starts_with("CARGO_")
+            || named.starts_with("NUDOX_")
+            || matches!(
+                named.as_ref(),
+                "PATH"
+                    | "RUSTC"
+                    | "RUSTC_WRAPPER"
+                    | "RUSTC_WORKSPACE_WRAPPER"
+                    | "RUSTFLAGS"
+                    | "RUSTUP_TOOLCHAIN"
+            ))
+        {
+            continue;
+        }
+        total = total
+            .saturating_add(key.as_encoded_bytes().len())
+            .saturating_add(value.as_encoded_bytes().len());
+        if entries.len() >= 256 || total > 64 * 1024 {
+            return Err("Cargo environment witness exceeds its count or byte limit".to_owned());
+        }
+        entries.push((key, value));
+    }
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.cargo-source-environment.v1\0");
+    for (key, value) in entries {
+        let key = key.as_encoded_bytes();
+        let value = value.as_encoded_bytes();
+        hasher.update(&(key.len() as u64).to_le_bytes());
+        hasher.update(key);
+        hasher.update(&(value.len() as u64).to_le_bytes());
+        hasher.update(value);
+    }
+    Ok(*hasher.finalize().as_bytes())
+}
+
+fn current_cargo_tool_witness() -> Result<[u8; 32], String> {
+    let cargo = cargo_program().ok_or_else(|| "cargo was not found".to_owned())?;
+    let version = run(&cargo, Path::new("/"), &["-vV"], 64 * 1024)?;
+    metadata_tool_witness(&cargo, &version)
+}
+
+fn metadata_tool_witness(cargo: &Path, version: &[u8]) -> Result<[u8; 32], String> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.cargo-source-tools.v1\0");
+    for path in [Some(cargo.to_path_buf()), rustc_program(cargo)]
+        .into_iter()
+        .flatten()
+    {
+        let resolved = path
+            .canonicalize()
+            .map_err(|error| format!("cannot resolve Cargo metadata tool: {error}"))?;
+        let metadata = std::fs::metadata(&resolved)
+            .map_err(|error| format!("cannot inspect Cargo metadata tool: {error}"))?;
+        hasher.update(resolved.as_os_str().as_encoded_bytes());
+        hasher.update(&metadata.len().to_le_bytes());
+        if let Ok(modified) = metadata.modified()
+            && let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH)
+        {
+            hasher.update(&duration.as_secs().to_le_bytes());
+            hasher.update(&duration.subsec_nanos().to_le_bytes());
+        }
+    }
+    hasher.update(&(version.len() as u64).to_le_bytes());
+    hasher.update(version);
+    Ok(*hasher.finalize().as_bytes())
+}
+
+fn rustc_program(cargo: &Path) -> Option<PathBuf> {
+    if let Some(rustc) = std::env::var_os("RUSTC") {
+        return Some(PathBuf::from(rustc));
+    }
+    if let Some(sibling) = cargo.parent().map(|bin| bin.join("rustc"))
+        && sibling.is_file()
+    {
+        return Some(sibling);
+    }
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(std::env::split_paths)
+        .map(|directory| directory.join("rustc"))
+        .find(|path| path.is_file())
+}
+
+/// The tree input and its observed paths. The first metadata call discovers
+/// the exact package-manifest set. A second call is bracketed by a bounded
+/// no-follow read-set witness, and its output must equal the discovery pass.
+fn read_project(workspace: &Path) -> Result<(TreeInput, Vec<PathBuf>, [u8; 32]), String> {
+    let workspace = workspace.to_path_buf();
+    match coherent_metadata(&workspace, cargo_metadata) {
+        Ok(observed) => {
+            let input = metadata_input_with_stable_source_witness(
+                &observed.metadata,
+                &observed.host,
+                observed.lockfile.as_deref(),
+                observed.input_witness,
+            )
+            .map_err(|error| error.to_string())?;
+            Ok((input, observed.watched, observed.input_witness))
+        }
+        Err(reason) => {
+            let mut watched = basic_input_paths(&workspace)?;
+            watched.extend(cargo_config_paths(&workspace)?);
+            watched.sort();
+            watched.dedup();
+            let observed = observation_witness(&workspace, &watched)?;
+            let lockfile = observed.lockfile.ok_or_else(|| {
+                format!("{reason}; and {} has no Cargo.lock", workspace.display())
+            })?;
+            let manifest = observed
+                .manifest
+                .ok_or_else(|| "Cargo.toml disappeared during lockfile fallback".to_owned())?;
+            let patched = patched_names_bytes(&manifest);
+            let root = workspace
+                .to_str()
+                .ok_or_else(|| "workspace root path is not UTF-8".to_owned())?;
+            let input = lockfile_input(&lockfile, root, &patched, &reason)
+                .map_err(|error| error.to_string())?;
+            Ok((input, watched, observed.digest))
+        }
+    }
+}
+
+fn coherent_metadata(
+    workspace: &Path,
+    run_metadata: impl FnMut(&Path) -> Result<(Vec<u8>, String, [u8; 32]), String>,
+) -> Result<CoherentMetadata, String> {
+    coherent_metadata_with(workspace, run_metadata, strict_observation_witness)
+}
+
+fn coherent_metadata_with(
+    workspace: &Path,
+    mut run_metadata: impl FnMut(&Path) -> Result<(Vec<u8>, String, [u8; 32]), String>,
+    mut observe: impl FnMut(&Path, &[PathBuf]) -> Result<InputObservation, String>,
+) -> Result<CoherentMetadata, String> {
+    let (discovery_metadata, discovery_host, discovery_tool) = run_metadata(workspace)?;
+    let discovery_paths = metadata_observation_paths(workspace, &discovery_metadata)?;
+    let before = observe(workspace, &discovery_paths)?;
+
+    let (metadata, host, tool_witness) = run_metadata(workspace)?;
+    if metadata != discovery_metadata || host != discovery_host || tool_witness != discovery_tool {
+        return Err("Cargo metadata inputs or tool changed between observation passes".to_owned());
+    }
+    let watched = metadata_observation_paths(workspace, &metadata)?;
+    if watched != discovery_paths {
+        return Err("Cargo metadata input set changed during observation".to_owned());
+    }
+    let after = observe(workspace, &watched)?;
+    if before.digest != after.digest {
+        return Err(
+            "Cargo manifests, lockfile, configuration, or tools changed during metadata".to_owned(),
+        );
+    }
+    Ok(CoherentMetadata {
+        metadata,
+        host,
+        input_witness: after.digest,
+        lockfile: after.lockfile,
+        watched,
+    })
+}
+
+fn metadata_observation_paths(workspace: &Path, metadata: &[u8]) -> Result<Vec<PathBuf>, String> {
+    if metadata.len() > MAX_METADATA_BYTES {
+        return Err("Cargo metadata exceeded its bounded response size".to_owned());
+    }
+    let value: serde_json::Value = serde_json::from_slice(metadata)
+        .map_err(|error| format!("Cargo metadata JSON is malformed: {error}"))?;
+    let packages = value
+        .get("packages")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "Cargo metadata has no package array".to_owned())?;
+    if packages.len() > 20_000 {
+        return Err("Cargo metadata package set exceeds the observation limit".to_owned());
+    }
+    let mut paths = basic_input_paths(workspace)?;
+    let mut manifest_path_bytes = 0_usize;
+    for package in packages {
+        let manifest = package
+            .get("manifest_path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "Cargo metadata package omitted manifest_path".to_owned())?;
+        if manifest.len() > 4 * 1024 {
+            return Err("Cargo metadata manifest path exceeds the observation limit".to_owned());
+        }
+        manifest_path_bytes = manifest_path_bytes.saturating_add(manifest.len());
+        if manifest_path_bytes > 16 * 1024 * 1024 {
+            return Err("Cargo metadata manifest paths exceed their byte budget".to_owned());
+        }
+        let path = PathBuf::from(manifest);
+        if !path.is_absolute()
+            || manifest.contains("//")
+            || path.file_name().and_then(std::ffi::OsStr::to_str) != Some("Cargo.toml")
+            || path.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::CurDir | std::path::Component::ParentDir
+                )
+            })
+        {
+            return Err("Cargo metadata returned a noncanonical manifest path".to_owned());
+        }
+        paths.push(path);
+    }
+    paths.extend(cargo_config_paths(workspace)?);
+    paths.sort();
+    paths.dedup();
+    if paths.len() > MAX_CARGO_OBSERVATION_PATHS {
+        return Err("Cargo metadata input set exceeds the observation limit".to_owned());
+    }
+    Ok(paths)
+}
+
+fn basic_input_paths(workspace: &Path) -> Result<Vec<PathBuf>, String> {
+    let workspace = workspace
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve workspace root: {error}"))?;
+    let mut paths = vec![workspace.join("Cargo.lock"), workspace.join("Cargo.toml")];
+    Ok(paths)
+}
+
+/// Captures inherited Cargo config candidates, recursive `include` inputs,
+/// and configured custom target JSONs. Unresolvable includes/target files
+/// fail closed instead of leaving an unobserved input outside the witness.
+fn cargo_config_paths(workspace: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut pending = Vec::<(PathBuf, usize)>::new();
+    let ancestors = workspace.ancestors().take(128).collect::<Vec<_>>();
+    if ancestors.len() == 128 && ancestors.last().is_some_and(|path| path.parent().is_some()) {
+        return Err("Cargo config ancestor chain exceeds its limit".to_owned());
+    }
+    for ancestor in ancestors {
+        pending.push((ancestor.join(".cargo/config"), 0));
+        pending.push((ancestor.join(".cargo/config.toml"), 0));
+    }
+    let cargo_home = match std::env::var_os("CARGO_HOME") {
+        Some(home) => {
+            let home = PathBuf::from(home);
+            if !home.is_absolute() {
+                return Err("relative CARGO_HOME cannot be safely observed".to_owned());
+            }
+            home
+        }
+        None => std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                "Cargo home cannot be resolved for configuration observation".to_owned()
+            })?
+            .join(".cargo"),
+    };
+    pending.push((cargo_home.join("config"), 0));
+    pending.push((cargo_home.join("config.toml"), 0));
+
+    let mut paths = BTreeSet::new();
+    while let Some((path, depth)) = pending.pop() {
+        if !paths.insert(path.clone()) {
+            continue;
+        }
+        if paths.len() > MAX_CARGO_CONFIG_INPUTS {
+            return Err("Cargo configuration input set exceeds its limit".to_owned());
+        }
+        let Some(bytes) = read_observation_file(&path, MAX_CARGO_CONFIG_BYTES)? else {
+            continue;
+        };
+        let document: toml::Value = std::str::from_utf8(&bytes)
+            .map_err(|_| "Cargo config is not UTF-8".to_owned())?
+            .parse()
+            .map_err(|error: toml::de::Error| format!("Cargo config is malformed: {error}"))?;
+        if let Some(include) = document.get("include") {
+            if depth >= MAX_CARGO_CONFIG_DEPTH {
+                return Err("Cargo config include depth exceeds its limit".to_owned());
+            }
+            let values = if let Some(value) = include.as_str() {
+                vec![value]
+            } else if let Some(values) = include.as_array() {
+                if values.len() > 64 {
+                    return Err("Cargo config has too many included files".to_owned());
+                }
+                values
+                    .iter()
+                    .map(|value| {
+                        value
+                            .as_str()
+                            .ok_or_else(|| "Cargo config include has a non-string path".to_owned())
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+            } else {
+                return Err("Cargo config include has an unsupported shape".to_owned());
+            };
+            if values.len() > 64 {
+                return Err("Cargo config has too many included files".to_owned());
+            }
+            let parent = path
+                .parent()
+                .ok_or_else(|| "Cargo config has no parent".to_owned())?;
+            for value in values {
+                if value.len() > 4 * 1024 || value.contains('\0') {
+                    return Err("Cargo config include path is out of bounds".to_owned());
+                }
+                let included = PathBuf::from(value);
+                if pending.len() >= MAX_CARGO_CONFIG_INPUTS {
+                    return Err("Cargo config include queue exceeds its limit".to_owned());
+                }
+                pending.push((
+                    if included.is_absolute() {
+                        included
+                    } else {
+                        parent.join(included)
+                    },
+                    depth + 1,
+                ));
+            }
+        }
+        if let Some(target) = document
+            .get("build")
+            .and_then(toml::Value::as_table)
+            .and_then(|build| build.get("target"))
+        {
+            let targets = if let Some(target) = target.as_str() {
+                vec![target]
+            } else if let Some(targets) = target.as_array() {
+                if targets.is_empty() || targets.len() > 16 {
+                    return Err("Cargo build.target array is empty or exceeds its limit".to_owned());
+                }
+                targets
+                    .iter()
+                    .map(|target| {
+                        target.as_str().ok_or_else(|| {
+                            "Cargo build.target array contains a non-string entry".to_owned()
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+            } else {
+                return Err("Cargo build.target has an unsupported shape".to_owned());
+            };
+            for target in targets {
+                observe_custom_target_path(
+                    workspace,
+                    path.parent().unwrap_or(workspace),
+                    target,
+                    &mut paths,
+                )?;
+            }
+        }
+    }
+    if let Some(target) = std::env::var_os("CARGO_BUILD_TARGET") {
+        let target = target
+            .to_str()
+            .ok_or_else(|| "CARGO_BUILD_TARGET is not UTF-8".to_owned())?;
+        observe_custom_target_path(workspace, workspace, target, &mut paths)?;
+    }
+    Ok(paths.into_iter().collect())
+}
+
+fn observe_custom_target_path(
+    workspace: &Path,
+    config_directory: &Path,
+    target: &str,
+    observed_paths: &mut BTreeSet<PathBuf>,
+) -> Result<(), String> {
+    if target.len() > 4 * 1024 || target.contains('\0') {
+        return Err("Cargo build.target value is out of bounds".to_owned());
+    }
+    if !target.ends_with(".json") {
+        return Ok(());
+    }
+    let target = PathBuf::from(target);
+    let candidates = if target.is_absolute() {
+        vec![target]
+    } else {
+        vec![config_directory.join(&target), workspace.join(&target)]
+    };
+    let mut found = false;
+    for candidate in &candidates {
+        match read_observation_file(candidate, MAX_CARGO_OBSERVATION_FILE_BYTES) {
+            Ok(Some(_)) => found = true,
+            Ok(None) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    if !found {
+        return Err(
+            "Cargo custom target JSON could not be located for source observation".to_owned(),
+        );
+    }
+    observed_paths.extend(candidates);
+    if observed_paths.len() > MAX_CARGO_CONFIG_INPUTS {
+        return Err("Cargo configuration input set exceeds its limit".to_owned());
+    }
+    Ok(())
+}
+
+fn patched_names_bytes(manifest: &[u8]) -> BTreeSet<String> {
+    std::str::from_utf8(manifest)
+        .ok()
+        .and_then(|text| text.parse::<toml::Value>().ok())
+        .map(|document| {
+            document
+                .get("patch")
+                .and_then(toml::Value::as_table)
+                .into_iter()
+                .flat_map(|registries| registries.values())
+                .filter_map(toml::Value::as_table)
+                .flat_map(|table| table.keys().cloned())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The nearest directory at or above `root` whose `Cargo.toml` declares
 /// `[workspace]`, else the nearest with a `Cargo.toml`: where Cargo itself
 /// would resolve the project.
-fn workspace_root(root: &Path) -> Option<PathBuf> {
+fn workspace_root(root: &Path) -> Result<Option<PathBuf>, String> {
     let mut nearest = None;
     for directory in root.ancestors() {
         let manifest = directory.join("Cargo.toml");
-        if !manifest.is_file() {
+        let Some(bytes) = read_observation_file(&manifest, MAX_CARGO_CONFIG_BYTES)? else {
             continue;
-        }
+        };
         if nearest.is_none() {
-            nearest = Some(directory.to_path_buf());
+            nearest = Some(
+                directory
+                    .canonicalize()
+                    .map_err(|error| format!("cannot resolve Cargo project root: {error}"))?,
+            );
         }
-        if std::fs::read_to_string(&manifest)
-            .is_ok_and(|text| text.lines().any(|line| line.trim() == "[workspace]"))
-        {
-            return Some(directory.to_path_buf());
+        let is_workspace = std::str::from_utf8(&bytes)
+            .ok()
+            .and_then(|text| text.parse::<toml::Value>().ok())
+            .is_some_and(|document| document.get("workspace").is_some());
+        if is_workspace {
+            let canonical = directory
+                .canonicalize()
+                .map_err(|error| format!("cannot resolve Cargo workspace root: {error}"))?;
+            return Ok(Some(canonical));
         }
     }
-    nearest
+    Ok(nearest)
 }
 
-fn read_bounded(path: &Path) -> Option<String> {
-    let metadata = std::fs::metadata(path).ok()?;
-    if metadata.len() > MAX_LOCKFILE_BYTES {
-        return None;
-    }
-    std::fs::read_to_string(path).ok()
-}
-
-/// The names `[patch.<registry>]` replaces with a path.
-fn patched_names(manifest: &Path) -> BTreeSet<String> {
-    let Some(text) = read_bounded(manifest) else {
-        return BTreeSet::new();
-    };
-    let Ok(document) = text.parse::<toml::Value>() else {
-        return BTreeSet::new();
-    };
-    document
-        .get("patch")
-        .and_then(toml::Value::as_table)
-        .into_iter()
-        .flat_map(|registries| registries.values())
-        .filter_map(toml::Value::as_table)
-        .flat_map(|table| table.keys().cloned())
-        .collect()
-}
-
-fn member_manifests(metadata: &[u8]) -> Vec<PathBuf> {
-    let Ok(root) = serde_json::from_slice::<serde_json::Value>(metadata) else {
-        return Vec::new();
-    };
-    let members = root
-        .get("workspace_members")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(serde_json::Value::as_str)
-        .collect::<BTreeSet<_>>();
-    root.get("packages")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter(|package| {
-            package
-                .get("id")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|id| members.contains(id))
-        })
-        .filter_map(|package| {
-            package
-                .get("manifest_path")
-                .and_then(serde_json::Value::as_str)
-        })
-        .map(PathBuf::from)
-        .collect()
-}
-
-/// Runs `cargo metadata` for this host; returns the document and the host triple.
-fn cargo_metadata(workspace: &Path) -> Result<(Vec<u8>, String), String> {
+/// Runs `cargo metadata` for this host; returns the document, host, and exact
+/// Cargo/Rust compiler tool stamp used for both resolution and cache checks.
+fn cargo_metadata(workspace: &Path) -> Result<(Vec<u8>, String, [u8; 32]), String> {
+    let environment_before = cargo_environment_witness()?;
     let cargo = cargo_program().ok_or_else(|| "cargo was not found".to_owned())?;
     let version = run(&cargo, workspace, &["-vV"], 64 * 1024)?;
+    if cargo_environment_witness()? != environment_before {
+        return Err(
+            "Cargo tool-selection environment changed during metadata admission".to_owned(),
+        );
+    }
     let host = String::from_utf8_lossy(&version)
         .lines()
         .find_map(|line| {
@@ -237,6 +931,7 @@ fn cargo_metadata(workspace: &Path) -> Result<(Vec<u8>, String), String> {
                 .map(ToOwned::to_owned)
         })
         .ok_or_else(|| "cargo -vV named no host".to_owned())?;
+    let tool_before = metadata_tool_witness(&cargo, &version)?;
     let metadata = run(
         &cargo,
         workspace,
@@ -251,7 +946,13 @@ fn cargo_metadata(workspace: &Path) -> Result<(Vec<u8>, String), String> {
         ],
         MAX_METADATA_BYTES,
     )?;
-    Ok((metadata, host))
+    let tool_after = metadata_tool_witness(&cargo, &version)?;
+    let environment_after = cargo_environment_witness()?;
+    if tool_before != tool_after || environment_before != environment_after {
+        return Err("Cargo tools or selection environment changed during metadata".to_owned());
+    }
+    let tool_witness = tool_after;
+    Ok((metadata, host, tool_witness))
 }
 
 /// `NUDOX_CARGO`, else `cargo` beside `NUDOX_RUSTC`, else the first `cargo`
@@ -386,9 +1087,15 @@ mod tests {
     fn the_workspace_root_is_the_outermost_workspace_manifest() {
         let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let repository = repository.canonicalize().expect("repository");
-        let found = workspace_root(&repository.join("crates/present")).expect("workspace");
+        let found = workspace_root(&repository.join("crates/present"))
+            .expect("workspace observation")
+            .expect("workspace");
         assert_eq!(found, repository);
-        let patched = patched_names(&repository.join("Cargo.toml"));
+        let manifest =
+            read_observation_file(&repository.join("Cargo.toml"), MAX_CARGO_CONFIG_BYTES)
+                .expect("manifest read")
+                .expect("manifest exists");
+        let patched = patched_names_bytes(&manifest);
         assert!(patched.contains("gpui-ce"), "{patched:?}");
     }
 
@@ -398,6 +1105,47 @@ mod tests {
             .project_tree(Path::new("/"), None)
             .expect_err("no project at the root");
         assert!(error.contains("is not inside a Cargo project"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cargo_source_file_reader_uses_nofollow_regular_files_and_hides_internal_roots() {
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let scratch = Scratch(std::env::temp_dir().join(format!(
+            "backend-cargo-source-file-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        )));
+        let package = scratch.0.join("package");
+        std::fs::create_dir_all(package.join("src")).expect("source directory");
+        std::fs::write(package.join("src/lib.rs"), "pub fn observed() {}\n").expect("source file");
+        let outside = scratch.0.join("outside.rs");
+        std::fs::write(&outside, "outside secret\n").expect("outside file");
+        std::os::unix::fs::symlink(&outside, package.join("src/linked.rs"))
+            .expect("source symlink");
+
+        let regular_path =
+            CargoPackageSourcePathV1::new("src/lib.rs").expect("canonical package relative path");
+        assert_eq!(
+            read_source_file_under(&package, &regular_path).expect("regular source file"),
+            b"pub fn observed() {}\n"
+        );
+        let linked_path = CargoPackageSourcePathV1::new("src/linked.rs")
+            .expect("valid but symlinked source path");
+        assert_eq!(
+            read_source_file_under(&package, &linked_path),
+            Err(CargoPackageSourceReadFailureV1::FileUnavailable)
+        );
+        assert!(CargoPackageSourcePathV1::new(".git/config").is_err());
+        assert!(CargoPackageSourcePathV1::new("target/generated.rs").is_err());
     }
 
     #[test]
@@ -454,8 +1202,7 @@ mod tests {
             source: TreeSource::Lockfile {
                 reason: "planted by the test, never a real read".to_owned(),
                 coverage: LockfileGraphCoverage::Complete,
-                workspace_membership:
-                    backend_library::browse::LockfileWorkspaceMembership::Unknown,
+                workspace_membership: backend_library::browse::LockfileWorkspaceMembership::Unknown,
             },
             root: "sentinel-root".to_owned(),
             packages: Vec::new(),
@@ -511,4 +1258,159 @@ mod tests {
             "a changed manifest alone must force a real read"
         );
     }
+
+    #[test]
+    fn a_path_dependency_manifest_change_during_metadata_refuses_the_source_observation() {
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let scratch = Scratch(std::env::temp_dir().join(format!(
+            "backend-cargo-observation-race-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        )));
+        let workspace = scratch.0.join("workspace");
+        let app = workspace.join("app");
+        let dependency = scratch.0.join("path-dependency");
+        std::fs::create_dir_all(app.join("src")).expect("app directory");
+        std::fs::create_dir_all(dependency.join("src")).expect("dependency directory");
+        std::fs::write(
+            workspace.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"app\"]\nresolver = \"2\"\n",
+        )
+        .expect("workspace manifest");
+        std::fs::write(workspace.join("Cargo.lock"), "version = 4\n").expect("lockfile");
+        std::fs::write(
+            app.join("Cargo.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .expect("app manifest");
+        std::fs::write(
+            dependency.join("Cargo.toml"),
+            "[package]\nname = \"dep\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .expect("path dependency manifest");
+        let workspace = workspace.canonicalize().expect("canonical workspace");
+        let app_manifest = app.join("Cargo.toml").canonicalize().expect("app path");
+        let dependency_manifest = dependency
+            .join("Cargo.toml")
+            .canonicalize()
+            .expect("dependency path");
+        let metadata = serde_json::to_vec(&serde_json::json!({
+            "workspace_root": workspace,
+            "workspace_members": ["app 0.1.0 (path+file:///workspace/app)"],
+            "packages": [
+                {
+                    "id": "app 0.1.0 (path+file:///workspace/app)",
+                    "name": "app",
+                    "version": "0.1.0",
+                    "manifest_path": app_manifest,
+                },
+                {
+                    "id": "dep 0.1.0 (path+file:///path-dependency)",
+                    "name": "dep",
+                    "version": "0.1.0",
+                    "manifest_path": dependency_manifest,
+                }
+            ]
+        }))
+        .expect("metadata fixture");
+        let mut runs = 0;
+        let result = coherent_metadata_with(
+            &workspace,
+            |_: &Path| {
+                runs += 1;
+                if runs == 2 {
+                    std::fs::write(
+                        &dependency_manifest,
+                        "[package]\nname = \"dep\"\nversion = \"0.2.0\"\nedition = \"2021\"\n",
+                    )
+                    .expect("mutate path dependency during second metadata pass");
+                }
+                Ok((
+                    metadata.clone(),
+                    "x86_64-unknown-linux-gnu".to_owned(),
+                    [9; 32],
+                ))
+            },
+            |workspace, paths| observation_witness_with_context(workspace, paths, [1; 32], [2; 32]),
+        );
+        assert!(
+            result
+                .expect_err("changed path dependency must invalidate source authority")
+                .contains("changed during metadata"),
+            "the observation must fail closed when Cargo ran across an input replacement"
+        );
+        assert_eq!(
+            runs, 2,
+            "no retry may turn this race into a success receipt"
+        );
+    }
+
+    #[test]
+    fn stable_metadata_witness_covers_nonmember_path_dependency_manifests() {
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let scratch = Scratch(std::env::temp_dir().join(format!(
+            "backend-cargo-observation-stable-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        )));
+        let workspace = scratch.0.join("workspace");
+        let app = workspace.join("app");
+        let dependency = scratch.0.join("path-dependency");
+        std::fs::create_dir_all(&app).expect("app directory");
+        std::fs::create_dir_all(&dependency).expect("dependency directory");
+        std::fs::write(workspace.join("Cargo.toml"), "[workspace]\n").expect("workspace manifest");
+        std::fs::write(workspace.join("Cargo.lock"), "version = 4\n").expect("lockfile");
+        std::fs::write(app.join("Cargo.toml"), "[package]\nname=\"app\"\n").expect("app manifest");
+        std::fs::write(dependency.join("Cargo.toml"), "[package]\nname=\"dep\"\n")
+            .expect("dependency manifest");
+        let workspace = workspace.canonicalize().expect("canonical workspace");
+        let app_manifest = app.join("Cargo.toml").canonicalize().expect("app path");
+        let dependency_manifest = dependency
+            .join("Cargo.toml")
+            .canonicalize()
+            .expect("dependency path");
+        let metadata = serde_json::to_vec(&serde_json::json!({
+            "workspace_root": workspace,
+            "packages": [
+                {"manifest_path": app_manifest},
+                {"manifest_path": dependency_manifest}
+            ]
+        }))
+        .expect("metadata fixture");
+        let result = coherent_metadata_with(
+            &workspace,
+            |_| Ok((metadata.clone(), "host".to_owned(), [3; 32])),
+            |workspace, paths| observation_witness_with_context(workspace, paths, [1; 32], [2; 32]),
+        )
+        .expect("stable input observation");
+        assert_ne!(result.input_witness, [0; 32]);
+        assert!(result.watched.contains(&dependency_manifest));
+    }
+}
+
+#[cfg(test)]
+fn witness(files: &[PathBuf]) -> [u8; 32] {
+    let workspace = files
+        .first()
+        .and_then(|path| path.parent())
+        .expect("workspace");
+    observation_witness(workspace, files)
+        .expect("source witness")
+        .digest
 }

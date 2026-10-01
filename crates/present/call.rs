@@ -589,6 +589,16 @@ fn surface(invocation: &Invocation, id: CommandId) -> Result<SurfaceCommand, Fau
             }
             SurfaceCommand::PackageGraphPage { request }
         }
+        CommandId::CargoPackageSourceFile => SurfaceCommand::CargoPackageSourceFile {
+            package: package(invocation, 0)?,
+            path: backend_library::CargoPackageSourcePathV1::new(invocation.require(1)?.to_owned())
+                .map_err(|_| {
+                    Fault::usage(
+                        "path",
+                        "use a bounded slash-separated package-relative file path",
+                    )
+                })?,
+        },
         CommandId::Owner => SurfaceCommand::Owner {
             owner: text(invocation, 0)?,
         },

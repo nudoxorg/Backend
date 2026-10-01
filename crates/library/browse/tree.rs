@@ -1,6 +1,7 @@
 //! A project's dependency tree, read once and shared by every surface.
 
 use super::roles::{Declared, RoleEvidence, RoleId, cohort_role, declared_role, described_role};
+use crate::{CargoPackageSourceAuthorityStateV1, PackageReference};
 use backend_advisory::{
     AdvisoryCoverage, AdvisoryObservation, AdvisoryStatus, FreshnessState,
     cargo_compatibility_class, cargo_version_cmp,
@@ -8,9 +9,10 @@ use backend_advisory::{
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::path::PathBuf;
 
 /// Wire schema of [`ProjectTree`].
-pub const PROJECT_TREE_SCHEMA: u16 = 6;
+pub const PROJECT_TREE_SCHEMA: u16 = 7;
 
 /// The most packages one tree reply admits.
 pub const MAX_TREE_PACKAGES: usize = 20_000;
@@ -82,7 +84,7 @@ pub enum LockedInactiveCoverage {
 }
 
 /// Where a package's source comes from.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(tag = "from", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum PackageOrigin {
     /// A registry release, with Cargo's observed source authority intact.
@@ -96,9 +98,10 @@ pub enum PackageOrigin {
         /// resolved commit fragment (for example `git+https://...?...#<sha>`).
         source: String,
     },
-    /// A path dependency that replaces a registry release (`[patch]`).
+    /// A Cargo package from a local path rather than a registry or Git source.
     Vendored {
-        /// The directory, relative to the project root when inside it.
+        /// Relative directory label, or an opaque external-root label. This
+        /// is presentation text, never a filesystem path authority.
         path: String,
     },
     /// The reader could not establish a supported source authority.
@@ -168,6 +171,10 @@ pub struct TreePackage {
     pub version: String,
     /// Where its source comes from.
     pub origin: PackageOrigin,
+    /// Exact Cargo source authority observed for this row, or why the owner
+    /// could not prove it. The display origin is not a read capability.
+    #[serde(default)]
+    pub source_authority: CargoPackageSourceAuthorityStateV1,
     /// Its SPDX license expression, when it states one.
     pub license: Option<String>,
     /// The shortest path from your code to it.
@@ -198,6 +205,11 @@ pub struct DirectDependency {
     pub name: String,
     /// The versions your members resolve it to, lowest first.
     pub versions: Box<[String]>,
+    /// Exact source-qualified references aligned with `versions`. Missing
+    /// receipts remain visible but cannot be used for navigation.
+    pub package_references: Box<[Option<PackageReference>]>,
+    /// Exact displayed Cargo origins aligned with `versions` and refs.
+    pub package_origins: Box<[PackageOrigin]>,
     /// Which members use it, and how.
     pub by: Box<[MemberEdge]>,
     /// Its one-line description.
@@ -329,6 +341,144 @@ impl ProjectTree {
         let first = matches.next()?;
         matches.next().is_none().then_some(first)
     }
+
+    /// Finds only the package row whose current owner receipt binds this exact
+    /// source-qualified route.
+    #[must_use]
+    pub fn package_by_reference(&self, reference: &PackageReference) -> Option<&TreePackage> {
+        self.packages
+            .iter()
+            .find(|package| package.source_qualified_reference().as_ref() == Some(reference))
+    }
+
+    /// Validates the schema, bounded rows, direct-row alignment and every
+    /// route-to-display source binding before accepting a tree from the wire.
+    #[must_use]
+    pub fn has_admissible_shape(&self) -> bool {
+        if self.schema != PROJECT_TREE_SCHEMA
+            || self.packages.len() > MAX_TREE_PACKAGES
+            || self.direct.len() > self.packages.len()
+            || !self.packages.iter().all(TreePackage::has_admissible_shape)
+        {
+            return false;
+        }
+        let mut references = BTreeMap::new();
+        let mut displayed = BTreeSet::new();
+        for package in &self.packages {
+            displayed.insert((
+                package.name.as_str(),
+                package.version.as_str(),
+                package.origin.clone(),
+            ));
+            if let Some(reference) = package.source_qualified_reference()
+                && references
+                    .insert(
+                        reference,
+                        (
+                            package.name.as_str(),
+                            package.version.as_str(),
+                            package.origin.clone(),
+                        ),
+                    )
+                    .is_some()
+            {
+                return false;
+            }
+        }
+        self.direct.iter().all(|dependency| {
+            dependency.versions.len() == dependency.package_references.len()
+                && dependency.versions.len() == dependency.package_origins.len()
+                && dependency
+                    .versions
+                    .iter()
+                    .zip(dependency.package_references.iter())
+                    .zip(dependency.package_origins.iter())
+                    .all(|((version, reference), origin)| {
+                        reference.as_ref().is_none_or(|reference| {
+                            references.get(reference).is_some_and(
+                                |(name, exact_version, exact_origin)| {
+                                    *name == dependency.name
+                                        && *exact_version == version
+                                        && exact_origin == origin
+                                },
+                            )
+                        }) && displayed.contains(&(
+                            dependency.name.as_str(),
+                            version.as_str(),
+                            origin.clone(),
+                        ))
+                    })
+        })
+    }
+}
+
+impl TreePackage {
+    /// Whether the public name/version/source display agrees with the exact
+    /// Cargo authority receipt.
+    #[must_use]
+    pub fn has_admissible_shape(&self) -> bool {
+        let CargoPackageSourceAuthorityStateV1::Admitted(authority) = &self.source_authority else {
+            return true;
+        };
+        if !authority.has_admissible_shape()
+            || authority.name() != self.name
+            || authority.version() != self.version
+        {
+            return false;
+        }
+        let origin_matches = match (authority.source(), &self.origin) {
+            (
+                crate::CargoPackageSourceV1::Registry { scheme, index_url },
+                PackageOrigin::Registry { source },
+            ) => {
+                let prefix = match scheme {
+                    crate::CargoRegistrySourceSchemeV1::Registry => "registry+",
+                    crate::CargoRegistrySourceSchemeV1::Sparse => "sparse+",
+                };
+                source == &format!("{prefix}{}", index_url.as_str())
+            }
+            (crate::CargoPackageSourceV1::Git { .. }, PackageOrigin::Git { source }) => {
+                let crate::CargoPackageSourceV1::Git {
+                    repository_url,
+                    requested_query,
+                    resolved_commit,
+                } = authority.source()
+                else {
+                    unreachable!()
+                };
+                let query = requested_query
+                    .as_ref()
+                    .map_or_else(String::new, |query| format!("?{}", query.as_str()));
+                source
+                    == &format!(
+                        "git+{}{}#{}",
+                        repository_url.as_str(),
+                        query,
+                        resolved_commit.as_str()
+                    )
+            }
+            (crate::CargoPackageSourceV1::Path, PackageOrigin::Vendored { path }) => {
+                authority.matches_vendored_display_path(path)
+            }
+            _ => false,
+        };
+        origin_matches && authority.package_reference().is_ok()
+    }
+
+    /// Source-qualified route only when the Cargo receipt is complete and
+    /// agrees with this exact row.
+    #[must_use]
+    pub fn source_qualified_reference(&self) -> Option<PackageReference> {
+        if !self.has_admissible_shape() {
+            return None;
+        }
+        match &self.source_authority {
+            CargoPackageSourceAuthorityStateV1::Admitted(authority) => {
+                authority.package_reference().ok()
+            }
+            CargoPackageSourceAuthorityStateV1::Unavailable(_) => None,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -350,6 +500,11 @@ pub struct TreeInputPackage {
     pub has_bin: bool,
     /// Where its source comes from.
     pub origin: Option<PackageOrigin>,
+    /// Owner-observed package root from this Cargo metadata row. Local input
+    /// only; never serialized on the public ProjectTree.
+    pub source_root: Option<PathBuf>,
+    /// Exact Cargo source receipt or a typed reason it is unavailable.
+    pub source_authority: CargoPackageSourceAuthorityStateV1,
     /// SPDX license expression.
     pub license: Option<String>,
     /// One-line description.
@@ -654,6 +809,7 @@ pub fn build_tree(input: &TreeInput, advisories: &dyn AdvisoryObserver) -> Proje
                     .origin
                     .clone()
                     .unwrap_or(PackageOrigin::Unresolved { source: None }),
+                source_authority: package.source_authority.clone(),
                 license: package.license.clone(),
                 why: why(at),
                 role: if direct_set.contains(&at) {
@@ -684,6 +840,26 @@ pub fn build_tree(input: &TreeInput, advisories: &dyn AdvisoryObserver) -> Proje
                     .nodes
                     .iter()
                     .map(|at| input.packages[*at].version.clone())
+                    .collect(),
+                package_references: draft
+                    .nodes
+                    .iter()
+                    .map(|at| match &input.packages[*at].source_authority {
+                        CargoPackageSourceAuthorityStateV1::Admitted(authority) => {
+                            authority.package_reference().ok()
+                        }
+                        CargoPackageSourceAuthorityStateV1::Unavailable(_) => None,
+                    })
+                    .collect(),
+                package_origins: draft
+                    .nodes
+                    .iter()
+                    .map(|at| {
+                        input.packages[*at]
+                            .origin
+                            .clone()
+                            .unwrap_or(PackageOrigin::Unresolved { source: None })
+                    })
                     .collect(),
                 by: draft.by.into_boxed_slice(),
                 description: newest.description.as_deref().map(one_line),
