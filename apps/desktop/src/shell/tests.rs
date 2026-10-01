@@ -1455,6 +1455,11 @@ fn graph_failed_new_root_open_with_retained_old_results_settles_and_can_retry(cx
     rig.go(Intent::RefreshRoot { basis: old_root, request: crate::navigation::RequestId::from_authority(old_root, 500) });
     let new_root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
     assert_ne!(new_root, old_root, "the test really advances producer authority");
+    // The synthetic owner is exact-root scoped, just like the real owner.
+    // Admit its R2 projection explicitly before opening a node in that world.
+    rig.cx.update(|_, cx| super::bodies::graph::install_test_fixture(new_root, cx));
+    rig.repaint();
+    rig.settle();
     rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
     rig.settle();
     rig.keys("g");
@@ -1763,6 +1768,14 @@ fn new_root_without_an_indexed_join_clears_the_previous_painted_graph_ghost(cx: 
     let old_root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
     fail.store(true, std::sync::atomic::Ordering::SeqCst);
     rig.go(Intent::RefreshRoot { basis: old_root, request: crate::navigation::RequestId::from_authority(old_root, 501) });
+    // No R2 graph projection is installed. Exercise the independent failed
+    // declaration read while the graph must already have revoked R1 geometry.
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_canvas_geometry(0, cx).1).is_none(),
+        "an unadmitted new graph cannot retain the old root's painted endpoint");
+    rig.graph.store.update(rig.cx, |store, cx| {
+        store.ensure(crate::model::pages::PageKey::Symbol(symbol("RelationLabel")), cx);
+    });
+    rig.settle();
     rig.graph.store.read_with(rig.cx, |store, _| {
         assert_ne!(store.snapshot().key(), old_root);
         let resource = store.symbol(&symbol("RelationLabel"));

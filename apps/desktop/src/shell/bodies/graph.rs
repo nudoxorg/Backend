@@ -138,7 +138,7 @@ impl Map {
                     map.invalidate_open();
                     map.error = None;
                     if event.is_branch(Branch::Root) {
-                        map.reset_indexed_world(cx);
+                        map.reset_indexed_world();
                     }
                     map.publish_focus(cx);
                 }
@@ -196,7 +196,7 @@ impl Map {
         }
     }
 
-    fn reset_indexed_world(&mut self, cx: &App) {
+    fn reset_indexed_world(&mut self) {
         self.graph = None;
         self.ready_scene = None;
         self.world_key = None;
@@ -207,10 +207,13 @@ impl Map {
         self.routed_focus = None;
         self.semantic_focus = None;
         self.revealed_focus = None;
+        self.painted_focus = None;
+        self.entry_origin = None;
+        self.canvas_transform = gpui::LayerTransform::IDENTITY;
+        self.focus_on_mount = self.visible;
         self._graph_events = None;
         self.load_error = None;
         self.toured = 0;
-        let _ = cx;
     }
 
     fn request_world(&mut self, cx: &mut Context<Self>) {
@@ -225,17 +228,15 @@ impl Map {
             .or(snapshot.workspace().host.as_ref())
             .and_then(|project| PackageRef::parse(project.as_str()).ok());
         let Some(key) = indexed_world::key(snapshot.key(), preferred, cx) else {
-            self.graph = None;
-            self.ready_scene = None;
-            self.world_key = None;
-            self.coverage = None;
-            self.identities = None;
-            self.projection_origin = None;
-            self.resolved.clear();
+            self.reset_indexed_world();
             self.load_error = Some("Waiting for the local index connection.".into());
             return;
         };
         if self.world_key.as_ref() != Some(&key) {
+            if self.world_key.is_some() {
+                self.entry_origin = None;
+            }
+            self.painted_focus = None;
             self.graph = None;
             self.ready_scene = None;
             self.coverage = None;
