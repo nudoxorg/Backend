@@ -132,6 +132,7 @@ impl Element for Inert {
 #[cfg(test)]
 mod tests {
     use super::inert;
+    use crate::util::FluentBuilder;
     use crate::{
         self as gpui, AnyElement, App, AppContext as _, Bounds, Context, Element, ElementId,
         Entity, FocusHandle, HitboxBehavior, HitboxId, InputHandler, InteractiveElement,
@@ -1292,13 +1293,14 @@ mod tests {
             }
         });
 
-        cx.update(|window, cx| {
+        let target = cx.update(|window, cx| {
             window.draw(cx).clear(cx);
             let target = target_hitbox
                 .get()
                 .expect("the keyed target hitbox was painted");
             window.capture_pointer(target);
             assert_eq!(window.captured_hitbox(), Some(target));
+            target
         });
 
         // A keyed target survives active reorder. Its new frame hitbox has a fresh ID, so the

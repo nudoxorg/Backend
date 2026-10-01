@@ -5,21 +5,21 @@ use crate::{
     AsyncWindowContext, AtlasTile, AvailableSpace, BackdropFilter, Background, BorderStyle, Bounds,
     BoxShadow, Capslock, ColorExt, Context, Corners, CursorHideMode, CursorStyle, Decorations,
     DevicePixels, DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect,
-    ElementId, Entity, EntityId, EventEmitter, FileDropEvent, Filter, FilterBoundary, FontId,
-    Global, GlobalElementId, GlyphId, GpuSpecs, InputHandler, IsZero, KeyBinding, KeyContext,
-    KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayerTransform, LayoutId, Lerp,
-    LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite, Motion, MouseButton,
-    MouseEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels, PlatformAtlas, PlatformDisplay,
-    PlatformInput, PlatformInputHandler, PlatformWindow, Point, PolychromeSprite, Priority,
-    PromptButton, PromptLevel, Quad, Render, RenderGlyphParams, RenderImage, RenderImageParams,
-    RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_X,
-    SUBPIXEL_VARIANTS_Y, ScaledFilter, ScaledPixels, Scene, Shadow, SharedString, Size,
-    StrikethroughStyle, Style, SubpixelSprite, SubscriberSet, Subscription, SystemWindowTab,
-    SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task, TextRenderingMode, TextStyle,
-    TextStyleRefinement, ThermalState, TransformationMatrix, Transition, TransitionState,
-    Underline, UnderlineStyle, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
-    WindowControls, WindowDecorations, WindowOptions, WindowParams, WindowTextSystem, point,
-    prelude::*, profiler, px, rems, size, transparent_black,
+    Entity, EntityId, EventEmitter, FileDropEvent, Filter, FilterBoundary, FontId, Global,
+    GlobalElementId, GlyphId, GpuSpecs, InputHandler, IsZero, KeyBinding, KeyContext, KeyDownEvent,
+    KeyEvent, Keystroke, KeystrokeEvent, LayerTransform, LayoutId, Lerp, LineLayoutIndex,
+    Modifiers, ModifiersChangedEvent, MonochromeSprite, Motion, MouseButton, MouseEvent,
+    MouseMoveEvent, MouseUpEvent, Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput,
+    PlatformInputHandler, PlatformWindow, Point, PolychromeSprite, Priority, PromptButton,
+    PromptLevel, Quad, Render, RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams,
+    Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y,
+    ScaledFilter, ScaledPixels, Scene, Shadow, SharedString, Size, StrikethroughStyle, Style,
+    SubpixelSprite, SubscriberSet, Subscription, SystemWindowTab, SystemWindowTabController,
+    TabStopMap, TaffyLayoutEngine, Task, TextRenderingMode, TextStyle, TextStyleRefinement,
+    ThermalState, TransformationMatrix, Transition, TransitionState, Underline, UnderlineStyle,
+    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControls, WindowDecorations,
+    WindowOptions, WindowParams, WindowTextSystem, point, prelude::*, profiler, px, rems, size,
+    transparent_black,
 };
 
 use anyhow::{Context as _, Result, anyhow};
@@ -906,12 +906,14 @@ impl ElementOwnerPath {
         let mut left_index = self.index;
         let mut right_index = other.index;
         #[cfg(any(test, feature = "test-support"))]
-        let mut compared_segments = 0;
+        let mut compared_segments = 0usize;
         let same_owner = loop {
             let left = &left_nodes.nodes[left_index];
             let right = &right_nodes.nodes[right_index];
             #[cfg(any(test, feature = "test-support"))]
-            compared_segments += 1;
+            {
+                compared_segments += 1;
+            }
             if left.depth != right.depth || !Self::same_segment(&left.segment, &right.segment) {
                 break false;
             }
@@ -929,7 +931,9 @@ impl ElementOwnerPath {
         drop(right_nodes);
         drop(left_nodes);
         #[cfg(any(test, feature = "test-support"))]
-        self.arena.record_path_equality_segments(compared_segments);
+        {
+            self.arena.record_path_equality_segments(compared_segments);
+        }
         same_owner
     }
 
@@ -988,7 +992,9 @@ impl ElementOwnerPath {
         drop(boundary_nodes);
         drop(owner_nodes);
         #[cfg(any(test, feature = "test-support"))]
-        self.arena.record_path_equality_segments(visited_segments);
+        {
+            self.arena.record_path_equality_segments(visited_segments);
+        }
         is_within
     }
 
@@ -1020,12 +1026,18 @@ impl Hash for ElementOwnerPath {
             let node = &nodes[index];
             if let Some(parent) = node.parent {
                 #[cfg(any(test, feature = "test-support"))]
-                hash_node(nodes, parent, state, segments_hashed);
+                {
+                    hash_node(nodes, parent, state, segments_hashed);
+                }
                 #[cfg(not(any(test, feature = "test-support")))]
-                hash_node(nodes, parent, state);
+                {
+                    hash_node(nodes, parent, state);
+                }
             }
             #[cfg(any(test, feature = "test-support"))]
-            *segments_hashed += 1;
+            {
+                *segments_hashed += 1;
+            }
             match &node.segment.element_id {
                 Some(element_id) => {
                     1u8.hash(state);
@@ -1051,7 +1063,9 @@ impl Hash for ElementOwnerPath {
             hash_node(&nodes.nodes, self.index, state);
         }
         #[cfg(any(test, feature = "test-support"))]
-        self.arena.record_path_hash_segments(segments_hashed);
+        {
+            self.arena.record_path_hash_segments(segments_hashed);
+        }
     }
 }
 
@@ -1068,7 +1082,7 @@ impl std::fmt::Debug for ElementOwnerPath {
 mod element_owner_path_tests {
     use super::{
         ElementOwnerPath, ElementOwnerPathArena, ElementOwnerPathOperations, ElementOwnerTracking,
-        FrameCallbackOwner, HitboxOwner, MAX_ELEMENT_OWNER_PATH_DEPTH,
+        FrameCallbackOwner, HitboxId, HitboxOwner, MAX_ELEMENT_OWNER_PATH_DEPTH,
         frame_callback_owner_from_tracking, pointer_capture_owner, unique_hitbox_for_owner,
     };
     use std::rc::Rc;
@@ -1077,7 +1091,7 @@ mod element_owner_path_tests {
         arena: &ElementOwnerPathArena,
         parent: Option<&ElementOwnerPath>,
         slot: usize,
-        id: Option<&str>,
+        id: Option<&'static str>,
     ) -> ElementOwnerPath {
         ElementOwnerPath::child(arena, parent, slot, id.map(Into::into)).unwrap()
     }
@@ -1376,18 +1390,24 @@ fn unique_hitbox_for_owner<'a>(
     let mut scanned = 0;
     for (hitbox_id, hitbox_owner) in hitbox_owners {
         #[cfg(any(test, feature = "test-support"))]
-        scanned += 1;
+        {
+            scanned += 1;
+        }
         if matches!(hitbox_owner, HitboxOwner::Tracked(current) if current.same_owner(owner)) {
             if candidate.is_some() {
                 #[cfg(any(test, feature = "test-support"))]
-                owner.arena.record_capture_owner_candidates(scanned);
+                {
+                    owner.arena.record_capture_owner_candidates(scanned);
+                }
                 return None;
             }
             candidate = Some(hitbox_id);
         }
     }
     #[cfg(any(test, feature = "test-support"))]
-    owner.arena.record_capture_owner_candidates(scanned);
+    {
+        owner.arena.record_capture_owner_candidates(scanned);
+    }
     candidate
 }
 
