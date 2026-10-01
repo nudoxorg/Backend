@@ -12,6 +12,7 @@ use iroh::{
     endpoint::{Connection, RecvStream, SendStream},
 };
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncReadExt;
 
 use crate::{
     Endpoint, TransportError, frame_error, read_frame_bounded, write_frame_bounded,
@@ -626,6 +627,12 @@ pub async fn connect_remote_index(
             })
         }
         RemoteIndexMessage::Rejected(reason) => {
+            let deadline = tokio::time::Instant::now() + REMOTE_INDEX_SESSION_TIMEOUT;
+            let _ = tokio::time::timeout_at(
+                deadline,
+                finish_rejected_exchange(&mut send, &mut receive),
+            )
+            .await;
             connection.close(1_u32.into(), b"remote-index admission denied");
             Err(frame_error(format!(
                 "remote-index admission denied: {reason:?}"
@@ -675,11 +682,16 @@ pub async fn accept_remote_index(
     hello.capability.encode().map_err(frame_error)?;
     let peer = connection.remote_id();
     if hello.verify(local, peer, system_now_unix_ms()?).is_err() {
-        let _ = write_frame_bounded(
-            &mut send,
-            &RemoteIndexMessage::Rejected(RemoteIndexReject::StaleCapability),
-            MAX_REMOTE_INDEX_AUTH_BYTES,
-        )
+        let deadline = tokio::time::Instant::now() + REMOTE_INDEX_SESSION_TIMEOUT;
+        let _ = tokio::time::timeout_at(deadline, async {
+            write_frame_bounded(
+                &mut send,
+                &RemoteIndexMessage::Rejected(RemoteIndexReject::StaleCapability),
+                MAX_REMOTE_INDEX_AUTH_BYTES,
+            )
+            .await?;
+            finish_rejected_exchange(&mut send, &mut receive).await
+        })
         .await;
         connection.close(1_u32.into(), b"remote-index grant rejected");
         return Err(frame_error("remote-index capability rejected"));
@@ -704,6 +716,35 @@ pub async fn accept_remote_index(
         last_responded_request_id: 0,
         last_sent_request_id: 0,
     })
+}
+
+/// Half-closes both sides of a rejected handshake so the rejection frame is
+/// delivered before the connection closes and the receiver can acknowledge
+/// that it consumed the final frame.
+async fn finish_rejected_exchange(
+    send: &mut SendStream,
+    receive: &mut RecvStream,
+) -> Result<(), TransportError> {
+    send.finish()
+        .map_err(|error| TransportError::Iroh(error.to_string()))?;
+    let mut trailing = [0_u8; 1];
+    match receive
+        .read(&mut trailing)
+        .await
+        .map_err(|error| TransportError::Iroh(error.to_string()))?
+    {
+        None => Ok(()),
+        Some(_) => Err(frame_error(
+            "remote-index rejection acknowledgement had trailing data",
+        )),
+    }?;
+    match send.stopped().await {
+        Ok(None) => Ok(()),
+        Ok(Some(_)) => Err(frame_error(
+            "remote-index rejection was not fully delivered",
+        )),
+        Err(error) => Err(TransportError::Iroh(error.to_string())),
+    }
 }
 
 /// Opaque authenticated peer identity for one accepted remote-index session.
