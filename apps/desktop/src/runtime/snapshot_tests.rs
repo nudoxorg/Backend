@@ -150,6 +150,67 @@ fn only_the_asked_sections_are_read_and_a_missing_one_is_simply_absent() {
 }
 
 #[test]
+fn alternate_release_sections_round_trip_only_under_the_exact_requested_origin() {
+    let pinned = PackageRef::parse("pkg:cargo/serde@1.0.0").expect("pin");
+    let release = PackageRef::parse("pkg:cargo/serde@0.9.0")
+        .expect("release")
+        .with_release_origin(&pinned);
+    let declaration = SymbolRef::new("pkg:cargo/serde@1.0.0::src/lib.rs::Value")
+        .expect("declaration")
+        .rebased(&pinned, &release)
+        .expect("release declaration");
+    let original = pages("RelationLabel");
+    let SeedEntry::Source(_, source) = &original[1] else {
+        panic!("source fixture")
+    };
+    let saved = vec![
+        SeedEntry::Symbol(declaration.clone(), Arc::new(rich_page("Value"))),
+        SeedEntry::Source(declaration.clone(), Arc::clone(source)),
+        SeedEntry::Package(release.clone(), Arc::new(dossier())),
+    ];
+    let bytes = encode(served("release-origin", 1), &saved).expect("encoding");
+    let restored = decode(&bytes, &keys(&saved)).expect("exact origin");
+    assert_eq!(
+        restored.pages, saved,
+        "all three page families retain their requested release scope"
+    );
+
+    let unscoped = vec![
+        PageKey::Symbol(SymbolRef::new(declaration.as_str()).expect("same coordinate")),
+        PageKey::Source(SymbolRef::new(declaration.as_str()).expect("same coordinate")),
+        PageKey::Package(PackageRef::parse(release.as_str()).expect("same coordinate")),
+    ];
+    assert!(
+        decode(&bytes, &unscoped)
+            .expect("no origin")
+            .pages
+            .is_empty()
+    );
+    let other_pin = PackageRef::parse("pkg:cargo/serde@1.0.1").expect("another pin");
+    let other_release = PackageRef::parse(release.as_str())
+        .expect("same release")
+        .with_release_origin(&other_pin);
+    let other_symbol = SymbolRef::new("pkg:cargo/serde@1.0.1::src/lib.rs::Value")
+        .expect("other declaration")
+        .rebased(&other_pin, &other_release)
+        .expect("other scope");
+    assert_eq!(other_symbol.as_str(), declaration.as_str());
+    assert!(
+        decode(
+            &bytes,
+            &[
+                PageKey::Symbol(other_symbol.clone()),
+                PageKey::Source(other_symbol),
+                PageKey::Package(other_release),
+            ]
+        )
+        .expect("different origin")
+        .pages
+        .is_empty()
+    );
+}
+
+#[test]
 fn a_corrupt_snapshot_is_ignored_whole_and_kept_as_bad() {
     let saved = pages("RelationLabel");
     let wanted = keys(&saved);
@@ -385,7 +446,8 @@ fn section_count_duplicate_keys_and_noncanonical_ranges_are_refused() {
         root: SnapRoot::of(root),
         sections: (0..=SECTION_CAP)
             .map(|index| Section {
-                key: SectionKey::Symbol(symbol(&format!("Item{index}"))),
+                key: SectionKey::of(&PageKey::Symbol(symbol(&format!("Item{index}"))))
+                    .expect("kept"),
                 offset: index,
                 len: 1,
                 hash: Digest::of(b"x"),

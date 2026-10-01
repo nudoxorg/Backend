@@ -75,7 +75,12 @@ impl SnapshotKeeper {
             return;
         };
         if seed.serves(root) {
-            let confirmed = pages.keys().into_iter().filter(|key| pages.confirm(key, root)).count();
+            // An alternate-release cache key carries a route claim about
+            // another tree. The owner root alone cannot admit that claim:
+            // its read worker must verify both manifests and the provider.
+            let confirmed = pages.keys().into_iter()
+                .filter(|key| !requires_origin_verification(key))
+                .filter(|key| pages.confirm(key, root)).count();
             crate::runtime::trace::mark("snapshot.confirm", format_args!("{confirmed} pages at the served root"));
         } else {
             crate::runtime::trace::mark("snapshot.revalidate", "the owner serves a newer root");
@@ -143,10 +148,40 @@ impl SnapshotKeeper {
     }
 }
 
+fn requires_origin_verification(key: &PageKey) -> bool {
+    match key {
+        PageKey::Symbol(symbol) | PageKey::Source(symbol) => symbol.release_origin().is_some(),
+        PageKey::Package(package) => package.release_origin().is_some(),
+        PageKey::Orbit | PageKey::Search(_) | PageKey::Health | PageKey::Browse(_) => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::pages::{Known, OrbitModel, PageValue};
+
+    #[test]
+    fn saved_release_claims_remain_seeded_until_the_worker_verifies_them() {
+        use crate::model::pages::PackageRef;
+        let dir = std::env::temp_dir().join(format!("nx-keeper-origin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch");
+        let file = SnapshotFile::in_data(&dir);
+        let root = VersionedRoot::synthetic(backend_library::view_state_root(&[("keeper".into(), "origin".into())]), 1);
+        let pinned = PackageRef::parse("pkg:cargo/serde@1.0.0").expect("pin");
+        let release = PackageRef::parse("pkg:cargo/serde@0.9.0").expect("release").with_release_origin(&pinned);
+        let entry = SeedEntry::Package(release.clone(), Arc::new(crate::shell::tests::dossier()));
+        let key = entry.key();
+        file.write(root, &[entry]).expect("snapshot");
+        let seed = file.read(std::slice::from_ref(&key)).expect("seed");
+        let mut keeper = SnapshotKeeper::default();
+        let mut pages = PageStore::default();
+        keeper.keep(&mut pages, VersionedRoot::unserved(), Keep { file, seed: Some(seed) });
+        keeper.settle(&mut pages, root);
+        assert!(pages.is_seeded(&key), "matching root does not verify the saved original release tree");
+        assert!(pages.begin(&key, root).is_some(), "a real worker read is still required");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn a_cancelled_stage_is_never_saved_as_a_complete_launch_page() {

@@ -34,6 +34,7 @@ use backend_platform::durable::BoundedWriter;
 use std::fmt;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -43,7 +44,7 @@ pub const FILE_NAME: &str = "desktop-snapshot.nxs";
 const MAGIC: [u8; 8] = *b"NXSNAP\0\x01";
 /// Bump when a saved page model changes meaning without changing its shape
 /// (a shape change already fails the decode, which ignores the file).
-const SCHEMA: u32 = 2;
+const SCHEMA: u32 = 3;
 const HEADER: usize = 8 + 4 + 4 + 32;
 /// Saved pages beyond this many bytes are left out (the route's pages are
 /// a few hundred kilobytes; this bounds a pathological page, not a normal
@@ -343,10 +344,35 @@ impl SnapshotFile {
 /// fresh every time: they have no section.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 enum SectionKey {
-    Symbol(SymbolRef),
-    Source(SymbolRef),
-    Package(PackageRef),
+    Symbol(AddressClaim),
+    Source(AddressClaim),
+    Package(AddressClaim),
     Orbit,
+}
+
+/// Cache-table bytes, never an admitted read address. The original release
+/// tree is part of identity even though page-model serde omits its provenance.
+/// A decoded claim can only match a key the current route already requested.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+struct AddressClaim {
+    coordinate: Arc<str>,
+    origin_claim: Option<Arc<str>>,
+}
+
+impl AddressClaim {
+    fn symbol(symbol: &SymbolRef) -> Self {
+        Self {
+            coordinate: Arc::from(symbol.as_str()),
+            origin_claim: symbol.release_origin().map(Arc::from),
+        }
+    }
+
+    fn package(package: &PackageRef) -> Self {
+        Self {
+            coordinate: Arc::from(package.as_str()),
+            origin_claim: package.release_origin().map(Arc::from),
+        }
+    }
 }
 
 impl SectionKey {
@@ -354,9 +380,9 @@ impl SectionKey {
     /// never keeps.
     fn of(key: &PageKey) -> Option<Self> {
         match key {
-            PageKey::Symbol(symbol) => Some(Self::Symbol(symbol.clone())),
-            PageKey::Source(symbol) => Some(Self::Source(symbol.clone())),
-            PageKey::Package(package) => Some(Self::Package(package.clone())),
+            PageKey::Symbol(symbol) => Some(Self::Symbol(AddressClaim::symbol(symbol))),
+            PageKey::Source(symbol) => Some(Self::Source(AddressClaim::symbol(symbol))),
+            PageKey::Package(package) => Some(Self::Package(AddressClaim::package(package))),
             PageKey::Orbit => Some(Self::Orbit),
             PageKey::Search(_) | PageKey::Health | PageKey::Browse(_) => None,
         }
@@ -366,9 +392,9 @@ impl SectionKey {
 impl fmt::Display for SectionKey {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Symbol(symbol) => write!(formatter, "symbol {}", symbol.as_str()),
-            Self::Source(symbol) => write!(formatter, "source {}", symbol.as_str()),
-            Self::Package(package) => write!(formatter, "package {}", package.as_str()),
+            Self::Symbol(symbol) => write!(formatter, "symbol {}", symbol.coordinate),
+            Self::Source(symbol) => write!(formatter, "source {}", symbol.coordinate),
+            Self::Package(package) => write!(formatter, "package {}", package.coordinate),
             Self::Orbit => formatter.write_str("orbit"),
         }
     }
@@ -377,9 +403,9 @@ impl fmt::Display for SectionKey {
 impl From<&SeedEntry> for SectionKey {
     fn from(entry: &SeedEntry) -> Self {
         match entry {
-            SeedEntry::Symbol(symbol, _) => Self::Symbol(symbol.clone()),
-            SeedEntry::Source(symbol, _) => Self::Source(symbol.clone()),
-            SeedEntry::Package(package, _) => Self::Package(package.clone()),
+            SeedEntry::Symbol(symbol, _) => Self::Symbol(AddressClaim::symbol(symbol)),
+            SeedEntry::Source(symbol, _) => Self::Source(AddressClaim::symbol(symbol)),
+            SeedEntry::Package(package, _) => Self::Package(AddressClaim::package(package)),
             SeedEntry::Orbit(_) => Self::Orbit,
         }
     }
@@ -556,8 +582,8 @@ fn decode(bytes: &[u8], wanted: &[PageKey]) -> Result<Seed, Refusal> {
             .checked_add(section.len)
             .and_then(|end| payload.get(section.offset..end))
             .ok_or_else(|| fault(SectionFault::PastTheEnd))?;
-        let entry = entry(wanted.clone(), body)
-            .map_err(|error| fault(SectionFault::Decode(error.to_string())))?;
+        let entry =
+            entry(key, body).map_err(|error| fault(SectionFault::Decode(error.to_string())))?;
         pages.push(entry);
     }
     Ok(Seed {
@@ -567,12 +593,19 @@ fn decode(bytes: &[u8], wanted: &[PageKey]) -> Result<Seed, Refusal> {
 }
 
 /// The page a section's payload holds.
-fn entry(key: SectionKey, body: &[u8]) -> Result<SeedEntry, serde_json::Error> {
+fn entry(key: &PageKey, body: &[u8]) -> Result<SeedEntry, serde_json::Error> {
     Ok(match key {
-        SectionKey::Symbol(symbol) => SeedEntry::Symbol(symbol, serde_json::from_slice(body)?),
-        SectionKey::Source(symbol) => SeedEntry::Source(symbol, serde_json::from_slice(body)?),
-        SectionKey::Package(package) => SeedEntry::Package(package, serde_json::from_slice(body)?),
-        SectionKey::Orbit => SeedEntry::Orbit(serde_json::from_slice(body)?),
+        PageKey::Symbol(symbol) => SeedEntry::Symbol(symbol.clone(), serde_json::from_slice(body)?),
+        PageKey::Source(symbol) => SeedEntry::Source(symbol.clone(), serde_json::from_slice(body)?),
+        PageKey::Package(package) => {
+            SeedEntry::Package(package.clone(), serde_json::from_slice(body)?)
+        }
+        PageKey::Orbit => SeedEntry::Orbit(serde_json::from_slice(body)?),
+        // Only kept families reach this decoder. No table claim is parsed
+        // into a SymbolRef, PackageRef or any producer capability.
+        PageKey::Search(_) | PageKey::Health | PageKey::Browse(_) => {
+            return Err(<serde_json::Error as serde::de::Error>::custom("unkept snapshot family"));
+        }
     })
 }
 
