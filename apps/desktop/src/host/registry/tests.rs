@@ -306,6 +306,7 @@ fn an_explicit_source_root_selects_the_matching_registry_metadata() {
     let release = release("tiny-crate", "1.2.3");
     let selected = home.join("registry/src/index.crates.io-a");
     for index in ["index.crates.io-a", "index.crates.io-b"] {
+        let checksum = if index.ends_with("-a") { "a".repeat(64) } else { "b".repeat(64) };
         let tree = home.join("registry/src").join(index).join(release.stem());
         std::fs::create_dir_all(&tree).expect("registry source tree");
         std::fs::write(
@@ -317,11 +318,7 @@ fn an_explicit_source_root_selects_the_matching_registry_metadata() {
         write_index_record(
             &record,
             &release,
-            if index.ends_with("-a") {
-                "a".repeat(64).as_str()
-            } else {
-                "b".repeat(64).as_str()
-            },
+            &checksum,
             index.ends_with("-b"),
             if index.ends_with("-a") {
                 "2026-01-02"
@@ -355,29 +352,29 @@ fn an_archive_unpacks_to_exactly_the_files_cargo_unpacked() {
     let anyhow = release("anyhow", "1.0.104");
     let fake = archive_only_home(&anyhow);
     let (private_root, unpacked) = private_unpack("unpacked");
-    let source = CargoCache::at(fake.clone(), unpacked.clone());
+    let source_cache = CargoCache::at(fake.clone(), unpacked.clone());
     assert!(matches!(
-        source
+        source_cache
             .releases(&anyhow.name)
             .into_iter()
             .find(|entry| entry.release == anyhow)
             .map(|entry| entry.availability),
         Some(Availability::Archive(_))
     ));
-    let checksum = source
+    let checksum = source_cache
         .unique_release_checksum(&anyhow)
         .expect("one effective archive checksum");
-    let planned = source
+    let planned = source_cache
         .own_tree(&anyhow, &checksum)
         .expect("valid checksum gives an app cache path");
-    let tree = source.resolve(&anyhow).expect("unpack");
+    let tree = source_cache.resolve(&anyhow).expect("unpack");
     assert_eq!(
         tree.root,
         planned.canonicalize().expect("planned is where it went")
     );
     assert!(matches!(tree.origin, Origin::Archive(_)));
     assert_eq!(
-        source.release_of(&tree.root),
+        source_cache.release_of(&tree.root),
         Some(anyhow.clone()),
         "an unpacked tree is known as its release"
     );
@@ -407,11 +404,11 @@ fn an_archive_unpacks_to_exactly_the_files_cargo_unpacked() {
         "{boundary}"
     );
     // A second resolve reads the tree that is there.
-    assert_eq!(source.resolve(&anyhow).expect("again").root, tree.root);
-    let archive = source.archive(&anyhow).expect("the cached archive");
+    assert_eq!(source_cache.resolve(&anyhow).expect("again").root, tree.root);
+    let archive = source_cache.archive(&anyhow).expect("the cached archive");
     std::fs::remove_file(archive).expect("remove archive, keep verified app cache");
     assert!(matches!(
-        source.availability(&anyhow),
+        source_cache.availability(&anyhow),
         Availability::Unpacked(ref path) if path == &planned
     ));
     let different_authority = CargoCache {
