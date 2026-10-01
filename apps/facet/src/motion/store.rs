@@ -667,6 +667,9 @@ impl Global for Gate {}
 /// Asks for another frame for the view being rendered. Cheap and idempotent
 /// within a frame; call it from `render` or `prepaint` only.
 pub fn request_frame(window: &mut Window, cx: &mut App) {
+    if super::is_still(cx) {
+        return;
+    }
     let view = window.current_view();
     let id = window.window_handle().window_id();
     let gate = cx.default_global::<Gate>();

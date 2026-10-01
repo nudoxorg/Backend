@@ -638,3 +638,25 @@ fn a_row_that_leaves_mid_flight_ends_its_track_at_rest(cx: &mut TestAppContext) 
     }
     assert!(view.read_with(cx, |pushed, cx| pushed.flow.is_settled(cx) && pushed.presence.is_settled(cx)));
 }
+
+/// Retained-body assembly must not alter user preferences or leave a still
+/// scope installed when a renderer unwinds; sibling motion must resume.
+#[gpui::test]
+fn retained_still_scope_is_nested_and_panic_safe(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        set_facet(cx, Facet::default());
+        assert!(!super::reduced(cx));
+        let outer = super::still(cx);
+        assert!(super::reduced(cx));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _inner = super::still(cx);
+            assert!(super::reduced(cx));
+            panic!("retained renderer interrupted");
+        }));
+        assert!(result.is_err());
+        assert!(super::reduced(cx), "outer scope survives nested unwind");
+        drop(outer);
+        assert!(!super::reduced(cx), "sibling body resumes user motion policy");
+        assert!(!crate::ActiveFacet::facet(cx).reduced_motion, "the preference never changed");
+    });
+}
