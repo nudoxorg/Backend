@@ -128,6 +128,9 @@ pub(crate) struct A11y {
     ///
     /// [forcibly disabled]: crate::Application::new_inaccessible
     force_disabled: bool,
+    /// Whether to build a tree without a platform assistive-technology client.
+    /// The force-disabled state still takes precedence.
+    forced: bool,
     /// Whether a11y features have been requested by the system.
     ///
     /// Updated by AccessKit using callbacks provided to the adapter. Can change
@@ -167,10 +170,12 @@ impl A11y {
     pub(crate) fn new(
         active_flag: Arc<AtomicBool>,
         force_disabled: bool,
+        forced: bool,
         window_title: Option<SharedString>,
     ) -> Self {
         Self {
             force_disabled,
+            forced,
             active_flag,
             active_this_frame: false,
             nodes: A11yNodeBuilder::new(),
@@ -210,7 +215,13 @@ impl A11y {
     /// See the docs for [`Self::active_flag`] and [`Self::active_this_frame`]
     /// for more commentary.
     pub(crate) fn sync_active_flag(&mut self) {
-        self.active_this_frame = !self.force_disabled && self.active_flag.load(Ordering::SeqCst);
+        self.active_this_frame =
+            !self.force_disabled && (self.forced || self.active_flag.load(Ordering::SeqCst));
+    }
+
+    /// Force the tree to be built on the next frame.
+    pub(crate) fn set_forced(&mut self, forced: bool) {
+        self.forced = forced;
     }
 
     pub(crate) fn is_active(&self) -> bool {
@@ -284,6 +295,7 @@ impl A11y {
             self.nodes.active_descendant,
             self.window_title.as_ref(),
             frame,
+            &self.node_bounds,
         );
         #[cfg(debug_assertions)]
         self.debug.capture_node_info(&self.nodes.node_info);
@@ -292,6 +304,18 @@ impl A11y {
 
     pub(crate) fn debug_tree_json(&self) -> Option<String> {
         self.debug.to_json()
+    }
+
+    pub(crate) fn last_tree_update(&self) -> Option<&TreeUpdate> {
+        self.debug.last_tree_update()
+    }
+
+    pub(crate) fn last_node_bounds(&self, id: NodeId) -> Option<Bounds<Pixels>> {
+        self.debug.node_bounds(id)
+    }
+
+    pub(crate) fn frame_number(&self) -> u64 {
+        self.debug.frame_number()
     }
 }
 
@@ -649,9 +673,47 @@ mod tests {
     }
 
     fn new_a11y() -> A11y {
-        let mut a11y = A11y::new(Arc::new(AtomicBool::new(true)), false, None);
+        let mut a11y = A11y::new(Arc::new(AtomicBool::new(true)), false, false, None);
         a11y.begin_frame();
         a11y
+    }
+
+    #[test]
+    fn forced_builds_the_tree_without_an_assistive_client() {
+        let mut a11y = A11y::new(Arc::new(AtomicBool::new(false)), false, true, None);
+        a11y.sync_active_flag();
+        assert!(a11y.is_active());
+
+        a11y.set_forced(false);
+        a11y.sync_active_flag();
+        assert!(!a11y.is_active());
+    }
+
+    #[test]
+    fn force_disabled_wins_over_forced() {
+        let mut a11y = A11y::new(Arc::new(AtomicBool::new(true)), true, true, None);
+        a11y.sync_active_flag();
+        assert!(!a11y.is_active());
+    }
+
+    #[test]
+    fn captured_tree_retains_its_bounds_and_frame_number() {
+        let mut a11y = new_a11y();
+        let node = NodeId(42);
+        assert!(a11y.nodes.push(node, test_node()));
+        a11y.nodes.pop();
+        let expected_bounds = Bounds::new(point(px(3.), px(4.)), size(px(5.), px(6.)));
+        a11y.node_bounds.insert(node, expected_bounds);
+
+        let update = a11y.end_frame(Default::default());
+        assert_eq!(a11y.last_tree_update(), Some(&update));
+        assert_eq!(a11y.last_node_bounds(node), Some(expected_bounds));
+        assert_eq!(a11y.frame_number(), 1);
+
+        a11y.begin_frame();
+        assert!(a11y.node_bounds.is_empty());
+        assert_eq!(a11y.last_node_bounds(node), Some(expected_bounds));
+        assert_eq!(a11y.frame_number(), 1);
     }
 
     #[test]

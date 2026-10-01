@@ -190,6 +190,7 @@ fn open_fixture(start: &str, size: (u32, u32), scale: u8) -> Result<Session, Str
         SessionOptions {
             asset_source: std::sync::Arc::new(facet::icons::Assets),
             frame_ms: FRAME_MS,
+            capture_native_accessibility: false,
         },
         {
             let failure = Rc::clone(&failure);

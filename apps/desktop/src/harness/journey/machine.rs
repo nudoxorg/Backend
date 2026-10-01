@@ -50,7 +50,11 @@ fn err(error: impl std::fmt::Display) -> String {
 }
 
 fn options() -> SessionOptions {
-    SessionOptions { asset_source: std::sync::Arc::new(facet::icons::Assets), frame_ms: FRAME_MS }
+    SessionOptions {
+        asset_source: std::sync::Arc::new(facet::icons::Assets),
+        frame_ms: FRAME_MS,
+        capture_native_accessibility: false,
+    }
 }
 
 /// Opens a production window over the app root beneath the private fixture

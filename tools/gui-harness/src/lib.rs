@@ -48,8 +48,9 @@ pub(crate) fn platform_init_guard() -> MutexGuard<'static, ()> {
 
 pub use artifact::{
     ArtifactError, ArtifactWriter, CaptureManifest, CaptureProvenance, FrameArtifact,
-    FrameSequenceMetadata, RunManifest, VerificationReport, frame_artifact, hash_bytes,
-    scenario_hash, validate_frame_sequence, verify_run, verify_run_for_baseline_update,
+    FrameSequenceMetadata, NativeAccessibilityArtifact, RunManifest, VerificationReport,
+    frame_artifact, hash_bytes, scenario_hash, validate_frame_sequence, verify_run,
+    verify_run_for_baseline_update,
 };
 pub use conformance::{
     CONFORMANCE_SCHEMA, ConformanceError, ConformanceFailure, ConformancePolicy, ConformanceReport,
@@ -77,7 +78,7 @@ pub use script::{Act, Button, Event, Mods, Script, ScriptError};
 pub use session::{Drawn, PlayedFrame, Quiet, Session, SessionOptions, Timeline, play};
 pub use storm::{Rng, Vocabulary};
 pub use semantics::{
-    SEMANTIC_SCHEMA, SemanticAnnouncement, SemanticBounds, SemanticError, SemanticNode,
+    NATIVE_ACCESSIBILITY_SCHEMA, SEMANTIC_SCHEMA, NativeAccessibilityFrame, SemanticAnnouncement, SemanticBounds, SemanticError, SemanticNode,
     SemanticProbe, SemanticRelations, SemanticRole, SemanticSource, SemanticState, changed_pixels,
     contrast_ratio, crop_focus_ring, hash_png_pixels, meets_wcag_aa, relative_luminance,
 };
@@ -621,6 +622,9 @@ pub struct CaptureRecord {
     pub input_index: Option<usize>,
     /// Baseline comparison result.
     pub diff: Option<DiffMetrics>,
+    /// The actual accessibility tree built for these exact pixels, when
+    /// native accessibility capture was enabled.
+    pub native_accessibility: Option<NativeAccessibilityFrame>,
 }
 
 /// Capture and comparison outcome for one state.
@@ -695,6 +699,7 @@ impl CaptureSession {
         script_id: Option<&str>,
         semantic_artifact: Option<&str>,
     ) -> Result<CaptureManifest, CaptureError> {
+        validate_native_accessibility_coverage(&capture.frames)?;
         let mut frames = Vec::with_capacity(capture.frames.len());
         let mut baseline_within_policy = true;
         let mut missing_baseline = false;
@@ -736,7 +741,23 @@ impl CaptureSession {
             let (path, hash) =
                 self.writer
                     .write_frame(&capture.state.id, &record.label, &record.image)?;
-            frames.push(frame_artifact(record, path, hash));
+            let mut artifact = frame_artifact(record, path, hash);
+            if let Some(accessibility) = &record.native_accessibility {
+                accessibility
+                    .verify_pair(
+                        &record.label,
+                        record.time_ms,
+                        record.viewport,
+                        &hash_png_pixels(&record.image),
+                    )
+                    .map_err(CaptureError::Accessibility)?;
+                artifact.native_accessibility = Some(self.writer.write_native_accessibility(
+                    &capture.state.id,
+                    &record.label,
+                    accessibility,
+                )?);
+            }
+            frames.push(artifact);
         }
         validate_frame_sequence(&frames)?;
         let filmstrip_path = self
@@ -839,6 +860,20 @@ impl CaptureSession {
     }
 }
 
+fn validate_native_accessibility_coverage(frames: &[CaptureRecord]) -> Result<(), CaptureError> {
+    let accessibility_frames = frames
+        .iter()
+        .filter(|frame| frame.native_accessibility.is_some())
+        .count();
+    if accessibility_frames != 0 && accessibility_frames != frames.len() {
+        return Err(CaptureError::Accessibility(format!(
+            "native accessibility evidence covers {accessibility_frames} of {} captured frames",
+            frames.len()
+        )));
+    }
+    Ok(())
+}
+
 /// Errors emitted by the harness orchestration layer.
 #[derive(Debug, Error)]
 pub enum CaptureError {
@@ -861,6 +896,10 @@ pub enum CaptureError {
     /// Artifact writing failed.
     #[error(transparent)]
     Artifact(#[from] ArtifactError),
+    /// The requested native accessibility tree was missing or inconsistent
+    /// with the rendered frame.
+    #[error("native accessibility capture failed: {0}")]
+    Accessibility(String),
     /// Image comparison failed.
     #[error(transparent)]
     Diff(#[from] DiffError),
@@ -982,6 +1021,32 @@ mod tests {
     }
 
     #[test]
+    fn native_accessibility_evidence_cannot_cover_only_some_frames() {
+        let viewport = Viewport::new(4, 3, 1).expect("viewport");
+        let image = RgbaImage::from_pixel(4, 3, image::Rgba([32, 32, 32, 255]));
+        let frame = |label: &str, native_accessibility| CaptureRecord {
+            label: label.to_owned(),
+            time_ms: 0,
+            viewport,
+            image: image.clone(),
+            input_index: None,
+            diff: None,
+            native_accessibility,
+        };
+        let evidence = NativeAccessibilityFrame {
+            schema: NATIVE_ACCESSIBILITY_SCHEMA,
+            frame: "settled".to_owned(),
+            time_ms: 0,
+            viewport,
+            frame_number: 1,
+            screenshot_sha256: hash_png_pixels(&image),
+            tree: serde_json::Value::Null,
+        };
+        let frames = vec![frame("start", None), frame("settled", Some(evidence))];
+        assert!(validate_native_accessibility_coverage(&frames).is_err());
+    }
+
+    #[test]
     fn one_pixel_baseline_mismatch_writes_evidence_and_fails_closed() {
         let root = std::env::temp_dir().join(format!(
             "backend-gui-harness-baseline-test-{}",
@@ -1014,6 +1079,7 @@ mod tests {
                 image: actual,
                 input_index: None,
                 diff: None,
+                native_accessibility: None,
             }],
             semantic_probes: Vec::new(),
             input_transcript: Vec::new(),
@@ -1039,16 +1105,50 @@ mod tests {
             .expect("semantic artifact");
         let mut image = RgbaImage::from_pixel(8, 6, image::Rgba([32, 32, 32, 255]));
         image.put_pixel(7, 5, image::Rgba([255, 59, 48, 255]));
+        let viewport = Viewport::new(4, 3, 2).expect("effective viewport");
+        let tree = serde_json::json!({
+            "root": "a",
+            "gpui_focus": "b",
+            "frame": {
+                "frame_number": 9,
+                "viewport_size": {"width": 4.0, "height": 3.0},
+                "scale_factor": 2.0
+            },
+            "nodes": {
+                "a": {
+                    "accesskit_id": "1",
+                    "bounds": {"x": 0.0, "y": 0.0, "width": 4.0, "height": 3.0},
+                    "aria": {"role": "Window"}
+                },
+                "b": {
+                    "accesskit_id": "2",
+                    "bounds": {"x": 0.0, "y": 0.0, "width": 4.0, "height": 1.0},
+                    "aria": {"role": "Button", "label": "Open settings"}
+                }
+            }
+        });
+        let native_accessibility = NativeAccessibilityFrame::new(
+            "start",
+            0,
+            viewport,
+            9,
+            &tree.to_string(),
+            &image,
+        )
+        .expect("frame-matched native tree");
+        assert!(native_accessibility.has_label("Open settings"));
+        assert_eq!(native_accessibility.focused_label(), Some("Open settings"));
         let mut capture = CaptureSet {
             state: GuiState::new("edge", None, None),
-            viewport: Viewport::new(4, 3, 2).expect("effective viewport"),
+            viewport,
             frames: vec![CaptureRecord {
                 label: "start".to_owned(),
                 time_ms: 0,
-                viewport: Viewport::new(4, 3, 2).expect("effective viewport"),
+                viewport,
                 image,
                 input_index: None,
                 diff: None,
+                native_accessibility: Some(native_accessibility),
             }],
             semantic_probes: Vec::new(),
             input_transcript: Vec::new(),
@@ -1061,6 +1161,10 @@ mod tests {
         )
         .expect("manifest json");
         assert_eq!(manifest["config"]["viewport"]["scale"], 2);
+        let accessibility = manifest["frames"][0]["native_accessibility"]["path"]
+            .as_str()
+            .expect("native accessibility sidecar");
+        assert!(root.join(accessibility).is_file());
         let verified = verify_run(&root).expect("verified run");
         assert_eq!(verified.manifests, 1);
         assert_eq!(verified.frames, 1);

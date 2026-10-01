@@ -6,6 +6,7 @@
 //! facet-gallery capture --scene ID|all [--size WxH] [--time MS] [--theme abyss|glacier]
 //!                       [--text-scale PCT] [--density comfortable|compact|dense]
 //!                       [--contrast normal|high] [--reduced-motion] [--scale 1|2]
+//!                       [--native-a11y]
 //!                       [--input SCRIPT | --input-file FILE | --no-script]
 //!                       [--frame-ms MS] --out DIR
 //! facet-gallery sequence --scene ID --times 0,32,64 [--frame-ms 16] [...] --out DIR
@@ -96,7 +97,7 @@ fn fail<T>(message: impl Into<String>) -> Result<T> {
     Err(GalleryError(message.into()))
 }
 
-const FLAGS: [&str; 11] = [
+const FLAGS: [&str; 12] = [
     "dump",
     "one-sheet",
     "full",
@@ -108,6 +109,7 @@ const FLAGS: [&str; 11] = [
     "help",
     "no-script",
     "no-fresh",
+    "native-a11y",
 ];
 
 struct Options {
@@ -216,6 +218,7 @@ impl Options {
         if let Some(scale) = self.number::<u8>("scale")? {
             shot.scale = scale;
         }
+        shot.capture_native_accessibility = self.flag("native-a11y");
         if let Some(time) = self.number::<u64>("time")? {
             shot.times = vec![time];
         }
@@ -334,7 +337,7 @@ fn script_tag(script: Option<&Script>) -> String {
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn suffix(shot: &Shot, time: u64) -> String {
     format!(
-        "{}-{}pct{}{}{}-t{time}{}@{}x",
+        "{}-{}pct{}{}{}{}-t{time}{}@{}x",
         theme_name(shot.appearance),
         (shot.text_scale * 100.0).round() as u32,
         match shot.density {
@@ -346,6 +349,7 @@ fn suffix(shot: &Shot, time: u64) -> String {
             Contrast::Normal => "",
             Contrast::High => "-hc",
         },
+        if shot.capture_native_accessibility { "-a11y" } else { "" },
         script_tag(shot.script.as_ref()),
         if shot.reduced_motion { "-rm" } else { "" },
         shot.scale
@@ -399,6 +403,17 @@ fn save(image: &image::RgbaImage, path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn save_native_accessibility(
+    evidence: &backend_gui_harness::NativeAccessibilityFrame,
+    image_path: &Path,
+) -> Result<String> {
+    let path = image_path.with_extension("a11y.json");
+    let bytes = serde_json::to_vec_pretty(evidence).map_err(GalleryError::from_display)?;
+    std::fs::write(&path, &bytes)
+        .map_err(|error| GalleryError(format!("{}: {error}", path.display())))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
 fn capture(options: &Options) -> Result<()> {
     let dir = out_dir(options)?;
     let scenes = match options.require("scene")? {
@@ -412,10 +427,11 @@ fn capture(options: &Options) -> Result<()> {
             println!("{}: input\n{script}", scene.id);
         }
         for frame in gallery::capture(&scene, &shot)? {
-            save(
-                &frame.image,
-                &dir.join(format!("{}-{}.png", scene.id, suffix(&shot, frame.time_ms))),
-            )?;
+            let path = dir.join(format!("{}-{}.png", scene.id, suffix(&shot, frame.time_ms)));
+            save(&frame.image, &path)?;
+            if let Some(evidence) = &frame.native_accessibility {
+                save_native_accessibility(evidence, &path)?;
+            }
         }
     }
     Ok(())
@@ -436,6 +452,17 @@ fn sequence(options: &Options) -> Result<()> {
         if let Some(image)=tick.image {
             let path=directory.join(format!("{}-{}.png",scene.id,suffix(&shot,tick.drawn.at_ms)));
             save(image,&path)?;
+            let native_accessibility = if let Some(evidence) = &tick.native_accessibility {
+                let sidecar_sha256 = save_native_accessibility(evidence, &path)?;
+                Some(Json::obj([
+                    ("path", Json::str(path.with_extension("a11y.json").to_string_lossy().into_owned())),
+                    ("sha256", Json::str(sidecar_sha256)),
+                    ("frame_number", Json::num(evidence.frame_number as f64)),
+                    ("screenshot_sha256", Json::str(evidence.screenshot_sha256.clone())),
+                ]))
+            } else {
+                None
+            };
             let state=Json::obj([
                 ("scene",Json::str(scene.id)),("time_ms",Json::num(tick.drawn.at_ms as f64)),
                 ("image",Json::str(path.to_string_lossy())),("rgba_sha256",Json::str(digest(image))),
@@ -443,6 +470,7 @@ fn sequence(options: &Options) -> Result<()> {
                 ("cpu_ms",Json::num(tick.drawn.cpu.as_secs_f64()*1000.0)),
                 ("input_cpu_ms",Json::num(tick.drawn.input_cpu.as_secs_f64()*1000.0)),
                 ("requested",Json::Bool(tick.drawn.requested())),
+                ("native_accessibility", native_accessibility.unwrap_or(Json::Null)),
             ]);
             std::fs::write(path.with_extension("json"),format!("{state}\n")).map_err(GalleryError::from_display)?;
             exported+=1;
@@ -471,10 +499,11 @@ fn film(options: &Options) -> Result<()> {
     let frames = gallery::capture(&scene, &shot)?;
     if options.flag("frames") {
         for frame in &frames {
-            save(
-                &frame.image,
-                &dir.join(format!("{}-{}.png", scene.id, suffix(&shot, frame.time_ms))),
-            )?;
+            let path = dir.join(format!("{}-{}.png", scene.id, suffix(&shot, frame.time_ms)));
+            save(&frame.image, &path)?;
+            if let Some(evidence) = &frame.native_accessibility {
+                save_native_accessibility(evidence, &path)?;
+            }
         }
     }
     let images = frames.iter().map(|frame| &frame.image).collect::<Vec<_>>();

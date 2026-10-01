@@ -2,7 +2,8 @@
 
 use crate::{
     AnimationFrame, CaptureError, CaptureRecord, CaptureSet, GuiState, ImeObservation, InputError,
-    InputStep, InputTranscriptEntry, SemanticProbe, Viewport, preflight_viewport,
+    InputStep, InputTranscriptEntry, NativeAccessibilityFrame, SemanticProbe, Viewport,
+    hash_png_pixels, preflight_viewport,
 };
 use gpui::{
     AnyWindowHandle, App, AssetSource, Capslock, ClipboardItem, Entity, HeadlessAppContext,
@@ -19,6 +20,9 @@ pub struct GpuiCaptureOptions {
     pub asset_source: Arc<dyn AssetSource>,
     /// Whether to fail if the platform has no direct headless renderer.
     pub require_renderer: bool,
+    /// Force and capture GPUI's actual AccessKit tree beside each screenshot.
+    /// Defaults to true when `GUI_HARNESS_NATIVE_A11Y=1` is set.
+    pub capture_native_accessibility: bool,
 }
 
 impl Default for GpuiCaptureOptions {
@@ -26,6 +30,8 @@ impl Default for GpuiCaptureOptions {
         Self {
             asset_source: Arc::new(()),
             require_renderer: true,
+            capture_native_accessibility: std::env::var("GUI_HARNESS_NATIVE_A11Y")
+                .is_ok_and(|value| value == "1"),
         }
     }
 }
@@ -269,6 +275,7 @@ where
     ) -> Result<Option<SemanticProbe>, CaptureError>,
 {
     let viewport = preflight_viewport(viewport, actions, frames)?;
+    let capture_native_accessibility = options.capture_native_accessibility;
     let platform = gpui_platform::current_platform(true);
     let text_system: Arc<dyn PlatformTextSystem> = platform.text_system();
     if options.require_renderer && gpui_platform::current_headless_renderer().is_none() {
@@ -288,6 +295,9 @@ where
                 // seam needed for 2x captures and causes device-pixel layout to be
                 // exercised by the same scene.
                 window.set_scale_factor(f32::from(viewport.scale));
+                if capture_native_accessibility {
+                    window.set_a11y_forced(true);
+                }
                 build_root(window, cx)
             },
         )
@@ -336,6 +346,7 @@ where
     let mut input_index = None;
     let mut records = Vec::with_capacity(frames.len());
     let mut semantic_probes = Vec::with_capacity(frames.len());
+    let mut last_accessibility_frame = 0;
     let mut elapsed = 0_u64;
     for frame in frames {
         let mut cursor = elapsed;
@@ -387,6 +398,45 @@ where
             .map_err(|error| CaptureError::Gpui(error.to_string()))??;
         let image =
             normalize_capture_image(draw_and_capture(&mut context, window)?, current_viewport)?;
+        let native_accessibility = if capture_native_accessibility {
+            let screenshot_sha256 = hash_png_pixels(&image);
+            let evidence = context
+                .update_window(window, |_, window, _| {
+                    let tree_json = window.debug_a11y_tree_json().ok_or_else(|| {
+                        CaptureError::Accessibility(
+                            "forced accessibility capture produced no tree".to_owned(),
+                        )
+                    })?;
+                    NativeAccessibilityFrame::new(
+                        frame.label.clone(),
+                        frame.time_ms,
+                        current_viewport,
+                        window.a11y_frame_number(),
+                        &tree_json,
+                        &image,
+                    )
+                    .map_err(CaptureError::Accessibility)
+                })
+                .map_err(|error| CaptureError::Gpui(error.to_string()))??;
+            if evidence.frame_number <= last_accessibility_frame {
+                return Err(CaptureError::Accessibility(format!(
+                    "tree frame {} did not advance after frame {}",
+                    evidence.frame_number, last_accessibility_frame
+                )));
+            }
+            evidence
+                .verify_pair(
+                    &frame.label,
+                    frame.time_ms,
+                    current_viewport,
+                    &screenshot_sha256,
+                )
+                .map_err(CaptureError::Accessibility)?;
+            last_accessibility_frame = evidence.frame_number;
+            Some(evidence)
+        } else {
+            None
+        };
         let probe = context
             .update_window(window, |_, window, cx| {
                 semantic_hook(frame, &image, current_viewport, window, cx)
@@ -402,6 +452,7 @@ where
             image,
             input_index,
             diff: None,
+            native_accessibility,
         });
         elapsed = frame.time_ms;
     }

@@ -15,6 +15,9 @@ use thiserror::Error;
 /// Semantic evidence schema version.
 pub const SEMANTIC_SCHEMA: u32 = 1;
 
+/// Schema for native GPUI/AccessKit evidence paired with an exact PNG frame.
+pub const NATIVE_ACCESSIBILITY_SCHEMA: u32 = 1;
+
 /// Roles that may appear in a rendered accessibility snapshot.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -347,6 +350,200 @@ pub struct SemanticProbe {
     pub announcements: Vec<SemanticAnnouncement>,
     /// SHA-256 of the normalized screenshot pixels paired with this probe.
     pub screenshot_sha256: String,
+}
+
+/// The actual accessibility tree built by GPUI for one rendered screenshot.
+///
+/// Unlike `SemanticProbe`, this is not product metadata: `tree` is read back
+/// from the window after the pixels were drawn, and contains AccessKit labels,
+/// focus, and window-space node bounds.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct NativeAccessibilityFrame {
+    /// Schema version.
+    pub schema: u32,
+    /// Stable capture-frame label.
+    pub frame: String,
+    /// Virtual capture time.
+    pub time_ms: u64,
+    /// Logical viewport used by the screenshot.
+    pub viewport: crate::Viewport,
+    /// Monotonic GPUI accessibility-tree frame number.
+    pub frame_number: u64,
+    /// SHA-256 of the normalized screenshot pixels paired with this tree.
+    pub screenshot_sha256: String,
+    /// `Window::debug_a11y_tree_json()` read after the paired draw.
+    pub tree: serde_json::Value,
+}
+
+impl NativeAccessibilityFrame {
+    /// Parses and validates a native tree captured after a rendered frame.
+    pub fn new(
+        frame: impl Into<String>,
+        time_ms: u64,
+        viewport: crate::Viewport,
+        frame_number: u64,
+        tree_json: &str,
+        screenshot: &RgbaImage,
+    ) -> Result<Self, String> {
+        let tree = serde_json::from_str(tree_json)
+            .map_err(|error| format!("invalid GPUI accessibility tree JSON: {error}"))?;
+        let evidence = Self {
+            schema: NATIVE_ACCESSIBILITY_SCHEMA,
+            frame: frame.into(),
+            time_ms,
+            viewport,
+            frame_number,
+            screenshot_sha256: hash_png_pixels(screenshot),
+            tree,
+        };
+        evidence.validate()?;
+        Ok(evidence)
+    }
+
+    /// Checks that the tree belongs to this screenshot frame and viewport.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema != NATIVE_ACCESSIBILITY_SCHEMA {
+            return Err(format!("unsupported native accessibility schema {}", self.schema));
+        }
+        if self.frame.trim().is_empty() || self.frame_number == 0 {
+            return Err("native accessibility frame identity is missing".to_owned());
+        }
+        let frame = self
+            .tree
+            .get("frame")
+            .ok_or_else(|| "native accessibility tree has no frame metadata".to_owned())?;
+        if frame.get("frame_number").and_then(serde_json::Value::as_u64)
+            != Some(self.frame_number)
+        {
+            return Err("native accessibility frame number does not match the tree".to_owned());
+        }
+        let viewport = frame
+            .get("viewport_size")
+            .ok_or_else(|| "native accessibility tree has no viewport metadata".to_owned())?;
+        for (axis, expected) in [("width", self.viewport.width), ("height", self.viewport.height)] {
+            let actual = viewport
+                .get(axis)
+                .and_then(serde_json::Value::as_f64)
+                .ok_or_else(|| format!("native accessibility tree has no viewport {axis}"))?;
+            if !actual.is_finite() || (actual - f64::from(expected)).abs() > 0.01 {
+                return Err(format!(
+                    "native accessibility {axis} {actual} does not match screenshot viewport {expected}"
+                ));
+            }
+        }
+        let actual_scale = frame
+            .get("scale_factor")
+            .and_then(serde_json::Value::as_f64)
+            .ok_or_else(|| "native accessibility tree has no scale factor".to_owned())?;
+        if !actual_scale.is_finite() || (actual_scale - f64::from(self.viewport.scale)).abs() > 0.01 {
+            return Err(format!(
+                "native accessibility scale {actual_scale} does not match screenshot scale {}",
+                self.viewport.scale
+            ));
+        }
+        let nodes = self
+            .tree
+            .get("nodes")
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| "native accessibility tree has no node map".to_owned())?;
+        let root = self
+            .tree
+            .get("root")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "native accessibility tree has no root".to_owned())?;
+        if !nodes.contains_key(root) {
+            return Err("native accessibility root is absent from the node map".to_owned());
+        }
+        if let Some(focused) = self
+            .tree
+            .get("gpui_focus")
+            .and_then(serde_json::Value::as_str)
+        {
+            let node = nodes
+                .get(focused)
+                .ok_or_else(|| "native accessibility focus is absent from the node map".to_owned())?;
+            let bounds = node
+                .get("bounds")
+                .and_then(serde_json::Value::as_object)
+                .ok_or_else(|| "native accessibility focus has no measured bounds".to_owned())?;
+            let mut rect = [0.0_f64; 4];
+            for (index, edge) in ["x", "y", "width", "height"].into_iter().enumerate() {
+                rect[index] = bounds
+                    .get(edge)
+                    .and_then(serde_json::Value::as_f64)
+                    .ok_or_else(|| format!("focused node bounds have no {edge}"))?;
+                if !rect[index].is_finite() {
+                    return Err(format!("focused node bounds have non-finite {edge}"));
+                }
+            }
+            if rect[0] < 0.0 || rect[1] < 0.0 || rect[2] <= 0.0 || rect[3] <= 0.0 {
+                return Err("native accessibility focus has empty bounds".to_owned());
+            }
+            if rect[0] + rect[2] > f64::from(self.viewport.width) + 0.01
+                || rect[1] + rect[3] > f64::from(self.viewport.height) + 0.01
+            {
+                return Err("native accessibility focus bounds escape the screenshot viewport".to_owned());
+            }
+        }
+        if self.screenshot_sha256.len() != 64
+            || !self
+                .screenshot_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err("native accessibility screenshot hash is malformed".to_owned());
+        }
+        Ok(())
+    }
+
+    /// Whether any actual AccessKit node exposes this accessible label.
+    #[must_use]
+    pub fn has_label(&self, label: &str) -> bool {
+        self.tree
+            .get("nodes")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|nodes| {
+                nodes.values().any(|node| {
+                    node.get("aria").and_then(|aria| aria.get("label"))
+                        .and_then(serde_json::Value::as_str)
+                        == Some(label)
+                })
+            })
+    }
+
+    /// Accessible label of the node GPUI reported as keyboard-focused.
+    #[must_use]
+    pub fn focused_label(&self) -> Option<&str> {
+        let nodes = self.tree.get("nodes")?.as_object()?;
+        let focused = self.tree.get("gpui_focus")?.as_str()?;
+        nodes
+            .get(focused)?
+            .get("aria")?
+            .get("label")?
+            .as_str()
+    }
+
+    /// Checks identity and pixel hash against the screenshot record that
+    /// claims this tree as its evidence.
+    pub fn verify_pair(
+        &self,
+        frame: &str,
+        time_ms: u64,
+        viewport: crate::Viewport,
+        screenshot_sha256: &str,
+    ) -> Result<(), String> {
+        self.validate()?;
+        if self.frame != frame
+            || self.time_ms != time_ms
+            || self.viewport != viewport
+            || self.screenshot_sha256 != screenshot_sha256
+        {
+            return Err(format!(
+                "native accessibility evidence is not paired with rendered frame {frame:?}"
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl SemanticProbe {

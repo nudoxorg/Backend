@@ -148,6 +148,10 @@ pub struct SessionOptions {
     /// turns the loop off: frames are drawn only at captures and right after
     /// each instant that delivered input.
     pub frame_ms: u64,
+    /// Force GPUI's native AccessKit tree for every frame in this session.
+    /// This is intended for screenshot evidence; it is disabled by default
+    /// because building the tree has a measurable cost.
+    pub capture_native_accessibility: bool,
 }
 
 impl Default for SessionOptions {
@@ -155,6 +159,7 @@ impl Default for SessionOptions {
         Self {
             asset_source: Arc::new(()),
             frame_ms: 16,
+            capture_native_accessibility: false,
         }
     }
 }
@@ -289,11 +294,15 @@ impl Session {
         );
         let scale = f32::from(viewport.scale);
         let audit_scale = std::env::var_os("GUI_HARNESS_SCALE_AUDIT").is_some();
+        let capture_native_accessibility = options.capture_native_accessibility;
         let window = context
             .open_window(
                 size(px(viewport.width as f32), px(viewport.height as f32)),
                 move |window, cx| {
                     window.set_scale_factor(scale);
+                    if capture_native_accessibility {
+                        window.set_a11y_forced(true);
+                    }
                     if audit_scale {
                         eprintln!("GUI_HARNESS_SCALE phase=build requested={scale} actual={}", window.scale_factor());
                     }
@@ -924,6 +933,7 @@ mod tests {
             SessionOptions {
                 asset_source: Arc::new(()),
                 frame_ms: 16,
+                capture_native_accessibility: false,
             },
             |_window, cx| cx.new(|_| Blank),
         )
