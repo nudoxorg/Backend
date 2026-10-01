@@ -482,6 +482,7 @@ fn rust_phase(cause: &backend_frontend_rust::legacy::RustAuthorityError) -> Auth
         | backend_frontend_rust::legacy::RustAuthorityError::CargoMetadataIncomplete { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::SourceNotLoaded { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::DetachedSource { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::AmbiguousSourceOwner { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::EditionMismatch { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::MissingSemanticFact { .. } => {
             AuthorityPhase::Resolve
@@ -523,6 +524,10 @@ fn rust_phase(cause: &backend_frontend_rust::legacy::RustAuthorityError) -> Auth
         | backend_frontend_rust::legacy::RustAuthorityError::WorkspaceBindingMismatch => {
             AuthorityPhase::Open
         }
+        backend_frontend_rust::legacy::RustAuthorityError::SourceOwnershipIndexLimit { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::SourceOwnershipIndexUnavailable => {
+            AuthorityPhase::Open
+        }
     }
 }
 
@@ -530,7 +535,8 @@ fn rust_class(
     cause: &backend_frontend_rust::legacy::RustAuthorityError,
 ) -> AuthorityDiagnosticClass {
     match cause {
-        backend_frontend_rust::legacy::RustAuthorityError::DetachedSource { .. } => {
+        backend_frontend_rust::legacy::RustAuthorityError::DetachedSource { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::AmbiguousSourceOwner { .. } => {
             AuthorityDiagnosticClass::SourceScope
         }
         _ => match rust_phase(cause) {

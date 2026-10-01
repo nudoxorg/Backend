@@ -1006,6 +1006,17 @@ pub(crate) fn rust_authority_diagnostic<'diagnostic>(
                 "selected Rust source is cfg-inactive or detached from every active Cargo target.",
             );
         }
+        RustError::AmbiguousSourceOwner { .. } => {
+            let _ = message.write_str(
+                "selected Rust source belongs to multiple active Cargo target contexts.",
+            );
+        }
+        RustError::SourceOwnershipIndexLimit { .. } => {
+            let _ = message.write_str("Rust active module ownership exceeded its admitted limit.");
+        }
+        RustError::SourceOwnershipIndexUnavailable => {
+            let _ = message.write_str("Rust active module ownership is unavailable.");
+        }
         RustError::EditionMismatch { .. } => {
             let _ = message.write_str("Cargo edition differs from the requested Rust profile.");
         }
