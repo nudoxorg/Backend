@@ -1126,6 +1126,19 @@ mod tests {
 
     #[test]
     fn mutated_invalid_line_range_never_publishes_duplicate_row_ids() {
+        let boundary = SourceText::new(Arc::from("last"), u32::MAX, SourceOrigin::Excerpt, true)
+            .expect("one final line is representable");
+        let last = SourcePage::at(
+            &boundary,
+            SourceCursor {
+                line: u32::MAX,
+                byte: 0,
+            },
+        );
+        assert_eq!(last.lines.len(), 1);
+        assert_eq!(last.lines[0].number, u32::MAX);
+        assert!(last.next.is_none());
+
         let mut source = text("one\ntwo".to_owned());
         for invalid_first in [0, u32::MAX] {
             source.first_line = invalid_first;
