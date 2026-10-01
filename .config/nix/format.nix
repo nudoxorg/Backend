@@ -27,11 +27,15 @@ let
         # Third-party, patched in vendor/; not ours to reformat, and rustfmt
         # per-file can't resolve its `mod` declarations either.
         "vendor/**"
-        # Raw parsing-corpus fixtures (a vendored serde_json snapshot, a
-        # synthetic "repo" tree) for the semantics engine's tests. They are
-        # test input data, not source we maintain, and some are deliberately
-        # malformed and don't parse as Rust at all.
+        # Raw parsing-corpus fixtures (vendored snapshots of real crates'
+        # source, synthetic "repo" trees) for the language frontends' and
+        # semantics engine's tests. They are test input data, not source we
+        # maintain: some are deliberately malformed, and the renamed/flat
+        # ones (e.g. `serde-1.0.228-core-crate_root.rs`) break rustfmt's
+        # per-file `mod` resolution the same way vendor/ and workspace/ do.
         "apps/facet/src/semantics/tests/fixtures/**"
+        "frontends/*/fixtures/**"
+        "frontends/*/tests/fixtures/**"
       ];
       formatter = {
         nushell = {
