@@ -172,8 +172,10 @@ mod tests {
         let release = PackageRef::parse("pkg:cargo/serde@0.9.0").expect("release").with_release_origin(&pinned);
         let entry = SeedEntry::Package(release.clone(), Arc::new(crate::shell::tests::dossier()));
         let key = entry.key();
+        assert!(file.read(&[]).is_none(), "prepare the build identity on the read path");
         file.write(root, &[entry]).expect("snapshot");
         let seed = file.read(std::slice::from_ref(&key)).expect("seed");
+        assert!(seed.root.serves(root), "this regression must exercise the same-build confirmation path");
         let mut keeper = SnapshotKeeper::default();
         let mut pages = PageStore::default();
         keeper.keep(&mut pages, VersionedRoot::unserved(), Keep { file, seed: Some(seed) });

@@ -91,6 +91,7 @@ fn pages(name: &str) -> Vec<SeedEntry> {
 }
 
 fn write(dir: &Path, root: VersionedRoot, pages: &[SeedEntry]) -> SnapshotFile {
+    Writer::prepare_this_build();
     let file = SnapshotFile::in_data(dir);
     assert!(file.write(root, pages).expect("write") > 0);
     file
@@ -366,17 +367,45 @@ fn a_family_the_snapshot_never_keeps_has_no_section_and_a_digest_is_hex_or_nothi
 
 #[test]
 fn pages_read_by_another_build_are_not_current_at_the_root_they_name() {
+    Writer::prepare_this_build();
     let root = served("writer", 2);
     let mut snapshot = SnapRoot::of(root);
     assert!(
         snapshot.serves(root),
         "this build reads what this build wrote"
     );
-    snapshot.writer.len += 1;
+    snapshot.writer.executable = Some(Digest::of(b"different executable"));
     assert!(
         !snapshot.serves(root),
         "another build's mapping of the same root is another page"
     );
+}
+
+#[test]
+fn executable_fingerprint_distinguishes_equal_sizes_and_unknown_identity_never_serves() {
+    let dir = scratch("fingerprint");
+    let first = dir.join("first");
+    let second = dir.join("second");
+    std::fs::write(&first, b"mapping A").expect("first build");
+    std::fs::write(&second, b"mapping B").expect("same-size different build");
+    assert_ne!(
+        fingerprint_executable(&first).expect("first digest"),
+        fingerprint_executable(&second).expect("second digest")
+    );
+    let root = served("unknown-writer", 1);
+    let mut snapshot = SnapRoot::of(root);
+    snapshot.writer = Writer::default();
+    assert!(
+        !snapshot.serves(root),
+        "two absent build identities cannot authorize a cache hit"
+    );
+    let oversized = dir.join("oversized");
+    std::fs::File::create(&oversized)
+        .expect("sparse executable")
+        .set_len((512_u64 << 20) + 1)
+        .expect("large file");
+    assert!(fingerprint_executable(&oversized).is_err());
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 fn encoded_table(table: &Table, payload: &[u8]) -> Vec<u8> {
