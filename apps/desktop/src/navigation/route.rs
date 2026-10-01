@@ -368,6 +368,16 @@ impl Route {
         }
     }
 
+    /// Keeps this place while changing its admitted UI focus identity.
+    #[must_use]
+    pub(crate) fn with_selected(&self, selected: Option<ObjectId>) -> Self {
+        match self {
+            Self::Package(route) => Self::Package(PackageRoute { selected, ..route.clone() }),
+            Self::Symbol(route) => Self::Symbol(SymbolRoute { selected, ..route.clone() }),
+            Self::Orbit(_) | Self::World => self.clone(),
+        }
+    }
+
     /// The release being viewed instead of the pinned one, if any.
     #[must_use]
     pub const fn at(&self) -> Option<&ReleaseId> {

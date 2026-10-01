@@ -1,6 +1,6 @@
 //! Durable shelf/settings/session schema with crash-safe publication.
 
-use super::snapshot::{AppSnapshot, SessionState, ShelfItem, ShelfState};
+use super::snapshot::{AppSnapshot, PendingSelectionClaim, SessionState, ShelfItem, ShelfState};
 use super::workspace::{
     AppearancePreference, ConnectionStatus, ContrastPreference, DensityPreference,
     MotionPreference, PrivacyPreference, ProjectPhase, ServiceMode, SettingsState,
@@ -216,6 +216,18 @@ pub struct PersistedWindow {
     pub height: u32,
 }
 
+/// Untrusted cold-start UI focus claim. The route and owner root are repeated
+/// so an edited or stale digest cannot silently attach to a different place.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PersistedSelectionClaim {
+    /// Exact route that carried the selection when saved.
+    pub route: PersistedRoute,
+    /// Hex spelling of the owner view root; never decoded into authority.
+    pub root: String,
+    /// Hex spelling of the UI object key; never decoded into [`super::ObjectId`].
+    pub object: String,
+}
+
 /// Versioned, forward-compatible desktop state file.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PersistedDesktopState {
@@ -231,6 +243,9 @@ pub struct PersistedDesktopState {
     pub context_open: bool,
     /// Last route, encoded by a small typed tag.
     pub route: PersistedRoute,
+    /// Saved focus claim; a current owner catalog must resolve it after load.
+    #[serde(default)]
+    pub selected_claim: Option<PersistedSelectionClaim>,
     /// Last settings page.
     pub settings_page: Option<String>,
     /// Active shelf project retained across a cold restart.
@@ -299,6 +314,7 @@ impl Default for PersistedDesktopState {
             shelf_open: true,
             context_open: true,
             route: PersistedRoute::Home,
+            selected_claim: None,
             settings_page: None,
             active_project: None,
             active_native_path: None,
@@ -765,6 +781,22 @@ impl PersistentState {
         snapshot: &AppSnapshot,
         shelf: Vec<PersistedShelfItem>,
     ) -> PersistedDesktopState {
+        let route = persist_route(snapshot.committed_route());
+        let selected_claim = if let Some(selected) = snapshot.committed_route().selected() {
+            (!snapshot.key().is_unserved()).then(|| PersistedSelectionClaim {
+                route: route.clone(),
+                root: backend_library::encode_id(snapshot.key().root().as_bytes()),
+                object: backend_library::encode_id(selected.get().as_bytes()),
+            })
+        } else {
+            snapshot.session().pending_selection.as_ref()
+                .filter(|claim| &claim.route == snapshot.committed_route())
+                .map(|claim| PersistedSelectionClaim {
+                    route: route.clone(),
+                    root: backend_library::encode_id(&claim.root),
+                    object: backend_library::encode_id(&claim.object),
+                })
+        };
         PersistedDesktopState {
             schema: SCHEMA,
             shelf,
@@ -841,7 +873,8 @@ impl PersistentState {
                 .settings()
                 .window
                 .map(|window| PersistedWindow { width: window.width, height: window.height }),
-            route: persist_route(snapshot.committed_route()),
+            route,
+            selected_claim,
             settings_page: match snapshot.overlay() {
                 Some(Overlay::Settings(page)) => Some(page.as_str().to_owned()),
                 Some(Overlay::AddProject | Overlay::CommandPalette | Overlay::Inbox) | None => None,
@@ -943,6 +976,21 @@ impl PersistentState {
                 *line,
             ),
         };
+        let pending_selection = state.selected_claim.as_ref().and_then(|claim| {
+            if claim.route != state.route || persist_route(&route) != state.route
+                || route.at().is_some_and(|release| !release.is_valid())
+            {
+                return None;
+            }
+            match &route {
+                Route::Package(_) | Route::Symbol(_) => Some(PendingSelectionClaim {
+                    route: route.clone(),
+                    root: backend_library::decode_id(&claim.root).ok()?,
+                    object: backend_library::decode_id(&claim.object).ok()?,
+                }),
+                Route::Orbit(_) | Route::World => None,
+            }
+        });
         let hand = crate::model::hand::Hand::of(state.hand.iter().filter_map(|held| {
             Some(crate::model::hand::Held {
                 package: crate::core::PackageId::new(&held.package).ok()?,
@@ -963,6 +1011,7 @@ impl PersistentState {
         SessionState {
             route,
             overlay,
+            pending_selection,
             hand,
             whispered: state.hand_whispered,
             ..SessionState::default()
@@ -1441,6 +1490,73 @@ mod tests {
         let restored = PersistentState::at("unused").cold_reload(&value);
         assert_eq!(restored.route, snapshot.route().clone(), "view, release and line survive");
         assert_eq!(restored.overlay, None);
+    }
+
+    #[test]
+    fn saved_focus_waits_for_the_exact_owner_catalog_row() {
+        let key = crate::core::VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("selection".to_owned(), "owner".to_owned())]),
+            1,
+        );
+        let package = crate::core::PackageId::new("pkg:cargo/serde@1.0.0").expect("package");
+        let object = crate::model::ObjectId::test(7);
+        let route = Route::Package(crate::navigation::PackageRoute {
+            project: None,
+            package: package.clone(),
+            lane: PackageLane::Overview,
+            selected: Some(object),
+            at: None,
+        });
+        let snapshot = AppSnapshot::empty(key).with_session(SessionState { route, ..SessionState::default() });
+        let wire = PersistentState::project(&snapshot);
+        assert!(wire.selected_claim.is_some(), "the focus claim is saved with its route and root");
+        let store = PersistentState::at("unused");
+        let restored = store.cold_reload(&wire);
+        assert_eq!(restored.route.selected(), None, "wire bytes cannot mint a typed ObjectId");
+        assert!(restored.pending_selection.is_some());
+
+        let row = crate::model::PackageSummary {
+            coordinate: package,
+            name: Arc::from("serde"),
+            version: Arc::from("1.0.0"),
+            ecosystem: Arc::from("Cargo"),
+            bytes: 0,
+            standing: Arc::from("current"),
+            downloads: Arc::from("unknown"),
+            advisory: Arc::from("unknown"),
+            object,
+        };
+        let catalog = crate::model::CatalogState { packages: Arc::from([row.clone()]) };
+        let opened = AppSnapshot::empty(key).with_session(restored).with_catalog(catalog.clone(), key);
+        assert_eq!(opened.route().selected(), Some(object));
+        assert_eq!(opened.session().selected, Some(crate::navigation::Selection::Object(object)));
+        assert!(opened.session().pending_selection.is_none());
+
+        let mut wrong_object = wire.clone();
+        wrong_object.selected_claim.as_mut().expect("claim").object = backend_library::encode_id(crate::model::ObjectId::test(9).get().as_bytes());
+        let rejected = AppSnapshot::empty(key).with_session(store.cold_reload(&wrong_object)).with_catalog(catalog.clone(), key);
+        assert_eq!(rejected.route().selected(), None);
+        assert!(rejected.session().pending_selection.is_none());
+
+        let mut wrong_root = wire.clone();
+        wrong_root.selected_claim.as_mut().expect("claim").root = backend_library::encode_id(&[3; 32]);
+        let rejected = AppSnapshot::empty(key).with_session(store.cold_reload(&wrong_root)).with_catalog(catalog, key);
+        assert_eq!(rejected.route().selected(), None);
+        assert!(rejected.session().pending_selection.is_none());
+
+        let mut moved_claim = wire.clone();
+        moved_claim.route = PersistedRoute::Package {
+            project: None,
+            package: "pkg:cargo/other@1.0.0".to_owned(),
+            lane: PersistedPackageLane::Overview,
+            at: None,
+        };
+        assert!(store.cold_reload(&moved_claim).pending_selection.is_none(), "a claim cannot follow an edited route");
+
+        let waiting = AppSnapshot::empty(key).with_session(store.cold_reload(&wire))
+            .with_catalog(crate::model::CatalogState::default(), key);
+        assert!(waiting.session().pending_selection.is_some(), "a paged catalog may not contain the row yet");
+        assert!(PersistentState::project(&waiting).selected_claim.is_some(), "pending focus survives another save");
     }
 
     #[test]

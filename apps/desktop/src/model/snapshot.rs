@@ -191,6 +191,9 @@ pub struct SessionState {
     pub forward: RouteHistory,
     /// Selected object/document retained across zoom transitions.
     pub selected: Option<Selection>,
+    /// Saved UI focus bytes awaiting a matching row from the current owner.
+    /// This is never an admitted object identity or a content capability.
+    pub(crate) pending_selection: Option<PendingSelectionClaim>,
     /// What you hold (D-Hand): persisted; its order is recomputed.
     pub hand: crate::model::hand::Hand,
     /// The first card ever held has been whispered ("Value *in hand*"):
@@ -203,6 +206,15 @@ pub struct SessionState {
     pub preview: Option<Route>,
 }
 
+/// A cold-start focus claim, scoped to one exact route and owner root.
+/// Only a producer-mapped catalog row can turn it back into [`ObjectId`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PendingSelectionClaim {
+    pub(crate) route: Route,
+    pub(crate) root: [u8; 32],
+    pub(crate) object: [u8; 32],
+}
+
 impl Default for SessionState {
     fn default() -> Self {
         Self {
@@ -211,6 +223,7 @@ impl Default for SessionState {
             back: RouteHistory::new(),
             forward: RouteHistory::new(),
             selected: None,
+            pending_selection: None,
             hand: crate::model::hand::Hand::default(),
             whispered: false,
             whisper: None,
@@ -446,6 +459,24 @@ impl AppSnapshot {
     /// Returns a copy with a producer-mapped registry catalog.
     #[must_use]
     pub(crate) fn with_catalog(&self, catalog: CatalogState, key: VersionedRoot) -> Self {
+        let mut session = self.data.session.as_ref().clone();
+        if let Some(claim) = session.pending_selection.take() {
+            if claim.route == session.route && claim.root == *key.root().as_bytes() {
+                let package = match &session.route {
+                    Route::Package(route) => Some(&route.package),
+                    Route::Symbol(route) => Some(&route.package),
+                    Route::Orbit(_) | Route::World => None,
+                };
+                match package.and_then(|package| catalog.packages.iter().find(|row| row.coordinate == *package)) {
+                    Some(row) if row.object.get().as_bytes() == &claim.object => {
+                        session.route = session.route.with_selected(Some(row.object));
+                        session.selected = Some(Selection::Object(row.object));
+                    }
+                    Some(_) => {} // Exact package, but the saved object claim disagrees.
+                    None => session.pending_selection = Some(claim), // Catalog may be paged.
+                }
+            }
+        }
         let mut next = self.clone();
         next.data = Arc::new(SnapshotData {
             shelf: Arc::clone(&self.data.shelf),
@@ -455,7 +486,7 @@ impl AppSnapshot {
             catalog: Resource::loaded_at(catalog, key),
             local_package: self.data.local_package.clone(),
             settings: Arc::clone(&self.data.settings),
-            session: Arc::clone(&self.data.session),
+            session: Arc::new(session),
             delta: self.data.delta,
         });
         next

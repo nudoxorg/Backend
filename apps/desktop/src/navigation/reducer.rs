@@ -114,6 +114,7 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
                 let current = session.route.clone();
                 let forward = session.forward.push(current);
                 session.route = previous;
+                session.pending_selection = None;
                 session.back = back;
                 session.forward = forward;
                 next = next.with_session(session);
@@ -127,6 +128,7 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
                 let current = session.route.clone();
                 let back = session.back.push(current);
                 session.route = forward_route;
+                session.pending_selection = None;
                 session.back = back;
                 session.forward = forward;
                 next = next.with_session(session);
@@ -136,11 +138,13 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
         Intent::Select(object) => {
             let mut session = next.session().clone();
             session.selected = Some(super::route::Selection::Object(object));
+            session.pending_selection = None;
             next = next.with_session(session);
         }
         Intent::SelectDocument(document) => {
             let mut session = next.session().clone();
             session.selected = Some(super::route::Selection::Document(document));
+            session.pending_selection = None;
             next = next.with_session(session);
         }
         Intent::OpenCommandPalette => {
@@ -268,6 +272,7 @@ fn navigate(snapshot: &mut crate::model::AppSnapshot, route: Route) {
     let mut session = snapshot.session().clone();
     let back = session.back.push(session.route.clone());
     session.route = route;
+    session.pending_selection = None;
     session.overlay = None;
     session.back = back;
     session.forward = Default::default();
@@ -303,6 +308,7 @@ fn end_preview(snapshot: &mut crate::model::AppSnapshot, close: bool) {
 fn replace(snapshot: &mut crate::model::AppSnapshot, route: Route) {
     let mut session = snapshot.session().clone();
     session.route = route;
+    session.pending_selection = None;
     session.overlay = None;
     *snapshot = snapshot.with_session(session);
 }
