@@ -7,7 +7,8 @@
 //! here. It ends in one [`OwnerState`] on the gate: `Ready` with the owner's
 //! root from one `revision()` round trip, or `Failed` in the host's own words.
 //! A failed owner waits for the window's "Try again" and starts again; a
-//! serving one keeps its host alive until the app quits.
+//! serving one keeps its host alive until the app quits or a confirmed lost
+//! attachment is retried.
 
 use super::lease::{DesktopHost, HostError, HostMode};
 use crate::core::VersionedRoot;
@@ -92,8 +93,9 @@ fn run<H>(gate: &OwnerGate, mut starter: impl FnMut(&OwnerGate) -> Result<Starte
         let fault = match std::panic::catch_unwind(AssertUnwindSafe(|| starter(gate))) {
             Ok(Ok(Started { host, key, mode })) => {
                 gate.publish(OwnerState::Ready { key, mode });
-                gate.await_close();
+                let restart = gate.await_close_or_restart();
                 drop(host);
+                if restart { continue; }
                 return;
             }
             Ok(Err(message)) => OwnerFault::Host(message.into()),
@@ -187,6 +189,27 @@ mod tests {
         // "Try again" starts it again, and this time it answers.
         assert!(gate.restart());
         settle(&gate, |state| matches!(state, OwnerState::Ready { .. }));
+        drop(thread);
+    }
+
+    #[test]
+    fn a_lost_attachment_restarts_only_its_own_serving_generation() {
+        let gate = OwnerGate::starting();
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = std::sync::Arc::clone(&attempts);
+        let thread = spawn_with(gate.clone(), move |_| {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Started { host: (), key: VersionedRoot::unserved(), mode: ServiceMode::Attached })
+        }).expect("attached owner thread");
+        settle(&gate, |state| matches!(state, OwnerState::Ready { .. }));
+        let old = gate.attached_ready_epoch().expect("attached generation");
+        assert!(gate.attached_lost_at(old, "socket closed".into()));
+        assert!(matches!(gate.state(), OwnerState::Failed(OwnerFault::Lost(_))));
+        assert!(gate.restart(), "Retry can reattach after confirmed loss");
+        settle(&gate, |state| matches!(state, OwnerState::Ready { .. }));
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert!(!gate.attached_lost_at(old, "stale failure".into()));
+        assert!(matches!(gate.state(), OwnerState::Ready { .. }));
         drop(thread);
     }
 }
