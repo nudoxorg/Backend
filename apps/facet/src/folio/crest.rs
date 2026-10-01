@@ -342,7 +342,11 @@ impl RenderOnce for Stamp {
 
         // Reserve room for each complete licence token. At narrow widths the
         // seal moves above the face before the title or SPDX id is broken.
-        let content_width = f32::from(measure.width()) - 2.0 * f32::from(measure.space(Space::Roomy));
+        // The stamp may sit in a wider measured row, but its seal and text
+        // must compose against the width this card actually receives.
+        let content_width = f32::from(self.width.min(measure.width()))
+            - 2.0 * f32::from(measure.space(Space::Roomy));
+        let content_width = content_width.max(0.0);
         let horizontal_text_width = content_width - 30.0 * scale - f32::from(measure.space(Space::Roomy));
         let verdict_width = f32::from(natural_width(
             &SharedString::from(verdict.word),

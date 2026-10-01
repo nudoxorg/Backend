@@ -474,7 +474,7 @@ impl RenderOnce for WeightCell {
         .w(self.width)
         // Keep the design floor at 100% text. The glyph and naturally wrapped
         // caption determine any extra height at larger text scales.
-        .min_h(self.height.at(1.0))
+        .min_h(super::state::DisclosureFlow::rest_height(self.height))
         .child(glyph)
         .child(super::text::wrap(
             key(&self.id, "caption"),
