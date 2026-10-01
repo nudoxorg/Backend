@@ -543,7 +543,6 @@ fn dep_facts(
     // unresolved dependency has no target at all, rather than a name that
     // cannot actually open.
     let target = in_the_library(dependency, indexed)
-        .or(dependency.resolved.as_ref())
         .map(|package| SharedString::from(package.as_str().to_owned()));
     DepFacts {
         name: dependency.name.to_string().into(),
@@ -565,36 +564,18 @@ fn dep_facts(
     }
 }
 
-/// The release of `dependency` the library holds, when it holds one: the
-/// release its resolver chose, else the one release of that name, else the
-/// one whose version the requirement names exactly (`0.8.23`, `=0.8.23`).
+/// The exact resolver-selected package, when that fully qualified reference
+/// is present in the indexed package set. Display names and version strings
+/// alone never establish a dependency destination.
 fn in_the_library<'a>(
     dependency: &Dependency,
     indexed: &'a [crate::model::pages::IndexedPackage],
 ) -> Option<&'a PackageRef> {
-    let named: Vec<&PackageRef> = indexed
+    let resolved = dependency.resolved.as_ref()?;
+    indexed
         .iter()
-        .map(|package| &package.package)
-        .filter(|package| package.display_name() == dependency.name.as_ref())
-        .collect();
-    let chosen = dependency
-        .resolved
-        .as_ref()
-        .and_then(PackageRef::release_version);
-    let written = dependency
-        .requirement
-        .trim_start_matches(['=', '^', '~', ' ']);
-    named
-        .iter()
-        .copied()
-        .find(|package| chosen.is_some_and(|version| package.release_version() == Some(version)))
-        .or_else(|| (named.len() == 1).then(|| named[0]))
-        .or_else(|| {
-            named
-                .iter()
-                .copied()
-                .find(|package| package.release_version() == Some(written))
-        })
+        .find(|candidate| &candidate.package == resolved)
+        .map(|candidate| &candidate.package)
 }
 
 /// Follows a dependency mark's link to the package it names; the page is
@@ -663,7 +644,6 @@ fn readme(dossier: &PackageDossier, place: &Route, ctx: &mut Ctx<'_>) -> Option<
         let rich = crate::shell::markdown::view(
             ElementId::Name(SharedString::from("package-readme-markdown")),
             SharedString::from(source.to_string()),
-            Arc::clone(&headings),
         )
         .w_full();
         let rich = div()
@@ -806,8 +786,8 @@ fn readme(dossier: &PackageDossier, place: &Route, ctx: &mut Ctx<'_>) -> Option<
                         .id(id.clone())
                         .w_full()
                         .cursor_pointer()
-                        .text_color(palette.cyan.base.hsla())
-                        .child(text(ty::PROSE, &measure, palette.cyan.base).child(label))
+                        .text_color(palette.peri.base.hsla())
+                        .child(text(ty::PROSE, &measure, palette.peri.base).child(label))
                         .on_click(move |_: &ClickEvent, window, app| act(window, app));
                     column = column.child(ctx.targets.track(id, row));
                 } else {
@@ -849,6 +829,9 @@ fn readme_link_kind(
     package: &PackageRef,
 ) -> Option<ReadmeLinkKind> {
     let trimmed = destination.trim();
+    if trimmed.len() > crate::model::local_package::MAX_README_LINK_DESTINATION_BYTES {
+        return None;
+    }
     let lower = trimmed.to_ascii_lowercase();
     if lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("mailto:")
     {
@@ -910,8 +893,8 @@ fn activate_readme_link(
             }
         }
         Some(ReadmeLinkKind::File { path, line }) => {
-            // The path was canonicalized, kept under the local package root,
-            // and checked as a file on the package-read worker.
+            // This is a worker-produced editor/display hint. Source reads
+            // continue to use the pinned directory capability, not this path.
             shell_links.dispatch(
                 Intent::OpenSource {
                     path: Arc::from(path),
@@ -971,15 +954,20 @@ fn rustdoc_symbol_route(
     let path = destination.split(['#', '?']).next()?;
     if path.starts_with('/')
         || path.contains('\\')
-        || path.split('/').any(|part| part == "..")
+        || path
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
         || path.contains("://")
     {
         return None;
     }
-    let leaf = path.rsplit('/').next()?;
+    let components = path.split('/').collect::<Vec<_>>();
+    let leaf = *components.last()?;
     let stem = leaf.strip_suffix(".html")?;
     let (name, kind) = rustdoc_item_name(stem);
-    let declaration = outline?.complete_names()?.unique_name(name, kind)?;
+    let declaration = outline?
+        .complete_names()?
+        .unique_rustdoc_path(&components[..components.len().saturating_sub(1)], name, kind)?;
     crate::shell::kit::symbol_route(package.as_str(), &declaration.decl.coordinate)
 }
 
@@ -1018,13 +1006,9 @@ fn exact_file_declaration_route(
         .ok()?
         .to_string_lossy()
         .replace('\\', "/");
-    let mut declarations = outline?.walk().filter(|node| {
-        node.decl.path.as_deref() == Some(relative.as_str()) && node.decl.line == Some(line)
-    });
-    let declaration = declarations.next()?;
-    if declarations.next().is_some() {
-        return None;
-    }
+    let declaration = outline?
+        .complete_names()?
+        .unique_file_line(relative.as_str(), line)?;
     let mut route = crate::shell::kit::symbol_view_route(
         package.as_str(),
         &declaration.decl.coordinate,

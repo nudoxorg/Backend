@@ -269,7 +269,7 @@ pub struct CompleteOutlineNames<'a> {
     outline: &'a OutlineTree,
 }
 
-impl CompleteOutlineNames<'_> {
+impl<'a> CompleteOutlineNames<'a> {
     /// Returns the unique declaration of `name`, optionally constrained by
     /// the kind encoded in a Rustdoc filename. Ambiguous names stay unresolved.
     #[must_use]
@@ -277,12 +277,92 @@ impl CompleteOutlineNames<'_> {
         &self,
         name: &str,
         expected_kind: Option<backend_library::DeclarationKind>,
-    ) -> Option<&OutlineNode> {
+    ) -> Option<&'a OutlineNode> {
         let mut candidates = self.outline.walk().filter(|node| {
             node.decl.name.as_ref() == name
                 && expected_kind.is_none_or(|kind| node.decl.kind == Some(kind))
         });
         let first = candidates.next()?;
         candidates.next().is_none().then_some(first)
+    }
+
+    /// Returns the unique declaration at this exact package-relative source
+    /// path and line. Partial outlines cannot use this method because a later
+    /// duplicate coordinate may not have been observed yet.
+    #[must_use]
+    pub fn unique_file_line(&self, path: &str, line: u32) -> Option<&'a OutlineNode> {
+        let mut candidates = self
+            .outline
+            .walk()
+            .filter(|node| node.decl.path.as_deref() == Some(path) && node.decl.line == Some(line));
+        let first = candidates.next()?;
+        candidates.next().is_none().then_some(first)
+    }
+
+    /// Resolves a Rustdoc item only when its URL module path exactly matches
+    /// the declaration's module ancestry. This prevents a fabricated or
+    /// misspelled directory from falling through to a globally unique name.
+    #[must_use]
+    pub fn unique_rustdoc_path(
+        &self,
+        modules: &[&str],
+        name: &str,
+        expected_kind: Option<backend_library::DeclarationKind>,
+    ) -> Option<&'a OutlineNode> {
+        fn visit<'a>(
+            nodes: &'a [OutlineNode],
+            modules: &[&str],
+            ancestry: &mut Vec<&'a str>,
+            name: &str,
+            expected_kind: Option<backend_library::DeclarationKind>,
+            found: &mut Option<&'a OutlineNode>,
+            ambiguous: &mut bool,
+        ) {
+            for node in nodes {
+                if ancestry.as_slice() == modules
+                    && node.decl.name.as_ref() == name
+                    && expected_kind.is_none_or(|kind| node.decl.kind == Some(kind))
+                {
+                    if found.is_some() {
+                        *ambiguous = true;
+                    } else {
+                        *found = Some(node);
+                    }
+                }
+                let is_module = node.decl.kind == Some(backend_library::DeclarationKind::Module);
+                if is_module {
+                    ancestry.push(&node.decl.name);
+                }
+                visit(
+                    &node.children,
+                    modules,
+                    ancestry,
+                    name,
+                    expected_kind,
+                    found,
+                    ambiguous,
+                );
+                if is_module {
+                    ancestry.pop();
+                }
+            }
+        }
+
+        let mut found = None;
+        let mut ambiguous = false;
+        visit(
+            &self.outline.roots,
+            modules,
+            &mut Vec::new(),
+            name,
+            expected_kind,
+            &mut found,
+            &mut ambiguous,
+        );
+        if ambiguous {
+            None
+        } else {
+            found
+        }
     }
 }
