@@ -51,8 +51,10 @@ fn map_control_error(error: LocalControlError) -> ClientError {
 #[cfg(any(unix, windows))]
 pub struct LocalSubscriptionTransport {
     client: LocalControlClient<backend_replication::LocalStream>,
+    interrupt: Option<crate::TransportInterrupt>,
     peer: Option<backend_replication::AuthenticatedLocalPeer>,
     endpoint: Option<PathBuf>,
+    connect_timeout: Duration,
     frames_on_connection: usize,
     next_request_id: u64,
 }
@@ -67,17 +69,28 @@ impl LocalSubscriptionTransport {
     /// configured, or [`ClientError::Transport`] when its path exceeds the
     /// bounded endpoint limit.
     pub fn connect(path: impl AsRef<Path>) -> Result<Self, ClientError> {
+        Self::connect_timeout(path, Duration::from_secs(5))
+    }
+
+    /// Connects within a caller-specified local dial limit.
+    ///
+    /// # Errors
+    /// Returns an endpoint, authentication, or bounded dial error.
+    pub fn connect_timeout(path: impl AsRef<Path>, timeout: Duration) -> Result<Self, ClientError> {
         let path = path.as_ref();
         let endpoint = backend_replication::UnixEndpointRef::new(path)
             .map_err(|_| ClientError::Transport(ReplicationError::MessageTooLarge))?;
         let path = endpoint.as_path();
-        let stream = connect_stream(path)?;
+        let stream = connect_stream(path, timeout)?;
         let peer = backend_replication::AuthenticatedLocalPeer::authenticate(&stream, path)
             .map_err(crate::map_peer_authentication_error)?;
+        let interrupt = Some(crate::TransportInterrupt::new(&stream)?);
         Ok(Self {
             client: LocalControlClient::new(stream, control_limits()),
+            interrupt,
             peer: Some(peer),
             endpoint: Some(path.to_path_buf()),
+            connect_timeout: timeout,
             frames_on_connection: 0,
             next_request_id: 1,
         })
@@ -90,13 +103,22 @@ impl LocalSubscriptionTransport {
         let _ = stream
             .set_read_timeout(Some(timeout))
             .and_then(|()| stream.set_write_timeout(Some(timeout)));
+        let interrupt = crate::TransportInterrupt::new(&stream).ok();
         Self {
             client: LocalControlClient::new(stream, control_limits()),
+            interrupt,
             peer: None,
             endpoint: None,
+            connect_timeout: Duration::from_secs(5),
             frames_on_connection: 0,
             next_request_id: 1,
         }
+    }
+
+    /// Returns a handle for the exact currently connected control socket.
+    #[must_use]
+    pub fn interrupt_handle(&self) -> Option<crate::TransportInterrupt> {
+        self.interrupt.clone()
     }
 
     fn prepare_request(&mut self) -> Result<(), ClientError> {
@@ -106,10 +128,13 @@ impl LocalSubscriptionTransport {
         let endpoint = self.endpoint.as_deref().ok_or_else(|| {
             ClientError::Io("local control connection reached its bounded frame budget".to_owned())
         })?;
-        let stream = connect_stream(endpoint)?;
+        let stream = connect_stream(endpoint, self.connect_timeout)?;
         let peer = backend_replication::AuthenticatedLocalPeer::authenticate(&stream, endpoint)
             .map_err(crate::map_peer_authentication_error)?;
         self.client = LocalControlClient::new(stream, control_limits());
+        if let Some(interrupt) = &self.interrupt {
+            interrupt.replace(self.client.stream())?;
+        }
         self.peer = Some(peer);
         self.frames_on_connection = 0;
         Ok(())
@@ -440,8 +465,8 @@ impl LocalSubscriptionTransport {
 }
 
 #[cfg(any(unix, windows))]
-fn connect_stream(path: &Path) -> Result<backend_replication::LocalStream, ClientError> {
-    let stream = backend_replication::LocalStream::connect(path)
+fn connect_stream(path: &Path, timeout: Duration) -> Result<backend_replication::LocalStream, ClientError> {
+    let stream = backend_replication::connect_local_timeout(path, timeout)
         .map_err(crate::map_endpoint_connect_error)?;
     crate::configure(&stream)?;
     Ok(stream)
