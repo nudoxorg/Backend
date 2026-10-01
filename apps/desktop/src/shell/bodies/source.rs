@@ -1333,8 +1333,12 @@ mod tests {
         let before_wheel = rig
             .shell
             .read_with(rig.cx, |shell, cx| shell.source_reader_scroll_offset(cx));
-        rig.cx
-            .simulate_scroll(pointer, gpui::point(px(0.0), px(-180.0)));
+        rig.cx.simulate_event(gpui::ScrollWheelEvent {
+            position: pointer,
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(-180.0))),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
         rig.repaint();
         let after_wheel = rig
             .shell
