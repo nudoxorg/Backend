@@ -583,6 +583,133 @@ fn settle_waits_for_named_graph_work_but_keeps_the_frame_and_root_watchdog() {
 }
 
 #[gpui::test]
+fn hidden_graph_projection_slot_does_not_hold_settle_and_reopens_into_the_scene(
+    cx: &mut TestAppContext,
+) {
+    use super::bodies::graph::MapWorkStatus;
+    use crate::runtime::indexed_world::TestProjectionGate;
+    use std::sync::Arc;
+
+    let mut rig = rig(cx, Some(Route::World), 1440.0, 900.0);
+    let root = rig
+        .graph
+        .store
+        .read_with(rig.cx, |store, _| store.snapshot().key());
+    let mut gates = Vec::new();
+
+    // Each replacement gets a distinct fixture owner. The first four reads
+    // hold every bounded Memo slot; the fifth request is explicitly deferred.
+    for slot in 0..5 {
+        let gate = Arc::new(TestProjectionGate::default());
+        rig.cx.update(|_, cx| {
+            super::bodies::graph::install_test_fixture_with_gate(
+                root,
+                Some(Arc::clone(&gate)),
+                cx,
+            );
+        });
+        rig.repaint();
+        rig.cx.run_until_parked();
+        let work = rig
+            .shell
+            .read_with(rig.cx, |shell, cx| shell.graph_work_status(cx));
+        if slot < 4 {
+            assert_eq!(work, Some(MapWorkStatus::ProjectionRead));
+            assert!(gate.entered(), "fixture read {slot} owns its Memo slot");
+        } else {
+            assert_eq!(work, Some(MapWorkStatus::ProjectionSlot));
+            assert!(!gate.entered(), "the fifth read waits without starting work");
+        }
+        gates.push(gate);
+    }
+
+    // Navigating to a page suspends the retained graph while its four readers
+    // are still gated. Hidden graph work must not keep the visible page's
+    // settlement loop alive.
+    rig.go(Intent::Navigate(page_route("RelationLabel")));
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_ready(cx)));
+    assert_eq!(
+        rig.shell
+            .read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)),
+        None,
+        "hidden reads and a deferred projection cannot block another page"
+    );
+
+    for gate in &gates[..4] {
+        gate.release();
+    }
+    rig.cx.run_until_parked();
+
+    // The deferred fixture key starts only after the old flights release
+    // their slots and the graph becomes visible again.
+    rig.graph.root.update(rig.cx, |root, cx| {
+        root.dispatch(Intent::Navigate(Route::World), cx);
+    });
+    rig.draw();
+    assert!(gates[4].entered(), "the visible deferred projection resumes");
+    assert_eq!(
+        rig.shell
+            .read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)),
+        Some(MapWorkStatus::ProjectionRead)
+    );
+
+    // Hide while that deferred projection is still running. A product page
+    // settles without waiting for invisible graph work.
+    rig.go(Intent::Navigate(page_route("RelationLabel")));
+    assert_eq!(
+        rig.shell
+            .read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)),
+        None
+    );
+    gates[4].release();
+    rig.cx.run_until_parked();
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_ready(cx)));
+    assert_eq!(
+        rig.shell
+            .read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)),
+        None,
+        "a completed projection stays hidden and cached until the graph returns"
+    );
+
+    // Completion while hidden remains cached. One visible frame asks the Memo
+    // for that completed fixture projection and leaves a real SceneMount stage.
+    rig.graph.root.update(rig.cx, |root, cx| {
+        root.dispatch(Intent::Navigate(Route::World), cx);
+    });
+    rig.draw();
+    assert_eq!(
+        rig.shell
+            .read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)),
+        Some(MapWorkStatus::SceneMount)
+    );
+    assert!(!rig.shell.read_with(rig.cx, |shell, cx| shell.graph_ready(cx)));
+
+    // Hide before the next map render consumes the retained scene. The page
+    // settles, then returning mounts that same projection into GraphView.
+    rig.go(Intent::Navigate(page_route("RelationLabel")));
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_ready(cx)));
+    assert_eq!(
+        rig.shell
+            .read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)),
+        None
+    );
+    rig.go(Intent::Navigate(Route::World));
+
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_ready(cx)));
+    assert_eq!(
+        rig.shell
+            .read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)),
+        None
+    );
+    assert!(
+        rig.shell
+            .read_with(rig.cx, |shell, cx| shell.graph_report(cx))
+            .contains("fixture 3 nodes"),
+        "reopening mounts the completed fixture projection"
+    );
+}
+
+#[gpui::test]
 fn a_page_renders_its_real_content_through_the_shell(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     rig.cx.update(|_, cx| facet::probe::enable(cx));

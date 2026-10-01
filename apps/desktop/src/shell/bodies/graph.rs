@@ -44,6 +44,20 @@ pub(crate) enum MapWorkStatus {
     OpenRequest,
 }
 
+fn visible_work_status(
+    visible: bool,
+    pending_open: bool,
+    visible_stage: Option<MapWorkStatus>,
+) -> Option<MapWorkStatus> {
+    if pending_open {
+        Some(MapWorkStatus::OpenRequest)
+    } else if visible {
+        visible_stage
+    } else {
+        None
+    }
+}
+
 /// One map for the reader's lifetime: its rig survives page/code visits.
 pub(crate) struct Map {
     links: Links,
@@ -93,6 +107,15 @@ impl gpui::Global for TestCanvasLayer {}
 
 #[cfg(test)]
 pub(crate) fn install_test_fixture(root: VersionedRoot, cx: &mut App) {
+    install_test_fixture_with_gate(root, None, cx);
+}
+
+#[cfg(test)]
+pub(crate) fn install_test_fixture_with_gate(
+    root: VersionedRoot,
+    gate: Option<Arc<indexed_world::TestProjectionGate>>,
+    cx: &mut App,
+) {
     use facet::graph::{Kind, Module, Node, Package};
     let mut nodes = vec![
         Node::new(Kind::Enum, "RelationLabel", 0, 0),
@@ -130,7 +153,7 @@ pub(crate) fn install_test_fixture(root: VersionedRoot, cx: &mut App) {
         "generic graph shell test world",
         world,
         identities,
-        None,
+        gate,
         cx,
     );
 }
@@ -320,27 +343,30 @@ impl Map {
 
     /// The exact graph stage keeping this map from becoming ready, if any.
     pub(crate) fn work_status(&self, cx: &App) -> Option<MapWorkStatus> {
-        if self.pending.is_some() {
-            return Some(MapWorkStatus::OpenRequest);
+        // A retained map can keep a read, ready scene, or discovery entity
+        // while another page is visible. Hidden work cannot hold a visible
+        // shell capture; on return the same retained state resumes mounting.
+        if !self.visible {
+            return visible_work_status(false, self.pending.is_some(), None);
         }
-        if self.projection_waiting {
-            return Some(MapWorkStatus::ProjectionSlot);
-        }
-        if self.ready_scene.is_some() {
-            return Some(MapWorkStatus::SceneMount);
-        }
-        if let Some(graph) = &self.graph {
-            return match graph.read(cx).work_status() {
+        let visible_stage = if self.projection_waiting {
+            Some(MapWorkStatus::ProjectionSlot)
+        } else if self.ready_scene.is_some() {
+            Some(MapWorkStatus::SceneMount)
+        } else if let Some(graph) = &self.graph {
+            match graph.read(cx).work_status() {
                 FacetGraphWorkStatus::Discovery => Some(MapWorkStatus::Discovery),
                 FacetGraphWorkStatus::Search => Some(MapWorkStatus::Search),
                 FacetGraphWorkStatus::PendingAccept => Some(MapWorkStatus::PendingAccept),
                 FacetGraphWorkStatus::Idle => None,
-            };
-        }
-        self.world_key
-            .as_ref()
-            .filter(|key| indexed_world::read_in_flight(key, cx))
-            .map(|_| MapWorkStatus::ProjectionRead)
+            }
+        } else {
+            self.world_key
+                .as_ref()
+                .filter(|key| indexed_world::read_in_flight(key, cx))
+                .map(|_| MapWorkStatus::ProjectionRead)
+        };
+        visible_work_status(true, self.pending.is_some(), visible_stage)
     }
 
     pub(crate) fn report(&self, cx: &App) -> String {
@@ -1448,6 +1474,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hidden_graph_stages_do_not_hold_settle_but_pending_opens_remain_visible_work() {
+        for stage in [
+            MapWorkStatus::ProjectionRead,
+            MapWorkStatus::ProjectionSlot,
+            MapWorkStatus::SceneMount,
+            MapWorkStatus::Discovery,
+            MapWorkStatus::Search,
+            MapWorkStatus::PendingAccept,
+        ] {
+            assert_eq!(visible_work_status(false, false, Some(stage)), None);
+            assert_eq!(visible_work_status(true, false, Some(stage)), Some(stage));
+        }
+        assert_eq!(
+            visible_work_status(false, true, None),
+            Some(MapWorkStatus::OpenRequest),
+            "an accepted product action still owns its pending resolution while hidden"
+        );
+    }
+
+    #[test]
     fn retained_value_failure_settles_but_active_retry_waits_for_its_new_root() {
         use crate::core::{FaultCode, UnavailableReason};
         let r1 = VersionedRoot::synthetic(
@@ -1575,7 +1621,7 @@ mod tests {
         };
         assert!(basis.matches(4, &Route::World, observed_root.authority(), false));
         assert!(!basis.matches(5, &Route::World, root.authority(), false));
-        assert!(!basis.matches(4, &Route::World, root.with_generation(2).authority(), false));
+        assert!(!basis.matches(4, &Route::World, root.with_generation(3).authority(), false));
         assert!(!basis.matches(4, &Route::World, root.authority(), true));
     }
 
