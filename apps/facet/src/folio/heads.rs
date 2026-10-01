@@ -357,43 +357,63 @@ impl RenderOnce for HeadsUp {
             let target_width = target_widths[i];
             let width = chip + (target_width - chip) * shown;
             let ink = ink_of(item.tone, palette);
-            let count_room = item.count.map_or(0.0, |count| {
-                f32::from(natural_width(
-                    &SharedString::from(count.to_string()),
-                    count_role,
-                    window,
-                )) + gap
+            let icon_inset = (chip - 14.0 * scale) * 0.5;
+            let right_inset = if shown > 0.03 { 10.0 * scale } else { 0.0 };
+            let row_text_room = width - icon_inset - 14.0 * scale - gap - right_inset;
+            let stacked_text_room = width - icon_inset - right_inset;
+            // Keep at least four ems for the identifier before spending that
+            // width on a non-wrapping count. If the icon itself leaves less
+            // room than that, move it above the copy so the label can use the
+            // full tile width. Both choices follow the measured tile width;
+            // neither clips nor truncates the finding.
+            let readable_word_room = word_role.size * 4.0;
+            let stack_icon = shown > 0.03
+                && row_text_room < readable_word_room
+                && stacked_text_room > row_text_room;
+            let label_room = if stack_icon { stacked_text_room } else { row_text_room };
+            let count_width = item.count.map_or(0.0, |count| {
+                f32::from(natural_width(&SharedString::from(count.to_string()), count_role, window))
             });
-            let text_room = width
-                - (chip - 14.0 * scale) * 0.5
-                - 14.0 * scale
-                - gap
-                - count_room
-                - 10.0 * scale;
-            let show_copy = shown > 0.03 && text_room >= word_role.size;
-            let mut inner = div()
-                .flex()
-                .items_center()
-                .min_w_0()
-                .gap(px(gap))
-                .pl(px((chip - 14.0 * scale) * 0.5))
-                .pr(px(if show_copy { 10.0 * scale } else { 0.0 }))
-                .child(probe::measure(
-                    key(&self.id, format!("icon-{i}")),
-                    glyph(item.glyph, 14.0 * scale, ink),
-                ));
+            let show_copy = shown > 0.03 && label_room >= word_role.size;
+            let count_inline = show_copy
+                && !stack_icon
+                && item.count.is_some()
+                && row_text_room - count_width - gap >= readable_word_room;
+            let mut inner = if stack_icon {
+                div().flex().flex_col().items_start().min_w_0().gap(px(gap))
+            } else {
+                div().flex().items_start().min_w_0().gap(px(gap))
+            }
+            .pl(px(icon_inset))
+            .pr(px(if show_copy { right_inset } else { 0.0 }))
+            .child(probe::measure(
+                key(&self.id, format!("icon-{i}")),
+                glyph(item.glyph, 14.0 * scale, ink),
+            ));
             if show_copy {
-                inner = inner.child(div().flex_1().min_w_0().child(wrap(
+                let word = wrap(
                     key(&self.id, format!("word-{i}")),
                     item.word.clone(),
                     WORD,
                     palette.ink0,
                     &measure,
                     None,
-                )));
+                );
+                let mut details = if count_inline {
+                    div().flex().items_center().gap(px(gap)).min_w_0().flex_1()
+                } else {
+                    div().flex().flex_col().items_start().gap(px(gap)).min_w_0()
+                };
+                details = if stack_icon { details.w_full() } else { details.flex_1() };
+                details = if count_inline {
+                    details.child(div().min_w_0().flex_1().child(word))
+                } else {
+                    details.child(word)
+                };
                 if let Some(count) = item.count {
-                    inner = inner.child(one(key(&self.id, format!("count-{i}")), count.to_string(), COUNT, ink, &measure));
+                    details = details.child(one(key(&self.id, format!("count-{i}")), count.to_string(), COUNT, ink, &measure));
                 }
+                inner = inner.child(details);
             }
             let tile = cut()
                 .chamfer(Chamfer::Px(8.0 * scale))
@@ -424,13 +444,12 @@ impl RenderOnce for HeadsUp {
             .fill(mix(palette.plate.into(), palette.plate2.into(), open.min(1.0)))
             .w(px(plate_width))
             .min_h(base_h)
-            .child(hand)
-            .id(self.id.clone());
+            .child(hand);
         let package = self.package.clone();
         let for_sheet = findings.clone();
         let plate = wire(plate, &touch, Some(Rc::new(move |window: &mut Window, cx: &mut App| open_sheet(&package, for_sheet.clone(), window, cx))));
         // The animated hand's wrapped row heights participate in this
         // natural flow, keeping every following card below the open content.
-        div().flex_none().w(px(plate_width)).child(hover_zone(plate, &touch, 9.0 * scale, true)).into_any_element()
+        div().id(self.id.clone()).flex_none().w(px(plate_width)).child(hover_zone(plate, &touch, 9.0 * scale, true)).into_any_element()
     }
 }
