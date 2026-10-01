@@ -34,6 +34,8 @@ pub enum OwnerFault {
     Host(Arc<str>),
     /// The owner's thread panicked, and said so.
     Panicked(Arc<str>),
+    /// An attached owner that had answered stopped answering a fresh probe.
+    Lost(Arc<str>),
     /// Nothing answered within the patience.
     Silent(Duration),
     /// The window closed before the owner answered.
@@ -45,6 +47,7 @@ impl fmt::Display for OwnerFault {
         match self {
             Self::Host(words) => formatter.write_str(words),
             Self::Panicked(what) => write!(formatter, "the index's thread panicked: {what}"),
+            Self::Lost(what) => write!(formatter, "the attached index stopped answering: {what}"),
             Self::Silent(waited) => write!(formatter, "the index did not answer within {} s", waited.as_secs()),
             Self::Closed => formatter.write_str("the window closed before the index answered"),
         }
@@ -159,6 +162,36 @@ impl OwnerGate {
         self.lock().state.clone()
     }
 
+    /// Generation of the attached owner currently answering. A page worker
+    /// must retain this before its request so an old failure cannot fail a
+    /// newly attached owner with the same root.
+    #[must_use]
+    pub(crate) fn attached_ready_epoch(&self) -> Option<Epoch> {
+        let inner = self.lock();
+        matches!(inner.state, OwnerState::Ready { mode: ServiceMode::Attached, .. }).then_some(inner.epoch)
+    }
+
+    /// Reports confirmed endpoint loss only for the attached generation that
+    /// issued the failed read. This is atomic with the epoch/state check.
+    pub(crate) fn attached_lost_at(&self, expected: Epoch, reason: Arc<str>) -> bool {
+        let waker = {
+            let mut inner = self.lock();
+            if inner.closed || inner.epoch != expected
+                || !matches!(inner.state, OwnerState::Ready { mode: ServiceMode::Attached, .. })
+            {
+                return false;
+            }
+            inner.state = OwnerState::Failed(OwnerFault::Lost(Arc::clone(&reason)));
+            inner.since = Instant::now();
+            inner.epoch = inner.epoch.next();
+            inner.waker.take()
+        };
+        self.0.changed.notify_all();
+        if let Some(waker) = waker { waker.wake(); }
+        crate::runtime::trace::mark("owner.failed", OwnerFault::Lost(reason));
+        true
+    }
+
     /// Publishes a new state: wakes every waiting worker and the UI.
     pub fn publish(&self, state: OwnerState) {
         let waker = {
@@ -250,10 +283,13 @@ impl OwnerGate {
         }
     }
 
-    /// The owner thread, once serving: blocks until the app quits.
-    pub(crate) fn await_close(&self) {
+    /// The owner thread, once serving: returns `true` when a failed attached
+    /// owner was explicitly retried, or `false` when the app closes.
+    pub(crate) fn await_close_or_restart(&self) -> bool {
         let mut inner = self.lock();
-        while !inner.closed {
+        loop {
+            if inner.closed { return false; }
+            if std::mem::take(&mut inner.restart) { return true; }
             inner = self
                 .0
                 .changed
@@ -391,9 +427,9 @@ mod tests {
     fn closing_releases_the_owner_thread_and_every_waiter() {
         let gate = OwnerGate::starting();
         let owner = gate.clone();
-        let thread = std::thread::spawn(move || owner.await_close());
+        let thread = std::thread::spawn(move || owner.await_close_or_restart());
         gate.close();
-        thread.join().expect("the owner thread lets go");
+        assert!(!thread.join().expect("the owner thread lets go"));
         assert!(gate.wait().is_err(), "nobody waits on an owner after quit");
         assert!(!gate.await_restart());
     }
