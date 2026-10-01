@@ -37,7 +37,7 @@
 //! ```
 
 use super::keys::{self, Keys, Mix, Pose};
-use super::{epoch, now, reduced, request_frame};
+use super::{epoch, now, reduced_in, request_frame};
 use crate::probe::{self, TrackKind, TrackSample};
 use crate::tokens::motion::{DROP, EMPH, GLIDE, QUICK, SCENE, SNAP, STD};
 use gpui::{
@@ -882,7 +882,7 @@ impl Presence {
         cx: &mut App,
     ) -> Vec<Item> {
         let now = now(cx);
-        let reduced = reduced(cx);
+        let reduced = reduced_in(window, cx);
         let entries = entries.into_iter().collect();
         self.inner.borrow_mut().model.sync(entries, now, reduced);
         let items = self.items_at(now, cx);

@@ -33,7 +33,7 @@
 //! shared_with(("gem", id), move |m| node(kind).glyph(m.t < 0.6))
 //! ```
 
-use super::{epoch as motion_epoch, now, reduced, request_frame};
+use super::{epoch as motion_epoch, now, reduced_in, request_frame};
 use crate::probe::{self, TrackKind, TrackSample};
 use crate::tokens::motion::{Bezier, GLIDE, SCENE};
 use gpui::{
@@ -489,7 +489,7 @@ impl gpui::Element for Shared {
             });
             self.morph = None;
         } else if let Some(owner) = id {
-            let reduced = reduced(cx);
+            let reduced = reduced_in(window, cx);
             let slot = (window.window_handle().window_id(), self.key.clone());
             let departing = cx
                 .default_global::<Registry>()

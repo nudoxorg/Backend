@@ -35,7 +35,7 @@
 //! value, slope and acceleration at landing. No position or velocity jumps,
 //! and the flight still lands exactly on its target.
 
-use super::{epoch as motion_epoch, now, reduced, request_frame};
+use super::{epoch as motion_epoch, now, reduced_in, request_frame};
 use crate::probe::{self, TrackKind, TrackSample};
 use gpui::{App, ElementId, Global, SharedString, Window};
 use std::cell::RefCell;
@@ -970,14 +970,14 @@ impl Flights {
         cx: &mut App,
     ) -> Shot {
         let now = now(cx);
-        let reduced = reduced(cx);
+        let reduced = reduced_in(window, cx);
         let (shot, trip) = {
             let mut store = self.store.borrow_mut();
             let state = store.entry(key.clone()).or_insert(State::Still(target));
             if let Some(travel) = travel {
-                step_with(state, target, now, reduced, self.pacing, Some(travel))
+                step_with(state, target, now, reduced_in, self.pacing, Some(travel))
             } else {
-                step(state, target, now, reduced, self.pacing)
+                step(state, target, now, reduced_in, self.pacing)
             }
         };
         if shot.live {
@@ -1003,7 +1003,7 @@ impl Flights {
     ) -> Shot {
         let key = key.into();
         let trip = plan(camera, velocity, target, now(cx), self.pacing);
-        let state = if reduced(cx) {
+        let state = if reduced_in(window, cx) {
             State::Still(camera)
         } else {
             State::Flying(trip)
@@ -1025,7 +1025,7 @@ impl Flights {
     ) -> Shot {
         let key = key.into();
         let trip = plan_travel(camera, velocity, target, now(cx), self.pacing, travel);
-        let state = if reduced(cx) {
+        let state = if reduced_in(window, cx) {
             State::Still(camera)
         } else {
             State::Flying(trip)
@@ -1136,7 +1136,7 @@ fn step(
     reduced: bool,
     pacing: Pacing,
 ) -> (Shot, Option<Trip>) {
-    step_with(state, target, now, reduced, pacing, None)
+    step_with(state, target, now, reduced_in, pacing, None)
 }
 
 fn step_with(

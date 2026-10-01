@@ -105,6 +105,13 @@ pub fn reduced(cx: &App) -> bool {
     is_still(cx) || cx.facet().reduced_motion || cx.reduce_motion()
 }
 
+/// Retained native subtrees settle their internal motion to exact layout,
+/// independently of the current user/system motion preference.
+#[must_use]
+pub fn reduced_in(window: &gpui::Window, cx: &App) -> bool {
+    reduced(cx) || window.is_inert_subtree()
+}
+
 /// Locally sample a retained body at rest while it is assembled. This does
 /// not change the user's preference; dropping the guard restores the prior
 /// scope even during unwinding. Hold it only around synchronous body work.

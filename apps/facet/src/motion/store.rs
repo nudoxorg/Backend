@@ -3,7 +3,7 @@
 
 use super::keys::{Keys, Pose};
 use super::spring::{Phase, Spring};
-use super::{epoch, now, reduced};
+use super::{epoch, now, reduced_in};
 use crate::probe::{self, TrackKind, TrackSample};
 use crate::tokens::motion::Bezier;
 use gpui::{App, ElementId, EntityId, Global, Window, WindowId};
@@ -320,7 +320,7 @@ impl Motion {
         cx: &mut App,
     ) -> f32 {
         let now = now(cx);
-        let spec = if reduced(cx) { Spec::Snap } else { spec };
+        let spec = if reduced_in(window, cx) { Spec::Snap } else { spec };
         let (sample, meta) = {
             let mut store = self.store.borrow_mut();
             let state = store
@@ -368,7 +368,7 @@ impl Motion {
     ) -> Pose {
         let key = key.into();
         let now = now(cx);
-        let reduced = reduced(cx);
+        let reduced = reduced_in(window, cx);
         let (pose, live, meta, keys) = {
             let mut store = self.store.borrow_mut();
             let state = store
@@ -667,7 +667,7 @@ impl Global for Gate {}
 /// Asks for another frame for the view being rendered. Cheap and idempotent
 /// within a frame; call it from `render` or `prepaint` only.
 pub fn request_frame(window: &mut Window, cx: &mut App) {
-    if super::is_still(cx) {
+    if super::is_still(cx) || window.is_inert_subtree() {
         return;
     }
     let view = window.current_view();

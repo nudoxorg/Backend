@@ -660,3 +660,53 @@ fn retained_still_scope_is_nested_and_panic_safe(cx: &mut TestAppContext) {
         assert!(!crate::ActiveFacet::facet(cx).reduced_motion, "the preference never changed");
     });
 }
+
+struct RetainedMover {
+    child: gpui::Entity<Mover>,
+    inert: bool,
+}
+
+impl Render for RetainedMover {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let child = if self.inert {
+            gpui::inert("retained-mover", "Previous content", self.child.clone()).into_any_element()
+        } else {
+            self.child.clone().into_any_element()
+        };
+        div().size_full().child(child)
+    }
+}
+
+/// A native inert view must settle at exact layout without latching the
+/// FACET Gate; an interactive sibling/later view can still request motion.
+#[gpui::test]
+fn inert_motion_leaves_no_gate_latch_and_resumes_after_release(cx: &mut TestAppContext) {
+    use gpui::AppContext as _;
+    let seen = Rc::new(Cell::new(f32::NAN));
+    let (root, cx) = cx.add_window_view({
+        let seen = Rc::clone(&seen);
+        move |_, cx| RetainedMover {
+            child: cx.new(|_| Mover { motion: Motion::new(), target: 0.0, seen }),
+            inert: true,
+        }
+    });
+    frame(cx);
+    let child = root.read_with(cx, |root, _| root.child.clone());
+    for target in [100.0, 120.0] {
+        child.update(cx, |child, cx| { child.target = target; cx.notify(); });
+        frame(cx);
+        assert_eq!(seen.get(), target, "inert content samples its exact settled target");
+        assert_eq!(cx.update(|_, cx| frames_requested(cx)), 0, "inert content never writes the Gate");
+    }
+    root.update(cx, |root, cx| { root.inert = false; cx.notify(); });
+    child.update(cx, |child, cx| { child.target = 200.0; cx.notify(); });
+    frame(cx);
+    assert!(cx.update(|_, cx| frames_requested(cx)) > 0, "motion resumes without a stale scheduled flag");
+    advance(cx, 400);
+    frame(cx);
+    assert_eq!(seen.get(), 200.0);
+    let requested = cx.update(|_, cx| frames_requested(cx));
+    advance(cx, 400);
+    frame(cx);
+    assert_eq!(cx.update(|_, cx| frames_requested(cx)), requested);
+}
