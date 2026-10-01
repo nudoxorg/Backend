@@ -177,7 +177,7 @@ fn chunks(path: &str) -> Vec<String> {
 fn coverage_words(coverage: &Coverage, count: usize) -> String {
     match coverage {
         Coverage::Complete => format!("All {count} safely addressable files were listed. Each file is checked again when opened."),
-        Coverage::Truncated { limit } => format!("Showing the first {limit} files. More may exist; this listing has no continuation yet."),
+        Coverage::Truncated { limit } => format!("Showing the first {limit} files. More files exist; this listing has no continuation yet."),
         Coverage::Partial { reason } => {
             let reason = match reason {
                 Gap::DirectoryEntryLimit => "a folder exceeded the per-folder entry limit",
