@@ -652,7 +652,9 @@ impl SessionEngine {
                     }
                     Err(error) if attempt == 0 && transport_break(&error) => continue,
                     Err(error) => {
-                        let _ = report_if_dead(self.gate.as_ref(), ready_epoch, &self.endpoint, &error);
+                        if !self.cancel.as_ref().is_some_and(CancellationToken::is_cancelled) {
+                            let _ = report_if_dead(self.gate.as_ref(), ready_epoch, &self.endpoint, &error);
+                        }
                         return Err(error);
                     }
                 }
@@ -670,7 +672,9 @@ impl SessionEngine {
                     if transport_break(&error) {
                         self.session = None;
                         self.session_epoch = None;
-                        let _ = report_if_dead(self.gate.as_ref(), ready_epoch, &self.endpoint, &error);
+                        if !self.cancel.as_ref().is_some_and(CancellationToken::is_cancelled) {
+                            let _ = report_if_dead(self.gate.as_ref(), ready_epoch, &self.endpoint, &error);
+                        }
                     }
                     return Err(error);
                 }

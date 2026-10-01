@@ -73,7 +73,9 @@ impl LocalEngineClient {
     }
 
     fn client_fault(&self, error: ClientError) -> EngineFault {
-        let _ = report_if_dead(self.gate.as_ref(), self.attached_epoch, &self.endpoint, &error);
+        if !self.active_cancel.as_ref().is_some_and(CancellationToken::is_cancelled) {
+            let _ = report_if_dead(self.gate.as_ref(), self.attached_epoch, &self.endpoint, &error);
+        }
         fault(error)
     }
 
