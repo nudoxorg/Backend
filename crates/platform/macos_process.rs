@@ -5,7 +5,9 @@
 //! the original PGID through `libproc` while the direct-child leader remains
 //! waitable. The `libproc` interfaces and unique-identity flavor are private
 //! Apple APIs; if their result is unavailable or does not match the expected
-//! ABI, retirement fails closed. The guarantee covers live members of the
+//! ABI, retirement fails closed. Identity consistency uses only flavor 18's
+//! nonzero `p_uniqueid`; the flavor does not expose a PID generation/version
+//! field. The guarantee covers live members of the
 //! original PGID. Descendants that deliberately change process groups or
 //! sessions escape that boundary.
 //!
@@ -53,8 +55,7 @@ struct ProcUniqIdentifierInfo {
     uuid: [u8; 16],
     unique_id: u64,
     parent_unique_id: u64,
-    id_version: i32,
-    reserved_2: u32,
+    reserved_2: u64,
     reserved_3: u64,
     reserved_4: u64,
 }
@@ -70,7 +71,6 @@ struct ProcessIdentity {
     pid: i32,
     process_group: u32,
     unique_id: u64,
-    id_version: i32,
     status: u32,
 }
 
@@ -256,7 +256,6 @@ fn process_identity(
         pid,
         process_group: info.bsd.pbi_pgid,
         unique_id: info.unique.unique_id,
-        id_version: info.unique.id_version,
         status: info.bsd.pbi_status,
     }))
 }
@@ -339,9 +338,25 @@ mod tests {
             pid,
             process_group: 100,
             unique_id,
-            id_version: pid,
             status,
         }
+    }
+
+    #[test]
+    fn private_identity_flavor_layout_uses_unique_id_without_a_pid_version() {
+        assert_eq!(std::mem::offset_of!(ProcUniqIdentifierInfo, unique_id), 16);
+        assert_eq!(
+            std::mem::offset_of!(ProcUniqIdentifierInfo, parent_unique_id),
+            24
+        );
+        assert_eq!(std::mem::offset_of!(ProcUniqIdentifierInfo, reserved_2), 32);
+        assert_eq!(std::mem::offset_of!(ProcUniqIdentifierInfo, reserved_3), 40);
+        assert_eq!(std::mem::offset_of!(ProcUniqIdentifierInfo, reserved_4), 48);
+        assert_eq!(std::mem::size_of::<ProcUniqIdentifierInfo>(), 56);
+        assert_eq!(
+            std::mem::offset_of!(ProcBsdInfoWithUniqId, unique),
+            std::mem::size_of::<libc::proc_bsdinfo>()
+        );
     }
 
     #[test]
