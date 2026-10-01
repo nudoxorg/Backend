@@ -365,10 +365,9 @@ impl RemoteSemanticRangeConnection {
             SocketAddr::V4(_) => SocketAddr::from(([0, 0, 0, 0], 0)),
             SocketAddr::V6(_) => SocketAddr::from(([0_u16; 8], 0)),
         };
-        let bound = runtime.block_on(tokio::time::timeout_at(
-            deadline,
-            bind_direct(secret, bind_address),
-        ));
+        let bound = runtime.block_on(async {
+            tokio::time::timeout_at(deadline, bind_direct(secret, bind_address)).await
+        });
         let endpoint = match bound {
             Ok(Ok(endpoint)) => endpoint,
             Ok(Err(error)) => return Err(ClientError::Io(error.to_string())),
@@ -412,10 +411,13 @@ impl RemoteSemanticRangeConnection {
             RemoteIndexChannel::SemanticHydration,
         )
         .map_err(|error| ClientError::Protocol(error.to_string()))?;
-        let connected = self.runtime.block_on(tokio::time::timeout_at(
-            deadline,
-            connect_remote_index(&self.endpoint, self.owner_address.clone(), hello),
-        ));
+        let connected = self.runtime.block_on(async {
+            tokio::time::timeout_at(
+                deadline,
+                connect_remote_index(&self.endpoint, self.owner_address.clone(), hello),
+            )
+            .await
+        });
         match connected {
             Ok(Ok(session)) => self.session = Some(session),
             Ok(Err(error)) => return Err(map_remote_index_transport_error(error)),
@@ -506,13 +508,15 @@ impl RemoteSemanticRangeConnection {
             let session = self.session.as_mut().ok_or_else(|| {
                 ClientError::Io("remote semantic session was not opened".to_owned())
             })?;
-            self.runtime
-                .block_on(tokio::time::timeout_at(deadline, async {
+            self.runtime.block_on(async {
+                tokio::time::timeout_at(deadline, async {
                     session
                         .send_request(&RemoteIndexRequest { request_id, body })
                         .await?;
                     session.receive_response(request_id).await
-                }))
+                })
+                .await
+            })
         };
         match result {
             Ok(Ok(response)) => Ok(response),

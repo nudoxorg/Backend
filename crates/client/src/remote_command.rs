@@ -248,10 +248,9 @@ impl RemoteIndexCommandTransport {
             SocketAddr::V4(_) => SocketAddr::from(([0, 0, 0, 0], 0)),
             SocketAddr::V6(_) => SocketAddr::from(([0_u16; 8], 0)),
         };
-        let bound = runtime.block_on(tokio::time::timeout_at(
-            deadline,
-            bind_direct(client_secret, bind_address),
-        ));
+        let bound = runtime.block_on(async {
+            tokio::time::timeout_at(deadline, bind_direct(client_secret, bind_address)).await
+        });
         let endpoint = match bound {
             Ok(Ok(endpoint)) => endpoint,
             Ok(Err(error)) => return Err(ClientError::Io(error.to_string())),
@@ -291,10 +290,13 @@ impl RemoteIndexCommandTransport {
         let hello =
             RemoteIndexSessionHello::new(self.capability.clone(), RemoteIndexChannel::ProductQuery)
                 .map_err(|error| ClientError::Protocol(error.to_string()))?;
-        let connected = self.runtime.block_on(tokio::time::timeout_at(
-            deadline,
-            connect_remote_index(&self.endpoint, self.owner_address.clone(), hello),
-        ));
+        let connected = self.runtime.block_on(async {
+            tokio::time::timeout_at(
+                deadline,
+                connect_remote_index(&self.endpoint, self.owner_address.clone(), hello),
+            )
+            .await
+        });
         let session = match connected {
             Ok(Ok(session)) => session,
             Ok(Err(error)) => return Err(map_session_transport(error)),
@@ -330,12 +332,13 @@ impl RemoteIndexCommandTransport {
             return Err(ClientError::Io("remote session was not opened".to_owned()));
         };
         let request = RemoteIndexRequest { request_id, body };
-        let result = self
-            .runtime
-            .block_on(tokio::time::timeout_at(deadline, async {
+        let result = self.runtime.block_on(async {
+            tokio::time::timeout_at(deadline, async {
                 active.session.send_request(&request).await?;
                 active.session.receive_response(request_id).await
-            }));
+            })
+            .await
+        });
         match result {
             Ok(Ok(response)) => Ok(response.outcome),
             Ok(Err(error)) => {
@@ -1653,14 +1656,17 @@ mod tests {
             .expect("bind raw expired-grant client");
         let hello = RemoteIndexSessionHello::new(expired, RemoteIndexChannel::ProductQuery)
             .expect("construct expired-grant hello");
-        let result = runtime.block_on(tokio::time::timeout(
-            TEST_IO_TIMEOUT,
-            connect_remote_index(
-                &client_endpoint,
-                EndpointAddr::new(owner_id).with_ip_addr(owner_address),
-                hello,
-            ),
-        ));
+        let result = runtime.block_on(async {
+            tokio::time::timeout(
+                TEST_IO_TIMEOUT,
+                connect_remote_index(
+                    &client_endpoint,
+                    EndpointAddr::new(owner_id).with_ip_addr(owner_address),
+                    hello,
+                ),
+            )
+            .await
+        });
         assert!(
             matches!(result, Ok(Err(_))),
             "owner rejected over real Iroh wire"
