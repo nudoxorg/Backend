@@ -1316,6 +1316,16 @@ mod tests {
         let route = crate::shell::tests::view_route("RelationLabel", View::Code);
         let pool = ReadPool::start(2, |_| LongWrappedLine).expect("wrapped source pool");
         let mut rig = crate::shell::tests::rig_with_reads(cx, Some(route), 260.0, 700.0, pool);
+        for _ in 0..5 {
+            rig.keys("cmd-=");
+        }
+        let scale = rig
+            .cx
+            .update(|_, cx| facet::ActiveFacet::facet(cx).text_scale);
+        assert!(
+            (scale - 2.0).abs() < 1e-6,
+            "the source view really reflowed at 200% text"
+        );
         assert!(
             rig.said()
                 .iter()
