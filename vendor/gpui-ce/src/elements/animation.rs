@@ -736,8 +736,8 @@ mod tests {
                 div().with_spring(
                     "retargetable-spring",
                     SpringAnimation::new(SpringConfig::new(100.0, 1.0, 1.0))
-                        .from(0.0)
-                        .to(target),
+                        .to(target)
+                        .from(0.0),
                     move |element, value| {
                         rendered_values.borrow_mut().push(value);
                         element
