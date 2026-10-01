@@ -243,7 +243,8 @@ pub fn route_package(route: &Route) -> Option<PackageRef> {
     };
     let pinned = PackageRef::parse(package.as_str()).ok()?;
     match at {
-        Some(at) => pinned.at(at.as_str()).or_else(|| release_tree(&pinned, at.as_str())),
+        Some(at) if at.is_valid() => pinned.at(at.as_str()).or_else(|| release_tree(&pinned, at.as_str())),
+        Some(_) => None,
         None => Some(pinned),
     }
 }
@@ -280,6 +281,8 @@ pub fn route_symbol(route: &Route) -> Option<SymbolRef> {
 pub enum Unread {
     /// The address does not spell a declaration.
     NotADeclaration,
+    /// The declaration coordinate belongs to a different package than the route.
+    CoordinateOutsidePackage,
     /// The route views a release its package cannot be read at: a
     /// workspace crate has only its working copy in the index.
     ReleaseNotHere(crate::navigation::ReleaseId),
@@ -294,12 +297,15 @@ pub fn route_declaration(route: &Route) -> Result<SymbolRef, Unread> {
         return Err(Unread::NotADeclaration);
     };
     let symbol = SymbolRef::new(route.id.as_str()).map_err(|_| Unread::NotADeclaration)?;
+    let pinned = PackageRef::parse(route.package.as_str()).map_err(|_| Unread::NotADeclaration)?;
+    if !symbol.as_str().strip_prefix(pinned.as_str()).is_some_and(|tail| tail.starts_with("::")) {
+        return Err(Unread::CoordinateOutsidePackage);
+    }
     let Some(at) = &route.at else {
         return Ok(symbol);
     };
-    let pinned = PackageRef::parse(route.package.as_str()).map_err(|_| Unread::NotADeclaration)?;
     let viewed = route_package(&Route::Symbol(route.clone())).ok_or_else(|| Unread::ReleaseNotHere(at.clone()))?;
-    Ok(symbol.rebased(&pinned, &viewed).unwrap_or(symbol))
+    symbol.rebased(&pinned, &viewed).ok_or(Unread::CoordinateOutsidePackage)
 }
 
 /// Returns the page keys one route displays.
@@ -535,6 +541,9 @@ impl DataStore {
             self.emit(StoreEvent::Snapshot(*branch), cx);
         }
         if changed.contains(&Branch::Root) {
+            // Old-root work must lose its generation before ensure asks for this root.
+            let stale = self.pages.keys().into_iter().filter(|key| self.pages.inflight(key).is_some()).collect::<Vec<_>>();
+            for key in stale { self.cancel_key(&key, cx); }
             let root = self.snapshot.key();
             self.keeper.settle(&mut self.pages, root);
         }
@@ -953,6 +962,26 @@ mod tests {
 
     type Gate = Arc<(Mutex<BTreeSet<String>>, Condvar)>;
 
+    #[test]
+    fn a_symbol_address_must_belong_to_its_pinned_package_before_release_rebasing() {
+        let route = |id: &str| Route::Symbol(crate::navigation::SymbolRoute {
+            project: None,
+            package: crate::core::PackageId::new("pkg:cargo/serde@1.0.0").expect("package"),
+            id: crate::navigation::Coordinate::new(id).expect("coordinate"),
+            at: Some(crate::navigation::ReleaseId::new("1.0.1").expect("release")),
+            view: crate::navigation::View::Page,
+            line: None,
+            selected: None,
+        });
+        let foreign = route("pkg:cargo/serde_core@1.0.0::src/lib.rs:1::Item");
+        assert_eq!(route_declaration(&foreign), Err(Unread::CoordinateOutsidePackage));
+        assert!(route_symbol(&foreign).is_none());
+        assert!(route_keys(&foreign).is_empty());
+
+        let own = route("pkg:cargo/serde@1.0.0::src/lib.rs:1::Item");
+        assert_eq!(route_declaration(&own).expect("own declaration").as_str(), "pkg:cargo/serde@1.0.1::src/lib.rs:1::Item");
+    }
+
     /// Answers every page at once, except coordinates starting with `slow`,
     /// which wait for the test to open their gate (or for cancellation).
     struct FixtureReader {
@@ -1164,6 +1193,31 @@ mod tests {
             rig.store
                 .read_with(cx, |store, _| store.symbol(&symbol("slow-old")).loaded_value().is_none())
         );
+    }
+
+    #[gpui::test]
+    fn a_new_root_supersedes_a_blocked_read_and_submits_exactly_one_current_read(cx: &mut TestAppContext) {
+        let rig = rig(cx, 1);
+        let key = PageKey::Symbol(symbol("slow-root"));
+        rig.store.update(cx, |store, cx| store.focus(vec![key.clone()], cx));
+        rig.until(cx, |store| store.pool_activity().running == 1);
+        let old = rig.store.read_with(cx, |store, _| store.pages.inflight(&key).expect("R1 read"));
+
+        let r2 = VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("store".to_owned(), "new-root".to_owned())]),
+            6,
+        );
+        rig.store.update(cx, |store, cx| store.admit_snapshot(Arc::new(AppSnapshot::empty(r2)), cx));
+        let (current, submitted) = rig.store.read_with(cx, |store, _| (store.pages.inflight(&key), store.stats().submitted));
+        assert_ne!(current, Some(old));
+        assert!(current.is_some(), "R2 starts despite the old Running slot");
+        assert_eq!(submitted - rig.base.submitted, 2, "one R1 and exactly one R2 request");
+
+        rig.open("slow-root");
+        rig.until(cx, |store| store.symbol(&symbol("slow-root")).is_loaded() && store.pool_activity().is_idle());
+        let (resource, landed) = rig.store.read_with(cx, |store, _| (store.symbol(&symbol("slow-root")), store.stats().landed));
+        assert_eq!(resource.value_root(), Some(r2));
+        assert_eq!(landed - rig.base.landed, 1, "only R2 can land");
     }
 
     #[gpui::test]

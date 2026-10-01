@@ -128,6 +128,7 @@ impl Ctx<'_> {
     pub(crate) fn unread(&mut self, unread: &crate::runtime::store::Unread) -> Vec<Leaf> {
         let words = match unread {
             crate::runtime::store::Unread::NotADeclaration => "This page's address is not a declaration.".to_owned(),
+            crate::runtime::store::Unread::CoordinateOutsidePackage => "This declaration does not belong to the package in this address.".to_owned(),
             crate::runtime::store::Unread::ReleaseNotHere(at) => format!(
                 "Release {} is not in this index; only your working copy is. Esc returns to it.",
                 at.as_str()
