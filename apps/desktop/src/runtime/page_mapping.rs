@@ -2040,6 +2040,15 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
     }
 }
 
+fn readme_relative_source_path(package: &PackageRef, path: &std::path::Path) -> Option<String> {
+    path.strip_prefix(package.as_str())
+        .ok()?
+        // A replacement character is not the file's name: source proof must
+        // never alias a non-UTF-8 path to an indexed row.
+        .to_str()
+        .map(|relative| relative.replace(std::path::MAIN_SEPARATOR, "/"))
+}
+
 /// Resolves only worker-indexed, uniquely proved semantic destinations. The
 /// local source read and complete flat outline are already held by this read
 /// worker; no GUI paint or filesystem access participates in this lookup.
@@ -2055,10 +2064,7 @@ fn prepare_readme_exact_targets(
     for (link_index, link) in links.iter().take(LIMIT).enumerate() {
         let kind = if let Some(path) = link.local_file.as_deref() {
             let line = link.line.unwrap_or(1);
-            let relative = std::path::Path::new(path)
-                .strip_prefix(package.as_str())
-                .ok()
-                .map(|relative| relative.to_string_lossy().replace('\\', "/"));
+            let relative = readme_relative_source_path(package, std::path::Path::new(path));
             relative.and_then(|relative| {
                 let mut candidates = index.rows.iter().filter(|row| {
                     row.source.captured().is_some_and(|site| {
@@ -2421,6 +2427,23 @@ mod tests {
 
     const PRESENT: &str = "/work/crates/present";
     const RICH: &str = "/work/rich_project";
+
+    #[cfg(unix)]
+    #[test]
+    fn readme_source_proof_refuses_a_native_path_that_lossy_text_would_alias() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt as _;
+
+        let package = PackageRef::parse(PRESENT).expect("local package");
+        let invalid = std::path::Path::new(PRESENT)
+            .join("src")
+            .join(OsString::from_vec(b"\xff.rs".to_vec()));
+        let replacement = std::path::Path::new(PRESENT).join("src").join("\u{fffd}.rs");
+        assert_eq!(invalid.to_string_lossy(), replacement.to_string_lossy(),
+            "this is a real native-path collision under lossy conversion");
+        assert_eq!(readme_relative_source_path(&package, &invalid), None);
+        assert_eq!(readme_relative_source_path(&package, &replacement).as_deref(), Some("src/\u{fffd}.rs"));
+    }
 
     fn basis() -> Basis {
         Basis::new(view_state_root(&[]), object_version(b"fixture"))
