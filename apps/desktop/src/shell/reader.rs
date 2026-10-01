@@ -464,7 +464,7 @@ impl Reader {
         Self {
             core: RegionCore::new(
                 store,
-                &[Branch::Route, Branch::Overlay, Branch::Workspace, Branch::Settings],
+                &[Branch::Root, Branch::Route, Branch::Overlay, Branch::Workspace, Branch::Settings],
             ),
             links,
             map: None,

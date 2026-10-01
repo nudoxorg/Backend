@@ -325,3 +325,26 @@ fn superseded_pending_page_releases_on_failure_and_late_reads_cannot_replace_des
     assert!(rig.said().iter().any(|line| line.as_str() == "RelationDirection"));
     assert!(!rig.said().iter().any(|line| line.as_str() == "KindGlyph"));
 }
+
+
+/// An incompatible producer root must wake the retained Reader even when the
+/// requested page is held before any fetch can emit a Resource event.
+#[gpui::test]
+fn pending_retention_drops_on_root_wake_before_reads_start(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
+    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(page_route("KindGlyph")), cx));
+    rig.frame(0);
+    assert!(rig.said().iter().any(|line| line.contains("previous page:")));
+    rig.graph.store.update(rig.cx, |store, cx| {
+        let root = crate::core::VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("retention".to_owned(), "new owner root".to_owned())]), 5,
+        );
+        let snapshot = std::sync::Arc::new(store.snapshot().with_key(root, None));
+        store.admit_snapshot(snapshot, cx);
+    });
+    rig.frame(0);
+    assert!(!rig.said().iter().any(|line| line.contains("previous page:")));
+    assert!(!rig.said().iter().any(|line| line.as_str() == "RelationLabel"));
+    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx)), 1);
+}
