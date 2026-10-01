@@ -463,7 +463,11 @@ impl RemoteSemanticRangeConnection {
             }
             Err(error) => return Err(error),
         };
-        match response.outcome {
+        let stale_selection = matches!(
+            &response.outcome,
+            RemoteIndexOutcome::StaleSemanticSelection
+        );
+        let admitted = match response.outcome {
             RemoteIndexOutcome::Payload(body) => {
                 backend_replication::decode_response(&body, control_limits())
                     .map_err(map_control_error)
@@ -482,20 +486,18 @@ impl RemoteSemanticRangeConnection {
             }
             RemoteIndexOutcome::Rejected(
                 backend_engine::cluster_transport::RemoteIndexReject::StaleCapability,
-            ) => {
-                self.session = None;
-                Err(ClientError::StaleRemoteCapability)
-            }
+            ) => Err(ClientError::StaleRemoteCapability),
             RemoteIndexOutcome::Rejected(
                 backend_engine::cluster_transport::RemoteIndexReject::CapabilityRevoked,
-            ) => {
-                self.session = None;
-                Err(ClientError::RemoteCapabilityRevoked)
-            }
+            ) => Err(ClientError::RemoteCapabilityRevoked),
             RemoteIndexOutcome::Rejected(reason) => Err(ClientError::Protocol(format!(
                 "remote semantic request was rejected: {reason:?}"
             ))),
+        };
+        if stale_selection || admitted.is_err() {
+            self.session = None;
         }
+        admitted
     }
 
     fn exchange_until(

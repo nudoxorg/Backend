@@ -399,6 +399,19 @@ impl RemoteIndexCommandTransport {
                 return Err(error);
             }
         };
+        let admitted = self.admit_outcome(&request, outcome, is_revision);
+        if admitted.is_err() {
+            self.active = None;
+        }
+        admitted
+    }
+
+    fn admit_outcome(
+        &mut self,
+        request: &CommandDto,
+        outcome: RemoteIndexOutcome,
+        is_revision: bool,
+    ) -> Result<ReplyDto, ClientError> {
         match outcome {
             RemoteIndexOutcome::Payload(body) => {
                 if body.len() > MAX_REMOTE_INDEX_BODY_BYTES {
@@ -420,7 +433,7 @@ impl RemoteIndexCommandTransport {
                 {
                     let reply =
                         backend_library::decode_reply_body(&body).map_err(ClientError::Protocol)?;
-                    return admit_reply(&request, reply);
+                    return admit_reply(request, reply);
                 }
                 let verifier = if is_revision {
                     RemoteProductCoverageVerifier::bootstrap_revision(
@@ -459,11 +472,11 @@ impl RemoteIndexCommandTransport {
                     if active.revision.is_some_and(|previous| previous != binding) {
                         return Err(ClientError::StaleRemoteCapability);
                     }
-                    let admitted = admit_reply(&request, reply)?;
+                    let admitted = admit_reply(request, reply)?;
                     active.revision = Some(binding);
                     return Ok(admitted);
                 }
-                admit_reply(&request, reply)
+                admit_reply(request, reply)
             }
             RemoteIndexOutcome::StaleProductRoot { expected, observed } => {
                 Err(ClientError::StaleRemoteRoot { expected, observed })
@@ -477,16 +490,10 @@ impl RemoteIndexCommandTransport {
             RemoteIndexOutcome::StaleSemanticSelection => Err(ClientError::StaleSelection),
             RemoteIndexOutcome::Rejected(
                 backend_engine::cluster_transport::RemoteIndexReject::StaleCapability,
-            ) => {
-                self.active = None;
-                Err(ClientError::StaleRemoteCapability)
-            }
+            ) => Err(ClientError::StaleRemoteCapability),
             RemoteIndexOutcome::Rejected(
                 backend_engine::cluster_transport::RemoteIndexReject::CapabilityRevoked,
-            ) => {
-                self.active = None;
-                Err(ClientError::RemoteCapabilityRevoked)
-            }
+            ) => Err(ClientError::RemoteCapabilityRevoked),
             RemoteIndexOutcome::Rejected(reason) => Err(ClientError::Protocol(format!(
                 "remote index request was rejected: {reason:?}"
             ))),
@@ -1187,6 +1194,14 @@ mod tests {
             CommandReply::Search(_)
         ));
         assert!(transport.request(query_request(3)).is_err());
+        assert!(
+            transport.active.is_none(),
+            "a wrong producer certificate clears the admitted revision and session"
+        );
+        assert!(
+            transport.request(query_request(4)).is_err(),
+            "a query after an untrusted reply needs a fresh Revision"
+        );
 
         transport
             .reconnect()
@@ -1579,6 +1594,7 @@ mod tests {
         let client_secret = SecretKey::generate();
         let (owner_address, _) = unused_loopback_addresses();
         let (ready_sender, ready_receiver) = mpsc::channel();
+        let (phase_sender, phase_receiver) = mpsc::channel();
         let (shutdown_sender, mut shutdown_receiver) = oneshot::channel();
         let owner_thread = thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1599,6 +1615,9 @@ mod tests {
                             .expect("expired-grant connection")
                     }
                 };
+                phase_sender
+                    .send("incoming accepted")
+                    .expect("report expired-grant incoming connection");
                 let connecting = incoming.accept().expect("accept expired-grant connection");
                 let connection = tokio::select! {
                     _ = &mut shutdown_receiver => return,
@@ -1607,6 +1626,9 @@ mod tests {
                             .expect("complete expired-grant connection")
                     }
                 };
+                phase_sender
+                    .send("Iroh connection completed")
+                    .expect("report expired-grant Iroh connection");
                 let rejected = tokio::select! {
                     _ = &mut shutdown_receiver => return,
                     result = tokio::time::timeout(
@@ -1617,6 +1639,9 @@ mod tests {
                             .expect_err("owner must reject an expired signed grant")
                     }
                 };
+                phase_sender
+                    .send("grant rejected by owner")
+                    .expect("report expired-grant admission");
                 assert!(
                     rejected.to_string().contains("capability rejected")
                         || rejected.to_string().contains("admission denied"),
@@ -1669,7 +1694,8 @@ mod tests {
         });
         assert!(
             matches!(result, Ok(Err(_))),
-            "owner rejected over real Iroh wire"
+            "owner rejected over real Iroh wire: {result:?}; server phases: {:?}",
+            phase_receiver.try_iter().collect::<Vec<_>>()
         );
 
         test_server.finish();
