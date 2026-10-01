@@ -4,6 +4,7 @@ mod inline;
 mod inline_flow;
 mod markdown_ext;
 mod node;
+mod pending_update;
 pub(crate) mod selection;
 mod selection_adapter;
 mod state;

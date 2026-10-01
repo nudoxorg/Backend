@@ -12,7 +12,7 @@ use gpui::{
     App, ClickEvent, ElementId, IntoElement, ParentElement, SharedString, Styled, Window, div, px,
 };
 use gpui_component::text::{MarkdownExtensions, MarkdownNode, TextView};
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 /// Action dispatched by the Markdown component when a rendered link is
 /// activated. Keeping the URL in the action crosses GPUI's Send+Sync
@@ -43,6 +43,7 @@ pub(crate) fn emit_link_action(
 /// Builds one selectable Markdown document with stable heading anchors.
 pub(crate) fn view(id: impl Into<ElementId>, source: impl Into<SharedString>) -> TextView {
     TextView::markdown(id, source)
+        .background_parse()
         .selectable(true)
         .on_link_click(emit_link_action)
         .markdown_extensions(readme_extensions().clone())
@@ -58,14 +59,17 @@ fn readme_extensions() -> &'static MarkdownExtensions {
                 };
                 let position = heading.position.as_ref()?;
                 let offset = position.start.offset.saturating_add(context.offset());
-                let element_id = format!("readme-heading-{offset}");
+                let element_id: SharedString = format!("readme-heading-{offset}").into();
+                let inline_id: SharedString = format!("readme-heading-{offset}:inline").into();
                 let raw = context.node_source(node)?;
-                let inline = heading_inline_source(raw);
+                let inline: SharedString = heading_inline_source(raw).into();
                 Some(
                     MarkdownNode::new(
                         "readme-heading-anchor",
                         HeadingData {
-                            element_id: Arc::from(element_id),
+                            element_id,
+                            inline_id,
+                            inline: inline.clone(),
                             level: heading.depth,
                         },
                     )
@@ -76,7 +80,7 @@ fn readme_extensions() -> &'static MarkdownExtensions {
                 let Some(data) = node.data::<HeadingData>() else {
                     return div().into_any_element();
                 };
-                let id = SharedString::from(data.element_id.to_string());
+                let id = data.element_id.clone();
                 let facet = cx.facet();
                 let measure = Measure::new(window.viewport_size().width, &facet);
                 let palette = facet.palette();
@@ -86,9 +90,10 @@ fn readme_extensions() -> &'static MarkdownExtensions {
                     _ => ty::PROSE,
                 });
                 let inline = TextView::markdown(
-                    ElementId::Name(SharedString::from(format!("{id}:inline"))),
-                    node.as_markdown(),
+                    ElementId::Name(data.inline_id.clone()),
+                    data.inline.clone(),
                 )
+                .background_parse()
                 .selectable(true)
                 .on_link_click(emit_link_action);
                 facet::motion::shared::shared(
@@ -109,7 +114,9 @@ fn readme_extensions() -> &'static MarkdownExtensions {
 
 #[derive(Clone)]
 struct HeadingData {
-    element_id: Arc<str>,
+    element_id: SharedString,
+    inline_id: SharedString,
+    inline: SharedString,
     level: u8,
 }
 
@@ -136,7 +143,18 @@ fn heading_inline_source(source: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::readme_extensions;
+    use super::{heading_inline_source, readme_extensions};
+
+    #[test]
+    fn heading_inline_preserves_unicode_links_and_setext_text() {
+        assert_eq!(
+            heading_inline_source("## 🦀 [Guide](#guide) ###"),
+            "🦀 [Guide](#guide)"
+        );
+        assert_eq!(heading_inline_source("Guide 🦀\n========"), "Guide 🦀");
+        assert_eq!(heading_inline_source("# C#"), "C#");
+        assert_eq!(heading_inline_source("# `#literal`"), "`#literal`");
+    }
 
     #[test]
     fn markdown_plugin_registration_is_stable_between_render_builds() {

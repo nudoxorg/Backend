@@ -14,7 +14,7 @@ use gpui::{
 
 use crate::{
     ElementExt,
-    async_util::{Receiver, Sender, unbounded},
+    async_util::{Sender, unbounded},
     input::{self, SelectAll},
     scroll::AutoScroll,
     text::{
@@ -22,14 +22,13 @@ use crate::{
         document::ParsedDocument,
         format,
         node::{self, NodeContext},
+        pending_update::{self, Publications, Publisher},
         selection_adapter::TextViewSelectionAdapter,
     },
     v_flex,
 };
 
 const CONTEXT: &'static str = "TextView";
-// Keep coalescing bounded so sustained streams still render intermediate updates.
-const MAX_COALESCED_UPDATES_PER_PARSE: usize = 64;
 // Preserve exact first-layout height for small documents while bounding the
 // amount of source parsed synchronously on the UI thread.
 const MAX_SYNC_FULL_REPLACE_BYTES: usize = 4 * 1024;
@@ -116,12 +115,13 @@ pub struct TextViewState {
     /// Content format (markdown / html), used for bounded synchronous parsing
     /// of small full-replace updates.
     format: TextViewFormat,
+    pub(super) background_parse: bool,
     text: String,
     revision: usize,
     pub(super) selection_revision: usize,
     compatible_layout_update: bool,
     parsed_error: Option<SharedString>,
-    tx: Sender<UpdateOptions>,
+    tx: Publisher<UpdateOptions>,
     _parse_task: Task<()>,
     _receive_task: Task<()>,
 }
@@ -139,40 +139,26 @@ impl TextViewState {
 
     /// Create a new TextViewState.
     fn new(format: TextViewFormat, text: &str, cx: &mut Context<Self>) -> Self {
+        Self::new_configured(format, text, Arc::default(), false, cx)
+    }
+
+    pub(super) fn new_configured(
+        format: TextViewFormat,
+        text: &str,
+        markdown_extensions: Arc<MarkdownExtensions>,
+        background_parse: bool,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
         let selection_adapter = TextViewSelectionAdapter::new(cx.entity().downgrade(), cx);
 
-        let (tx, rx) = unbounded::<UpdateOptions>();
+        let (tx, rx) = pending_update::channel(UpdateOptions::merge);
         let (tx_result, rx_result) = unbounded::<ParsedUpdate>();
         let _receive_task = cx.spawn({
             async move |weak_self, cx| {
                 while let Ok(parsed_update) = rx_result.recv().await {
                     _ = weak_self.update(cx, |state, cx| {
-                        if parsed_update.revision != state.revision {
-                            return;
-                        }
-                        if parsed_update.baseline_ack {
-                            debug_assert!(parsed_update.full_parse);
-                            return;
-                        }
-
-                        match parsed_update.result {
-                            Ok(content) => {
-                                state.parsed_content = content;
-                                state.parsed_error = None;
-                                state.compatible_layout_update = parsed_update.selection_compatible;
-                            }
-                            Err(err) => {
-                                state.parsed_error = Some(err);
-                            }
-                        }
-                        // Don't interrupt an active drag-selection; the stored
-                        // positions remain valid for append-only updates and will
-                        // self-correct on the next mouse-move event.
-                        if !parsed_update.selection_compatible && !state.is_selecting {
-                            state.reset_selection_and_adapter(cx);
-                        }
-                        cx.notify();
+                        state.accept_parsed_update(parsed_update, cx);
                     });
                 }
             }
@@ -201,12 +187,13 @@ impl TextViewState {
             code_block_actions: None,
             table_actions: None,
             link_click_handler: None,
-            markdown_extensions: Arc::default(),
+            markdown_extensions,
             is_selecting: false,
             auto_scroll: AutoScroll::default(),
             selection_adapter,
             parsed_content: Default::default(),
             format,
+            background_parse,
             parsed_error: None,
             text: text.to_string(),
             revision: 0,
@@ -218,6 +205,39 @@ impl TextViewState {
         };
         this.increment_update(&text, false, cx);
         this
+    }
+
+    fn accept_parsed_update(
+        &mut self,
+        parsed_update: ParsedUpdate,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if parsed_update.revision != self.revision {
+            return false;
+        }
+        if parsed_update.baseline_ack {
+            debug_assert!(parsed_update.full_parse);
+            return false;
+        }
+
+        match parsed_update.result {
+            Ok(content) => {
+                self.parsed_content = content;
+                self.parsed_error = None;
+                self.compatible_layout_update = parsed_update.selection_compatible;
+            }
+            Err(err) => {
+                self.parsed_error = Some(err);
+            }
+        }
+        // Don't interrupt an active drag-selection; the stored
+        // positions remain valid for append-only updates and will
+        // self-correct on the next mouse-move event.
+        if !parsed_update.selection_compatible && !self.is_selecting {
+            self.reset_selection_and_adapter(cx);
+        }
+        cx.notify();
+        true
     }
 
     /// Get the text content.
@@ -367,7 +387,8 @@ impl TextViewState {
         if !append {
             self.selection_revision = self.selection_revision.wrapping_add(1);
         }
-        let parse_synchronously = !append && text.len() <= MAX_SYNC_FULL_REPLACE_BYTES;
+        let parse_synchronously =
+            !self.background_parse && !append && text.len() <= MAX_SYNC_FULL_REPLACE_BYTES;
         let update_options = UpdateOptions {
             revision: self.revision,
             append,
@@ -661,14 +682,14 @@ pub(crate) struct ParsedContent {
 struct UpdateFuture {
     format: TextViewFormat,
     content: ParsedContent,
-    rx: Pin<Box<Receiver<UpdateOptions>>>,
+    rx: Pin<Box<Publications<UpdateOptions>>>,
     tx_result: Sender<ParsedUpdate>,
 }
 
 impl UpdateFuture {
     fn new(
         format: TextViewFormat,
-        rx: Receiver<UpdateOptions>,
+        rx: Publications<UpdateOptions>,
         tx_result: Sender<ParsedUpdate>,
     ) -> Self {
         Self {
@@ -684,32 +705,26 @@ impl Future for UpdateFuture {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
-        loop {
-            match self.rx.as_mut().poll_next(cx) {
-                Poll::Ready(Some(mut options)) => {
-                    let hit_coalesce_budget =
-                        merge_pending_options(&mut options, self.rx.as_ref().get_ref());
-
-                    let res = parse_content(self.format, self.content.clone(), &options);
-                    if let Ok(content) = &res {
-                        self.content = content.clone();
-                    }
-                    _ = self.tx_result.try_send(ParsedUpdate {
-                        revision: options.revision,
-                        full_parse: !options.append,
-                        selection_compatible: options.mode == ParseMode::Compatible,
-                        baseline_ack: options.mode == ParseMode::BaselineAck,
-                        result: res,
-                    });
-                    if hit_coalesce_budget {
-                        cx.waker().wake_by_ref();
-                        return Poll::Pending;
-                    }
-                    continue;
+        match self.rx.as_mut().poll_next(cx) {
+            Poll::Ready(Some(options)) => {
+                let res = parse_content(self.format, self.content.clone(), &options);
+                if let Ok(content) = &res {
+                    self.content = content.clone();
                 }
-                Poll::Ready(None) => return Poll::Ready(()),
-                Poll::Pending => return Poll::Pending,
+                _ = self.tx_result.try_send(ParsedUpdate {
+                    revision: options.revision,
+                    full_parse: !options.append,
+                    selection_compatible: options.mode == ParseMode::Compatible,
+                    baseline_ack: options.mode == ParseMode::BaselineAck,
+                    result: res,
+                });
+                // One parse per poll; a concurrent publisher cannot keep
+                // this worker occupied indefinitely.
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
             }
+            Poll::Ready(None) => Poll::Ready(()),
+            Poll::Pending => Poll::Pending,
         }
     }
 }
@@ -750,22 +765,6 @@ enum ParseMode {
     BaselineAck,
     Replace,
     Compatible,
-}
-
-fn merge_pending_options(options: &mut UpdateOptions, rx: &Receiver<UpdateOptions>) -> bool {
-    let mut update_count = 1;
-
-    while update_count < MAX_COALESCED_UPDATES_PER_PARSE {
-        match rx.try_recv() {
-            Ok(next_options) => {
-                options.merge(next_options);
-                update_count += 1;
-            }
-            Err(_) => return false,
-        }
-    }
-
-    true
 }
 
 fn parse_content(
@@ -829,6 +828,199 @@ mod tests {
     use super::*;
     use crate::text::MarkdownNode;
     use gpui::TestAppContext;
+
+    #[gpui::test]
+    fn background_small_markdown_installs_extensions_once_before_parsing(cx: &mut TestAppContext) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        cx.update(crate::init);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let extensions = Arc::new(MarkdownExtensions::default().block_parser(
+            move |node, context| {
+                let markdown::mdast::Node::Heading(heading) = node else {
+                    return None;
+                };
+                observed.fetch_add(1, Ordering::SeqCst);
+                Some(
+                    MarkdownNode::new("heading", heading.depth)
+                        .text("Hello 🦀")
+                        .markdown(context.node_source(node).unwrap()),
+                )
+            },
+        ));
+        let source = "# Hello 🦀\n\n[local](src/lib.rs#L7)";
+        let state = cx.update(|cx| {
+            cx.new(|cx| {
+                TextViewState::new_configured(
+                    TextViewFormat::Markdown,
+                    source,
+                    extensions.clone(),
+                    true,
+                    cx,
+                )
+            })
+        });
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        state.read_with(cx, |state, _| {
+            assert!(state.parsed_content.document.blocks.is_empty())
+        });
+        cx.run_until_parked();
+        state.read_with(cx, |state, _| {
+            let blocks = &state.parsed_content.document.blocks;
+            assert_eq!(blocks.len(), 2);
+            let node::BlockNode::Custom(heading) = &blocks[0] else {
+                panic!("custom heading missing");
+            };
+            assert_eq!(heading.data::<u8>(), Some(&1));
+            assert_eq!(heading.as_text(), "Hello 🦀");
+            let node::BlockNode::Paragraph(paragraph) = &blocks[1] else {
+                panic!("link paragraph missing");
+            };
+            assert_eq!(paragraph.text(), "local");
+            let destinations: Vec<_> = paragraph
+                .children
+                .iter()
+                .flat_map(|run| run.marks.iter())
+                .filter_map(|(_, mark)| mark.link.as_ref().map(|link| link.url.as_str()))
+                .collect();
+            assert_eq!(destinations, ["src/lib.rs#L7"]);
+        });
+        state.update(cx, |state, cx| {
+            state.set_markdown_extensions(extensions, cx);
+            state.set_text(source, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "unchanged source/options must reuse parse"
+        );
+    }
+
+    #[gpui::test]
+    fn held_old_completion_and_failure_cannot_publish_over_new_revision(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let state = cx.update(|cx| {
+            cx.new(|cx| {
+                TextViewState::new_configured(
+                    TextViewFormat::Markdown,
+                    "A",
+                    Arc::default(),
+                    true,
+                    cx,
+                )
+            })
+        });
+        let held_a = parse_content(
+            TextViewFormat::Markdown,
+            ParsedContent::default(),
+            &UpdateOptions {
+                revision: 1,
+                pending_text: "A".into(),
+                append: false,
+                mode: ParseMode::Replace,
+                markdown_extensions: Arc::default(),
+            },
+        )
+        .unwrap();
+        state.update(cx, |state, cx| {
+            state.set_text("B", cx);
+            state.set_text("C", cx);
+            assert!(!state.accept_parsed_update(
+                ParsedUpdate {
+                    revision: 1,
+                    full_parse: true,
+                    selection_compatible: false,
+                    baseline_ack: false,
+                    result: Ok(held_a),
+                },
+                cx
+            ));
+            assert!(!state.accept_parsed_update(
+                ParsedUpdate {
+                    revision: 2,
+                    full_parse: true,
+                    selection_compatible: false,
+                    baseline_ack: false,
+                    result: Err("obsolete B failure".into()),
+                },
+                cx
+            ));
+            assert!(state.source().is_empty());
+            assert!(state.parsed_error.is_none());
+        });
+        cx.run_until_parked();
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.source().as_str(), "C");
+            assert!(state.parsed_error.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn background_replacements_publish_only_latest_unicode_source(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let state = cx.update(|cx| {
+            cx.new(|cx| {
+                TextViewState::new_configured(
+                    TextViewFormat::Markdown,
+                    "A",
+                    Arc::default(),
+                    true,
+                    cx,
+                )
+            })
+        });
+        state.update(cx, |state, cx| {
+            state.set_text("B", cx);
+            state.set_text("**C 🦀**", cx);
+        });
+        state.read_with(cx, |state, _| assert!(state.source().is_empty()));
+        cx.run_until_parked();
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.source().as_str(), "**C 🦀**");
+            assert_eq!(state.parsed_content.document.text().trim(), "C 🦀");
+        });
+    }
+
+    #[gpui::test]
+    fn background_bounded_large_readme_keeps_first_heading_and_unicode_tail(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::init);
+        // The owner admits at most 512 KiB of README. Keep this fixture under
+        // that bound while exercising a long Unicode paragraph and final link.
+        let source = format!("# First\n\n{}\n\n[最後](#first)", "文 ".repeat(120_000));
+        assert!(source.len() < 512 * 1024);
+        let state = cx.update(|cx| {
+            cx.new(|cx| {
+                TextViewState::new_configured(
+                    TextViewFormat::Markdown,
+                    &source,
+                    Arc::default(),
+                    true,
+                    cx,
+                )
+            })
+        });
+        state.read_with(cx, |state, _| {
+            assert!(state.parsed_content.document.blocks.is_empty())
+        });
+        cx.run_until_parked();
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.source().as_str(), source);
+            assert_eq!(state.parsed_content.document.blocks.len(), 3);
+            let rendered = state.parsed_content.document.text();
+            assert!(rendered.starts_with("First"));
+            assert!(rendered.trim_end().ends_with("最後"));
+            assert_eq!(
+                state.parsed_content.document.blocks[0]
+                    .span()
+                    .unwrap()
+                    .start,
+                0
+            );
+        });
+    }
 
     #[gpui::test]
     fn small_full_replace_parses_before_background_executor_runs(cx: &mut TestAppContext) {
@@ -1030,48 +1222,40 @@ mod tests {
     }
 
     #[test]
-    fn update_future_yields_before_coalescing_all_queued_updates() {
-        let (tx, rx) = unbounded::<UpdateOptions>();
-        let (tx_result, rx_result) = unbounded::<ParsedUpdate>();
-        let total_updates = 128;
-
-        for revision in 1..=total_updates {
-            tx.try_send(UpdateOptions {
-                revision,
-                pending_text: format!("{revision}\n"),
-                append: revision != 1,
-                mode: if revision == 1 {
-                    ParseMode::BaselineAck
-                } else {
-                    ParseMode::Compatible
-                },
-                markdown_extensions: Arc::default(),
-            })
-            .unwrap();
-        }
-
-        let mut future = Box::pin(UpdateFuture::new(TextViewFormat::Markdown, rx, tx_result));
-        let waker = futures::task::noop_waker();
-        let mut task_cx = std::task::Context::from_waker(&waker);
-
-        assert!(matches!(
-            std::future::Future::poll(future.as_mut(), &mut task_cx),
-            Poll::Pending
-        ));
-        let parsed_update = rx_result.try_recv().expect("parse result");
-
+    fn pending_publications_replace_obsolete_snapshots_and_preserve_deltas() {
+        let (tx, rx) = pending_update::channel(UpdateOptions::merge);
+        let options = |revision, text: &str, append| UpdateOptions {
+            revision,
+            pending_text: text.into(),
+            append,
+            mode: if append {
+                ParseMode::Compatible
+            } else {
+                ParseMode::Replace
+            },
+            markdown_extensions: Arc::default(),
+        };
+        tx.try_send(options(1, "A", false)).unwrap();
+        let held = rx.try_recv().unwrap();
+        tx.try_send(options(2, "B", false)).unwrap();
+        tx.try_send(options(3, "C 🦀", false)).unwrap();
+        tx.try_send(options(4, " tail", true)).unwrap();
+        let latest = rx.try_recv().unwrap();
+        assert_eq!(held.pending_text, "A");
+        assert_eq!(latest.revision, 4);
+        assert_eq!(latest.pending_text, "C 🦀 tail");
+        assert!(!latest.append);
+        assert_eq!(latest.mode, ParseMode::Replace);
         assert!(
-            parsed_update.revision < total_updates,
-            "single poll coalesced every queued update through revision {}",
-            parsed_update.revision
+            rx.try_recv().is_err(),
+            "obsolete B must not have its own publication"
         );
 
-        assert!(matches!(
-            std::future::Future::poll(future.as_mut(), &mut task_cx),
-            Poll::Pending
-        ));
-        let parsed_update = rx_result.try_recv().expect("next parse result");
-        assert_eq!(parsed_update.revision, total_updates);
+        tx.try_send(options(5, " α", true)).unwrap();
+        tx.try_send(options(6, " β", true)).unwrap();
+        let delta = rx.try_recv().unwrap();
+        assert!(delta.append);
+        assert_eq!(delta.pending_text, " α β");
     }
 
     #[gpui::test]

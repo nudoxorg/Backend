@@ -79,6 +79,7 @@ pub struct TextView {
     table_actions: Option<Arc<TableActionsFn>>,
     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
     markdown_extensions: Arc<MarkdownExtensions>,
+    background_parse: bool,
 }
 
 /// A plugin that can configure a [`TextView`].
@@ -122,6 +123,7 @@ impl TextView {
             table_actions: None,
             link_click_handler: None,
             markdown_extensions: Arc::default(),
+            background_parse: false,
         }
     }
 
@@ -142,6 +144,7 @@ impl TextView {
             table_actions: None,
             link_click_handler: None,
             markdown_extensions: Arc::default(),
+            background_parse: false,
         }
     }
 
@@ -162,7 +165,16 @@ impl TextView {
             table_actions: None,
             link_click_handler: None,
             markdown_extensions: Arc::default(),
+            background_parse: false,
         }
+    }
+
+    /// Parse every content publication on the background executor, including
+    /// small documents. First layout may be empty until parsing completes.
+    /// Width, text style and paint changes still reuse the parsed document.
+    pub fn background_parse(mut self) -> Self {
+        self.background_parse = true;
+        self
     }
 
     /// Set [`TextViewStyle`].
@@ -453,16 +465,20 @@ impl Element for TextView {
         } else {
             let default_format = self.format.unwrap_or(TextViewFormat::Markdown);
             let default_text = self.text.clone().unwrap_or_default();
+            let extensions = self.markdown_extensions.clone();
+            let background_parse = self.background_parse;
 
             let state = window.use_keyed_state(
                 SharedString::from(format!("{}/state", self.id)),
                 cx,
                 move |_, cx| {
-                    if default_format == TextViewFormat::Markdown {
-                        TextViewState::markdown(default_text.as_str(), cx)
-                    } else {
-                        TextViewState::html(default_text.as_str(), cx)
-                    }
+                    TextViewState::new_configured(
+                        default_format,
+                        default_text.as_str(),
+                        extensions,
+                        background_parse,
+                        cx,
+                    )
                 },
             );
             self.state = Some(state.clone());
@@ -474,6 +490,7 @@ impl Element for TextView {
         let max_lines = self.max_lines.filter(|_| !self.scrollable);
 
         state.update(cx, |state, cx| {
+            state.background_parse = self.background_parse;
             state.code_block_actions = self.code_block_actions.clone();
             state.table_actions = self.table_actions.clone();
             state.link_click_handler = self.link_click_handler.clone();
