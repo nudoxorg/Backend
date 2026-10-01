@@ -1,8 +1,9 @@
 //! A project's dependency tree, read from Cargo and the advisory authority.
 //!
-//! Cargo is the authority for what a project depends on: `cargo metadata
-//! --filter-platform <host>` resolves features, targets and renames exactly
-//! as a build here would. When Cargo cannot answer (not installed, no
+//! Cargo is the authority for the current target's active dependency graph:
+//! `cargo metadata --filter-platform <host>`. Cargo.lock rows outside that
+//! graph can also be disabled by feature selection, so the difference is not
+//! called "other platforms." When Cargo cannot answer (not installed, no
 //! network for a missing download, a stale lockfile under `--locked`), the
 //! tree is read from `Cargo.lock` alone and says so.
 //!
@@ -12,7 +13,8 @@
 //! refresh shows at once.
 
 use backend_library::browse::{
-    ProjectTree, TreeInput, TreeSource, build_tree, lockfile_input, metadata_input,
+    LockedInactiveCoverage, LockfileGraphCoverage, ProjectTree, TreeInput, TreeSource, build_tree,
+    lockfile_input, metadata_input,
 };
 use std::collections::BTreeSet;
 use std::io::Read;
@@ -451,11 +453,15 @@ mod tests {
         let sentinel = TreeInput {
             source: TreeSource::Lockfile {
                 reason: "planted by the test, never a real read".to_owned(),
+                coverage: LockfileGraphCoverage::Complete,
+                workspace_membership:
+                    backend_library::browse::LockfileWorkspaceMembership::Unknown,
             },
             root: "sentinel-root".to_owned(),
             packages: Vec::new(),
             edges: Vec::new(),
-            other_platforms: 0,
+            locked_inactive: 0,
+            locked_inactive_coverage: LockedInactiveCoverage::Unavailable,
         };
         let mut cache = BrowseCache::default();
         cache.entry = Some(CacheEntry {

@@ -10,7 +10,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// Wire schema of [`ProjectTree`].
-pub const PROJECT_TREE_SCHEMA: u16 = 2;
+pub const PROJECT_TREE_SCHEMA: u16 = 6;
 
 /// The most packages one tree reply admits.
 pub const MAX_TREE_PACKAGES: usize = 20_000;
@@ -24,12 +24,61 @@ pub enum TreeSource {
         /// The target triple Cargo resolved for.
         host: String,
     },
-    /// Cargo could not answer: read from `Cargo.lock` alone, so every
-    /// platform's packages count and no package states its own metadata.
+    /// Cargo could not answer: read all available rows from `Cargo.lock`
+    /// alone, without a current target/features graph or package metadata.
+    /// Workspace members and local paths remain unknown in this fallback.
     Lockfile {
         /// Why Cargo did not answer.
         reason: String,
+        /// Whether package identities and dependency edges are unambiguous.
+        coverage: LockfileGraphCoverage,
+        /// Cargo.lock does not identify workspace members or path sources.
+        /// This fallback never guesses them from a missing `source` field.
+        workspace_membership: LockfileWorkspaceMembership,
     },
+}
+
+/// What a lockfile-only read can establish about workspace membership.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "membership", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum LockfileWorkspaceMembership {
+    /// A lockfile has package rows but no member/source-path declarations.
+    Unknown,
+}
+
+/// How completely Cargo.lock supports package identities and dependency edges.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "coverage", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum LockfileGraphCoverage {
+    /// Every package identity is unique and every dependency edge was attributed.
+    Complete,
+    /// Some dependency strings did not identify exactly one package row or
+    /// were malformed; unresolved edges were omitted.
+    Partial {
+        /// Number of edges that had no unique package target.
+        ambiguous_edges: u32,
+        /// Number of rows whose identical name/version/source identity cannot
+        /// be distinguished from Cargo.lock alone.
+        ambiguous_package_rows: u32,
+    },
+}
+
+/// Completeness of the lockfile inventory absent from the current target and
+/// feature resolution.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "coverage", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum LockedInactiveCoverage {
+    /// Every row was paired without ambiguity using Cargo source identities
+    /// and unique source-less name/version identities from Cargo.lock.
+    Complete,
+    /// Some package rows could not be matched between the current resolve
+    /// graph and Cargo.lock without guessing a missing source identity.
+    Partial {
+        /// Number of package rows in unresolved identity groups.
+        unmatched_packages: u32,
+    },
+    /// No Cargo metadata plus lockfile comparison was available.
+    Unavailable,
 }
 
 /// Where a package's source comes from.
@@ -43,8 +92,9 @@ pub enum PackageOrigin {
     },
     /// A git checkout.
     Git {
-        /// The repository.
-        url: String,
+        /// Cargo's exact source identity, including reference query and the
+        /// resolved commit fragment (for example `git+https://...?...#<sha>`).
+        source: String,
     },
     /// A path dependency that replaces a registry release (`[patch]`).
     Vendored {
@@ -104,6 +154,8 @@ pub enum PackageRole {
     Shared,
     /// Reached from your members, but through no direct dependency.
     Unreached,
+    /// The lockfile lists this package, but workspace member roots are unknown.
+    Unknown,
 }
 
 /// One external package that builds for this project.
@@ -234,7 +286,7 @@ pub struct ProjectTree {
     pub name: String,
     /// Your own packages.
     pub members: Box<[TreeMember]>,
-    /// Every external package that builds here, by name then version.
+    /// Every external package that builds here, by name, version, then source.
     pub packages: Box<[TreePackage]>,
     /// Your direct dependencies, by name.
     pub direct: Box<[DirectDependency]>,
@@ -242,8 +294,11 @@ pub struct ProjectTree {
     pub twice: Box<[Duplicate]>,
     /// Advisory evidence for the tree.
     pub health: TreeHealth,
-    /// Lockfile packages that build only for other platforms.
-    pub other_platforms: u32,
+    /// Number of Cargo.lock package rows not active in this target/features
+    /// resolution. This does not infer why a package is inactive.
+    pub locked_inactive: u32,
+    /// Whether `locked_inactive` is exact, a lower bound, or unmeasured.
+    pub locked_inactive_coverage: LockedInactiveCoverage,
 }
 
 impl ProjectTree {
@@ -261,7 +316,10 @@ impl ProjectTree {
             .filter(move |package| package.role == PackageRole::Brought(role))
     }
 
-    /// The package record for one exact version.
+    /// The package row only when this name and version have one source.
+    ///
+    /// Returns `None` when two authorities provide the same name and version;
+    /// callers must not choose either row by display order.
     #[must_use]
     pub fn package(&self, name: &str, version: &str) -> Option<&TreePackage> {
         let mut matches = self
@@ -328,8 +386,11 @@ pub struct TreeInput {
     pub packages: Vec<TreeInputPackage>,
     /// Resolved edges.
     pub edges: Vec<TreeEdge>,
-    /// Lockfile packages outside this set (other platforms).
-    pub other_platforms: u32,
+    /// Number of Cargo.lock package rows outside the current target/features
+    /// resolution. This does not infer why a package is inactive.
+    pub locked_inactive: u32,
+    /// Completeness of the lockfile-to-resolution package comparison.
+    pub locked_inactive_coverage: LockedInactiveCoverage,
 }
 
 /// Answers "what do the advisory sources say about this release?".
@@ -400,8 +461,16 @@ pub fn build_tree(input: &TreeInput, advisories: &dyn AdvisoryObserver) -> Proje
         (
             input.packages[*at].name.clone(),
             VersionOrder(input.packages[*at].version.clone()),
+            input.packages[*at].id.clone(),
         )
     };
+    let workspace_membership_unknown = matches!(
+        &input.source,
+        TreeSource::Lockfile {
+            workspace_membership: LockfileWorkspaceMembership::Unknown,
+            ..
+        }
+    );
     for targets in &mut outgoing {
         targets.sort_by_key(order);
     }
@@ -589,6 +658,8 @@ pub fn build_tree(input: &TreeInput, advisories: &dyn AdvisoryObserver) -> Proje
                 why: why(at),
                 role: if direct_set.contains(&at) {
                     PackageRole::Direct
+                } else if workspace_membership_unknown {
+                    PackageRole::Unknown
                 } else {
                     match brought[at].len() {
                         0 => PackageRole::Unreached,
@@ -737,7 +808,8 @@ pub fn build_tree(input: &TreeInput, advisories: &dyn AdvisoryObserver) -> Proje
             of: u32::try_from(externals.len()).unwrap_or(u32::MAX),
             affecting: affecting.into_boxed_slice(),
         },
-        other_platforms: input.other_platforms,
+        locked_inactive: input.locked_inactive,
+        locked_inactive_coverage: input.locked_inactive_coverage,
     }
 }
 

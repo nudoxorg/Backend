@@ -195,7 +195,8 @@ pub(crate) enum Listed {
 /// added (its direct dependencies first, then by distance from its code),
 /// from the owner's own resolution of it: `SurfaceCommand::ProjectTree`,
 /// which is `cargo metadata --offline --locked` for this host (else its
-/// `Cargo.lock`). Packages that build only for other platforms are not in it.
+/// `Cargo.lock`). This target/features-filtered graph does not identify why
+/// other locked package rows are inactive.
 ///
 /// # Errors
 /// The owner's refusal to read the project's tree, in its words.
@@ -228,7 +229,7 @@ pub(crate) fn dependency_origin(origin: &PackageOrigin, release: &Release, sourc
         PackageOrigin::Registry { source } => Origin::Elsewhere(Arc::from(format!(
             "from registry {source}: the configured source only offers crates.io releases"
         ))),
-        PackageOrigin::Git { url } => Origin::Elsewhere(Arc::from(format!("from git ({url}): only registry releases are added"))),
+        PackageOrigin::Git { .. } => Origin::Elsewhere(Arc::from("from a Git source: only registry releases are added")),
         PackageOrigin::Vendored { path } => Origin::Elsewhere(Arc::from(format!("vendored at {path}: only registry releases are added"))),
         PackageOrigin::Unresolved { source } => Origin::Elsewhere(Arc::from(format!(
             "source {} is unresolved: no release is offered",

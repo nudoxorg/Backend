@@ -111,7 +111,7 @@ fn toml_is_here_twice_and_each_copy_has_its_own_reason() {
 }
 
 #[test]
-fn counts_are_what_builds_on_this_machine() {
+fn counts_follow_the_selected_target_feature_resolution() {
     let tree = tree(&rustsec());
     assert_eq!(
         tree.source,
@@ -123,7 +123,11 @@ fn counts_are_what_builds_on_this_machine() {
     assert_eq!(tree.members.len(), 44);
     assert_eq!(tree.direct.len(), 75);
     assert_eq!(tree.packages.len(), 884);
-    assert_eq!(tree.other_platforms, 309);
+    assert_eq!(tree.locked_inactive, 309);
+    assert_eq!(
+        tree.locked_inactive_coverage,
+        LockedInactiveCoverage::Complete
+    );
     assert_eq!(tree.twice.len(), 60);
     let desktop = tree
         .members
@@ -336,7 +340,11 @@ fn with_no_advisory_source_nothing_is_claimed() {
     let tree = build_tree(&input, &no_source);
     assert!(tree.health.affecting.is_empty());
     assert_eq!(tree.health.coverage, AdvisoryCoverage::Unknown);
-    assert_eq!(tree.other_platforms, 0, "no lockfile, no count");
+    assert_eq!(tree.locked_inactive, 0, "no lockfile, no count");
+    assert_eq!(
+        tree.locked_inactive_coverage,
+        LockedInactiveCoverage::Unavailable
+    );
 }
 
 #[test]
@@ -361,11 +369,24 @@ fn the_lockfile_alone_still_explains_the_tree() {
     assert_eq!(
         tree.source,
         TreeSource::Lockfile {
-            reason: "cargo was not found".to_owned()
+            reason: "cargo was not found".to_owned(),
+            coverage: LockfileGraphCoverage::Complete,
+            workspace_membership: LockfileWorkspaceMembership::Unknown,
         }
     );
-    assert_eq!(tree.members.len(), 44);
-    assert_eq!(tree.packages.len(), 1193, "every platform counts");
+    assert!(
+        tree.members.is_empty(),
+        "Cargo.lock does not identify members"
+    );
+    assert_eq!(
+        tree.packages.len(),
+        1237,
+        "every Cargo.lock package row counts"
+    );
+    assert!(
+        tree.direct.is_empty(),
+        "no direct member edge is proven from Cargo.lock"
+    );
     let toml = tree.package("toml", "0.8.23").expect("toml");
     assert_eq!(
         toml.origin,
@@ -373,11 +394,13 @@ fn the_lockfile_alone_still_explains_the_tree() {
             source: "registry+https://github.com/rust-lang/crates.io-index".to_owned(),
         }
     );
-    assert_eq!(toml.why.len(), 2, "{}", path(&toml.why));
     assert!(
-        tree.direct
+        toml.why.is_empty(),
+        "no member root is proven from Cargo.lock"
+    );
+    assert!(
+        tree.packages
             .iter()
-            .all(|dependency| dependency.role == RoleId::Other),
-        "no package states its metadata in a lockfile, so no role is claimed"
+            .all(|package| package.why.is_empty() && package.role == PackageRole::Unknown)
     );
 }

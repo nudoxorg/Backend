@@ -1,0 +1,212 @@
+{
+  "build_directory": "/fixture/workspace/target",
+  "metadata": null,
+  "packages": [
+    {
+      "authors": [],
+      "categories": [],
+      "default_run": null,
+      "dependencies": [],
+      "description": null,
+      "documentation": null,
+      "edition": "2021",
+      "features": {},
+      "homepage": null,
+      "id": "path+file:///fixture/workspace/common#common-proof@0.1.0",
+      "keywords": [],
+      "license": null,
+      "license_file": null,
+      "links": null,
+      "manifest_path": "/fixture/workspace/common/Cargo.toml",
+      "metadata": null,
+      "name": "common-proof",
+      "publish": null,
+      "readme": null,
+      "repository": null,
+      "rust_version": null,
+      "source": null,
+      "targets": [
+        {
+          "crate_types": [
+            "lib"
+          ],
+          "doc": true,
+          "doctest": true,
+          "edition": "2021",
+          "kind": [
+            "lib"
+          ],
+          "name": "common_proof",
+          "src_path": "/fixture/workspace/common/src/lib.rs",
+          "test": true
+        }
+      ],
+      "version": "0.1.0"
+    },
+    {
+      "authors": [],
+      "categories": [],
+      "default_run": null,
+      "dependencies": [
+        {
+          "features": [],
+          "kind": null,
+          "name": "common-proof",
+          "optional": false,
+          "path": "/fixture/workspace/common",
+          "registry": null,
+          "rename": null,
+          "req": "*",
+          "source": null,
+          "target": null,
+          "uses_default_features": true
+        },
+        {
+          "features": [],
+          "kind": null,
+          "name": "windows-only-proof",
+          "optional": false,
+          "path": "/fixture/workspace/windows-only",
+          "registry": null,
+          "rename": null,
+          "req": "*",
+          "source": null,
+          "target": "cfg(windows)",
+          "uses_default_features": true
+        }
+      ],
+      "description": null,
+      "documentation": null,
+      "edition": "2021",
+      "features": {},
+      "homepage": null,
+      "id": "path+file:///fixture/workspace/app#filter-platform-proof-app@0.1.0",
+      "keywords": [],
+      "license": null,
+      "license_file": null,
+      "links": null,
+      "manifest_path": "/fixture/workspace/app/Cargo.toml",
+      "metadata": null,
+      "name": "filter-platform-proof-app",
+      "publish": null,
+      "readme": null,
+      "repository": null,
+      "rust_version": null,
+      "source": null,
+      "targets": [
+        {
+          "crate_types": [
+            "lib"
+          ],
+          "doc": true,
+          "doctest": true,
+          "edition": "2021",
+          "kind": [
+            "lib"
+          ],
+          "name": "filter_platform_proof_app",
+          "src_path": "/fixture/workspace/app/src/lib.rs",
+          "test": true
+        }
+      ],
+      "version": "0.1.0"
+    },
+    {
+      "authors": [],
+      "categories": [],
+      "default_run": null,
+      "dependencies": [],
+      "description": null,
+      "documentation": null,
+      "edition": "2021",
+      "features": {},
+      "homepage": null,
+      "id": "path+file:///fixture/workspace/windows-only#windows-only-proof@0.1.0",
+      "keywords": [],
+      "license": null,
+      "license_file": null,
+      "links": null,
+      "manifest_path": "/fixture/workspace/windows-only/Cargo.toml",
+      "metadata": null,
+      "name": "windows-only-proof",
+      "publish": null,
+      "readme": null,
+      "repository": null,
+      "rust_version": null,
+      "source": null,
+      "targets": [
+        {
+          "crate_types": [
+            "lib"
+          ],
+          "doc": true,
+          "doctest": true,
+          "edition": "2021",
+          "kind": [
+            "lib"
+          ],
+          "name": "windows_only_proof",
+          "src_path": "/fixture/workspace/windows-only/src/lib.rs",
+          "test": true
+        }
+      ],
+      "version": "0.1.0"
+    }
+  ],
+  "resolve": {
+    "nodes": [
+      {
+        "dependencies": [],
+        "deps": [],
+        "features": [],
+        "id": "path+file:///fixture/workspace/common#common-proof@0.1.0"
+      },
+      {
+        "dependencies": [
+          "path+file:///fixture/workspace/common#common-proof@0.1.0",
+          "path+file:///fixture/workspace/windows-only#windows-only-proof@0.1.0"
+        ],
+        "deps": [
+          {
+            "dep_kinds": [
+              {
+                "kind": null,
+                "target": null
+              }
+            ],
+            "name": "common_proof",
+            "pkg": "path+file:///fixture/workspace/common#common-proof@0.1.0"
+          },
+          {
+            "dep_kinds": [
+              {
+                "kind": null,
+                "target": "cfg(windows)"
+              }
+            ],
+            "name": "windows_only_proof",
+            "pkg": "path+file:///fixture/workspace/windows-only#windows-only-proof@0.1.0"
+          }
+        ],
+        "features": [],
+        "id": "path+file:///fixture/workspace/app#filter-platform-proof-app@0.1.0"
+      },
+      {
+        "dependencies": [],
+        "deps": [],
+        "features": [],
+        "id": "path+file:///fixture/workspace/windows-only#windows-only-proof@0.1.0"
+      }
+    ],
+    "root": "path+file:///fixture/workspace/app#filter-platform-proof-app@0.1.0"
+  },
+  "target_directory": "/fixture/workspace/target",
+  "version": 1,
+  "workspace_default_members": [
+    "path+file:///fixture/workspace/app#filter-platform-proof-app@0.1.0"
+  ],
+  "workspace_members": [
+    "path+file:///fixture/workspace/app#filter-platform-proof-app@0.1.0"
+  ],
+  "workspace_root": "/fixture/workspace"
+}

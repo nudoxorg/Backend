@@ -183,7 +183,7 @@ fn prepared_library_model(reading: &backend_present::TreeReading, links: &[TreeR
     LibraryModel {
         name: say(&reading.name),
         lede: say(&reading.lede),
-        lede_tip: reading.elsewhere.clone().map(SharedString::from),
+        lede_tip: reading.locked_inactive_note.clone().map(SharedString::from),
         note: reading.source_note.as_deref().map(&mut say),
         alerts,
         facts,
@@ -280,7 +280,7 @@ fn tree_destination(root: &str, name: &str, version: &str, origin: Option<&backe
             }
         }
         Some(PackageOrigin::Vendored { .. }) => unavailable("Cargo.lock did not record the local source folder.".to_owned()),
-        Some(PackageOrigin::Git { url }) => unavailable(format!("Git source at {url}; this tree does not record its checkout folder.")),
+        Some(PackageOrigin::Git { .. }) => unavailable("Git source; this tree does not record its checkout folder.".to_owned()),
         Some(PackageOrigin::Unresolved { source }) => unavailable(format!(
             "Cargo did not establish a supported source{}.",
             source.as_ref().map_or(String::new(), |source| format!(" ({source})"))
@@ -446,7 +446,7 @@ mod find_tests {
         let TreeDestination::Open(path) = local else { panic!("a present vendored source should open") };
         assert_eq!(path.as_str(), std::path::Path::new(root).join("vendor/gpui-ce").canonicalize().unwrap().to_str().unwrap());
         assert!(matches!(
-            tree_destination(root, "foo", "1.0.0", Some(&PackageOrigin::Git { url: "https://example.invalid/foo".to_owned() })),
+            tree_destination(root, "foo", "1.0.0", Some(&PackageOrigin::Git { source: "git+https://example.invalid/foo?branch=main#0123456789abcdef0123456789abcdef01234567".to_owned() })),
             TreeDestination::Unavailable(reason) if reason.contains("Git source")
         ));
         assert!(matches!(tree_destination(root, "foo", "1.0.0", None), TreeDestination::Unavailable(_)));

@@ -6,7 +6,10 @@
 
 use crate::browse::read_tree;
 use backend_advisory::{AdvisoryAuthority, AdvisorySource, AuthorityFeed, normalize_package};
-use backend_library::browse::{PackageOrigin, ProjectTree, RoleId, build_tree, metadata_input};
+use backend_library::browse::{
+    LockedInactiveCoverage, LockfileGraphCoverage, LockfileWorkspaceMembership, PackageOrigin,
+    ProjectTree, RoleId, TreeSource, build_tree, lockfile_input, metadata_input,
+};
 
 const METADATA: &[u8] = include_bytes!("../library/browse/fixtures/tree-2026-09-27/metadata.json");
 const LOCKFILE: &str = include_str!("../library/browse/fixtures/tree-2026-09-27/Cargo.lock");
@@ -28,10 +31,22 @@ fn tree() -> ProjectTree {
 fn the_tree_reads_as_the_library_page_says_it() {
     let reading = read_tree(&tree());
     assert_eq!(reading.name, "backend");
-    assert_eq!(reading.lede, "Your 44 packages lean on 75 others directly, and 884 in all.");
-    assert_eq!(reading.elsewhere.as_deref(), Some("and 309 more for other platforms"));
-    assert_eq!(reading.twice_line.as_deref(), Some("60 crates appear at more than one version"));
-    assert_eq!(reading.health, "advisories from a partial source, not a full check of 884");
+    assert_eq!(
+        reading.lede,
+        "Your 44 packages lean on 75 others directly, and 884 in all."
+    );
+    assert_eq!(
+        reading.locked_inactive_note.as_deref(),
+        Some("309 packages are locked but inactive for the current target/features")
+    );
+    assert_eq!(
+        reading.twice_line.as_deref(),
+        Some("60 crates appear at more than one version")
+    );
+    assert_eq!(
+        reading.health,
+        "advisories from a partial source, not a full check of 884"
+    );
     let alert = &reading.alerts[0];
     assert_eq!(alert.title, "bincode 1.3.3 is unmaintained");
     assert_eq!(alert.id, "RUSTSEC-2025-0141");
@@ -39,6 +54,32 @@ fn the_tree_reads_as_the_library_page_says_it() {
     assert_eq!(
         alert.why,
         "desktop → gpui_ce_components 0.2.0 → gpui_ce_components_base 0.2.0 → syntect 5.3.0 → bincode 1.3.3"
+    );
+}
+
+#[test]
+fn inactive_rows_never_claim_they_are_other_platforms_and_keep_partial_coverage_visible() {
+    let mut tree = tree();
+    tree.locked_inactive = 1;
+    tree.locked_inactive_coverage = LockedInactiveCoverage::Complete;
+    assert_eq!(
+        read_tree(&tree).locked_inactive_note.as_deref(),
+        Some("1 package is locked but inactive for the current target/features")
+    );
+
+    tree.locked_inactive = 0;
+    tree.locked_inactive_coverage = LockedInactiveCoverage::Partial {
+        unmatched_packages: 2,
+    };
+    assert_eq!(
+        read_tree(&tree).locked_inactive_note.as_deref(),
+        Some("some package rows could not be matched exactly (2); the inactive-package count is a lower bound")
+    );
+
+    tree.locked_inactive_coverage = LockedInactiveCoverage::Unavailable;
+    assert_eq!(
+        read_tree(&tree).locked_inactive_note.as_deref(),
+        Some("inactive rows cannot be counted without both the current resolution and Cargo.lock")
     );
 }
 
@@ -114,7 +155,7 @@ fn dependency_rows_retain_exact_source_origin_and_refuse_ambiguous_releases() {
     let version = toml.versions[0].clone();
     let duplicate = source.packages.iter().find(|package| package.name == "toml" && package.version == version).expect("toml package").clone();
     let mut duplicate = duplicate;
-    duplicate.origin = PackageOrigin::Git { url: "https://example.invalid/toml".to_owned() };
+    duplicate.origin = PackageOrigin::Git { source: "git+https://example.invalid/toml?branch=stable#0123456789abcdef0123456789abcdef01234567".to_owned() };
     let mut packages = source.packages.to_vec();
     packages.push(duplicate);
     source.packages = packages.into_boxed_slice();
@@ -122,6 +163,68 @@ fn dependency_rows_retain_exact_source_origin_and_refuse_ambiguous_releases() {
     let toml = reading.roles.iter().flat_map(|role| &role.rows).find(|row| row.name == "toml").expect("toml");
     let at = toml.versions.iter().position(|candidate| *candidate == version).expect("version");
     assert_eq!(toml.sources[at], None, "same name and release at two origins has no safe link");
+}
+
+#[test]
+fn lockfile_fallback_names_unattributed_edges_as_partial() {
+    let mut source = tree();
+    source.source = TreeSource::Lockfile {
+        reason: "Cargo metadata could not be read".to_owned(),
+        coverage: LockfileGraphCoverage::Partial {
+            ambiguous_edges: 3,
+            ambiguous_package_rows: 0,
+        },
+        workspace_membership: LockfileWorkspaceMembership::Unknown,
+    };
+    let reading = read_tree(&source);
+    assert_eq!(
+        reading.source_note.as_deref(),
+        Some(
+            "Read from Cargo.lock alone, without target/feature filtering or package metadata; workspace membership and local paths are unknown: Cargo metadata could not be read; 3 dependency edge(s) could not be attributed and 0 package row(s) share an indistinguishable source identity"
+        )
+    );
+}
+
+#[test]
+fn lockfile_fallback_never_claims_workspace_membership() {
+    let input = lockfile_input(
+        LOCKFILE,
+        "/workspace/backend",
+        &Default::default(),
+        "Cargo unavailable",
+    )
+    .expect("lockfile-only input");
+    let tree = build_tree(&input, &|_, _| {
+        let authority = AdvisoryAuthority::new(0);
+        authority.observe(
+            &normalize_package("cargo", "none").expect("test identity"),
+            "0.0.0",
+            false,
+            false,
+            0,
+            false,
+        )
+    });
+    let reading = read_tree(&tree);
+    assert_eq!(
+        reading.lede,
+        "Cargo.lock lists 1237 package rows; workspace membership is unknown."
+    );
+    assert_eq!(tree.members.len(), 0);
+    assert_eq!(tree.direct.len(), 0);
+    assert!(tree.packages.iter().all(|package| package.why.is_empty()));
+    assert!(
+        reading.twice.iter().all(|duplicate| {
+            duplicate
+                .paths
+                .iter()
+                .all(|path| path == "Workspace path unknown")
+                && duplicate.verdict.contains("Workspace membership is unknown")
+        })
+    );
+    assert!(reading.source_note.as_deref().is_some_and(|note| {
+        note.contains("workspace membership and local paths are unknown")
+    }));
 }
 
 #[test]

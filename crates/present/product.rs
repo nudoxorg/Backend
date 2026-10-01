@@ -1043,7 +1043,7 @@ fn tree_view(tree: &backend_library::browse::ProjectTree) -> ProductView {
     let reading = crate::browse::read_tree(tree);
     let mut records = Vec::new();
     let mut tags = Vec::new();
-    tags.extend(reading.elsewhere.clone());
+    tags.extend(reading.locked_inactive_note.clone());
     tags.push(reading.health.clone());
     tags.extend(reading.twice_line.clone());
     records.push(ProductRecord::new(

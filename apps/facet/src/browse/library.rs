@@ -149,7 +149,7 @@ pub struct Model {
     pub name: SharedString,
     /// Its one sentence.
     pub lede: SharedString,
-    /// Rested on the sentence: what builds only elsewhere.
+    /// Rested on lockfile rows inactive for the current target/features resolution.
     pub lede_tip: Option<SharedString>,
     /// How the tree was read, when not by Cargo for this machine.
     pub note: Option<SharedString>,

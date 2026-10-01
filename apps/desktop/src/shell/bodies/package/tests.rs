@@ -210,8 +210,16 @@ fn read_and_open_at(rig: &mut Rig, dir: &Path) {
 
 #[gpui::test]
 fn a_page_whose_source_is_missing_says_so_instead_of_inventing_facts(cx: &mut TestAppContext) {
-    let mut rig = rig(cx, Some(package_route()), 1440.0, 900.0);
+    let mut rig = rig(cx, None, 1440.0, 900.0);
     install(&mut rig);
+    rig.cx.update(|_, cx| {
+        source_facts::install(
+            &package(),
+            Reading::Absent("Its source is not on this machine.".into()),
+            cx,
+        );
+    });
+    rig.go(Intent::Navigate(package_route()));
     let ledger = painted(&mut rig);
     let heads = said(&ledger, "heads-words");
     assert_eq!(
