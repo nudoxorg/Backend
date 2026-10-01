@@ -363,16 +363,18 @@ fn registry(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     ));
     let detail = ctx.say("If the same release appears under conflicting cached indexes, set NUDOX_CARGO_ROOT to the intended registry source root and restart the desktop. The exact index path is shown in the release notice. Local archives are unpacked only when their checksum is known for the selected source.");
     leaves.push(Leaf::new(quiet(detail, &measure, palette)));
-    let policy = if snapshot.settings().service_mode == crate::model::ServiceMode::Embedded {
-        match snapshot.settings().privacy {
-            PrivacyPreference::LocalOnly => "This desktop's embedded service is configured to keep registry and discovery requests local. Change that choice in Privacy & local data, then restart the desktop.",
-            PrivacyPreference::RegistryMetadata => "This desktop's embedded service may request registry and discovery metadata. Change that choice in Privacy & local data, then restart the desktop.",
+    let policy = match snapshot.settings().privacy {
+        PrivacyPreference::LocalOnly => {
+            "Local only is saved for this desktop's next embedded-service start."
         }
-    } else {
-        "This desktop is attached to a running service. Its owner controls registry network policy; this desktop's saved choice applies only if it later starts an embedded service."
+        PrivacyPreference::RegistryMetadata => {
+            "Registry metadata is saved for this desktop's next embedded-service start."
+        }
     };
     let policy = ctx.say(policy);
     leaves.push(Leaf::new(quiet(policy, &measure, palette)));
+    let running = ctx.say(running_service_policy_note(snapshot));
+    leaves.push(Leaf::new(quiet(running, &measure, palette)));
     if source_root.is_none() {
         let example =
             "NUDOX_CARGO_ROOT=/path/to/CARGO_HOME/registry/src/index.crates.io-…".to_owned();
@@ -571,10 +573,13 @@ fn diagnostics(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
             .into_any_element(),
         ctx,
     ));
-    let mode = ctx.say(match snapshot.settings().service_mode {
-        crate::model::ServiceMode::Embedded => "embedded local service",
-        crate::model::ServiceMode::Attached => "attached to a running local service",
-    });
+    let mode = ctx.say(confirmed_host_mode(snapshot).map_or(
+        "service mode not confirmed yet",
+        |mode| match mode {
+            crate::host::lease::HostMode::Embedded => "embedded local service",
+            crate::host::lease::HostMode::Attached => "attached to a running local service",
+        },
+    ));
     leaves.push(setting(
         "Service",
         text(ty::ROW, &measure, palette.ink1)
@@ -622,11 +627,14 @@ fn connections(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
             .into_any_element(),
         ctx,
     ));
-    let mode = ctx.say(match snapshot.settings().service_mode {
-        crate::model::ServiceMode::Embedded => "This desktop starts and owns its local service.",
-        crate::model::ServiceMode::Attached => {
-            "This desktop shares a local service started elsewhere."
+    let mode = ctx.say(match confirmed_host_mode(snapshot) {
+        Some(crate::host::lease::HostMode::Embedded) => {
+            "This desktop owns the connected local service."
         }
+        Some(crate::host::lease::HostMode::Attached) => {
+            "This desktop shares a local service owned elsewhere."
+        }
+        None => "The local service owner has not confirmed this connection yet.",
     });
     leaves.push(Leaf::new(quiet(mode, &measure, palette)));
     let links = ctx.links.clone();
@@ -758,10 +766,7 @@ fn privacy(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     let measure = ctx.measure;
     let palette = ctx.palette;
     let settings = snapshot.settings();
-    let mode_note = match settings.service_mode {
-        crate::model::ServiceMode::Embedded => "These choices are saved for this desktop's embedded local service. Restart the desktop to apply changes to a service that is already running.",
-        crate::model::ServiceMode::Attached => "This desktop is attached to a service owned elsewhere. These choices are saved for a future embedded service; the connected service keeps its owner's policy.",
-    };
+    let mode_note = running_service_policy_note(snapshot);
     let mode_note = ctx.say(mode_note);
     leaves.push(Leaf::new(quiet(mode_note, &measure, palette)));
 
@@ -790,7 +795,11 @@ fn privacy(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
         .on_select(move |index, _, cx| {
             links.dispatch(Intent::SetAdvisoriesEnabled(index == 0), cx);
         });
-    leaves.push(setting("Advisory refresh", advisories.into_any_element(), ctx));
+    leaves.push(setting(
+        "Advisory refresh",
+        advisories.into_any_element(),
+        ctx,
+    ));
 
     let links = ctx.links.clone();
     let cache = facet::controls::seg("set-registry-cache", &measure)
@@ -800,7 +809,11 @@ fn privacy(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
         .on_select(move |index, _, cx| {
             links.dispatch(Intent::SetCacheEnabled(index == 0), cx);
         });
-    leaves.push(setting("Registry result cache", cache.into_any_element(), ctx));
+    leaves.push(setting(
+        "Registry result cache",
+        cache.into_any_element(),
+        ctx,
+    ));
 
     let links = ctx.links.clone();
     let decrement = facet::controls::button("cache-age-down", "−", &measure)
@@ -818,7 +831,11 @@ fn privacy(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
         .child(decrement)
         .child(text(ty::MONO_ROW, &measure, palette.ink1).child(age))
         .child(increment);
-    leaves.push(setting("Maximum reusable age", age_control.into_any_element(), ctx));
+    leaves.push(setting(
+        "Maximum reusable age",
+        age_control.into_any_element(),
+        ctx,
+    ));
 
     for note in [
         "Local only blocks registry, registry-discovery, and remote advisory-feed requests. Project files and the local index remain on this machine.",
@@ -829,6 +846,34 @@ fn privacy(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
         leaves.push(Leaf::new(quiet(words, &measure, palette)));
     }
     leaves
+}
+
+/// The persisted service mode can be stale before the current owner answers.
+/// `OwnerReady` publishes the mode returned by `DesktopHost::mode()` together
+/// with `ConnectionStatus::Connected`, so only that live state is presented as
+/// the actual host mode.
+fn confirmed_host_mode(snapshot: &AppSnapshot) -> Option<crate::host::lease::HostMode> {
+    if snapshot.settings().connection != ConnectionStatus::Connected {
+        return None;
+    }
+    Some(match snapshot.settings().service_mode {
+        crate::model::ServiceMode::Embedded => crate::host::lease::HostMode::Embedded,
+        crate::model::ServiceMode::Attached => crate::host::lease::HostMode::Attached,
+    })
+}
+
+fn running_service_policy_note(snapshot: &AppSnapshot) -> &'static str {
+    match confirmed_host_mode(snapshot) {
+        Some(crate::host::lease::HostMode::Embedded) => {
+            "The connected service is this desktop's embedded owner. Saved choices do not change its current policy; restart the desktop to apply them on its next embedded start."
+        }
+        Some(crate::host::lease::HostMode::Attached) => {
+            "The connected service is attached and its owner controls current policy. Saved choices apply only if this desktop later starts an embedded service."
+        }
+        None => {
+            "The active service mode is not confirmed. Saved choices apply on the next embedded-service start and do not change an already-running owner."
+        }
+    }
 }
 
 fn connection_words(status: ConnectionStatus) -> &'static str {
@@ -858,6 +903,28 @@ fn owner_paths(snapshot: &AppSnapshot) -> (Option<PathBuf>, Option<PathBuf>, Opt
         .and_then(Path::parent)
         .map(Path::to_path_buf);
     (project, data, endpoint)
+}
+
+#[cfg(test)]
+mod policy_status_tests {
+    use super::*;
+
+    #[test]
+    fn persisted_service_mode_is_not_presented_as_the_live_host_before_owner_ready() {
+        let mut settings = crate::model::SettingsState::default();
+        settings.service_mode = crate::model::ServiceMode::Attached;
+        let restored = AppSnapshot::empty(crate::core::VersionedRoot::unserved())
+            .with_settings(settings.clone());
+        assert_eq!(confirmed_host_mode(&restored), None);
+
+        settings.connection = ConnectionStatus::Connected;
+        let ready =
+            AppSnapshot::empty(crate::core::VersionedRoot::unserved()).with_settings(settings);
+        assert_eq!(
+            confirmed_host_mode(&ready),
+            Some(crate::host::lease::HostMode::Attached)
+        );
+    }
 }
 
 fn mcp_config(

@@ -478,7 +478,9 @@ impl RegistryGateway {
                 }
             };
             if error.is_some() && !policy_blocked {
+                let before = authority.frontier(source.source).cloned();
                 authority.mark_unavailable(source.source, advisory_now());
+                changed |= before.as_ref() != authority.frontier(source.source);
             }
             let frontier = authority.frontier(source.source);
             states.push(backend_library::browse::AdvisorySourceState {
@@ -3616,7 +3618,7 @@ mod tests {
     }
 
     #[test]
-    fn advisory_refresh_overlays_the_same_release_after_cold_reopen() {
+    fn failed_advisory_refresh_cold_reopen_keeps_findings_and_marks_unavailable() {
         const ADVISORY_ID: &str = "OSV-REGRESSION-1";
         let root = scratch();
         fs::create_dir_all(&root).expect("workspace root");
@@ -3852,6 +3854,14 @@ mod tests {
             .refresh_advisories()
             .expect("persist unavailable source state");
         assert!(states[0].error.is_some());
+        assert_eq!(
+            unavailable_gateway
+                .advisory()
+                .frontier(backend_engine::advisory::AdvisorySource::Osv)
+                .map(|frontier| frontier.availability),
+            Some(backend_engine::advisory::AuthorityAvailability::Unavailable),
+            "a failed non-policy-blocked refresh updates the source frontier"
+        );
         drop(unavailable_gateway);
         let mut unavailable_gateway =
             RegistryGateway::open(&config, &root, &advisory_config(Some(&advisory_feed)))
@@ -3874,6 +3884,96 @@ mod tests {
 
         drop(unavailable_gateway);
         fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn policy_blocked_advisory_refresh_preserves_the_durable_frontier() {
+        let root = scratch();
+        fs::create_dir_all(&root).expect("workspace root");
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind advisory endpoint");
+        let endpoint = format!(
+            "http://{}/osv.json",
+            listener.local_addr().expect("advisory endpoint address")
+        );
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept initial refresh");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut buffer).expect("read refresh request");
+                assert_ne!(read, 0, "refresh request headers complete");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let body = br#"{"vulns":[]}"#;
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream
+                .write_all(headers.as_bytes())
+                .expect("write response headers");
+            stream.write_all(body).expect("write advisory response");
+        });
+
+        let registry = registry_config("http://127.0.0.1:9".to_owned());
+        let source = AdvisorySourceConfig {
+            source: backend_engine::advisory::AdvisorySource::Osv,
+            location: endpoint.clone(),
+        };
+        let config = |offline| {
+            let mut config = advisory_config(None);
+            config.sources = vec![source.clone()];
+            config.offline = offline;
+            config
+        };
+
+        let mut online = RegistryGateway::open(&registry, &root, &config(false))
+            .expect("open online gateway")
+            .expect("configured registry gateway");
+        online
+            .refresh_advisories()
+            .expect("admit initial remote feed");
+        server.join().expect("initial remote refresh");
+        let initial = online
+            .advisory()
+            .frontier(source.source)
+            .cloned()
+            .expect("admitted source frontier");
+        assert_eq!(
+            initial.availability,
+            backend_engine::advisory::AuthorityAvailability::Available
+        );
+        drop(online);
+
+        let mut offline = RegistryGateway::open(&registry, &root, &config(true))
+            .expect("open offline gateway")
+            .expect("configured registry gateway");
+        let states = offline
+            .refresh_advisories()
+            .expect("policy-blocked refresh is reported, not treated as storage failure");
+        assert!(
+            states[0]
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("disabled"))
+        );
+        assert_eq!(
+            offline.advisory().frontier(source.source),
+            Some(&initial),
+            "policy blocking reports the refusal without changing available evidence"
+        );
+        drop(offline);
+
+        let offline = RegistryGateway::open(&registry, &root, &config(true))
+            .expect("cold reopen offline gateway")
+            .expect("configured registry gateway");
+        assert_eq!(
+            offline.advisory().frontier(source.source),
+            Some(&initial),
+            "policy-blocked refresh leaves the durable source frontier unchanged"
+        );
+        drop(offline);
+        fs::remove_dir_all(root).expect("remove workspace fixture");
     }
 
     #[test]
