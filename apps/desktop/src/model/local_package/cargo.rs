@@ -122,6 +122,9 @@ pub(super) fn bounded_output_cancelled(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Vec<u8>, CargoFailure> {
     if cancelled() { return Err(CargoFailure::Cancelled); }
+    // An arbitrary public timeout must never panic after the child starts.
+    // Reject an unrepresentable deadline before creating a process or pipe.
+    let deadline = Instant::now().checked_add(timeout).ok_or(CargoFailure::Timeout)?;
     #[cfg(windows)]
     return Err(CargoFailure::UnsupportedCapture);
     #[cfg(target_os = "macos")]
@@ -145,7 +148,6 @@ pub(super) fn bounded_output_cancelled(
         child_output::stop(&mut child);
         return Err(CargoFailure::Spawn);
     }
-    let deadline = Instant::now() + timeout;
     let cap = max_output.saturating_add(1);
     let mut bytes = Vec::new();
     let mut scratch = [0_u8; 8 * 1024];

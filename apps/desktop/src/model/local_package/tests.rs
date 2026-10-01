@@ -834,6 +834,22 @@ fn cargo_output_returns_at_normal_eof_with_exact_budget() -> Outcome {
 
 #[cfg(unix)]
 #[test]
+fn unrepresentable_cargo_timeout_never_starts_a_child() -> Outcome {
+    let scratch = workspace_fixture("overflowed-timeout")?;
+    let marker = scratch.0.join("started");
+    let program = fake_cargo(&scratch, &format!("printf started > '{}'", marker.display()))?;
+    let result = bounded_output(
+        std::process::Command::new(program),
+        Duration::MAX,
+        64,
+    );
+    assert_eq!(result, Err(CargoFailure::Timeout));
+    assert!(!marker.exists(), "an invalid deadline must be refused before spawn");
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
 fn cargo_exit_with_inherited_stdout_retires_descendant_at_deadline() -> Outcome {
     let scratch = workspace_fixture("inherited-stdout")?;
     let marker = scratch.0.join("descendant-escaped");
