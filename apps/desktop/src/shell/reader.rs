@@ -1701,7 +1701,10 @@ impl Reader {
         let source_generation = match &place.route {
             Route::CargoSource(file) => crate::model::pages::PackageRef::parse(file.package.as_str())
                 .ok()
-                .and_then(|package| pages.cargo_source(&crate::model::pages::CargoSourceKey { package, file: file.file.clone() }).loaded_value().map(|page| SourceGeneration::Cargo(page.content_digest))),
+                .and_then(|package| self.links.store.read(cx)
+                    .cargo_source(&crate::model::pages::CargoSourceKey { package, file: file.file.clone() })
+                    .loaded_value()
+                    .map(|page| SourceGeneration::Cargo(page.content_digest))),
             _ => route_symbol(&place.route).and_then(|symbol| pages.source(&symbol).value_root().map(SourceGeneration::Indexed)),
         };
         let source_paging = if matches!(&place.route, Route::Symbol(symbol) if symbol.view == View::Code)
