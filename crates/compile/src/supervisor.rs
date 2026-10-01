@@ -8,7 +8,7 @@ use crate::{
 };
 use std::{
     collections::VecDeque,
-    fs::{File, OpenOptions, remove_file, symlink_metadata},
+    fs::{File, symlink_metadata},
     io::{self, Read, Seek, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
@@ -2521,13 +2521,39 @@ fn workspace_size_with_checkpoint(
     if !metadata.is_dir() {
         return Ok(0);
     }
+    for _ in 0..3 {
+        checkpoint()?;
+        if let Some(size) = workspace_size_attempt(root, &mut checkpoint)? {
+            return Ok(size);
+        }
+    }
+    Err(ProcessError::Io)
+}
+
+fn workspace_size_attempt(
+    root: &Path,
+    checkpoint: &mut impl FnMut() -> Result<(), ProcessError>,
+) -> Result<Option<usize>, ProcessError> {
     let mut total = 0_usize;
     let mut pending = vec![root.to_owned()];
     while let Some(directory) = pending.pop() {
-        for entry in std::fs::read_dir(directory).map_err(|_| ProcessError::Io)? {
+        let entries = match std::fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(error) if workspace_entry_disappeared(&error) => return Ok(None),
+            Err(_) => return Err(ProcessError::Io),
+        };
+        for entry in entries {
             checkpoint()?;
-            let entry = entry.map_err(|_| ProcessError::Io)?;
-            let metadata = symlink_metadata(entry.path()).map_err(|_| ProcessError::Io)?;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) if workspace_entry_disappeared(&error) => return Ok(None),
+                Err(_) => return Err(ProcessError::Io),
+            };
+            let metadata = match symlink_metadata(entry.path()) {
+                Ok(metadata) => metadata,
+                Err(error) if workspace_entry_disappeared(&error) => return Ok(None),
+                Err(_) => return Err(ProcessError::Io),
+            };
             if metadata.is_dir() {
                 pending.push(entry.path());
             } else if metadata.is_file() {
@@ -2541,17 +2567,78 @@ fn workspace_size_with_checkpoint(
         }
     }
     checkpoint()?;
-    Ok(total)
+    Ok(Some(total))
+}
+
+fn workspace_entry_disappeared(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+    )
 }
 
 struct TempOutput {
     path: PathBuf,
     file: File,
-    remove_on_drop: bool,
+    staging: Option<TempStagingDirectory>,
 }
 
 struct TempInput {
+    staging: TempStagingDirectory,
+}
+
+struct TempStagingDirectory {
+    name: String,
     path: PathBuf,
+    parent: backend_platform::DirectoryCapability,
+    directory: backend_platform::DirectoryCapability,
+}
+
+impl TempStagingDirectory {
+    fn create(label: &str) -> Result<Self, ProcessError> {
+        let base = std::env::temp_dir();
+        let parent = backend_platform::DirectoryCapability::open(&base)
+            .map_err(|_| ProcessError::TemporaryFile)?;
+        for _ in 0..16 {
+            let nonce = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let name = format!("backend-compile-{}-{nonce}-{label}.tmp", std::process::id());
+            match parent.create_private_dir(&name) {
+                Ok(directory) => {
+                    return Ok(Self {
+                        path: base.join(&name),
+                        name,
+                        parent,
+                        directory,
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(_) => return Err(ProcessError::TemporaryFile),
+            }
+        }
+        Err(ProcessError::TemporaryFile)
+    }
+
+    fn create_file(&self) -> Result<File, ProcessError> {
+        self.directory
+            .create_file_exclusive("stream.out")
+            .map_err(|_| ProcessError::TemporaryFile)
+    }
+
+    fn open_file(&self) -> Result<File, ProcessError> {
+        self.directory
+            .open_private_file("stream.out")
+            .map_err(|_| ProcessError::Io)
+    }
+
+    fn file_path(&self) -> PathBuf {
+        self.path.join("stream.out")
+    }
+}
+
+impl Drop for TempStagingDirectory {
+    fn drop(&mut self) {
+        let _ = self.parent.remove_dir_all(&self.name, 2);
+    }
 }
 
 impl TempInput {
@@ -2572,67 +2659,102 @@ impl TempInput {
         check_observer_deadline(cancellation, deadline)?;
         output.file.flush().map_err(|_| ProcessError::Io)?;
         check_observer_deadline(cancellation, deadline)?;
-        let path = output.keep_path();
-        Ok(Some(Self { path }))
+        let staging = output.staging.take().ok_or(ProcessError::TemporaryFile)?;
+        Ok(Some(Self { staging }))
     }
 
     fn open(&self) -> Result<File, ProcessError> {
-        File::open(&self.path).map_err(|_| ProcessError::Io)
-    }
-}
-
-impl Drop for TempInput {
-    fn drop(&mut self) {
-        let _ = remove_file(&self.path);
+        self.staging.open_file()
     }
 }
 
 impl TempOutput {
     fn create(label: &str) -> Result<Self, ProcessError> {
-        let base = std::env::temp_dir();
-        for _ in 0..16 {
-            let nonce = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let path = base.join(format!(
-                "backend-compile-{}-{nonce}-{label}.out",
-                std::process::id()
-            ));
-            match OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .read(true)
-                .open(&path)
-            {
-                Ok(file) => {
-                    return Ok(Self {
-                        path,
-                        file,
-                        remove_on_drop: true,
-                    });
-                }
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(_) => return Err(ProcessError::TemporaryFile),
-            }
-        }
-        Err(ProcessError::TemporaryFile)
-    }
-
-    fn keep_path(&mut self) -> PathBuf {
-        self.remove_on_drop = false;
-        self.path.clone()
-    }
-}
-
-impl Drop for TempOutput {
-    fn drop(&mut self) {
-        if self.remove_on_drop {
-            let _ = remove_file(&self.path);
-        }
+        let staging = TempStagingDirectory::create(label)?;
+        let path = staging.file_path();
+        let file = staging.create_file()?;
+        Ok(Self {
+            path,
+            file,
+            staging: Some(staging),
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn temp_output_permission_probe_child() {
+        if std::env::var_os("BACKEND_COMPILE_TEMP_PERMISSION_PROBE").is_none() {
+            return;
+        }
+        let _ = rustix::process::umask(rustix::fs::Mode::from_bits_truncate(0o022));
+        let cancellation = AtomicBool::new(false);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let stdin = TempInput::create_until(
+            &ProcessStdin::bytes(b"private request".to_vec()),
+            &cancellation,
+            deadline,
+        )
+        .expect("private stdin staging")
+        .expect("stdin staging exists");
+        let stdout = TempOutput::create("stdout").expect("private stdout staging");
+        let stderr = TempOutput::create("stderr").expect("private stderr staging");
+        let paths = [
+            stdin.staging.file_path(),
+            stdout.path.clone(),
+            stderr.path.clone(),
+        ];
+        for path in &paths {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(path)
+                .expect("staging metadata")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600, "staging file mode for {path:?}");
+        }
+        drop((stdin, stdout, stderr));
+        assert!(paths.iter().all(|path| !path.exists()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn temp_stream_files_are_private_under_umask_022_and_cleaned_up() {
+        let status =
+            std::process::Command::new(std::env::current_exe().expect("current test executable"))
+                .args(["temp_output_permission_probe_child", "--nocapture"])
+                .env("BACKEND_COMPILE_TEMP_PERMISSION_PROBE", "1")
+                .status()
+                .expect("launch isolated umask test process");
+        assert!(status.success());
+    }
+
+    #[test]
+    fn workspace_census_retries_when_a_cargo_temporary_entry_disappears() {
+        let root = std::env::temp_dir().join(format!(
+            "backend-workspace-census-{}-{}",
+            std::process::id(),
+            TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&root).expect("workspace fixture");
+        let transient = root.join("rustc-temporary.rcgu.o");
+        std::fs::write(&transient, b"temporary object").expect("temporary object");
+        let mut checkpoints = 0;
+        let size = workspace_size_with_checkpoint(&root, || {
+            checkpoints += 1;
+            if checkpoints == 3 {
+                std::fs::remove_file(&transient).expect("remove between listing and stat");
+            }
+            Ok(())
+        })
+        .expect("bounded retry should obtain a stable second snapshot");
+        assert_eq!(size, 0);
+        std::fs::remove_dir(&root).expect("workspace cleanup");
+    }
 
     #[test]
     fn child_reaper_reservations_are_bounded_and_released_by_permit_drop() {

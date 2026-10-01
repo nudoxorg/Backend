@@ -129,6 +129,29 @@ impl SupervisedCommand {
         environment: ProcessEnvironment,
         limits: ProcessLimits,
     ) -> Result<Self, ProcessError> {
+        Self::validate_launch_inputs(&program, &args, &cwd)?;
+        Ok(Self {
+            program,
+            args,
+            cwd,
+            environment,
+            stdin: ProcessStdin::Null,
+            toolchain: None,
+            executable_identity: None,
+            toolchain_artifact: None,
+            session_key: None,
+            protocol: ProtocolDescriptor::cold(),
+            limits,
+        })
+    }
+
+    /// Applies the canonical path and argument limits before activation performs any hashing,
+    /// workspace creation, or model materialization.
+    pub(crate) fn validate_launch_inputs(
+        program: &Path,
+        args: &[String],
+        cwd: &Path,
+    ) -> Result<(), ProcessError> {
         if !program.is_absolute() || !cwd.is_absolute() {
             return Err(ProcessError::RelativePath);
         }
@@ -146,19 +169,7 @@ impl SupervisedCommand {
         if args.iter().any(|arg| arg.as_bytes().contains(&0)) {
             return Err(ProcessError::Protocol);
         }
-        Ok(Self {
-            program,
-            args,
-            cwd,
-            environment,
-            stdin: ProcessStdin::Null,
-            toolchain: None,
-            executable_identity: None,
-            toolchain_artifact: None,
-            session_key: None,
-            protocol: ProtocolDescriptor::cold(),
-            limits,
-        })
+        Ok(())
     }
 
     /// Constructs a command with explicit native-authority provenance and

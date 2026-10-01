@@ -10,11 +10,10 @@ use crate::{
     ProcessEnvironment, ProcessError, ProcessLimits, ProcessStdin, ProcessSupervisor,
     ProcessTerminal, ProtocolDescriptor, SupervisedCommand, ToolchainArtifact,
 };
-#[cfg(unix)]
-use std::fs;
 use std::{
     collections::{HashMap, VecDeque},
     fmt,
+    fs::File,
     io::{self, Read},
     num::{NonZeroU16, NonZeroU32},
     path::{Path, PathBuf},
@@ -697,17 +696,13 @@ impl EmbeddingExecutionIdentity {
 }
 
 struct EmbeddingArtifactWorkspace {
-    #[cfg(windows)]
     name: String,
-    directory: PathBuf,
     model_path: PathBuf,
     tokenizer_path: PathBuf,
     model_length: usize,
     tokenizer_length: usize,
-    #[cfg(windows)]
-    parent: backend_platform::win32::workspace_fs::WorkspaceRoot,
-    #[cfg(windows)]
-    directory_handle: backend_platform::win32::workspace_fs::WorkspaceRoot,
+    parent: backend_platform::DirectoryCapability,
+    directory_handle: backend_platform::DirectoryCapability,
 }
 
 impl EmbeddingArtifactWorkspace {
@@ -749,41 +744,25 @@ impl EmbeddingArtifactWorkspace {
         let directory = workspace.join(&name);
 
         check_request_deadline(None, deadline)?;
-        #[cfg(unix)]
-        create_private_artifact_directory(&directory)?;
-        #[cfg(windows)]
-        let (parent, directory_handle) = {
-            use backend_platform::win32::workspace_fs::WorkspaceRoot;
-            let parent = WorkspaceRoot::open(workspace)
-                .map_err(EmbeddingExecutableError::ArtifactWorkspace)?;
-            let child = parent
-                .create_child_dir_exclusive(&name)
-                .map_err(EmbeddingExecutableError::ArtifactWorkspace)?;
-            (parent, child)
-        };
-        #[cfg(not(any(unix, windows)))]
-        return Err(EmbeddingExecutableError::ArtifactWorkspace(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "private embedding artifact workspaces are unsupported on this platform",
-        )));
+        let parent = backend_platform::DirectoryCapability::open(workspace)
+            .map_err(EmbeddingExecutableError::ArtifactWorkspace)?;
+        let directory_handle = parent
+            .create_private_dir(&name)
+            .map_err(EmbeddingExecutableError::ArtifactWorkspace)?;
 
         let artifacts = Self {
-            #[cfg(windows)]
             name,
             model_path: directory.join(MODEL_FILE_NAME),
             tokenizer_path: directory.join(TOKENIZER_FILE_NAME),
             model_length: model.bytes().len(),
             tokenizer_length: tokenizer.bytes().len(),
-            directory,
-            #[cfg(windows)]
             parent,
-            #[cfg(windows)]
             directory_handle,
         };
         check_request_deadline(None, deadline)?;
-        artifacts.write_artifact(MODEL_FILE_NAME, model.bytes())?;
+        artifacts.write_artifact(MODEL_FILE_NAME, model.bytes(), deadline)?;
         check_request_deadline(None, deadline)?;
-        artifacts.write_artifact(TOKENIZER_FILE_NAME, tokenizer.bytes())?;
+        artifacts.write_artifact(TOKENIZER_FILE_NAME, tokenizer.bytes(), deadline)?;
         artifacts.verify_artifact(
             MODEL_FILE_NAME,
             model.identity,
@@ -801,26 +780,22 @@ impl EmbeddingArtifactWorkspace {
         Ok(artifacts)
     }
 
-    fn write_artifact(&self, name: &str, bytes: &[u8]) -> Result<(), EmbeddingExecutableError> {
-        #[cfg(unix)]
-        backend_platform::durable::write_private_atomic(&self.directory.join(name), bytes)
-            .map_err(EmbeddingExecutableError::ArtifactWorkspace)?;
-        #[cfg(windows)]
-        {
-            use std::io::Write as _;
-
-            let mut file = self
-                .directory_handle
-                .create_file_exclusive(&[name])
-                .map_err(EmbeddingExecutableError::ArtifactWorkspace)?;
-            file.write_all(bytes)
-                .and_then(|()| file.sync_all())
-                .map_err(EmbeddingExecutableError::ArtifactWorkspace)?;
-            self.directory_handle
-                .flush_dir()
-                .map_err(EmbeddingExecutableError::ArtifactWorkspace)?;
-        }
-        Ok(())
+    fn write_artifact(
+        &self,
+        name: &str,
+        bytes: &[u8],
+        deadline: Instant,
+    ) -> Result<(), EmbeddingExecutableError> {
+        write_private_artifact_atomic(
+            &self.directory_handle,
+            name,
+            bytes,
+            deadline,
+            |file, chunk| {
+                use std::io::Write as _;
+                file.write_all(chunk)
+            },
+        )
     }
 
     fn verify_until(
@@ -856,8 +831,9 @@ impl EmbeddingArtifactWorkspace {
         deadline: Instant,
     ) -> Result<(), EmbeddingExecutableError> {
         check_request_deadline(cancelled, deadline)?;
-        let path = self.directory.join(name);
-        let mut file = backend_platform::durable::open_private_read(&path)
+        let mut file = self
+            .directory_handle
+            .open_private_file(name)
             .map_err(EmbeddingExecutableError::ArtifactWorkspace)?;
         if file
             .metadata()
@@ -935,36 +911,42 @@ impl EmbeddingArtifactWorkspace {
     }
 }
 
-#[cfg(unix)]
-fn create_private_artifact_directory(path: &Path) -> Result<(), EmbeddingExecutableError> {
-    use std::os::unix::fs::DirBuilderExt as _;
-
-    let mut builder = fs::DirBuilder::new();
-    builder.mode(0o700);
-    builder
-        .create(path)
+fn write_private_artifact_atomic(
+    directory: &backend_platform::DirectoryCapability,
+    name: &str,
+    bytes: &[u8],
+    deadline: Instant,
+    mut write_chunk: impl FnMut(&mut File, &[u8]) -> io::Result<()>,
+) -> Result<(), EmbeddingExecutableError> {
+    check_request_deadline(None, deadline)?;
+    let sequence = ARTIFACT_WORKSPACE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temporary = format!(".{name}-{sequence}.tmp");
+    let mut file = directory
+        .create_file_exclusive(&temporary)
         .map_err(EmbeddingExecutableError::ArtifactWorkspace)?;
-    if let Err(error) = backend_platform::durable::ensure_private_directory(path) {
-        let _ = fs::remove_dir(path);
-        return Err(EmbeddingExecutableError::ArtifactWorkspace(error));
+    let write_result = (|| {
+        for chunk in bytes.chunks(64 * 1024) {
+            check_request_deadline(None, deadline)?;
+            write_chunk(&mut file, chunk).map_err(EmbeddingExecutableError::ArtifactWorkspace)?;
+        }
+        check_request_deadline(None, deadline)?;
+        file.sync_all()
+            .map_err(EmbeddingExecutableError::ArtifactWorkspace)?;
+        check_request_deadline(None, deadline)?;
+        directory
+            .rename_with_outcome(&temporary, name, true)
+            .map_err(|error| EmbeddingExecutableError::ArtifactWorkspace(error.into_io_error()))
+    })();
+    drop(file);
+    if write_result.is_err() {
+        let _ = directory.remove_file(&temporary);
     }
-    Ok(())
+    write_result
 }
 
 impl Drop for EmbeddingArtifactWorkspace {
     fn drop(&mut self) {
-        #[cfg(unix)]
-        {
-            let _ = backend_platform::durable::remove_private(&self.model_path);
-            let _ = backend_platform::durable::remove_private(&self.tokenizer_path);
-            if fs::remove_dir(&self.directory).is_ok() {
-                let _ = backend_platform::durable::sync_parent(&self.directory);
-            }
-        }
-        #[cfg(windows)]
-        {
-            let _ = self.parent.remove_dir_tree(&[&self.name]);
-        }
+        let _ = self.parent.remove_dir_all(&self.name, 8);
     }
 }
 
@@ -1267,7 +1249,7 @@ impl EmbeddingExecutable {
             return None;
         }
         let identity = self.execution_identity();
-        EmbeddingCacheSession::open(directory, identity.recipe(), identity.dimension())
+        EmbeddingCacheSession::open(directory, identity)
     }
 
     /// Upper bound for one vector's canonical output bytes.
@@ -1282,8 +1264,10 @@ impl EmbeddingExecutable {
         self.maximum_text_bytes
     }
 
-    /// Upper bound for cache storage, batch request/output scratch, decoded coordinates, and
-    /// per-input batch metadata. Compiler staging reserves encoded BVE1 payloads separately.
+    /// Per-call upper bound for cache storage, batch request/output scratch, decoded coordinates,
+    /// and per-input batch metadata. Returned vectors retained by callers and concurrent calls
+    /// can aggregate beyond this per-call budget. Compiler staging reserves encoded BVE1 payloads
+    /// separately.
     #[must_use]
     pub const fn maximum_inference_scratch_bytes(&self) -> usize {
         self.process_limits
@@ -1441,6 +1425,8 @@ impl EmbeddingExecutable {
             .checked_add(process_limits.wall_time())
             .ok_or(EmbeddingExecutableError::Process(ProcessError::Deadline))?;
         check_request_deadline(None, activation_deadline)?;
+        SupervisedCommand::validate_launch_inputs(&program, &arguments, &workspace)
+            .map_err(EmbeddingExecutableError::Process)?;
         if maximum_text_bytes == 0 {
             return Err(EmbeddingExecutableError::ZeroTextLimit);
         }
@@ -1721,6 +1707,8 @@ impl EmbeddingExecutable {
         if !self.active {
             return Err(EmbeddingExecutableError::Revoked);
         }
+        let cache_session =
+            cache_session.filter(|session| session.is_bound_to(self.execution_identity()));
         if texts.len() > MAX_EMBEDDING_BATCH_INPUTS {
             return Err(EmbeddingExecutableError::BatchInputLimit {
                 observed: texts.len(),
@@ -1782,6 +1770,9 @@ impl EmbeddingExecutable {
             input_indices.push(index);
         }
 
+        // Bound the complete unique result set before any cache read or coordinate allocation.
+        // A warm cache must not bypass the same per-call retained-coordinate ceiling as a miss.
+        check_batch_result_limit(unique_inputs.len(), self.dimensions.get())?;
         let mut unique_results = vec![None; unique_inputs.len()];
         let mut misses = Vec::new();
         misses
@@ -1854,7 +1845,6 @@ impl EmbeddingExecutable {
                 deadline,
             )?;
         }
-        check_batch_result_limit(misses.len(), self.dimensions.get())?;
         let inferred_indices = misses.clone();
 
         if self.batch_protocol == EmbeddingBatchProtocol::SingleV1 {
@@ -2849,10 +2839,10 @@ fn validate_batch_input_bytes(
 }
 
 fn check_batch_result_limit(
-    unique_misses: usize,
+    unique_results: usize,
     dimensions: u16,
 ) -> Result<(), EmbeddingExecutableError> {
-    let coordinate_bytes = unique_misses
+    let coordinate_bytes = unique_results
         .checked_mul(usize::from(dimensions))
         .and_then(|coordinates| coordinates.checked_mul(size_of::<f32>()))
         .ok_or(EmbeddingExecutableError::BatchResultLimit {
@@ -4575,6 +4565,46 @@ while True:
     }
 
     #[test]
+    fn foreign_dimension_cache_session_is_ignored_without_mutating_its_files()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (root, _, runtime) = runtime()?;
+        let cache_root = root.join("foreign-dimension-cache");
+        fs::create_dir(&cache_root)?;
+        fs::set_permissions(&cache_root, fs::Permissions::from_mode(0o700))?;
+        let mut foreign_identity = runtime.execution_identity();
+        foreign_identity.dimension += 1;
+        let foreign_session = EmbeddingCacheSession::open(
+            backend_platform::DirectoryCapability::open(&cache_root)?,
+            foreign_identity,
+        )
+        .ok_or("foreign cache actor admission failed")?;
+
+        let result = runtime.infer_batch_with_cache_session(
+            EmbeddingPurpose::Document,
+            &["alpha beta"],
+            &AtomicBool::new(false),
+            &foreign_session,
+        )?;
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].values().len(), 2);
+        assert_eq!(
+            fs::read_dir(&cache_root)?
+                .filter_map(Result::ok)
+                .filter(|entry| entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "vec"))
+                .count(),
+            0,
+            "a cache session for another output shape must remain untouched"
+        );
+
+        drop((foreign_session, runtime));
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
     fn launch_configuration_binds_arguments_and_environment_but_not_private_artifact_paths()
     -> Result<(), Box<dyn std::error::Error>> {
         let first = ProcessEnvironment::new(vec![
@@ -4664,6 +4694,94 @@ while True:
                 maximum: MAX_EMBEDDING_BATCH_COORDINATE_BYTES,
             })
         ));
+    }
+
+    #[test]
+    fn artifact_staging_checks_deadline_and_removes_partial_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "backend-embedding-artifact-stage-{}-{stamp}",
+            std::process::id()
+        ));
+        fs::create_dir(&root)?;
+        #[cfg(unix)]
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
+        let directory = backend_platform::DirectoryCapability::open(&root)?;
+        let deadline = Instant::now() + Duration::from_millis(25);
+        let bytes = vec![0x5A; 128 * 1024];
+        let result = write_private_artifact_atomic(
+            &directory,
+            "model.bin",
+            &bytes,
+            deadline,
+            |file, chunk| {
+                use std::io::Write as _;
+                file.write_all(chunk)?;
+                std::thread::sleep(Duration::from_millis(40));
+                Ok(())
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(EmbeddingExecutableError::Process(ProcessError::Deadline))
+        ));
+        assert!(directory.entries(8)?.is_empty());
+        drop(directory);
+        fs::remove_dir(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn activation_rejects_oversized_arguments_before_workspace_or_child_side_effects()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (root, program) = fixture()?;
+        let call_counter = root.join("activation-calls.txt");
+        let environment = ProcessEnvironment::new(vec![
+            ("PATH".into(), "/usr/bin:/bin".into()),
+            (
+                "BACKEND_EMBEDDING_CALL_COUNTER".into(),
+                call_counter.to_string_lossy().into_owned(),
+            ),
+        ])?;
+        let limits = ProcessLimits::new(256, 64, Duration::from_secs(2), 256)?
+            .with_input_bytes_limit(2_048)?;
+        let executable = ToolchainArtifact::from_path(&program, Vec::new())?;
+        let model = EmbeddingArtifact::new(Arc::from(MODEL_BYTES));
+        let tokenizer = EmbeddingArtifact::new(Arc::from(TOKENIZER_BYTES));
+        let spec = EmbeddingRuntimeSpecV1::new(
+            model.identity().as_bytes(),
+            [7; 32],
+            tokenizer.identity().as_bytes(),
+            executable.identity().to_bytes(),
+            NonZeroU16::new(2).ok_or("dimensions")?,
+            EmbeddingNormalization::L2,
+            NonZeroU32::new(128).ok_or("text limit")?,
+            [0xA5; 32],
+        );
+        for arguments in [vec!["x".to_owned(); 257], vec!["x".repeat(64 * 1024 + 1)]] {
+            let result = EmbeddingExecutable::activate_with_spec(
+                spec,
+                program.clone(),
+                arguments,
+                root.clone(),
+                environment.clone(),
+                limits,
+                executable.clone(),
+                model.clone(),
+                tokenizer.clone(),
+            );
+            assert!(matches!(
+                result,
+                Err(EmbeddingExecutableError::Process(
+                    ProcessError::ConfigurationLimit
+                ))
+            ));
+            assert_eq!(fs::read_dir(&root)?.count(), 1);
+            assert!(!call_counter.exists());
+        }
+        fs::remove_dir_all(root)?;
+        Ok(())
     }
 
     #[test]

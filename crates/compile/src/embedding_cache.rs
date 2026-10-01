@@ -11,7 +11,7 @@
 //! cache actor takes a separate kernel lock on that exact directory and owns inventory, eviction,
 //! and atomic replacement. Cache reads and writes stay scoped to the borrowed actor session.
 
-use crate::{EmbeddingInputIdentity, ProcessError};
+use crate::{EmbeddingExecutionIdentity, EmbeddingInputIdentity, ProcessError};
 use backend_platform::{DirectoryCapability, EntryKind};
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -67,6 +67,7 @@ struct CacheEntry {
 /// The actor owns the pinned directory capability, kernel lock, inventory, and all file mutation.
 /// Callers borrow the session for one inference; it never attaches itself to an executable runtime.
 pub struct EmbeddingCacheSession {
+    execution_identity: EmbeddingExecutionIdentity,
     sender: SyncSender<CacheBrokerMessage>,
     worker: Mutex<Option<JoinHandle<()>>>,
 }
@@ -105,25 +106,35 @@ impl Drop for CacheBrokerPermit {
 impl EmbeddingCacheSession {
     pub(crate) fn open(
         directory: DirectoryCapability,
-        recipe: [u8; 32],
-        dimensions: u32,
+        execution_identity: EmbeddingExecutionIdentity,
     ) -> Option<Self> {
         if !reserve_broker() {
             return None;
         }
         let (sender, receiver) = mpsc::sync_channel(CACHE_BROKER_QUEUE);
         let permit = CacheBrokerPermit;
+        let broker_identity = execution_identity;
         let worker = thread::Builder::new()
             .name("embedding-cache-broker".into())
             .spawn(move || {
                 let _permit = permit;
-                run_cache_broker(receiver, directory, recipe, dimensions);
+                run_cache_broker(
+                    receiver,
+                    directory,
+                    broker_identity.recipe(),
+                    broker_identity.dimension(),
+                );
             })
             .ok()?;
         Some(Self {
+            execution_identity,
             sender,
             worker: Mutex::new(Some(worker)),
         })
+    }
+
+    pub(crate) fn is_bound_to(&self, identity: EmbeddingExecutionIdentity) -> bool {
+        self.execution_identity == identity
     }
 
     pub(crate) fn lookup_batch(
