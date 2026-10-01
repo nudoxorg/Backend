@@ -389,6 +389,7 @@ impl<E: Element> Drawable<E> {
                 }
 
                 let bounds = window.layout_bounds(layout_id);
+                let is_inert_subtree = window.is_inert_subtree();
                 let mut pushed_a11y_node = false;
                 if window.a11y.is_active() {
                     if let Some(global_id) = global_id.as_ref() {
@@ -405,6 +406,9 @@ impl<E: Element> Drawable<E> {
                             self.element.write_a11y_info(&mut node);
                             window.a11y.node_bounds.insert(node_id, bounds);
                             pushed_a11y_node = window.a11y.nodes.push(node_id, node);
+                            if pushed_a11y_node && is_inert_subtree {
+                                window.a11y.nodes.mark_current_inert();
+                            }
                             #[cfg(debug_assertions)]
                             if pushed_a11y_node {
                                 let view = window
@@ -453,13 +457,17 @@ impl<E: Element> Drawable<E> {
                         let mut builder = A11ySubtreeBuilder::new(
                             global_id.accesskit_node_id(),
                             &mut window.a11y.nodes,
-                        );
+                        )
+                        .inert(is_inert_subtree);
                         #[cfg(debug_assertions)]
                         {
                             builder = builder.with_creator(creator);
                         }
                         self.element
                             .a11y_synthetic_children(&mut prepaint, &mut builder);
+                    }
+                    if is_inert_subtree {
+                        window.a11y.nodes.mark_current_inert();
                     }
                     window.a11y.nodes.pop();
                 }

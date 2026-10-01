@@ -274,6 +274,10 @@ impl A11y {
         }
     }
 
+    pub(crate) fn is_node_inert(&self, node_id: NodeId) -> bool {
+        self.nodes.is_node_inert(node_id)
+    }
+
     pub(crate) fn set_active_descendant(&mut self, node_id: NodeId) {
         // The active descendant must be a descendant of the focused container,
         // not the focused node itself.
@@ -336,6 +340,7 @@ impl A11y {
 pub struct A11ySubtreeBuilder<'a> {
     parent_id: NodeId,
     nodes: &'a mut A11yNodeBuilder,
+    inert: bool,
     /// Provenance of the real element whose `a11y_synthetic_children` is
     /// running.
     #[cfg(debug_assertions)]
@@ -347,6 +352,7 @@ impl<'a> A11ySubtreeBuilder<'a> {
         Self {
             parent_id,
             nodes,
+            inert: false,
             #[cfg(debug_assertions)]
             creator: debug::NodeCreator::default(),
         }
@@ -355,6 +361,11 @@ impl<'a> A11ySubtreeBuilder<'a> {
     #[cfg(debug_assertions)]
     pub(crate) fn with_creator(mut self, creator: debug::NodeCreator) -> Self {
         self.creator = creator;
+        self
+    }
+
+    pub(crate) fn inert(mut self, inert: bool) -> Self {
+        self.inert = inert;
         self
     }
 
@@ -376,7 +387,11 @@ impl<'a> A11ySubtreeBuilder<'a> {
     /// Returns `false` if a node with this id is already present in the tree,
     /// in which case the node is discarded.
     pub fn push_child(&mut self, id: NodeId, node: accesskit::Node) -> bool {
-        let pushed = self.nodes.push_leaf(id, node);
+        let pushed = if self.inert {
+            self.nodes.push_leaf_inert(id, node)
+        } else {
+            self.nodes.push_leaf(id, node)
+        };
         #[cfg(debug_assertions)]
         if pushed {
             self.nodes.record_node_info(
@@ -415,6 +430,9 @@ pub(crate) struct A11yNodeBuilder {
     /// pattern, which allows a focused container to act as if a descendant is
     /// focused.
     active_descendant: Option<NodeId>,
+    /// Nodes rendered beneath an inert boundary. Kept through finalization so
+    /// parent callbacks cannot reattach an active-descendant path into them.
+    inert_nodes: FxHashSet<NodeId>,
     #[cfg(debug_assertions)]
     node_info: FxHashMap<NodeId, debug::NodeDebugInfo>,
 }
@@ -428,6 +446,7 @@ impl A11yNodeBuilder {
             seen_ids: FxHashSet::default(),
             focus: None,
             active_descendant: None,
+            inert_nodes: FxHashSet::default(),
             #[cfg(debug_assertions)]
             node_info: FxHashMap::default(),
         }
@@ -488,6 +507,40 @@ impl A11yNodeBuilder {
         true
     }
 
+    pub(crate) fn push_leaf_inert(&mut self, id: NodeId, mut node: accesskit::Node) -> bool {
+        make_node_inert(&mut node);
+        let pushed = self.push_leaf(id, node);
+        if pushed {
+            self.inert_nodes.insert(id);
+        }
+        pushed
+    }
+
+    /// Mark and sanitize the current node. Used after element a11y callbacks so
+    /// synthetic-child builders cannot restore actions or active descendants.
+    pub(crate) fn mark_current_inert(&mut self) {
+        let Some(id) = self.ids_stack.last().copied() else {
+            return;
+        };
+        if id == ROOT_NODE_ID {
+            return;
+        }
+        self.inert_nodes.insert(id);
+        if let Some(node) = self.nodes_stack.last_mut() {
+            make_node_inert(node);
+        }
+    }
+
+    pub(crate) fn mark_current_inert_if(&mut self, expected_id: NodeId) {
+        if self.ids_stack.last().copied() == Some(expected_id) {
+            self.mark_current_inert();
+        }
+    }
+
+    fn is_node_inert(&self, node_id: NodeId) -> bool {
+        self.inert_nodes.contains(&node_id)
+    }
+
     pub(crate) fn current_node_mut(&mut self) -> Option<&mut accesskit::Node> {
         self.nodes_stack.last_mut()
     }
@@ -497,7 +550,10 @@ impl A11yNodeBuilder {
     pub(crate) fn pop(&mut self) {
         debug_assert!(self.ids_stack.len() > 1, "pop would remove the root node");
 
-        if let (Some(id), Some(node)) = (self.ids_stack.pop(), self.nodes_stack.pop()) {
+        if let (Some(id), Some(mut node)) = (self.ids_stack.pop(), self.nodes_stack.pop()) {
+            if self.inert_nodes.contains(&id) {
+                make_node_inert(&mut node);
+            }
             self.all_nodes.push((id, node));
         }
     }
@@ -519,6 +575,7 @@ impl A11yNodeBuilder {
         self.nodes_stack.push(root_node);
         self.focus = None;
         self.active_descendant = None;
+        self.inert_nodes.clear();
     }
 
     /// Returns whether a node with the given ID has been pushed in this frame.
@@ -593,7 +650,33 @@ impl A11yNodeBuilder {
             }
         }
 
-        let focus = match self.active_descendant {
+        for (id, node) in &mut self.all_nodes {
+            if self.inert_nodes.contains(id) {
+                make_node_inert(node);
+            }
+            if node
+                .active_descendant()
+                .is_some_and(|active| self.inert_nodes.contains(&active))
+            {
+                node.clear_active_descendant();
+            }
+        }
+        for (id, node) in self.ids_stack.iter().zip(self.nodes_stack.iter_mut()) {
+            if self.inert_nodes.contains(id) {
+                make_node_inert(node);
+            }
+            if node
+                .active_descendant()
+                .is_some_and(|active| self.inert_nodes.contains(&active))
+            {
+                node.clear_active_descendant();
+            }
+        }
+
+        let active_descendant = self
+            .active_descendant
+            .filter(|id| !self.inert_nodes.contains(id));
+        let focus = match active_descendant {
             Some(id) if self.has_node(id) => id,
             Some(id) => {
                 if cfg!(debug_assertions) {
@@ -674,6 +757,14 @@ impl Drop for A11ySuppression {
     fn drop(&mut self) {
         self.depth.set(self.depth.get().checked_sub(1).expect("unbalanced accessibility suppression"));
     }
+}
+
+fn make_node_inert(node: &mut accesskit::Node) {
+    node.set_disabled(true);
+    node.clear_actions();
+    node.clear_child_actions();
+    node.clear_custom_actions();
+    node.clear_active_descendant();
 }
 
 #[cfg(test)]

@@ -7,19 +7,19 @@ use crate::{
     DevicePixels, DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect,
     Entity, EntityId, EventEmitter, FileDropEvent, Filter, FilterBoundary, FontId, Global,
     GlobalElementId, GlyphId, GpuSpecs, InputHandler, IsZero, KeyBinding, KeyContext, KeyDownEvent,
-    LayerTransform, KeyEvent, Keystroke, KeystrokeEvent, LayoutId, Lerp, LineLayoutIndex,
-    Modifiers, Motion,
-    ModifiersChangedEvent, MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent,
-    Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler,
-    PlatformWindow, Point, PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render,
-    RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge,
-    SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledFilter, ScaledPixels,
-    Scene, Shadow, SharedString, Size, StrikethroughStyle, Style, SubpixelSprite, SubscriberSet,
-    Subscription, SystemWindowTab, SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task,
-    TextRenderingMode, TextStyle, TextStyleRefinement, ThermalState, TransformationMatrix,
-    Transition, TransitionState, Underline, UnderlineStyle, WindowAppearance,
-    WindowBackgroundAppearance, WindowBounds, WindowControls, WindowDecorations, WindowOptions,
-    WindowParams, WindowTextSystem, point, prelude::*, profiler, px, rems, size, transparent_black,
+    KeyEvent, Keystroke, KeystrokeEvent, LayerTransform, LayoutId, Lerp, LineLayoutIndex,
+    Modifiers, ModifiersChangedEvent, MonochromeSprite, Motion, MouseButton, MouseEvent,
+    MouseMoveEvent, MouseUpEvent, Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput,
+    PlatformInputHandler, PlatformWindow, Point, PolychromeSprite, Priority, PromptButton,
+    PromptLevel, Quad, Render, RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams,
+    Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y,
+    ScaledFilter, ScaledPixels, Scene, Shadow, SharedString, Size, StrikethroughStyle, Style,
+    SubpixelSprite, SubscriberSet, Subscription, SystemWindowTab, SystemWindowTabController,
+    TabStopMap, TaffyLayoutEngine, Task, TextRenderingMode, TextStyle, TextStyleRefinement,
+    ThermalState, TransformationMatrix, Transition, TransitionState, Underline, UnderlineStyle,
+    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControls, WindowDecorations,
+    WindowOptions, WindowParams, WindowTextSystem, point, prelude::*, profiler, px, rems, size,
+    transparent_black,
 };
 
 use anyhow::{Context as _, Result, anyhow};
@@ -912,12 +912,21 @@ pub(crate) struct DeferredDraw {
     /// NUDOX: the element and group opacity in effect where the draw was deferred.
     element_opacity: f32,
     group_opacity: f32,
+    inert_subtree: bool,
     prepaint_range: Range<PrepaintStateIndex>,
     paint_range: Range<PaintIndex>,
 }
 
 pub(crate) struct Frame {
     pub(crate) focus: Option<FocusId>,
+    /// Focus handles rendered beneath an inert boundary in this frame. Kept in
+    /// the committed frame so programmatic focus cannot reactivate a retained
+    /// child between draws.
+    pub(crate) inert_focus_ids: FxHashSet<FocusId>,
+    /// Focusable IDs in paint order, retained so a cached subtree can be made inert without
+    /// replaying its dispatch tree.
+    focus_ids: Vec<FocusId>,
+    inert_focus_id_list: Vec<FocusId>,
     pub(crate) window_active: bool,
     pub(crate) element_states: FxHashMap<(GlobalElementId, TypeId), ElementStateBox>,
     accessed_element_states: Vec<(GlobalElementId, TypeId)>,
@@ -946,6 +955,8 @@ pub(crate) struct PrepaintStateIndex {
     deferred_draws_index: usize,
     dispatch_tree_index: usize,
     accessed_element_states_index: usize,
+    focus_ids_index: usize,
+    inert_focus_ids_index: usize,
     line_layout_index: LineLayoutIndex,
 }
 
@@ -960,10 +971,23 @@ pub(crate) struct PaintIndex {
     line_layout_index: LineLayoutIndex,
 }
 
+struct InertSubtreeScope(Rc<Cell<usize>>);
+
+impl Drop for InertSubtreeScope {
+    fn drop(&mut self) {
+        let depth = self.0.get();
+        debug_assert!(depth > 0, "inert subtree scope depth underflow");
+        self.0.set(depth.saturating_sub(1));
+    }
+}
+
 impl Frame {
     pub(crate) fn new(dispatch_tree: DispatchTree) -> Self {
         Frame {
             focus: None,
+            inert_focus_ids: FxHashSet::default(),
+            focus_ids: Vec::new(),
+            inert_focus_id_list: Vec::new(),
             window_active: false,
             element_states: FxHashMap::default(),
             accessed_element_states: Vec::new(),
@@ -1003,6 +1027,9 @@ impl Frame {
         self.deferred_draws.clear();
         self.tab_stops.clear();
         self.focus = None;
+        self.inert_focus_ids.clear();
+        self.focus_ids.clear();
+        self.inert_focus_id_list.clear();
 
         #[cfg(any(test, feature = "test-support"))]
         {
@@ -1151,6 +1178,8 @@ pub struct Window {
     pub(crate) activation_observers: SubscriberSet<(), AnyObserver>,
     pub(crate) focus: Option<FocusId>,
     focus_enabled: bool,
+    /// Nesting depth for the currently constructed inert subtree.
+    inert_subtree_depth: Rc<Cell<usize>>,
     /// Incremented every time focus moves. Used to invalidate a
     /// pending keyboard activation state when focus changes.
     pub(crate) focus_generation: u64,
@@ -1902,6 +1931,7 @@ impl Window {
             activation_observers: SubscriberSet::new(),
             focus: None,
             focus_enabled: true,
+            inert_subtree_depth: Rc::new(Cell::new(0)),
             focus_generation: 0,
             pending_input: None,
             pending_modifier: ModifierState::default(),
@@ -2059,7 +2089,21 @@ impl Window {
 
     /// Move focus to the element associated with the given [`FocusHandle`].
     pub fn focus(&mut self, handle: &FocusHandle, cx: &mut App) {
-        if !self.focus_enabled || self.focus == Some(handle.id) {
+        if !self.focus_enabled {
+            return;
+        }
+
+        if self.is_inert_subtree()
+            || self.rendered_frame.inert_focus_ids.contains(&handle.id)
+            || self.next_frame.inert_focus_ids.contains(&handle.id)
+        {
+            if self.focus == Some(handle.id) {
+                self.blur();
+            }
+            return;
+        }
+
+        if self.focus == Some(handle.id) {
             return;
         }
 
@@ -2362,6 +2406,9 @@ impl Window {
 
     /// Schedule the given closure to be run directly after the current frame is rendered.
     pub fn on_next_frame(&self, callback: impl FnOnce(&mut Window, &mut App) + 'static) {
+        if self.is_inert_subtree() {
+            return;
+        }
         RefCell::borrow_mut(&self.next_frame_callbacks).push(Box::new(callback));
     }
 
@@ -2818,7 +2865,9 @@ impl Window {
     ///
     /// The capture is automatically released on mouse up.
     pub fn capture_pointer(&mut self, hitbox_id: HitboxId) {
-        self.captured_hitbox = Some(hitbox_id);
+        if !self.is_inert_subtree() {
+            self.captured_hitbox = Some(hitbox_id);
+        }
     }
 
     /// Releases any active pointer capture.
@@ -3246,7 +3295,17 @@ impl Window {
             traversal_order.sort_by_key(|ix| self.next_frame.deferred_draws[*ix].priority);
 
             for deferred_draw_ix in traversal_order {
-                let (element, parent_node, current_view, rem_size, absolute_offset, prepaint_range, layer_transform, opacities) = {
+                let (
+                    element,
+                    parent_node,
+                    current_view,
+                    rem_size,
+                    absolute_offset,
+                    prepaint_range,
+                    layer_transform,
+                    opacities,
+                    inert_subtree,
+                ) = {
                     let deferred_draw = &mut self.next_frame.deferred_draws[deferred_draw_ix];
                     self.element_id_stack
                         .clone_from(&deferred_draw.element_id_stack);
@@ -3261,27 +3320,42 @@ impl Window {
                         deferred_draw.prepaint_range.clone(),
                         deferred_draw.layer_transform,
                         (deferred_draw.element_opacity, deferred_draw.group_opacity),
+                        deferred_draw.inert_subtree,
                     )
                 };
                 self.next_frame.dispatch_tree.set_active_node(parent_node);
 
                 let prepaint_start = self.prepaint_index();
                 if let Some(mut element) = element {
-                    self.with_rendered_view(current_view, |window| {
-                        window.with_rem_size(Some(rem_size), |window| {
-                            window.with_absolute_element_offset(absolute_offset, |window| {
-                                window.with_layer_transform(layer_transform, |window| {
-                                    window.with_element_opacity(Some(opacities.0), |window| {
-                                        let viewport = Bounds::new(Point::default(), window.viewport_size);
-                                        window.with_group_opacity(viewport, opacities.1, |window| {
-                                            element.prepaint(window, cx);
+                    let prepaint = |window: &mut Window, element: &mut AnyElement| {
+                        window.with_rendered_view(current_view, |window| {
+                            window.with_rem_size(Some(rem_size), |window| {
+                                window.with_absolute_element_offset(absolute_offset, |window| {
+                                    window.with_layer_transform(layer_transform, |window| {
+                                        window.with_element_opacity(Some(opacities.0), |window| {
+                                            let viewport =
+                                                Bounds::new(Point::default(), window.viewport_size);
+                                            window.with_group_opacity(
+                                                viewport,
+                                                opacities.1,
+                                                |window| {
+                                                    element.prepaint(window, cx);
+                                                },
+                                            );
                                         });
                                     });
                                 });
                             });
                         });
-                    });
+                    };
+                    if inert_subtree {
+                        self.with_inert_subtree(|window| prepaint(window, &mut element));
+                    } else {
+                        prepaint(self, &mut element);
+                    }
                     self.next_frame.deferred_draws[deferred_draw_ix].element = Some(element);
+                } else if inert_subtree {
+                    self.with_inert_subtree(|window| window.reuse_prepaint(prepaint_range));
                 } else {
                     self.reuse_prepaint(prepaint_range);
                 }
@@ -3322,21 +3396,44 @@ impl Window {
 
             let paint_start = self.paint_index();
             let content_mask = deferred_draw.content_mask;
+            let inert_subtree = deferred_draw.inert_subtree;
             if let Some(element) = deferred_draw.element.as_mut() {
-                self.with_rendered_view(deferred_draw.current_view, |window| {
-                    window.with_layer_transform(deferred_draw.layer_transform, |window| {
-                        window.with_element_opacity(Some(deferred_draw.element_opacity), |window| {
-                            let viewport = Bounds::new(Point::default(), window.viewport_size);
-                            window.with_group_opacity(viewport, deferred_draw.group_opacity, |window| {
-                                window.with_content_mask(content_mask, |window| {
-                                    window.with_rem_size(Some(deferred_draw.rem_size), |window| {
-                                        element.paint(window, cx);
-                                    });
-                                })
-                            })
+                let paint = |window: &mut Window| {
+                    window.with_rendered_view(deferred_draw.current_view, |window| {
+                        window.with_layer_transform(deferred_draw.layer_transform, |window| {
+                            window.with_element_opacity(
+                                Some(deferred_draw.element_opacity),
+                                |window| {
+                                    let viewport =
+                                        Bounds::new(Point::default(), window.viewport_size);
+                                    window.with_group_opacity(
+                                        viewport,
+                                        deferred_draw.group_opacity,
+                                        |window| {
+                                            window.with_content_mask(content_mask, |window| {
+                                                window.with_rem_size(
+                                                    Some(deferred_draw.rem_size),
+                                                    |window| {
+                                                        element.paint(window, cx);
+                                                    },
+                                                );
+                                            });
+                                        },
+                                    )
+                                },
+                            )
                         })
                     })
-                })
+                };
+                if inert_subtree {
+                    self.with_inert_subtree(paint);
+                } else {
+                    paint(self);
+                }
+            } else if inert_subtree {
+                self.with_inert_subtree(|window| {
+                    window.reuse_paint(deferred_draw.paint_range.clone())
+                });
             } else {
                 self.reuse_paint(deferred_draw.paint_range.clone());
             }
@@ -3361,62 +3458,109 @@ impl Window {
             deferred_draws_index: self.next_frame.deferred_draws.len(),
             dispatch_tree_index: self.next_frame.dispatch_tree.len(),
             accessed_element_states_index: self.next_frame.accessed_element_states.len(),
+            focus_ids_index: self.next_frame.focus_ids.len(),
+            inert_focus_ids_index: self.next_frame.inert_focus_id_list.len(),
             line_layout_index: self.text_system.layout_index(),
         }
     }
 
     pub(crate) fn reuse_prepaint(&mut self, range: Range<PrepaintStateIndex>) {
-        self.next_frame.hitboxes.extend(
-            self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
-                .iter()
-                .cloned(),
-        );
-        self.next_frame.tooltip_requests.extend(
-            self.rendered_frame.tooltip_requests
-                [range.start.tooltips_index..range.end.tooltips_index]
-                .iter_mut()
-                .map(|request| request.take()),
-        );
+        if !self.is_inert_subtree() {
+            self.next_frame.hitboxes.extend(
+                self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
+                    .iter()
+                    .cloned(),
+            );
+            self.next_frame.tooltip_requests.extend(
+                self.rendered_frame.tooltip_requests
+                    [range.start.tooltips_index..range.end.tooltips_index]
+                    .iter_mut()
+                    .map(|request| request.take()),
+            );
+        }
         self.next_frame.accessed_element_states.extend(
             self.rendered_frame.accessed_element_states[range.start.accessed_element_states_index
                 ..range.end.accessed_element_states_index]
                 .iter()
                 .map(|(id, type_id)| (id.clone(), *type_id)),
         );
+        let focus_ids =
+            &self.rendered_frame.focus_ids[range.start.focus_ids_index..range.end.focus_ids_index];
+        self.next_frame.focus_ids.extend(focus_ids.iter().copied());
+        if self.is_inert_subtree() {
+            for focus_id in focus_ids {
+                self.next_frame.inert_focus_ids.insert(*focus_id);
+                self.next_frame.inert_focus_id_list.push(*focus_id);
+            }
+        } else {
+            let inert_focus_ids = &self.rendered_frame.inert_focus_id_list
+                [range.start.inert_focus_ids_index..range.end.inert_focus_ids_index];
+            for focus_id in inert_focus_ids {
+                self.next_frame.inert_focus_ids.insert(*focus_id);
+                self.next_frame.inert_focus_id_list.push(*focus_id);
+            }
+        }
         self.text_system
             .reuse_layouts(range.start.line_layout_index..range.end.line_layout_index);
 
-        let reused_subtree = self.next_frame.dispatch_tree.reuse_subtree(
-            range.start.dispatch_tree_index..range.end.dispatch_tree_index,
-            &mut self.rendered_frame.dispatch_tree,
-            self.focus,
-        );
+        if self.is_inert_subtree() {
+            let parent_node = self.next_frame.dispatch_tree.active_node_id().unwrap();
+            self.next_frame.deferred_draws.extend(
+                self.rendered_frame.deferred_draws
+                    [range.start.deferred_draws_index..range.end.deferred_draws_index]
+                    .iter()
+                    .map(|deferred_draw| DeferredDraw {
+                        current_view: deferred_draw.current_view,
+                        parent_node,
+                        element_id_stack: deferred_draw.element_id_stack.clone(),
+                        text_style_stack: deferred_draw.text_style_stack.clone(),
+                        content_mask: deferred_draw.content_mask,
+                        rem_size: deferred_draw.rem_size,
+                        priority: deferred_draw.priority,
+                        element: None,
+                        absolute_offset: deferred_draw.absolute_offset,
+                        layer_transform: deferred_draw.layer_transform,
+                        element_opacity: deferred_draw.element_opacity,
+                        group_opacity: deferred_draw.group_opacity,
+                        inert_subtree: true,
+                        prepaint_range: deferred_draw.prepaint_range.clone(),
+                        paint_range: deferred_draw.paint_range.clone(),
+                    }),
+            );
+        } else {
+            let reused_subtree = self.next_frame.dispatch_tree.reuse_subtree(
+                range.start.dispatch_tree_index..range.end.dispatch_tree_index,
+                &mut self.rendered_frame.dispatch_tree,
+                self.focus,
+            );
 
-        if reused_subtree.contains_focus() {
-            self.next_frame.focus = self.focus;
+            if reused_subtree.contains_focus() {
+                self.next_frame.focus = self.focus;
+            }
+
+            self.next_frame.deferred_draws.extend(
+                self.rendered_frame.deferred_draws
+                    [range.start.deferred_draws_index..range.end.deferred_draws_index]
+                    .iter()
+                    .map(|deferred_draw| DeferredDraw {
+                        current_view: deferred_draw.current_view,
+                        parent_node: reused_subtree.refresh_node_id(deferred_draw.parent_node),
+                        element_id_stack: deferred_draw.element_id_stack.clone(),
+                        text_style_stack: deferred_draw.text_style_stack.clone(),
+                        content_mask: deferred_draw.content_mask,
+                        rem_size: deferred_draw.rem_size,
+                        priority: deferred_draw.priority,
+                        element: None,
+                        absolute_offset: deferred_draw.absolute_offset,
+                        layer_transform: deferred_draw.layer_transform,
+                        element_opacity: deferred_draw.element_opacity,
+                        group_opacity: deferred_draw.group_opacity,
+                        inert_subtree: deferred_draw.inert_subtree,
+                        prepaint_range: deferred_draw.prepaint_range.clone(),
+                        paint_range: deferred_draw.paint_range.clone(),
+                    }),
+            );
         }
-
-        self.next_frame.deferred_draws.extend(
-            self.rendered_frame.deferred_draws
-                [range.start.deferred_draws_index..range.end.deferred_draws_index]
-                .iter()
-                .map(|deferred_draw| DeferredDraw {
-                    current_view: deferred_draw.current_view,
-                    parent_node: reused_subtree.refresh_node_id(deferred_draw.parent_node),
-                    element_id_stack: deferred_draw.element_id_stack.clone(),
-                    text_style_stack: deferred_draw.text_style_stack.clone(),
-                    content_mask: deferred_draw.content_mask,
-                    rem_size: deferred_draw.rem_size,
-                    priority: deferred_draw.priority,
-                    element: None,
-                    absolute_offset: deferred_draw.absolute_offset,
-                    layer_transform: deferred_draw.layer_transform,
-                    element_opacity: deferred_draw.element_opacity,
-                    group_opacity: deferred_draw.group_opacity,
-                    prepaint_range: deferred_draw.prepaint_range.clone(),
-                    paint_range: deferred_draw.paint_range.clone(),
-                }),
-        );
     }
 
     pub(crate) fn paint_index(&self) -> PaintIndex {
@@ -3432,34 +3576,38 @@ impl Window {
     }
 
     pub(crate) fn reuse_paint(&mut self, range: Range<PaintIndex>) {
-        self.next_frame.cursor_styles.extend(
-            self.rendered_frame.cursor_styles
-                [range.start.cursor_styles_index..range.end.cursor_styles_index]
-                .iter()
-                .cloned(),
-        );
-        self.next_frame.input_handlers.extend(
-            self.rendered_frame.input_handlers
-                [range.start.input_handlers_index..range.end.input_handlers_index]
-                .iter_mut()
-                .map(|handler| handler.take()),
-        );
-        self.next_frame.mouse_listeners.extend(
-            self.rendered_frame.mouse_listeners
-                [range.start.mouse_listeners_index..range.end.mouse_listeners_index]
-                .iter_mut()
-                .map(|listener| listener.take()),
-        );
+        if !self.is_inert_subtree() {
+            self.next_frame.cursor_styles.extend(
+                self.rendered_frame.cursor_styles
+                    [range.start.cursor_styles_index..range.end.cursor_styles_index]
+                    .iter()
+                    .cloned(),
+            );
+            self.next_frame.input_handlers.extend(
+                self.rendered_frame.input_handlers
+                    [range.start.input_handlers_index..range.end.input_handlers_index]
+                    .iter_mut()
+                    .map(|handler| handler.take()),
+            );
+            self.next_frame.mouse_listeners.extend(
+                self.rendered_frame.mouse_listeners
+                    [range.start.mouse_listeners_index..range.end.mouse_listeners_index]
+                    .iter_mut()
+                    .map(|listener| listener.take()),
+            );
+        }
         self.next_frame.accessed_element_states.extend(
             self.rendered_frame.accessed_element_states[range.start.accessed_element_states_index
                 ..range.end.accessed_element_states_index]
                 .iter()
                 .map(|(id, type_id)| (id.clone(), *type_id)),
         );
-        self.next_frame.tab_stops.replay(
-            &self.rendered_frame.tab_stops.insertion_history
-                [range.start.tab_handle_index..range.end.tab_handle_index],
-        );
+        if !self.is_inert_subtree() {
+            self.next_frame.tab_stops.replay(
+                &self.rendered_frame.tab_stops.insertion_history
+                    [range.start.tab_handle_index..range.end.tab_handle_index],
+            );
+        }
 
         self.text_system
             .reuse_layouts(range.start.line_layout_index..range.end.line_layout_index);
@@ -3467,6 +3615,31 @@ impl Window {
             range.start.scene_index..range.end.scene_index,
             &self.rendered_frame.scene,
         );
+    }
+
+    /// Whether the current element work is executing below an [`crate::inert`] boundary.
+    ///
+    /// This is a scoped construction query: it is true only while the wrapped subtree is being
+    /// laid out, prepainted, or painted. Programmatic focus is additionally fenced by the
+    /// committed frame's inert focus IDs, so callers should not use this query as a substitute
+    /// for checking whether an arbitrary focus handle belongs to an inert subtree.
+    pub fn is_inert_subtree(&self) -> bool {
+        self.inert_subtree_depth.get() > 0
+    }
+
+    /// Run element work with interaction registrations disabled.
+    pub(crate) fn with_inert_subtree<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        self.inert_subtree_depth
+            .set(self.inert_subtree_depth.get() + 1);
+        let _scope = InertSubtreeScope(self.inert_subtree_depth.clone());
+        f(self)
+    }
+
+    /// Mark this element's current AccessKit node inert after child callbacks have run.
+    pub(crate) fn mark_a11y_node_inert(&mut self, id: accesskit::NodeId) {
+        if self.a11y.is_active() {
+            self.a11y.nodes.mark_current_inert_if(id);
+        }
     }
 
     /// Push a text style onto the stack, and call a function with that style active.
@@ -3491,10 +3664,12 @@ impl Window {
     /// during the paint phase of element drawing.
     pub fn set_cursor_style(&mut self, style: CursorStyle, hitbox: &Hitbox) {
         self.invalidator.debug_assert_paint();
-        self.next_frame.cursor_styles.push(CursorStyleRequest {
-            hitbox_id: Some(hitbox.id),
-            style,
-        });
+        if !self.is_inert_subtree() {
+            self.next_frame.cursor_styles.push(CursorStyleRequest {
+                hitbox_id: Some(hitbox.id),
+                style,
+            });
+        }
     }
 
     /// Updates the cursor style for the entire window at the platform level. A cursor
@@ -3503,10 +3678,12 @@ impl Window {
     /// phase of element drawing.
     pub fn set_window_cursor_style(&mut self, style: CursorStyle) {
         self.invalidator.debug_assert_paint();
-        self.next_frame.cursor_styles.push(CursorStyleRequest {
-            hitbox_id: None,
-            style,
-        })
+        if !self.is_inert_subtree() {
+            self.next_frame.cursor_styles.push(CursorStyleRequest {
+                hitbox_id: None,
+                style,
+            })
+        }
     }
 
     /// Sets a tooltip to be rendered for the upcoming frame. This method should only be called
@@ -3514,9 +3691,11 @@ impl Window {
     pub fn set_tooltip(&mut self, tooltip: AnyTooltip) -> TooltipId {
         self.invalidator.debug_assert_prepaint();
         let id = TooltipId(post_inc(&mut self.next_tooltip_id.0));
-        self.next_frame
-            .tooltip_requests
-            .push(Some(TooltipRequest { id, tooltip }));
+        if !self.is_inert_subtree() {
+            self.next_frame
+                .tooltip_requests
+                .push(Some(TooltipRequest { id, tooltip }));
+        }
         id
     }
 
@@ -3795,7 +3974,13 @@ impl Window {
     /// NUDOX: records one painted text line (element coordinates) with the alpha of its ink,
     /// when [`TextTrace`] is set: placed through the layer transform, cut by the content mask,
     /// and faded by the element and group opacity in effect.
-    pub(crate) fn trace_text(&mut self, cx: &App, text: &SharedString, bounds: Bounds<Pixels>, alpha: f32) {
+    pub(crate) fn trace_text(
+        &mut self,
+        cx: &App,
+        text: &SharedString,
+        bounds: Bounds<Pixels>,
+        alpha: f32,
+    ) {
         if !cx.has_global::<TextTrace>() {
             return;
         }
@@ -4094,6 +4279,7 @@ impl Window {
             layer_transform: self.layer_transform,
             element_opacity: self.element_opacity,
             group_opacity: self.group_opacity,
+            inert_subtree: self.is_inert_subtree(),
             prepaint_range: PrepaintStateIndex::default()..PrepaintStateIndex::default(),
             paint_range: PaintIndex::default()..PaintIndex::default(),
         });
@@ -4148,7 +4334,8 @@ impl Window {
             if shadow.inset {
                 continue;
             }
-            let shadow_bounds = self.layer_bounds((bounds + shadow.offset).dilate(shadow.spread_radius));
+            let shadow_bounds =
+                self.layer_bounds((bounds + shadow.offset).dilate(shadow.spread_radius));
             self.next_frame.scene.insert_primitive(Shadow {
                 order: 0,
                 blur_radius: shadow.blur_radius.scale(length),
@@ -5092,9 +5279,17 @@ impl Window {
             id,
             bounds,
             content_mask,
-            behavior,
+            // An inert subtree is transparent to pointer hit-testing. In particular, an
+            // `.occlude()` child must not block a live sibling behind it.
+            behavior: if self.is_inert_subtree() {
+                HitboxBehavior::Normal
+            } else {
+                behavior
+            },
         };
-        self.next_frame.hitboxes.push(hitbox.clone());
+        if !self.is_inert_subtree() {
+            self.next_frame.hitboxes.push(hitbox.clone());
+        }
         hitbox
     }
 
@@ -5103,7 +5298,9 @@ impl Window {
     /// This method should only be called as part of the paint phase of element drawing.
     pub fn insert_window_control_hitbox(&mut self, area: WindowControlArea, hitbox: Hitbox) {
         self.invalidator.debug_assert_paint();
-        self.next_frame.window_control_hitboxes.push((area, hitbox));
+        if !self.is_inert_subtree() {
+            self.next_frame.window_control_hitboxes.push((area, hitbox));
+        }
     }
 
     /// Sets the key context for the current element. This context will be used to translate
@@ -5112,7 +5309,9 @@ impl Window {
     /// This method should only be called as part of the paint phase of element drawing.
     pub fn set_key_context(&mut self, context: KeyContext) {
         self.invalidator.debug_assert_paint();
-        self.next_frame.dispatch_tree.set_key_context(context);
+        if !self.is_inert_subtree() {
+            self.next_frame.dispatch_tree.set_key_context(context);
+        }
     }
 
     /// Sets the focus handle for the current element. This handle will be used to manage focus state
@@ -5121,6 +5320,15 @@ impl Window {
     /// This method should only be called as part of the prepaint phase of element drawing.
     pub fn set_focus_handle(&mut self, focus_handle: &FocusHandle, _: &App) {
         self.invalidator.debug_assert_prepaint();
+        self.next_frame.focus_ids.push(focus_handle.id);
+        if self.is_inert_subtree() {
+            self.next_frame.inert_focus_ids.insert(focus_handle.id);
+            self.next_frame.inert_focus_id_list.push(focus_handle.id);
+            if self.focus == Some(focus_handle.id) {
+                self.blur();
+            }
+            return;
+        }
         if focus_handle.is_focused(self) {
             self.next_frame.focus = Some(focus_handle.id);
         }
@@ -5186,7 +5394,7 @@ impl Window {
     ) {
         self.invalidator.debug_assert_paint();
 
-        if focus_handle.is_focused(self) {
+        if !self.is_inert_subtree() && focus_handle.is_focused(self) {
             let cx = self.to_async(cx);
             self.next_frame
                 .input_handlers
@@ -5204,6 +5412,10 @@ impl Window {
         mut listener: impl FnMut(&Event, DispatchPhase, &mut Window, &mut App) + 'static,
     ) {
         self.invalidator.debug_assert_paint();
+
+        if self.is_inert_subtree() {
+            return;
+        }
 
         self.next_frame.mouse_listeners.push(Some(Box::new(
             move |event: &dyn Any, phase: DispatchPhase, window: &mut Window, cx: &mut App| {
@@ -5228,6 +5440,10 @@ impl Window {
     ) {
         self.invalidator.debug_assert_paint();
 
+        if self.is_inert_subtree() {
+            return;
+        }
+
         self.next_frame.dispatch_tree.on_key_event(Rc::new(
             move |event: &dyn Any, phase, window: &mut Window, cx: &mut App| {
                 if let Some(event) = event.downcast_ref::<Event>() {
@@ -5249,6 +5465,10 @@ impl Window {
     ) {
         self.invalidator.debug_assert_paint();
 
+        if self.is_inert_subtree() {
+            return;
+        }
+
         self.next_frame.dispatch_tree.on_modifiers_changed(Rc::new(
             move |event: &ModifiersChangedEvent, window: &mut Window, cx: &mut App| {
                 listener(event, window, cx)
@@ -5265,6 +5485,9 @@ impl Window {
         cx: &mut App,
         mut listener: impl FnMut(&mut Window, &mut App) + 'static,
     ) -> Subscription {
+        if self.is_inert_subtree() {
+            return Subscription::new(|| {});
+        }
         let focus_id = handle.id;
         let (subscription, activate) =
             self.new_focus_listener(Box::new(move |event, window, cx| {
@@ -5285,6 +5508,9 @@ impl Window {
         cx: &mut App,
         mut listener: impl FnMut(FocusOutEvent, &mut Window, &mut App) + 'static,
     ) -> Subscription {
+        if self.is_inert_subtree() {
+            return Subscription::new(|| {});
+        }
         let focus_id = handle.id;
         let (subscription, activate) =
             self.new_focus_listener(Box::new(move |event, window, cx| {
@@ -6316,6 +6542,10 @@ impl Window {
     ) {
         self.invalidator.debug_assert_paint();
 
+        if self.is_inert_subtree() {
+            return;
+        }
+
         self.next_frame
             .dispatch_tree
             .on_action(action_type, Rc::new(listener));
@@ -6337,7 +6567,7 @@ impl Window {
     ) {
         self.invalidator.debug_assert_paint();
 
-        if condition {
+        if condition && !self.is_inert_subtree() {
             self.next_frame
                 .dispatch_tree
                 .on_action(action_type, Rc::new(listener));
@@ -6482,6 +6712,9 @@ impl Window {
         action: accesskit::Action,
         listener: impl FnMut(Option<&accesskit::ActionData>, &mut Window, &mut App) + 'static,
     ) {
+        if self.is_inert_subtree() {
+            return;
+        }
         self.a11y
             .action_listeners
             .entry(node_id)
@@ -6491,6 +6724,13 @@ impl Window {
 
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn handle_a11y_action(&mut self, request: accesskit::ActionRequest, cx: &mut App) {
+        // Action requests can arrive after the accessibility tree was committed. Do not trust
+        // only the current listener map: built-in Click handling can synthesize pointer events
+        // even when the inert node itself has no listener.
+        if self.a11y.is_node_inert(request.target_node) {
+            return;
+        }
+
         // Take listeners out temporarily so the closures can borrow Window
         // mutably, then restore them afterward.
         if let Some(mut listeners) = self.a11y.action_listeners.remove(&request.target_node) {
