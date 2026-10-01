@@ -766,7 +766,7 @@ mod tests {
             certificate = certificate.with_claim(WireClaim::Root {
                 schema: WireSchema::ViewRelation,
                 id: encode_id(root.basis().root.as_bytes()),
-                canonical: backend_version::canonical_empty::<backend_library::ViewRelation>()
+                canonical: backend_engine::canonical_empty::<backend_library::ViewRelation>()
                     .as_bytes()
                     .to_vec()
                     .into_boxed_slice(),
