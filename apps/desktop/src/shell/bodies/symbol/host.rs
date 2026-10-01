@@ -76,6 +76,15 @@ impl Doors for ShellHost<'_> {
         gpui::IntoElement::into_any_element(self.targets.track(key, element))
     }
 
+    fn track_hoverable(&self, key: SharedString, label: SharedString, door: &Door, focus: facet::hover::FocusTarget, element: AnyElement) -> AnyElement {
+        if self.active {
+            let act: Action = door.open.clone().unwrap_or_else(|| Rc::new(|_, _| {}));
+            let target = SymbolRef::new(focus.subject().0.as_ref()).ok();
+            self.targets.push(Target { id: key.clone(), label, act, peek: target.clone().map(PageKey::Symbol), source: target });
+        }
+        gpui::IntoElement::into_any_element(self.targets.track(key, element))
+    }
+
     fn up(&self) -> Option<Rc<dyn Fn(&mut gpui::Window, &mut gpui::App)>> {
         let links = self.links.clone();
         Some(Rc::new(move |_, cx| links.dispatch(Intent::ZoomOut, cx)))

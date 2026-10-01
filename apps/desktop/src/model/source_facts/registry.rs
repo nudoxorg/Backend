@@ -9,7 +9,6 @@ use facet::marks::semver;
 use std::collections::{HashMap, VecDeque};
 #[cfg(any(test, feature = "visual-harness"))]
 use std::fs;
-#[cfg(any(test, feature = "visual-harness"))]
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};

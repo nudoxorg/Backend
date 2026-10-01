@@ -355,7 +355,7 @@ fn fault(error: ClientError) -> EngineFault {
     EngineFault::Failed(crate::core::ErrorValue::new(
         match error {
             ClientError::Protocol(_) | ClientError::IncoherentView => FaultCode::Protocol,
-            ClientError::Disconnected(_) | ClientError::Io(_) | ClientError::Transport(_) => {
+            ClientError::Disconnected(_) | ClientError::Io(_) | ClientError::Transport(_) | ClientError::RemoteDeadlineExceeded => {
                 FaultCode::Transport
             }
             ClientError::CommandFailed(_) => FaultCode::Missing,
@@ -364,7 +364,10 @@ fn fault(error: ClientError) -> EngineFault {
             | ClientError::RequestMismatch { .. }
             | ClientError::CursorMismatch
             | ClientError::StaleCursor
-            | ClientError::StaleSelection => FaultCode::Cancelled,
+            | ClientError::StaleSelection
+            | ClientError::StaleRemoteRoot { .. }
+            | ClientError::StaleRemoteCapability
+            | ClientError::RemoteCapabilityRevoked => FaultCode::Cancelled,
         },
         error.to_string(),
     ))
