@@ -129,8 +129,8 @@ impl Writer {
 }
 
 fn fingerprint_running_executable(anchor: fn()) -> io::Result<Digest> {
-    let file = backend_platform::executable_identity::open_running_executable(anchor)?;
-    fingerprint_file(file)
+    let mut executable = backend_platform::executable_identity::open_running_executable(anchor)?;
+    executable.with_verified_read(fingerprint_file)
 }
 
 /// A test helper for comparing arbitrary file contents. Production always
@@ -146,10 +146,11 @@ fn fingerprint_executable(path: &Path) -> io::Result<Digest> {
         .ok_or_else(|| io::Error::other("executable has no Unicode name"))?;
     let directory =
         backend_platform::directory::DirectoryCapability::open_read_only_source(parent)?;
-    fingerprint_file(directory.open_file_read(name)?)
+    let mut file = directory.open_file_read(name)?;
+    fingerprint_file(&mut file)
 }
 
-fn fingerprint_file(mut file: File) -> io::Result<Digest> {
+fn fingerprint_file(file: &mut File) -> io::Result<Digest> {
     use sha2::Digest as _;
     use std::io::Read as _;
 

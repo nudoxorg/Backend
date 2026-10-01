@@ -14,26 +14,25 @@
 
 use std::fs::File;
 use std::io;
+use std::time::SystemTime;
 
 /// Opens the running executable image, or refuses when it cannot establish
 /// the relationship between this process and the bytes being read.
 ///
 /// On macOS, `main_image_anchor` must be a function compiled into the main
-/// executable whose bytes the caller wants to identify. The returned file is
-/// opened without following a final symlink and remains bound to that file
-/// across later pathname replacement.
+/// executable whose bytes the caller wants to identify. The returned opaque
+/// handle retains the no-follow file descriptor and the identity stamp taken
+/// before Mach-O verification; reads through it are checked against that same
+/// stamp after completion.
 ///
 /// # Errors
 /// Returns an I/O error if the current image cannot be proven or opened.
-pub fn open_running_executable(main_image_anchor: fn()) -> io::Result<File> {
+pub fn open_running_executable(main_image_anchor: fn()) -> io::Result<RunningExecutable> {
     #[cfg(target_os = "linux")]
     {
         let _ = main_image_anchor;
         let file = File::open("/proc/self/exe")?;
-        if !file.metadata()?.is_file() {
-            return Err(invalid("kernel executable handle is not a regular file"));
-        }
-        Ok(file)
+        RunningExecutable::new(file)
     }
 
     #[cfg(target_os = "macos")]
@@ -52,6 +51,78 @@ fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
+/// A held executable file whose identity was captured before platform image
+/// verification. Its file descriptor is never reopened by pathname.
+pub struct RunningExecutable {
+    file: File,
+    stamp: FileStamp,
+}
+
+impl RunningExecutable {
+    fn new(file: File) -> io::Result<Self> {
+        let stamp = FileStamp::capture(&file)?;
+        Ok(Self { file, stamp })
+    }
+
+    /// Runs a bounded read against the held executable and rejects the result
+    /// if the same file changed since platform identity verification.
+    pub fn with_verified_read<T>(
+        &mut self,
+        read: impl FnOnce(&mut File) -> io::Result<T>,
+    ) -> io::Result<T> {
+        self.stamp.verify(&self.file)?;
+        use std::io::Seek as _;
+        self.file.seek(std::io::SeekFrom::Start(0))?;
+        let value = read(&mut self.file)?;
+        self.stamp.verify(&self.file)?;
+        Ok(value)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FileStamp {
+    length: u64,
+    modified: SystemTime,
+    #[cfg(unix)]
+    unix_identity: (u64, u64, i64, i64, i64, i64),
+}
+
+impl FileStamp {
+    fn capture(file: &File) -> io::Result<Self> {
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            return Err(invalid("running executable is not a regular file"));
+        }
+        #[cfg(unix)]
+        let unix_identity = {
+            use std::os::unix::fs::MetadataExt as _;
+            (
+                metadata.dev(),
+                metadata.ino(),
+                metadata.ctime(),
+                metadata.ctime_nsec(),
+                metadata.mtime(),
+                metadata.mtime_nsec(),
+            )
+        };
+        Ok(Self {
+            length: metadata.len(),
+            modified: metadata.modified()?,
+            #[cfg(unix)]
+            unix_identity,
+        })
+    }
+
+    fn verify(&self, file: &File) -> io::Result<()> {
+        let current = Self::capture(file)?;
+        if self == &current {
+            Ok(())
+        } else {
+            Err(invalid("running executable changed during identity read"))
+        }
+    }
+}
+
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn unsupported() -> io::Error {
     io::Error::new(
@@ -62,7 +133,7 @@ fn unsupported() -> io::Error {
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use super::invalid;
+    use super::{FileStamp, RunningExecutable, invalid};
     use crate::directory::DirectoryCapability;
     use std::ffi::{c_char, c_int, c_void};
     use std::fs::File;
@@ -115,7 +186,7 @@ mod macos {
         fn dladdr(address: *const c_void, info: *mut DlInfo) -> c_int;
     }
 
-    pub(super) fn open_running_executable(anchor: fn()) -> io::Result<File> {
+    pub(super) fn open_running_executable(anchor: fn()) -> io::Result<RunningExecutable> {
         let path = std::env::current_exe()?;
         let parent = path
             .parent()
@@ -126,16 +197,14 @@ mod macos {
             .ok_or_else(|| invalid("running executable has no Unicode name"))?;
         let directory = DirectoryCapability::open_read_only_source(parent)?;
         let file = directory.open_file_read(name)?;
-        let metadata = file.metadata()?;
-        if !metadata.is_file() {
-            return Err(invalid("running executable is not a regular file"));
-        }
+        let stamp = FileStamp::capture(&file)?;
         if !loaded_main_image_matches(&file, anchor)? {
             return Err(invalid(
                 "current executable path does not identify the loaded main image",
             ));
         }
-        Ok(file)
+        stamp.verify(&file)?;
+        Ok(RunningExecutable { file, stamp })
     }
 
     fn loaded_main_image_matches(file: &File, anchor: fn()) -> io::Result<bool> {
@@ -169,53 +238,22 @@ mod macos {
         }
         let command_bytes = usize::try_from(header.command_bytes)
             .map_err(|_| invalid("loaded Mach-O command size overflow"))?;
-        if command_bytes > MAX_LOAD_COMMAND_BYTES
-            || header.command_count > MAX_LOAD_COMMANDS
-            || header.command_count as usize > command_bytes / 8
-        {
+        if command_bytes > MAX_LOAD_COMMAND_BYTES {
             return Err(invalid("loaded Mach-O command table exceeds its bound"));
         }
-        let commands = unsafe { base.add(std::mem::size_of::<MachHeader64>()) };
-        let mut offset = 0_usize;
-        let mut uuid = None;
-        for _ in 0..header.command_count {
-            if offset.checked_add(8).is_none_or(|end| end > command_bytes) {
-                return Err(invalid("truncated loaded Mach-O command"));
-            }
-            // SAFETY: the preceding bound check keeps these words inside the
-            // loader-validated command region.
-            let command = unsafe { ptr::read_unaligned(commands.add(offset).cast::<u32>()) };
-            let size =
-                unsafe { ptr::read_unaligned(commands.add(offset + 4).cast::<u32>()) as usize };
-            if size < 8
-                || offset
-                    .checked_add(size)
-                    .is_none_or(|end| end > command_bytes)
-            {
-                return Err(invalid("invalid loaded Mach-O command size"));
-            }
-            if command == LC_UUID {
-                if size != 24 || uuid.is_some() {
-                    return Err(invalid("invalid or duplicate loaded LC_UUID"));
-                }
-                let mut bytes = [0_u8; 16];
-                // SAFETY: LC_UUID has the exact 24-byte form checked above;
-                // its UUID payload is 16 bytes after the two-word prefix.
-                unsafe {
-                    ptr::copy_nonoverlapping(commands.add(offset + 8), bytes.as_mut_ptr(), 16);
-                }
-                uuid = Some(bytes);
-            }
-            offset += size;
-        }
-        if offset != command_bytes {
-            return Err(invalid("loaded Mach-O command table has trailing bytes"));
-        }
-        Ok(ImageIdentity {
-            cpu_type: header.cpu_type as u32,
-            cpu_subtype: header.cpu_subtype as u32,
-            uuid: uuid.ok_or_else(|| invalid("loaded main image has no LC_UUID"))?,
-        })
+        // SAFETY: `base` is dyld's loaded main-image header, and the header's
+        // bounded `sizeofcmds` region is the loader-validated command table.
+        // The shared parser treats the resulting bytes as untrusted anyway.
+        let commands = unsafe {
+            std::slice::from_raw_parts(base.add(std::mem::size_of::<MachHeader64>()), command_bytes)
+        };
+        parse_load_commands(
+            header.cpu_type as u32,
+            header.cpu_subtype as u32,
+            header.file_type,
+            header.command_count,
+            commands,
+        )
     }
 
     fn disk_image_identity(file: &File, loaded: ImageIdentity) -> io::Result<ImageIdentity> {
@@ -330,12 +368,29 @@ mod macos {
         }
         let mut commands = vec![0_u8; command_bytes];
         read_exact_at(file, &mut commands, offset + 32)?;
+        parse_load_commands(cpu_type, cpu_subtype, file_type, command_count, &commands)
+    }
+
+    fn parse_load_commands(
+        cpu_type: u32,
+        cpu_subtype: u32,
+        file_type: u32,
+        command_count: u32,
+        commands: &[u8],
+    ) -> io::Result<ImageIdentity> {
+        if file_type != MH_EXECUTE
+            || commands.len() > MAX_LOAD_COMMAND_BYTES
+            || command_count > MAX_LOAD_COMMANDS
+            || command_count as usize > commands.len() / 8
+        {
+            return Err(invalid("Mach-O command table exceeds its bound"));
+        }
         let mut cursor = 0_usize;
         let mut uuid = None;
         for _ in 0..command_count {
             let prefix = commands
-                .get(cursor..cursor + 8)
-                .ok_or_else(|| invalid("truncated on-disk Mach-O command"))?;
+                .get(cursor..cursor.saturating_add(8))
+                .ok_or_else(|| invalid("truncated Mach-O load command"))?;
             let command = u32::from_le_bytes(prefix[..4].try_into().expect("four-byte word"));
             let size =
                 u32::from_le_bytes(prefix[4..8].try_into().expect("four-byte word")) as usize;
@@ -343,11 +398,11 @@ mod macos {
                 .checked_add(size)
                 .ok_or_else(|| invalid("Mach-O command range overflow"))?;
             if size < 8 || end > commands.len() {
-                return Err(invalid("invalid on-disk Mach-O command size"));
+                return Err(invalid("invalid Mach-O load command size"));
             }
             if command == LC_UUID {
                 if size != 24 || uuid.is_some() {
-                    return Err(invalid("invalid or duplicate on-disk LC_UUID"));
+                    return Err(invalid("invalid or duplicate Mach-O LC_UUID"));
                 }
                 let mut bytes = [0_u8; 16];
                 bytes.copy_from_slice(&commands[cursor + 8..cursor + 24]);
@@ -356,12 +411,12 @@ mod macos {
             cursor = end;
         }
         if cursor != commands.len() {
-            return Err(invalid("on-disk Mach-O command table has trailing bytes"));
+            return Err(invalid("Mach-O command table has trailing bytes"));
         }
         Ok(ImageIdentity {
             cpu_type,
             cpu_subtype,
-            uuid: uuid.ok_or_else(|| invalid("on-disk main image has no LC_UUID"))?,
+            uuid: uuid.ok_or_else(|| invalid("main image has no LC_UUID"))?,
         })
     }
 
@@ -408,8 +463,9 @@ mod macos {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use std::io::{BufRead as _, Read as _, Write as _};
+        use std::io::{Read as _, Write as _};
         use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
 
         fn test_main_image_anchor() {}
 
@@ -417,7 +473,29 @@ mod macos {
 
         #[test]
         fn current_executable_file_matches_the_loaded_main_image() {
-            assert!(open_running_executable(test_main_image_anchor).is_ok());
+            let mut executable =
+                open_running_executable(test_main_image_anchor).expect("verified running image");
+            executable
+                .with_verified_read(|file| file.metadata().map(|metadata| metadata.len()))
+                .expect("stable executable read");
+        }
+
+        #[test]
+        fn held_image_stamp_rejects_change_before_the_digest_read_starts() {
+            let directory = test_directory("stamp");
+            let path = directory.join("image");
+            std::fs::write(&path, b"original image").expect("write initial image");
+            let file = File::open(&path).expect("open held image");
+            let mut running = RunningExecutable::new(file).expect("capture initial stamp");
+
+            // This is the race window between loaded-image verification and
+            // the caller's first digest metadata read. The held descriptor
+            // stays the same, but its in-place contents and ctime change.
+            std::fs::write(&path, b"replacement image").expect("replace held contents");
+            let error = running
+                .with_verified_read(|file| file.metadata().map(|metadata| metadata.len()))
+                .expect_err("changed held image must not be fingerprinted");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         }
 
         #[test]
@@ -426,37 +504,41 @@ mod macos {
                 return;
             }
             let source = std::env::current_exe().expect("test executable");
-            let unique = format!(
-                "nudox-image-{}-{}",
-                std::process::id(),
-                std::thread::current().name().unwrap_or("test")
-            );
-            let directory = std::env::temp_dir().join(unique);
-            std::fs::create_dir(&directory).expect("private test directory");
+            let directory = test_directory("replacement");
+            let _directory_guard = DirectoryGuard(directory.clone());
             let running_path = directory.join("running-test");
             std::fs::copy(&source, &running_path).expect("copy test executable");
-            let mut child = Command::new(&running_path)
+            let ready_file = directory.join("ready");
+            let child = Command::new(&running_path)
                 .args([
                     "--exact",
                     "executable_identity::macos::tests::replacement_child",
                     "--nocapture",
                 ])
                 .env(CHILD_MODE, "child")
+                .env("NUDOX_TEST_REPLACEMENT_READY", &ready_file)
                 .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::inherit())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
                 .spawn()
                 .expect("start copied process");
-            let stdout = child.stdout.take().expect("child stdout");
-            let mut output = std::io::BufReader::new(stdout);
-            let mut line = String::new();
+            let mut child_guard = ChildGuard(Some(child));
+            let deadline = Instant::now() + Duration::from_secs(10);
             loop {
-                line.clear();
-                let count = output.read_line(&mut line).expect("child ready marker");
-                assert_ne!(count, 0, "child exited before its ready marker");
-                if line.trim() == "RUNNING_IMAGE_READY" {
+                if ready_file.exists() {
                     break;
                 }
+                if let Some(status) = child_guard
+                    .0
+                    .as_mut()
+                    .expect("child")
+                    .try_wait()
+                    .expect("check child")
+                {
+                    panic!("child exited before ready marker: {status}");
+                }
+                assert!(Instant::now() < deadline, "child ready wait timed out");
+                std::thread::sleep(Duration::from_millis(10));
             }
 
             // `/usr/bin/true` is a system Mach-O with a different main-image
@@ -465,15 +547,17 @@ mod macos {
             let replacement = directory.join("replacement");
             std::fs::copy("/usr/bin/true", &replacement).expect("copy replacement Mach-O");
             std::fs::rename(&replacement, &running_path).expect("atomically replace launch path");
-            child
+            child_guard
+                .0
+                .as_mut()
+                .expect("child")
                 .stdin
-                .take()
+                .as_mut()
                 .expect("child stdin")
                 .write_all(b"go")
                 .expect("release child");
-            let status = child.wait().expect("wait for child");
+            let status = child_guard.wait_timeout(Duration::from_secs(10));
             assert!(status.success(), "child rejected replaced current_exe path");
-            let _ = std::fs::remove_dir_all(directory);
         }
 
         #[test]
@@ -481,8 +565,9 @@ mod macos {
             if std::env::var_os(CHILD_MODE).is_none() {
                 return;
             }
-            println!("RUNNING_IMAGE_READY");
-            std::io::stdout().flush().expect("flush ready marker");
+            let ready_file = std::env::var_os("NUDOX_TEST_REPLACEMENT_READY")
+                .expect("parent supplies ready marker path");
+            std::fs::write(ready_file, b"ready").expect("write ready marker");
             let mut release = [0_u8; 2];
             std::io::stdin()
                 .read_exact(&mut release)
@@ -491,6 +576,102 @@ mod macos {
                 open_running_executable(replacement_child).is_err(),
                 "the mapped test process must not adopt the replacement file's LC_UUID"
             );
+        }
+
+        struct ChildGuard(Option<std::process::Child>);
+
+        impl ChildGuard {
+            fn wait_timeout(&mut self, timeout: Duration) -> std::process::ExitStatus {
+                let deadline = Instant::now() + timeout;
+                loop {
+                    if let Some(status) = self
+                        .0
+                        .as_mut()
+                        .expect("child")
+                        .try_wait()
+                        .expect("check child")
+                    {
+                        self.0.take();
+                        return status;
+                    }
+                    assert!(Instant::now() < deadline, "child exit wait timed out");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+        }
+
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                if let Some(mut child) = self.0.take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
+
+        struct DirectoryGuard(std::path::PathBuf);
+
+        impl Drop for DirectoryGuard {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        fn test_directory(name: &str) -> std::path::PathBuf {
+            let unique = format!(
+                "nudox-image-{}-{name}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("clock after epoch")
+                    .as_nanos()
+            );
+            let directory = std::env::temp_dir().join(unique);
+            std::fs::create_dir(&directory).expect("private test directory");
+            directory
+        }
+
+        fn uuid_command(bytes: [u8; 16]) -> [u8; 24] {
+            let mut command = [0_u8; 24];
+            command[..4].copy_from_slice(&LC_UUID.to_le_bytes());
+            command[4..8].copy_from_slice(&24_u32.to_le_bytes());
+            command[8..].copy_from_slice(&bytes);
+            command
+        }
+
+        #[test]
+        fn parser_accepts_one_well_formed_uuid_command() {
+            let command = uuid_command([7; 16]);
+            let identity =
+                parse_load_commands(1, 2, MH_EXECUTE, 1, &command).expect("valid load command");
+            assert_eq!(identity.uuid, [7; 16]);
+        }
+
+        #[test]
+        fn parser_rejects_truncated_load_command_prefix() {
+            let error =
+                parse_load_commands(1, 2, MH_EXECUTE, 1, &[0; 7]).expect_err("truncated prefix");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        }
+
+        #[test]
+        fn parser_rejects_duplicate_uuid_commands() {
+            let mut commands = Vec::from(uuid_command([1; 16]));
+            commands.extend_from_slice(&uuid_command([2; 16]));
+            let error =
+                parse_load_commands(1, 2, MH_EXECUTE, 2, &commands).expect_err("duplicate UUID");
+            assert!(error.to_string().contains("duplicate"));
+        }
+
+        #[test]
+        fn parser_rejects_invalid_and_trailing_command_bytes() {
+            let mut invalid_size = uuid_command([3; 16]);
+            invalid_size[4..8].copy_from_slice(&4_u32.to_le_bytes());
+            assert!(parse_load_commands(1, 2, MH_EXECUTE, 1, &invalid_size).is_err());
+
+            let mut trailing = Vec::from(uuid_command([4; 16]));
+            trailing.push(0);
+            assert!(parse_load_commands(1, 2, MH_EXECUTE, 1, &trailing).is_err());
         }
     }
 }
