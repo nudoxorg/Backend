@@ -5,8 +5,9 @@
 //! adapter on its worker thread; the GPUI thread receives only versioned DTOs
 //! and never touches a socket, a reply codec, or a registry record.
 
-use super::actor::{EngineClient, EngineDto, EngineFault, EngineRequest, ProjectDto};
+use super::actor::{CancellationToken, EngineClient, EngineDto, EngineFault, EngineRequest, ProjectDto};
 use super::liveness::{report_if_dead, transport_break};
+use super::owner::OwnerFault;
 use crate::core::{FaultCode, LocalProjectId, VersionedRoot};
 use crate::model::{ObjectId, PackageSummary};
 use backend_client::{ClientError, LocalSubscriptionTransport, Session};
@@ -22,6 +23,7 @@ pub struct LocalEngineClient {
     subscription: Option<LocalSubscriptionTransport>,
     /// Attached generation admitted for this actor request and its sockets.
     attached_epoch: Option<super::owner::Epoch>,
+    active_cancel: Option<CancellationToken>,
     /// The owner this client waits for, on the actor thread (I1).
     gate: Option<super::owner::OwnerGate>,
 }
@@ -36,6 +38,7 @@ impl LocalEngineClient {
             session: None,
             subscription: None,
             attached_epoch: None,
+            active_cancel: None,
             gate: None,
         }
     }
@@ -81,6 +84,9 @@ impl LocalEngineClient {
             Ok(root) => Ok(root),
             Err(error) if transport_break(&error) => {
                 self.subscription = None;
+                if self.active_cancel.as_ref().is_some_and(CancellationToken::is_cancelled) {
+                    return Err(EngineFault::Cancelled);
+                }
                 let retry = self.subscription()?.bootstrap_root();
                 retry.map_err(|error| self.client_fault(error))
             }
@@ -253,6 +259,9 @@ impl LocalEngineClient {
         mut operation: impl FnMut(&mut Session) -> Result<T, ClientError>,
     ) -> Result<T, EngineFault> {
         for attempt in 0..2 {
+            if self.active_cancel.as_ref().is_some_and(CancellationToken::is_cancelled) {
+                return Err(EngineFault::Cancelled);
+            }
             let result = operation(self.session()?);
             match result {
                 Ok(value) => return Ok(value),
@@ -260,9 +269,8 @@ impl LocalEngineClient {
                     self.session = None;
                     let _ = self.client_fault(error);
                     if let Some(gate) = &self.gate {
-                        gate.wait().map_err(|fault| EngineFault::Failed(
-                            crate::core::ErrorValue::new(FaultCode::Transport, fault.to_string())
-                        ))?;
+                        gate.wait_cancelled(self.active_cancel.as_ref().expect("read has a cancellation token"))
+                            .map_err(owner_fault)?;
                         if gate.attached_ready_epoch() != self.attached_epoch {
                             return Err(EngineFault::Superseded);
                         }
@@ -298,13 +306,9 @@ impl LocalEngineClient {
 
 impl EngineClient for LocalEngineClient {
     fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
+        self.active_cancel = Some(request.cancellation().clone());
         if let Some(gate) = &self.gate {
-            gate.wait().map_err(|message| {
-                EngineFault::Failed(crate::core::ErrorValue::new(
-                    FaultCode::Transport,
-                    format!("the index could not start: {message}"),
-                ))
-            })?;
+            gate.wait_cancelled(request.cancellation()).map_err(owner_fault)?;
             // Superseded while it waited (the startup root read, once the
             // owner's own root arrived): not run.
             if request.cancelled() {
@@ -337,6 +341,7 @@ impl EngineClient for LocalEngineClient {
                 delta: *delta,
             }),
         };
+        self.active_cancel = None;
         if self.attached_epoch.is_some()
             && self.gate.as_ref().and_then(super::owner::OwnerGate::attached_ready_epoch) != self.attached_epoch
         {
@@ -428,6 +433,17 @@ fn fault(error: ClientError) -> EngineFault {
         },
         error.to_string(),
     ))
+}
+
+fn owner_fault(fault: OwnerFault) -> EngineFault {
+    if fault == OwnerFault::Cancelled {
+        EngineFault::Cancelled
+    } else {
+        EngineFault::Failed(crate::core::ErrorValue::new(
+            FaultCode::Transport,
+            format!("the index could not start: {fault}"),
+        ))
+    }
 }
 
 #[cfg(test)]

@@ -40,6 +40,8 @@ pub enum OwnerFault {
     Silent(Duration),
     /// The window closed before the owner answered.
     Closed,
+    /// The request was revoked while the owner was starting.
+    Cancelled,
 }
 
 impl fmt::Display for OwnerFault {
@@ -50,6 +52,7 @@ impl fmt::Display for OwnerFault {
             Self::Lost(what) => write!(formatter, "the attached index stopped answering: {what}"),
             Self::Silent(waited) => write!(formatter, "the index did not answer within {} s", waited.as_secs()),
             Self::Closed => formatter.write_str("the window closed before the index answered"),
+            Self::Cancelled => formatter.write_str("the request was cancelled while the index was starting"),
         }
     }
 }
@@ -218,7 +221,22 @@ impl OwnerGate {
     /// The owner's failure, in its own words; also when the app quits
     /// before it answered.
     pub fn wait(&self) -> Result<(), OwnerFault> {
-        self.wait_for(PATIENCE)
+        self.wait_while(PATIENCE, None)
+    }
+
+    /// Waits on a worker for the owner, waking immediately when this exact
+    /// request is cancelled. The callback locks the gate before signalling
+    /// its condition variable, so cancellation cannot fall between the
+    /// predicate check and the wait.
+    pub(crate) fn wait_cancelled(&self, cancel: &super::actor::CancellationToken) -> Result<(), OwnerFault> {
+        let weak = Arc::downgrade(&self.0);
+        let _wake = cancel.on_cancel(move || {
+            if let Some(shared) = weak.upgrade() {
+                let _inner = shared.inner.lock().unwrap_or_else(PoisonError::into_inner);
+                shared.changed.notify_all();
+            }
+        });
+        self.wait_while(PATIENCE, Some(cancel))
     }
 
     /// [`Self::wait`] with its own patience: gives up with
@@ -227,8 +245,15 @@ impl OwnerGate {
     /// # Errors
     /// The owner's fault; the window closing; or the patience running out.
     pub fn wait_for(&self, patience: Duration) -> Result<(), OwnerFault> {
+        self.wait_while(patience, None)
+    }
+
+    fn wait_while(&self, patience: Duration, cancel: Option<&super::actor::CancellationToken>) -> Result<(), OwnerFault> {
         let mut inner = self.lock();
         loop {
+            if cancel.is_some_and(super::actor::CancellationToken::is_cancelled) {
+                return Err(OwnerFault::Cancelled);
+            }
             match &inner.state {
                 OwnerState::Ready { .. } => return Ok(()),
                 OwnerState::Failed(fault) => return Err(fault.clone()),
@@ -421,6 +446,22 @@ mod tests {
             mode: ServiceMode::Attached,
         });
         assert_eq!(gate.wait(), Ok(()));
+    }
+
+    #[test]
+    fn cancelling_a_worker_wakes_the_owner_gate_without_waiting_for_patience() {
+        let gate = OwnerGate::starting();
+        let cancel = super::super::actor::CancellationToken::new();
+        let worker_gate = gate.clone();
+        let worker_cancel = cancel.clone();
+        let (sent, received) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            sent.send(worker_gate.wait_cancelled(&worker_cancel)).expect("send wait result");
+        });
+        cancel.cancel();
+        assert_eq!(received.recv_timeout(Duration::from_secs(1)).expect("cancellation woke worker"), Err(OwnerFault::Cancelled));
+        thread.join().expect("join worker");
+        assert_eq!(gate.state(), OwnerState::Starting, "one revoked request cannot fail the owner");
     }
 
     #[test]

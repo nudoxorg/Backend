@@ -539,10 +539,7 @@ fn run_worker<R: PageReader>(worker: usize, mut reader: R, shared: &Shared) {
                 )))
             })
         };
-        let result = match result {
-            Ok(_) if job.cancel.is_cancelled() => Err(ReadFailure::Cancelled),
-            other => other,
-        };
+        let result = if job.cancel.is_cancelled() { Err(ReadFailure::Cancelled) } else { result };
         {
             let mut queue = shared.queue();
             if let Some(slot) = queue.running.get_mut(worker) {
@@ -579,6 +576,8 @@ pub struct SessionEngine {
     session_epoch: Option<super::owner::Epoch>,
     /// The owner this engine waits for on the read worker before use (I1).
     gate: Option<super::owner::OwnerGate>,
+    /// The read job currently using this worker-owned session.
+    cancel: Option<CancellationToken>,
 }
 
 impl std::fmt::Debug for SessionEngine {
@@ -599,6 +598,7 @@ impl SessionEngine {
             session: None,
             session_epoch: None,
             gate: None,
+            cancel: None,
         }
     }
 
@@ -612,13 +612,23 @@ impl SessionEngine {
         }
     }
 
+    fn wait_for_owner(&self, gate: &super::owner::OwnerGate) -> Result<(), super::owner::OwnerFault> {
+        match &self.cancel {
+            Some(cancel) => gate.wait_cancelled(cancel),
+            None => gate.wait(),
+        }
+    }
+
     fn with_session<T>(
         &mut self,
         mut operation: impl FnMut(&mut Session) -> Result<T, ClientError>,
     ) -> Result<T, ClientError> {
+        if self.cancel.as_ref().is_some_and(CancellationToken::is_cancelled) {
+            return Err(ClientError::Io("read was cancelled before connecting".to_owned()));
+        }
         let mut ready_epoch = None;
         if let Some(gate) = &self.gate {
-            gate.wait()
+            self.wait_for_owner(gate)
                 .map_err(|message| ClientError::Io(format!("the index could not start: {message}")))?;
             ready_epoch = gate.attached_ready_epoch();
             if self.session_epoch != ready_epoch {
@@ -627,9 +637,12 @@ impl SessionEngine {
             }
         }
         for attempt in 0..2 {
+            if self.cancel.as_ref().is_some_and(CancellationToken::is_cancelled) {
+                return Err(ClientError::Io("read was cancelled before retrying".to_owned()));
+            }
             if self.session.is_none() {
                 if let Some(gate) = &self.gate {
-                    gate.wait()
+                    self.wait_for_owner(gate)
                         .map_err(|message| ClientError::Io(format!("the index could not start: {message}")))?;
                     ready_epoch = gate.attached_ready_epoch();
                 }
@@ -670,6 +683,19 @@ impl SessionEngine {
         ))
     }
 
+}
+
+/// The page composer owns this narrow job lifecycle. Fixture engines may
+/// ignore it; the production session binds it to every owner wait.
+pub trait ReadEngine: Engine + Send + 'static {
+    /// Binds the cancellation state of one page read, or clears it afterward.
+    fn set_cancellation(&mut self, _cancel: Option<CancellationToken>) {}
+}
+
+impl ReadEngine for SessionEngine {
+    fn set_cancellation(&mut self, cancel: Option<CancellationToken>) {
+        self.cancel = cancel;
+    }
 }
 
 pub(crate) const fn read_only(command: &SurfaceCommand) -> bool {
@@ -798,13 +824,14 @@ impl<E: Engine + Send + 'static> SessionReader<E> {
     }
 }
 
-impl<E: Engine + Send + 'static> PageReader for SessionReader<E> {
+impl<E: ReadEngine> PageReader for SessionReader<E> {
     fn read(
         &mut self,
         request: &ReadRequest,
         context: &ReadContext<'_>,
     ) -> Result<PageValue, ReadFailure> {
-        match request {
+        self.engine.set_cancellation(Some(context.cancel.clone()));
+        let result = (|| match request {
             ReadRequest::Symbol(symbol) => compose_symbol(&mut self.engine, symbol, context),
             ReadRequest::Source(symbol) => compose_source(&mut self.engine, symbol, context),
             ReadRequest::Package(package) => {
@@ -852,7 +879,9 @@ impl<E: Engine + Send + 'static> PageReader for SessionReader<E> {
                     ))))
                 }
             },
-        }
+        })();
+        self.engine.set_cancellation(None);
+        result
     }
 }
 
@@ -1431,6 +1460,28 @@ mod tests {
     use crate::model::pages::{HealthModel, IngestModel};
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn closing_the_read_pool_wakes_a_page_waiting_for_owner_startup() {
+        let gate = super::super::owner::OwnerGate::starting();
+        let worker_gate = gate.clone();
+        let pool = ReadPool::start(1, move |_| SessionReader::gated(
+            "/tmp/nudox-no-owner-for-page-cancellation.sock", worker_gate.clone()
+        )).expect("read pool");
+        assert!(pool.submit(ReadJob {
+            key: PageKey::Health,
+            request: ReadRequest::Health,
+            generation: Generation::new(1),
+            priority: Priority::Normal,
+            cancel: CancellationToken::new(),
+            affinity: None,
+        }));
+        crate::runtime::wait::until("page entered the owner wait", || pool.running() == 1);
+        let (sent, received) = mpsc::channel();
+        std::thread::spawn(move || sent.send(drop(pool)).expect("read pool closed"));
+        received.recv_timeout(Duration::from_secs(1)).expect("pool shutdown did not wait for the owner's 60-second patience");
+        assert_eq!(gate.state(), super::super::owner::OwnerState::Starting);
+    }
 
     #[test]
     fn outline_cache_evicts_by_retained_bytes_and_never_caches_incomplete_indexes() {

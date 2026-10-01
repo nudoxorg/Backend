@@ -6,30 +6,81 @@ use crate::core::{ErrorValue, LocalProjectId, VersionedRoot};
 use crate::model::local_package::{LocalPackage, LocalPackageLoader};
 use crate::model::snapshot::{DeltaId, ObjectId, PackageSummary, ProjectState};
 use crate::navigation::RequestId;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 
 /// Cheap cancellation handle shared by a request and the worker.
-#[derive(Clone, Debug)]
-pub struct CancellationToken(Arc<AtomicBool>);
+#[derive(Clone)]
+pub struct CancellationToken(Arc<CancellationState>);
+
+struct CancellationState {
+    cancelled: AtomicBool,
+    next: AtomicU64,
+    waiters: Mutex<Vec<(u64, Arc<dyn Fn() + Send + Sync>)>>,
+}
+
+impl std::fmt::Debug for CancellationToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CancellationToken").field("cancelled", &self.is_cancelled()).finish()
+    }
+}
+
+/// A worker wait removes its wakeup when it ends. A token held through a
+/// long page composition therefore cannot accumulate one callback per probe.
+pub(crate) struct CancellationWake {
+    state: Weak<CancellationState>,
+    id: u64,
+}
+
+impl Drop for CancellationWake {
+    fn drop(&mut self) {
+        if let Some(state) = self.state.upgrade() {
+            state.waiters.lock().unwrap_or_else(PoisonError::into_inner)
+                .retain(|(id, _)| *id != self.id);
+        }
+    }
+}
 
 impl CancellationToken {
     /// Creates a live token.
     #[must_use]
     pub fn new() -> Self {
-        Self(Arc::new(AtomicBool::new(false)))
+        Self(Arc::new(CancellationState {
+            cancelled: AtomicBool::new(false),
+            next: AtomicU64::new(1),
+            waiters: Mutex::new(Vec::new()),
+        }))
     }
 
     /// Requests cancellation without waiting for the worker.
     pub fn cancel(&self) {
-        self.0.store(true, Ordering::Release);
+        if !self.0.cancelled.swap(true, Ordering::AcqRel) {
+            let waiters = self.0.waiters.lock().unwrap_or_else(PoisonError::into_inner)
+                .iter().map(|(_, wake)| Arc::clone(wake)).collect::<Vec<_>>();
+            for wake in waiters { wake(); }
+        }
     }
 
     /// Returns whether cancellation was requested.
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        self.0.cancelled.load(Ordering::Acquire)
+    }
+
+    /// Registers one condition-variable wakeup for a worker wait. The
+    /// callback fires immediately when cancellation already happened.
+    pub(crate) fn on_cancel(&self, wake: impl Fn() + Send + Sync + 'static) -> CancellationWake {
+        let id = self.0.next.fetch_add(1, Ordering::Relaxed);
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake);
+        let mut waiters = self.0.waiters.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.is_cancelled() {
+            drop(waiters);
+            wake();
+        } else {
+            waiters.push((id, wake));
+        }
+        CancellationWake { state: Arc::downgrade(&self.0), id }
     }
 }
 
@@ -109,11 +160,15 @@ impl EngineRequest {
     }
 
     pub(crate) fn cancelled(&self) -> bool {
+        self.cancellation().is_cancelled()
+    }
+
+    pub(crate) fn cancellation(&self) -> &CancellationToken {
         match self {
             Self::Root { cancel, .. }
             | Self::Object { cancel, .. }
             | Self::Surface { cancel, .. }
-            | Self::IndexProject { cancel, .. } => cancel.is_cancelled(),
+            | Self::IndexProject { cancel, .. } => cancel,
         }
     }
 }
@@ -321,10 +376,19 @@ pub struct EngineActor {
     events: CoalescingMailbox<EngineEvent>,
     join: Option<JoinHandle<()>>,
     local_join: Option<JoinHandle<()>>,
+    /// The synchronous producer request currently owned by the worker.
+    /// Shutdown revokes it before joining, including when it awaits startup.
+    active: Arc<Mutex<ActiveRequest>>,
     /// Wakes the UI after every delivered event; closed on shutdown.
     wake: WakeSender,
     /// The UI half, taken once by the entity that drains events.
     wake_receiver: Option<WakeReceiver>,
+}
+
+#[derive(Default)]
+struct ActiveRequest {
+    closed: bool,
+    cancel: Option<CancellationToken>,
 }
 
 /// Failure to create the dedicated worker thread.
@@ -405,10 +469,12 @@ impl EngineActor {
         let worker_mailbox = mailbox.clone();
         let worker_events = events.clone();
         let worker_wake = wake.clone();
+        let active = Arc::new(Mutex::new(ActiveRequest::default()));
+        let worker_active = Arc::clone(&active);
         let join = thread::Builder::new()
             .name("nudox-engine-actor".to_owned())
             .spawn(move || {
-                run_actor(Box::new(client), &worker_mailbox, &worker_events, &worker_wake);
+                run_actor(Box::new(client), &worker_mailbox, &worker_events, &worker_wake, &worker_active);
             })
             .map_err(|error| ActorStartError::from_spawn(&error))?;
         let local_mailbox = local.clone();
@@ -423,6 +489,7 @@ impl EngineActor {
             events,
             join: Some(join),
             local_join: None,
+            active,
             wake,
             wake_receiver: Some(wake_receiver),
         };
@@ -501,6 +568,12 @@ impl EngineActor {
     }
 
     fn close_and_join(&mut self) {
+        let cancel = {
+            let mut active = self.active.lock().unwrap_or_else(PoisonError::into_inner);
+            active.closed = true;
+            active.cancel.clone()
+        };
+        if let Some(cancel) = cancel { cancel.cancel(); }
         self.mailbox.close();
         self.local.close();
         self.events.close();
@@ -525,6 +598,7 @@ fn run_actor(
     mailbox: &CoalescingMailbox<EngineRequest>,
     events: &CoalescingMailbox<EngineEvent>,
     wake: &WakeSender,
+    active: &Mutex<ActiveRequest>,
 ) {
     let mut newest: Option<VersionedRoot> = None;
     while let Some(request) = mailbox.recv() {
@@ -568,14 +642,22 @@ fn run_actor(
         // A read (not an index) counts as one the owner should answer before
         // the next package compile (`traffic`).
         let _reading = (!index_lane).then(super::traffic::Reading::begin);
-        let result = match client.execute(&request) {
+        {
+            let mut active = active.lock().unwrap_or_else(PoisonError::into_inner);
+            if active.closed { request.cancellation().cancel(); }
+            active.cancel = Some(request.cancellation().clone());
+        }
+        let result = if request.cancelled() {
+            Err(cancelled_fault(&request))
+        } else { match client.execute(&request) {
             // A cancellation request cannot revoke a synchronous producer
             // commit after it has returned. Admit that committed result; a
             // producer error after cancellation is terminal cancellation.
             Ok(dto) => Ok(dto),
             Err(_error) if request.cancelled() => Err(cancelled_fault(&request)),
             Err(error) => Err(error),
-        };
+        }};
+        active.lock().unwrap_or_else(PoisonError::into_inner).cancel = None;
         let event = EngineEvent {
             basis,
             request: id,
@@ -640,7 +722,13 @@ fn cancelled_fault(request: &EngineRequest) -> EngineFault {
 
 #[cfg(test)]
 mod tests {
-    use super::ActorStartError;
+    use super::{ActorStartError, CancellationToken, EngineActor, EngineRequest};
+    use crate::core::{LocalProjectId, VersionedRoot};
+    use crate::navigation::RequestId;
+    use crate::runtime::client::LocalEngineClient;
+    use crate::runtime::owner::OwnerGate;
+    use std::sync::mpsc;
+    use std::time::Duration;
 
     #[test]
     fn actor_spawn_failure_is_reported_as_a_typed_bounded_error() {
@@ -650,5 +738,26 @@ mod tests {
         let long = "x".repeat(1_024);
         let bounded = ActorStartError::from_spawn(&std::io::Error::other(long));
         assert!(bounded.message().len() <= 256);
+    }
+
+    #[test]
+    fn closing_the_actor_wakes_a_request_waiting_for_owner_startup() {
+        let gate = OwnerGate::starting();
+        let project = LocalProjectId::from_path(std::path::Path::new("/tmp")).expect("project identity");
+        let client = LocalEngineClient::gated("/tmp/nudox-no-owner-for-cancellation.sock", project, gate.clone());
+        let actor = EngineActor::start(client, 4).expect("actor");
+        let request = EngineRequest::Root {
+            request: RequestId::new(1),
+            basis: VersionedRoot::unserved(),
+            cancel: CancellationToken::new(),
+        };
+        assert!(matches!(actor.try_submit(request), super::PushResult::Enqueued));
+        crate::runtime::wait::until("actor entered cancellable owner wait", || {
+            actor.active.lock().unwrap_or_else(std::sync::PoisonError::into_inner).cancel.is_some()
+        });
+        let (sent, received) = mpsc::channel();
+        std::thread::spawn(move || sent.send(drop(actor)).expect("actor closed"));
+        received.recv_timeout(Duration::from_secs(1)).expect("actor shutdown did not wait for the owner's 60-second patience");
+        assert_eq!(gate.state(), crate::runtime::owner::OwnerState::Starting);
     }
 }
