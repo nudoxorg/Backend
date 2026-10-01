@@ -6,13 +6,19 @@ use crate::Set;
 use crate::measure::Measure;
 use crate::probe::{self, Text, TextOverflow};
 use crate::tokens::TypeRole;
-use gpui::{ElementId, Hsla, ParentElement, SharedString, Styled, div};
+use gpui::{ElementId, Hsla, ParentElement, Pixels, SharedString, Styled, Window, div};
 use std::sync::Arc;
 
 /// `id` with `channel` appended: `hero-name`, `card-Sender-doc`.
 #[must_use]
 pub fn key(id: &ElementId, channel: impl Into<SharedString>) -> ElementId {
     ElementId::NamedChild(Arc::new(id.clone()), channel.into())
+}
+
+/// The shaped natural width for a role already resolved by [`Measure`].
+#[must_use]
+pub fn natural_width(content: &SharedString, role: TypeRole, window: &Window) -> Pixels {
+    probe::natural_width(content, role, 1.0, window)
 }
 
 /// One line that keeps its natural width.

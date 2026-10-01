@@ -4,11 +4,12 @@
 //! own project's licence) and the advisories cell (what the advisory feeds
 //! say about this release, honest when no feed is configured).
 //!
-//! The row is a fixed height: the licence stamp unfolds into the band
-//! reserved under the row, so opening it moves nothing else on the page.
+//! Cells keep their design minimum at 100% text. Their measured content
+//! determines any extra height, so opening one moves later content in normal
+//! flow instead of covering it.
 
-use super::state::{Fit, Nominal, Pose};
-use super::text::{ellipsis, key, one, wrap};
+use super::state::{DisclosureFlow, Fit, Nominal, Pose};
+use super::text::{key, natural_width, one, wrap};
 use crate::controls::state::{Touch, hover_zone, track};
 use crate::marks::badges::{Glyph, glyph};
 use crate::marks::license::LicenseFacts;
@@ -22,13 +23,13 @@ use crate::tokens::{Face, Palette, TypeRole, Voice, ty};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, Bounds, Element, ElementId, GlobalElementId, Hsla, InspectorElementId, InteractiveElement, IntoElement, LayoutId,
-    ParentElement, Pixels, Refineable, RenderOnce, SharedString, Style, StyleRefinement, Styled, Window, deferred, div, px,
+    ParentElement, Pixels, Refineable, RenderOnce, SharedString, Style, StyleRefinement, Styled, Window, div, px,
 };
 use std::rc::Rc;
 
 /// A cell at rest, px at 100 %.
 pub const REST: Nominal = Nominal::px(138.0);
-/// The band the licence stamp may unfold into, px at 100 %.
+/// The expanded stamp design reference, px at 100 %; content may exceed it.
 pub const FULL: Nominal = Nominal::px(188.0);
 
 const LABEL: TypeRole = TypeRole { weight: 620.0, size: 10.5, line: 14.0, tracking: 0.08, ..ty::LABEL };
@@ -47,28 +48,50 @@ fn ink_of(tone: Voice, palette: &Palette) -> Hsla {
 /// The frame every crest cell shares: a cut plate with its small-caps
 /// label at the head (`accent` is a count in amber beside it).
 #[must_use]
-pub fn cell(id: &ElementId, label: &str, accent: Option<String>, note: Option<&str>, measure: &Measure, palette: &'static Palette) -> crate::paint::Cut {
+pub fn cell(
+    id: &ElementId,
+    label: &str,
+    accent: Option<String>,
+    note: Option<&str>,
+    measure: &Measure,
+    width: Pixels,
+    window: &Window,
+    palette: &'static Palette,
+) -> crate::paint::Cut {
     let scale = measure.scale();
-    let mut head = div().flex().items_center().gap(measure.space(Space::Snug)).child(one(
+    let mut head = div().flex().flex_wrap().items_center().gap(measure.space(Space::Snug)).min_w_0().w_full().child(one(
         key(id, "label"),
         label.to_uppercase(),
         LABEL,
         palette.ink3,
         measure,
     ));
-    if let Some(accent) = accent {
-        head = head.child(one(key(id, "accent"), accent, LABEL, palette.amber.base, measure));
+    if let Some(accent) = accent.as_ref() {
+        head = head.child(one(key(id, "accent"), accent.clone(), LABEL, palette.amber.base, measure));
     }
     if let Some(note) = note {
-        // Where the fact was read from: never presented as an index fact.
-        head = head.child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .justify_end()
-                .child(wrap(key(id, "note"), note.to_owned(), NOTE, palette.ink3, measure, None)),
-        );
+        let label_width = natural_width(&SharedString::from(label.to_uppercase()), measure.role(LABEL), window);
+        let accent_width = accent.as_ref().map_or(px(0.0), |accent| {
+            natural_width(&SharedString::from(accent.clone()), measure.role(LABEL), window)
+        });
+        let note_width = natural_width(&SharedString::from(note.to_owned()), measure.role(NOTE), window);
+        let gap_count = if accent.is_some() { 3.0 } else { 2.0 };
+        let inline_width = label_width + accent_width + note_width + measure.space(Space::Snug) * gap_count;
+        let available_width = width - measure.space(Space::Roomy) * 2.0;
+        // The note says where the fact was read from. When the complete
+        // header will not fit, give the note its own wrapping row.
+        if inline_width > available_width {
+            head = head.child(div().w_full().min_w_0().child(wrap(
+                key(id, "note"),
+                note.to_owned(),
+                NOTE,
+                palette.ink3,
+                measure,
+                None,
+            )));
+        } else {
+            head = head.child(div().flex_1().min_w_0().child(one(key(id, "note"), note.to_owned(), NOTE, palette.ink3, measure)));
+        }
     }
     let mut edge = Edge::of(Bevel::Rest, palette);
     edge.hi = palette.line3.into();
@@ -311,49 +334,99 @@ impl RenderOnce for Stamp {
         let verdict = verdict(&self.facts);
         let touch = Touch::read(&self.id, crate::controls::Look::LIVE, true, window, cx);
         let motion = touch.motion.clone();
-        let wanted = touch.hovered || touch.focused || self.held == Pose::Held;
-        let open = motion.animate(track(&self.id, "open"), if wanted { 1.0 } else { 0.0 }, super::state::plate(wanted), window, cx);
-        let open = open.clamp(0.0, 1.05);
+        let disclosure = DisclosureFlow::read(&self.id, &touch, self.held, window, cx);
+        let open = disclosure.progress;
         let hover = motion.animate(track(&self.id, "hover"), if touch.hovered { 1.0 } else { 0.0 }, spec::HOVER, window, cx);
         let tone = ink_of(verdict.tone, palette);
         let glyph_of = if verdict.tone == Voice::Mint { Glyph::Shield } else { Glyph::Unsafe };
 
+        // Reserve room for each complete licence token. At narrow widths the
+        // seal moves above the face before the title or SPDX id is broken.
+        let content_width = f32::from(measure.width()) - 2.0 * f32::from(measure.space(Space::Roomy));
+        let horizontal_text_width = content_width - 30.0 * scale - f32::from(measure.space(Space::Roomy));
+        let verdict_width = f32::from(natural_width(
+            &SharedString::from(verdict.word),
+            measure.role(VERDICT),
+            window,
+        ));
+        let identifier_width = verdict
+            .expression
+            .iter()
+            .filter_map(|part| match part {
+                Part::Id { id, .. } => Some(f32::from(natural_width(
+                    &SharedString::from(id.clone()),
+                    measure.role(EXPR),
+                    window,
+                ))),
+                Part::Or | Part::And => None,
+            })
+            .fold(0.0_f32, f32::max);
+        let stacked_face = verdict_width.max(identifier_width) > horizontal_text_width;
+        let text_width = if stacked_face { content_width } else { horizontal_text_width };
+
         // The expression: the judged option in full ink, the rest quiet.
-        let mut expression = div().min_w_0().flex().flex_wrap().items_center().gap_x(measure.space(Space::Snug));
+        let mut expression = div().min_w_0().w_full().flex().flex_wrap().items_center().gap_x(measure.space(Space::Snug));
         if verdict.expression.is_empty() {
-            expression = expression.child(one(key(&self.id, "expr"), "no licence declared", EXPR, palette.ink3, &measure));
+            let no_licence = "no licence declared";
+            let width = f32::from(natural_width(&SharedString::from(no_licence), measure.role(EXPR), window));
+            expression = expression.child(if width <= text_width {
+                one(key(&self.id, "expr"), no_licence, EXPR, palette.ink3, &measure).into_any_element()
+            } else {
+                wrap(key(&self.id, "expr"), no_licence, EXPR, palette.ink3, &measure, None).into_any_element()
+            });
         }
         for (i, part) in verdict.expression.iter().enumerate() {
             expression = expression.child(match part {
-                Part::Id { id, fit } => one(key(&self.id, format!("id-{i}")), id.clone(), EXPR, if *fit == Fit::Judged { palette.ink0 } else { palette.ink3 }, &measure).into_any_element(),
+                Part::Id { id, fit } => {
+                    let width = f32::from(natural_width(&SharedString::from(id.clone()), measure.role(EXPR), window));
+                    let ink = if *fit == Fit::Judged { palette.ink0 } else { palette.ink3 };
+                    if width <= text_width {
+                        one(key(&self.id, format!("id-{i}")), id.clone(), EXPR, ink, &measure).into_any_element()
+                    } else {
+                        wrap(key(&self.id, format!("id-{i}")), id.clone(), EXPR, ink, &measure, None).into_any_element()
+                    }
+                }
                 Part::Or => one(key(&self.id, format!("op-{i}")), "or", AND, palette.ink3, &measure).into_any_element(),
                 Part::And => one(key(&self.id, format!("op-{i}")), "and", AND, palette.amber.base, &measure).into_any_element(),
             });
         }
 
-        let face = div()
-            .flex()
-            .items_center()
-            .gap(measure.space(Space::Roomy))
-            .child(seal(glyph_of, 30.0 * scale, tone))
-            .child(
-                div()
-                    .flex()
-                    .min_w_0()
-                    .flex_col()
-                    .child(one(key(&self.id, "verdict"), verdict.word, VERDICT, tone, &measure))
-                    .child(expression),
-            );
+        let verdict_view = if verdict_width <= text_width {
+            one(key(&self.id, "verdict"), verdict.word, VERDICT, tone, &measure).into_any_element()
+        } else {
+            wrap(key(&self.id, "verdict"), verdict.word, VERDICT, tone, &measure, None).into_any_element()
+        };
+        let details = div().flex().flex_col().min_w_0().child(verdict_view).child(expression);
+        let face = if stacked_face {
+            div()
+                .flex()
+                .flex_col()
+                .items_start()
+                .gap(measure.space(Space::Roomy))
+                .min_w_0()
+                .w_full()
+                .child(seal(glyph_of, 30.0 * scale, tone))
+                .child(details.w_full().min_w_0())
+        } else {
+            div()
+                .flex()
+                .items_center()
+                .gap(measure.space(Space::Roomy))
+                .min_w_0()
+                .w_full()
+                .child(seal(glyph_of, 30.0 * scale, tone))
+                .child(details.flex_1().min_w_0())
+        };
 
         // What unfolds: the sentence, then what it permits, asks and won't promise.
         let term = |g: Glyph, ink: Hsla, words: &[&str], name: &'static str| {
             (!words.is_empty()).then(|| {
                 div()
                     .flex()
-                    .items_center()
+                    .items_start()
                     .gap(measure.space(Space::Snug))
                     .child(glyph(g, 12.0 * scale, ink))
-                    .child(div().flex_1().min_w_0().flex().child(ellipsis(key(&self.id, name), words.join(" · "), TERMS, palette.ink1, &measure)))
+                    .child(div().flex_1().min_w_0().child(wrap(key(&self.id, name), words.join(" · "), TERMS, palette.ink1, &measure, None)))
             })
         };
         let more = div()
@@ -361,36 +434,33 @@ impl RenderOnce for Stamp {
             .flex_col()
             .gap(measure.space(Space::Tight))
             .pt(measure.space(Space::Snug))
-            .child(wrap(key(&self.id, "line"), verdict.line.clone(), LINE, palette.ink1, &measure, Some(3)))
+            .child(wrap(key(&self.id, "line"), verdict.line.clone(), LINE, palette.ink1, &measure, None))
             .children(term(Glyph::Makes, palette.mint.base.into(), &verdict.permits, "permits"))
             .children(term(Glyph::Takes, palette.peri_hi.into(), &verdict.asks, "asks"))
             .children(term(Glyph::Error, palette.coral.base.into(), &verdict.limits, "limits"));
 
-        let height = (REST.value() + (FULL.value() - REST.value()) * open) * scale;
+        let more_item = crate::motion::Presence::scoped(format!("folio-stamp-{}", self.id), cx)
+            .enter(crate::motion::act::RISE)
+            .exit(crate::motion::act::LEAVE)
+            .sync((open > 0.02).then_some("details"), window, cx)
+            .into_iter()
+            .next()
+            .map(|item| item.slot(more.opacity(open.min(1.0))));
+
         let mut edge = Edge::of(Bevel::Rest, palette);
         edge.hi = palette.line3.into();
         edge.lo = palette.line2.into();
         let edge = edge.mix(Edge::of(Bevel::Peri, palette), hover);
-        let plate = cell(&self.id, "Licence", None, None, &measure, palette)
+        let plate = cell(&self.id, "Licence", None, None, &measure, self.width, window, palette)
             .edge(edge)
             .fill(mix(palette.plate.into(), palette.plate2.into(), hover))
             .w(self.width)
-            .h(px(height))
-            .overflow_hidden()
+            .min_h(DisclosureFlow::rest_height(REST))
             .child(face)
-            .when(open > 0.02, |plate| plate.child(more))
+            .children(more_item)
             .id(self.id.clone());
         let plate = crate::controls::button::wire(plate, &touch, None);
-        if open > 0.001 || touch.hovered {
-            // The plate unfolds over what lies below it (drawn late, hit
-            // first), so opening it moves nothing on the page.
-            let plate = plate.absolute().top_0().left_0();
-            div().relative().flex_none().w(self.width).h(REST.at(scale)).child(deferred(hover_zone(plate, &touch, 9.0 * scale, true)).with_priority(1)).into_any_element()
-        } else {
-            // At rest it is part of the page's own flow, so a page change
-            // that cuts the page cuts it too (a deferred draw would not be).
-            div().flex_none().w(self.width).h(REST.at(scale)).child(hover_zone(plate, &touch, 9.0 * scale, true)).into_any_element()
-        }
+        div().flex_none().w(self.width).child(hover_zone(plate, &touch, 9.0 * scale, true)).into_any_element()
     }
 }
 
@@ -464,7 +534,7 @@ pub fn advisories(id: impl Into<ElementId>, facts: Advisories, width: Pixels, me
 }
 
 impl RenderOnce for AdvisoriesCell {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let palette = cx.palette();
         let measure = self.measure;
         let scale = measure.scale();
@@ -489,18 +559,39 @@ impl RenderOnce for AdvisoriesCell {
             }
         };
         let face_word = TypeRole { weight: if quiet { 560.0 } else { 700.0 }, size: if quiet { 14.0 } else { 16.0 }, ..VERDICT };
-        cell(&self.id, "Advisories", None, None, &measure, palette)
+        let content_width = (f32::from(self.width) - 2.0 * f32::from(measure.space(Space::Roomy))).max(0.0);
+        let inline_text_width = content_width - 30.0 * scale - f32::from(measure.space(Space::Roomy));
+        let word_width = f32::from(natural_width(&word, measure.role(face_word), window));
+        let word_view = if word_width <= content_width {
+            one(key(&self.id, "word"), word.clone(), face_word, tone, &measure).into_any_element()
+        } else {
+            wrap(key(&self.id, "word"), word.clone(), face_word, tone, &measure, None).into_any_element()
+        };
+        let face = if word_width > inline_text_width {
+            div()
+                .flex()
+                .flex_col()
+                .items_start()
+                .gap(measure.space(Space::Roomy))
+                .min_w_0()
+                .w_full()
+                .child(seal(Glyph::Shield, 30.0 * scale, if quiet { palette.ink3.into() } else { tone }))
+                .child(div().w_full().min_w_0().child(word_view))
+        } else {
+            div()
+                .flex()
+                .items_center()
+                .gap(measure.space(Space::Roomy))
+                .min_w_0()
+                .w_full()
+                .child(seal(Glyph::Shield, 30.0 * scale, if quiet { palette.ink3.into() } else { tone }))
+                .child(div().flex_1().min_w_0().child(word_view))
+        };
+        cell(&self.id, "Advisories", None, None, &measure, self.width, window, palette)
             .w(self.width)
-            .h(REST.at(scale))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(measure.space(Space::Roomy))
-                    .child(seal(Glyph::Shield, 30.0 * scale, if quiet { palette.ink3.into() } else { tone }))
-                    .child(one(key(&self.id, "word"), word, face_word, tone, &measure)),
-            )
-            .child(wrap(key(&self.id, "note"), note, TERMS, palette.ink2, &measure, Some(3)))
+            .min_h(DisclosureFlow::rest_height(REST))
+            .child(face)
+            .child(wrap(key(&self.id, "note"), note, TERMS, palette.ink2, &measure, None))
             .into_any_element()
     }
 }
@@ -536,13 +627,13 @@ impl Unread {
 }
 
 impl RenderOnce for Unread {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let palette = cx.palette();
         let measure = self.measure;
-        cell(&self.id, &self.label, None, self.note.as_deref(), &measure, palette)
+        cell(&self.id, &self.label, None, self.note.as_deref(), &measure, self.width, window, palette)
             .w(self.width)
-            .h(REST.at(measure.scale()))
-            .child(wrap(key(&self.id, "words"), self.words.clone(), TERMS, palette.ink3, &measure, Some(4)))
+            .min_h(DisclosureFlow::rest_height(REST))
+            .child(wrap(key(&self.id, "words"), self.words.clone(), TERMS, palette.ink3, &measure, None))
             .into_any_element()
     }
 }

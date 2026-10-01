@@ -16,7 +16,7 @@ use super::state::{Fold, Nominal};
 use super::text::key;
 use crate::controls::button::wire;
 use crate::controls::state::{Touch, hover_zone, track};
-use crate::data::text::{font, shape, shape_fit};
+use crate::data::text::{shape, shape_fit};
 use crate::measure::Measure;
 use crate::motion::spec;
 use crate::paint::geom::{Fill, Poly, pt};
@@ -28,7 +28,7 @@ use gpui::{
     App, Bounds, ColorExt as _, DispatchPhase, Element, ElementId, Entity, GlobalElementId, Hitbox,
     HitboxBehavior, Hsla, InspectorElementId, InteractiveElement, IntoElement, LayoutId,
     MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, ParentElement, Pixels, Refineable,
-    RenderOnce, SharedString, Style, StyleRefinement, Styled, TextRun, Window, px,
+    RenderOnce, SharedString, Style, StyleRefinement, Styled, Window, px,
 };
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -362,24 +362,6 @@ const CAPTION: TypeRole = TypeRole {
     ..ty::SMALL
 };
 
-fn wrapped_lines(text: &str, role: TypeRole, width: f32, window: &Window) -> usize {
-    let text: SharedString = text.to_owned().into();
-    let run = TextRun {
-        len: text.len(),
-        font: font(role),
-        color: Hsla::default(),
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-        letter_spacing: (role.tracking.abs() > f32::EPSILON).then(|| px(role.tracking * role.size)),
-    };
-    window
-        .text_system()
-        .shape_text(text, px(role.size), &[run], Some(px(width.max(1.0))), None)
-        .map(|lines| lines.iter().map(|line| 1 + line.wrap_boundaries().len()).sum::<usize>().max(1))
-        .unwrap_or(1)
-}
-
 /// The weight cell (see [`weight`]).
 #[derive(IntoElement)]
 pub struct WeightCell {
@@ -473,12 +455,6 @@ impl RenderOnce for WeightCell {
         if facts.missing > 0 {
             words = format!("{words} · {} not on this machine", facts.missing);
         }
-        let caption_role = measure.role(CAPTION);
-        let horizontal_padding = f32::from(measure.space(crate::measure::Space::Roomy));
-        let inner_width = (f32::from(self.width) - 2.0 * horizontal_padding).max(1.0);
-        let caption_lines = wrapped_lines(&words, caption_role, inner_width, window);
-        #[allow(clippy::cast_precision_loss)]
-        let content_height = f32::from(self.height.at(scale)) + caption_role.line * caption_lines.saturating_sub(1) as f32;
         let mut edge = Edge::of(Bevel::Rest, palette);
         edge.hi = palette.line3.into();
         edge.lo = palette.line2.into();
@@ -489,15 +465,16 @@ impl RenderOnce for WeightCell {
             None,
             Some("from its source"),
             &measure,
+            self.width,
+            window,
             palette,
         )
         .edge(edge)
         .fill(mix(palette.plate.into(), palette.plate2.into(), hover))
         .w(self.width)
-        // One caption line fits in the designed rest height. Add the exact
-        // wrapped line count beyond it so every source fact stays inside the
-        // bevel at large text scales and narrow widths.
-        .min_h(px(content_height))
+        // Keep the design floor at 100% text. The glyph and naturally wrapped
+        // caption determine any extra height at larger text scales.
+        .min_h(self.height.at(1.0))
         .child(glyph)
         .child(super::text::wrap(
             key(&self.id, "caption"),

@@ -1,9 +1,51 @@
 //! The small states the folio's components are told, as types: nothing in
 //! the page's public surface is a bare `bool` or a bare `f32` of pixels.
 
+use crate::controls::state::Touch;
 use crate::motion::{Spec, spec};
 use crate::overlay::float::QUICK_REST;
-use gpui::{Pixels, px};
+use gpui::{App, ElementId, Pixels, Window, px};
+
+/// The shared open state for a disclosure card. Children remain in ordinary
+/// GPUI flow, so their measured height moves every following sibling as the
+/// card opens, resizes, or responds to a text-scale change.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct DisclosureFlow {
+    /// Animated progress, including the plate's small entrance overshoot.
+    pub(crate) progress: f32,
+}
+
+impl DisclosureFlow {
+    /// Preserve the design minimum at its 100% reference size while letting
+    /// larger or wrapped content determine the card's actual height.
+    #[must_use]
+    pub(crate) fn rest_height(minimum: Nominal) -> Pixels {
+        minimum.at(1.0)
+    }
+
+    /// Read the common hover/focus/held state and animate its open track.
+    #[must_use]
+    pub(crate) fn read(
+        id: &ElementId,
+        touch: &Touch,
+        pose: Pose,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self {
+        let wanted = touch.hovered || touch.focused || pose == Pose::Held;
+        let progress = touch
+            .motion
+            .animate(
+                crate::controls::state::track(id, "open"),
+                if wanted { 1.0 } else { 0.0 },
+                plate(wanted),
+                window,
+                cx,
+            )
+            .clamp(0.0, 1.05);
+        Self { progress }
+    }
+}
 
 /// How a plate that answers a pointer's *rest* opens or shuts: it opens after
 /// the house rest ([`QUICK_REST`]), so a pointer only passing over it opens
