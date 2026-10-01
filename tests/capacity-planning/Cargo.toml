@@ -1,0 +1,27 @@
+[package]
+name = "backend-capacity-planning"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+allocation-counter.workspace = true
+backend-engine = { path = "../../crates/engine" }
+backend-extension-tantivy = { path = "../../extensions/tantivy" }
+backend-extension-trustfall = { path = "../../extensions/trustfall" }
+backend-semantic = { path = "../../crates/semantic" }
+backend-store = { path = "../../crates/store" }
+backend-version = { path = "../../crates/version" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[[bench]]
+name = "capacity-planning"
+path = "benches/capacity_planning.rs"
+harness = false
+
+[lints]
+workspace = true

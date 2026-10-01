@@ -850,13 +850,13 @@ in
         capacity-planning = {
           kind = "cargo-benchmark";
           tool = "cargo";
-          protocol = "criterion-v1";
-          package = "backend-engine";
+          protocol = "heart.capacity-planning.v1";
+          package = "backend-capacity-planning";
           benchmark = "capacity-planning";
           allocator = "system";
-          warmth = "criterion-warmup";
-          repetitions = "criterion-adaptive";
-          statistical_method = "criterion-bootstrap";
+          warmth = "custom-configured-warmups";
+          repetitions = "explicit-sample-count";
+          statistical_method = "arithmetic-mean-over-stage-samples";
         };
         backend-cli-size = {
           kind = "cargo-binary";

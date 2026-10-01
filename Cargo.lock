@@ -967,6 +967,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "backend-capacity-planning"
+version = "0.1.0"
+dependencies = [
+ "allocation-counter",
+ "backend-engine",
+ "backend-extension-tantivy",
+ "backend-extension-trustfall",
+ "backend-semantic",
+ "backend-store",
+ "backend-version",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "backend-engine"
 version = "0.1.0"
 dependencies = [
@@ -1534,11 +1550,7 @@ version = "0.1.0"
 dependencies = [
  "allocation-counter",
  "arrayvec",
- "backend-engine",
- "backend-extension-tantivy",
- "backend-extension-trustfall",
  "backend-platform",
- "backend-semantic",
  "backend-version",
  "blake3",
  "bolero",
