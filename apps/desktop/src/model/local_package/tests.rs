@@ -447,6 +447,90 @@ fn readme_navigation_index_uses_gfm_links_and_contains_local_targets() -> Outcom
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn readme_source_and_link_index_refuse_symlink_targets() -> Outcome {
+    use std::os::unix::fs::symlink;
+
+    let scratch = Scratch::new("readme-symlink")?;
+    let target = scratch.0.join("target.md");
+    fs::write(&target, "# Outside\n\n[not admitted](README.md)\n").map_err(text)?;
+    symlink(&target, scratch.0.join("README.md")).map_err(text)?;
+
+    let read = readme::read(&scratch.0, &scratch.0.join("README.md"));
+    assert!(
+        read.is_empty(),
+        "the README reader must not follow the replacement link"
+    );
+    let (links, headings) = readme::navigation_index(
+        "[not admitted](README.md)",
+        &scratch.0,
+        &scratch.0.join("README.md"),
+    );
+    assert!(links[0].local_file.is_none());
+    assert!(headings.is_empty());
+
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_vendor = "apple")))]
+#[test]
+fn readme_source_rejects_fifo_without_blocking() -> Outcome {
+    let scratch = Scratch::new("readme-fifo")?;
+    let fifo = scratch.0.join("README.md");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .map_err(text)?;
+    if !status.success() {
+        return Err("mkfifo failed to create the FIFO fixture".to_owned());
+    }
+
+    let root = scratch.0.clone();
+    let path = fifo.clone();
+    let (send, receive) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let _sent = send.send(readme::read(&root, &path));
+    });
+    match receive.recv_timeout(Duration::from_secs(2)) {
+        Ok(source) => {
+            assert!(source.is_empty());
+            worker.join().map_err(|_| "README reader worker panicked")?;
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            // Release a regression that blocks in `open(README.md)` so the
+            // test process does not retain a stuck worker after reporting it.
+            let writer = fs::OpenOptions::new()
+                .write(true)
+                .open(&fifo)
+                .map_err(text)?;
+            drop(writer);
+            worker.join().map_err(|_| "README reader worker panicked")?;
+            return Err("README reader blocked while opening a FIFO".to_owned());
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            return Err("README reader worker stopped before returning".to_owned());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn readme_navigation_rejects_overlong_destinations_without_truncating_them() -> Outcome {
+    let scratch = Scratch::new("readme-long-link")?;
+    let destination = format!(
+        "https://example.test/{}",
+        "x".repeat(crate::model::local_package::MAX_README_LINK_DESTINATION_BYTES)
+    );
+    let source = format!("[oversized]({destination})");
+    let (links, _) = readme::navigation_index(&source, &scratch.0, &scratch.0.join("README.md"));
+    assert!(
+        links.is_empty(),
+        "an overlong prefix must never become actionable"
+    );
+    Ok(())
+}
+
 #[test]
 fn readme_projection_ignores_manifest_package_facts() -> Outcome {
     let scratch = Scratch::new("readme-facts")?;
