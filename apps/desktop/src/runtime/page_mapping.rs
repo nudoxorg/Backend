@@ -2429,7 +2429,7 @@ mod tests {
         );
         assert!(partial_duplicates.resolve_name("Foo", is_type_like).is_none());
 
-        let partial_spans = identifier_spans("Foo", None, Some(&partial));
+        let partial_spans = identifier_spans("Foo", None, Some(&partial), None);
         assert_eq!(
             partial_spans.gap().map(|gap| gap.reason),
             Some(GapReason::Unavailable)

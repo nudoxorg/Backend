@@ -381,7 +381,7 @@ mod tests {
     #[test]
     fn deserialization_rejects_source_larger_than_the_worker_limit() {
         let wire = serde_json::json!({
-            "text": "x".repeat(MAX_DESERIALIZED_SOURCE_BYTES + 1),
+            "text": "x".repeat(super::MAX_DESERIALIZED_SOURCE_BYTES + 1),
             "first_line": 1,
             "origin": "LocalFile",
             "complete": true,
