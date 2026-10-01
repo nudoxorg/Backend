@@ -1368,7 +1368,7 @@ mod mounted_tests {
         let source = tail
             .targets
             .iter()
-            .find(|target| target.key.contains("registry-b") && target.key.contains("open-source"))
+            .find(|target| target.key.contains("registry-b") && target.key.contains("open-package"))
             .expect("exact source button at the tail");
         let at = point(
             px(source.bounds.x + source.bounds.width / 2.0),
@@ -1407,7 +1407,7 @@ mod mounted_tests {
                 .targets
                 .iter()
                 .any(|target| target.key.contains("registry-b")
-                    && target.key.contains("open-source")
+                    && target.key.contains("open-package")
                     && target.state.focused),
             "Back restored native focus to the exact authority after reorder"
         );
@@ -1982,7 +1982,7 @@ fn inventory_row(
         }
         let open = Rc::clone(&actions.open_inventory);
         line = line.child(
-            button(child(id, "open-source"), "Open source ›", measure)
+            button(child(id, "open-package"), "Open package ›", measure)
                 .focus_handle(focus)
                 .ghost()
                 .on_click(move |window, cx| open(target.clone(), window, cx)),
