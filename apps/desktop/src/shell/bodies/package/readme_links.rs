@@ -17,7 +17,7 @@ const UNAVAILABLE: &str = "This link has no verified destination in this package
 const MAX_INDEXED_LINKS: usize = 512;
 const MAX_INDEXED_HEADINGS: usize = 512;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum Outcome {
     External(Arc<str>),
     Anchor(ReadmeHeading),
@@ -156,12 +156,27 @@ impl Plan {
                 )
             })
             .collect();
-        let by_destination = links
+        // An inline Markdown callback carries the destination, not the
+        // indexed occurrence. Two identical spellings may have different
+        // per-link proofs; neither occurrence can lend its route to the
+        // other. Listed rows retain their exact link_index action.
+        let mut by_destination = HashMap::<Arc<str>, Outcome>::new();
+        for (link, outcome) in links
             .iter()
             .flat_map(|links| links.iter().take(MAX_INDEXED_LINKS))
             .zip(outcomes.iter())
-            .map(|(link, outcome)| (Arc::clone(&link.destination), outcome.clone()))
-            .collect();
+        {
+            by_destination
+                .entry(Arc::clone(&link.destination))
+                .and_modify(|existing| {
+                    if existing != outcome {
+                        *existing = Outcome::Unavailable(
+                            "This destination has different link targets in the README index.",
+                        );
+                    }
+                })
+                .or_insert_with(|| outcome.clone());
+        }
         Self {
             source,
             links,
@@ -630,6 +645,49 @@ mod tests {
             package,
         );
         assert!(matches!(partial.row(0), Outcome::Unavailable(_)));
+    }
+
+    #[test]
+    fn duplicate_inline_destination_cannot_borrow_another_occurrences_proof() {
+        let dossier = crate::shell::tests::dossier();
+        let package = dossier.package;
+        let outline = dossier.outline.known().expect("fixture outline").clone();
+        let symbol = outline
+            .walk()
+            .find(|node| node.decl.name.as_ref() == "Outline")
+            .expect("exact fixture declaration")
+            .decl
+            .coordinate
+            .clone();
+        let source: Arc<str> = Arc::from("[first](outline/struct.Outline.html) [second](outline/struct.Outline.html)");
+        let links: Arc<[ReadmeLink]> = Arc::from([
+            link("outline/struct.Outline.html", None, None),
+            link("outline/struct.Outline.html", None, None),
+        ]);
+        let exact = ReadmeExactTargets {
+            package: package.clone(),
+            source: Arc::clone(&source),
+            outline_roots: Arc::clone(&outline.roots),
+            links: Arc::from([crate::model::pages::ReadmeExactTarget {
+                link_index: 0,
+                destination: Arc::from("outline/struct.Outline.html"),
+                kind: ReadmeExactKind::Rustdoc(symbol),
+            }]),
+        };
+        let prepared = Plan::build(source, Some(links), Some(Arc::from([])), Some(outline), Some(exact), package);
+        assert!(matches!(prepared.row(0), Outcome::Route(Route::Symbol(_))));
+        assert!(matches!(prepared.row(1), Outcome::Unavailable(_)));
+        assert!(matches!(prepared.destination("outline/struct.Outline.html"), Outcome::Unavailable(reason)
+            if reason.contains("different link targets")));
+
+        let same = plan(
+            vec![
+                link("https://example.test/help", None, None),
+                link("https://example.test/help", None, None),
+            ],
+            vec![],
+        );
+        assert!(matches!(same.destination("https://example.test/help"), Outcome::External(_)));
     }
 
     #[test]
