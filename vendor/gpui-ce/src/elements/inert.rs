@@ -501,14 +501,6 @@ mod tests {
         ) -> Self::PrepaintState {
             let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
             self.hitbox.set(Some(hitbox.id));
-            if let Some(moves) = self.moves.clone() {
-                let hitbox_id = hitbox.id;
-                window.on_mouse_event::<MouseMoveEvent>(move |_, _, window, _| {
-                    if window.captured_hitbox() == Some(hitbox_id) {
-                        moves.set(moves.get() + 1);
-                    }
-                });
-            }
         }
 
         fn paint(
@@ -518,9 +510,16 @@ mod tests {
             _: Bounds<Pixels>,
             _: &mut Self::RequestLayoutState,
             _: &mut Self::PrepaintState,
-            _: &mut Window,
+            window: &mut Window,
             _: &mut App,
         ) {
+            if let (Some(moves), Some(hitbox_id)) = (self.moves.clone(), self.hitbox.get()) {
+                window.on_mouse_event::<MouseMoveEvent>(move |_, _, window, _| {
+                    if window.captured_hitbox() == Some(hitbox_id) {
+                        moves.set(moves.get() + 1);
+                    }
+                });
+            }
         }
     }
 
