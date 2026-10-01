@@ -806,7 +806,9 @@ impl From<image::ImageError> for ImageCacheError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ParentElement as _, TestAppContext, canvas, div, point, px, size};
+    use crate::{
+        Context, ParentElement as _, Render, TestAppContext, Window, canvas, div, point, px, size,
+    };
     use image::{Frame, ImageBuffer, Rgba};
 
     const TEST_IMG_ID: &str = "test-img";
@@ -837,6 +839,44 @@ mod tests {
                 });
             },
         )
+    }
+
+    struct StaleFrameIndexTestView {
+        frame_count: usize,
+        observed_frame_indexes: std::rc::Rc<std::cell::RefCell<Vec<usize>>>,
+    }
+
+    impl Render for StaleFrameIndexTestView {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            let observed_frame_indexes = self.observed_frame_indexes.clone();
+            let mut children = vec![
+                img(ImageSource::Render(test_image(self.frame_count)))
+                    .id(TEST_IMG_ID)
+                    .into_any_element(),
+            ];
+
+            if self.frame_count > 1 {
+                children.push(seed_frame_index(self.frame_count - 1).into_any_element());
+            }
+
+            children.push(
+                canvas(
+                    |_, _, _| (),
+                    move |_, _, window, _| {
+                        window.with_global_id(TEST_IMG_ID.into(), |id, window| {
+                            window.with_element_state::<ImgState, _>(id, |state, _| {
+                                let mut state = state.expect("img state should be initialized");
+                                observed_frame_indexes.borrow_mut().push(state.frame_index);
+                                ((), state)
+                            });
+                        });
+                    },
+                )
+                .into_any_element(),
+            );
+
+            div().children(children)
+        }
     }
 
     #[gpui::test]
@@ -929,21 +969,29 @@ mod tests {
 
     #[gpui::test]
     fn stale_frame_index_is_clamped_when_image_changes(cx: &mut TestAppContext) {
-        let window = cx.add_empty_window();
+        let observed_frame_indexes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let window = cx.open_window(size(px(100.), px(100.)), {
+            let observed_frame_indexes = observed_frame_indexes.clone();
+            move |_, _| StaleFrameIndexTestView {
+                frame_count: 5,
+                observed_frame_indexes,
+            }
+        });
+        cx.run_until_parked();
 
         // Assert that a cached frame_index from a previous multi-frame image
         // does not cause an out-of-bounds panic when the image is replaced
         // with one that has fewer frames.
-        window.draw(point(px(0.), px(0.)), size(px(100.), px(100.)), |_, _| {
-            div()
-                .child(img(ImageSource::Render(test_image(5))).id(TEST_IMG_ID))
-                .child(seed_frame_index(4))
-                .into_any_element()
-        });
-        window.draw(point(px(0.), px(0.)), size(px(100.), px(100.)), |_, _| {
-            img(ImageSource::Render(test_image(1)))
-                .id(TEST_IMG_ID)
-                .into_any_element()
-        });
+        assert_eq!(observed_frame_indexes.borrow().last(), Some(&4));
+
+        window
+            .update(cx, |view, window, _| {
+                view.frame_count = 1;
+                window.refresh();
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(observed_frame_indexes.borrow().last(), Some(&0));
     }
 }
