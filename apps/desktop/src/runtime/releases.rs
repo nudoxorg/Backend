@@ -441,7 +441,7 @@ fn item_path(label: &str, from: &str, to: &str) -> String {
         .find_map(|root| {
             label
                 .strip_prefix(root)
-                .and_then(|rest| rest.strip_prefix("::"))
+                .and_then(|rest| rest.strip_prefix("::").or_else(|| rest.strip_prefix('/')))
         })
         .unwrap_or(label)
         .to_owned()
@@ -456,6 +456,13 @@ fn semver_slip(from: &str, to: &str, breaking: bool) -> bool {
     let (Ok(from), Ok(to)) = (semver::Version::parse(from), semver::Version::parse(to)) else {
         return false;
     };
+    // Build metadata distinguishes published release spellings, but does not
+    // advance the SemVer API version or Cargo caret compatibility.
+    if (from.major, from.minor, from.patch, &from.pre)
+        == (to.major, to.minor, to.patch, &to.pre)
+    {
+        return false;
+    }
     if to <= from {
         return false;
     }
