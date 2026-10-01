@@ -11,6 +11,10 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[path = "durable_read.rs"]
+mod read;
+pub use read::read_regular_bounded;
+
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Publishes `bytes` at `path` without exposing a partial state file.
