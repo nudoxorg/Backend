@@ -832,7 +832,8 @@ mod tests {
     #[test]
     fn remote_product_admission_pins_one_authenticated_session_across_real_wire_replies() {
         let root = owner_view();
-        let root_id = root.root().to_bytes();
+        let query_root = root.root();
+        let root_id = query_root.to_bytes();
         let context = [0x42; 32];
         let evidence = b"authenticated-owner-source-proof".to_vec();
         let owner_secret = SecretKey::generate();
@@ -1013,7 +1014,7 @@ mod tests {
         let query = || {
             Command::Search(Query::new(
                 "needle",
-                backend_library::ViewStateRoot::from_bytes(root_id),
+                query_root,
                 QueryLimit::new(10).expect("valid query limit"),
             ))
         };
