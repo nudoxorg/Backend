@@ -78,6 +78,7 @@ gpui_platform = { workspace = true, features = ["wgpu"] }
 windows = { version = "=0.61.3", features = ["Foundation", "UI_ViewManagement"] }
 
 [dev-dependencies]
+backend-advisory = { path = "../../crates/advisory" }
 backend-gui-harness = { path = "../../tools/gui-harness" }
 # Prototype release fixtures are test-only; production release views read the
 # selected local registry and exact owner comparison.

@@ -13,6 +13,7 @@ use facet::browse::{Alert, AlertTone, LibraryModel, LibraryReleaseLink, LibraryR
 use facet::browse::library::ReleaseHandle;
 use facet::icons::Icon;
 use gpui::SharedString;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// A path may wrap between hops, never inside one: `toml 1.1.5` stays whole.
@@ -139,18 +140,21 @@ fn prepared_library_model(reading: &backend_present::TreeReading, links: &[TreeR
                                 version: version.clone().into(),
                                 target: Some(ReleaseHandle::new(role_at, row_at, version_at)),
                                 unavailable: None,
+                                source_detail: destination.and_then(|link| link.source_detail.as_ref()).map(|detail| detail.to_string().into()),
                             },
                             Some(TreeDestination::Unavailable(reason)) => LibraryReleaseLink {
                                 key,
                                 version: version.clone().into(),
                                 target: None,
                                 unavailable: Some(reason.to_string().into()),
+                                source_detail: None,
                             },
                             None => LibraryReleaseLink {
                                 key,
                                 version: version.clone().into(),
                                 target: None,
                                 unavailable: Some("The source for this release was not resolved.".into()),
+                                source_detail: None,
                             },
                         }
                     }).collect(),
@@ -229,14 +233,25 @@ pub fn compose(engine: &mut dyn Engine, key: &BrowseKey) -> Result<PageValue, Re
 #[must_use]
 pub fn tree_model(tree: &backend_library::browse::ProjectTree) -> TreeModel {
     let reading = backend_present::read_tree(tree);
+    let sources = TreeSources::new(tree);
     let links: Arc<[TreeRoleLinks]> = reading.roles.iter().map(|role| TreeRoleLinks {
         role: role.id,
         rows: role.rows.iter().map(|row| TreeRowLinks {
             name: Arc::from(row.name.as_str()),
-            releases: row.versions.iter().enumerate().map(|(at, version)| TreeReleaseLink {
-                version: Arc::from(version.as_str()),
-                destination: tree_destination(&tree.root, &row.name, version, row.sources.get(at).and_then(Option::as_ref)),
-            }).collect::<Vec<_>>().into(),
+            releases: {
+                let mut copies = BTreeMap::<&str, usize>::new();
+                for version in &row.versions { *copies.entry(version).or_default() += 1; }
+                row.versions.iter().enumerate().map(|(at, version)| {
+                    let reference = row.sources.get(at).and_then(Option::as_ref);
+                    let source_detail = (copies.get(version.as_str()).copied().unwrap_or_default() > 1)
+                        .then(|| sources.detail(&row.name, version, reference)).flatten();
+                    TreeReleaseLink {
+                        version: Arc::from(version.as_str()),
+                        destination: sources.destination(&row.name, version, reference),
+                        source_detail,
+                    }
+                }).collect::<Vec<_>>().into()
+            },
         }).collect::<Vec<_>>().into(),
     }).collect::<Vec<_>>().into();
     let prepared = Arc::new(prepared_library_model(&reading, &links));
@@ -248,60 +263,63 @@ pub fn tree_model(tree: &backend_library::browse::ProjectTree) -> TreeModel {
     }
 }
 
-/// A project tree records source origin separately from its display name.
-/// Resolve only the identities that preserve that source on a package route.
-/// Vendored paths are checked here on the read worker, never while painting.
-fn tree_destination(root: &str, name: &str, version: &str, origin: Option<&backend_library::browse::PackageOrigin>) -> TreeDestination {
-    use backend_library::browse::PackageOrigin;
-    let unavailable = |words: String| TreeDestination::Unavailable(Arc::from(words));
-    match origin {
-        Some(origin @ PackageOrigin::Registry { source }) => {
-            let coordinate = if origin.is_crates_io_registry() {
-                format!("pkg:cargo/{name}@{version}")
-            } else {
-                let index = source.strip_prefix("registry+").or_else(|| source.strip_prefix("sparse+"));
-                let Some(index) = index.filter(|index| !index.is_empty()) else {
-                    return unavailable("Cargo did not record a usable registry authority.".to_owned());
-                };
-                format!("pkg:cargo/{name}@{version}?repository_url={}", encode_purl_qualifier(index))
-            };
-            PackageRef::parse(&coordinate)
-                .map_or_else(|_| unavailable("The registry coordinate could not be admitted.".to_owned()), TreeDestination::Open)
-        }
-        Some(PackageOrigin::Vendored { path }) if !path.is_empty() => {
-            let path = std::path::Path::new(path);
-            let path = if path.is_absolute() { path.to_path_buf() } else { std::path::Path::new(root).join(path) };
-            match path.canonicalize() {
-                Ok(path) if path.is_dir() => PackageRef::parse(&path.to_string_lossy()).map_or_else(
-                    |_| unavailable("This local source path could not be admitted.".to_owned()),
-                    TreeDestination::Open,
-                ),
-                _ => unavailable("This local source folder is unavailable on this machine.".to_owned()),
-            }
-        }
-        Some(PackageOrigin::Vendored { .. }) => unavailable("Cargo.lock did not record the local source folder.".to_owned()),
-        Some(PackageOrigin::Git { .. }) => unavailable("Git source; this tree does not record its checkout folder.".to_owned()),
-        Some(PackageOrigin::Unresolved { source }) => unavailable(format!(
-            "Cargo did not establish a supported source{}.",
-            source.as_ref().map_or(String::new(), |source| format!(" ({source})"))
-        )),
-        None => unavailable("This release has no unique source identity in the project tree.".to_owned()),
-    }
+/// The display row is admitted only through its aligned exact Cargo metadata
+/// reference. Equal name/version text may identify multiple registry or Git
+/// sources; the authority digest keeps those releases separate.
+struct TreeSources<'a> {
+    by_reference: BTreeMap<backend_library::PackageReference, Vec<&'a backend_library::browse::TreePackage>>,
 }
 
-/// Package URL qualifiers use canonical percent escapes. Keep URL authority
-/// bytes, including an alternative registry's host and path, in the identity.
-fn encode_purl_qualifier(value: &str) -> String {
-    let mut encoded = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            encoded.push(char::from(byte));
-        } else {
-            use std::fmt::Write as _;
-            let _ = write!(encoded, "%{byte:02X}");
+impl<'a> TreeSources<'a> {
+    fn new(tree: &'a backend_library::browse::ProjectTree) -> Self {
+        let mut by_reference = BTreeMap::new();
+        for package in &tree.packages {
+            if let Some(reference) = package.source_qualified_reference() {
+                by_reference.entry(reference).or_insert_with(Vec::new).push(package);
+            }
+        }
+        Self { by_reference }
+    }
+
+    fn exact(
+        &self,
+        name: &str,
+        version: &str,
+        reference: Option<&backend_library::PackageReference>,
+    ) -> Result<&'a backend_library::browse::TreePackage, &'static str> {
+        let Some(reference) = reference else {
+            return Err("This release has no current exact Cargo source receipt.");
+        };
+        let Some(packages) = self.by_reference.get(reference) else {
+            return Err("The exact Cargo package was not in this project tree.");
+        };
+        match packages.as_slice() {
+            [package] if package.name == name && package.version == version => Ok(package),
+            [_] => Err("The source receipt does not match this displayed release."),
+            _ => Err("More than one Cargo package matches this source receipt."),
         }
     }
-    encoded
+
+    fn destination(&self, name: &str, version: &str, reference: Option<&backend_library::PackageReference>) -> TreeDestination {
+        if let Err(reason) = self.exact(name, version, reference) {
+            return TreeDestination::Unavailable(Arc::from(reason));
+        }
+        reference.map_or_else(
+            || TreeDestination::Unavailable(Arc::from("This release has no current exact Cargo source receipt.")),
+            |reference| TreeDestination::Open(PackageRef::from_reference(reference.clone())),
+        )
+    }
+
+    fn detail(&self, name: &str, version: &str, reference: Option<&backend_library::PackageReference>) -> Option<Arc<str>> {
+        let package = self.exact(name, version, reference).ok()?;
+        use backend_library::browse::PackageOrigin;
+        Some(match &package.origin {
+            PackageOrigin::Registry { source } => Arc::from(source.as_str()),
+            PackageOrigin::Git { source } => Arc::from(source.as_str()),
+            PackageOrigin::Vendored { path } => Arc::from(format!("path: {path}")),
+            PackageOrigin::Unresolved { .. } => return None,
+        })
+    }
 }
 
 /// Merge real package identities once, off the UI thread. Exact names lead;
@@ -404,7 +422,6 @@ mod find_tests {
     use super::*;
     use crate::model::browse::FindPackage;
     use crate::model::pages::PackageRef;
-    use backend_library::browse::PackageOrigin;
 
     fn candidate(name: &str, indexed: bool) -> FindPackage {
         FindPackage { package: PackageRef::parse(&format!("pkg:cargo/{name}@1.0.0")).unwrap(), name: Arc::from(name), description: None, indexed, record: None, offer: None }
@@ -428,27 +445,32 @@ mod find_tests {
     }
 
     #[test]
-    fn tree_links_preserve_registry_release_and_local_path_without_inventing_git_checkout() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
-        let root = root.to_str().unwrap();
-        assert_eq!(
-            tree_destination(root, "toml", "1.1.6", Some(&PackageOrigin::Registry { source: "registry+https://github.com/rust-lang/crates.io-index".to_owned() })),
-            TreeDestination::Open(PackageRef::parse("pkg:cargo/toml@1.1.6").unwrap()),
-        );
-        let first = tree_destination(root, "toml", "1.1.6", Some(&PackageOrigin::Registry { source: "registry+https://packages.example.test/first".to_owned() }));
-        let second = tree_destination(root, "toml", "1.1.6", Some(&PackageOrigin::Registry { source: "registry+https://packages.example.test/second".to_owned() }));
-        let (TreeDestination::Open(first), TreeDestination::Open(second)) = (first, second) else { panic!("observed alternative registries have typed coordinates") };
-        assert_eq!(first.as_str(), "pkg:cargo/toml@1.1.6?repository_url=https%3A%2F%2Fpackages.example.test%2Ffirst");
-        assert_ne!(first, second, "two authorities cannot alias the same name and version");
-        assert_ne!(first.as_str(), "pkg:cargo/toml@1.1.6", "an alternate registry cannot open crates.io");
-        assert!(matches!(tree_destination(root, "toml", "1.1.6", Some(&PackageOrigin::Unresolved { source: Some("other+opaque".to_owned()) })), TreeDestination::Unavailable(_)));
-        let local = tree_destination(root, "gpui-ce", "0.2.2", Some(&PackageOrigin::Vendored { path: "vendor/gpui-ce".to_owned() }));
-        let TreeDestination::Open(path) = local else { panic!("a present vendored source should open") };
-        assert_eq!(path.as_str(), std::path::Path::new(root).join("vendor/gpui-ce").canonicalize().unwrap().to_str().unwrap());
-        assert!(matches!(
-            tree_destination(root, "foo", "1.0.0", Some(&PackageOrigin::Git { source: "git+https://example.invalid/foo?branch=main#0123456789abcdef0123456789abcdef01234567".to_owned() })),
-            TreeDestination::Unavailable(reason) if reason.contains("Git source")
-        ));
-        assert!(matches!(tree_destination(root, "foo", "1.0.0", None), TreeDestination::Unavailable(_)));
+    fn tree_links_use_only_exact_owner_observed_cargo_source_receipts() {
+        use backend_advisory::{AdvisoryAuthority, normalize_package};
+        use backend_library::browse::{build_tree, metadata_input};
+        const METADATA: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../crates/library/browse/fixtures/tree-2026-09-27/metadata.json"));
+        const LOCKFILE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../crates/library/browse/fixtures/tree-2026-09-27/Cargo.lock"));
+        let input = metadata_input(METADATA, "aarch64-apple-darwin", Some(LOCKFILE)).expect("actual Cargo metadata fixture");
+        let authority = AdvisoryAuthority::new(1);
+        let observe = |name: &str, version: &str| {
+            let package = normalize_package("cargo", name).expect("test package");
+            authority.observe(&package, version, false, false, 0, false)
+        };
+        let mut tree = build_tree(&input, &observe);
+        let serde = tree.package("serde", "1.0.219").expect("resolved Cargo package").clone();
+        let receipt = serde.source_qualified_reference().expect("owner receipt");
+        let TreeDestination::Open(exact) = TreeSources::new(&tree).destination(&serde.name, &serde.version, Some(&receipt))
+            else { panic!("complete metadata receipt opens its exact source") };
+        assert_eq!(exact.reference(), &receipt);
+        assert!(exact.as_str().contains("?cargo-authority="));
+        assert_ne!(exact.as_str(), "pkg:cargo/serde@1.0.219");
+
+        assert!(matches!(TreeSources::new(&tree).destination(&serde.name, &serde.version, None), TreeDestination::Unavailable(_)));
+        let different = backend_library::PackageReference::parse(
+            "pkg:cargo/serde@1.0.219?cargo-authority=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        ).expect("other source address");
+        assert!(matches!(TreeSources::new(&tree).destination(&serde.name, &serde.version, Some(&different)), TreeDestination::Unavailable(_)));
+        tree.packages = tree.packages.iter().cloned().chain(std::iter::once(serde.clone())).collect();
+        assert!(matches!(TreeSources::new(&tree).destination(&serde.name, &serde.version, Some(&receipt)), TreeDestination::Unavailable(_)), "ambiguous rows cannot lend each other file authority");
     }
 }

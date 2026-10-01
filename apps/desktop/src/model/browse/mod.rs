@@ -173,6 +173,8 @@ pub struct TreeReleaseLink {
     pub version: Arc<str>,
     /// A route only when the source identity admits one.
     pub destination: TreeDestination,
+    /// Full exact source spelling when equal visible versions need disambiguation.
+    pub source_detail: Option<Arc<str>>,
 }
 
 /// Whether this exact source can open as a local package page.

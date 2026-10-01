@@ -465,7 +465,7 @@ impl AppSnapshot {
                 let package = match &session.route {
                     Route::Package(route) => Some(&route.package),
                     Route::Symbol(route) => Some(&route.package),
-                    Route::Orbit(_) | Route::World => None,
+                    Route::CargoSource(_) | Route::Orbit(_) | Route::World => None,
                 };
                 match package.and_then(|package| catalog.packages.iter().find(|row| row.coordinate == *package)) {
                     Some(row) if row.object.get().as_bytes() == &claim.object => {

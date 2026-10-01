@@ -1,6 +1,7 @@
 //! Identity keys for page resources.
 
 use super::common::{KeyError, PackageRef, SymbolRef};
+use crate::navigation::CargoSourcePath;
 use std::fmt;
 use std::sync::Arc;
 
@@ -12,6 +13,16 @@ pub struct SearchQuery {
     pub text: Arc<str>,
     /// Page size (1..=200).
     pub limit: u16,
+}
+
+/// Exact owner-addressed Cargo file. A line is a view position, so it does
+/// not enter the read key; the authority digest remains in `package`.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct CargoSourceKey {
+    /// Full source-qualified Cargo package reference.
+    pub package: PackageRef,
+    /// Canonical package-relative file path.
+    pub file: CargoSourcePath,
 }
 
 impl SearchQuery {
@@ -44,6 +55,8 @@ pub enum PageKey {
     Symbol(SymbolRef),
     /// A declaration's source view.
     Source(SymbolRef),
+    /// One owner-revalidated Cargo file with no semantic-index claim.
+    CargoSource(CargoSourceKey),
     /// A package dossier.
     Package(PackageRef),
     /// One search query's accumulated result pages.
@@ -63,6 +76,7 @@ impl PageKey {
         match self {
             Self::Symbol(_) => "symbol",
             Self::Source(_) => "source",
+            Self::CargoSource(_) => "cargo-source",
             Self::Package(_) => "package",
             Self::Search(_) => "search",
             Self::Orbit => "orbit",
@@ -77,6 +91,7 @@ impl fmt::Display for PageKey {
         match self {
             Self::Symbol(symbol) => write!(formatter, "symbol {symbol}"),
             Self::Source(symbol) => write!(formatter, "source {symbol}"),
+            Self::CargoSource(key) => write!(formatter, "Cargo source {}#{}", key.package, key.file.as_str()),
             Self::Package(package) => write!(formatter, "package {package}"),
             Self::Search(query) => write!(formatter, "search {:?} x{}", query.text, query.limit),
             Self::Orbit => formatter.write_str("orbit"),

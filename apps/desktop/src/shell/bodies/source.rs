@@ -3,6 +3,8 @@
 //! declaration's one sentence and callers in the margin.
 
 pub(crate) mod paging;
+mod cargo;
+pub(super) use cargo::body as cargo_body;
 
 #[cfg(test)]
 use paging::{MAX_SOURCE_BYTES, MAX_SOURCE_LINE_BYTES, MAX_SOURCE_LINES, previous_cursor};
@@ -43,6 +45,7 @@ struct Pager {
     error: Option<SharedString>,
     recall: Recall,
     reveal: Rc<Cell<bool>>,
+    row_id: Rc<dyn Fn(u32) -> SharedString>,
     _subscription: Subscription,
 }
 
@@ -53,6 +56,7 @@ impl Pager {
         last: u32,
         recall: Recall,
         reveal: Rc<Cell<bool>>,
+        row_id: Rc<dyn Fn(u32) -> SharedString>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -74,14 +78,14 @@ impl Pager {
             error: None,
             recall,
             reveal,
+            row_id,
             _subscription: subscription,
         }
     }
 
     fn focus_line(&mut self, line: u32, cx: &mut Context<Self>) {
         self.error = None;
-        self.recall
-            .focus(crate::shell::reader::source_line_shared_id(line));
+        self.recall.focus((self.row_id)(line));
         self.reveal.set(true);
         cx.notify();
     }
@@ -293,6 +297,7 @@ fn code(
             last_line,
             recall,
             reveal,
+            Rc::new(crate::shell::reader::source_line_shared_id),
             window,
             cx,
         )

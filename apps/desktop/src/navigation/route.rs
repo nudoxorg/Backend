@@ -240,6 +240,75 @@ pub struct SymbolRoute {
     pub selected: Option<ObjectId>,
 }
 
+/// A package-relative file requested from Cargo's exact source authority.
+/// This is an address, not file proof: the owner revalidates the source and
+/// content digest before any bytes become a page.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct CargoSourceRoute {
+    /// Full source-qualified package coordinate, including its authority digest.
+    pub package: PackageId,
+    /// Canonical package-relative file spelling.
+    pub file: CargoSourcePath,
+    /// Optional one-based line to reveal.
+    pub line: Option<u32>,
+}
+
+impl CargoSourceRoute {
+    /// Creates an address that can only ask the owner for a source-qualified
+    /// Cargo package. The digest is an address hint, never proof by itself.
+    pub fn new(package: PackageId, file: CargoSourcePath, line: Option<u32>) -> Option<Self> {
+        let reference = backend_library::PackageReference::parse(package.as_str()).ok()?;
+        let backend_library::PackageReference::Purl(purl) = reference else {
+            return None;
+        };
+        let digest = purl.qualifiers()?.strip_prefix("cargo-authority=")?;
+        if purl.package_type().as_str() != "cargo"
+            || digest.len() != 64
+            || !digest.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            || line == Some(0)
+        {
+            return None;
+        }
+        Some(Self { package, file, line })
+    }
+
+    /// The package page returned to by zoom-out and Back.
+    #[must_use]
+    pub fn package_route(&self) -> PackageRoute {
+        PackageRoute {
+            project: None,
+            package: self.package.clone(),
+            lane: PackageLane::Overview,
+            selected: None,
+            at: None,
+        }
+    }
+}
+
+/// A bounded, canonical relative file address. Its bytes never act as a
+/// filesystem capability; only the owner's held source root can read it.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct CargoSourcePath(Arc<str>);
+
+impl CargoSourcePath {
+    /// Rejects rooted, escaping, ambiguous, or overlong file spellings.
+    pub fn new(value: &str) -> Option<Self> {
+        if value.is_empty()
+            || value.len() > 1_024
+            || value.contains(['\\', ':'])
+            || value.chars().any(char::is_control)
+            || value.split('/').any(|part| matches!(part, "" | "." | ".."))
+        {
+            return None;
+        }
+        Some(Self(Arc::from(value)))
+    }
+
+    /// The exact package-relative spelling sent to the owner.
+    #[must_use]
+    pub fn as_str(&self) -> &str { &self.0 }
+}
+
 impl SymbolRoute {
     /// Whether `other` shows the same declaration at the same release (only
     /// the view or line differ): moving between them is not navigation.
@@ -262,6 +331,8 @@ pub enum Route {
     Package(PackageRoute),
     /// One declaration, as a page, its code, or its graph.
     Symbol(SymbolRoute),
+    /// A source file from a Cargo package, without an indexed symbol claim.
+    CargoSource(CargoSourceRoute),
     /// The whole dependency graph, nothing selected.
     World,
 }
@@ -369,6 +440,7 @@ impl Route {
         match self {
             Self::Orbit(_) | Self::World => Some(RouteDepth::Orbit),
             Self::Package(_) => Some(RouteDepth::Package),
+            Self::CargoSource(_) => Some(RouteDepth::Source),
             Self::Symbol(route) => Some(match route.view {
                 View::Code => RouteDepth::Source,
                 View::Page | View::Graph => RouteDepth::Page,
@@ -382,7 +454,7 @@ impl Route {
         match self {
             Self::Package(route) => route.selected,
             Self::Symbol(route) => route.selected,
-            Self::Orbit(_) | Self::World => None,
+            Self::CargoSource(_) | Self::Orbit(_) | Self::World => None,
         }
     }
 
@@ -392,7 +464,7 @@ impl Route {
         match self {
             Self::Package(route) => Self::Package(PackageRoute { selected, ..route.clone() }),
             Self::Symbol(route) => Self::Symbol(SymbolRoute { selected, ..route.clone() }),
-            Self::Orbit(_) | Self::World => self.clone(),
+            Self::CargoSource(_) | Self::Orbit(_) | Self::World => self.clone(),
         }
     }
 
@@ -402,7 +474,7 @@ impl Route {
         match self {
             Self::Package(route) => route.at.as_ref(),
             Self::Symbol(route) => route.at.as_ref(),
-            Self::Orbit(_) | Self::World => None,
+            Self::CargoSource(_) | Self::Orbit(_) | Self::World => None,
         }
     }
 
@@ -413,7 +485,7 @@ impl Route {
         match self {
             Self::Package(route) => Self::Package(PackageRoute { at, ..route.clone() }),
             Self::Symbol(route) => Self::Symbol(SymbolRoute { at, ..route.clone() }),
-            Self::Orbit(_) | Self::World => self.clone(),
+            Self::CargoSource(_) | Self::Orbit(_) | Self::World => self.clone(),
         }
     }
 
@@ -423,7 +495,7 @@ impl Route {
     pub fn with_view(&self, view: View) -> Option<Self> {
         match self {
             Self::Symbol(route) => Some(Self::Symbol(SymbolRoute { view, ..route.clone() })),
-            Self::Orbit(_) | Self::Package(_) | Self::World => None,
+            Self::CargoSource(_) | Self::Orbit(_) | Self::Package(_) | Self::World => None,
         }
     }
 
@@ -433,6 +505,7 @@ impl Route {
     pub fn same_place(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Symbol(a), Self::Symbol(b)) => a.same_place(b),
+            (Self::CargoSource(a), Self::CargoSource(b)) => a.package == b.package && a.file == b.file,
             _ => self == other,
         }
     }
@@ -442,6 +515,7 @@ impl Route {
     #[must_use]
     pub fn zoom_out(&self) -> Option<Self> {
         match self {
+            Self::CargoSource(route) => Some(Self::Package(route.package_route())),
             Self::Symbol(route) => Some(Self::Package(PackageRoute {
                 project: route.project.clone(),
                 package: route.package.clone(),
@@ -476,6 +550,7 @@ impl Route {
                 route.id.clone(),
                 route.at.clone(),
             ),
+            Self::CargoSource(route) => RouteKey::CargoSource(route.package.clone(), route.file.clone()),
             Self::Orbit(OrbitRoute::Browse(route)) => RouteKey::Browse(route.clone()),
             Self::World => RouteKey::World,
         }
@@ -493,6 +568,8 @@ pub enum RouteKey {
     Package(Option<ProjectId>, PackageId, PackageLane),
     /// Declaration coordinate and release.
     Symbol(Option<ProjectId>, PackageId, Coordinate, Option<ReleaseId>),
+    /// Exact Cargo source package and package-relative file.
+    CargoSource(PackageId, CargoSourcePath),
     /// The whole graph.
     World,
     /// A browsing page.
@@ -512,6 +589,24 @@ pub enum Selection {
 mod tests {
     use super::*;
     use crate::model::ObjectId;
+
+    #[test]
+    fn cargo_file_route_keeps_exact_package_authority_and_line_independent_place() {
+        let package = PackageId::new("pkg:cargo/demo@1.0.0?cargo-authority=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").expect("qualified package");
+        let file = CargoSourcePath::new("src/lib.rs").expect("relative file");
+        let first = Route::CargoSource(CargoSourceRoute::new(package.clone(), file.clone(), Some(12)).expect("route"));
+        let later = Route::CargoSource(CargoSourceRoute::new(package.clone(), file.clone(), Some(90)).expect("route"));
+        assert!(first.same_place(&later));
+        assert_eq!(first.key(), later.key());
+        assert_eq!(first.depth(), Some(RouteDepth::Source));
+        assert_eq!(first.zoom_out().expect("package").key(), Route::Package(CargoSourceRoute::new(package, file, None).expect("route").package_route()).key());
+        assert!(CargoSourcePath::new("../Cargo.toml").is_none());
+        assert!(CargoSourcePath::new("src//lib.rs").is_none());
+        assert!(CargoSourcePath::new("/Cargo.toml").is_none());
+        assert!(CargoSourcePath::new("C:\\Cargo.toml").is_none());
+        assert!(CargoSourceRoute::new(PackageId::new("/local/project").expect("local"), CargoSourcePath::new("Cargo.toml").expect("path"), None).is_none());
+        assert!(CargoSourceRoute::new(PackageId::new("pkg:cargo/demo@1.0.0").expect("unqualified"), CargoSourcePath::new("Cargo.toml").expect("path"), None).is_none());
+    }
 
     #[test]
     fn release_spelling_is_ecosystem_neutral_but_never_a_path_component_escape() {

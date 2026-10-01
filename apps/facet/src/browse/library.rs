@@ -42,6 +42,8 @@ pub struct ReleaseLink {
     pub target: Option<ReleaseHandle>,
     /// Explicit reason when the tree cannot open this source.
     pub unavailable: Option<SharedString>,
+    /// Full exact source spelling when equal visible versions need disambiguation.
+    pub source_detail: Option<SharedString>,
 }
 
 /// An action address into the immutable tree that produced one rendered page.
@@ -378,7 +380,7 @@ mod mounted_tests {
             name: if at == 499 { "exact-package".into() } else { format!("other-{at:03}").into() },
             at_rest: None, why: "an admitted release".into(), about: None,
             releases: if at == 499 { vec![ReleaseLink { key: "release-1".into(), version: "1".into(),
-                target: Some(release), unavailable: None }] } else { vec![] },
+                target: Some(release), unavailable: None, source_detail: None }] } else { vec![] },
         }).collect();
         let model = Arc::new(Model {
             name: "project".into(), lede: "Its dependencies".into(), lede_tip: None,
@@ -429,7 +431,7 @@ mod mounted_tests {
         });
         let releases = (0..1_000).map(|at| ReleaseLink {
             key: format!("release-{at}").into(), version: at.to_string().into(),
-            target: Some(ReleaseHandle::new(0, 0, at)), unavailable: None,
+            target: Some(ReleaseHandle::new(0, 0, at)), unavailable: None, source_detail: None,
         }).collect();
         let model = Arc::new(Model {
             name: "project".into(), lede: "Its dependencies".into(), lede_tip: None,
@@ -1168,16 +1170,37 @@ fn row_view(
                 let returning_focus = focus.clone();
                 window.defer(cx, move |window, cx| window.focus(&returning_focus, cx));
             }
+            let kind = release.source_detail.as_ref().map(|source| {
+                let source = source.as_ref();
+                if source.starts_with("registry+") { "registry" }
+                else if source.starts_with("sparse+") { "sparse" }
+                else if source.starts_with("git+") { "git" }
+                else { "path" }
+            });
+            let label = kind.map_or_else(
+                || format!("Open {} ›", release.version),
+                |kind| format!("Open {} · {kind} ›", release.version),
+            );
             detail = detail.child(
                 button(
                     button_id,
-                    format!("Open {} ›", release.version),
+                    label,
                     measure,
                 )
                 .focus_handle(focus)
                 .ghost()
                 .on_click(move |window, cx| open(target.clone(), window, cx)),
             );
+            if let Some(source) = &release.source_detail {
+                detail = detail.child(words(
+                    child(child(id, release.key.clone()), "source-detail"),
+                    source.clone(),
+                    ty::CAPTION,
+                    palette.ink3,
+                    measure,
+                    TextOverflow::Wrap,
+                ));
+            }
         } else if let Some(reason) = &release.unavailable {
             detail = detail.child(words(
                 child(id, release.key.clone()),

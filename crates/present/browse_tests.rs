@@ -7,7 +7,7 @@
 use crate::browse::read_tree;
 use backend_advisory::{AdvisoryAuthority, AdvisorySource, AuthorityFeed, normalize_package};
 use backend_library::browse::{
-    LockedInactiveCoverage, LockfileGraphCoverage, LockfileWorkspaceMembership, PackageOrigin,
+    LockedInactiveCoverage, LockfileGraphCoverage, LockfileWorkspaceMembership,
     ProjectTree, RoleId, TreeSource, build_tree, lockfile_input, metadata_input,
 };
 
@@ -143,26 +143,33 @@ fn each_role_says_what_it_is_for_and_why_a_dependency_is_in_it() {
 }
 
 #[test]
-fn dependency_rows_retain_exact_source_origin_and_refuse_ambiguous_releases() {
+fn dependency_rows_retain_aligned_source_references_even_at_the_same_version() {
+    use backend_library::PackageReference;
     let mut source = tree();
     let reading = read_tree(&source);
     let toml = reading.roles.iter().flat_map(|role| &role.rows).find(|row| row.name == "toml").expect("toml");
     assert_eq!(toml.versions.len(), toml.sources.len());
-    assert!(toml.sources.iter().all(|source| source.as_ref().is_some_and(PackageOrigin::is_crates_io_registry)));
+    assert!(toml.sources.iter().all(|source| source.as_ref().is_some_and(|reference| reference.as_str().contains("cargo-authority="))));
     let gpui = reading.roles.iter().flat_map(|role| &role.rows).find(|row| row.name == "gpui-ce").expect("vendored direct dependency");
-    assert!(gpui.sources.iter().any(|source| matches!(source, Some(PackageOrigin::Vendored { path }) if path == "vendor/gpui-ce")));
+    assert!(gpui.sources.iter().any(Option::is_some));
 
     let version = toml.versions[0].clone();
-    let duplicate = source.packages.iter().find(|package| package.name == "toml" && package.version == version).expect("toml package").clone();
-    let mut duplicate = duplicate;
-    duplicate.origin = PackageOrigin::Git { source: "git+https://example.invalid/toml?branch=stable#0123456789abcdef0123456789abcdef01234567".to_owned() };
-    let mut packages = source.packages.to_vec();
-    packages.push(duplicate);
-    source.packages = packages.into_boxed_slice();
+    let direct = source.direct.iter_mut().find(|dependency| dependency.name == "toml").expect("direct dependency");
+    let original = direct.package_references[0].clone().expect("first exact receipt");
+    let distinct = PackageReference::parse(&format!(
+        "pkg:cargo/toml@{version}?cargo-authority=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    )).expect("distinct typed address");
+    let mut versions = direct.versions.to_vec();
+    versions.insert(1, version.clone());
+    direct.versions = versions.into_boxed_slice();
+    let mut references = direct.package_references.to_vec();
+    references.insert(1, Some(distinct.clone()));
+    direct.package_references = references.into_boxed_slice();
     let reading = read_tree(&source);
     let toml = reading.roles.iter().flat_map(|role| &role.rows).find(|row| row.name == "toml").expect("toml");
-    let at = toml.versions.iter().position(|candidate| *candidate == version).expect("version");
-    assert_eq!(toml.sources[at], None, "same name and release at two origins has no safe link");
+    assert_eq!(toml.versions[0], toml.versions[1]);
+    assert_eq!(toml.sources[0].as_ref(), Some(&original));
+    assert_eq!(toml.sources[1].as_ref(), Some(&distinct));
 }
 
 #[test]

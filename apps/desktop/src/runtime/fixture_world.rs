@@ -213,7 +213,7 @@ pub(crate) fn launch_need(route: &Route, hand: &Hand) -> Option<LaunchNeed> {
     match route {
         Route::World => Some(LaunchNeed::Graph),
         Route::Symbol(symbol) if symbol.view == View::Graph => Some(LaunchNeed::Graph),
-        Route::Orbit(_) | Route::Package(_) | Route::Symbol(_) => (!hand.is_empty()).then_some(LaunchNeed::Hand),
+        Route::CargoSource(_) | Route::Orbit(_) | Route::Package(_) | Route::Symbol(_) => (!hand.is_empty()).then_some(LaunchNeed::Hand),
     }
 }
 
