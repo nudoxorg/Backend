@@ -745,6 +745,7 @@ mod tests {
             ),
             ecosystem: RegistryEcosystem::Cargo,
             lineage: "widget".to_owned(),
+            coordinate_suffix: None,
         }
     }
 

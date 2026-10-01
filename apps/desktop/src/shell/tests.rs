@@ -60,6 +60,7 @@ fn member(name: &str, kind: DeclarationKind, signature: &str, summary: &str) -> 
         signature: Known::Known(SignatureText {
             text: Arc::from(signature),
             tokens: Arc::from([]),
+            name_link_coverage: crate::model::pages::NameLinkCoverage::Unavailable,
         }),
         summary: Some(Arc::from(summary)),
         docs: Arc::from([DocFragment::Text(Arc::from(summary))]),
@@ -85,6 +86,7 @@ pub(crate) fn page(name: &str) -> SymbolPage {
         signature: Known::Known(SignatureText {
             text: Arc::from(format!("pub enum {name}")),
             tokens: Arc::from([]),
+            name_link_coverage: crate::model::pages::NameLinkCoverage::Unavailable,
         }),
         docs: Arc::from([DocFragment::Text(Arc::from(format!(
             "The readable label of {name}.\n\nIt names one relation group."
@@ -102,6 +104,7 @@ pub(crate) fn page(name: &str) -> SymbolPage {
             }),
         },
         members: Known::Known(Members {
+            coverage: crate::model::pages::MembersCoverage::Complete,
             made_of: Arc::from([
                 member("Typed", DeclarationKind::Variant, "Typed(SemanticLinkKind)", "A relation whose kind is known."),
                 member("Related", DeclarationKind::Variant, "Related", "Related, and nothing more is known."),
@@ -151,6 +154,7 @@ pub(crate) fn dossier() -> PackageDossier {
         versions: Known::Unknown(unknown(GapReason::LocalProject)),
         dependencies: Known::Known(Arc::from([])),
         dependents: Known::Unknown(unknown(GapReason::LocalProject)),
+        observed_dependents: Arc::from([]),
         outline: Known::Known(OutlineTree {
             roots: Arc::from([
                 node("identity", DeclarationKind::Module, vec![node("Identity", DeclarationKind::Struct, vec![])]),
@@ -172,6 +176,9 @@ pub(crate) fn dossier() -> PackageDossier {
             complete: true,
         }),
         readme: Known::Unknown(unknown(GapReason::NotCaptured)),
+        readme_markdown: Known::unknown(GapReason::NotCaptured, "fixture has no Markdown source"),
+        readme_links: Known::unknown(GapReason::NotCaptured, "fixture has no link index"),
+        readme_headings: Known::unknown(GapReason::NotCaptured, "fixture has no heading index"),
     }
 }
 
@@ -204,12 +211,13 @@ impl PageReader for Fixture {
                 PageValue::Source(SourceView {
                     symbol: decl(&name, DeclarationKind::Enum),
                     file: Known::Known(Arc::from("glyph.rs")),
-                    text: Known::Known(SourceText {
-                        text: Arc::from(format!("// lead\npub enum {name} {{\n    Typed,\n}}\n// tail\n")),
-                        first_line: 137,
-                        origin: SourceOrigin::LocalFile,
-                        complete: true,
-                    }),
+                    editor_path: Known::unknown(GapReason::NotServed, "fixture has no editor authority"),
+                    text: Known::Known(SourceText::new(
+                        Arc::from(format!("// lead\npub enum {name} {{\n    Typed,\n}}\n// tail\n")),
+                        137,
+                        SourceOrigin::LocalFile,
+                        true,
+                    )),
                     declaration: Known::Known(LineSpan { first: 138, last: 140 }),
                     identifiers: Known::Known(Arc::from([])),
                     uses: Known::Known(Arc::from([])),

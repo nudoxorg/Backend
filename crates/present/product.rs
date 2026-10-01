@@ -1122,6 +1122,11 @@ fn owner_view(metadata: &RegistryMetadata<Box<[RegistryPackageRecord]>>) -> Prod
         RegistryMetadata::Recorded(records) => {
             ProductView::rows("owner", records.iter().map(owner_row).collect())
         }
+        RegistryMetadata::Partial { value, reason } => {
+            let mut view = ProductView::rows("owner", value.iter().map(owner_row).collect());
+            view.note = Some(format!("Partial coverage: {}", reason.as_str()));
+            view
+        }
         RegistryMetadata::NotRecorded(reason) => metadata_view("owner", metadata),
     }
 }
@@ -1150,6 +1155,11 @@ fn metadata_view(
 ) -> ProductView {
     match metadata {
         RegistryMetadata::Recorded(records) => ProductView::rows(heading, registry_rows(records)),
+        RegistryMetadata::Partial { value, reason } => {
+            let mut view = ProductView::rows(heading, registry_rows(value));
+            view.note = Some(format!("Partial coverage: {}", reason.as_str()));
+            view
+        }
         RegistryMetadata::NotRecorded(reason) => ProductView::refused(
             heading,
             Fault::new(
@@ -1894,6 +1904,52 @@ mod tests {
         RegistryReleaseMatchScope, RegistryReleaseStanding, RegistrySearchGroupKind,
         SemanticGenerationId, SemanticLanguageProfile, SemanticVersionFreshness,
     };
+
+    #[test]
+    fn partial_registry_metadata_keeps_coverage_in_cli_and_mcp_without_hiding_rows() {
+        let metadata = RegistryNativeMetadata::unavailable(RegistryEcosystem::Cargo, "test");
+        let record = RegistryPackageRecord {
+            coordinate: PackageReference::parse("pkg:cargo/proven@1.0.0").expect("coordinate"),
+            ecosystem: RegistryEcosystem::Cargo,
+            name: backend_library::ProductText::from_static("proven"),
+            version: backend_library::ProductText::from_static("1.0.0"),
+            bytes: 0,
+            standing: RegistryReleaseStanding::Available,
+            downloads: RegistryDownloadCount::Unavailable(RegistryFactAvailability::Unsupported),
+            facts_version: [0; 32],
+            authority: None,
+            native_metadata_version: metadata.identity().expect("metadata identity"),
+            native_metadata: metadata,
+            forge_sources: Box::new([]),
+            advisory: backend_library::AdvisoryPackageDto::unknown(),
+        };
+        let reply = SurfaceReply::Dependents(RegistryMetadata::Partial {
+            value: Box::new([record]),
+            reason: backend_library::ProductText::from_static(
+                "some source authorities were unresolved",
+            ),
+        });
+        let projected = product_view(&reply);
+        assert_eq!(projected.records().len(), 1);
+        assert!(
+            projected
+                .note()
+                .is_some_and(|note| note.contains("Partial coverage"))
+        );
+        assert!(crate::dto::ProductDto::new(&projected).note.is_some());
+
+        let markdown = crate::markdown::product(&projected);
+        let terminal = crate::text::product(&projected, crate::Theme::plain());
+        assert!(
+            markdown.contains("Partial coverage") && markdown.contains("pkg:cargo/proven@1.0.0")
+        );
+        assert!(
+            terminal.contains("Partial coverage") && terminal.contains("pkg:cargo/proven@1.0.0")
+        );
+        let dto = crate::dto::ProductDto::new(&projected);
+        assert_eq!(dto.records.len(), 1);
+        assert!(dto.note.is_some());
+    }
 
     #[test]
     fn index_search_cursor_projection_keeps_owner_family_and_projects_both_renderings() {

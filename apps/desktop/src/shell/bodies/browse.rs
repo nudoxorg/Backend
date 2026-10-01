@@ -3,12 +3,12 @@
 
 use super::state::{Shown, not_ready, shown};
 use super::{Ctx, Leaf, Pages};
-use crate::model::browse::{BrowseKey, BrowseValue, TreeModel};
+use crate::model::browse::{BrowseKey, BrowseValue, TreeDestination, TreeModel};
 use crate::model::pages::{PageKey, PackageRef, SearchQuery, SymbolRef};
 use crate::navigation::{BrowseRoute, CompareSet, Intent, OrbitRoute, Route, View};
 use crate::shell::kit::{package_route, symbol_route, symbol_view_route};
 use crate::shell::reader::Reader;
-use facet::browse::{Alert, AlertTone, LibraryModel, LibraryRole, LibraryRow, Twice, library};
+use facet::browse::{Alert, AlertTone, LibraryActions, LibraryModel, LibraryReleaseLink, LibraryRole, LibraryRow, Twice, library};
 use gpui::{Context, SharedString};
 use std::sync::Arc;
 use std::rc::Rc;
@@ -23,7 +23,14 @@ pub(super) fn body(route: &BrowseRoute, store: &Pages, ctx: &mut Ctx<'_>, cx: &m
         let value = match shown(&resource) { Shown::Ready(BrowseValue::Find(value)) => Some(value.as_ref()), _ => None };
         let model = match value {
             Some(value) => Arc::clone(&value.prepared),
-            None => Arc::new(facet::browse::find::Model { query: match route { BrowseRoute::Find(query) => query.text.to_string().into(), _ => "".into() }, candidates: vec![], loose: vec![], coverage: vec![], more_answers: false, loading: true }),
+            None => Arc::new(facet::browse::find::Model {
+                query: match route { BrowseRoute::Find(query) => query.text.to_string().into(), _ => "".into() },
+                candidates: vec![],
+                loose: vec![],
+                coverage: vec![],
+                more_answers: false,
+                loading: matches!(shown(&resource), Shown::Pending),
+            }),
         };
         // Find's reveal state lives in its native component. Its painted text
         // probes are the authority for what is visible in this frame.
@@ -37,7 +44,7 @@ pub(super) fn body(route: &BrowseRoute, store: &Pages, ctx: &mut Ctx<'_>, cx: &m
     match shown(&resource) {
         Shown::Ready(BrowseValue::Tree(tree)) => {
             let model = library_model(tree, ctx);
-            vec![Leaf::new(library("library", Arc::new(model), &ctx.measure))]
+            vec![Leaf::new(library("library", Arc::new(model), LibraryActions { open_package: open_package_action(ctx) }, &ctx.measure))]
         }
         Shown::Ready(BrowseValue::Compare(compare)) => {
             let model = Arc::clone(&compare.prepared);
@@ -147,17 +154,44 @@ fn library_model(tree: &TreeModel, ctx: &mut Ctx<'_>) -> LibraryModel {
     let roles = reading
         .roles
         .iter()
-        .map(|role| LibraryRole {
+        .enumerate()
+        .map(|(role_at, role)| LibraryRole {
             label: say(role.label),
             serving: role.serving.as_deref().map(&mut say),
             rows: role
                 .rows
                 .iter()
-                .map(|row| LibraryRow {
+                .enumerate()
+                .map(|(row_at, row)| LibraryRow {
                     name: say(&row.name),
                     at_rest: row.at_rest.as_deref().map(&mut say),
                     why: row.evidence.clone().into(),
                     about: row.description.clone().map(SharedString::from),
+                    releases: row.versions.iter().enumerate().map(|(version_at, version)| {
+                        let destination = tree.links.get(role_at)
+                            .filter(|links| links.role == role.id)
+                            .and_then(|links| links.rows.get(row_at))
+                            .filter(|links| links.name.as_ref() == row.name)
+                            .and_then(|links| links.releases.get(version_at))
+                            .filter(|link| link.version.as_ref() == version);
+                        match destination.map(|link| &link.destination) {
+                            Some(TreeDestination::Open(package)) => LibraryReleaseLink {
+                                version: version.clone().into(),
+                                target: Some(package.as_str().to_owned().into()),
+                                unavailable: None,
+                            },
+                            Some(TreeDestination::Unavailable(reason)) => LibraryReleaseLink {
+                                version: version.clone().into(),
+                                target: None,
+                                unavailable: Some(reason.to_string().into()),
+                            },
+                            None => LibraryReleaseLink {
+                                version: version.clone().into(),
+                                target: None,
+                                unavailable: Some("The source for this release was not resolved.".into()),
+                            },
+                        }
+                    }).collect(),
                 })
                 .collect(),
             brings: role.brings.as_deref().map(&mut say),

@@ -101,6 +101,10 @@ pub(crate) struct LineageKey {
     pub(crate) ecosystem: RegistryEcosystem,
     #[serde(deserialize_with = "deserialize_lineage")]
     pub(crate) lineage: String,
+    /// Canonical qualifier/subpath identity for an acquired lineage. Source
+    /// certificates alone cannot distinguish un-attributed registries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) coordinate_suffix: Option<String>,
 }
 
 impl LineageKey {
@@ -108,6 +112,11 @@ impl LineageKey {
         if self.lineage.is_empty()
             || self.lineage.len() > MAX_CURSOR_SORT_KEY_BYTES
             || self.lineage.chars().any(char::is_control)
+            || self.coordinate_suffix.as_ref().is_some_and(|suffix| {
+                suffix.is_empty()
+                    || suffix.len() > MAX_CURSOR_SORT_KEY_BYTES
+                    || suffix.chars().any(char::is_control)
+            })
             || self.source.ecosystem() != self.ecosystem
         {
             return Err("lineage key exceeds its bounds or has inconsistent authority".to_owned());
@@ -4548,6 +4557,7 @@ fn discovery_lineage_key(
         source: LineageSearchSource::Discovery(source.clone()),
         ecosystem,
         lineage: lineage.to_owned(),
+        coordinate_suffix: None,
     }
 }
 
@@ -4566,13 +4576,16 @@ pub(crate) fn lineage_sort_key(key: &LineageKey) -> String {
             if source.is_some() { "1" } else { "0" },
         ),
     };
-    format!(
+    let base = format!(
         "{source_kind}\u{1f}{}\u{1f}{}\u{1f}{authority_marker}\u{1f}{}:{}",
         key.ecosystem.as_str(),
         hex(&source_id),
         key.lineage.len(),
         key.lineage,
-    )
+    );
+    key.coordinate_suffix.as_ref().map_or_else(|| base.clone(), |suffix| {
+        format!("{base}\u{1f}{}:{suffix}", suffix.len())
+    })
 }
 
 impl<K: Clone> TextSearchIndex<K> {

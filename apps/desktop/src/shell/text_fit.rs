@@ -162,6 +162,10 @@ pub(crate) struct CodeLine {
     pub continued: bool,
     /// The text, hanging indent included.
     pub text: String,
+    /// The source-line byte interval represented by this visual line.
+    pub source_range: Range<usize>,
+    /// Byte offset where highlighted source text begins after a hanging indent.
+    pub text_offset: usize,
     /// Highlight runs, in this text's byte offsets.
     pub runs: Vec<(Range<usize>, HighlightStyle)>,
 }
@@ -196,7 +200,11 @@ pub(crate) fn wrap_code(text: &str, runs: &[(Range<usize>, HighlightStyle)], col
         let mut start = 0;
         let mut first = true;
         loop {
-            let room = if first { columns } else { columns.saturating_sub(hang.len()).max(8) };
+            let room = if first {
+                columns
+            } else {
+                columns.saturating_sub(hang.len()).max(1)
+            };
             let rest = &line[start..];
             let (piece_end, done) = if rest.chars().count() <= room {
                 (line.len(), true)
@@ -219,6 +227,8 @@ pub(crate) fn wrap_code(text: &str, runs: &[(Range<usize>, HighlightStyle)], col
                 source,
                 continued: !first,
                 text: format!("{prefix}{piece_text}"),
+                source_range: start + trimmed..piece_end,
+                text_offset: shift,
                 runs,
             });
             if done {
@@ -296,5 +306,22 @@ mod tests {
             .flat_map(|line| line.runs.iter().map(move |(range, _)| line.text[range.clone()].to_owned()))
             .collect::<Vec<_>>();
         assert_eq!(marked.concat(), "RelationLabel");
+    }
+
+    #[test]
+    fn wrapped_code_preserves_exact_source_byte_ranges() {
+        let text = "αβ  RelationLabel::new()";
+        let lines = wrap_code(text, &[], 8);
+        let recovered = lines
+            .iter()
+            .map(|line| &text[line.source_range.clone()])
+            .collect::<String>();
+        assert_eq!(recovered, text);
+        for line in &lines {
+            assert_eq!(
+                &line.text[line.text_offset..],
+                &text[line.source_range.clone()]
+            );
+        }
     }
 }

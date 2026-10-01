@@ -21,13 +21,14 @@
 //! thread only ever receives finished models.
 
 use super::actor::{ActorStartError, CancellationToken};
+use super::liveness::{report_if_dead, transport_break};
 use super::page_mapping::{self, OutlineIndex, PackageInputs, SymbolInputs};
 use super::wake::{WakeReceiver, WakeSender, wake_channel};
 use crate::core::{ErrorValue, FaultCode, LocalProjectId};
 use crate::model::local_package::LocalPackageLoader;
 use crate::model::pages::{
-    Gap, GapReason, Generation, PackageRef, PageKey, PageValue, ReadFailure, SearchContinuation, SearchQuery,
-    SymbolRef,
+    Gap, GapReason, Generation, PackageRef, PageKey, PageValue, ReadFailure, SearchContinuation,
+    SearchQuery, SymbolRef,
 };
 use backend_client::{ClientError, Session};
 use backend_library::{
@@ -169,7 +170,9 @@ pub struct ReadContext<'a> {
 
 impl std::fmt::Debug for ReadContext<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ReadContext").field("worker", &self.worker).finish_non_exhaustive()
+        f.debug_struct("ReadContext")
+            .field("worker", &self.worker)
+            .finish_non_exhaustive()
     }
 }
 
@@ -177,7 +180,9 @@ impl ReadContext<'_> {
     /// Delivers a partial page only while this read still owns its request.
     pub fn publish(&self, value: PageValue) {
         if !self.cancel.is_cancelled() {
-            if let Some(progress) = self.progress { progress(value); }
+            if let Some(progress) = self.progress {
+                progress(value);
+            }
         }
     }
 }
@@ -209,12 +214,22 @@ impl OutlineCache {
     }
 
     /// Stores an outline, evicting the least recently used.
-    pub fn put(&self, package: PackageRef, root: ViewStateRoot, index: Arc<OutlineIndex>, bytes: usize) {
-        if !index.is_complete() || bytes > Self::MAX_BYTES { return; }
+    pub fn put(
+        &self,
+        package: PackageRef,
+        root: ViewStateRoot,
+        index: Arc<OutlineIndex>,
+        bytes: usize,
+    ) {
+        if !index.is_complete() || bytes > Self::MAX_BYTES {
+            return;
+        }
         let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
         entries.retain(|(cached, _, _, _)| *cached != package);
         entries.push_front((package, root, index, bytes));
-        while entries.len() > Self::CAPACITY || entries.iter().map(|entry| entry.3).sum::<usize>() > Self::MAX_BYTES {
+        while entries.len() > Self::CAPACITY
+            || entries.iter().map(|entry| entry.3).sum::<usize>() > Self::MAX_BYTES
+        {
             entries.pop_back();
         }
     }
@@ -231,16 +246,27 @@ fn outline_row_bytes(row: &Row) -> usize {
             Fragment::Link { label, .. } => label.len(),
             Fragment::Break => 0,
         };
-        used.saturating_add(std::mem::size_of::<Fragment>()).saturating_add(text)
+        used.saturating_add(std::mem::size_of::<Fragment>())
+            .saturating_add(text)
     });
-    let text = row.label.len()
-        .saturating_add(row.identity_preimage().map_or(0, |value| value.as_str().len()))
+    let text = row
+        .label
+        .len()
+        .saturating_add(
+            row.identity_preimage()
+                .map_or(0, |value| value.as_str().len()),
+        )
         .saturating_add(row.signature.as_ref().map_or(0, String::len))
         .saturating_add(row.source.file_path().map_or(0, str::len))
-        .saturating_add(match &row.excerpt { SourceExcerpt::Captured { text, .. } => text.len(), _ => 0 })
+        .saturating_add(match &row.excerpt {
+            SourceExcerpt::Captured { text, .. } => text.len(),
+            _ => 0,
+        })
         .saturating_add(row.facts.text_bytes())
         .saturating_add(fragments);
-    std::mem::size_of::<Row>().saturating_add(512).saturating_add(text.saturating_mul(4))
+    std::mem::size_of::<Row>()
+        .saturating_add(512)
+        .saturating_add(text.saturating_mul(4))
 }
 
 /// The job one worker is running: its key, generation, and token.
@@ -363,18 +389,27 @@ impl ReadPool {
         }
         if queue.jobs.len() >= MAX_QUEUED_READS {
             let victim = (job.priority == Priority::Normal)
-                .then(|| queue.jobs.iter().position(|queued| queued.priority == Priority::Prefetch))
+                .then(|| {
+                    queue
+                        .jobs
+                        .iter()
+                        .position(|queued| queued.priority == Priority::Prefetch)
+                })
                 .flatten();
             if let Some(victim) = victim.and_then(|at| queue.jobs.remove(at)) {
                 victim.cancel.cancel();
-                self.shared.results.lock().unwrap_or_else(PoisonError::into_inner).push_back(ReadOutcome {
-                    key: victim.key,
-                    generation: victim.generation,
-                    worker: usize::MAX,
-                    priority: victim.priority,
-                    complete: true,
-                    result: Err(ReadFailure::Cancelled),
-                });
+                self.shared
+                    .results
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push_back(ReadOutcome {
+                        key: victim.key,
+                        generation: victim.generation,
+                        worker: usize::MAX,
+                        priority: victim.priority,
+                        complete: true,
+                        result: Err(ReadFailure::Cancelled),
+                    });
                 self.shared.wake.wake();
             } else {
                 return false;
@@ -494,7 +529,11 @@ fn run_worker<R: PageReader>(worker: usize, mut reader: R, shared: &Shared) {
                 }
                 if let Some(job) = next_job(&mut queue, worker) {
                     if let Some(slot) = queue.running.get_mut(worker) {
-                        *slot = Some(RunningJob { key: job.key.clone(), generation: job.generation, cancel: job.cancel.clone() });
+                        *slot = Some(RunningJob {
+                            key: job.key.clone(),
+                            generation: job.generation,
+                            cancel: job.cancel.clone(),
+                        });
                     }
                     break job;
                 }
@@ -508,14 +547,18 @@ fn run_worker<R: PageReader>(worker: usize, mut reader: R, shared: &Shared) {
             Err(ReadFailure::Cancelled)
         } else {
             let publish = |value| {
-                shared.results.lock().unwrap_or_else(PoisonError::into_inner).push_back(ReadOutcome {
-                    key: job.key.clone(),
-                    generation: job.generation,
-                    worker,
-                    priority: job.priority,
-                    complete: false,
-                    result: Ok(value),
-                });
+                shared
+                    .results
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push_back(ReadOutcome {
+                        key: job.key.clone(),
+                        generation: job.generation,
+                        worker,
+                        priority: job.priority,
+                        complete: false,
+                        result: Ok(value),
+                    });
                 shared.wake.wake();
             };
             let context = ReadContext {
@@ -537,9 +580,10 @@ fn run_worker<R: PageReader>(worker: usize, mut reader: R, shared: &Shared) {
                 )))
             })
         };
-        let result = match result {
-            Ok(_) if job.cancel.is_cancelled() => Err(ReadFailure::Cancelled),
-            other => other,
+        let result = if job.cancel.is_cancelled() {
+            Err(ReadFailure::Cancelled)
+        } else {
+            result
         };
         {
             let mut queue = shared.queue();
@@ -577,6 +621,8 @@ pub struct SessionEngine {
     session_epoch: Option<super::owner::Epoch>,
     /// The owner this engine waits for on the read worker before use (I1).
     gate: Option<super::owner::OwnerGate>,
+    /// The read job currently using this worker-owned session.
+    cancel: Option<CancellationToken>,
 }
 
 impl std::fmt::Debug for SessionEngine {
@@ -597,6 +643,7 @@ impl SessionEngine {
             session: None,
             session_epoch: None,
             gate: None,
+            cancel: None,
         }
     }
 
@@ -610,14 +657,34 @@ impl SessionEngine {
         }
     }
 
+    fn wait_for_owner(
+        &self,
+        gate: &super::owner::OwnerGate,
+    ) -> Result<(), super::owner::OwnerFault> {
+        match &self.cancel {
+            Some(cancel) => gate.wait_cancelled(cancel),
+            None => gate.wait(),
+        }
+    }
+
     fn with_session<T>(
         &mut self,
         mut operation: impl FnMut(&mut Session) -> Result<T, ClientError>,
     ) -> Result<T, ClientError> {
+        if self
+            .cancel
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+        {
+            return Err(ClientError::Io(
+                "read was cancelled before connecting".to_owned(),
+            ));
+        }
         let mut ready_epoch = None;
         if let Some(gate) = &self.gate {
-            gate.wait()
-                .map_err(|message| ClientError::Io(format!("the index could not start: {message}")))?;
+            self.wait_for_owner(gate).map_err(|message| {
+                ClientError::Io(format!("the index could not start: {message}"))
+            })?;
             ready_epoch = gate.attached_ready_epoch();
             if self.session_epoch != ready_epoch {
                 self.session = None;
@@ -625,10 +692,20 @@ impl SessionEngine {
             }
         }
         for attempt in 0..2 {
+            if self
+                .cancel
+                .as_ref()
+                .is_some_and(CancellationToken::is_cancelled)
+            {
+                return Err(ClientError::Io(
+                    "read was cancelled before retrying".to_owned(),
+                ));
+            }
             if self.session.is_none() {
                 if let Some(gate) = &self.gate {
-                    gate.wait()
-                        .map_err(|message| ClientError::Io(format!("the index could not start: {message}")))?;
+                    self.wait_for_owner(gate).map_err(|message| {
+                        ClientError::Io(format!("the index could not start: {message}"))
+                    })?;
                     ready_epoch = gate.attached_ready_epoch();
                 }
                 match Session::connect(&self.endpoint) {
@@ -638,7 +715,18 @@ impl SessionEngine {
                     }
                     Err(error) if attempt == 0 && transport_break(&error) => continue,
                     Err(error) => {
-                        self.signal_if_dead(ready_epoch, &error);
+                        if !self
+                            .cancel
+                            .as_ref()
+                            .is_some_and(CancellationToken::is_cancelled)
+                        {
+                            let _ = report_if_dead(
+                                self.gate.as_ref(),
+                                ready_epoch,
+                                &self.endpoint,
+                                &error,
+                            );
+                        }
                         return Err(error);
                     }
                 }
@@ -656,7 +744,18 @@ impl SessionEngine {
                     if transport_break(&error) {
                         self.session = None;
                         self.session_epoch = None;
-                        self.signal_if_dead(ready_epoch, &error);
+                        if !self
+                            .cancel
+                            .as_ref()
+                            .is_some_and(CancellationToken::is_cancelled)
+                        {
+                            let _ = report_if_dead(
+                                self.gate.as_ref(),
+                                ready_epoch,
+                                &self.endpoint,
+                                &error,
+                            );
+                        }
                     }
                     return Err(error);
                 }
@@ -667,35 +766,22 @@ impl SessionEngine {
             "the local session could not be re-established".to_owned(),
         ))
     }
+}
 
-    fn signal_if_dead(&self, ready_epoch: Option<super::owner::Epoch>, terminal: &ClientError) {
-        let (Some(gate), Some(epoch)) = (&self.gate, ready_epoch) else { return; };
-        if !transport_break(terminal) { return; }
-        // A failed page query is not proof that a healthy owner died. Probe a
-        // fresh session on this worker; only independent transport failure
-        // changes the gate and exposes Retry in the window.
-        let liveness = Session::connect(&self.endpoint).and_then(|mut session| session.revision()).map(|_| ());
-        let _ = confirm_attached_loss(gate, epoch, terminal, liveness);
+/// The page composer owns this narrow job lifecycle. Fixture engines may
+/// ignore it; the production session binds it to every owner wait.
+pub trait ReadEngine: Engine + Send + 'static {
+    /// Binds the cancellation state of one page read, or clears it afterward.
+    fn set_cancellation(&mut self, _cancel: Option<CancellationToken>) {}
+}
+
+impl ReadEngine for SessionEngine {
+    fn set_cancellation(&mut self, cancel: Option<CancellationToken>) {
+        self.cancel = cancel;
     }
 }
 
-fn transport_break(error: &ClientError) -> bool {
-    matches!(error, ClientError::Disconnected(_) | ClientError::Io(_) | ClientError::Transport(_) | ClientError::RemoteDeadlineExceeded)
-}
-
-fn confirm_attached_loss(
-    gate: &super::owner::OwnerGate,
-    epoch: super::owner::Epoch,
-    terminal: &ClientError,
-    liveness: Result<(), ClientError>,
-) -> bool {
-    if !transport_break(terminal) || !liveness.is_err_and(|error| transport_break(&error)) {
-        return false;
-    }
-    gate.attached_lost_at(epoch, Arc::from(terminal.to_string()))
-}
-
-const fn read_only(command: &SurfaceCommand) -> bool {
+pub(crate) const fn read_only(command: &SurfaceCommand) -> bool {
     matches!(
         command,
         SurfaceCommand::Advisory { .. }
@@ -779,7 +865,10 @@ impl Engine for SessionEngine {
         let name = super::trace::enabled().then(|| format!("{command:?}"));
         let reply = self.with_session(|session| session.surface(command.clone()));
         if let Some(name) = name {
-            let variant = name.split(|c: char| !c.is_alphanumeric()).next().unwrap_or("surface");
+            let variant = name
+                .split(|c: char| !c.is_alphanumeric())
+                .next()
+                .unwrap_or("surface");
             super::trace::span("surface", asking, variant);
         }
         reply
@@ -809,7 +898,10 @@ impl SessionReader<SessionEngine> {
     /// A reader whose first connect waits for the owner, on its worker.
     #[must_use]
     pub fn gated(endpoint: impl AsRef<Path>, gate: super::owner::OwnerGate) -> Self {
-        Self::new(SessionEngine::gated(endpoint, gate), LocalPackageLoader::default())
+        Self::new(
+            SessionEngine::gated(endpoint, gate),
+            LocalPackageLoader::default(),
+        )
     }
 }
 
@@ -821,13 +913,14 @@ impl<E: Engine + Send + 'static> SessionReader<E> {
     }
 }
 
-impl<E: Engine + Send + 'static> PageReader for SessionReader<E> {
+impl<E: ReadEngine> PageReader for SessionReader<E> {
     fn read(
         &mut self,
         request: &ReadRequest,
         context: &ReadContext<'_>,
     ) -> Result<PageValue, ReadFailure> {
-        match request {
+        self.engine.set_cancellation(Some(context.cancel.clone()));
+        let result = (|| match request {
             ReadRequest::Symbol(symbol) => compose_symbol(&mut self.engine, symbol, context),
             ReadRequest::Source(symbol) => compose_source(&mut self.engine, symbol, context),
             ReadRequest::Package(package) => {
@@ -848,21 +941,33 @@ impl<E: Engine + Send + 'static> PageReader for SessionReader<E> {
                 .map(|report| PageValue::Health(page_mapping::health_model(&report)))
                 .map_err(|error| failure(&error)),
             ReadRequest::Browse(key) => match key {
-                crate::model::browse::BrowseKey::Tree(_) => super::browse_reads::compose(&mut self.engine, key),
-                crate::model::browse::BrowseKey::FindHome => compose_find(&mut self.engine, None, context)
-                    .map(|page| PageValue::Browse(crate::model::browse::BrowseValue::Find(Arc::new(page)))),
-                crate::model::browse::BrowseKey::Find(query) => compose_find(&mut self.engine, Some(query), context)
-                    .map(|page| PageValue::Browse(crate::model::browse::BrowseValue::Find(Arc::new(page)))),
+                crate::model::browse::BrowseKey::Tree(_) => {
+                    super::browse_reads::compose(&mut self.engine, key)
+                }
+                crate::model::browse::BrowseKey::FindHome => {
+                    compose_find(&mut self.engine, None, context).map(|page| {
+                        PageValue::Browse(crate::model::browse::BrowseValue::Find(Arc::new(page)))
+                    })
+                }
+                crate::model::browse::BrowseKey::Find(query) => {
+                    compose_find(&mut self.engine, Some(query), context).map(|page| {
+                        PageValue::Browse(crate::model::browse::BrowseValue::Find(Arc::new(page)))
+                    })
+                }
                 crate::model::browse::BrowseKey::Compare(selection) => {
                     let mut packages = Vec::with_capacity(selection.packages().len());
                     let mut apis = Vec::with_capacity(selection.packages().len());
                     for package in selection.packages() {
                         check(context.cancel)?;
-                        let PageValue::Package(dossier) = compose_package(&mut self.engine, &self.loader, package, context)? else {
+                        let PageValue::Package(dossier) =
+                            compose_package(&mut self.engine, &self.loader, package, context)?
+                        else {
                             return Err(shape("compare package"));
                         };
                         let api = match outline(&mut self.engine, package, context) {
-                            Ok(index) => crate::model::pages::Known::Known(index.comparison_api(package)),
+                            Ok(index) => {
+                                crate::model::pages::Known::Known(index.comparison_api(package))
+                            }
                             Err(gap) => crate::model::pages::Known::Unknown(gap),
                         };
                         check(context.cancel)?;
@@ -870,12 +975,20 @@ impl<E: Engine + Send + 'static> PageReader for SessionReader<E> {
                         apis.push(api);
                     }
                     let prepared = Arc::new(super::browse_views::prepare_compare(&packages, &apis));
-                    Ok(PageValue::Browse(crate::model::browse::BrowseValue::Compare(Arc::new(
-                        crate::model::browse::CompareModel { packages: packages.into(), apis: apis.into(), prepared },
-                    ))))
+                    Ok(PageValue::Browse(
+                        crate::model::browse::BrowseValue::Compare(Arc::new(
+                            crate::model::browse::CompareModel {
+                                packages: packages.into(),
+                                apis: apis.into(),
+                                prepared,
+                            },
+                        )),
+                    ))
                 }
             },
-        }
+        })();
+        self.engine.set_cancellation(None);
+        result
     }
 }
 
@@ -891,9 +1004,10 @@ pub fn failure(error: &ClientError) -> ReadFailure {
         ClientError::CommandFailed(_) | ClientError::Protocol(_) | ClientError::IncoherentView => {
             FaultCode::Protocol
         }
-        ClientError::Disconnected(_) | ClientError::Io(_) | ClientError::Transport(_) | ClientError::RemoteDeadlineExceeded => {
-            FaultCode::Transport
-        }
+        ClientError::Disconnected(_)
+        | ClientError::Io(_)
+        | ClientError::Transport(_)
+        | ClientError::RemoteDeadlineExceeded => FaultCode::Transport,
         ClientError::BasisMismatch { .. }
         | ClientError::FreshnessMismatch
         | ClientError::RequestMismatch { .. }
@@ -938,14 +1052,18 @@ fn verify_release_origin(origin: Option<&str>, viewed: &PackageRef) -> Result<()
         }
         return Ok(());
     };
-    let refused = || ReadFailure::Fault(ErrorValue::new(
-        FaultCode::Missing,
-        "This release could not be verified against its pinned Cargo source and local registry authority",
-    ));
+    let refused = || {
+        ReadFailure::Fault(ErrorValue::new(
+            FaultCode::Missing,
+            "This release could not be verified against its pinned Cargo source and local registry authority",
+        ))
+    };
     let pinned = PackageRef::parse(origin).map_err(|_| refused())?;
     let pinned_release = pinned.verify_registry_manifest().ok_or_else(refused)?;
     let viewed_release = viewed.verify_registry_manifest().ok_or_else(refused)?;
-    if pinned_release.name != viewed_release.name { return Err(refused()); }
+    if pinned_release.name != viewed_release.name {
+        return Err(refused());
+    }
     let composition = crate::host::registry::composed().ok_or_else(refused)?;
     if composition.source.release_of(Path::new(pinned.as_str())) != Some(pinned_release)
         || composition.source.release_of(Path::new(viewed.as_str())) != Some(viewed_release)
@@ -1029,7 +1147,9 @@ fn outline(
             retained_bytes += bytes;
             rows.push(row.clone());
         }
-        if capped { break; }
+        if capped {
+            break;
+        }
         match page.terminal {
             PageTerminal::Complete => {
                 complete = true;
@@ -1040,7 +1160,11 @@ fn outline(
         }
     }
     let index = Arc::new(OutlineIndex::new(rows, complete));
-    if complete { context.outlines.put(package.clone(), root, Arc::clone(&index), retained_bytes); }
+    if complete {
+        context
+            .outlines
+            .put(package.clone(), root, Arc::clone(&index), retained_bytes);
+    }
     Ok(index)
 }
 
@@ -1146,28 +1270,7 @@ fn compose_symbol(
     let references = references(engine, symbol);
     check(context.cancel)?;
     let reading_outline = Err(Gap::new(GapReason::Stale, "Reading the package outline"));
-    context.publish(PageValue::Symbol(page_mapping::symbol_page(&SymbolInputs {
-        coordinate: symbol,
-        document: &document,
-        related: related.as_ref().map(|hood| page_mapping::Neighbourhood {
-            rows: &hood.rows,
-            relations: hood.relations.as_deref(),
-            rich: hood.rich.as_ref(),
-        }).map_err(Clone::clone),
-        references: references.as_ref(),
-        outline: reading_outline,
-    })));
-    let outline = symbol.package().map_or_else(
-        || {
-            Err(Gap::new(
-                GapReason::NotCaptured,
-                "the coordinate does not spell its package",
-            ))
-        },
-        |package| outline(engine, &package, context),
-    );
-    check(context.cancel)?;
-    let mut page = page_mapping::symbol_page(
+    context.publish(PageValue::Symbol(page_mapping::symbol_page(
         &SymbolInputs {
             coordinate: symbol,
             document: &document,
@@ -1180,9 +1283,33 @@ fn compose_symbol(
                 })
                 .map_err(Clone::clone),
             references: references.as_ref(),
-            outline: outline.as_deref().map_err(Clone::clone),
+            outline: reading_outline,
         },
+    )));
+    let outline = symbol.package().map_or_else(
+        || {
+            Err(Gap::new(
+                GapReason::NotCaptured,
+                "the coordinate does not spell its package",
+            ))
+        },
+        |package| outline(engine, &package, context),
     );
+    check(context.cancel)?;
+    let mut page = page_mapping::symbol_page(&SymbolInputs {
+        coordinate: symbol,
+        document: &document,
+        related: related
+            .as_ref()
+            .map(|hood| page_mapping::Neighbourhood {
+                rows: &hood.rows,
+                relations: hood.relations.as_deref(),
+                rich: hood.rich.as_ref(),
+            })
+            .map_err(Clone::clone),
+        references: references.as_ref(),
+        outline: outline.as_deref().map_err(Clone::clone),
+    });
     // Your own files at each use's span: read here, on the worker, so the page
     // lands with its lines and nothing reads them again on the UI thread.
     if let Some(sites) = page.references.known() {
@@ -1193,20 +1320,31 @@ fn compose_symbol(
 
 /// Reads a local project file for the source view. Only a local package's
 /// own files are read, and only by package-relative path.
-fn local_file(package: &PackageRef, path: &str) -> Option<String> {
-    if !package.is_local() || path.split(['/', '\\']).any(|part| part == "..") {
+struct LocalSourceFile {
+    text: String,
+    editor_path_hint: Option<String>,
+}
+
+const MAX_LOCAL_SOURCE_FILE_BYTES: u64 = 4 * 1024 * 1024;
+
+fn local_file(package: &PackageRef, path: &str) -> Option<LocalSourceFile> {
+    if !package.is_local() {
         return None;
     }
     let root = Path::new(package.as_str());
     if !root.is_absolute() {
         return None;
     }
-    let file = root.join(path);
-    let metadata = std::fs::metadata(&file).ok()?;
-    if !metadata.is_file() || metadata.len() > 4 * 1024 * 1024 {
-        return None;
-    }
-    std::fs::read_to_string(file).ok()
+    let (text, editor_path) = crate::model::local_package::files::read_text_under(
+        root,
+        Path::new(path),
+        MAX_LOCAL_SOURCE_FILE_BYTES,
+    )
+    .ok()?;
+    Some(LocalSourceFile {
+        text,
+        editor_path_hint: editor_path.and_then(|path| path.to_str().map(str::to_owned)),
+    })
 }
 
 fn compose_source(
@@ -1227,14 +1365,17 @@ fn compose_source(
     let outline_index = outline.as_ref().and_then(|result| result.as_ref().ok());
     let references =
         page_mapping::references(references_reply.as_ref(), outline_index.map(AsRef::as_ref));
-    let text = match (&package, document.location.captured()) {
+    let local_file = match (&package, document.location.captured()) {
         (Some(package), Some(location)) => local_file(package, location.path()),
         _ => None,
     };
     Ok(PageValue::Source(page_mapping::source_view(
         symbol,
         &document,
-        text.as_deref(),
+        local_file.as_ref().map(|file| file.text.as_str()),
+        local_file
+            .as_ref()
+            .and_then(|file| file.editor_path_hint.as_deref()),
         &references,
         outline_index.map(AsRef::as_ref),
     )))
@@ -1253,7 +1394,10 @@ fn compose_package(
     if package.is_local() && !Path::new(package.as_str()).is_dir() {
         return Err(ReadFailure::Fault(ErrorValue::new(
             FaultCode::Missing,
-            format!("This package source is no longer on this machine: {}", package.as_str()),
+            format!(
+                "This package source is no longer on this machine: {}",
+                package.as_str()
+            ),
         )));
     }
     let reference = package.reference().clone();
@@ -1296,15 +1440,17 @@ fn compose_package(
     {
         return Err(failure(error));
     }
-    context.publish(PageValue::Package(page_mapping::package_dossier(&PackageInputs {
-        package,
-        records: records.as_ref(),
-        versions: versions.as_ref(),
-        dependencies: dependencies.as_ref(),
-        dependents: dependents.as_ref(),
-        outline: Err(Gap::new(GapReason::Stale, "Reading the package outline")),
-        local: local.as_ref(),
-    })));
+    context.publish(PageValue::Package(page_mapping::package_dossier(
+        &PackageInputs {
+            package,
+            records: records.as_ref(),
+            versions: versions.as_ref(),
+            dependencies: dependencies.as_ref(),
+            dependents: dependents.as_ref(),
+            outline: Err(Gap::new(GapReason::Stale, "Reading the package outline")),
+            local: local.as_ref(),
+        },
+    )));
     let outline = outline(engine, package, context);
     check(context.cancel)?;
     Ok(PageValue::Package(page_mapping::package_dossier(
@@ -1362,16 +1508,28 @@ fn compose_find(
             Err(ReadFailure::Cancelled) => return Err(ReadFailure::Cancelled),
             Err(error) => Known::Unknown(Gap::new(GapReason::ReadFailed, format!("{error:?}"))),
         },
-        None => Known::unknown(GapReason::NotCaptured, "Enter a name to find indexed declarations."),
+        None => Known::unknown(
+            GapReason::NotCaptured,
+            "Enter a name to find indexed declarations.",
+        ),
     };
     check(context.cancel)?;
     let indexed = engine.probe(Probe::Packages);
     check(context.cancel)?;
-    let query_text = query.map(|query| ProductText::new(query.text.to_string())).transpose().map_err(|_| shape("find query"))?;
-    let catalog = engine.surface(SurfaceCommand::Explore { query: query_text, limit: EXPLORE_LIMIT });
+    let query_text = query
+        .map(|query| ProductText::new(query.text.to_string()))
+        .transpose()
+        .map_err(|_| shape("find query"))?;
+    let catalog = engine.surface(SurfaceCommand::Explore {
+        query: query_text,
+        limit: EXPLORE_LIMIT,
+    });
     check(context.cancel)?;
     let indexed_rows = match &indexed {
-        Ok(reply) => match &reply.reply { CommandReply::Packages(rows) => Some(rows.root.rows().iter().collect::<Vec<_>>()), _ => None },
+        Ok(reply) => match &reply.reply {
+            CommandReply::Packages(rows) => Some(rows.root.rows().iter().collect::<Vec<_>>()),
+            _ => None,
+        },
         Err(_) => None,
     };
     let catalog_rows = match &catalog {
@@ -1379,11 +1537,19 @@ fn compose_find(
         _ => None,
     };
     let registry = crate::host::registry::composed();
-    let packages = super::browse_reads::find_packages(query.map_or("", |query| query.text.as_ref()), indexed_rows.as_deref().unwrap_or_default(), catalog_rows.unwrap_or_default(), registry.as_ref().map(|composed| composed.source.as_ref()));
+    let packages = super::browse_reads::find_packages(
+        query.map_or("", |query| query.text.as_ref()),
+        indexed_rows.as_deref().unwrap_or_default(),
+        catalog_rows.unwrap_or_default(),
+        registry.as_ref().map(|composed| composed.source.as_ref()),
+    );
     let package_coverage = if indexed_rows.is_some() && catalog_rows.is_some() {
         Known::Known(())
     } else {
-        Known::Unknown(Gap::new(GapReason::Unavailable, "Some package sources could not answer; these are the matches available locally."))
+        Known::Unknown(Gap::new(
+            GapReason::Unavailable,
+            "Some package sources could not answer; these are the matches available locally.",
+        ))
     };
     let prepared = Arc::new(super::browse_views::prepare_find(
         query.map_or("", |query| query.text.as_ref()),
@@ -1391,14 +1557,26 @@ fn compose_find(
         &packages,
         &package_coverage,
     ));
-    Ok(FindModel { answers, packages: packages.into(), package_coverage, prepared })
+    Ok(FindModel {
+        answers,
+        packages: packages.into(),
+        package_coverage,
+        prepared,
+    })
 }
 
-fn compose_orbit(engine: &mut dyn Engine, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
-    let packages = engine.probe(Probe::Packages).and_then(|reply| match reply.reply {
-        CommandReply::Packages(snapshot) => Ok(snapshot),
-        _ => Err(ClientError::Protocol("the packages reply changed shape".to_owned())),
-    });
+fn compose_orbit(
+    engine: &mut dyn Engine,
+    context: &ReadContext<'_>,
+) -> Result<PageValue, ReadFailure> {
+    let packages = engine
+        .probe(Probe::Packages)
+        .and_then(|reply| match reply.reply {
+            CommandReply::Packages(snapshot) => Ok(snapshot),
+            _ => Err(ClientError::Protocol(
+                "the packages reply changed shape".to_owned(),
+            )),
+        });
     check(context.cancel)?;
     let projects = engine.surface(SurfaceCommand::Projects);
     check(context.cancel)?;
@@ -1425,33 +1603,38 @@ fn compose_orbit(engine: &mut dyn Engine, context: &ReadContext<'_>) -> Result<P
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::model::pages::{HealthModel, IngestModel};
     use crate::model::ServiceMode;
+    use crate::model::pages::{HealthModel, IngestModel};
     use crate::runtime::owner::{OwnerFault, OwnerGate, OwnerState};
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
     #[test]
-    fn a_query_fault_needs_an_independent_loss_before_failing_an_attachment() {
-        let gate = OwnerGate::ready(crate::core::VersionedRoot::unserved(), ServiceMode::Attached);
-        let epoch = gate.attached_ready_epoch().expect("attached generation");
-        let query = ClientError::Io("query failed".to_owned());
-        assert!(!confirm_attached_loss(&gate, epoch, &query, Ok(())));
-        assert!(matches!(gate.state(), OwnerState::Ready { .. }), "a healthy independent probe keeps the owner ready");
-
-        assert!(confirm_attached_loss(
-            &gate,
-            epoch,
-            &query,
-            Err(ClientError::Io("independent probe failed".to_owned())),
-        ));
-        assert!(matches!(gate.state(), OwnerState::Failed(OwnerFault::Lost(_))));
-        assert!(!confirm_attached_loss(
-            &gate,
-            epoch,
-            &query,
-            Err(ClientError::Io("late probe failed".to_owned())),
-        ), "a stale result cannot fail a later owner generation");
+    fn closing_the_read_pool_wakes_a_page_waiting_for_owner_startup() {
+        let gate = super::super::owner::OwnerGate::starting();
+        let worker_gate = gate.clone();
+        let pool = ReadPool::start(1, move |_| {
+            SessionReader::gated(
+                "/tmp/nudox-no-owner-for-page-cancellation.sock",
+                worker_gate.clone(),
+            )
+        })
+        .expect("read pool");
+        assert!(pool.submit(ReadJob {
+            key: PageKey::Health,
+            request: ReadRequest::Health,
+            generation: Generation::new(1),
+            priority: Priority::Normal,
+            cancel: CancellationToken::new(),
+            affinity: None,
+        }));
+        crate::runtime::wait::until("page entered the owner wait", || pool.running() == 1);
+        let (sent, received) = mpsc::channel();
+        std::thread::spawn(move || sent.send(drop(pool)).expect("read pool closed"));
+        received
+            .recv_timeout(Duration::from_secs(1))
+            .expect("pool shutdown did not wait for the owner's 60-second patience");
+        assert_eq!(gate.state(), super::super::owner::OwnerState::Starting);
     }
 
     #[test]
@@ -1460,12 +1643,33 @@ mod tests {
         let root = backend_library::view_state_root(&[("outline".to_owned(), "cache".to_owned())]);
         let first = PackageRef::parse("pkg:cargo/first@1.0.0").expect("first");
         let second = PackageRef::parse("pkg:cargo/second@1.0.0").expect("second");
-        cache.put(first.clone(), root, Arc::new(OutlineIndex::new(Vec::new(), true)), 20 * 1024 * 1024);
-        cache.put(second.clone(), root, Arc::new(OutlineIndex::new(Vec::new(), true)), 20 * 1024 * 1024);
-        assert!(cache.get(&first, root).is_none(), "the combined retained cost exceeds the cache budget");
+        cache.put(
+            first.clone(),
+            root,
+            Arc::new(OutlineIndex::new(Vec::new(), true)),
+            20 * 1024 * 1024,
+        );
+        cache.put(
+            second.clone(),
+            root,
+            Arc::new(OutlineIndex::new(Vec::new(), true)),
+            20 * 1024 * 1024,
+        );
+        assert!(
+            cache.get(&first, root).is_none(),
+            "the combined retained cost exceeds the cache budget"
+        );
         assert!(cache.get(&second, root).is_some());
-        cache.put(first.clone(), root, Arc::new(OutlineIndex::new(Vec::new(), false)), 1);
-        assert!(cache.get(&first, root).is_none(), "an incomplete outline cannot become a cache hit");
+        cache.put(
+            first.clone(),
+            root,
+            Arc::new(OutlineIndex::new(Vec::new(), false)),
+            1,
+        );
+        assert!(
+            cache.get(&first, root).is_none(),
+            "an incomplete outline cannot become a cache hit"
+        );
     }
 
     /// A reader whose `Symbol` reads block until the test releases them, and
@@ -1500,12 +1704,20 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock")
             .as_nanos();
-        let scratch = std::env::temp_dir().join(format!("nudox-release-origin-{}-{nonce}", std::process::id()));
+        let scratch = std::env::temp_dir().join(format!(
+            "nudox-release-origin-{}-{nonce}",
+            std::process::id()
+        ));
         let source = scratch.join("registry/src/index.test-0");
         let original = source.join("fake-1.0.0");
         std::fs::create_dir_all(&original).expect("original tree");
-        std::fs::write(original.join("Cargo.toml"), b"[package]\nname = \"other\"\nversion = \"1.0.0\"\n").expect("misnamed manifest");
-        let viewed = PackageRef::parse(source.join("fake-2.0.0").to_str().expect("UTF-8")).expect("candidate");
+        std::fs::write(
+            original.join("Cargo.toml"),
+            b"[package]\nname = \"other\"\nversion = \"1.0.0\"\n",
+        )
+        .expect("misnamed manifest");
+        let viewed = PackageRef::parse(source.join("fake-2.0.0").to_str().expect("UTF-8"))
+            .expect("candidate");
         assert!(matches!(
             verify_release_origin(Some(original.to_str().expect("UTF-8")), &viewed),
             Err(ReadFailure::Fault(error)) if error.code() == FaultCode::Missing
@@ -1520,11 +1732,17 @@ mod tests {
             release: Arc<std::sync::atomic::AtomicBool>,
         }
         impl PageReader for StagedReader {
-            fn read(&mut self, _: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+            fn read(
+                &mut self,
+                _: &ReadRequest,
+                context: &ReadContext<'_>,
+            ) -> Result<PageValue, ReadFailure> {
                 context.publish(PageValue::Health(health()));
                 self.begun.send(()).expect("stage signal");
                 while !self.release.load(std::sync::atomic::Ordering::Acquire) {
-                    if context.cancel.is_cancelled() { return Err(ReadFailure::Cancelled); }
+                    if context.cancel.is_cancelled() {
+                        return Err(ReadFailure::Cancelled);
+                    }
                     std::thread::sleep(Duration::from_millis(1));
                 }
                 Ok(PageValue::Health(health()))
@@ -1532,7 +1750,11 @@ mod tests {
         }
         let (begun, started) = mpsc::channel();
         let release = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let pool = ReadPool::start(1, |_| StagedReader { begun: begun.clone(), release: Arc::clone(&release) }).expect("read pool");
+        let pool = ReadPool::start(1, |_| StagedReader {
+            begun: begun.clone(),
+            release: Arc::clone(&release),
+        })
+        .expect("read pool");
         pool.submit(ReadJob {
             key: PageKey::Health,
             request: ReadRequest::Health,
@@ -1541,7 +1763,9 @@ mod tests {
             cancel: CancellationToken::new(),
             affinity: None,
         });
-        started.recv_timeout(Duration::from_secs(2)).expect("stage reached UI queue");
+        started
+            .recv_timeout(Duration::from_secs(2))
+            .expect("stage reached UI queue");
         let staged = pool.drain();
         assert_eq!(staged.len(), 1);
         assert!(!staged[0].complete);
@@ -1550,7 +1774,9 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(2);
         let final_result = loop {
             let results = pool.drain();
-            if let Some(result) = results.into_iter().find(|result| result.complete) { break result; }
+            if let Some(result) = results.into_iter().find(|result| result.complete) {
+                break result;
+            }
             assert!(Instant::now() < deadline, "final read did not finish");
             std::thread::sleep(Duration::from_millis(1));
         };
@@ -1783,5 +2009,94 @@ mod tests {
         assert_eq!(signals, 8, "one wake per finished read");
         assert!(receiver.try_take(), "the burst left one pending turn");
         assert!(!receiver.try_take(), "and only one");
+    }
+
+    #[test]
+    fn editor_paths_are_canonical_and_cannot_escape_the_local_package() {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "nudox-source-path-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(root.join("src")).expect("package source directory");
+        std::fs::write(root.join("src/lib.rs"), "pub fn owned() {}\n").expect("source file");
+        let package = PackageRef::parse(root.to_str().expect("UTF-8 temp path")).expect("package");
+        let opened = local_file(&package, "src/lib.rs").expect("local source");
+        assert_eq!(opened.text, "pub fn owned() {}\n");
+        let expected = root
+            .join("src/lib.rs")
+            .canonicalize()
+            .expect("canonical source");
+        assert_eq!(
+            std::path::Path::new(opened.editor_path_hint.as_deref().expect("editor hint")),
+            expected.as_path()
+        );
+        assert!(local_file(&package, "../outside.rs").is_none());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let outside = root.with_extension("outside.rs");
+            std::fs::write(&outside, "pub fn outside() {}\n").expect("outside source");
+            symlink(&outside, root.join("src/outside.rs")).expect("source symlink");
+            assert!(local_file(&package, "src/outside.rs").is_none());
+            std::fs::remove_file(outside).expect("remove outside fixture");
+        }
+        std::fs::remove_dir_all(root).expect("remove source fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn held_source_capability_rejects_replaced_links_and_special_files() {
+        use std::io::Read as _;
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!("nudox-source-held-{}", std::process::id()));
+        let _removed = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).expect("source directory");
+        std::fs::write(root.join("src/lib.rs"), "inside").expect("source file");
+        let capability =
+            backend_platform::directory::DirectoryCapability::open_read_only_source(&root)
+                .expect("pin package root");
+
+        let mut held = crate::model::local_package::files::open_relative_source(
+            &capability,
+            Path::new("src/lib.rs"),
+        )
+        .expect("open source relative to held root");
+        let mut content = String::new();
+        held.read_to_string(&mut content)
+            .expect("read opened source");
+        assert_eq!(content, "inside");
+
+        std::fs::remove_file(root.join("src/lib.rs")).expect("remove original path");
+        let outside = root.with_extension("outside.rs");
+        std::fs::write(&outside, "outside").expect("outside file");
+        symlink(&outside, root.join("src/lib.rs")).expect("replace with symlink");
+        assert!(
+            crate::model::local_package::files::open_relative_source(
+                &capability,
+                Path::new("src/lib.rs"),
+            )
+            .is_err()
+        );
+
+        let fifo = root.join("src/fifo");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo is available on Unix");
+        assert!(status.success(), "create FIFO fixture");
+        assert!(
+            crate::model::local_package::files::open_relative_source(
+                &capability,
+                Path::new("src/fifo"),
+            )
+            .is_err()
+        );
+
+        std::fs::remove_file(outside).expect("remove outside fixture");
+        std::fs::remove_dir_all(root).expect("remove source fixture");
     }
 }

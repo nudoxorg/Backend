@@ -244,8 +244,12 @@ fn dossier(package: &PackageRef) -> Option<PackageDossier> {
         versions: if local { Known::Unknown(unknown(GapReason::LocalProject)) } else { Known::Known(versions.into()) },
         dependencies: Known::Known(dependencies.into()),
         dependents: Known::Unknown(unknown(GapReason::NotServed)),
+        observed_dependents: Arc::from([]),
         outline: Known::Known(outline(package, &facts.modules)),
         readme: Known::Unknown(unknown(GapReason::NotCaptured)),
+        readme_markdown: Known::Unknown(unknown(GapReason::NotCaptured)),
+        readme_links: Known::Unknown(unknown(GapReason::NotCaptured)),
+        readme_headings: Known::Unknown(unknown(GapReason::NotCaptured)),
     })
 }
 

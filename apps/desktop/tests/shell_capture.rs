@@ -280,13 +280,12 @@ fn capture(shot: &Shot, endpoint: &Path, snapshot_key: VersionedRoot, out: &Path
             } else {
                 shot_build.route.clone()
             };
+            let mut session = SessionState::default();
+            session.route = start;
+            session.back = vec![Route::Orbit(OrbitRoute::Home)].into();
             let snapshot = AppSnapshot::empty(snapshot_key)
                 .with_settings(settings)
-                .with_session(SessionState {
-                    route: start,
-                    back: vec![Route::Orbit(OrbitRoute::Home)].into(),
-                    ..SessionState::default()
-                });
+                .with_session(session);
             let mut workspace = snapshot.workspace().clone();
             workspace.host = LocalProjectId::from_path(&repo().join("crates/present")).ok();
             let snapshot = snapshot.with_workspace(workspace);

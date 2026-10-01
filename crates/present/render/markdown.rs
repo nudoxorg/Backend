@@ -328,9 +328,10 @@ fn push_outline_entry(
     within: Option<&ProjectRef>,
 ) {
     let indent = "  ".repeat(depth.min(16));
-    let glyph = entry
-        .kind()
-        .map_or_else(|| "·".to_owned(), |kind| KindGlyph::new(kind).as_str().to_owned());
+    let glyph = entry.kind().map_or_else(
+        || "·".to_owned(),
+        |kind| KindGlyph::new(kind).as_str().to_owned(),
+    );
     let mut line = format!("{indent}{glyph} {}", entry.name());
     if let Some(identity) = entry.identity() {
         let _ = write!(line, "  `{}`", identity.trail_within(within));
@@ -372,9 +373,11 @@ pub fn product(view: &ProductView) -> String {
     }
     if let Some(note) = view.note() {
         lines.push(note);
-        index_search_page_footer(view, &mut lines);
-        index_job_footer(view, &mut lines);
-        return lines.finish();
+        if view.records().is_empty() {
+            index_search_page_footer(view, &mut lines);
+            index_job_footer(view, &mut lines);
+            return lines.finish();
+        }
     }
     if view.records().is_empty() {
         lines.push("no row at this revision");
@@ -433,21 +436,15 @@ fn index_job_footer(view: &ProductView, lines: &mut Lines) {
         IndexJobProjection::Cancellation(backend_library::IndexCancelReceipt {
             status: backend_library::IndexCancelStatus::Requested,
             ..
-        }) => {
-            "cancellation was requested; poll `backend.index_progress` for its terminal receipt"
-        }
+        }) => "cancellation was requested; poll `backend.index_progress` for its terminal receipt",
         IndexJobProjection::Cancellation(backend_library::IndexCancelReceipt {
             status: backend_library::IndexCancelStatus::Terminal(_),
             ..
-        }) => {
-            "the owner returned a terminal index receipt"
-        }
+        }) => "the owner returned a terminal index receipt",
         IndexJobProjection::Cancellation(backend_library::IndexCancelReceipt {
             status: backend_library::IndexCancelStatus::Unknown,
             ..
-        }) => {
-            "no active or retained terminal job matched the cancellation ticket"
-        }
+        }) => "no active or retained terminal job matched the cancellation ticket",
     };
     lines.push(guidance);
     if let IndexJobProjection::Cancellation(receipt) = job {

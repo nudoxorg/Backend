@@ -27,7 +27,7 @@ pub(super) fn decl(file: &str, line: u32, name: &str, kind: DeclarationKind) -> 
 }
 
 fn signature(text: &str) -> Known<SignatureText> {
-    Known::Known(SignatureText { text: Arc::from(text), tokens: Arc::from([]) })
+    Known::Known(SignatureText { text: Arc::from(text), tokens: Arc::from([]), name_link_coverage: crate::model::pages::NameLinkCoverage::Unavailable })
 }
 
 fn text(doc: &str) -> Arc<[DocFragment]> {
@@ -59,6 +59,7 @@ pub(super) fn page(identity: DeclRef, sig: &str, doc: Option<&str>, made_of: Vec
             excerpt: Known::Known(Excerpt { text: Arc::from(sig), lines: Some(LineSpan { first: line, last: line }), complete: true }),
         },
         members: Known::Known(Members {
+            coverage: crate::model::pages::MembersCoverage::Complete,
             made_of: Arc::from(made_of),
             does: Arc::from(does.into_iter().map(|(receiver, members)| MethodGroup { receiver, members: Arc::from(members) }).collect::<Vec<_>>()),
             other: Arc::from([]),

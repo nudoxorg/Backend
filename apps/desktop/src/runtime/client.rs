@@ -5,7 +5,9 @@
 //! adapter on its worker thread; the GPUI thread receives only versioned DTOs
 //! and never touches a socket, a reply codec, or a registry record.
 
-use super::actor::{EngineClient, EngineDto, EngineFault, EngineRequest, ProjectDto};
+use super::actor::{CancellationToken, EngineClient, EngineDto, EngineFault, EngineRequest, ProjectDto};
+use super::liveness::{report_if_dead, transport_break};
+use super::owner::OwnerFault;
 use crate::core::{FaultCode, LocalProjectId, VersionedRoot};
 use crate::model::{ObjectId, PackageSummary};
 use backend_client::{ClientError, LocalSubscriptionTransport, Session};
@@ -13,12 +15,15 @@ use backend_library::{RegistryDownloadCount, RowId, SurfaceCommand, SurfaceReply
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// A worker-owned, reconnecting local service session.
+/// A worker-owned local service session with typed read replay.
 pub struct LocalEngineClient {
     endpoint: PathBuf,
     project: LocalProjectId,
     session: Option<Session>,
     subscription: Option<LocalSubscriptionTransport>,
+    /// Attached generation admitted for this actor request and its sockets.
+    attached_epoch: Option<super::owner::Epoch>,
+    active_cancel: Option<CancellationToken>,
     /// The owner this client waits for, on the actor thread (I1).
     gate: Option<super::owner::OwnerGate>,
 }
@@ -32,6 +37,8 @@ impl LocalEngineClient {
             project,
             session: None,
             subscription: None,
+            attached_epoch: None,
+            active_cancel: None,
             gate: None,
         }
     }
@@ -52,7 +59,7 @@ impl LocalEngineClient {
 
     fn session(&mut self) -> Result<&mut Session, EngineFault> {
         if self.session.is_none() {
-            self.session = Some(Session::connect(&self.endpoint).map_err(fault)?);
+            self.session = Some(Session::connect(&self.endpoint).map_err(|error| self.client_fault(error))?);
         }
         Ok(self.session.as_mut().expect("session installed"))
     }
@@ -60,9 +67,16 @@ impl LocalEngineClient {
     fn subscription(&mut self) -> Result<&mut LocalSubscriptionTransport, EngineFault> {
         if self.subscription.is_none() {
             self.subscription =
-                Some(LocalSubscriptionTransport::connect(&self.endpoint).map_err(fault)?);
+                Some(LocalSubscriptionTransport::connect(&self.endpoint).map_err(|error| self.client_fault(error))?);
         }
         Ok(self.subscription.as_mut().expect("subscription installed"))
+    }
+
+    fn client_fault(&self, error: ClientError) -> EngineFault {
+        if !self.active_cancel.as_ref().is_some_and(CancellationToken::is_cancelled) {
+            let _ = report_if_dead(self.gate.as_ref(), self.attached_epoch, &self.endpoint, &error);
+        }
+        fault(error)
     }
 
     fn bootstrap_root(
@@ -70,11 +84,15 @@ impl LocalEngineClient {
     ) -> Result<(backend_library::ViewRoot, backend_library::Cursor), EngineFault> {
         match self.subscription()?.bootstrap_root() {
             Ok(root) => Ok(root),
-            Err(ClientError::Disconnected(_) | ClientError::Io(_)) => {
+            Err(error) if transport_break(&error) => {
                 self.subscription = None;
-                self.subscription()?.bootstrap_root().map_err(fault)
+                if self.active_cancel.as_ref().is_some_and(CancellationToken::is_cancelled) {
+                    return Err(EngineFault::Cancelled);
+                }
+                let retry = self.subscription()?.bootstrap_root();
+                retry.map_err(|error| self.client_fault(error))
             }
-            Err(error) => Err(fault(error)),
+            Err(error) => Err(self.client_fault(error)),
         }
     }
 
@@ -125,7 +143,7 @@ impl LocalEngineClient {
 
     fn catalog(&mut self) -> Result<Arc<[PackageSummary]>, EngineFault> {
         let reply = self
-            .with_reconnect(|session| {
+            .with_session_read(|session| {
                 session.surface(SurfaceCommand::Explore {
                     query: None,
                     limit: 64,
@@ -162,7 +180,11 @@ impl LocalEngineClient {
         else {
             unreachable!("surface adapter called with a non-surface request")
         };
-        let reply = self.with_reconnect(|session| session.surface(command.clone()))?;
+        let reply = if super::reads::read_only(command) {
+            self.with_session_read(|session| session.surface(command.clone()))?
+        } else {
+            self.with_session_once(|session| session.surface(command.clone()))?
+        };
         Ok(EngineDto::Surface {
             request: *request_id,
             basis: *basis,
@@ -182,7 +204,7 @@ impl LocalEngineClient {
             unreachable!("index adapter called with a non-index request")
         };
         let mut session = Session::connect(&self.endpoint)
-            .map_err(fault)
+            .map_err(|error| self.client_fault(error))
             .map_err(|error| index_fault(project.clone(), error))?;
         let coordinate =
             project
@@ -193,7 +215,7 @@ impl LocalEngineClient {
                 })?;
         session
             .index(coordinate)
-            .map_err(fault)
+            .map_err(|error| self.client_fault(error))
             .map_err(|error| index_fault(project.clone(), error))?;
         self.session = Some(session);
         let (view, revision) = self
@@ -232,45 +254,79 @@ impl LocalEngineClient {
         })
     }
 
-    fn with_reconnect<T>(
+    /// A read may be retried once after a transport break, using a fresh
+    /// session. The owner generation is checked again before that retry.
+    fn with_session_read<T>(
+        &mut self,
+        mut operation: impl FnMut(&mut Session) -> Result<T, ClientError>,
+    ) -> Result<T, EngineFault> {
+        for attempt in 0..2 {
+            if self.active_cancel.as_ref().is_some_and(CancellationToken::is_cancelled) {
+                return Err(EngineFault::Cancelled);
+            }
+            let result = operation(self.session()?);
+            match result {
+                Ok(value) => return Ok(value),
+                Err(error) if attempt == 0 && transport_break(&error) => {
+                    self.session = None;
+                    let _ = self.client_fault(error);
+                    if let Some(gate) = &self.gate {
+                        gate.wait_cancelled(self.active_cancel.as_ref().expect("read has a cancellation token"))
+                            .map_err(owner_fault)?;
+                        if gate.attached_ready_epoch() != self.attached_epoch {
+                            return Err(EngineFault::Superseded);
+                        }
+                    }
+                }
+                Err(error) if transport_break(&error) => {
+                    self.session = None;
+                    return Err(self.client_fault(error));
+                }
+                Err(error) => return Err(self.client_fault(error)),
+            }
+        }
+        unreachable!("one read attempt and one retry return above")
+    }
+
+    /// A disconnect after a command's submission leaves a mutation's outcome
+    /// ambiguous. Only a later explicit request can retry it.
+    fn with_session_once<T>(
         &mut self,
         operation: impl FnOnce(&mut Session) -> Result<T, ClientError>,
     ) -> Result<T, EngineFault> {
         let result = operation(self.session()?);
         match result {
             Ok(value) => Ok(value),
-            Err(ClientError::Disconnected(_)) => {
-                let session = self.session()?;
-                session.reconnect().map_err(fault)?;
-                // The operation is pure/read-only at this boundary. A caller
-                // that submitted a mutation gets the original error instead
-                // of silently replaying it.
-                Err(EngineFault::Failed(crate::core::ErrorValue::new(
-                    FaultCode::Transport,
-                    "local service connection was renewed; retry the request",
-                )))
+            Err(error) if transport_break(&error) => {
+                self.session = None;
+                Err(self.client_fault(error))
             }
-            Err(error) => Err(fault(error)),
+            Err(error) => Err(self.client_fault(error)),
         }
     }
 }
 
 impl EngineClient for LocalEngineClient {
     fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
+        self.active_cancel = Some(request.cancellation().clone());
         if let Some(gate) = &self.gate {
-            gate.wait().map_err(|message| {
-                EngineFault::Failed(crate::core::ErrorValue::new(
-                    FaultCode::Transport,
-                    format!("the index could not start: {message}"),
-                ))
-            })?;
+            gate.wait_cancelled(request.cancellation()).map_err(owner_fault)?;
             // Superseded while it waited (the startup root read, once the
             // owner's own root arrived): not run.
             if request.cancelled() {
                 return Err(EngineFault::Cancelled);
             }
+            // An attached owner may restart under the same root. Discard
+            // sockets admitted by its prior serving generation before this
+            // request can use them.
+            let epoch = gate.attached_ready_epoch();
+            if self.attached_epoch != epoch {
+                self.session = None;
+                self.subscription = None;
+            }
+            self.attached_epoch = epoch;
         }
-        match request {
+        let result = match request {
             EngineRequest::Root { .. } => self.request_root(request),
             EngineRequest::Surface { .. } => self.request_surface(request),
             EngineRequest::IndexProject { .. } => self.request_index(request),
@@ -286,6 +342,14 @@ impl EngineClient for LocalEngineClient {
                 object: *object,
                 delta: *delta,
             }),
+        };
+        self.active_cancel = None;
+        if self.attached_epoch.is_some()
+            && self.gate.as_ref().and_then(super::owner::OwnerGate::attached_ready_epoch) != self.attached_epoch
+        {
+            Err(EngineFault::Superseded)
+        } else {
+            result
         }
     }
 }
@@ -371,6 +435,17 @@ fn fault(error: ClientError) -> EngineFault {
         },
         error.to_string(),
     ))
+}
+
+fn owner_fault(fault: OwnerFault) -> EngineFault {
+    if fault == OwnerFault::Cancelled {
+        EngineFault::Cancelled
+    } else {
+        EngineFault::Failed(crate::core::ErrorValue::new(
+            FaultCode::Transport,
+            format!("the index could not start: {fault}"),
+        ))
+    }
 }
 
 #[cfg(test)]

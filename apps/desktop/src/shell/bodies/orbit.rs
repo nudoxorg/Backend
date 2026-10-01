@@ -6,7 +6,7 @@ use super::state::{Shown, shown};
 use super::{Ctx, Leaf};
 use crate::model::AppSnapshot;
 use crate::model::pages::{IndexedPackage, PackageRef, PageKey, Readiness};
-use crate::navigation::{Intent, Route};
+use crate::navigation::{BrowseRoute, Intent, OrbitRoute, Route};
 use crate::shell::focus::{Act, Target};
 use crate::shell::kit::{HoverIntent, package_route, pending, quiet, text};
 use crate::shell::reader::Reader;
@@ -34,15 +34,11 @@ pub(super) fn body(
         leaves.push(leaf);
     }
     let workspace = snapshot.workspace();
-    let indexed = store
-        .orbit()
-        .loaded_value()
-        .and_then(|model| model.indexed.known().map(|indexed| indexed.len()))
-        .unwrap_or(0);
-    if workspace.projects.is_empty() && indexed == 0 {
+    let orbit = store.orbit();
+    let indexed = orbit.loaded_value().and_then(|model| model.indexed.known());
+    if workspace.projects.is_empty() && indexed.is_some_and(|indexed| indexed.is_empty()) {
         // A Library the index could not answer is not an empty one: say why
         // it could not, with the way to try again, before offering a first run.
-        let orbit = store.orbit();
         let fault = shown(&orbit);
         if matches!(fault, Shown::Fault(_)) {
             leaves.extend(super::state::not_ready(&fault, &PageKey::Orbit, "The Library", ctx, cx));
@@ -50,6 +46,11 @@ pub(super) fn body(
             leaves.push(crate::shell::onboard::library::empty(ctx));
         }
         return leaves;
+    }
+    if workspace.projects.is_empty() {
+        // An unknown index is not evidence that the library is empty. Keep
+        // the add path visible while naming the incomplete read.
+        leaves.push(crate::shell::onboard::library::add_another(ctx));
     }
     // Your projects: the centre.
     let mut centre = div()
@@ -70,6 +71,19 @@ pub(super) fn body(
         // fail for a path the engine would refuse; then the tile still
         // activates the project, it just has nowhere further to go.
         let project_route = PackageRef::parse(&project.path).ok().and_then(|package| package_route(&package));
+        let tree_route = Route::Orbit(OrbitRoute::Browse(BrowseRoute::Tree(project.id.clone())));
+        let tree_id: SharedString = format!("orbit-tree-{}", project.id.as_str()).into();
+        let tree_links = ctx.links.clone();
+        let tree_project = project.id.clone();
+        let tree_recall = ctx.targets.recall();
+        let tree_leave_id = tree_id.clone();
+        let tree_act: Act = Rc::new(move |_, cx| {
+            let leaving = tree_links.snapshot(cx).route().clone();
+            tree_recall.focus(tree_leave_id.clone());
+            tree_recall.remember_leave(leaving, tree_leave_id.clone());
+            tree_links.dispatch(Intent::ActivateProject(tree_project.clone()), cx);
+            tree_links.dispatch(Intent::Navigate(tree_route.clone()), cx);
+        });
         // A click focuses the tile it lands on (so Back, returning here,
         // restores it) and remembers this route was left by it, since
         // `Reader::arrive` unfocuses every new page it draws.
@@ -93,6 +107,15 @@ pub(super) fn body(
             peek: None,
             source: None,
         });
+        if project.phase != crate::model::ProjectPhase::Missing {
+            ctx.targets.push(Target {
+                id: tree_id.clone(),
+                label: format!("{} dependency tree", project.label).into(),
+                act: Rc::clone(&tree_act),
+                peek: None,
+                source: None,
+            });
+        }
         let state = match project.phase {
             crate::model::ProjectPhase::Indexing => ctx.say("indexing"),
             crate::model::ProjectPhase::Failed => ctx.say("stopped"),
@@ -101,8 +124,7 @@ pub(super) fn body(
             crate::model::ProjectPhase::Missing => ctx.say("folder missing"),
             _ => SharedString::default(),
         };
-        centre = centre.child(
-            ctx.targets.track(
+        let tile = ctx.targets.track(
                 id.clone(),
                 div()
                     .id(id)
@@ -114,13 +136,32 @@ pub(super) fn body(
                     .child(text(ty::HEAD, &measure, if active { palette.ink0 } else { palette.ink1 }).child(name))
                     .children((!state.is_empty()).then(|| text(ty::SMALL, &measure, palette.ink3).child(state)))
                     .on_click(move |_: &ClickEvent, window, cx| act(window, cx)),
-            ),
-        );
+            );
+        let mut project_block = div().flex().flex_col().items_center().gap(measure.space(Space::Snug)).child(tile);
+        if project.phase != crate::model::ProjectPhase::Missing {
+            let label = ctx.say("Dependency tree ›");
+            project_block = project_block.child(ctx.targets.track(
+                tree_id.clone(),
+                div()
+                    .id(tree_id)
+                    .cursor_pointer()
+                    .min_h(measure.row())
+                    .flex()
+                    .items_center()
+                    .px(measure.space(Space::Base))
+                    .hover(|style| style.bg(palette.tint))
+                    .child(text(ty::SMALL, &measure, palette.ink2).child(label))
+                    .on_click(move |_: &ClickEvent, window, cx| tree_act(window, cx)),
+            ));
+        }
+        centre = centre.child(project_block);
     }
     leaves.push(Leaf::new(centre).wide());
     leaves.extend(crate::shell::onboard::library::indexing(snapshot, ctx, cx));
     leaves.extend(crate::shell::onboard::failure::stopped(&workspace.projects, ctx, cx));
-    leaves.push(crate::shell::onboard::library::add_another(ctx));
+    if !workspace.projects.is_empty() {
+        leaves.push(crate::shell::onboard::library::add_another(ctx));
+    }
     // The packages around them.
     let orbit = store.orbit();
     match shown(&orbit) {
@@ -143,11 +184,31 @@ pub(super) fn body(
                 // another line lands there (the ring's flow is `wrapped`).
                 let around = crate::shell::side::beside_your_projects(indexed, &workspace, crate::shell::side::LibraryOrder::Library);
                 let apart = crate::shell::side::told_apart(&around);
-                for (package, apart) in around.into_iter().zip(apart) {
+                let hidden = around.len().saturating_sub(64);
+                for (package, apart) in around.into_iter().zip(apart).take(64) {
                     let key = gpui::ElementId::Name(format!("orbit-chip-{}", package.package).into());
                     ring = ring.child(flow.item(key, package_name(package, apart, ctx, cx)));
                 }
                 leaves.push(Leaf::new(ring).wide());
+                if hidden > 0 {
+                    let id: SharedString = "orbit-browse-all".into();
+                    let label = ctx.say(format!("Browse all {} indexed packages ›", indexed.len()));
+                    let links = ctx.links.clone();
+                    let act: Act = Rc::new(move |_, cx| {
+                        links.dispatch(Intent::Navigate(Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome))), cx);
+                    });
+                    ctx.targets.push(Target { id: id.clone(), label: label.clone(), act: Rc::clone(&act), peek: None, source: None });
+                    leaves.push(Leaf::new(div().flex().justify_center().child(ctx.targets.track(
+                        id.clone(),
+                        div().id(id).cursor_pointer().min_h(measure.row()).flex().items_center()
+                            .px(measure.space(Space::Base)).hover(|style| style.bg(palette.tint))
+                            .child(text(ty::SMALL, &measure, palette.ink2).child(label))
+                            .on_click(move |_: &ClickEvent, window, cx| act(window, cx)),
+                    ))));
+                }
+            } else if let Some(gap) = model.indexed.gap() {
+                let words = ctx.say(format!("The packages around your projects are unavailable. {}", crate::shell::kit::gap_words(gap)));
+                leaves.push(Leaf::new(div().flex().justify_center().child(quiet(words, &measure, palette))));
             }
         }
         Shown::Pending => leaves.push(Leaf::new(
@@ -156,7 +217,9 @@ pub(super) fn body(
         fault @ Shown::Fault(_) => {
             leaves.extend(super::state::not_ready(&fault, &PageKey::Orbit, "The packages around your projects", ctx, cx));
         }
-        Shown::Unavailable(..) => {}
+        fault @ Shown::Unavailable(..) => {
+            leaves.extend(super::state::not_ready(&fault, &PageKey::Orbit, "The packages around your projects", ctx, cx));
+        }
     }
     // The counts describe the last revision the owner published. While a
     // project is being indexed they describe something older than what is
@@ -207,7 +270,7 @@ fn resume(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -
         let route = crate::shell::root::held_route(&last.held)?;
         let ago = ago(crate::shell::root::now_ms().saturating_sub(last.held.touched_at));
         let mut words = vec![("Continue".to_owned(), false)];
-        match view.roads.first() {
+        match view.roads.first().filter(|_| view.status.is_none()) {
             Some(road) => {
                 let names: Vec<String> = road.cards.iter().map(|&n| view.cards[n].name.to_string()).collect();
                 words.push((names.join(" → "), true));
@@ -217,6 +280,9 @@ fn resume(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -
         }
         words.push((last.name.to_string(), true));
         words.push((ago, false));
+        if let Some(status) = &view.status {
+            words.push((format!("· {status}"), false));
+        }
         (words, route)
     };
     let label = ctx.say(words.iter().map(|(w, _)| w.as_str()).collect::<Vec<_>>().join(" "));

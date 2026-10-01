@@ -49,6 +49,100 @@ fn words(value: &Value, key: &str) -> Vec<String> {
         .collect()
 }
 
+/// Retain Cargo's source spelling so a later reader never guesses a registry
+/// from a display name. An unfamiliar source stays explicitly unresolved.
+fn source_origin(source: &str) -> PackageOrigin {
+    if let Some(url) = source.strip_prefix("git+") {
+        PackageOrigin::Git {
+            url: url.split(['?', '#']).next().unwrap_or(url).to_owned(),
+        }
+    } else if source.starts_with("registry+") || source.starts_with("sparse+") {
+        PackageOrigin::Registry {
+            source: source.to_owned(),
+        }
+    } else {
+        PackageOrigin::Unresolved {
+            source: Some(source.to_owned()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::*;
+
+    #[test]
+    fn alternative_and_unrecognized_sources_keep_their_observed_authority() {
+        let first = source_origin("registry+https://one.example.test/index");
+        let second = source_origin("registry+https://two.example.test/index");
+        assert_ne!(first, second);
+        assert!(!first.is_crates_io_registry());
+        assert_eq!(
+            first,
+            PackageOrigin::Registry {
+                source: "registry+https://one.example.test/index".to_owned()
+            }
+        );
+        assert_eq!(
+            source_origin("other+opaque"),
+            PackageOrigin::Unresolved {
+                source: Some("other+opaque".to_owned())
+            }
+        );
+    }
+
+    #[test]
+    fn lockfile_edges_keep_source_ids_and_refuse_ambiguous_name_versions() {
+        let lock = r#"
+version = 4
+[[package]]
+name = "app"
+version = "0.1.0"
+dependencies = [
+  "widget 1.0.0 (registry+https://one.example.test/index)",
+  "widget 1.0.0 (registry+https://two.example.test/index)",
+]
+[[package]]
+name = "widget"
+version = "1.0.0"
+source = "registry+https://one.example.test/index"
+[[package]]
+name = "widget"
+version = "1.0.0"
+source = "registry+https://two.example.test/index"
+"#;
+        let input = lockfile_input(
+            lock,
+            "/workspace/app",
+            &BTreeSet::new(),
+            "Cargo unavailable",
+        )
+        .expect("lockfile");
+        assert_ne!(input.packages[1].id, input.packages[2].id);
+        assert_eq!(input.edges.len(), 2);
+        assert_ne!(input.edges[0].to, input.edges[1].to);
+
+        let ambiguous = lock.replace(
+            "  \"widget 1.0.0 (registry+https://one.example.test/index)\",\n  \"widget 1.0.0 (registry+https://two.example.test/index)\",",
+            "  \"widget 1.0.0\",",
+        );
+        let input = lockfile_input(
+            &ambiguous,
+            "/workspace/app",
+            &BTreeSet::new(),
+            "Cargo unavailable",
+        )
+        .expect("ambiguous lockfile");
+        assert!(
+            input.edges.is_empty(),
+            "a name/version-only edge cannot choose a registry"
+        );
+        assert!(
+            matches!(input.source, TreeSource::Lockfile { reason } if reason.contains("could not be attributed"))
+        );
+    }
+}
+
 /// Reads `cargo metadata --format-version 1 --filter-platform <host>`.
 ///
 /// `lockfile` (the project's `Cargo.lock`) only counts the packages that
@@ -81,15 +175,7 @@ pub fn metadata_input(
             None
         } else {
             Some(match source {
-                Some(source) if source.starts_with("git+") => PackageOrigin::Git {
-                    url: source
-                        .trim_start_matches("git+")
-                        .split(['?', '#'])
-                        .next()
-                        .unwrap_or(source)
-                        .to_owned(),
-                },
-                Some(_) => PackageOrigin::Registry,
+                Some(source) => source_origin(source),
                 None => PackageOrigin::Vendored {
                     path: text(package, "manifest_path")
                         .and_then(|manifest| {
@@ -267,7 +353,8 @@ pub fn lockfile_input(
     reason: &str,
 ) -> Result<TreeInput, CargoTreeError> {
     let locked = locked_packages(lockfile)?;
-    let id = |package: &Locked| format!("{} {}", package.name, package.version);
+    let id =
+        |package: &Locked| format!("{} {} {:?}", package.name, package.version, package.source);
     let mut by_name: BTreeMap<&str, Vec<&Locked>> = BTreeMap::new();
     for package in &locked {
         by_name
@@ -289,15 +376,7 @@ pub fn lockfile_input(
                     None
                 } else {
                     Some(match package.source.as_deref() {
-                        Some(source) if source.starts_with("git+") => PackageOrigin::Git {
-                            url: source
-                                .trim_start_matches("git+")
-                                .split(['?', '#'])
-                                .next()
-                                .unwrap_or(source)
-                                .to_owned(),
-                        },
-                        Some(_) => PackageOrigin::Registry,
+                        Some(source) => source_origin(source),
                         None => PackageOrigin::Vendored {
                             path: String::new(),
                         },
@@ -308,21 +387,44 @@ pub fn lockfile_input(
         })
         .collect::<Vec<_>>();
     let mut edges = Vec::new();
+    let mut ambiguous_edges = 0_usize;
     for package in &locked {
         for dependency in &package.dependencies {
-            let mut parts = dependency.split(' ');
+            let mut parts = dependency.split_whitespace();
             let name = parts.next().unwrap_or_default();
-            let version = parts.next();
+            let second = parts.next();
+            let (version, source) = match second {
+                Some(source) if source.starts_with('(') => (None, Some(source)),
+                version => (version, parts.next()),
+            };
+            let source = match source {
+                Some(source) => match source
+                    .strip_prefix('(')
+                    .and_then(|source| source.strip_suffix(')'))
+                {
+                    Some(source) => Some(source),
+                    None => continue,
+                },
+                None => None,
+            };
+            if parts.next().is_some() {
+                continue;
+            }
             let Some(candidates) = by_name.get(name) else {
                 continue;
             };
-            let target = match version {
-                Some(version) => candidates
-                    .iter()
-                    .find(|candidate| candidate.version == version),
-                None => candidates.first(),
-            };
-            if let Some(target) = target {
+            let matches = candidates
+                .iter()
+                .filter(|candidate| {
+                    version.is_none_or(|version| candidate.version == version)
+                        && source.is_none_or(|source| candidate.source.as_deref() == Some(source))
+                })
+                .copied()
+                .collect::<Vec<_>>();
+            if matches.len() > 1 {
+                ambiguous_edges = ambiguous_edges.saturating_add(1);
+            }
+            if let [target] = matches.as_slice() {
                 edges.push(TreeEdge {
                     from: id(package),
                     to: id(target),
@@ -335,7 +437,13 @@ pub fn lockfile_input(
     }
     Ok(TreeInput {
         source: TreeSource::Lockfile {
-            reason: reason.to_owned(),
+            reason: if ambiguous_edges == 0 {
+                reason.to_owned()
+            } else {
+                format!(
+                    "{reason}; {ambiguous_edges} dependency edge(s) could not be attributed to one source"
+                )
+            },
         },
         root: root.to_owned(),
         packages,

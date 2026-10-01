@@ -50,6 +50,7 @@ gpui_component = { package = "gpui_ce_components", version = "=0.2.0" }
 hmac = "0.12.1"
 httpdate = "1.0.3"
 loom = "0.7.2"
+markdown = "=1.0.0"
 opentelemetry = { version = "=0.32.0", features = ["logs", "metrics", "trace"] }
 opentelemetry-appender-tracing = "=0.32.0"
 opentelemetry_sdk = { version = "=0.32.1", features = ["logs", "metrics", "trace"] }

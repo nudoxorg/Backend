@@ -2191,6 +2191,14 @@ impl Default for RegistryFactAvailability {
 pub enum RegistryMetadata<T> {
     /// Facts were recorded.
     Recorded(T),
+    /// Exact observed facts, with additional rows withheld because the
+    /// producer could not prove their source or coverage.
+    Partial {
+        /// Only facts whose identity was established.
+        value: T,
+        /// Why this answer is incomplete.
+        reason: ProductText,
+    },
     /// The configured feed does not publish this fact.
     NotRecorded(ProductText),
 }
@@ -2444,7 +2452,9 @@ impl SurfaceReply {
             | Self::IndexSearch(v)
             | Self::PackageVersions(v)
             | Self::Dependents(RegistryMetadata::Recorded(v))
-            | Self::Owner(RegistryMetadata::Recorded(v)) => v.len(),
+            | Self::Owner(RegistryMetadata::Recorded(v))
+            | Self::Dependents(RegistryMetadata::Partial { value: v, .. })
+            | Self::Owner(RegistryMetadata::Partial { value: v, .. }) => v.len(),
             Self::IndexSearchWithDiscovery(hits) => hits.len(),
             Self::PackageDetails { registry, forge } => registry.len().saturating_add(forge.len()),
             Self::IndexSearchPage(page) => page.hits.len(),
@@ -2546,7 +2556,9 @@ impl SurfaceReply {
                     }
                 }
                 Self::Dependents(RegistryMetadata::Recorded(rows))
-                | Self::Owner(RegistryMetadata::Recorded(rows)) => {
+                | Self::Owner(RegistryMetadata::Recorded(rows))
+                | Self::Dependents(RegistryMetadata::Partial { value: rows, .. })
+                | Self::Owner(RegistryMetadata::Partial { value: rows, .. }) => {
                     for row in rows {
                         admit_registry_record(row)?;
                     }
@@ -2601,6 +2613,10 @@ impl SurfaceReply {
             | Self::PackageVersions(records)
             | Self::Dependents(RegistryMetadata::Recorded(records))
             | Self::Owner(RegistryMetadata::Recorded(records)) => registry_records_bound(records),
+            Self::Dependents(RegistryMetadata::Partial { value, reason })
+            | Self::Owner(RegistryMetadata::Partial { value, reason }) => {
+                registry_records_bound(value).saturating_add(text_bound(reason))
+            }
             Self::IndexSearchWithDiscovery(hits) => hits.iter().fold(0_usize, |bound, hit| {
                 bound.saturating_add(match hit {
                     RegistrySearchHit::Acquired(record)
@@ -2980,6 +2996,21 @@ impl core::fmt::Display for ProductAdmissionError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn partial_registry_metadata_survives_wire_and_admission_with_zero_observed_rows() {
+        let reply = SurfaceReply::Dependents(RegistryMetadata::Partial {
+            value: Box::new([]),
+            reason: ProductText::from_static("source authority for name-only edges is unresolved"),
+        });
+        reply
+            .admit(CommandId::Dependents)
+            .expect("partial reply admission");
+        let encoded = serde_json::to_vec(&reply).expect("wire");
+        let decoded: SurfaceReply = serde_json::from_slice(&encoded).expect("partial wire decode");
+        assert_eq!(decoded, reply);
+        assert!(reply.encoded_size_bound() >= encoded.len());
+    }
 
     #[test]
     fn json_status_budget_counts_encoded_bytes_without_underestimating() {

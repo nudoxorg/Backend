@@ -35,11 +35,11 @@ pub use package::{
     PackageDossier, PackageRecord, RecordSource, Standing, VersionEntry,
 };
 pub use search::{MatchReason, SearchContinuation, SearchPage, SearchRow};
-pub use source::{IdentifierSpan, SourceOrigin, SourceText, SourceView};
+pub use source::{IdentifierSpan, SourceCoverage, SourceOrigin, SourceText, SourceView};
 pub use store::{Capacity, Generation, Landing, PageStore, PageValue, ReadFailure, SeedEntry, Stamp};
 pub use symbol::{
     Arrival, DocEntry, DocFragment, DocSection, DocSections, Excerpt, FileSpan, Member, Members,
-    MethodGroup, OutlinePosition, SectionKind,
-    Receiver, ReferenceScope, ReferenceSite, Relation, RelationKind, Rose, SignatureText,
-    SignatureToken, SourceLocation, SourceSite, SymbolLink, SymbolPage, TokenClass,
+    MembersCoverage, MethodGroup, NameLinkCoverage, OutlinePosition, SectionKind, Receiver,
+    ReferenceScope, ReferenceSite, Relation, RelationKind, Rose, SignatureText, SignatureToken,
+    SourceLocation, SourceSite, SymbolLink, SymbolPage, TokenClass,
 };

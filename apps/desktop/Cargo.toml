@@ -34,6 +34,7 @@ backend-runtime = { path = "../../crates/runtime" }
 gpui.workspace = true
 gpui_component.workspace = true
 image = { version = "0.25.10", default-features = false, features = ["png"], optional = true }
+markdown.workspace = true
 sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true

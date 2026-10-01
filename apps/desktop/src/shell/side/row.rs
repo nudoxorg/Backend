@@ -120,6 +120,10 @@ pub(crate) enum RowId {
     Tests,
     /// One of your projects (by the spelling of its folder).
     Project(Arc<str>),
+    /// The dependency tree belonging to one project.
+    ProjectTree(LocalProjectId),
+    /// A route into the local discovery page.
+    Find,
     /// A package in the library.
     Package(PackageRef),
     /// One settings page.
@@ -146,6 +150,8 @@ impl RowId {
             Self::Group(group) => format!("shelf-kind-{}", group.key()).into(),
             Self::Tests => TESTS_ROW.into(),
             Self::Project(path) => format!("project-{path}").into(),
+            Self::ProjectTree(project) => format!("project-tree-{}", project.as_str()).into(),
+            Self::Find => "shelf-find".into(),
             Self::Package(package) => format!("package-{package}").into(),
             Self::Setting(page) => format!("settings-{}", page.as_str()).into(),
             Self::Release(version) => format!("shelf-release-{version}").into(),
@@ -172,6 +178,8 @@ pub(crate) enum Do {
     Release(Option<ReleaseId>),
     /// Makes a project the active one.
     Project(LocalProjectId),
+    /// Activates a project and reads its own dependency tree.
+    ProjectTree(LocalProjectId),
     /// Opens a settings page.
     Settings(SettingsPage),
     /// Narrows Contents to what one of your crates uses.

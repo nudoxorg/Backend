@@ -2,8 +2,11 @@
 //! the words every surface shares.
 
 use super::reads::failure;
-use crate::model::browse::{BrowseKey, BrowseValue, TreeModel};
-use crate::model::pages::{PageValue, ReadFailure};
+use crate::model::browse::{
+    BrowseKey, BrowseValue, TreeDestination, TreeModel, TreeReleaseLink, TreeRoleLinks,
+    TreeRowLinks,
+};
+use crate::model::pages::{PackageRef, PageValue, ReadFailure};
 use backend_library::{ProductText, SurfaceCommand, SurfaceReply};
 use backend_present::Engine;
 use std::sync::Arc;
@@ -42,10 +45,78 @@ pub fn compose(engine: &mut dyn Engine, key: &BrowseKey) -> Result<PageValue, Re
 /// The Library page's model of one tree.
 #[must_use]
 pub fn tree_model(tree: &backend_library::browse::ProjectTree) -> TreeModel {
+    let reading = backend_present::read_tree(tree);
+    let links: Arc<[TreeRoleLinks]> = reading.roles.iter().map(|role| TreeRoleLinks {
+        role: role.id,
+        rows: role.rows.iter().map(|row| TreeRowLinks {
+            name: Arc::from(row.name.as_str()),
+            releases: row.versions.iter().enumerate().map(|(at, version)| TreeReleaseLink {
+                version: Arc::from(version.as_str()),
+                destination: tree_destination(&tree.root, &row.name, version, row.sources.get(at).and_then(Option::as_ref)),
+            }).collect::<Vec<_>>().into(),
+        }).collect::<Vec<_>>().into(),
+    }).collect::<Vec<_>>().into();
     TreeModel {
         root: Arc::from(tree.root.as_str()),
-        reading: backend_present::read_tree(tree),
+        reading,
+        links,
     }
+}
+
+/// A project tree records source origin separately from its display name.
+/// Resolve only the identities that preserve that source on a package route.
+/// Vendored paths are checked here on the read worker, never while painting.
+fn tree_destination(root: &str, name: &str, version: &str, origin: Option<&backend_library::browse::PackageOrigin>) -> TreeDestination {
+    use backend_library::browse::PackageOrigin;
+    let unavailable = |words: String| TreeDestination::Unavailable(Arc::from(words));
+    match origin {
+        Some(origin @ PackageOrigin::Registry { source }) => {
+            let coordinate = if origin.is_crates_io_registry() {
+                format!("pkg:cargo/{name}@{version}")
+            } else {
+                let index = source.strip_prefix("registry+").or_else(|| source.strip_prefix("sparse+"));
+                let Some(index) = index.filter(|index| !index.is_empty()) else {
+                    return unavailable("Cargo did not record a usable registry authority.".to_owned());
+                };
+                format!("pkg:cargo/{name}@{version}?repository_url={}", encode_purl_qualifier(index))
+            };
+            PackageRef::parse(&coordinate)
+                .map_or_else(|_| unavailable("The registry coordinate could not be admitted.".to_owned()), TreeDestination::Open)
+        }
+        Some(PackageOrigin::Vendored { path }) if !path.is_empty() => {
+            let path = std::path::Path::new(path);
+            let path = if path.is_absolute() { path.to_path_buf() } else { std::path::Path::new(root).join(path) };
+            match path.canonicalize() {
+                Ok(path) if path.is_dir() => PackageRef::parse(&path.to_string_lossy()).map_or_else(
+                    |_| unavailable("This local source path could not be admitted.".to_owned()),
+                    TreeDestination::Open,
+                ),
+                _ => unavailable("This local source folder is unavailable on this machine.".to_owned()),
+            }
+        }
+        Some(PackageOrigin::Vendored { .. }) => unavailable("Cargo.lock did not record the local source folder.".to_owned()),
+        Some(PackageOrigin::Git { url }) => unavailable(format!("Git source at {url}; this tree does not record its checkout folder.")),
+        Some(PackageOrigin::Unresolved { source }) => unavailable(format!(
+            "Cargo did not establish a supported source{}.",
+            source.as_ref().map_or(String::new(), |source| format!(" ({source})"))
+        )),
+        None => unavailable("This release has no unique source identity in the project tree.".to_owned()),
+    }
+}
+
+/// Package URL qualifiers use canonical percent escapes. Keep URL authority
+/// bytes, including an alternative registry's host and path, in the identity.
+fn encode_purl_qualifier(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            use std::fmt::Write as _;
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
 }
 
 /// Merge real package identities once, off the UI thread. Exact names lead;
@@ -148,6 +219,7 @@ mod find_tests {
     use super::*;
     use crate::model::browse::FindPackage;
     use crate::model::pages::PackageRef;
+    use backend_library::browse::PackageOrigin;
 
     fn candidate(name: &str, indexed: bool) -> FindPackage {
         FindPackage { package: PackageRef::parse(&format!("pkg:cargo/{name}@1.0.0")).unwrap(), name: Arc::from(name), description: None, indexed, record: None, offer: None }
@@ -168,5 +240,30 @@ mod find_tests {
         let ranked = rank_packages("item", rows);
         assert_eq!(ranked.len(), 64);
         assert_eq!(ranked.last().unwrap().name.as_ref(), "item063");
+    }
+
+    #[test]
+    fn tree_links_preserve_registry_release_and_local_path_without_inventing_git_checkout() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
+        let root = root.to_str().unwrap();
+        assert_eq!(
+            tree_destination(root, "toml", "1.1.6", Some(&PackageOrigin::Registry { source: "registry+https://github.com/rust-lang/crates.io-index".to_owned() })),
+            TreeDestination::Open(PackageRef::parse("pkg:cargo/toml@1.1.6").unwrap()),
+        );
+        let first = tree_destination(root, "toml", "1.1.6", Some(&PackageOrigin::Registry { source: "registry+https://packages.example.test/first".to_owned() }));
+        let second = tree_destination(root, "toml", "1.1.6", Some(&PackageOrigin::Registry { source: "registry+https://packages.example.test/second".to_owned() }));
+        let (TreeDestination::Open(first), TreeDestination::Open(second)) = (first, second) else { panic!("observed alternative registries have typed coordinates") };
+        assert_eq!(first.as_str(), "pkg:cargo/toml@1.1.6?repository_url=https%3A%2F%2Fpackages.example.test%2Ffirst");
+        assert_ne!(first, second, "two authorities cannot alias the same name and version");
+        assert_ne!(first.as_str(), "pkg:cargo/toml@1.1.6", "an alternate registry cannot open crates.io");
+        assert!(matches!(tree_destination(root, "toml", "1.1.6", Some(&PackageOrigin::Unresolved { source: Some("other+opaque".to_owned()) })), TreeDestination::Unavailable(_)));
+        let local = tree_destination(root, "gpui-ce", "0.2.2", Some(&PackageOrigin::Vendored { path: "vendor/gpui-ce".to_owned() }));
+        let TreeDestination::Open(path) = local else { panic!("a present vendored source should open") };
+        assert_eq!(path.as_str(), std::path::Path::new(root).join("vendor/gpui-ce").canonicalize().unwrap().to_str().unwrap());
+        assert!(matches!(
+            tree_destination(root, "foo", "1.0.0", Some(&PackageOrigin::Git { url: "https://example.invalid/foo".to_owned() })),
+            TreeDestination::Unavailable(reason) if reason.contains("Git source")
+        ));
+        assert!(matches!(tree_destination(root, "foo", "1.0.0", None), TreeDestination::Unavailable(_)));
     }
 }

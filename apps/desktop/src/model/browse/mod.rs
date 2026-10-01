@@ -140,4 +140,43 @@ pub struct TreeModel {
     pub root: Arc<str>,
     /// Every sentence of the page.
     pub reading: backend_present::TreeReading,
+    /// Exact release destinations prepared by the read worker, aligned with
+    /// `reading.roles`; source gaps remain explicit per release.
+    pub links: Arc<[TreeRoleLinks]>,
+}
+
+/// Destinations for the rows of one derived role.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TreeRoleLinks {
+    /// Guards the alignment with the prose role.
+    pub role: backend_library::browse::RoleId,
+    /// One entry per direct dependency in this role.
+    pub rows: Arc<[TreeRowLinks]>,
+}
+
+/// Destinations for all versions of one direct dependency.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TreeRowLinks {
+    /// Guards the alignment with the prose row.
+    pub name: Arc<str>,
+    /// Exact version identity and destination or its explicit reason.
+    pub releases: Arc<[TreeReleaseLink]>,
+}
+
+/// One version's source-backed destination.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TreeReleaseLink {
+    /// Version from the same project-tree reply as its source.
+    pub version: Arc<str>,
+    /// A route only when the source identity admits one.
+    pub destination: TreeDestination,
+}
+
+/// Whether this exact source can open as a local package page.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TreeDestination {
+    /// A typed package locator, with origin and version preserved.
+    Open(PackageRef),
+    /// Why this tree cannot open this source as a package page.
+    Unavailable(Arc<str>),
 }

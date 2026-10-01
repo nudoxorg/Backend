@@ -33,6 +33,7 @@ mod hand;
 mod hints;
 mod jump;
 mod keys;
+mod markdown;
 pub(crate) mod kit;
 mod onboard;
 mod peeks;

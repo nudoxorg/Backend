@@ -33,6 +33,45 @@ fn has(ledger: &Ledger, part: &str) -> bool {
 }
 
 #[test]
+fn rustdoc_filename_resolves_only_a_complete_unique_kind_matched_outline() {
+    let dossier = dossier();
+    let outline = dossier.outline.known().expect("fixture outline");
+    assert!(super::rustdoc_symbol_route(
+        "outline/struct.Outline.html",
+        Some(outline),
+        &dossier.package,
+    )
+    .is_some());
+    assert!(super::rustdoc_symbol_route(
+        "docs/nonexistent-module/struct.Outline.html",
+        Some(outline),
+        &dossier.package,
+    )
+    .is_none());
+    assert!(super::rustdoc_symbol_route(
+        "missing/struct.Outline.html",
+        Some(outline),
+        &dossier.package,
+    )
+    .is_none());
+    assert!(super::rustdoc_symbol_route(
+        "struct.RelationLabel.html",
+        Some(outline),
+        &dossier.package,
+    )
+    .is_none());
+
+    let mut partial = outline.clone();
+    partial.complete = false;
+    assert!(super::rustdoc_symbol_route(
+        "outline/struct.Outline.html",
+        Some(&partial),
+        &dossier.package,
+    )
+    .is_none());
+}
+
+#[test]
 fn package_hero_stacks_when_text_scale_leaves_no_readable_side_column() {
     assert!(super::hero_stacks(px(320.0), 2.0));
     assert!(super::hero_stacks(px(390.0), 2.0));
@@ -1224,9 +1263,9 @@ fn a_dependency_links_to_the_release_the_library_holds() {
         })
     };
     assert_eq!(
-        linked(&wants("toml", "0.8.23", None)).as_deref(),
-        Some("toml-0.8.23"),
-        "the release the requirement names"
+        linked(&wants("toml", "0.8.23", None)),
+        None,
+        "a requirement string does not prove a resolved destination"
     );
     assert_eq!(
         linked(&wants("toml", "0.5", Some("pkg:cargo/toml@0.5.11"))).as_deref(),
@@ -1234,9 +1273,14 @@ fn a_dependency_links_to_the_release_the_library_holds() {
         "the release the resolver chose"
     );
     assert_eq!(
-        linked(&wants("serde", "1", None)).as_deref(),
-        Some("serde-1.0.229"),
-        "the one release of that name"
+        linked(&wants("toml", "0.5", Some("pkg:gem/toml@0.5.11"))),
+        None,
+        "same display name/version from another ecosystem is not the resolved Cargo package"
+    );
+    assert_eq!(
+        linked(&wants("serde", "1", None)),
+        None,
+        "a unique display name without resolver evidence is unresolved"
     );
     assert_eq!(
         linked(&wants("winnow", "0.7", None)),

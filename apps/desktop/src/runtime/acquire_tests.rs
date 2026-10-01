@@ -15,6 +15,26 @@ use gpui::{TestAppContext, WeakEntity};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[test]
+fn project_acquisition_never_offers_an_alternative_registry_from_the_crates_io_source() {
+    use backend_library::browse::PackageOrigin;
+    let release = release("toml", "1.1.6");
+    let other = PackageOrigin::Registry {
+        source: "registry+https://packages.example.test/index".to_owned(),
+    };
+    let crates_io = PackageOrigin::Registry {
+        source: "registry+https://github.com/rust-lang/crates.io-index".to_owned(),
+    };
+    assert!(matches!(
+        super::acquire::dependency_origin(&other, &release, &Shelf),
+        super::acquire::Origin::Elsewhere(_)
+    ));
+    assert!(matches!(
+        super::acquire::dependency_origin(&crates_io, &release, &Shelf),
+        super::acquire::Origin::Registry(_)
+    ));
+}
+
 /// A source with two crates: `anyhow` (unpacked, not indexed) and `toml`
 /// (unpacked at `/cache/toml-0.8.23`, which the owner indexed).
 struct Shelf;
@@ -166,7 +186,7 @@ fn settled(release: &Release, cx: &mut TestAppContext) -> Option<Stage> {
 }
 
 #[gpui::test]
-fn a_release_only_the_registry_has_fails_in_words_and_is_never_fetched(cx: &mut TestAppContext) {
+fn a_registry_only_release_needs_the_owner_to_fetch_it(cx: &mut TestAppContext) {
     // The worker is a real thread that wakes the UI task, as the read pool's do.
     cx.executor().allow_parking();
     let wanted = release("anyhash", "0.1.0");
@@ -190,12 +210,12 @@ fn a_release_only_the_registry_has_fails_in_words_and_is_never_fetched(cx: &mut 
         Some(Stage::Queued),
         "it is taken at once"
     );
-    assert_eq!(
-        settled(&wanted, cx),
-        Some(Stage::Failed(Arc::from(
-            "anyhash 0.1.0 is not on this machine; reading it needs a download"
-        ))),
-        "a release only the registry has is refused, not downloaded"
+    let Some(Stage::Failed(words)) = settled(&wanted, cx) else {
+        panic!("the unreachable owner must fail the request")
+    };
+    assert!(
+        words.starts_with("the local index could not be reached: "),
+        "only the owner can fetch the published release: {words}"
     );
 }
 

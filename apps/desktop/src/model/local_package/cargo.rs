@@ -213,13 +213,14 @@ pub(super) fn project(
     members.sort_by(|left, right| left.manifest_path.cmp(&right.manifest_path));
     let selected = root_package(root, &members);
     let selected_manifest = selected.map(|package| package.manifest_path.clone());
-    let readme = selected
+    let readme_path = selected
         .and_then(|package| {
             let file = package.readme.as_ref()?;
             let directory = Path::new(&package.manifest_path).parent().unwrap_or(root);
-            Some(readme::read(&directory.join(file)))
+            Some(directory.join(file))
         })
-        .unwrap_or_else(|| readme::read(&root.join("README.md")));
+        .unwrap_or_else(|| root.join("README.md"));
+    let readme = readme::read(root, &readme_path);
     let facts = Facts {
         name: selected.map(|package| package.name.clone()),
         version: selected.map(|package| package.version.clone()),
@@ -232,6 +233,7 @@ pub(super) fn project(
         keywords: selected.map_or_else(Vec::new, |package| package.keywords.clone()),
         categories: selected.map_or_else(Vec::new, |package| package.categories.clone()),
         readme,
+        readme_path: Some(readme_path),
     };
     let members = scope_to_member(root, members, selected_manifest.as_deref());
     let dependencies = dependencies(members.iter().flat_map(|package| {

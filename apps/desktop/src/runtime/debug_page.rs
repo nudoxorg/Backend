@@ -272,6 +272,22 @@ pub fn package_text(dossier: &PackageDossier) -> String {
     let _ = writeln!(out, "  dependents: {}", known(&dossier.dependents, |dependents| {
         format!("{} packages", dependents.len())
     }));
+    if !dossier.observed_dependents.is_empty()
+        || dossier
+            .dependents
+            .gap()
+            .is_some_and(|gap| gap.reason == crate::model::pages::GapReason::Unknown)
+    {
+        let _ = writeln!(
+            out,
+            "  observed dependents: {} rows{}",
+            dossier.observed_dependents.len(),
+            dossier
+                .dependents
+                .gap()
+                .map_or_else(String::new, |gap| format!(" · incomplete: {}", gap.detail)),
+        );
+    }
     let _ = writeln!(out, "  readme: {}", known(&dossier.readme, |blocks| format!("{} blocks", blocks.len())));
     match &dossier.outline {
         Known::Known(tree) => {
@@ -320,7 +336,7 @@ pub fn source_text(view: &SourceView) -> String {
             .take(24)
             .map(|span| {
                 let word = text
-                    .and_then(|text| text.text.get(span.span.range()))
+                    .and_then(|text| text.text().get(span.span.range()))
                     .unwrap_or("?");
                 format!("{word}@{}→{}", span.span.start, span.link.target)
             })
@@ -332,7 +348,7 @@ pub fn source_text(view: &SourceView) -> String {
     match &view.text {
         Known::Known(text) => {
             let _ = writeln!(out, "  text ({:?}, from line {}):", text.origin, text.first_line);
-            for (offset, line) in text.text.lines().enumerate().take(40) {
+            for (offset, line) in text.text().lines().enumerate().take(40) {
                 let _ = writeln!(out, "    {:>5} │ {line}", text.first_line as usize + offset);
             }
         }

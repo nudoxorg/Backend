@@ -19,8 +19,9 @@
 //! open retargets it from its painted value and velocity. The two pages are
 //! never drawn in the same place: the one outside the plate is cut to the
 //! region the plate has not reached, the one inside to the plate, so no
-//! frame shows two texts over each other. A view switch cuts (the Peel is a
-//! later slice); reduced motion cuts, and a Close still marks the row.
+//! frame shows two texts over each other. Page and Code peel around the
+//! measured declaration line; reduced motion cuts, and a Close still marks
+//! the row.
 //!
 //! The graph is the same space zoomed out. Going to it, the page **folds**:
 //! its body folds up with the graph not yet drawn, then its empty plate
@@ -140,6 +141,9 @@ pub(crate) enum Verb {
     /// Graph → page: the node's plate opens into the page, the node becomes
     /// the gem, and the page prints once the plate covers the graph.
     Unfold,
+    /// The same declaration's page and source exchange through a strip
+    /// centred on its measured hero or source line.
+    Peel,
 }
 
 /// The row that carried a place change: which target drew it, where
@@ -224,7 +228,7 @@ impl Transit {
                 let ms = if now >= started { since(started) } else { -(started.saturating_duration_since(now).as_secs_f32() * 1000.0) };
                 Some(PRINT_SPEED * ms)
             }
-            (Verb::Close | Verb::Fold, None) => None,
+            (Verb::Close | Verb::Fold | Verb::Peel, None) => None,
         }
     }
 
@@ -237,6 +241,7 @@ impl Transit {
                 p >= 0.94 && self.edge_local(now, f32::from(reader.size.height)).is_none_or(|edge| edge >= f32::from(reader.size.height))
             }
             Verb::Close | Verb::Fold => p <= LANDED && now >= self.start + CLOSE_AFTER,
+            Verb::Peel => if self.carry.target() >= 0.5 { p >= 0.94 } else { p <= LANDED },
         }
     }
 }
@@ -353,6 +358,15 @@ fn plate_at(reader: Bounds<Pixels>, column: (Pixels, Pixels), row: Option<Bounds
     Bounds::from_corners(point(left, top), point(right.max(left), bottom.max(top)))
 }
 
+/// A Peel has no sideways travel: the source file opens above and below the
+/// actual declaration row, exposing exactly one page in every painted pixel.
+fn peel_at(reader: Bounds<Pixels>, row: Bounds<Pixels>, p: f32) -> Bounds<Pixels> {
+    let open = band(p, LANDED, 0.94);
+    let top = lerp(row.top().clamp(reader.top(), reader.bottom()), reader.top(), open);
+    let bottom = lerp(row.bottom().clamp(reader.top(), reader.bottom()), reader.bottom(), open);
+    Bounds::from_corners(point(reader.left(), top), point(reader.right(), bottom.max(top)))
+}
+
 /// What of the reader the plate leaves uncovered, as (at most) two bands.
 fn uncovered(reader: Bounds<Pixels>, plate: Bounds<Pixels>, has_row: bool) -> [Bounds<Pixels>; 2] {
     let none = Bounds::new(reader.origin, size(Pixels::ZERO, Pixels::ZERO));
@@ -375,9 +389,16 @@ pub(crate) struct Reader {
     pub(crate) targets: Targets,
     hover: HoverIntent,
     scroll: ScrollHandle,
+    /// Recent viewport offsets keyed by exact route and overlay.
+    scroll_memory: Vec<RouteScroll>,
+    /// Applied only after the destination content can paint.
+    pending_scroll_restore: Option<(u64, Point<Pixels>)>,
     /// Bring the focused target into view in the next frame's prepaint (a
     /// keyboard walk, or a reflow that may have moved it).
     reveal: Rc<Cell<bool>>,
+    /// Initial source-line focus, latched once per exact place and resource
+    /// revision so ordinary frames never steal focus back from the user.
+    source_focus_applied: Rc<Cell<Option<(u64, u32, Option<crate::core::VersionedRoot>)>>>,
     /// What the last frame was laid out for: width, height, text scale,
     /// density. A change is a reflow.
     laid_out: Option<(Pixels, Pixels, f32, facet::Density)>,
@@ -433,7 +454,10 @@ impl Reader {
             targets: Targets::named("reader"),
             hover: HoverIntent::default(),
             scroll: ScrollHandle::new(),
+            scroll_memory: Vec::new(),
+            pending_scroll_restore: None,
             reveal: Rc::new(Cell::new(false)),
+            source_focus_applied: Rc::new(Cell::new(None)),
             laid_out: None,
             lens: Lens::Reference,
             route: snapshot.route().clone(),
@@ -630,6 +654,9 @@ impl Reader {
         // from A to C, not a skeleton for B leaving and one for C arriving.
         // Drop each unpainted place (the first one, before any frame, stays:
         // there is nothing older) and arrive from the last one painted.
+        if let Some(current) = self.places.last().filter(|place| Some(place.key) == self.painted) {
+            self.remember_scroll(current.route.clone(), current.overlay, self.scroll.offset());
+        }
         let collapsed = drop_unpainted(&mut self.places, self.painted);
         if collapsed && let Some(last) = self.places.last() {
             self.route = last.route.clone();
@@ -672,13 +699,43 @@ impl Reader {
         });
         if !view_switch {
             self.lens = Lens::Reference;
-            // Back puts the parent where it was, so its row is where you left it.
-            let back = arrival.as_ref().filter(|arrival| arrival.verb == Verb::Close);
-            let scroll = back.and_then(|_| self.places.iter().rev().nth(1)).and_then(|leaving| leaving.opened.clone().flatten());
-            self.scroll.set_offset(scroll.map_or(point(px(0.0), px(0.0)), |origin| origin.scroll));
         }
+        // Back puts the parent where it was, so its opened row takes
+        // precedence. Other visits restore this exact route's recent offset.
+        let back = arrival.as_ref().filter(|arrival| arrival.verb == Verb::Close);
+        let opened = back
+            .and_then(|_| self.places.iter().rev().nth(1))
+            .and_then(|leaving| leaving.opened.clone().flatten());
+        let restored = opened
+            .map(|origin| origin.scroll)
+            .or_else(|| self.saved_scroll(next, overlay));
+        self.pending_scroll_restore = Some((
+            self.descents,
+            restored.unwrap_or(point(px(0.0), px(0.0))),
+        ));
         self.arrival = arrival.map(|arrival| Arrival { key: self.descents, ..arrival });
         self.targets.new_page();
+    }
+
+    fn remember_scroll(&mut self, route: Route, overlay: Option<Overlay>, offset: Point<Pixels>) {
+        self.scroll_memory
+            .retain(|saved| saved.route != route || saved.overlay != overlay);
+        self.scroll_memory.push(RouteScroll { route, overlay, offset });
+        if self.scroll_memory.len() > MAX_ROUTE_SCROLL_MEMORY {
+            let excess = self.scroll_memory.len() - MAX_ROUTE_SCROLL_MEMORY;
+            self.scroll_memory.drain(..excess);
+        }
+    }
+
+    fn saved_scroll(&mut self, route: &Route, overlay: Option<Overlay>) -> Option<Point<Pixels>> {
+        let index = self
+            .scroll_memory
+            .iter()
+            .position(|saved| saved.route == *route && saved.overlay == overlay)?;
+        let saved = self.scroll_memory.remove(index);
+        let offset = saved.offset;
+        self.scroll_memory.push(saved);
+        Some(offset)
     }
 
     /// Which plate move a place change plays, and what it needs from the
@@ -706,7 +763,13 @@ impl Reader {
             (true, true) => return None,
             (false, false) => {}
         }
-        if matches!(way, Way::View | Way::GraphPage) {
+        if way == Way::View {
+            let page_code = matches!((&self.route, next), (Route::Symbol(from), Route::Symbol(to))
+                if from.same_place(to)
+                    && matches!((from.view, to.view), (View::Page, View::Code) | (View::Code, View::Page)));
+            return page_code.then(|| arrival(Verb::Peel, Vec::new(), None));
+        }
+        if way == Way::GraphPage {
             return None;
         }
         let leaving = place_keys(&current.route, current.overlay).into_iter().next();
@@ -755,6 +818,64 @@ impl Reader {
             rect.size.height > Pixels::ZERO && rect.top() >= reader.top() - px(1.0) && rect.bottom() <= reader.bottom() + px(1.0)
         };
         match arrival.verb {
+            Verb::Peel => {
+                let Some((route, _)) = route_of(&self.places, arrival.leaving) else { return };
+                let Some(symbol) = route_symbol(&route) else { return };
+                let Some((target_route, target_overlay)) = arriving.as_ref() else { return };
+                if !content_loaded(self.links.store.read(cx), &place_keys(target_route, *target_overlay)) {
+                    // A source or page still loading must show its honest
+                    // loading state; never unroll a skeleton as if it were
+                    // the arrived declaration.
+                    return;
+                }
+                let code = if matches!(&route, Route::Symbol(symbol) if symbol.view == View::Code) {
+                    Some(route.clone())
+                } else {
+                    arriving.as_ref().map(|(route, _)| route.clone())
+                };
+                let source_line = code.as_ref().and_then(|route| {
+                    let Route::Symbol(route) = route else { return None };
+                    route.line.or_else(|| self.links.store.read(cx).source(&symbol).loaded_value()
+                        .and_then(|view| view.declaration.known().map(|span| span.first)))
+                });
+                let code_row = source_line.and_then(|line| self.targets.bounds_of(source_line_shared_id(line).as_str()));
+                let hero = facet::motion::shared::last_bounds(crate::shell::kit::shared_id(&symbol), window, cx);
+                let row = if matches!(&route, Route::Symbol(symbol) if symbol.view == View::Code) {
+                    code_row.or(hero)
+                } else {
+                    hero.or(code_row)
+                }.filter(shown);
+                let Some(row) = row else { return };
+                let reversed = live.as_ref().filter(|transit| transit.verb == Verb::Peel
+                    && transit.inside == arrival.leaving && route_of(&self.places, transit.outside) == arriving);
+                let resumed = live.as_ref().filter(|transit| transit.verb == Verb::Peel
+                    && transit.outside == arrival.leaving && route_of(&self.places, transit.inside) == arriving);
+                self.transit = Some(if let Some(transit) = reversed.or(resumed) {
+                    let mut transit = transit.clone();
+                    transit.carry.retarget(if reversed.is_some() { 0.0 } else { 1.0 }, now);
+                    if reversed.is_some() { transit.outside = arrival.key; }
+                    else { transit.inside = arrival.key; }
+                    transit.start = now;
+                    transit.scroll = arrival.scroll;
+                    transit
+                } else {
+                    Transit {
+                        verb: Verb::Peel,
+                        inside: arrival.key,
+                        outside: arrival.leaving,
+                        row: Some(row),
+                        row_id: None,
+                        find: None,
+                        carry: Carry::new(0.0, 1.0, now),
+                        start: now,
+                        scroll: arrival.scroll,
+                        fold: None,
+                        print_after: Duration::ZERO,
+                        gem: None,
+                        symbol: None,
+                    }
+                });
+            }
             Verb::Open => {
                 // The row under the pointer, else the one the keyboard stood
                 // on, else the first on screen that links here.
@@ -929,8 +1050,8 @@ impl Reader {
         }
     }
 
-    /// The reader's column geometry for a snapshot's place.
-    fn layout(&self, snapshot: &AppSnapshot, measure: &Measure, facet: &facet::Facet) -> Layout {
+    /// The reader's column geometry for one exact place.
+    fn layout(&self, route: &Route, overlay: Option<Overlay>, measure: &Measure, facet: &facet::Facet) -> Layout {
         let width = self.core.width();
         let room = measure.fluid_room();
         // The gutters glide from 16 px on a phone to the design's 40; nothing
@@ -938,8 +1059,8 @@ impl Reader {
         let pad = READER_PAD.at(room);
         let content = (width - pad * 2.0).max(px(0.0));
         let scale = measure.scale();
-        let notes_possible = matches!(snapshot.route(), Route::Symbol(route) if route.view == View::Code)
-            && snapshot.overlay().is_none();
+        let notes_possible = matches!(route, Route::Symbol(route) if route.view == View::Code)
+            && overlay.is_none();
         let margin_notes = self.core.modes().settle(&NOTES, room).mode == Notes::Beside;
         let wide = margin_notes && notes_possible;
         let gutter = px(GUTTER * facet.density.space() * scale);
@@ -948,7 +1069,7 @@ impl Reader {
         // A declaration page (the simple symbol page) lays out its own
         // column and rail from the whole room; every other page reads at the
         // folio's measure.
-        let own_width = matches!(snapshot.route(), Route::Symbol(route) if route.view == View::Page) && snapshot.overlay().is_none();
+        let own_width = matches!(route, Route::Symbol(route) if route.view == View::Page) && overlay.is_none();
         let folio = if own_width { content } else { px(FOLIO * scale).min((content - beside).max(px(0.0))) };
         Layout {
             pad,
@@ -1017,14 +1138,19 @@ impl Reader {
             (true, Some(node)) => (node.left(), node.right()),
             _ => column,
         };
-        let plate = plate_at(reader, column, transit.row, p);
-        let plate_course = Course::of(|p| plate_at(reader, column, transit.row, p), p, transit.carry.target());
+        let plate_at = |p| match (transit.verb, transit.row) {
+            (Verb::Peel, Some(row)) => peel_at(reader, row, p),
+            _ => plate_at(reader, column, transit.row, p),
+        };
+        let plate = plate_at(p);
+        let plate_course = Course::of(plate_at, p, transit.carry.target());
         let height = f32::from(reader.size.height);
         let edge = transit.edge_local(now, height).map(|local| {
             let y = reader.top() + px(local);
             match transit.verb {
                 Verb::Open | Verb::Unfold => Edge::down(y, px(PRINT_SETTLE * scale), px(PRINT_SPEED * scale * 32.0)),
                 Verb::Close | Verb::Fold => Edge::fold(y),
+                Verb::Peel => unreachable!("Peel has no print edge"),
             }
         });
         // The gem travels between the hero and the node on the plate's own
@@ -1041,7 +1167,7 @@ impl Reader {
         };
         let gem = ends.map(|(kind, node, hero)| (kind, lerp_rect(node, hero, band(p, LANDED, 0.9))));
         let gem_course = ends.map(|(_, node, hero)| Course::of(|p| lerp_rect(node, hero, band(p, LANDED, 0.9)), p, transit.carry.target()));
-        let drift = if graph { 0.0 } else { DRIFT * scale };
+        let drift = if graph || transit.verb == Verb::Peel { 0.0 } else { DRIFT * scale };
         Some(Staged {
             verb: transit.verb,
             p,
@@ -1175,8 +1301,14 @@ fn content_loaded(store: &DataStore, keys: &[PageKey]) -> bool {
         PageKey::Symbol(symbol) => store.symbol(symbol).is_loaded(),
         PageKey::Package(package) => store.package(package).is_loaded(),
         PageKey::Orbit => store.orbit().is_loaded(),
-        PageKey::Source(_) | PageKey::Health | PageKey::Browse(_) | PageKey::Search(_) => true,
+        PageKey::Source(symbol) => store.source(symbol).is_loaded(),
+        PageKey::Health | PageKey::Browse(_) | PageKey::Search(_) => true,
     })
+}
+
+/// Stable shared-element key for a one-based source row.
+pub(crate) fn source_line_shared_id(line: u32) -> SharedString {
+    format!("source-line-{line}").into()
 }
 
 fn drop_unpainted(places: &mut Vec<Place>, painted: Option<u64>) -> bool {
@@ -1204,6 +1336,15 @@ struct Place {
     /// Reached by a hop forward (an Open, not a Back): a declaration page
     /// rings the declaration it came from.
     hop: bool,
+}
+
+const MAX_ROUTE_SCROLL_MEMORY: usize = 64;
+
+#[derive(Clone)]
+struct RouteScroll {
+    route: Route,
+    overlay: Option<Overlay>,
+    offset: Point<Pixels>,
 }
 
 /// The reader's column geometry for one frame.
@@ -1297,6 +1438,8 @@ impl Reader {
         let mut hero = Vec::new();
         let mut scratch_hover = HoverIntent::default();
         let mut hover = if current { std::mem::take(&mut self.hover) } else { HoverIntent::default() };
+        let source_generation = route_symbol(&place.route)
+            .and_then(|symbol| pages.source(&symbol).value_root());
         let leaves = {
             let symbol_disclosure = route_symbol(&place.route).map(|symbol| self.symbol_disclosure(&symbol)).unwrap_or_default();
             let mut ctx = Ctx {
@@ -1312,6 +1455,10 @@ impl Reader {
                 links: &links,
                 targets: &targets,
                 reader_scroll: self.scroll.clone(),
+                reader_reveal: Rc::clone(&self.reveal),
+                source_focus_applied: Rc::clone(&self.source_focus_applied),
+                place_key: place.key,
+                source_generation,
                 lens: if current { self.lens } else { place.lens },
                 said: &mut said,
                 hero: &mut hero,
@@ -1378,7 +1525,7 @@ impl Render for Reader {
             self.find_held.clear();
         }
         let on_graph = bodies::graph::is_graph(snapshot.route()) && snapshot.overlay().is_none();
-        let layout = self.layout(&snapshot, &measure, &facet);
+        let layout = self.layout(snapshot.route(), snapshot.overlay(), &measure, &facet);
         let Layout { pad, top, folio, beside, content, .. } = layout;
         let scale = measure.scale();
         let Some(current) = self.places.last().cloned() else {
@@ -1388,7 +1535,20 @@ impl Render for Reader {
         // way" is not a page that can leave (a route that supersedes it cuts
         // past it, and the change in flight goes on to the newer route).
         if content_loaded(self.links.store.read(cx), &place_keys(&current.route, current.overlay)) {
+            if let Some((key, offset)) = self.pending_scroll_restore.take() {
+                if key == current.key {
+                    self.scroll.set_offset(offset);
+                } else {
+                    self.pending_scroll_restore = Some((key, offset));
+                }
+            }
             self.painted = Some(current.key);
+        } else if self
+            .pending_scroll_restore
+            .as_ref()
+            .is_some_and(|(key, _)| *key != current.key)
+        {
+            self.pending_scroll_restore = None;
         }
         // The place change in flight, this frame (window space).
         let reader = self.frame.get();
@@ -1419,6 +1579,7 @@ impl Render for Reader {
                 Verb::Open => transit.outside,
                 Verb::Close | Verb::Fold => transit.inside,
                 Verb::Unfold => return None,
+                Verb::Peel => if current.key == transit.inside { transit.outside } else { transit.inside },
             };
             self.places.iter().find(|place| place.key == key).cloned()
         });
@@ -1525,6 +1686,7 @@ impl Render for Reader {
         let drift = staged.map_or(Pixels::ZERO, |staged| match staged.verb {
             Verb::Open | Verb::Unfold => staged.inside_drift,
             Verb::Close | Verb::Fold => staged.outside_drift,
+            Verb::Peel => Pixels::ZERO,
         });
         let stack = div()
             .relative()
@@ -1577,6 +1739,23 @@ impl Render for Reader {
             );
         }
         match (staged, transit.as_ref(), leaving) {
+            (Some(staged), Some(transit), Some(leaving)) if staged.verb == Verb::Peel => {
+                let frame = reader.unwrap_or(staged.plate);
+                let leaving_layout = self.layout(&leaving.route, leaving.overlay, &measure, &facet);
+                if current.key == transit.inside {
+                    // Entering Code or Page: the old view remains outside the
+                    // unrolling strip. Its pixels are covered by one opaque
+                    // plate before the arriving text is drawn inside it.
+                    let old = self.still_page(&leaving, transit.scroll, frame, None, Pixels::ZERO, &snapshot, &leaving_layout, &facet, window, cx);
+                    root = root.child(old).child(plate_ground(&staged)).child(masked(staged.plate, scroller));
+                } else {
+                    // A mid-flight Back contracts the same strip from its
+                    // painted position and velocity; the newly current view
+                    // is already visible around it.
+                    let old = self.still_page(&leaving, transit.scroll, staged.plate, None, Pixels::ZERO, &snapshot, &leaving_layout, &facet, window, cx);
+                    root = root.child(scroller).child(plate_ground(&staged)).child(old);
+                }
+            }
             (Some(staged), Some(transit), Some(leaving)) if staged.verb == Verb::Open => {
                 // The old page stays where it was, drifting left, cut to what
                 // the plate has not reached; the new page is on the plate.
@@ -1856,6 +2035,30 @@ mod transit_tests {
     use gpui::{Bounds, PaintedText, Pixels, TestAppContext, point, px, size};
     use std::collections::BTreeSet;
     use std::time::Duration;
+
+    #[test]
+    fn page_code_peel_opens_from_the_measured_line_and_reverses_without_lateral_motion() {
+        let reader = Bounds::new(point(px(24.0), px(40.0)), size(px(320.0), px(520.0)));
+        let row = Bounds::new(point(px(86.0), px(292.0)), size(px(178.0), px(22.0)));
+        let start = super::peel_at(reader, row, 0.0);
+        assert_eq!((start.left(), start.right()), (reader.left(), reader.right()));
+        assert_eq!((start.top(), start.bottom()), (row.top(), row.bottom()));
+        let mut prior = start;
+        for progress in [0.12, 0.35, 0.62, 0.84, 0.94, 1.0] {
+            let plate = super::peel_at(reader, row, progress);
+            assert_eq!((plate.left(), plate.right()), (reader.left(), reader.right()));
+            assert!(plate.top() <= prior.top() && plate.bottom() >= prior.bottom(), "the same plate grows around the line");
+            assert!(plate.top() <= row.top() && plate.bottom() >= row.bottom(), "the declaration line stays covered");
+            prior = plate;
+        }
+        assert_eq!(prior, reader);
+        for progress in [0.84, 0.62, 0.35, 0.12, 0.0] {
+            let plate = super::peel_at(reader, row, progress);
+            assert!(plate.top() >= prior.top() && plate.bottom() <= prior.bottom(), "Back contracts the same plate");
+            prior = plate;
+        }
+        assert_eq!(prior, start);
+    }
 
     /// One drawn frame: the plate (if a change is in flight), the driver, the
     /// tints, the targets and every painted text line.

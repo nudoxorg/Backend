@@ -11,10 +11,12 @@ use crate::model::pages::{
     AdvisorySummary, Arrival, ByteSpan, DeclFacts, DeclRef, Dependency, DependencyScope,
     Derivation, DocEntry, DocFragment, DocSection, DocSections, Downloads, Excerpt, FaultProgress, FileSpan, Gap, GapReason, HealthModel,
     IdentifierSpan, IndexedPackage, IngestModel, Known, LanguageProgress, LineSpan, MatchReason,
-    Member, Members, MethodGroup, OrbitModel, OrbitProject, OutlineNode, OutlinePosition,
+    Member, Members, MembersCoverage, MethodGroup, NameLinkCoverage, OrbitModel, OrbitProject,
+    OutlineNode, OutlinePosition,
     OutlineTree, PackageDossier, PackageRecord, PackageRef, Provenance, Readiness, Receiver,
     RecordSource, ReferenceScope, ReferenceSite, Relation, RelationKind, Rose, SearchContinuation,
-    SearchPage, SearchRow, SignatureText, SignatureToken, SourceLocation, SourceOrigin,
+    SearchPage, SearchRow, SignatureText, SignatureToken, SourceCoverage, SourceLocation,
+    SourceOrigin,
     SourceSite, SourceText, SourceView, Standing, SymbolLink, SymbolPage, SymbolRef, TokenClass,
     TreeNode, TreeOpener, TreeSubject, VersionEntry,
 };
@@ -44,6 +46,42 @@ pub struct OutlineIndex {
     children: HashMap<Option<SymbolKey>, Vec<usize>>,
     by_name: HashMap<String, Vec<usize>>,
     complete: bool,
+}
+
+/// Borrowed proof that name lookup covers the complete admitted outline.
+/// There is no public constructor that can upgrade a partial outline.
+pub struct CompleteNameLookup<'a> {
+    outline: &'a OutlineIndex,
+}
+
+impl<'a> CompleteNameLookup<'a> {
+    /// Resolves a name only across the complete package row set.
+    #[must_use]
+    pub fn resolve(
+        &self,
+        name: &str,
+        accept: impl Fn(Option<DeclarationKind>) -> bool,
+    ) -> Option<&'a Row> {
+        let candidates = self.outline.by_name.get(name)?;
+        let mut best: Option<(u8, &Row)> = None;
+        let mut tie = false;
+        for index in candidates {
+            let row = &self.outline.rows[*index];
+            if !accept(row.kind) || is_encoded_signature(row.signature.as_deref().unwrap_or("")) {
+                continue;
+            }
+            let rank = name_rank(row.kind);
+            match best {
+                Some((current, _)) if rank > current => {}
+                Some((current, _)) if rank == current => tie = true,
+                _ => {
+                    best = Some((rank, row));
+                    tie = false;
+                }
+            }
+        }
+        if tie { None } else { best.map(|(_, row)| row) }
+    }
 }
 
 impl OutlineIndex {
@@ -86,6 +124,14 @@ impl OutlineIndex {
     #[must_use]
     pub const fn is_complete(&self) -> bool {
         self.complete
+    }
+
+    /// Grants name-based resolution only when the package-wide index is
+    /// complete. Exact producer-key and coordinate lookups remain available
+    /// on a partial outline through [`Self::row`] and [`Self::row_by_label`].
+    #[must_use]
+    pub fn complete_names(&self) -> Option<CompleteNameLookup<'_>> {
+        self.complete.then_some(CompleteNameLookup { outline: self })
     }
 
     /// Returns the number of indexed rows.
@@ -171,26 +217,13 @@ impl OutlineIndex {
     /// Resolves an identifier to one declaration by name, preferring
     /// nominal types and contracts. Ambiguous names resolve to nothing.
     #[must_use]
-    pub fn resolve_name(&self, name: &str, accept: impl Fn(Option<DeclarationKind>) -> bool) -> Option<&Row> {
-        let candidates = self.by_name.get(name)?;
-        let mut best: Option<(u8, &Row)> = None;
-        let mut tie = false;
-        for index in candidates {
-            let row = &self.rows[*index];
-            if !accept(row.kind) || is_encoded_signature(row.signature.as_deref().unwrap_or("")) {
-                continue;
-            }
-            let rank = name_rank(row.kind);
-            match best {
-                Some((current, _)) if rank > current => {}
-                Some((current, _)) if rank == current => tie = true,
-                _ => {
-                    best = Some((rank, row));
-                    tie = false;
-                }
-            }
-        }
-        if tie { None } else { best.map(|(_, row)| row) }
+    pub fn resolve_name(
+        &self,
+        name: &str,
+        accept: impl Fn(Option<DeclarationKind>) -> bool,
+    ) -> Option<&Row> {
+        let complete = self.complete_names()?;
+        complete.resolve(name, accept)
     }
 
     /// Builds the mosaic forest.
@@ -378,6 +411,11 @@ pub fn signature_text(
     Known::Known(SignatureText {
         text: Arc::from(text),
         tokens: tokens.into(),
+        name_link_coverage: match outline {
+            Some(outline) if outline.is_complete() => NameLinkCoverage::Complete,
+            Some(_) => NameLinkCoverage::Partial,
+            None => NameLinkCoverage::Unavailable,
+        },
     })
 }
 
@@ -782,6 +820,7 @@ pub fn members(
     // A callable's children are its local bindings, not members.
     if is_callable(centre_kind) {
         return Members {
+            coverage: members_coverage(outline),
             made_of: Arc::from([]),
             does: Arc::from([]),
             other: Arc::from([]),
@@ -817,9 +856,18 @@ pub fn members(
         })
         .collect::<Vec<_>>();
     Members {
+        coverage: members_coverage(outline),
         made_of: made_of.into(),
         does: does.into(),
         other: other.into(),
+    }
+}
+
+fn members_coverage(outline: Option<&OutlineIndex>) -> MembersCoverage {
+    match outline {
+        Some(outline) if outline.is_complete() => MembersCoverage::Complete,
+        Some(_) => MembersCoverage::Partial,
+        None => MembersCoverage::Unavailable,
     }
 }
 
@@ -1145,6 +1193,12 @@ pub fn outline_position(centre: RowId, outline: Option<&OutlineIndex>, failure: 
             Gap::new(GapReason::ReadFailed, "the package outline was not read")
         }));
     };
+    if !outline.is_complete() {
+        return Known::unknown(
+            GapReason::Unavailable,
+            "the package outline is partial; ancestry and sibling coverage are incomplete",
+        );
+    }
     let RowId::Symbol(key) = centre else {
         return Known::unknown(GapReason::NotCaptured, "the declaration has no symbol row");
     };
@@ -1271,17 +1325,22 @@ pub fn symbol_page(inputs: &SymbolInputs<'_>) -> SymbolPage {
             })
             .unwrap_or_default(),
     };
-    let members_known = if outline.is_some() || neighbourhood.is_some() {
-        Known::Known(members(kind, &children, outline))
-    } else {
-        Known::Unknown(
+    let members_known = match outline {
+        Some(outline) if outline.is_complete() => {
+            Known::Known(members(kind, &children, Some(outline)))
+        }
+        Some(_) => Known::unknown(
+            GapReason::Unavailable,
+            "the package outline is partial; the members ledger may omit declarations",
+        ),
+        None => Known::Unknown(
             inputs
                 .outline
                 .as_ref()
                 .err()
                 .cloned()
-                .unwrap_or_else(|| Gap::new(GapReason::ReadFailed, "members were not read")),
-        )
+                .unwrap_or_else(|| Gap::new(GapReason::Unavailable, "member coverage was not established")),
+        ),
     };
     let references = references(inputs.references, outline);
     SymbolPage {
@@ -1342,32 +1401,66 @@ fn line_offset(text: &str, line: u32) -> Option<usize> {
 }
 
 /// Checks a local file against the engine's excerpt at the declared line.
-/// Returns the file text only when the excerpt is found starting on that line.
+/// Returns whether that exact excerpt is present at the declared line.
 #[must_use]
 pub fn verify_local_file(file: &str, excerpt: &str, line: u32) -> bool {
+    verified_local_excerpt(file, excerpt, line).is_some()
+}
+
+fn verified_local_excerpt(file: &str, excerpt: &str, line: u32) -> Option<ByteSpan> {
     let Some(start) = line_offset(file, line) else {
-        return false;
+        return None;
     };
     let rest = &file[start..];
     let excerpt = excerpt.trim_end();
     if excerpt.is_empty() {
-        return false;
+        return None;
     }
     // The excerpt may begin after indentation on its first line.
     let line_end = rest.find('\n').unwrap_or(rest.len());
     let first_line = &rest[..line_end];
-    first_line
-        .find(excerpt.lines().next().unwrap_or_default().trim_start())
-        .is_some_and(|column| rest[column..].starts_with(excerpt))
+    let column = first_line.find(excerpt.lines().next().unwrap_or_default().trim_start())?;
+    if !rest.get(column..)?.starts_with(excerpt) {
+        return None;
+    }
+    let matched_start = start.checked_add(column)?;
+    let matched_end = matched_start.checked_add(excerpt.len())?;
+    ByteSpan::new(
+        u32::try_from(matched_start).ok()?,
+        u32::try_from(matched_end).ok()?,
+    )
 }
 
+/// Builds name links only from a complete outline and a byte region whose
+/// source provenance is exact. Emitted spans are non-overlapping and in byte
+/// order because the scanner advances across each complete identifier token;
+/// the source renderer relies on that invariant for interval seeking.
 fn identifier_spans(
     text: &str,
     own: Option<crate::model::pages::RowKey>,
     outline: Option<&OutlineIndex>,
+    verified_region: Option<ByteSpan>,
 ) -> Known<Arc<[IdentifierSpan]>> {
     let Some(outline) = outline else {
         return Known::unknown(GapReason::ReadFailed, "the package outline was not read");
+    };
+    if !outline.is_complete() {
+        return Known::unknown(
+            GapReason::Unavailable,
+            "the package outline is partial; name-based identifier links may be missing",
+        );
+    }
+    let (text, source_offset) = match verified_region {
+        Some(bytes) => {
+            let Some(region) = text.get(bytes.range()) else {
+                return Known::unknown(
+                    GapReason::Unavailable,
+                    "the verified source excerpt no longer matches its byte range",
+                );
+            };
+            (region, bytes.start as usize)
+        }
+        None => (text, 0),
     };
     let mut spans = Vec::new();
     let bytes = text.as_bytes();
@@ -1386,9 +1479,9 @@ fn identifier_spans(
                 })
                 && own.is_none_or(|own| !matches!(row.id, RowId::Symbol(key) if crate::model::pages::RowKey::from(key) == own))
                 && let (Some(span), Ok(target)) = (
-                    u32::try_from(start)
+                    u32::try_from(start.saturating_add(source_offset))
                         .ok()
-                        .zip(u32::try_from(index).ok())
+                        .zip(u32::try_from(index.saturating_add(source_offset)).ok())
                         .and_then(|(start, end)| ByteSpan::new(start, end)),
                     SymbolRef::new(&row.label),
                 )
@@ -1416,6 +1509,7 @@ pub fn source_view(
     coordinate: &SymbolRef,
     document: &Document,
     local_file: Option<&str>,
+    local_editor_path: Option<&str>,
     references: &Known<Arc<[ReferenceSite]>>,
     outline: Option<&OutlineIndex>,
 ) -> SourceView {
@@ -1448,23 +1542,36 @@ pub fn source_view(
     let location = site.location.known().cloned();
     let verified = match (local_file, &excerpt, &location) {
         (Some(file_text), Some(excerpt), Some(location)) => {
-            verify_local_file(file_text, &excerpt.text, location.line).then_some(file_text)
+            verified_local_excerpt(file_text, &excerpt.text, location.line)
+                .map(|bytes| (file_text, bytes))
         }
         _ => None,
     };
+    let editor_path = match (verified, local_editor_path) {
+        (Some(_), Some(path)) if !path.is_empty() => Known::Known(Arc::from(path)),
+        _ => Known::unknown(
+            GapReason::NotServed,
+            "a verified local source file is unavailable for editor handoff",
+        ),
+    };
     let text = match (verified, &excerpt, &location) {
-        (Some(file_text), Some(excerpt), _) => Known::Known(SourceText {
-            text: Arc::from(file_text),
-            first_line: 1,
-            origin: SourceOrigin::LocalFile,
-            complete: excerpt.complete,
-        }),
-        (None, Some(excerpt), location) => Known::Known(SourceText {
-            text: Arc::clone(&excerpt.text),
-            first_line: location.as_ref().map_or(1, |location| location.line),
-            origin: SourceOrigin::Excerpt,
-            complete: excerpt.complete,
-        }),
+        (Some((file_text, verified_bytes)), Some(excerpt), _) => {
+            Known::Known(
+                SourceText::new(
+                    Arc::from(file_text),
+                    1,
+                    SourceOrigin::LocalFile,
+                    excerpt.complete,
+                )
+                .with_verified_local_excerpt(verified_bytes),
+            )
+        }
+        (None, Some(excerpt), location) => Known::Known(SourceText::new(
+            Arc::clone(&excerpt.text),
+            location.as_ref().map_or(1, |location| location.line),
+            SourceOrigin::Excerpt,
+            excerpt.complete,
+        )),
         (_, None, _) => Known::Unknown(
             site.excerpt
                 .gap()
@@ -1480,32 +1587,41 @@ pub fn source_view(
             Known::Known,
         );
     let identifiers = match &text {
-        Known::Known(source) => identifier_spans(&source.text, symbol.key, outline),
+        Known::Known(source) => match source.coverage() {
+            SourceCoverage::CapturedExcerpt => {
+                identifier_spans(source.text(), symbol.key, outline, None)
+            }
+            SourceCoverage::LiveFileExcerptVerified { bytes } => {
+                identifier_spans(source.text(), symbol.key, outline, Some(bytes))
+            }
+            SourceCoverage::Unverified => Known::unknown(
+                GapReason::Unavailable,
+                "source links are disabled because live source bytes have no verified excerpt",
+            ),
+        },
         Known::Unknown(gap) => Known::Unknown(gap.clone()),
     };
     let (uses, uses_elsewhere) = match (references, &text, &file) {
-        (Known::Known(sites), Known::Known(source), Known::Known(path)) => {
-            let mut here = Vec::new();
-            let mut elsewhere = Vec::new();
-            for span in sites.iter().filter_map(|site| site.span.known()) {
-                let in_text = source.origin == SourceOrigin::LocalFile
-                    && span.file.as_ref() == path.as_ref()
-                    && (span.bytes.end as usize) <= source.text.len();
-                if in_text {
-                    here.push(span.bytes);
-                } else {
-                    elsewhere.push(span.clone());
+        (Known::Known(sites), Known::Known(source), Known::Known(_path)) => {
+            let detail = match source.coverage() {
+                SourceCoverage::CapturedExcerpt => {
+                    "use spans are file byte offsets and the producer serves only a declaration excerpt"
                 }
-            }
-            let uses = if source.origin == SourceOrigin::LocalFile {
-                Known::Known(here.into())
-            } else {
-                Known::unknown(
-                    GapReason::NotServed,
-                    "use spans are file byte offsets and the engine serves only the declaration excerpt",
-                )
+                SourceCoverage::LiveFileExcerptVerified { .. } => {
+                    "the live file is excerpt-verified only; no full-file digest proves use offsets"
+                }
+                SourceCoverage::Unverified => {
+                    "the displayed source bytes are not verified against the indexed producer"
+                }
             };
-            (uses, elsewhere)
+            (
+                Known::unknown(GapReason::NotServed, detail),
+                sites
+                    .iter()
+                    .filter_map(|site| site.span.known())
+                    .cloned()
+                    .collect(),
+            )
         }
         (Known::Unknown(gap), _, _) => (Known::Unknown(gap.clone()), Vec::new()),
         _ => (
@@ -1516,6 +1632,7 @@ pub fn source_view(
     SourceView {
         symbol,
         file,
+        editor_path,
         text,
         declaration,
         identifiers,
@@ -1824,18 +1941,39 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
         ) => Known::unknown(GapReason::Unavailable, text.as_str()),
         (_, other) => Known::Unknown(surface_gap(other, "dependencies")),
     };
-    let dependents = match inputs.dependents {
+    let (dependents, observed_dependents) = match inputs.dependents {
         Ok(SurfaceReply::Dependents(backend_library::RegistryMetadata::Recorded(records))) => {
-            Known::Known(records.iter().map(registry_record).collect::<Vec<_>>().into())
+            let observed: Arc<[PackageRecord]> =
+                records.iter().map(registry_record).collect::<Vec<_>>().into();
+            (Known::Known(Arc::clone(&observed)), observed)
         }
-        Ok(SurfaceReply::Dependents(backend_library::RegistryMetadata::NotRecorded(text))) => {
+        Ok(SurfaceReply::Dependents(backend_library::RegistryMetadata::Partial {
+            value: records,
+            reason,
+        })) if !local => {
+            let observed = records
+                .iter()
+                .map(registry_record)
+                .collect::<Vec<_>>()
+                .into();
+            (
+                Known::unknown(GapReason::Unknown, reason.as_str()),
+                observed,
+            )
+        }
+        Ok(SurfaceReply::Dependents(backend_library::RegistryMetadata::Partial { .. })) => (
+            Known::Unknown(local_gap("reverse dependencies")),
+            Arc::from([]),
+        ),
+        Ok(SurfaceReply::Dependents(backend_library::RegistryMetadata::NotRecorded(text))) => (
             if local {
                 Known::Unknown(local_gap("reverse dependencies"))
             } else {
                 Known::unknown(GapReason::NotRecorded, text.as_str())
-            }
-        }
-        other => Known::Unknown(surface_gap(other, "dependents")),
+            },
+            Arc::from([]),
+        ),
+        other => (Known::Unknown(surface_gap(other, "dependents")), Arc::from([])),
     };
     let outline = match &inputs.outline {
         Ok(index) => Known::Known(index.tree()),
@@ -1852,8 +1990,24 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
         versions,
         dependencies,
         dependents,
+        observed_dependents,
         outline,
         readme,
+        readme_markdown: match inputs.local {
+            Some(manifest) => manifest.readme_markdown.clone().map_or_else(
+                || Known::unknown(GapReason::NotRecorded, "the project has no retained README Markdown source"),
+                Known::Known,
+            ),
+            None => Known::Unknown(not_served("README Markdown source")),
+        },
+        readme_links: inputs.local.map_or_else(
+            || Known::Unknown(not_served("README link targets")),
+            |manifest| Known::Known(Arc::clone(&manifest.readme_links)),
+        ),
+        readme_headings: inputs.local.map_or_else(
+            || Known::Unknown(not_served("README heading targets")),
+            |manifest| Known::Known(Arc::clone(&manifest.readme_headings)),
+        ),
     }
 }
 
@@ -2191,6 +2345,163 @@ mod tests {
             RowSpec { label: identity.clone(), kind: DeclarationKind::Struct, signature: Some("pub struct Identity"), parent: Some(&identity_module), doc: Some("One parsed row identity."), site: Some(("identity.rs", 339)) },
         ];
         specs.iter().map(row).collect()
+    }
+
+    #[test]
+    fn name_links_require_complete_outline_but_exact_doc_keys_survive_partial_coverage() {
+        let foo = format!("{PRESENT}::src/lib.rs:3::Foo");
+        let consumer = format!("{PRESENT}::src/lib.rs:8::consume");
+        let rows = vec![
+            row(&RowSpec {
+                label: foo.clone(),
+                kind: DeclarationKind::Struct,
+                signature: Some("pub struct Foo"),
+                parent: None,
+                doc: None,
+                site: Some(("src/lib.rs", 3)),
+            }),
+            row(&RowSpec {
+                label: consumer.clone(),
+                kind: DeclarationKind::Function,
+                signature: Some("pub fn consume(value: Foo)"),
+                parent: None,
+                doc: None,
+                site: Some(("src/lib.rs", 8)),
+            }),
+        ];
+        let complete = OutlineIndex::new(rows.clone(), true);
+        let partial = OutlineIndex::new(rows, false);
+        let complete_signature = signature_text(
+            Some("pub fn consume(value: Foo)"),
+            Language::Rust,
+            None,
+            Some(&complete),
+        );
+        let partial_signature = signature_text(
+            Some("pub fn consume(value: Foo)"),
+            Language::Rust,
+            None,
+            Some(&partial),
+        );
+        assert!(complete_signature.known().unwrap().links().next().is_some());
+        assert!(partial_signature.known().unwrap().links().next().is_none());
+        assert_eq!(
+            complete_signature.known().unwrap().name_link_coverage,
+            NameLinkCoverage::Complete
+        );
+        assert_eq!(
+            partial_signature.known().unwrap().name_link_coverage,
+            NameLinkCoverage::Partial
+        );
+        assert_eq!(
+            complete
+                .complete_names()
+                .unwrap()
+                .resolve("Foo", is_type_like)
+                .unwrap()
+                .label,
+            foo
+        );
+        assert!(partial.complete_names().is_none());
+        assert!(partial.resolve_name("Foo", is_type_like).is_none());
+
+        let duplicate = format!("{PRESENT}::src/other.rs:3::Foo");
+        let partial_duplicates = OutlineIndex::new(
+            vec![
+                row(&RowSpec {
+                    label: foo.clone(),
+                    kind: DeclarationKind::Struct,
+                    signature: Some("pub struct Foo"),
+                    parent: None,
+                    doc: None,
+                    site: Some(("src/lib.rs", 3)),
+                }),
+                row(&RowSpec {
+                    label: duplicate,
+                    kind: DeclarationKind::Struct,
+                    signature: Some("pub struct Foo"),
+                    parent: None,
+                    doc: None,
+                    site: Some(("src/other.rs", 3)),
+                }),
+            ],
+            false,
+        );
+        assert!(partial_duplicates.resolve_name("Foo", is_type_like).is_none());
+
+        let partial_spans = identifier_spans("Foo", None, Some(&partial), None);
+        assert_eq!(
+            partial_spans.gap().map(|gap| gap.reason),
+            Some(GapReason::Unavailable)
+        );
+        let exact = doc_fragments(
+            &[Fragment::Link {
+                label: "Foo".to_owned(),
+                target: key(&foo),
+            }],
+            Some(&partial),
+        );
+        assert!(matches!(
+            exact.first(),
+            Some(DocFragment::Link { coordinate: Some(coordinate), .. })
+                if coordinate.as_str() == foo
+        ));
+    }
+
+    #[test]
+    fn partial_outline_never_claims_complete_members_or_ancestry() {
+        let rows = present_rows();
+        let outline = OutlineIndex::new(rows.clone(), false);
+        let page_label = present("page.rs:396::Page");
+        let centre = RowId::Symbol(key(&page_label));
+        let position = outline_position(centre, Some(&outline), None);
+        assert_eq!(
+            position.gap().map(|gap| gap.reason),
+            Some(GapReason::Unavailable)
+        );
+        assert!(position.gap().unwrap().detail.contains("partial"));
+        let children = outline.children(key(&page_label)).collect::<Vec<_>>();
+        let observed_members = members(Some(DeclarationKind::Struct), &children, Some(&outline));
+        assert_eq!(observed_members.coverage, MembersCoverage::Partial);
+
+        let coordinate = SymbolRef::new(&page_label).expect("coordinate");
+        let document = present_document(
+            &page_label,
+            "pub struct Page",
+            "One complete declaration page.",
+            ("page.rs", 396),
+            "pub struct Page {\n    prose: Box<[Prose]>,\n}",
+        );
+        let related_rows = rows
+            .iter()
+            .filter(|row| {
+                row.label == page_label
+                    || row.label == present("page.rs")
+                    || row.parent == Some(key(&page_label))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let failure = no_semantics();
+        let page = symbol_page(&SymbolInputs {
+            coordinate: &coordinate,
+            document: &document,
+            related: Ok(Neighbourhood {
+                rows: &related_rows,
+                relations: None,
+                rich: None,
+            }),
+            references: Err(&failure),
+            outline: Ok(&outline),
+        });
+        assert_eq!(
+            page.members.gap().map(|gap| gap.reason),
+            Some(GapReason::Unavailable)
+        );
+        assert!(page.members.gap().unwrap().detail.contains("partial"));
+        assert_eq!(
+            page.outline.gap().map(|gap| gap.reason),
+            Some(GapReason::Unavailable)
+        );
     }
 
     #[test]
@@ -2561,6 +2872,34 @@ mod tests {
         assert_eq!(dossier.outline.gap().map(|gap| gap.detail.as_ref()), Some("outline refused"));
     }
 
+    #[test]
+    fn partial_reverse_dependencies_keep_observed_rows_without_claiming_completeness() {
+        let package = PackageRef::parse("pkg:cargo/beta@1.0.0").expect("package");
+        let dependents = SurfaceReply::Dependents(backend_library::RegistryMetadata::Partial {
+            value: Box::new([crate::runtime::tests::registry_record("alpha", "2.0.0")]),
+            reason: backend_library::ProductText::from_static(
+                "some registry sources could not be queried",
+            ),
+        });
+        let unavailable = no_semantics();
+        let dossier = package_dossier(&PackageInputs {
+            package: &package,
+            records: Err(&unavailable),
+            versions: Err(&unavailable),
+            dependencies: Err(&unavailable),
+            dependents: Ok(&dependents),
+            outline: Err(Gap::new(GapReason::ReadFailed, "not needed")),
+            local: None,
+        });
+
+        assert!(dossier.dependents.known().is_none());
+        assert_eq!(dossier.observed_dependents.len(), 1);
+        assert_eq!(dossier.observed_dependents[0].name.as_ref(), "alpha");
+        let gap = dossier.dependents.gap().expect("partial coverage gap");
+        assert_eq!(gap.reason, GapReason::Unknown);
+        assert!(gap.detail.contains("some registry sources"));
+    }
+
     /// The toml/present package-page bug: a package can be *both* registry-
     /// shaped (the "package" surface reply matches, so `standing`/
     /// `downloads`/etc. are real registry facts) *and* locally readable
@@ -2597,6 +2936,9 @@ mod tests {
             keywords: Arc::from([]),
             categories: Arc::from([]),
             readme: Arc::from([]),
+            readme_markdown: None,
+            readme_links: Arc::from([]),
+            readme_headings: Arc::from([]),
             dependencies: Arc::from([]),
             features: Arc::from([]),
             members: 0,
@@ -2641,6 +2983,9 @@ mod tests {
             keywords: Arc::from([]),
             categories: Arc::from([]),
             readme: Arc::from([ReadmeBlock::Paragraph(Arc::from("Presentation model."))]),
+            readme_markdown: None,
+            readme_links: Arc::from([]),
+            readme_headings: Arc::from([]),
             dependencies: Arc::from([LocalDependency {
                 name: Arc::from("backend-library"),
                 requirement: Arc::from("*"),
@@ -2718,6 +3063,9 @@ mod tests {
             keywords: Arc::from([]),
             categories: Arc::from([]),
             readme: Arc::from([ReadmeBlock::Paragraph(Arc::from("From the checkout."))]),
+            readme_markdown: None,
+            readme_links: Arc::from([]),
+            readme_headings: Arc::from([]),
             dependencies: Arc::from([LocalDependency {
                 name: Arc::from("local-only"),
                 requirement: Arc::from("0.1"),
@@ -2792,6 +3140,9 @@ mod tests {
             keywords: Arc::from([]),
             categories: Arc::from([]),
             readme: Arc::from([ReadmeBlock::Paragraph(Arc::from("Visible."))]),
+            readme_markdown: None,
+            readme_links: Arc::from([]),
+            readme_headings: Arc::from([]),
             dependencies: Arc::from([]),
             features: Arc::from([]),
             members: 0,
@@ -2856,17 +3207,19 @@ mod tests {
     }
 
     #[test]
-    fn a_local_source_view_is_the_whole_verified_file_with_linked_identifiers() {
+    fn local_file_source_links_only_excerpt_verified_identifiers() {
         let rows = present_rows();
         let outline = OutlineIndex::new(rows, true);
         let label = present("page.rs:3::render");
         let file = "use crate::Page;\n\npub fn render(page: &Page) -> Identity {\n    page.identity().clone()\n}\n";
+        let captured_excerpt =
+            "pub fn render(page: &Page) -> Identity {\n    page.identity().clone()\n}";
         let mut document = present_document(
             &label,
             "pub fn render(page: &Page) -> Identity",
             "Renders one page.",
             ("page.rs", 3),
-            "pub fn render(page: &Page) -> Identity {\n    page.identity().clone()\n}",
+            captured_excerpt,
         );
         document.symbol = key(&label);
         let coordinate = SymbolRef::new(&label).expect("coordinate");
@@ -2880,36 +3233,54 @@ mod tests {
             }),
             scope: ReferenceScope::Local,
         }]));
-        let view = source_view(&coordinate, &document, Some(file), &uses, Some(&outline));
+        let view = source_view(&coordinate, &document, Some(file), Some("/fixture/page.rs"), &uses, Some(&outline));
         let text = view.text.known().expect("source text");
         assert_eq!(text.origin, SourceOrigin::LocalFile);
         assert_eq!(text.first_line, 1);
-        assert_eq!(text.text.as_ref(), file);
+        assert_eq!(text.text(), file);
+        let verified_start = u32::try_from(file.find("pub fn render").expect("excerpt start"))
+            .expect("source offset");
+        let verified_end = verified_start
+            + u32::try_from(captured_excerpt.trim_end().len()).expect("excerpt length");
+        assert_eq!(
+            text.coverage(),
+            SourceCoverage::LiveFileExcerptVerified {
+                bytes: ByteSpan::new(verified_start, verified_end).expect("verified range"),
+            }
+        );
         assert_eq!(view.declaration.known(), Some(&LineSpan { first: 3, last: 5 }));
         assert_eq!(view.file.known().map(AsRef::as_ref), Some("page.rs"));
+        assert_eq!(view.editor_path.known().map(AsRef::as_ref), Some("/fixture/page.rs"));
         let linked = view
             .identifiers
             .known()
             .expect("identifiers")
             .iter()
-            .map(|span| (&text.text[span.span.range()], span.link.target.as_str().to_owned()))
+            .map(|span| (&text.text()[span.span.range()], span.link.target.as_str().to_owned()))
             .collect::<Vec<_>>();
+        assert!(view
+            .identifiers
+            .known()
+            .expect("identifiers")
+            .windows(2)
+            .all(|pair| pair[0].span.end <= pair[1].span.start));
         assert_eq!(
             linked,
             [
                 ("Page", present("page.rs:396::Page")),
-                ("Page", present("page.rs:396::Page")),
                 ("Identity", present("identity.rs:339::Identity")),
             ]
         );
-        let uses = view.uses.known().expect("uses in this file");
-        assert_eq!(&text.text[uses[0].range()], "Page");
+        let uses_gap = view.uses.gap().expect("whole-file offsets stay unplaced");
+        assert!(uses_gap.detail.contains("no full-file digest"));
+        assert_eq!(view.uses_elsewhere.len(), 1);
 
         // A file that no longer matches the excerpt is not trusted.
         let stale = "// edited since indexing\n";
-        let view = source_view(&coordinate, &document, Some(stale), &Known::Known(Arc::from([])), Some(&outline));
+        let view = source_view(&coordinate, &document, Some(stale), Some("/fixture/page.rs"), &Known::Known(Arc::from([])), Some(&outline));
         let text = view.text.known().expect("excerpt text");
         assert_eq!(text.origin, SourceOrigin::Excerpt);
+        assert!(view.editor_path.known().is_none());
         assert_eq!(text.first_line, 3);
         assert_eq!(view.uses.gap().map(|gap| gap.reason), Some(GapReason::NotServed));
     }
