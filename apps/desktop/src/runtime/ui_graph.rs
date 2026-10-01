@@ -12,7 +12,7 @@ use super::coordinator::{DesktopRuntime, RequestOutcome, RuntimeEvent};
 use super::reads::ReadPool;
 use super::store::DataStore;
 use crate::core::{IntentDispatcher, ProducerAuthority, SnapshotReadModel};
-use crate::model::{AppSnapshot, PersistentState};
+use crate::model::{AppSnapshot, ConnectionStatus, PersistentState};
 use crate::navigation::{FolderPickerOutcome, Intent, OrbitRoute, PackageLane, PackageRoute, Route, View};
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, PathPromptOptions, Task};
 use std::collections::BTreeSet;
@@ -34,14 +34,19 @@ struct ConnectionProbeLatch {
 
 struct ActiveConnectionProbe {
     request: crate::navigation::RequestId,
+    previous: ConnectionStatus,
 }
 
 impl ConnectionProbeLatch {
-    fn begin(&mut self, request: crate::navigation::RequestId) -> bool {
+    fn begin(
+        &mut self,
+        request: crate::navigation::RequestId,
+        previous: ConnectionStatus,
+    ) -> bool {
         if self.active.is_some() {
             return false;
         }
-        self.active = Some(ActiveConnectionProbe { request });
+        self.active = Some(ActiveConnectionProbe { request, previous });
         true
     }
 
@@ -54,13 +59,16 @@ impl ConnectionProbeLatch {
         if active.request != request {
             return None;
         }
+        let previous = active.previous;
         self.active.take()?;
         Some(match outcome {
             RequestOutcome::Succeeded => Intent::ConnectionResult { connected: true },
             RequestOutcome::Failed => Intent::ConnectionResult { connected: false },
             RequestOutcome::Cancelled
             | RequestOutcome::Superseded
-            | RequestOutcome::Refused(_) => Intent::ConnectionProbeAborted,
+            | RequestOutcome::Refused(_) => Intent::ConnectionProbeAborted {
+                previous,
+            },
         })
     }
 
@@ -288,7 +296,8 @@ impl UiRootEntity {
             Intent::TestConnection => {
                 if !self.connection_probe.is_active() {
                     let request = self.runtime.allocate_request();
-                    if self.connection_probe.begin(request) {
+                    let previous = self.snapshot().settings().connection;
+                    if self.connection_probe.begin(request, previous) {
                         self.dispatch_runtime(Intent::TestConnection, cx);
                         self.dispatch_runtime(
                             Intent::RefreshRoot {
@@ -637,21 +646,23 @@ mod connection_probe_tests {
         let first = crate::navigation::RequestId::new(701);
         let second = crate::navigation::RequestId::new(702);
 
-        assert!(probe.begin(first));
+        assert!(probe.begin(first, ConnectionStatus::Disconnected));
         assert_eq!(
             probe.finish(crate::navigation::RequestId::new(799), RequestOutcome::Succeeded),
             None,
             "an unrelated request terminal cannot release this probe"
         );
-        assert!(!probe.begin(second));
+        assert!(!probe.begin(second, ConnectionStatus::Unknown));
         assert_eq!(
             probe.finish(first, RequestOutcome::Superseded),
-            Some(Intent::ConnectionProbeAborted)
+            Some(Intent::ConnectionProbeAborted {
+                previous: ConnectionStatus::Disconnected,
+            })
         );
         assert_eq!(probe.finish(first, RequestOutcome::Succeeded), None);
         assert!(!probe.is_active());
 
-        assert!(probe.begin(second));
+        assert!(probe.begin(second, ConnectionStatus::Connected));
         assert_eq!(
             probe.finish(second, RequestOutcome::Succeeded),
             Some(Intent::ConnectionResult { connected: true })
@@ -663,17 +674,19 @@ mod connection_probe_tests {
     fn refusal_and_actor_failure_are_not_reported_as_success() {
         let mut probe = ConnectionProbeLatch::default();
         let refused = crate::navigation::RequestId::new(703);
-        assert!(probe.begin(refused));
+        assert!(probe.begin(refused, ConnectionStatus::Unknown));
         assert_eq!(
             probe.finish(
                 refused,
                 RequestOutcome::Refused(super::super::coordinator::RequestRefusalReason::Closed),
             ),
-            Some(Intent::ConnectionProbeAborted)
+            Some(Intent::ConnectionProbeAborted {
+                previous: ConnectionStatus::Unknown,
+            })
         );
 
         let failed = crate::navigation::RequestId::new(704);
-        assert!(probe.begin(failed));
+        assert!(probe.begin(failed, ConnectionStatus::Unknown));
         assert_eq!(
             probe.finish(failed, RequestOutcome::Failed),
             Some(Intent::ConnectionResult { connected: false })

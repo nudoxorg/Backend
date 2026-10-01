@@ -332,10 +332,10 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
             };
             next = next.with_settings(settings);
         }
-        Intent::ConnectionProbeAborted => {
+        Intent::ConnectionProbeAborted { previous } => {
             let mut settings = next.settings().clone();
             if settings.connection == ConnectionStatus::Testing {
-                settings.connection = ConnectionStatus::Unknown;
+                settings.connection = *previous;
                 next = next.with_settings(settings);
                 effects.push(Effect::Persist);
             }
@@ -834,19 +834,35 @@ mod tests {
     }
 
     #[test]
-    fn an_aborted_connection_probe_clears_testing_without_overriding_owner_state() {
+    fn an_aborted_connection_probe_restores_its_prior_state_only_while_testing() {
+        for previous in [
+            ConnectionStatus::Disconnected,
+            ConnectionStatus::Connected,
+            ConnectionStatus::Unknown,
+        ] {
+            let mut settings = snapshot().settings().clone();
+            settings.connection = previous;
+            let initial = snapshot().with_settings(settings);
+            let testing = reduce(&initial, &Intent::TestConnection)
+                .expect("connection probe")
+                .snapshot;
+            assert_eq!(testing.settings().connection, ConnectionStatus::Testing);
+
+            let restored = reduce(
+                &testing,
+                &Intent::ConnectionProbeAborted { previous },
+            )
+            .expect("aborted probe")
+            .snapshot;
+            assert_eq!(restored.settings().connection, previous);
+        }
+
         let mut settings = snapshot().settings().clone();
         settings.connection = ConnectionStatus::Disconnected;
         let initial = snapshot().with_settings(settings);
         let testing = reduce(&initial, &Intent::TestConnection)
             .expect("connection probe")
             .snapshot;
-        assert_eq!(testing.settings().connection, ConnectionStatus::Testing);
-
-        let restored = reduce(&testing, &Intent::ConnectionProbeAborted)
-            .expect("aborted probe")
-            .snapshot;
-        assert_eq!(restored.settings().connection, ConnectionStatus::Unknown);
 
         let owner_key = VersionedRoot::synthetic(
             backend_library::view_state_root(&[("root".to_owned(), "owner".to_owned())]),
@@ -861,7 +877,12 @@ mod tests {
         )
         .expect("owner ready")
         .snapshot;
-        let after_late_abort = reduce(&connected, &Intent::ConnectionProbeAborted)
+        let after_late_abort = reduce(
+            &connected,
+            &Intent::ConnectionProbeAborted {
+                previous: ConnectionStatus::Disconnected,
+            },
+        )
             .expect("late probe cancellation")
             .snapshot;
         assert_eq!(

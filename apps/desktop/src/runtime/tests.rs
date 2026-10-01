@@ -114,6 +114,9 @@ fn superseding_a_root_refresh_emits_one_typed_terminal_for_the_old_request() {
     )
     .expect("actor thread");
     let mut runtime = DesktopRuntime::new(snapshot(), actor);
+    // Dropped before `runtime` on unwinding, releasing any gate wait before
+    // the runtime joins its actor thread.
+    let mut gate = TestGate::new(release_tx, 3);
     let basis = runtime.snapshot().key();
     let blocker = RequestId::new(800);
     let first = RequestId::new(801);
@@ -142,8 +145,7 @@ fn superseding_a_root_refresh_emits_one_typed_terminal_for_the_old_request() {
     );
 
     let mut old_terminals = 1;
-    let _ = release_tx.send(());
-    let _ = release_tx.send(());
+    gate.release_all();
     let mut outcomes = Vec::new();
     wait::until("the blocker and replacement root reached terminal results", || {
         for (request, outcome) in request_terminals(runtime.poll()) {
@@ -217,6 +219,40 @@ struct GatedClient {
     release: Receiver<()>,
 }
 
+/// Releases a gated actor before its runtime is dropped, including when an
+/// assertion unwinds before the test reaches its normal release point.
+struct TestGate {
+    release: Sender<()>,
+    permits: usize,
+    released: bool,
+}
+
+impl TestGate {
+    fn new(release: Sender<()>, permits: usize) -> Self {
+        Self {
+            release,
+            permits,
+            released: false,
+        }
+    }
+
+    fn release_all(&mut self) {
+        if self.released {
+            return;
+        }
+        for _ in 0..self.permits {
+            let _ = self.release.send(());
+        }
+        self.released = true;
+    }
+}
+
+impl Drop for TestGate {
+    fn drop(&mut self) {
+        self.release_all();
+    }
+}
+
 impl EngineClient for GatedClient {
     fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
         self.entered
@@ -253,6 +289,8 @@ fn a_full_actor_queue_refuses_new_work_without_leaking_an_inflight_request() {
     )
     .expect("actor thread");
     let mut runtime = DesktopRuntime::new(snapshot(), actor);
+    // This guard runs before the runtime's actor join if an assertion fails.
+    let mut gate = TestGate::new(release_tx, 2);
     let first = RequestId::new(805);
     let queued = RequestId::new(806);
     let refused = RequestId::new(807);
@@ -268,8 +306,7 @@ fn a_full_actor_queue_refuses_new_work_without_leaking_an_inflight_request() {
 
     // Always release the worker before assertions so a failed test cannot
     // leave the actor join waiting on a fixture gate.
-    let _ = release_tx.send(());
-    let _ = release_tx.send(());
+    gate.release_all();
     let mut admitted_outcomes = Vec::new();
     wait::until("the admitted queue entries reached terminal results", || {
         admitted_outcomes.extend(request_terminals(runtime.poll()));
