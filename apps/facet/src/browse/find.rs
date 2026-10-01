@@ -63,12 +63,68 @@ pub struct Candidate {
 pub struct Model {
     pub query: SharedString,
     pub candidates: Vec<Candidate>,
-    /// Matches whose package could not be addressed; still actionable symbols.
+    /// Matches whose package could not be addressed; recorded facts remain readable,
+    /// but the shell must explain why their page/code routes are unavailable.
     pub loose: Vec<Answer>,
     pub coverage: Vec<SharedString>,
     /// A first page with an owner-issued continuation has more than these rows.
     pub more_answers: bool,
     pub loading: bool,
+}
+
+/// The shell admits a reading only at its exact current producer authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReadAdmission {
+    Current,
+    Retained(SharedString),
+    Failed(SharedString),
+}
+
+/// Editing and reading share one rule for disclosure and action eligibility.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Admission {
+    Blank,
+    Invalid(SharedString),
+    Current,
+    Retained(SharedString),
+    Failed(SharedString),
+}
+
+impl Admission {
+    fn allows_actions(&self) -> bool { matches!(self, Self::Blank | Self::Current) }
+    fn note(&self) -> Option<SharedString> {
+        match self { Self::Invalid(reason) | Self::Retained(reason) | Self::Failed(reason) => Some(reason.clone()), _ => None }
+    }
+}
+
+/// Validation belongs to the shell's typed query constructor, not this view.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum QueryInput {
+    Blank,
+    Valid,
+    Invalid(SharedString),
+}
+
+fn admit(text: &str, input: QueryInput, loaded_query: &str, read: &ReadAdmission) -> Admission {
+    let blank = match input { QueryInput::Invalid(reason) => return Admission::Invalid(reason), QueryInput::Blank => true, QueryInput::Valid => false };
+    if let ReadAdmission::Failed(reason) = read { return Admission::Failed(reason.clone()); }
+    if let ReadAdmission::Retained(reason) = read { return Admission::Retained(reason.clone()); }
+    if text.trim() != loaded_query.trim() {
+        return Admission::Retained("Previous results; waiting for the current query. Result actions are unavailable.".into());
+    }
+    if blank { Admission::Blank } else { Admission::Current }
+}
+
+/// An indexed declaration may lack an addressable package; this is not an action.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Routability {
+    Available,
+    Unavailable(SharedString),
+}
+
+impl Routability {
+    fn available(&self) -> bool { matches!(self, Self::Available) }
+    fn reason(&self) -> Option<SharedString> { match self { Self::Unavailable(reason) => Some(reason.clone()), Self::Available => None } }
 }
 
 /// Typed actions supplied by the shell; the component never contacts the owner.
@@ -80,7 +136,11 @@ pub struct Actions {
     pub initial_held: Vec<HeldPackage>,
     /// Publish each edit to the Reader before navigation can unmount Find.
     pub persist_held: Rc<dyn Fn(Vec<HeldPackage>, &mut App)>,
+    pub query_input: Rc<dyn Fn(&str) -> QueryInput>,
     pub refine: Rc<dyn Fn(SharedString, &mut App)>,
+    /// Retries the exact failed current route; absent when the owner cannot serve it.
+    pub retry: Option<Rc<dyn Fn(&mut App)>>,
+    pub symbol_routability: Rc<dyn Fn(&SharedString) -> Routability>,
     pub open_symbol: Rc<dyn Fn(SharedString, &mut Window, &mut App)>,
     pub open_code: Rc<dyn Fn(SharedString, &mut Window, &mut App)>,
     pub open_package: Rc<dyn Fn(SharedString, &mut Window, &mut App)>,
@@ -137,6 +197,7 @@ impl Held {
 
 struct State {
     active: bool,
+    read_admission: ReadAdmission,
     input: Entity<InputState>,
     route_query: SharedString,
     refine: Rc<dyn Fn(SharedString, &mut App)>,
@@ -171,6 +232,7 @@ impl State {
                 state.pending = None;
                 state.generation = state.generation.wrapping_add(1);
                 let generation = state.generation;
+                if matches!((state.actions.query_input)(&text), QueryInput::Invalid(_)) { cx.notify(); return; }
                 if text.trim() == state.route_query.as_ref().trim() { cx.notify(); return; }
                 {
                     state.pending = Some(cx.spawn(async move |this, cx| {
@@ -185,24 +247,29 @@ impl State {
                 cx.notify();
             } else if matches!(event, InputEvent::PressEnter { .. }) {
                 let text = input.read(cx).value();
+                if matches!((state.actions.query_input)(&text), QueryInput::Invalid(_)) { cx.notify(); return; }
                 if !reading_matches(state.loaded_query.as_ref(), &text) {
+                    if text.trim() == state.route_query.as_ref().trim() && !matches!(state.read_admission, ReadAdmission::Current) { return; }
                     state.pending = None;
                     state.generation = state.generation.wrapping_add(1);
                     state.submitted = Some(text.trim().to_owned().into());
                     (state.refine)(text, cx);
                     return;
                 }
+                if !matches!(state.read_admission, ReadAdmission::Current) { return; }
                 if let Some(selected) = state.selected.clone() {
                     match selected {
                         Selection::Package(key) => (state.actions.open_package)(key, window, cx),
-                        Selection::Answer(key) => (state.actions.open_symbol)(key, window, cx),
+                        Selection::Answer(key) => {
+                            if (state.actions.symbol_routability)(&key).available() { (state.actions.open_symbol)(key, window, cx); }
+                        }
                     }
                 }
             }
         });
         let held = Held(actions.initial_held.clone());
         let reveal = KeyboardReveal::new(actions.scroll.clone());
-        Self { active: true, input, route_query: query, refine, actions, keyboard: vec![], loaded_query: None, snapshot: None, submitted: None, generation: 0, selected: None, reveal, held,
+        Self { active: true, read_admission: ReadAdmission::Current, input, route_query: query, refine, actions, keyboard: vec![], loaded_query: None, snapshot: None, submitted: None, generation: 0, selected: None, reveal, held,
             all_packages: false, all_answers: false, source: false, pending: None, _subscriptions: vec![subscription] }
     }
     /// A release added to the library changes its address (the offer's
@@ -220,8 +287,8 @@ impl State {
     fn accept(&mut self, model: &Arc<Model>, actions: &Actions, window: &mut Window, cx: &mut Context<Self>) {
         self.refine = Rc::clone(&actions.refine);
         self.actions = actions.clone();
-        self.loaded_query = (!model.loading).then(|| model.query.clone());
-        if !model.loading {
+        self.loaded_query = (!model.loading && matches!(self.read_admission, ReadAdmission::Current)).then(|| model.query.clone());
+        if !model.loading && matches!(self.read_admission, ReadAdmission::Current) {
             self.follow_added_release(model);
             self.snapshot = Some(Arc::clone(&model));
         }
@@ -246,13 +313,17 @@ impl State {
 /// Compose a native Find folio.
 #[must_use]
 pub fn find(id: impl Into<ElementId>, model: Arc<Model>, actions: Actions, measure: &Measure) -> Find {
-    Find { id: id.into(), model, actions, active: true, measure: *measure, #[cfg(test)] test_state: None }
+    Find { id: id.into(), model, actions, admission: None, active: true, measure: *measure, #[cfg(test)] test_state: None }
 }
 
 #[derive(IntoElement)]
-pub struct Find { active: bool, id: ElementId, model: Arc<Model>, actions: Actions, measure: Measure, #[cfg(test)] test_state: Option<Entity<State>> }
+pub struct Find { admission: Option<ReadAdmission>, active: bool, id: ElementId, model: Arc<Model>, actions: Actions, measure: Measure, #[cfg(test)] test_state: Option<Entity<State>> }
 
 impl Find {
+    /// Supplies the live resource's authority/activity/terminal admission.
+    #[must_use]
+    pub fn admission(mut self, admission: ReadAdmission) -> Self { self.admission = Some(admission); self }
+
     /// Only the settled reader owns input and exposes controls to native clients.
     #[must_use]
     pub fn active(mut self, active: bool) -> Self { self.active = active; self }
@@ -268,7 +339,11 @@ impl RenderOnce for Find {
         let state = self.test_state.unwrap_or_else(|| window.use_keyed_state(child(&self.id, "state"), cx, |window, cx| State::new(query, actions, window, cx)));
         #[cfg(not(test))]
         let state = window.use_keyed_state(child(&self.id, "state"), cx, |window, cx| State::new(query, actions, window, cx));
+        let read_admission = self.admission.unwrap_or_else(|| if self.model.loading {
+            ReadAdmission::Retained("Waiting for the current query; result actions are unavailable.".into())
+        } else { ReadAdmission::Current });
         state.update(cx, |state, _| {
+            state.read_admission = read_admission.clone();
             state.active = self.active;
             if !self.active { state.pending = None; state.generation = state.generation.wrapping_add(1); }
         });
@@ -278,7 +353,9 @@ impl RenderOnce for Find {
         // evidence remains inspectable, but navigation waits for the new read.
         let model = state.read(cx).snapshot.clone().unwrap_or_else(|| Arc::clone(&self.model));
         let empty = state.read(cx).input.read(cx).value().trim().is_empty();
-        let updating = self.model.loading || model.query.as_ref().trim() != state.read(cx).input.read(cx).value().trim();
+        let input_text = state.read(cx).input.read(cx).value();
+        let admission = admit(&input_text, (self.actions.query_input)(&input_text), &model.query, &read_admission);
+        let updating = !admission.allows_actions();
         state.update(cx, |state, _| {
             let shown_packages = if state.all_packages { model.candidates.len() } else { 8 };
             let choices = |state: &State| model.candidates.iter().take(shown_packages).flat_map(|candidate| {
@@ -320,8 +397,17 @@ impl RenderOnce for Find {
                 });
                 cx.stop_propagation();
             });
+        if let Some(note) = admission.note() {
+            page = page.child(words(child(&self.id, "admission"), note.clone(), ty::CAPTION, p.ink2, &m)
+                .role(gpui::Role::Status).aria_label(note));
+        }
+        if matches!(admission, Admission::Failed(_)) && let Some(retry) = &self.actions.retry {
+            let retry = retry.clone();
+            page = page.child(button(child(&self.id, "retry"), "Retry current Find query", &m).primary()
+                .on_click(move |_, cx| retry(cx)));
+        }
         if !state.read(cx).held.packages().is_empty() {
-            page = page.child(held_tray(&child(&self.id, "held-tray"), &state, &self.actions, &m, cx));
+            page = page.child(held_tray(&child(&self.id, "held-tray"), &state, &self.actions, admission.allows_actions(), &m, cx));
         }
         if empty {
             let mut examples = div().flex().flex_wrap().items_center().gap(m.space(Space::Base))
@@ -347,7 +433,6 @@ impl RenderOnce for Find {
             page = page.child(words(child(&self.id, "home-packages"), "Packages known here", ty::HEAD, p.ink1, &m));
         }
         if updating {
-            page = page.child(words(child(&self.id, "loading"), "Updating results…", ty::CAPTION, p.ink2, &m));
             if state.read(cx).snapshot.is_none() { return page.into_any_element(); }
         }
         let selected = state.read(cx).selected.clone();
@@ -371,7 +456,7 @@ impl RenderOnce for Find {
         let flow = Flow::scoped(format!("find-{:?}", self.id), cx);
         flow.epoch((split.epoch, model.query.clone(), selected.clone().map(|selection| format!("{selection:?}"))));
         let mut list = div().id(child(&self.id, "results")).role(gpui::Role::Group).aria_label("Search results")
-            .aria_description(if updating { "Previous results; actions unavailable while the current query loads." } else { "Current query results." })
+            .aria_description(admission.note().unwrap_or_else(|| "Current query results.".into()))
             .flex().flex_col().w(list_m.width()).gap(m.space(Space::Base));
         let limit = if state.read(cx).all_packages { model.candidates.len() } else { 8 };
         for candidate in model.candidates.iter().take(limit) {
@@ -393,7 +478,11 @@ impl RenderOnce for Find {
         for answer in &model.loose {
             let open = Rc::clone(&self.actions.open_symbol);
             let key = answer.key.clone();
-            let row = button(child(&self.id, format!("loose-{}", answer.key)), answer.name.clone(), &list_m).ghost().disabled(updating).on_click(move |window, cx| open(key.clone(), window, cx));
+            let route = (self.actions.symbol_routability)(&answer.key);
+            if let Some(reason) = route.reason() {
+                list = list.child(words(child(&self.id, format!("loose-{}-unavailable", answer.key)), reason, ty::CAPTION, p.ink2, &list_m));
+            }
+            let row = button(child(&self.id, format!("loose-{}", answer.key)), answer.name.clone(), &list_m).ghost().disabled(updating || !route.available()).on_click(move |window, cx| open(key.clone(), window, cx));
             list = list.child(if selected.as_ref() == Some(&Selection::Answer(answer.key.clone())) { state.read(cx).reveal.selected(row) } else { row.into_any_element() });
         }
         if let Some(answer) = loose_selected {
@@ -418,7 +507,7 @@ impl RenderOnce for Find {
     }
 }
 
-fn held_tray(id: &ElementId, state: &Entity<State>, actions: &Actions, m: &Measure, cx: &mut App) -> AnyElement {
+fn held_tray(id: &ElementId, state: &Entity<State>, actions: &Actions, enabled: bool, m: &Measure, cx: &mut App) -> AnyElement {
     let p = cx.palette();
     let held = state.read(cx).held.clone();
     let mut chips = div().flex().flex_wrap().items_center().gap(m.space(Space::Base));
@@ -439,7 +528,7 @@ fn held_tray(id: &ElementId, state: &Entity<State>, actions: &Actions, m: &Measu
             .child(ui(Icon::Split, IconSize::S18, p.peri.base))
             .child(words(child(id, "heading"), "HELD FOR COMPARISON", ty::CAPTION, p.ink1, m)))
         .child(chips)
-        .child(button(child(id, "compare"), held.action_label(), m).edge().disabled(!held.can_compare())
+        .child(button(child(id, "compare"), held.action_label(), m).edge().disabled(!enabled || !held.can_compare())
             .on_click(move |window, cx| compare(chosen.clone(), window, cx)))
         .into_any_element()
 }
@@ -498,6 +587,7 @@ fn candidate_view(id: &ElementId, candidate: &Candidate, active: bool, selected:
         let key = answer.key.clone();
         let open = Rc::clone(&actions.open_symbol);
         let open_key = key.clone();
+        let can_open = enabled && (actions.symbol_routability)(&key).available();
         let line = selection_row(child(id, format!("answer-{}", answer.key)), state,
             Selection::Answer(key), format!("Inspect declaration {}{}", answer.name,
                 answer.context.as_ref().map(|context| format!(", {context}")).unwrap_or_default()), answer_selected, enabled).flex().items_start().gap(m.space(Space::Snug))
@@ -509,7 +599,7 @@ fn candidate_view(id: &ElementId, candidate: &Candidate, active: bool, selected:
                 .children(answer.context.as_ref().map(|context| words_ellipsis(child(id, format!("answer-{at}-context")), context.clone(), ty::CAPTION, p.ink2, m))));
         let line = div().flex().items_center().child(line.flex_1().min_w_0())
             .children(answer_selected.then(|| button(child(id, format!("open-answer-{}", answer.key)), "Open", m)
-                .aria_label(format!("Explore declaration {}", answer.name)).ghost().size(Control::Small).disabled(!enabled)
+                .aria_label(format!("Explore declaration {}", answer.name)).ghost().size(Control::Small).disabled(!can_open)
                 .on_click(move |window, cx| open(open_key.clone(), window, cx))));
         group = group.child(if answer_selected { state.read(cx).reveal.selected(line) } else { line.into_any_element() });
     }
@@ -545,6 +635,12 @@ fn inspector(id: &ElementId, candidate: &Candidate, answer: Option<&Answer>, _st
         detail = detail.child(words(child(id, "summary"), summary.clone(), ty::LEDE, p.ink2, m));
     }
     if let Some(answer) = answer {
+        let route = (actions.symbol_routability)(&answer.key);
+        let enabled = enabled && route.available();
+        if let Some(reason) = route.reason() {
+            detail = detail.child(words(child(id, "unavailable"), reason.clone(), ty::CAPTION, p.ink2, m)
+                .role(gpui::Role::Status).aria_label(reason));
+        }
         if let Some(pipe) = &answer.pipe {
             detail = detail.child(facet_pipe(id, pipe.clone(), m));
         }

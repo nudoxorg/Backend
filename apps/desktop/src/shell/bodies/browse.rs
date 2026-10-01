@@ -3,6 +3,7 @@
 
 use super::state::{Shown, not_ready, shown};
 use super::{Ctx, Leaf, Pages};
+use crate::core::{ResourceAdmission, ReadHoldReason, ResourceTerminal, UnavailableReason, admit_resource};
 use crate::model::browse::{BrowseKey, BrowseValue, TreeDestination, TreeModel, TreeRoleLinks};
 use crate::model::pages::{PageKey, PackageRef, SearchQuery, SymbolRef};
 use crate::navigation::{BrowseRoute, CompareSet, Intent, OrbitRoute, Route, View};
@@ -21,7 +22,14 @@ pub(super) fn body(route: &BrowseRoute, store: &Pages, ctx: &mut Ctx<'_>, cx: &m
     // query is being read. Replacing it with a generic loading page loses
     // IME composition, focus, the debounce and the package hand.
     if matches!(route, BrowseRoute::Find(_) | BrowseRoute::FindHome) {
-        let value = match shown(&resource) { Shown::Ready(BrowseValue::Find(value)) => Some(value.as_ref()), _ => None };
+        let (resource, owner_serving) = {
+            let live = ctx.links.store.read(cx);
+            (live.browse(&key), live.owner_serving())
+        };
+        let reading = admit_resource(&resource, ctx.links.snapshot(cx).key(), owner_serving);
+        let value = match reading.current_value().or_else(|| reading.retained_value()) {
+            Some(BrowseValue::Find(value)) => Some(value.as_ref()), _ => None,
+        };
         let model = match value {
             Some(value) => Arc::clone(&value.prepared),
             None => Arc::new(facet::browse::find::Model {
@@ -35,11 +43,14 @@ pub(super) fn body(route: &BrowseRoute, store: &Pages, ctx: &mut Ctx<'_>, cx: &m
         };
         // Find's reveal state lives in its native component. Its painted text
         // probes are the authority for what is visible in this frame.
-        let actions = find_actions(route, ctx, cx);
-        let mut leaves = vec![Leaf::new(facet::browse::find::find("find", model, actions, &ctx.measure).active(ctx.active && ctx.links.snapshot(cx).overlay().is_none()))];
-        if matches!(shown(&resource), Shown::Fault(_) | Shown::Unavailable(_, _)) {
-            leaves.extend(not_ready(&shown(&resource), &PageKey::Browse(key), "Find", ctx, cx));
+        let admission = find_admission(&reading);
+        let mut actions = find_actions(route, ctx, cx);
+        if matches!(resource.terminal(), ResourceTerminal::Fault(_)) {
+            let links = ctx.links.clone();
+            let retry_key = PageKey::Browse(key.clone());
+            actions.retry = Some(Rc::new(move |cx| links.retry(retry_key.clone(), cx)));
         }
+        let leaves = vec![Leaf::new(facet::browse::find::find("find", model, actions, &ctx.measure).admission(admission).active(ctx.active && ctx.links.snapshot(cx).overlay().is_none()))];
         return leaves;
     }
     match shown(&resource) {
@@ -56,6 +67,45 @@ pub(super) fn body(route: &BrowseRoute, store: &Pages, ctx: &mut Ctx<'_>, cx: &m
             let (name, _) = route.here();
             not_ready(&other, &PageKey::Browse(key), &name, ctx, cx)
         }
+    }
+}
+
+/// A retained Resource value is visual evidence, never current authority.
+fn find_admission<T>(reading: &ResourceAdmission<'_, T>) -> facet::browse::find::ReadAdmission {
+    use facet::browse::find::ReadAdmission;
+    match reading {
+        ResourceAdmission::Current(_) => ReadAdmission::Current,
+        ResourceAdmission::Retained { reason, .. } | ResourceAdmission::Pending(reason) => {
+            ReadAdmission::Retained(match reason {
+                ReadHoldReason::OwnerUnavailable => "The index owner is not serving this reading. Previous results, if shown, are read-only.",
+                ReadHoldReason::AuthorityChanged => "Previous index reading; waiting for the current producer authority. Result actions are unavailable.",
+                ReadHoldReason::Reading | ReadHoldReason::NotReady => "Waiting for the current query. Previous results, if shown, are read-only.",
+            }.into())
+        }
+        ResourceAdmission::Failed { terminal, .. } => ReadAdmission::Failed(match terminal {
+            ResourceTerminal::Fault(error) => format!("Find stopped: {}. Previous results, if shown, are read-only.", error.message()).into(),
+            ResourceTerminal::Unavailable(UnavailableReason::Unsupported) => "Find is not served by this owner. Previous results, if shown, are read-only.".into(),
+            ResourceTerminal::Unavailable(UnavailableReason::OutOfScope) => "Find is outside this owner's scope. Previous results, if shown, are read-only.".into(),
+            ResourceTerminal::Complete | ResourceTerminal::Partial => unreachable!("shared admission only classifies terminal failures as Failed"),
+        }),
+    }
+}
+
+fn query_input(text: &str) -> facet::browse::find::QueryInput {
+    use facet::browse::find::QueryInput;
+    if text.trim().is_empty() { return QueryInput::Blank; }
+    match SearchQuery::new(text, SearchQuery::DEFAULT_LIMIT) {
+        Ok(_) => QueryInput::Valid,
+        Err(error) => QueryInput::Invalid(format!("This query was not admitted: {error}. Remove the invalid character to search; the current route has not changed.").into()),
+    }
+}
+
+fn symbol_routability(key: &SharedString) -> facet::browse::find::Routability {
+    use facet::browse::find::Routability;
+    match SymbolRef::new(key) {
+        Ok(symbol) if symbol.package().is_some() => Routability::Available,
+        Ok(_) => Routability::Unavailable("This declaration has no addressable package in the owner reply. Its recorded facts can be read, but its page and code are unavailable.".into()),
+        Err(error) => Routability::Unavailable(format!("This declaration's address was not admitted: {error}.").into()),
     }
 }
 
@@ -105,13 +155,23 @@ fn find_actions(route: &BrowseRoute, ctx: &Ctx<'_>, cx: &mut Context<Reader>) ->
     let acquire = Some(crate::shell::acquire::add_actions(&ctx.links, cx.entity_id()));
     facet::browse::find::Actions {
         acquire,
+        retry: None,
         scroll: ctx.reader_scroll.clone(),
         initial_held: ctx.find_held.clone(),
         persist_held: Rc::new(move |held, cx| { let _ = reader.update(cx, |reader, cx| reader.set_find_held(held, cx)); }),
+        query_input: Rc::new(query_input),
         refine: Rc::new(move |text, cx| {
-            let query = SearchQuery::new(&text, SearchQuery::DEFAULT_LIMIT).ok();
+            let query = if text.trim().is_empty() { None } else {
+                match SearchQuery::new(&text, SearchQuery::DEFAULT_LIMIT) {
+                    Ok(query) => Some(query),
+                    // The Find field exposes this same invalid-input state;
+                    // an admission error must never mean clearing the route.
+                    Err(_) => return,
+                }
+            };
             refine_links.dispatch(Intent::RefineFind { expected: expected.clone(), query }, cx);
         }),
+        symbol_routability: Rc::new(symbol_routability),
         open_symbol: open_symbol_action(ctx, false), open_code: open_symbol_action(ctx, true), open_package: open_package_action(ctx),
         compare: Rc::new(move |keys, _, cx| {
             let packages = keys.iter().map(|key| PackageRef::parse(key)).collect::<Result<Vec<_>, _>>();

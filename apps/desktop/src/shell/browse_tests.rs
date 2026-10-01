@@ -189,3 +189,14 @@ fn the_library_page_shows_a_real_tree_read_by_a_real_owner(cx: &mut TestAppConte
     assert_eq!(again.alerts[0].why, "app → bincode 1.3.3");
     let _ = std::fs::remove_dir_all(state);
 }
+
+#[test]
+fn find_invalid_input_is_distinct_from_blank_and_missing_package_is_unavailable() {
+    use facet::browse::find::{QueryInput, Routability};
+    assert_eq!(super::query_input("  "), QueryInput::Blank);
+    assert_eq!(super::query_input("from_str"), QueryInput::Valid);
+    assert!(matches!(super::query_input("bad\0query"), QueryInput::Invalid(_)));
+    let unresolved = super::symbol_routability(&"unqualified::Thing".into());
+    assert!(matches!(unresolved, Routability::Unavailable(reason) if reason.contains("no addressable package")));
+    assert_eq!(super::symbol_routability(&"/fixture/app::app.rs:1::main".into()), Routability::Available);
+}
