@@ -2,8 +2,8 @@ use scheduler::Instant;
 
 use crate::{
     AnyElement, App, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement, Motion,
-    ParentElement, SpringAnimation, SpringConfig, SpringPlayback, SpringState, SpringTarget,
-    Window,
+    MotionExtent, ParentElement, SpringAnimation, SpringConfig, SpringPlayback, SpringState,
+    SpringTarget, Window,
 };
 
 pub use easing::*;
@@ -369,18 +369,27 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
                     .get();
                 (animation_ix, delta, true)
             } else {
-                let animation_ix = state.animation_ix;
+                loop {
+                    let animation_ix = state.animation_ix;
+                    let motion = &self.animations[animation_ix].motion;
+                    let sample = motion.sample(now.saturating_duration_since(state.start));
 
-                let sample = self.animations[animation_ix]
-                    .motion
-                    .sample(now.saturating_duration_since(state.start));
-                let mut done = !sample.is_active;
-                if done && animation_ix < self.animations.len() - 1 {
-                    state.start = now;
+                    if sample.is_active || animation_ix == self.animations.len() - 1 {
+                        break (animation_ix, sample.progress.get(), !sample.is_active);
+                    }
+
+                    // Carry unused frame time through every completed finite
+                    // segment. An inactive infinite motion can only be a
+                    // zero-span repeat, which consumes its initial delay.
+                    let elapsed = now.saturating_duration_since(state.start);
+                    let consumed = match motion.checked_extent() {
+                        Some(MotionExtent::Finite(extent)) => extent,
+                        Some(MotionExtent::Infinite) => motion.delay(),
+                        None => elapsed,
+                    };
+                    state.start = state.start.checked_add(consumed).unwrap_or(now);
                     state.animation_ix += 1;
-                    done = false;
                 }
-                (animation_ix, sample.progress.get(), done)
             };
             debug_assert!(delta.is_finite(), "animation progress should be finite");
 
@@ -628,6 +637,89 @@ mod tests {
         cx.executor().advance_clock(Duration::from_millis(100));
         assert_eq!(simulate_next_frame(&window, cx), 1);
         assert_eq!(rendered_deltas.borrow().last(), Some(&0.0));
+        assert_eq!(simulate_next_frame(&window, cx), 0);
+    }
+
+    struct ChainedAnimationTestView {
+        animations: Vec<Animation>,
+        samples: Rc<RefCell<Vec<(usize, f32)>>>,
+    }
+
+    impl Render for ChainedAnimationTestView {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            let samples = self.samples.clone();
+            div().size_full().child(div().with_animations(
+                "animation-chain",
+                self.animations.clone(),
+                move |this, index, progress| {
+                    samples.borrow_mut().push((index, progress));
+                    this
+                },
+            ))
+        }
+    }
+
+    fn open_chained_test_window(
+        cx: &mut TestAppContext,
+        animations: Vec<Animation>,
+    ) -> (
+        Rc<RefCell<Vec<(usize, f32)>>>,
+        WindowHandle<ChainedAnimationTestView>,
+    ) {
+        let samples = Rc::new(RefCell::new(Vec::new()));
+        let window = cx.open_window(size(px(100.), px(100.)), {
+            let samples = samples.clone();
+            move |_, _| ChainedAnimationTestView {
+                animations,
+                samples,
+            }
+        });
+        cx.run_until_parked();
+        (samples, window)
+    }
+
+    #[gpui::test]
+    fn animation_chain_carries_elapsed_time_across_finite_segments(cx: &mut TestAppContext) {
+        let animations = vec![
+            Animation::new(
+                Motion::new(Duration::from_millis(100)).with_delay(Duration::from_millis(20)),
+            ),
+            Animation::new(
+                Motion::new(Duration::from_millis(200)).with_delay(Duration::from_millis(10)),
+            ),
+            Animation::new(Duration::from_millis(300)),
+        ];
+        let (samples, window) = open_chained_test_window(cx, animations);
+
+        cx.executor().advance_clock(Duration::from_millis(480));
+        assert_eq!(simulate_next_frame(&window, cx), 1);
+        assert_eq!(samples.borrow().last(), Some(&(2, 0.5)));
+
+        cx.executor().advance_clock(Duration::from_millis(150));
+        assert_eq!(simulate_next_frame(&window, cx), 1);
+        assert_eq!(samples.borrow().last(), Some(&(2, 1.0)));
+        assert_eq!(simulate_next_frame(&window, cx), 0);
+    }
+
+    #[gpui::test]
+    fn inactive_infinite_zero_span_chain_segment_consumes_only_its_delay(cx: &mut TestAppContext) {
+        let animations = vec![
+            Animation::new(
+                Motion::new(Duration::ZERO)
+                    .repeat_forever()
+                    .with_delay(Duration::from_millis(50)),
+            ),
+            Animation::new(Duration::from_millis(100)),
+        ];
+        let (samples, window) = open_chained_test_window(cx, animations);
+
+        cx.executor().advance_clock(Duration::from_millis(100));
+        assert_eq!(simulate_next_frame(&window, cx), 1);
+        assert_eq!(samples.borrow().last(), Some(&(1, 0.5)));
+
+        cx.executor().advance_clock(Duration::from_millis(50));
+        assert_eq!(simulate_next_frame(&window, cx), 1);
+        assert_eq!(samples.borrow().last(), Some(&(1, 1.0)));
         assert_eq!(simulate_next_frame(&window, cx), 0);
     }
 
