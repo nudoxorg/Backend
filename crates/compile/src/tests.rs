@@ -1,8 +1,16 @@
 use super::*;
 use crate::contract::{AuthorityAdmissionError, AuthorityRegistry};
 use std::{
-    error::Error, fmt::Write as _, fs, io::Write as _, path::PathBuf, process::Command, sync::Arc,
-    thread, time::Duration,
+    error::Error,
+    fmt::Write as _,
+    fs,
+    io::Write as _,
+    path::PathBuf,
+    process::Command,
+    sync::Arc,
+    sync::atomic::{AtomicBool, Ordering},
+    thread,
+    time::Duration,
 };
 
 #[test]
@@ -1143,6 +1151,37 @@ fn supervisor_kills_when_the_caller_cancels() -> Result<(), Box<dyn Error>> {
     handle.cancel();
     let result = join.join().map_err(|_| "supervisor thread panicked")?;
     assert_eq!(result, Err(ProcessError::Cancelled));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn supervisor_polls_a_borrowed_atomic_cancellation_flag() -> Result<(), Box<dyn Error>> {
+    let process_limits = limits(32, 32, Duration::from_secs(2), 64)?;
+    let process = command("/bin/sleep", &["1"], process_limits)?;
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let observer = Arc::clone(&cancelled);
+    let join =
+        thread::spawn(move || ProcessSupervisor::new(process).run_with_observer(observer.as_ref()));
+    thread::sleep(Duration::from_millis(20));
+    cancelled.store(true, Ordering::Release);
+    let result = join.join().map_err(|_| "supervisor thread panicked")?;
+    assert_eq!(result, Err(ProcessError::Cancelled));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn supervisor_honors_a_borrowed_absolute_deadline() -> Result<(), Box<dyn Error>> {
+    let process_limits = limits(32, 32, Duration::from_secs(2), 64)?;
+    let process = command("/bin/sleep", &["1"], process_limits)?;
+    let cancelled = AtomicBool::new(false);
+    let deadline = std::time::Instant::now() + Duration::from_millis(20);
+
+    assert_eq!(
+        ProcessSupervisor::new(process).run_with_observer_until(&cancelled, deadline),
+        Err(ProcessError::Deadline)
+    );
     Ok(())
 }
 

@@ -1,7 +1,7 @@
 //! Cold process supervision with bounded file output and explicit reaping.
 
 use crate::{
-    Cancellation, ProcessError,
+    Cancellation, CancellationObserver, ProcessError,
     process::{
         ExecutableLease, ProcessReceipt, ProcessStdin, ProcessTerminal, SupervisedCommand, receipt,
     },
@@ -57,7 +57,36 @@ impl ProcessSupervisor {
         &self,
         cancellation: &Cancellation,
     ) -> Result<RunningProcess, ProcessError> {
+        self.start_with_observer(cancellation)
+    }
+
+    /// Starts the validated command after observing a borrowed cancellation
+    /// source.
+    ///
+    /// This supports caller-owned flags such as
+    /// [`std::sync::atomic::AtomicBool`] without an intermediate cancellation
+    /// thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProcessError`] when cancellation, a requested limit, identity
+    /// verification, temporary I/O, or process startup fails.
+    pub fn start_with_observer<C: CancellationObserver + ?Sized>(
+        &self,
+        cancellation: &C,
+    ) -> Result<RunningProcess, ProcessError> {
+        self.start_with_observer_optional_deadline(cancellation, None)
+    }
+
+    fn start_with_observer_optional_deadline<C: CancellationObserver + ?Sized>(
+        &self,
+        cancellation: &C,
+        deadline: Option<Instant>,
+    ) -> Result<RunningProcess, ProcessError> {
         cancellation.checkpoint().map_err(ProcessError::from)?;
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(ProcessError::Deadline);
+        }
         self.command.limits().validate_supported()?;
         let workspace_baseline = match self.command.limits().workspace_limit() {
             Some(_) => workspace_size(self.command.workspace())?,
@@ -68,6 +97,10 @@ impl ProcessSupervisor {
         let stderr = TempOutput::create("stderr")?;
         self.command.verify_executable()?;
         let executable = ExecutableLease::prepare(&self.command)?;
+        cancellation.checkpoint().map_err(ProcessError::from)?;
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(ProcessError::Deadline);
+        }
         let child = spawn(
             &self.command,
             executable.path(),
@@ -107,8 +140,41 @@ impl ProcessSupervisor {
         &self,
         cancellation: &Cancellation,
     ) -> Result<ProcessReceipt, ProcessError> {
-        self.start_with_cancellation(cancellation)?
-            .finish_with_cancellation(cancellation)
+        self.run_with_observer(cancellation)
+    }
+
+    /// Runs the command while polling a borrowed cancellation observer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProcessError`] when startup, cancellation, a configured
+    /// limit, or process completion fails.
+    pub fn run_with_observer<C: CancellationObserver + ?Sized>(
+        &self,
+        cancellation: &C,
+    ) -> Result<ProcessReceipt, ProcessError> {
+        self.start_with_observer(cancellation)?
+            .finish_with_observer(cancellation)
+    }
+
+    /// Runs the command while polling a borrowed cancellation source and an
+    /// absolute caller deadline.
+    ///
+    /// The effective deadline is the earlier of this deadline and the
+    /// command's configured wall-time limit. It is measured across executable
+    /// verification, spawn, and process completion.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProcessError`] when startup, cancellation, a configured
+    /// limit, or process completion fails.
+    pub fn run_with_observer_until<C: CancellationObserver + ?Sized>(
+        &self,
+        cancellation: &C,
+        deadline: Instant,
+    ) -> Result<ProcessReceipt, ProcessError> {
+        self.start_with_observer_optional_deadline(cancellation, Some(deadline))?
+            .finish_with_observer_until(cancellation, deadline)
     }
 }
 
@@ -166,13 +232,52 @@ impl RunningProcess {
     /// Returns [`ProcessError`] when cancellation, a deadline, an output or
     /// workspace bound, or process reaping fails.
     pub fn finish_with_cancellation(
-        mut self,
+        self,
         cancellation: &Cancellation,
     ) -> Result<ProcessReceipt, ProcessError> {
+        self.finish_with_observer(cancellation)
+    }
+
+    /// Polls until the process exits while observing a borrowed cancellation
+    /// source, enforcing deadlines and output/workspace bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProcessError`] when cancellation, a deadline, an output or
+    /// workspace bound, or process reaping fails.
+    pub fn finish_with_observer<C: CancellationObserver + ?Sized>(
+        self,
+        cancellation: &C,
+    ) -> Result<ProcessReceipt, ProcessError> {
+        self.finish_with_optional_deadline(cancellation, None)
+    }
+
+    /// Polls until the process exits while observing a borrowed cancellation
+    /// source and absolute caller deadline.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProcessError`] when cancellation, a deadline, an output or
+    /// workspace bound, or process reaping fails.
+    pub fn finish_with_observer_until<C: CancellationObserver + ?Sized>(
+        self,
+        cancellation: &C,
+        deadline: Instant,
+    ) -> Result<ProcessReceipt, ProcessError> {
+        self.finish_with_optional_deadline(cancellation, Some(deadline))
+    }
+
+    fn finish_with_optional_deadline<C: CancellationObserver + ?Sized>(
+        mut self,
+        cancellation: &C,
+        caller_deadline: Option<Instant>,
+    ) -> Result<ProcessReceipt, ProcessError> {
         let start = Instant::now();
-        let deadline = start
+        let command_deadline = start
             .checked_add(self.command.limits().wall_time())
             .ok_or(ProcessError::Deadline)?;
+        let deadline =
+            caller_deadline.map_or(command_deadline, |deadline| deadline.min(command_deadline));
 
         let status = loop {
             if cancellation.is_cancelled() {

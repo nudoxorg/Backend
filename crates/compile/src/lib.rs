@@ -34,7 +34,7 @@ pub use backend_version::{
     AuthorityScopeClaim, Coverage, CoverageAdmissionError, CoverageWitness, ScopeRoot,
     UntrustedCoverageScope, admit_complete_scope,
 };
-pub use cancel::{CancelHandle, Cancellation, CancellationError};
+pub use cancel::{CancelHandle, Cancellation, CancellationError, CancellationObserver};
 pub use contract::{
     Authority, AuthorityEpoch, AuthorityEpochSchema, AuthorityError, AuthorityIdentity, CommandId,
     CommandSchema, ContractId, ContractSchema, DiscoveryDelta, DiscoverySnapshot, Extraction,
