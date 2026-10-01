@@ -1385,7 +1385,6 @@ fn destination_state(store: &DataStore, keys: &[PageKey], root: crate::core::Ver
         PageKey::Package(package) => resource_state(&store.package(package), root, false),
         PageKey::Orbit => resource_state(&store.orbit(), root, false),
         PageKey::Source(symbol) => resource_state(&store.source(symbol), root, false),
-        PageKey::CargoSource(file) => resource_state(&store.cargo_source(file), root, store.is_loading(key)),
         PageKey::Health | PageKey::Browse(_) | PageKey::Search(_) => DestinationState::Ready,
     }).fold(DestinationState::Ready, DestinationState::and)
 }
@@ -1397,7 +1396,6 @@ fn place_name(route: &Route) -> String {
             symbol.at.as_ref(),
         ),
         Route::Package(package) => (package.package.as_str().to_owned(), package.at.as_ref()),
-        Route::CargoSource(file) => return format!("{} / {}{}", file.package.as_str(), file.file.as_str(), file.line.map_or_else(String::new, |line| format!(":{line}"))),
         Route::Orbit(_) => return "Library".to_owned(),
         Route::World => return "Graph".to_owned(),
     };
@@ -3308,6 +3306,7 @@ mod transit_ledger {
 mod retained_destination_tests {
     use super::{DestinationState, resource_state, retainable};
     use crate::core::{FaultCode, Resource, UnavailableReason, VersionedRoot};
+    use crate::navigation::{OrbitRoute, Route};
 
     fn root(label: &str, epoch: u64) -> VersionedRoot {
         VersionedRoot::synthetic(backend_library::view_state_root(&[("retention".to_owned(), label.to_owned())]), epoch)
@@ -3338,12 +3337,10 @@ mod retained_destination_tests {
     }
 
     #[test]
-    fn cargo_file_capabilities_cannot_enter_last_good_retention() {
-        use crate::core::PackageId;
-        use crate::navigation::{CargoSourcePath, CargoSourceRoute, Route};
-        let package = PackageId::new("pkg:cargo/demo@1.0.0?cargo-authority=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").expect("package");
-        let route = Route::CargoSource(CargoSourceRoute::new(package, CargoSourcePath::new("src/lib.rs").expect("path"), None).expect("route"));
-        let place = super::Place { key: 1, route, overlay: None, way: super::Way::Down, lens: super::Lens::Reference, from: None, opened: None, hop: false };
-        assert!(!retainable(&place));
+    fn non_document_destinations_cannot_enter_last_good_retention() {
+        for route in [Route::Orbit(OrbitRoute::Home), Route::World] {
+            let place = super::Place { key: 1, route, overlay: None, way: super::Way::Down, lens: super::Lens::Reference, from: None, opened: None, hop: false };
+            assert!(!retainable(&place));
+        }
     }
 }

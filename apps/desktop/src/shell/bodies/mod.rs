@@ -214,7 +214,6 @@ impl Pages {
         self.terminal_destination = self.symbols.iter().find_map(|(key, resource)| terminal(PageKey::Symbol(key.clone()), resource))
             .or_else(|| self.sources.iter().find_map(|(key, resource)| terminal(PageKey::Source(key.clone()), resource)))
             .or_else(|| self.packages.iter().find_map(|(key, resource)| terminal(PageKey::Package(key.clone()), resource)))
-            .or_else(|| self.cargo_sources.iter().find_map(|(key, resource)| terminal(PageKey::CargoSource(key.clone()), resource)))
             .or_else(|| self.orbit.as_ref().and_then(|resource| terminal(PageKey::Orbit, resource)));
     }
 
