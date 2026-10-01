@@ -36,7 +36,7 @@ pub(super) fn body(route: &BrowseRoute, store: &Pages, ctx: &mut Ctx<'_>, cx: &m
         // Find's reveal state lives in its native component. Its painted text
         // probes are the authority for what is visible in this frame.
         let actions = find_actions(route, ctx, cx);
-        let mut leaves = vec![Leaf::new(facet::browse::find::find("find", model, actions, &ctx.measure))];
+        let mut leaves = vec![Leaf::new(facet::browse::find::find("find", model, actions, &ctx.measure).active(ctx.active && ctx.links.snapshot(cx).overlay().is_none()))];
         if matches!(shown(&resource), Shown::Fault(_) | Shown::Unavailable(_, _)) {
             leaves.extend(not_ready(&shown(&resource), &PageKey::Browse(key), "Find", ctx, cx));
         }
