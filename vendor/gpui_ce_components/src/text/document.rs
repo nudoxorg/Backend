@@ -74,27 +74,39 @@ impl ParsedDocument {
     ) -> String {
         let last_ix = self.blocks.len().saturating_sub(1);
         let explicit_range = blocks.is_some();
-        // Virtualized callers may provide a block range even when nothing is
-        // selected. Preserve the old empty-selection contract without
-        // allocating an O(N) bitmap of every block's paint state.
-        let mut painted_first = None;
-        let mut painted_last = None;
-        for (ix, block) in self.blocks.iter().enumerate() {
-            if block.has_selection() {
-                painted_first.get_or_insert(ix);
-                painted_last = Some(ix);
-            }
-        }
-        let (Some(painted_first), Some(painted_last)) = (painted_first, painted_last) else {
-            return String::new();
-        };
         let (first, last) = match blocks {
-            Some(blocks) => (*blocks.start().min(&last_ix), *blocks.end().min(&last_ix)),
-            None => (painted_first, painted_last),
+            Some(blocks) => {
+                let first = *blocks.start().min(&last_ix);
+                let last = *blocks.end().min(&last_ix);
+                if first > last
+                    || !self
+                        .blocks
+                        .iter_from(first)
+                        .take(last - first + 1)
+                        .any(|(_, block)| block.has_selection())
+                {
+                    return String::new();
+                }
+                (first, last)
+            }
+            None => {
+                // Without virtual endpoint indices, fall back to the painted
+                // blocks. Keep the scan allocation-free and preserve the
+                // original implicit-selection behavior.
+                let mut first = None;
+                let mut last = None;
+                for (ix, block) in self.blocks.iter().enumerate() {
+                    if block.has_selection() {
+                        first.get_or_insert(ix);
+                        last = Some(ix);
+                    }
+                }
+                let (Some(first), Some(last)) = (first, last) else {
+                    return String::new();
+                };
+                (first, last)
+            }
         };
-        if first > last {
-            return String::new();
-        }
 
         if format == SelectionFormat::Plain {
             let mut text = String::new();
@@ -245,17 +257,81 @@ impl ParsedDocument {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::text::node::Paragraph;
+    use std::ops::Range;
+
+    fn paragraph(text: &str, selection: Option<Range<usize>>) -> BlockNode {
+        let paragraph = Paragraph::new(text.to_owned());
+        if let Some(selection) = selection {
+            let mut state = paragraph.state.lock().unwrap();
+            state.set_text(text.into());
+            state.selection = Some(selection.into());
+        }
+        BlockNode::Paragraph(paragraph)
+    }
+
+    fn document(blocks: Vec<BlockNode>) -> ParsedDocument {
+        ParsedDocument {
+            source: String::new().into(),
+            blocks: blocks.into(),
+        }
+    }
 
     #[test]
     fn explicit_virtual_block_range_is_empty_without_a_selection() {
-        let document = ParsedDocument {
-            source: "unselected".into(),
-            blocks: vec![BlockNode::Paragraph(Default::default())].into(),
-        };
+        let document = document(vec![paragraph("unselected", None)]);
 
         assert_eq!(
             document.selected_text(SelectionFormat::Plain, Some(0..=0)),
             ""
         );
+    }
+
+    #[test]
+    fn explicit_virtual_range_keeps_unpainted_endpoints_around_a_painted_interior() {
+        let document = document(vec![
+            paragraph("start", None),
+            paragraph("middle", Some(1..3)),
+            paragraph("end", None),
+        ]);
+
+        assert_eq!(
+            document.selected_text(SelectionFormat::Plain, Some(0..=2)),
+            "startmiddleend"
+        );
+    }
+
+    #[test]
+    fn explicit_range_ignores_selection_state_outside_its_clamped_bounds() {
+        let document = document(vec![
+            paragraph("zero", None),
+            paragraph("one", None),
+            paragraph("two", None),
+            paragraph("outside", Some(0..7)),
+        ]);
+
+        assert_eq!(
+            document.selected_text(SelectionFormat::Plain, Some(0..=2)),
+            ""
+        );
+        assert_eq!(
+            document.selected_text(SelectionFormat::Plain, Some(0..=usize::MAX)),
+            "zeroonetwooutside"
+        );
+    }
+
+    #[test]
+    fn explicit_range_reversed_is_empty_and_implicit_range_still_uses_painted_bounds() {
+        let document = document(vec![
+            paragraph("first", None),
+            paragraph("middle", Some(1..3)),
+            paragraph("last", None),
+        ]);
+
+        assert_eq!(
+            document.selected_text(SelectionFormat::Plain, Some(2..=1)),
+            ""
+        );
+        assert_eq!(document.selected_text(SelectionFormat::Plain, None), "id");
     }
 }
