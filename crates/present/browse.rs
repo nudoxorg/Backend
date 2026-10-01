@@ -143,7 +143,7 @@ pub fn read_tree(tree: &ProjectTree) -> TreeReading {
                 "{count_text} {noun} locked but inactive for the current target/features"
             ))
         }
-        LockedInactiveCoverage::Complete if tree.locked_inactive == 0 => None,
+        LockedInactiveCoverage::Complete => None,
         LockedInactiveCoverage::Unavailable => Some(
             "inactive rows cannot be counted without both the current resolution and Cargo.lock"
                 .to_owned(),
