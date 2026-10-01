@@ -1483,6 +1483,8 @@ fn cargo_source_failure(reason: CargoPackageSourceReadFailureV1) -> (FaultCode, 
             (FaultCode::Protocol, "This Cargo source address is invalid."),
         Reason::AuthorityUnavailable =>
             (FaultCode::Missing, "This Cargo package has no current source receipt. Reopen its project tree."),
+        Reason::SourceObservationUnavailable =>
+            (FaultCode::Missing, "The Cargo source observation could not be revalidated completely. Reopen its project tree."),
         Reason::StaleAuthority =>
             (FaultCode::Missing, "The Cargo source changed. Reopen its project tree."),
         Reason::PackageRootUnavailable =>
