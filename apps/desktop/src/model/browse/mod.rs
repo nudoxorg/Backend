@@ -9,8 +9,8 @@ use crate::model::pages::{
     SignatureText,
 };
 use crate::navigation::BrowseRoute;
-use crate::navigation::CompareSet;
 use crate::navigation::CargoSourcePath;
+use crate::navigation::CompareSet;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::Arc;
@@ -45,7 +45,12 @@ impl fmt::Display for BrowseKey {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Tree(project) => write!(formatter, "tree {}", project.display_lossy()),
-            Self::CargoSourceInventory(key) => write!(formatter, "Cargo files {} in {}", key.package, key.project.display_lossy()),
+            Self::CargoSourceInventory(key) => write!(
+                formatter,
+                "Cargo files {} in {}",
+                key.package,
+                key.project.display_lossy()
+            ),
             Self::FindHome => formatter.write_str("find"),
             Self::Find(query) => write!(formatter, "find {:?}", query.text),
             Self::Compare(selection) => write!(formatter, "compare {:?}", selection.packages()),
@@ -177,6 +182,9 @@ pub struct TreeModel {
     /// Exact release destinations prepared by the read worker, aligned with
     /// `reading.roles`; source gaps remain explicit per release.
     pub links: Arc<[TreeRoleLinks]>,
+    /// Every observed external row, including lockfile rows without a role.
+    /// Stable exact keys and destinations are prepared on the read worker.
+    pub inventory_links: Arc<[TreeInventoryLink]>,
     /// Exact source-qualified packages admitted by this owner tree, including
     /// transitive/unknown-role rows that have no direct dependency button.
     /// Prepared on the read worker for bounded package-page lookups.
@@ -184,6 +192,19 @@ pub struct TreeModel {
     /// UI-ready words and stable action keys prepared once on the read lane.
     /// Drawing the page only borrows this model; it never rescans the tree.
     pub prepared: Arc<facet::browse::LibraryModel>,
+}
+
+/// One package inventory row aligned with `TreeReading::inventory`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TreeInventoryLink {
+    /// Exact row identity including source spelling; occurrence distinguishes
+    /// only literally indistinguishable duplicate rows.
+    pub key: Arc<str>,
+    /// Full observed package name and version guard positional hints.
+    pub name: Arc<str>,
+    pub version: Arc<str>,
+    /// No action exists without an exact current owner source receipt.
+    pub destination: TreeDestination,
 }
 
 /// Destinations for the rows of one derived role.

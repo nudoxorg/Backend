@@ -3,12 +3,14 @@
 
 use super::state::{Shown, not_ready, shown};
 use super::{Ctx, Leaf, Pages};
-use crate::model::browse::{BrowseKey, BrowseValue, TreeDestination, TreeModel, TreeRoleLinks};
+use crate::model::browse::{
+    BrowseKey, BrowseValue, TreeDestination, TreeInventoryLink, TreeModel, TreeRoleLinks,
+};
 use crate::model::pages::{PackageRef, PageKey, SearchQuery, SymbolRef};
 use crate::navigation::{BrowseRoute, CompareSet, Intent, OrbitRoute, Route, View};
 use crate::shell::kit::{package_route, symbol_route, symbol_view_route};
 use crate::shell::reader::Reader;
-use facet::browse::library::ReleaseHandle;
+use facet::browse::library::{InventoryHandle, ReleaseHandle};
 use facet::browse::{LibraryActions, LibraryModel, library};
 use gpui::{Context, SharedString};
 use std::rc::Rc;
@@ -72,6 +74,7 @@ pub(super) fn body(
                 model,
                 LibraryActions {
                     open_package: open_library_package_action(Arc::clone(tree), ctx),
+                    open_inventory: open_library_inventory_action(Arc::clone(tree), ctx),
                 },
                 &ctx.measure,
                 Rc::clone(&ctx.library_state),
@@ -146,6 +149,38 @@ fn open_library_package_action(
             links.dispatch(Intent::Navigate(route), cx);
         }
     })
+}
+
+fn open_library_inventory_action(
+    tree: Arc<TreeModel>,
+    ctx: &Ctx<'_>,
+) -> Rc<dyn Fn(InventoryHandle, &mut gpui::Window, &mut gpui::App)> {
+    let links = ctx.links.clone();
+    let state = Rc::clone(&ctx.library_state);
+    let place_key = ctx.place_key;
+    Rc::new(move |handle, _, cx| {
+        let Some(package) = typed_library_inventory(&tree.inventory_links, &handle) else {
+            return;
+        };
+        if let Some(route) = package_route(package) {
+            state
+                .borrow_mut()
+                .remember_inventory_open(handle, place_key);
+            links.dispatch(Intent::Navigate(route), cx);
+        }
+    })
+}
+
+fn typed_library_inventory<'a>(
+    rows: &'a [TreeInventoryLink],
+    handle: &InventoryHandle,
+) -> Option<&'a PackageRef> {
+    let (at, key) = handle.address();
+    let row = rows.get(at).filter(|row| row.key.as_ref() == key)?;
+    match &row.destination {
+        TreeDestination::Open(package) => Some(package),
+        TreeDestination::Unavailable(_) => None,
+    }
 }
 
 fn typed_library_release(roles: &[TreeRoleLinks], handle: &ReleaseHandle) -> Option<&PackageRef> {

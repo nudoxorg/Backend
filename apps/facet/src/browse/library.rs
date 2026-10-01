@@ -144,10 +144,64 @@ impl ReleaseHandle {
     }
 }
 
+/// Exact observed inventory identity. `row` is a lookup hint only; a stale
+/// hint must never open a different source after rows reorder.
+#[derive(Clone, Debug)]
+pub struct InventoryHandle {
+    row: usize,
+    key: SharedString,
+}
+
+impl InventoryHandle {
+    #[must_use]
+    pub fn new(row: usize, key: impl Into<SharedString>) -> Self {
+        Self {
+            row,
+            key: key.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn address(&self) -> (usize, &str) {
+        (self.row, self.key.as_ref())
+    }
+}
+
+impl PartialEq for InventoryHandle {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+    }
+}
+impl Eq for InventoryHandle {}
+impl std::hash::Hash for InventoryHandle {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&self.key, state);
+    }
+}
+
 /// Navigation supplied by the desktop; the shared facet never parses paths.
 #[derive(Clone)]
 pub struct Actions {
     pub open_package: Rc<dyn Fn(ReleaseHandle, &mut Window, &mut App)>,
+    pub open_inventory: Rc<dyn Fn(InventoryHandle, &mut Window, &mut App)>,
+}
+
+/// One exact package row retained by the owner, including rows whose role or
+/// source-file access remains unknown under lockfile-only coverage.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InventoryRow {
+    pub key: SharedString,
+    pub name: SharedString,
+    pub version: SharedString,
+    /// Full origin caption, retained without display wraps.
+    pub origin: SharedString,
+    /// Exact source spelling, when the owner supplied one.
+    pub copy_origin: Option<SharedString>,
+    /// Display-only chunks whose concatenation is exactly `origin`.
+    pub origin_chunks: Vec<SharedString>,
+    pub role: SharedString,
+    /// Only current owner-admitted source receipts receive an action.
+    pub target: Option<InventoryHandle>,
 }
 
 /// How loudly an alert speaks.
@@ -236,6 +290,12 @@ pub struct Model {
     pub facts: Vec<SharedString>,
     /// The roles, in order.
     pub roles: Vec<Role>,
+    /// Every observed external package row, virtualized for large trees.
+    pub inventory: Vec<InventoryRow>,
+    /// Exact key lookup prepared with the immutable rows by the read worker.
+    pub inventory_index: BTreeMap<SharedString, usize>,
+    /// Producer coverage and source availability, stated without inference.
+    pub inventory_note: SharedString,
     /// "Here twice", then "60 crates appear at more than one version", when any do.
     pub twice_heading: Option<(SharedString, SharedString)>,
     /// The packages here twice, most actionable first.
@@ -257,6 +317,7 @@ pub struct State {
     focuses: VecDeque<(ReleaseIdentity, FocusHandle)>,
     release_pages: VecDeque<(SharedString, usize)>,
     return_focus: Option<(ReleaseIdentity, u64)>,
+    return_inventory: Option<(InventoryHandle, u64)>,
 }
 
 struct ListCache {
@@ -270,6 +331,31 @@ impl State {
     /// focused only if this same tree is painted at a later Reader place.
     pub fn remember_open(&mut self, release: ReleaseHandle, place_key: u64) {
         self.return_focus = Some((release.identity, place_key));
+    }
+
+    /// Remember the exact inventory source that opened a package page.
+    pub fn remember_inventory_open(&mut self, row: InventoryHandle, place_key: u64) {
+        self.return_inventory = Some((row, place_key));
+    }
+
+    fn inventory_return_target(&self, place_key: u64, active: bool) -> Option<&InventoryHandle> {
+        self.return_inventory
+            .as_ref()
+            .filter(|(_, from)| active && *from != place_key)
+            .map(|(key, _)| key)
+    }
+
+    fn take_inventory_return(
+        &mut self,
+        key: &InventoryHandle,
+        place_key: u64,
+        active: bool,
+    ) -> bool {
+        if self.inventory_return_target(place_key, active) != Some(key) {
+            return false;
+        }
+        self.return_inventory = None;
+        true
     }
 
     fn return_target(&self, place_key: u64, active: bool) -> Option<ReleaseIdentity> {
@@ -340,14 +426,24 @@ impl State {
     }
 
     fn list(&mut self, key: SharedString, count: usize, measure: &Measure) -> ListState {
+        self.list_sized(key, count, measure, measure.row())
+    }
+
+    fn list_sized(
+        &mut self,
+        key: SharedString,
+        count: usize,
+        measure: &Measure,
+        height: Pixels,
+    ) -> ListState {
         let cache = self.lists.entry(key).or_insert_with(|| ListCache {
             state: ListState::new(count, ListAlignment::Top, px(80.))
-                .with_uniform_item_height(measure.row()),
+                .with_uniform_item_height(height),
             width: measure.width(),
             scale: measure.scale(),
         });
         if cache.state.item_count() != count {
-            cache.state.reset_with_uniform_height(count, measure.row());
+            cache.state.reset_with_uniform_height(count, height);
         } else if cache.width != measure.width() || cache.scale != measure.scale() {
             cache.state.remeasure();
         }
@@ -374,7 +470,23 @@ impl State {
 
 #[cfg(test)]
 mod state_tests {
-    use super::{ReleaseHandle, State};
+    use super::{InventoryHandle, ReleaseHandle, State};
+
+    #[test]
+    fn inventory_handle_identity_ignores_position_hints() {
+        use std::hash::{Hash as _, Hasher as _};
+        let first = InventoryHandle::new(1, "exact-registry-a");
+        let reordered = InventoryHandle::new(9, "exact-registry-a");
+        let sibling = InventoryHandle::new(1, "exact-registry-b");
+        assert_eq!(first, reordered);
+        assert_ne!(first, sibling);
+        let digest = |handle: &InventoryHandle| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            handle.hash(&mut hasher);
+            hasher.finish()
+        };
+        assert_eq!(digest(&first), digest(&reordered));
+    }
 
     #[test]
     fn exact_release_handle_identity_ignores_reordered_position_hints() {
@@ -436,6 +548,7 @@ mod mounted_tests {
         model: Arc<Model>,
         state: Rc<RefCell<State>>,
         opened: Rc<RefCell<Vec<ReleaseHandle>>>,
+        inventory_opened: Option<Rc<RefCell<Vec<InventoryHandle>>>>,
         width: Pixels,
         place_key: u64,
         visible: bool,
@@ -450,11 +563,21 @@ mod mounted_tests {
             let measure = Measure::new(self.width, &cx.facet());
             let state = Rc::clone(&self.state);
             let opened = Rc::clone(&self.opened);
+            let inventory_opened = self.inventory_opened.clone();
+            let inventory_state = Rc::clone(&self.state);
             let place_key = self.place_key;
             let actions = Actions {
                 open_package: Rc::new(move |release, _, _| {
                     state.borrow_mut().remember_open(release.clone(), place_key);
                     opened.borrow_mut().push(release);
+                }),
+                open_inventory: Rc::new(move |row, _, _| {
+                    inventory_state
+                        .borrow_mut()
+                        .remember_inventory_open(row.clone(), place_key);
+                    if let Some(opened) = &inventory_opened {
+                        opened.borrow_mut().push(row);
+                    }
                 }),
             };
             div().w(self.width).h(px(900.0)).child(library(
@@ -553,6 +676,9 @@ mod mounted_tests {
                 brings: None,
                 rows,
             }],
+            inventory: vec![],
+            inventory_index: BTreeMap::new(),
+            inventory_note: "".into(),
             twice_heading: None,
             twice: vec![],
         });
@@ -562,6 +688,7 @@ mod mounted_tests {
             model,
             state: Rc::clone(&state),
             opened: Rc::clone(&opened),
+            inventory_opened: None,
             width: px(260.0),
             place_key: 1,
             visible: true,
@@ -690,6 +817,9 @@ mod mounted_tests {
                     releases,
                 }],
             }],
+            inventory: vec![],
+            inventory_index: BTreeMap::new(),
+            inventory_note: "".into(),
             twice_heading: None,
             twice: vec![],
         });
@@ -699,6 +829,7 @@ mod mounted_tests {
             model,
             state: Rc::clone(&state),
             opened: Rc::clone(&opened),
+            inventory_opened: None,
             width: px(260.0),
             place_key: 1,
             visible: true,
@@ -812,6 +943,9 @@ mod mounted_tests {
                     releases,
                 }],
             }],
+            inventory: vec![],
+            inventory_index: BTreeMap::new(),
+            inventory_note: "".into(),
             twice_heading: None,
             twice: vec![],
         });
@@ -821,6 +955,7 @@ mod mounted_tests {
             model,
             state: Rc::clone(&state),
             opened: Rc::clone(&opened),
+            inventory_opened: None,
             width: px(260.0),
             place_key: 1,
             visible: true,
@@ -922,6 +1057,9 @@ mod mounted_tests {
                 rows,
                 brings: None,
             }],
+            inventory: vec![],
+            inventory_index: BTreeMap::new(),
+            inventory_note: "".into(),
             twice_heading: None,
             twice: vec![],
         });
@@ -931,6 +1069,7 @@ mod mounted_tests {
             model,
             state: Rc::clone(&state),
             opened,
+            inventory_opened: None,
             width: px(260.0),
             place_key: 1,
             visible: true,
@@ -1041,6 +1180,240 @@ mod mounted_tests {
         assert!(
             list_state.logical_scroll_top().item_ix < 490,
             "focused navigation did not handle PageUp"
+        );
+    }
+
+    #[gpui::test]
+    fn large_inventory_virtualizes_and_back_focuses_exact_source_after_reorder(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            set_facet(
+                Facet {
+                    text_scale: 2.0,
+                    reduced_motion: true,
+                    ..Facet::default()
+                },
+                cx,
+            );
+            probe::enable(cx);
+        });
+        let mut rows = (0..1235)
+            .map(|at| InventoryRow {
+                key: format!("locked-{at:04}").into(),
+                name: format!("locked-{at:04}").into(),
+                version: "1.0.0".into(),
+                origin: "registry+https://index.crates.io/".into(),
+                copy_origin: Some("registry+https://index.crates.io/".into()),
+                origin_chunks: vec![
+                    "registry+htt".into(),
+                    "ps://index.c".into(),
+                    "rates.io/".into(),
+                ],
+                role: "transitive dependency".into(),
+                target: None,
+            })
+            .collect::<Vec<_>>();
+        for (at, key) in ["registry-a", "registry-b"].into_iter().enumerate() {
+            rows.push(InventoryRow {
+                key: key.into(),
+                name: "shared".into(),
+                version: "1.0.0".into(),
+                origin: format!("registry+https://{key}.example/index").into(),
+                copy_origin: Some(format!("registry+https://{key}.example/index").into()),
+                origin_chunks: vec![
+                    "registry+htt".into(),
+                    "ps://registr".into(),
+                    format!(
+                        "y-{}.example/",
+                        key.ends_with('b').then_some('b').unwrap_or('a')
+                    )
+                    .into(),
+                    "index".into(),
+                ],
+                role: "transitive dependency".into(),
+                target: Some(InventoryHandle::new(1235 + at, key)),
+            });
+        }
+        assert!(rows.iter().all(|row| {
+            row.origin_chunks
+                .iter()
+                .map(|part| part.as_ref())
+                .collect::<String>()
+                == row.origin.as_ref()
+        }));
+        let make_model = |rows: Vec<InventoryRow>| {
+            Arc::new(Model {
+                name: "large Cargo project".into(),
+                lede: "Current Cargo resolution lists 1,237 external packages.".into(),
+                lede_tip: None,
+                note: None,
+                alerts: vec![],
+                facts: vec![],
+                roles: vec![],
+                inventory_index: rows
+                    .iter()
+                    .enumerate()
+                    .map(|(at, row)| (row.key.clone(), at))
+                    .collect(),
+                inventory: rows,
+                inventory_note:
+                    "All 1,237 current package rows are listed; source availability is explicit."
+                        .into(),
+                twice_heading: None,
+                twice: vec![],
+            })
+        };
+        let model = make_model(rows.clone());
+        let state = Rc::new(RefCell::new(State::default()));
+        let opened = Rc::new(RefCell::new(Vec::new()));
+        let (host, cx) = cx.add_window_view(|_, _| Mounted {
+            model,
+            state: Rc::clone(&state),
+            opened: Rc::new(RefCell::new(Vec::new())),
+            inventory_opened: Some(Rc::clone(&opened)),
+            width: px(260.0),
+            place_key: 1,
+            visible: true,
+        });
+        let first = draw(cx);
+        let painted = |ledger: &crate::probe::Ledger| {
+            ledger
+                .texts
+                .iter()
+                .filter(|text| text.content.starts_with("locked-"))
+                .count()
+        };
+        assert!(
+            (1..40).contains(&painted(&first)),
+            "virtual inventory painted too many rows"
+        );
+        assert!(
+            first
+                .texts
+                .iter()
+                .any(|text| text.content.contains("1,237 current"))
+        );
+        assert!(first.texts.iter().any(|text| text.content == "locked-0000"));
+        assert!(!first.texts.iter().any(|text| text.content == "locked-1234"));
+        assert!(
+            first
+                .texts
+                .iter()
+                .filter(|text| text.content.starts_with("registry+"))
+                .all(|text| !text.clipped_without_ellipsis())
+        );
+
+        let list_state = state
+            .borrow()
+            .lists
+            .get("package-inventory")
+            .expect("inventory list")
+            .state
+            .clone();
+        let viewport = list_state.viewport_bounds();
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: point(
+                viewport.left() + viewport.size.width / 2.0,
+                viewport.top() + viewport.size.height / 2.0,
+            ),
+            delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-500.0))),
+            ..Default::default()
+        });
+        draw(cx);
+        assert!(
+            list_state.logical_scroll_top().item_ix > 0,
+            "wheel reached retained rows"
+        );
+        host.update(cx, |host, cx| {
+            host.width = px(320.0);
+            cx.notify();
+        });
+        let resized = draw(cx);
+        assert!(
+            list_state.logical_scroll_top().item_ix > 0,
+            "resize preserved reading position"
+        );
+        assert!((1..40).contains(&painted(&resized)));
+
+        click(cx, &resized, "last-packages");
+        let tail = draw(cx);
+        assert!(list_state.logical_scroll_top().item_ix >= 1228);
+        cx.simulate_keystrokes("tab");
+        let mut previous_focused = false;
+        for _ in 0..20 {
+            previous_focused = draw(cx)
+                .targets
+                .iter()
+                .any(|target| target.key.contains("previous-packages") && target.state.focused);
+            if previous_focused {
+                break;
+            }
+            cx.update(|window, cx| window.focus_next(cx));
+        }
+        assert!(
+            previous_focused,
+            "inventory page controls belong to native focus order"
+        );
+        cx.simulate_keystrokes("pageup");
+        draw(cx);
+        assert!(
+            list_state.logical_scroll_top().item_ix < 1228,
+            "focused PageUp reached prior rows"
+        );
+        let prior = draw(cx);
+        click(cx, &prior, "last-packages");
+        let tail = draw(cx);
+        let source = tail
+            .targets
+            .iter()
+            .find(|target| target.key.contains("registry-b") && target.key.contains("open-source"))
+            .expect("exact source button at the tail");
+        let at = point(
+            px(source.bounds.x + source.bounds.width / 2.0),
+            px(source.bounds.y + source.bounds.height / 2.0),
+        );
+        cx.simulate_mouse_move(at, None, Modifiers::none());
+        draw(cx);
+        cx.simulate_click(at, Modifiers::none());
+        assert_eq!(
+            opened.borrow().last(),
+            Some(&InventoryHandle::new(1236, "registry-b"))
+        );
+
+        host.update(cx, |host, cx| {
+            host.visible = false;
+            cx.notify();
+        });
+        draw(cx);
+        rows.swap(1235, 1236);
+        for at in 1235..1237 {
+            rows[at].target = Some(InventoryHandle::new(at, rows[at].key.clone()));
+        }
+        host.update(cx, |host, cx| {
+            host.model = make_model(rows);
+            host.place_key = 2;
+            host.visible = true;
+            cx.notify();
+        });
+        list_state.scroll_to(ListOffset {
+            item_ix: 0,
+            offset_in_item: px(0.),
+        });
+        let returned = draw(cx);
+        assert!(
+            returned
+                .targets
+                .iter()
+                .any(|target| target.key.contains("registry-b")
+                    && target.key.contains("open-source")
+                    && target.state.focused),
+            "Back restored native focus to the exact authority after reorder"
+        );
+        assert!(
+            state.borrow().return_inventory.is_none(),
+            "focus restoration is one shot"
         );
     }
 }
@@ -1163,6 +1536,18 @@ impl RenderOnce for Library {
             ));
         }
         page = page.child(roles(
+            &id,
+            &model,
+            &self.actions,
+            &measure,
+            palette,
+            &self.state,
+            self.place_key,
+            self.active,
+            window,
+            cx,
+        ));
+        page = page.child(inventory(
             &id,
             &model,
             &self.actions,
@@ -1381,6 +1766,238 @@ fn roles(
         );
     }
     row.into_any_element()
+}
+
+/// The whole retained inventory uses one native virtual list. Its visible
+/// rows are words from the owner; only an exact source receipt adds a button.
+fn inventory(
+    id: &ElementId,
+    model: &Arc<Model>,
+    actions: &Actions,
+    measure: &Measure,
+    palette: &Palette,
+    state: &Rc<RefCell<State>>,
+    place_key: u64,
+    active: bool,
+    _window: &mut Window,
+    _cx: &mut App,
+) -> AnyElement {
+    let block_id = child(id, "inventory");
+    let count = model.inventory.len();
+    if count == 0 {
+        return div()
+            .id(block_id.clone())
+            .flex()
+            .flex_col()
+            .gap(measure.space(Space::Tight))
+            .child(words(
+                child(&block_id, "heading"),
+                "Package inventory · 0 rows".into(),
+                ty::HEAD,
+                palette.ink0,
+                measure,
+                TextOverflow::Wrap,
+            ))
+            .child(words(
+                child(&block_id, "coverage"),
+                model.inventory_note.clone(),
+                ty::CAPTION,
+                palette.ink2,
+                measure,
+                TextOverflow::Wrap,
+            ))
+            .into_any_element();
+    }
+    let list_state = state.borrow_mut().list_sized(
+        "package-inventory".into(),
+        count,
+        measure,
+        measure.row() * 4.0,
+    );
+    if let Some(target) = state.borrow().inventory_return_target(place_key, active)
+        && let Some(&at) = model.inventory_index.get(&target.key)
+    {
+        list_state.remeasure_items(at..at + 1);
+        list_state.scroll_to(ListOffset {
+            item_ix: at,
+            offset_in_item: px(0.),
+        });
+    }
+    let rows = Arc::clone(model);
+    let actions = actions.clone();
+    let state = Rc::clone(state);
+    let item_parent = block_id.clone();
+    let measure = *measure;
+    let palette = *palette;
+    let navigation = list_state.clone();
+    let keyboard = list_state.clone();
+    let mut block = div()
+        .id(block_id.clone())
+        .flex()
+        .flex_col()
+        .gap(measure.space(Space::Tight))
+        .child(words(
+            child(&block_id, "heading"),
+            format!("Package inventory · {count} rows").into(),
+            ty::HEAD,
+            palette.ink0,
+            &measure,
+            TextOverflow::Wrap,
+        ))
+        .child(words(
+            child(&block_id, "coverage"),
+            model.inventory_note.clone(),
+            ty::CAPTION,
+            palette.ink2,
+            &measure,
+            TextOverflow::Wrap,
+        ))
+        .child(list_navigation(&block_id, &navigation, count, &measure))
+        .child(
+            list(list_state, move |at, window, cx| {
+                let row = &rows.inventory[at];
+                inventory_row(
+                    &child(&item_parent, row.key.clone()),
+                    row,
+                    &actions,
+                    &measure,
+                    &palette,
+                    &state,
+                    place_key,
+                    active,
+                    window,
+                    cx,
+                )
+            })
+            .w(measure.width())
+            .h(measure.row() * 8.0),
+        );
+    block = block.on_key_down(move |event, _, cx| {
+        let top = keyboard.logical_scroll_top().item_ix;
+        let target = match event.keystroke.key.as_str() {
+            "pagedown" => top.saturating_add(8).min(count - 1),
+            "pageup" => top.saturating_sub(8),
+            "home" => 0,
+            "end" => count - 1,
+            _ => return,
+        };
+        keyboard.scroll_to(ListOffset {
+            item_ix: target,
+            offset_in_item: px(0.),
+        });
+        cx.refresh_windows();
+        cx.stop_propagation();
+    });
+    block.into_any_element()
+}
+
+fn inventory_row(
+    id: &ElementId,
+    row: &InventoryRow,
+    actions: &Actions,
+    measure: &Measure,
+    palette: &Palette,
+    state: &Rc<RefCell<State>>,
+    place_key: u64,
+    active: bool,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let mut line = div()
+        .id(id.clone())
+        .flex()
+        .flex_col()
+        .min_w_0()
+        .min_h(measure.row() * 3.0)
+        .py(measure.space(Space::Tight))
+        .gap(measure.space(Space::Tight))
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .items_baseline()
+                .gap(measure.space(Space::Tight))
+                .child(words(
+                    child(id, "name"),
+                    row.name.clone(),
+                    ty::MONO_ROW,
+                    palette.ink1,
+                    measure,
+                    TextOverflow::Wrap,
+                ))
+                .child(words(
+                    child(id, "version"),
+                    row.version.clone(),
+                    ty::SMALL,
+                    palette.ink2,
+                    measure,
+                    TextOverflow::Wrap,
+                )),
+        )
+        .child(div().flex().flex_col().min_w_0().children(
+            row.origin_chunks.iter().enumerate().map(|(at, chunk)| {
+                words(
+                    child(id, format!("origin-{at}")),
+                    chunk.clone(),
+                    ty::CAPTION,
+                    palette.ink2,
+                    measure,
+                    TextOverflow::Wrap,
+                )
+            }),
+        ))
+        .child(words(
+            child(id, "role"),
+            row.role.clone(),
+            ty::CAPTION,
+            palette.ink3,
+            measure,
+            TextOverflow::Wrap,
+        ));
+    if let Some(origin) = &row.copy_origin {
+        let origin = origin.clone();
+        line = line.child(
+            button(child(id, "copy-origin"), "Copy source identity", measure)
+                .ghost()
+                .size(Control::Small)
+                .on_click(move |_, cx| {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(origin.to_string()));
+                }),
+        );
+    }
+    if let Some(target) = &row.target {
+        let target = target.clone();
+        let focus_key = ReleaseIdentity {
+            role: "inventory".into(),
+            row: row.key.clone(),
+            release: "".into(),
+        };
+        let focus = state.borrow_mut().focus_for(&focus_key, cx);
+        if state
+            .borrow_mut()
+            .take_inventory_return(&target, place_key, active)
+        {
+            let returning_focus = focus.clone();
+            window.defer(cx, move |window, cx| window.focus(&returning_focus, cx));
+        }
+        let open = Rc::clone(&actions.open_inventory);
+        line = line.child(
+            button(child(id, "open-source"), "Open source ›", measure)
+                .focus_handle(focus)
+                .ghost()
+                .on_click(move |window, cx| open(target.clone(), window, cx)),
+        );
+    } else {
+        line = line.child(words(
+            child(id, "source-unavailable"),
+            "Source unavailable without a current exact Cargo receipt.".into(),
+            ty::CAPTION,
+            palette.ink3,
+            measure,
+            TextOverflow::Wrap,
+        ));
+    }
+    line.into_any_element()
 }
 
 fn role_block(

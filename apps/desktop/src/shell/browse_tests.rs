@@ -105,6 +105,46 @@ fn library_release_actions_keep_exact_source_and_row_keys_survive_reorder() {
     );
 }
 
+#[test]
+fn inventory_actions_refuse_stale_positions_and_unverified_sources() {
+    use crate::model::browse::{TreeDestination, TreeInventoryLink};
+    use crate::model::pages::PackageRef;
+    use facet::browse::library::InventoryHandle;
+
+    let first = PackageRef::parse("pkg:cargo/shared@1.0.0?cargo-authority=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        .expect("first exact source");
+    let second = PackageRef::parse("pkg:cargo/shared@1.0.0?cargo-authority=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+        .expect("second exact source");
+    let row = |key: &str, destination| TreeInventoryLink {
+        key: key.into(),
+        name: "shared".into(),
+        version: "1.0.0".into(),
+        destination,
+    };
+    let rows = [
+        row("registry-a", TreeDestination::Open(first.clone())),
+        row("registry-b", TreeDestination::Open(second.clone())),
+        row(
+            "unverified",
+            TreeDestination::Unavailable("no receipt".into()),
+        ),
+    ];
+    let a = InventoryHandle::new(0, "registry-a");
+    let b = InventoryHandle::new(1, "registry-b");
+    assert_eq!(super::typed_library_inventory(&rows, &a), Some(&first));
+    assert_eq!(super::typed_library_inventory(&rows, &b), Some(&second));
+    assert_eq!(
+        super::typed_library_inventory(&rows, &InventoryHandle::new(2, "unverified")),
+        None
+    );
+    let reordered = [rows[1].clone(), rows[0].clone(), rows[2].clone()];
+    assert_eq!(super::typed_library_inventory(&reordered, &a), None);
+    assert_eq!(
+        super::typed_library_inventory(&reordered, &InventoryHandle::new(1, "registry-a")),
+        Some(&first)
+    );
+}
+
 fn repository() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")

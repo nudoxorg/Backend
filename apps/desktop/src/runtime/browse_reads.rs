@@ -3,13 +3,13 @@
 
 use super::reads::failure;
 use crate::model::browse::{
-    BrowseKey, BrowseValue, TreeDestination, TreeModel, TreeReleaseLink, TreeRoleLinks,
-    TreeRowLinks,
+    BrowseKey, BrowseValue, TreeDestination, TreeInventoryLink, TreeModel, TreeReleaseLink,
+    TreeRoleLinks, TreeRowLinks,
 };
 use crate::model::pages::{PackageRef, PageValue, ReadFailure};
 use backend_library::{ProductText, SurfaceCommand, SurfaceReply, browse::RoleId};
 use backend_present::Engine;
-use facet::browse::library::ReleaseHandle;
+use facet::browse::library::{InventoryHandle, InventoryRow, ReleaseHandle};
 use facet::browse::{
     Alert, AlertTone, LibraryModel, LibraryReleaseLink, LibraryRole, LibraryRow, Twice,
 };
@@ -31,6 +31,89 @@ fn key_part(into: &mut String, part: &str) {
     use std::fmt::Write as _;
     let _ = write!(into, "{}:", part.len());
     into.push_str(part);
+}
+
+/// Full source spelling participates in identity even when source bytes are
+/// unavailable. An admitted receipt refines that identity with its digest.
+fn inventory_key(row: &backend_present::InventoryReading) -> String {
+    let mut key = String::new();
+    key_part(&mut key, &row.name);
+    key_part(&mut key, &row.version);
+    if let Some(reference) = &row.source {
+        key_part(&mut key, "qualified");
+        key_part(&mut key, reference.as_str());
+    }
+    use backend_library::browse::PackageOrigin;
+    match &row.origin {
+        PackageOrigin::Registry { source } => {
+            key_part(&mut key, "registry");
+            key_part(&mut key, source);
+        }
+        PackageOrigin::Git { source } => {
+            key_part(&mut key, "git");
+            key_part(&mut key, source);
+        }
+        PackageOrigin::Vendored { path } => {
+            key_part(&mut key, "vendored");
+            key_part(&mut key, path);
+        }
+        PackageOrigin::Unresolved { source } => {
+            key_part(&mut key, "unresolved");
+            key_part(&mut key, source.as_deref().unwrap_or(""));
+        }
+    }
+    key
+}
+
+fn inventory_origin(origin: &backend_library::browse::PackageOrigin) -> Arc<str> {
+    use backend_library::browse::PackageOrigin;
+    match origin {
+        PackageOrigin::Registry { source } | PackageOrigin::Git { source } => {
+            Arc::from(source.as_str())
+        }
+        PackageOrigin::Vendored { path } => Arc::from(format!("path: {path}")),
+        PackageOrigin::Unresolved {
+            source: Some(source),
+        } => Arc::from(format!("unresolved: {source}")),
+        PackageOrigin::Unresolved { source: None } => Arc::from("source origin unknown"),
+    }
+}
+
+/// Split long unbreakable Cargo source IDs into phone-width display runs.
+/// Concatenating the runs gives the unchanged owner spelling.
+fn origin_chunks(origin: &str) -> Vec<SharedString> {
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    for ch in origin.chars() {
+        current.push(ch);
+        if current.chars().count() == 12 {
+            chunks.push(std::mem::take(&mut current).into());
+        }
+    }
+    if !current.is_empty() || chunks.is_empty() {
+        chunks.push(current.into());
+    }
+    chunks
+}
+
+fn original_source(origin: &backend_library::browse::PackageOrigin) -> Option<&str> {
+    use backend_library::browse::PackageOrigin;
+    match origin {
+        PackageOrigin::Registry { source } | PackageOrigin::Git { source } => Some(source),
+        PackageOrigin::Vendored { path } => Some(path),
+        PackageOrigin::Unresolved { source } => source.as_deref(),
+    }
+}
+
+fn inventory_role(role: backend_library::browse::PackageRole) -> SharedString {
+    use backend_library::browse::PackageRole;
+    match role {
+        PackageRole::Direct => "direct dependency".into(),
+        PackageRole::Brought(_) => "transitive dependency".into(),
+        PackageRole::Shared => "shared dependency".into(),
+        PackageRole::Unreached => "outside a direct dependency role".into(),
+        PackageRole::Unknown => "role unknown from Cargo.lock".into(),
+    }
 }
 
 /// Exact release source, including registry authority, participates in the
@@ -118,6 +201,7 @@ pub(crate) fn row_key(
 fn prepared_library_model(
     reading: &backend_present::TreeReading,
     links: &[TreeRoleLinks],
+    inventory_links: &[TreeInventoryLink],
 ) -> LibraryModel {
     let mut say = |text: &str| -> SharedString { text.to_owned().into() };
     let alerts = reading
@@ -295,6 +379,33 @@ fn prepared_library_model(
             }
         })
         .collect::<Vec<_>>();
+    let inventory = reading
+        .inventory
+        .iter()
+        .enumerate()
+        .map(|(at, row)| {
+            // Both slices are constructed from this same reading. Never let
+            // zip silently hide a retained owner row if that changes.
+            let link = &inventory_links[at];
+            let origin = inventory_origin(&row.origin);
+            InventoryRow {
+                key: link.key.to_string().into(),
+                name: say(&row.name),
+                version: say(&row.version),
+                origin: origin.to_string().into(),
+                copy_origin: original_source(&row.origin).map(|source| source.to_owned().into()),
+                origin_chunks: origin_chunks(&origin),
+                role: inventory_role(row.role),
+                target: matches!(&link.destination, TreeDestination::Open(_))
+                    .then(|| InventoryHandle::new(at, link.key.to_string())),
+            }
+        })
+        .collect::<Vec<_>>();
+    let inventory_index = inventory
+        .iter()
+        .enumerate()
+        .map(|(at, row)| (row.key.clone(), at))
+        .collect();
     LibraryModel {
         name: say(&reading.name),
         lede: say(&reading.lede),
@@ -303,6 +414,9 @@ fn prepared_library_model(
         alerts,
         facts,
         roles,
+        inventory,
+        inventory_index,
+        inventory_note: say(&reading.inventory_note),
         twice_heading: reading
             .twice_heading
             .as_ref()
@@ -343,12 +457,13 @@ pub fn compose(engine: &mut dyn Engine, key: &BrowseKey) -> Result<PageValue, Re
                 ))),
             }
         }
-        BrowseKey::CargoSourceInventory(_) | BrowseKey::FindHome | BrowseKey::Find(_) | BrowseKey::Compare(_) => {
-            Err(ReadFailure::Fault(crate::core::ErrorValue::new(
-                crate::core::FaultCode::Protocol,
-                "find and compare require the page reader's cancellable read context",
-            )))
-        }
+        BrowseKey::CargoSourceInventory(_)
+        | BrowseKey::FindHome
+        | BrowseKey::Find(_)
+        | BrowseKey::Compare(_) => Err(ReadFailure::Fault(crate::core::ErrorValue::new(
+            crate::core::FaultCode::Protocol,
+            "find and compare require the page reader's cancellable read context",
+        ))),
     }
 }
 
@@ -358,8 +473,31 @@ pub fn tree_model(tree: &backend_library::browse::ProjectTree) -> TreeModel {
     let reading = backend_present::read_tree(tree);
     let sources = TreeSources::new(tree);
     let source_packages = Arc::new(
-        sources.by_reference.keys().cloned().map(PackageRef::from_reference).collect(),
+        sources
+            .by_reference
+            .keys()
+            .cloned()
+            .map(PackageRef::from_reference)
+            .collect(),
     );
+    let mut occurrences = BTreeMap::<String, usize>::new();
+    let inventory_links: Arc<[TreeInventoryLink]> = reading
+        .inventory
+        .iter()
+        .map(|row| {
+            let base = inventory_key(row);
+            let occurrence = occurrences.entry(base.clone()).or_default();
+            let key: Arc<str> = Arc::from(format!("{base}#{}", *occurrence));
+            *occurrence += 1;
+            TreeInventoryLink {
+                key,
+                name: Arc::from(row.name.as_str()),
+                version: Arc::from(row.version.as_str()),
+                destination: sources.destination(&row.name, &row.version, row.source.as_ref()),
+            }
+        })
+        .collect::<Vec<_>>()
+        .into();
     let links: Arc<[TreeRoleLinks]> = reading
         .roles
         .iter()
@@ -409,11 +547,12 @@ pub fn tree_model(tree: &backend_library::browse::ProjectTree) -> TreeModel {
         })
         .collect::<Vec<_>>()
         .into();
-    let prepared = Arc::new(prepared_library_model(&reading, &links));
+    let prepared = Arc::new(prepared_library_model(&reading, &links, &inventory_links));
     TreeModel {
         root: Arc::from(tree.root.as_str()),
         reading,
         links,
+        inventory_links,
         source_packages,
         prepared,
     }
@@ -690,6 +829,89 @@ mod find_tests {
         );
     }
 
+    #[test]
+    fn inventory_keys_preserve_full_origin_and_lockfile_rows_stay_unopenable() {
+        use backend_advisory::{AdvisoryAuthority, normalize_package};
+        use backend_library::browse::{PackageOrigin, PackageRole, build_tree, lockfile_input};
+        let row = |origin| backend_present::InventoryReading {
+            name: "shared".to_owned(),
+            version: "1.0.0".to_owned(),
+            origin,
+            role: PackageRole::Unknown,
+            source: None,
+        };
+        let registry = row(PackageOrigin::Registry {
+            source: "registry+https://example.test/index".to_owned(),
+        });
+        let sparse = row(PackageOrigin::Registry {
+            source: "sparse+https://example.test/index".to_owned(),
+        });
+        let git = row(PackageOrigin::Git {
+            source: "git+https://example.test/lib?branch=main#aaaaaaaa".to_owned(),
+        });
+        assert_ne!(inventory_key(&registry), inventory_key(&sparse));
+        assert_ne!(inventory_key(&registry), inventory_key(&git));
+
+        const LOCKFILE: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../crates/library/browse/fixtures/tree-2026-09-27/Cargo.lock"
+        ));
+        let input = lockfile_input(
+            LOCKFILE,
+            "/workspace/backend",
+            &Default::default(),
+            "Cargo unavailable",
+        )
+        .expect("real lockfile fallback");
+        let authority = AdvisoryAuthority::new(0);
+        let tree = build_tree(&input, &|_, _| {
+            authority.observe(
+                &normalize_package("cargo", "none").expect("test identity"),
+                "0.0.0",
+                false,
+                false,
+                0,
+                false,
+            )
+        });
+        let model = tree_model(&tree);
+        assert_eq!(model.reading.inventory.len(), 1237);
+        assert_eq!(model.prepared.inventory.len(), 1237);
+        assert!(
+            model
+                .prepared
+                .inventory
+                .iter()
+                .all(|row| row.target.is_none())
+        );
+        assert!(
+            model
+                .inventory_links
+                .iter()
+                .all(|link| matches!(&link.destination, TreeDestination::Unavailable(_)))
+        );
+        assert!(
+            model
+                .prepared
+                .inventory_index
+                .contains_key(&model.prepared.inventory[0].key)
+        );
+    }
+
+    #[test]
+    fn display_chunking_preserves_exact_unicode_source_for_copy_and_identity() {
+        let source = "git+https://example.test/βeta?rev=abc123#def456";
+        let chunks = origin_chunks(source);
+        assert_eq!(
+            chunks
+                .iter()
+                .map(|chunk| chunk.as_ref())
+                .collect::<String>(),
+            source
+        );
+        assert!(chunks.iter().all(|chunk| chunk.chars().count() <= 12));
+    }
+
     fn candidate(name: &str, indexed: bool) -> FindPackage {
         FindPackage {
             package: PackageRef::parse(&format!("pkg:cargo/{name}@1.0.0")).unwrap(),
@@ -745,8 +967,13 @@ mod find_tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../crates/library/browse/fixtures/tree-2026-09-27/Cargo.lock"
         ));
-        let input = metadata_input_with_stable_source_witness(METADATA, "aarch64-apple-darwin", Some(LOCKFILE), [7; 32])
-            .expect("actual Cargo metadata fixture");
+        let input = metadata_input_with_stable_source_witness(
+            METADATA,
+            "aarch64-apple-darwin",
+            Some(LOCKFILE),
+            [7; 32],
+        )
+        .expect("actual Cargo metadata fixture");
         let authority = AdvisoryAuthority::new(1);
         let observe = |name: &str, version: &str| {
             let package = normalize_package("cargo", name).expect("test package");
@@ -759,7 +986,11 @@ mod find_tests {
             .clone();
         let receipt = serde.source_qualified_reference().expect("owner receipt");
         let model = tree_model(&tree);
-        assert!(model.source_packages.contains(&PackageRef::from_reference(receipt.clone())));
+        assert!(
+            model
+                .source_packages
+                .contains(&PackageRef::from_reference(receipt.clone()))
+        );
         let TreeDestination::Open(exact) =
             TreeSources::new(&tree).destination(&serde.name, &serde.version, Some(&receipt))
         else {
