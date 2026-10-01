@@ -5,21 +5,21 @@ use crate::{
     AsyncWindowContext, AtlasTile, AvailableSpace, BackdropFilter, Background, BorderStyle, Bounds,
     BoxShadow, Capslock, ColorExt, Context, Corners, CursorHideMode, CursorStyle, Decorations,
     DevicePixels, DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect,
-    Entity, EntityId, EventEmitter, FileDropEvent, Filter, FilterBoundary, FontId, Global,
-    GlobalElementId, GlyphId, GpuSpecs, InputHandler, IsZero, KeyBinding, KeyContext, KeyDownEvent,
-    KeyEvent, Keystroke, KeystrokeEvent, LayerTransform, LayoutId, Lerp, LineLayoutIndex,
-    Modifiers, ModifiersChangedEvent, MonochromeSprite, Motion, MouseButton, MouseEvent,
-    MouseMoveEvent, MouseUpEvent, Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput,
-    PlatformInputHandler, PlatformWindow, Point, PolychromeSprite, Priority, PromptButton,
-    PromptLevel, Quad, Render, RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams,
-    Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y,
-    ScaledFilter, ScaledPixels, Scene, Shadow, SharedString, Size, StrikethroughStyle, Style,
-    SubpixelSprite, SubscriberSet, Subscription, SystemWindowTab, SystemWindowTabController,
-    TabStopMap, TaffyLayoutEngine, Task, TextRenderingMode, TextStyle, TextStyleRefinement,
-    ThermalState, TransformationMatrix, Transition, TransitionState, Underline, UnderlineStyle,
-    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControls, WindowDecorations,
-    WindowOptions, WindowParams, WindowTextSystem, point, prelude::*, profiler, px, rems, size,
-    transparent_black,
+    ElementId, Entity, EntityId, EventEmitter, FileDropEvent, Filter, FilterBoundary, FontId,
+    Global, GlobalElementId, GlyphId, GpuSpecs, InputHandler, IsZero, KeyBinding, KeyContext,
+    KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayerTransform, LayoutId, Lerp,
+    LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite, Motion, MouseButton,
+    MouseEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels, PlatformAtlas, PlatformDisplay,
+    PlatformInput, PlatformInputHandler, PlatformWindow, Point, PolychromeSprite, Priority,
+    PromptButton, PromptLevel, Quad, Render, RenderGlyphParams, RenderImage, RenderImageParams,
+    RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_X,
+    SUBPIXEL_VARIANTS_Y, ScaledFilter, ScaledPixels, Scene, Shadow, SharedString, Size,
+    StrikethroughStyle, Style, SubpixelSprite, SubscriberSet, Subscription, SystemWindowTab,
+    SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task, TextRenderingMode, TextStyle,
+    TextStyleRefinement, ThermalState, TransformationMatrix, Transition, TransitionState,
+    Underline, UnderlineStyle, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
+    WindowControls, WindowDecorations, WindowOptions, WindowParams, WindowTextSystem, point,
+    prelude::*, profiler, px, rems, size, transparent_black,
 };
 
 use anyhow::{Context as _, Result, anyhow};
@@ -665,7 +665,437 @@ impl<M: Focusable + EventEmitter<DismissEvent> + Render> ManagedView for M {}
 /// Emitted by implementers of [`ManagedView`] to indicate the view should be dismissed, such as when a view is presented as a modal.
 pub struct DismissEvent;
 
-type FrameCallback = Box<dyn FnOnce(&mut Window, &mut App)>;
+type FrameCallbackFn = Box<dyn FnOnce(&mut Window, &mut App)>;
+
+struct FrameCallback {
+    owner: Option<FrameCallbackOwner>,
+    callback: FrameCallbackFn,
+}
+
+#[derive(Clone)]
+enum FrameCallbackOwner {
+    Element(ElementOwnerPath),
+    View(EntityId),
+}
+
+/// One frame-local compact arena for structural element paths. Paths are handles into a single
+/// `Vec`, so each drawable contributes an inline node rather than a separate heap allocation.
+/// The arena is UI-thread-local: callback and hitbox ownership never crosses threads.
+#[derive(Clone)]
+struct ElementOwnerPathArena(Rc<RefCell<ElementOwnerPathNodes>>);
+
+#[derive(Default)]
+struct ElementOwnerPathNodes {
+    nodes: Vec<ElementOwnerNode>,
+    work: ElementOwnerPathWork,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ElementOwnerPathWork {
+    pub(crate) arenas_created: usize,
+    pub(crate) arenas_reused: usize,
+    pub(crate) nodes_created: usize,
+    pub(crate) node_storage_growths: usize,
+    pub(crate) cached_handles_reused: usize,
+}
+
+impl Default for ElementOwnerPathArena {
+    fn default() -> Self {
+        Self(Rc::new(RefCell::new(ElementOwnerPathNodes {
+            work: ElementOwnerPathWork {
+                arenas_created: 1,
+                ..ElementOwnerPathWork::default()
+            },
+            ..ElementOwnerPathNodes::default()
+        })))
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct ElementOwnerPath {
+    arena: ElementOwnerPathArena,
+    index: usize,
+    depth: usize,
+}
+
+struct ElementOwnerNode {
+    parent: Option<usize>,
+    segment: ElementOwnerSegment,
+    depth: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+struct ElementOwnerSegment {
+    slot: usize,
+    element_id: Option<ElementId>,
+}
+
+const MAX_ELEMENT_OWNER_PATH_DEPTH: usize = 128;
+
+impl ElementOwnerPathArena {
+    fn work(&self) -> ElementOwnerPathWork {
+        self.0.borrow().work
+    }
+
+    fn record_cached_handle_reuse(&self) {
+        self.0.borrow_mut().work.cached_handles_reused += 1;
+    }
+
+    fn reset_or_replace(&mut self) {
+        if Rc::strong_count(&self.0) == 1 {
+            let mut nodes = self.0.borrow_mut();
+            nodes.nodes.clear();
+            nodes.work = ElementOwnerPathWork {
+                arenas_reused: 1,
+                ..ElementOwnerPathWork::default()
+            };
+        } else {
+            *self = Self::default();
+        }
+    }
+}
+
+impl ElementOwnerPath {
+    fn child(
+        arena: &ElementOwnerPathArena,
+        parent: Option<&Self>,
+        slot: usize,
+        element_id: Option<ElementId>,
+    ) -> Option<Self> {
+        let depth = parent.map_or(1, |parent| parent.depth.saturating_add(1));
+        if depth > MAX_ELEMENT_OWNER_PATH_DEPTH {
+            return None;
+        }
+        if let Some(parent) = parent {
+            if !Rc::ptr_eq(&arena.0, &parent.arena.0) {
+                debug_assert!(
+                    false,
+                    "element-owner parents must belong to the current frame arena"
+                );
+                return None;
+            }
+        }
+        let mut nodes = arena.0.borrow_mut();
+        let previous_capacity = nodes.nodes.capacity();
+        let index = nodes.nodes.len();
+        nodes.nodes.push(ElementOwnerNode {
+            parent: parent.map(|parent| parent.index),
+            segment: ElementOwnerSegment { slot, element_id },
+            depth,
+        });
+        nodes.work.nodes_created += 1;
+        nodes.work.node_storage_growths += usize::from(nodes.nodes.capacity() != previous_capacity);
+        Some(Self {
+            arena: arena.clone(),
+            index,
+            depth,
+        })
+    }
+
+    fn with_final_element_id(&self, element_id: Option<ElementId>) -> Self {
+        let nodes = self.arena.0.borrow();
+        let source = &nodes.nodes[self.index];
+        let parent = source.parent;
+        let slot = source.segment.slot;
+        drop(nodes);
+        let parent_path = parent.map(|index| Self {
+            arena: self.arena.clone(),
+            index,
+            depth: self.depth.saturating_sub(1),
+        });
+        Self::child(&self.arena, parent_path.as_ref(), slot, element_id)
+            .expect("an inert wrapper projection must preserve the existing path depth")
+    }
+
+    fn same_owner(&self, other: &Self) -> bool {
+        let left_nodes = self.arena.0.borrow();
+        let right_nodes = other.arena.0.borrow();
+        let mut left_index = self.index;
+        let mut right_index = other.index;
+        loop {
+            let left = &left_nodes.nodes[left_index];
+            let right = &right_nodes.nodes[right_index];
+            if left.depth != right.depth || !Self::same_segment(&left.segment, &right.segment) {
+                return false;
+            }
+            match (left.parent, right.parent) {
+                (Some(left), Some(right)) => {
+                    left_index = left;
+                    right_index = right;
+                }
+                (None, None) => return true,
+                _ => return false,
+            }
+        }
+    }
+
+    /// Whether this prior-frame owner falls within a currently inert boundary. The boundary path
+    /// is projected onto the exact wrapped child's root identity, so keyed children remain matched
+    /// across sibling reordering while anonymous children use their structural slot.
+    fn is_within_inert_boundary(&self, boundary: &Self) -> bool {
+        if self.depth < boundary.depth {
+            return false;
+        }
+        let owner_nodes = self.arena.0.borrow();
+        let boundary_nodes = boundary.arena.0.borrow();
+        let mut owner_index = self.index;
+        while owner_nodes.nodes[owner_index].depth > boundary.depth {
+            let Some(parent) = owner_nodes.nodes[owner_index].parent else {
+                return false;
+            };
+            owner_index = parent;
+        }
+        let mut left_index = owner_index;
+        let mut right_index = boundary.index;
+        loop {
+            let left = &owner_nodes.nodes[left_index];
+            let right = &boundary_nodes.nodes[right_index];
+            if left.depth != right.depth || !Self::same_segment(&left.segment, &right.segment) {
+                return false;
+            }
+            match (left.parent, right.parent) {
+                (Some(left), Some(right)) => {
+                    left_index = left;
+                    right_index = right;
+                }
+                (None, None) => return true,
+                _ => return false,
+            }
+        }
+    }
+
+    fn same_segment(left: &ElementOwnerSegment, right: &ElementOwnerSegment) -> bool {
+        match (&left.element_id, &right.element_id) {
+            (Some(left), Some(right)) => left == right,
+            (None, None) => left.slot == right.slot,
+            _ => false,
+        }
+    }
+}
+
+impl PartialEq for ElementOwnerPath {
+    fn eq(&self, other: &Self) -> bool {
+        self.same_owner(other)
+    }
+}
+
+impl Eq for ElementOwnerPath {}
+
+impl Hash for ElementOwnerPath {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        fn hash_node<H: Hasher>(nodes: &[ElementOwnerNode], index: usize, state: &mut H) {
+            let node = &nodes[index];
+            if let Some(parent) = node.parent {
+                hash_node(nodes, parent, state);
+            }
+            match &node.segment.element_id {
+                Some(element_id) => {
+                    1u8.hash(state);
+                    element_id.hash(state);
+                }
+                None => {
+                    0u8.hash(state);
+                    node.segment.slot.hash(state);
+                }
+            }
+        }
+
+        hash_node(&self.arena.0.borrow().nodes, self.index, state);
+    }
+}
+
+impl std::fmt::Debug for ElementOwnerPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ElementOwnerPath")
+            .field("index", &self.index)
+            .field("depth", &self.depth)
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod element_owner_path_tests {
+    use super::{ElementOwnerPath, ElementOwnerPathArena, MAX_ELEMENT_OWNER_PATH_DEPTH};
+    use std::rc::Rc;
+
+    fn child(
+        arena: &ElementOwnerPathArena,
+        parent: Option<&ElementOwnerPath>,
+        slot: usize,
+        id: Option<&str>,
+    ) -> ElementOwnerPath {
+        ElementOwnerPath::child(arena, parent, slot, id.map(Into::into)).unwrap()
+    }
+
+    #[test]
+    fn keyed_owner_survives_reordering_and_exact_inert_wrapper_insertion() {
+        let prior_arena = ElementOwnerPathArena::default();
+        let current_arena = ElementOwnerPathArena::default();
+        let prior_parent = child(&prior_arena, None, 0, Some("parent"));
+        let current_parent = child(&current_arena, None, 0, Some("parent"));
+        let before = child(&prior_arena, Some(&prior_parent), 0, Some("body"));
+        let after_reorder = child(&current_arena, Some(&current_parent), 3, Some("body"));
+        let keyed_sibling = child(&current_arena, Some(&current_parent), 0, Some("other"));
+        let wrapper = child(
+            &current_arena,
+            Some(&current_parent),
+            3,
+            Some("inert-boundary"),
+        );
+        let boundary = wrapper.with_final_element_id(Some("body".into()));
+
+        assert!(before.same_owner(&after_reorder));
+        assert!(before.is_within_inert_boundary(&boundary));
+        assert!(!keyed_sibling.is_within_inert_boundary(&boundary));
+        assert!(std::collections::HashSet::from([before]).contains(&after_reorder));
+    }
+
+    #[test]
+    fn anonymous_owner_uses_position_without_claiming_anonymous_siblings() {
+        let prior_arena = ElementOwnerPathArena::default();
+        let current_arena = ElementOwnerPathArena::default();
+        let prior_parent = child(&prior_arena, None, 0, Some("parent"));
+        let current_parent = child(&current_arena, None, 0, Some("parent"));
+        let before = child(&prior_arena, Some(&prior_parent), 1, None);
+        let live_sibling = child(&current_arena, Some(&current_parent), 2, None);
+        let wrapper = child(
+            &current_arena,
+            Some(&current_parent),
+            1,
+            Some("inert-boundary"),
+        );
+        let boundary = wrapper.with_final_element_id(None);
+
+        assert!(before.is_within_inert_boundary(&boundary));
+        assert!(!live_sibling.is_within_inert_boundary(&boundary));
+    }
+
+    #[test]
+    fn exact_nested_wrapper_projections_compose_without_dropping_ancestors() {
+        let prior_arena = ElementOwnerPathArena::default();
+        let current_arena = ElementOwnerPathArena::default();
+        let prior_parent = child(&prior_arena, None, 0, Some("parent"));
+        let parent = child(&current_arena, None, 0, Some("parent"));
+        let previous_content = child(&prior_arena, Some(&prior_parent), 0, Some("content"));
+        let outer_wrapper = child(&current_arena, Some(&parent), 0, Some("outer"));
+        let outer_projection = outer_wrapper.with_final_element_id(Some("inner".into()));
+        let actual_inner_wrapper = child(&current_arena, Some(&outer_wrapper), 0, Some("inner"));
+        let composed_projection = outer_projection.with_final_element_id(Some("content".into()));
+        let unrelated_ancestor = child(&current_arena, None, 1, Some("other-parent"));
+        let unrelated_content = child(
+            &current_arena,
+            Some(&unrelated_ancestor),
+            0,
+            Some("content"),
+        );
+
+        assert!(actual_inner_wrapper.same_owner(&child(
+            &current_arena,
+            Some(&outer_wrapper),
+            0,
+            Some("inner")
+        )));
+        assert!(previous_content.is_within_inert_boundary(&composed_projection));
+        assert!(!unrelated_content.is_within_inert_boundary(&composed_projection));
+    }
+
+    #[test]
+    fn owner_paths_have_a_fixed_depth_limit() {
+        let arena = ElementOwnerPathArena::default();
+        let mut path = None;
+        for index in 0..MAX_ELEMENT_OWNER_PATH_DEPTH {
+            path = ElementOwnerPath::child(&arena, path.as_ref(), index, None);
+            assert!(path.is_some());
+        }
+        assert!(ElementOwnerPath::child(&arena, path.as_ref(), 0, None).is_none());
+    }
+
+    #[test]
+    fn owner_nodes_are_inline_arena_entries_and_cached_path_copies_reuse_handles() {
+        let arena = ElementOwnerPathArena::default();
+        let root = child(&arena, None, 0, Some("root"));
+        let anonymous = child(&arena, Some(&root), 0, None);
+        let before_reuse = arena.work();
+        arena.record_cached_handle_reuse();
+        arena.record_cached_handle_reuse();
+
+        assert_eq!(before_reuse.nodes_created, 2);
+        assert!(before_reuse.node_storage_growths <= 2);
+        assert_eq!(arena.work().cached_handles_reused, 2);
+        assert!(anonymous.same_owner(&child(&arena, Some(&root), 0, None)));
+    }
+
+    #[test]
+    fn arena_buffer_is_reused_only_after_all_prior_owner_handles_drop() {
+        let mut reusable = ElementOwnerPathArena::default();
+        let original_capacity = {
+            let _path = child(&reusable, None, 0, Some("released"));
+            reusable.0.borrow().nodes.capacity()
+        };
+        reusable.reset_or_replace();
+        assert_eq!(reusable.work().arenas_reused, 1);
+        assert_eq!(reusable.0.borrow().nodes.capacity(), original_capacity);
+        assert_eq!(reusable.work().nodes_created, 0);
+
+        let mut retained = ElementOwnerPathArena::default();
+        let path = child(&retained, None, 0, Some("retained"));
+        let same_owner = path.clone();
+        retained.reset_or_replace();
+        assert_eq!(retained.work().arenas_reused, 0);
+        assert!(path.same_owner(&same_owner));
+        assert!(!Rc::ptr_eq(&retained.0, &path.arena.0));
+    }
+}
+
+#[derive(Default)]
+struct ElementOwnerStack {
+    frames: Vec<ElementOwnerFrame>,
+    next_root_slot: usize,
+}
+
+/// A scoped mapping from a wrapper's actual child path to the equivalent path with that exact
+/// wrapper elided. It lets adjacent/nested inert wrappers compose without dropping unrelated
+/// ancestor IDs.
+#[derive(Clone)]
+struct InertOwnerBoundary {
+    wrapped_child_owner: ElementOwnerPath,
+    projected_child_owner: ElementOwnerPath,
+}
+
+impl InertOwnerBoundary {
+    fn same_mapping(&self, other: &Self) -> bool {
+        self.wrapped_child_owner
+            .same_owner(&other.wrapped_child_owner)
+            && self
+                .projected_child_owner
+                .same_owner(&other.projected_child_owner)
+    }
+
+    fn push_unique(boundaries: &mut SmallVec<[Self; 2]>, boundary: &Self) {
+        if !boundaries
+            .iter()
+            .any(|existing| existing.same_mapping(boundary))
+        {
+            boundaries.push(boundary.clone());
+        }
+    }
+}
+
+struct ElementOwnerFrame {
+    path: Option<ElementOwnerPath>,
+    next_child_slot: usize,
+}
+
+struct ElementOwnerScope {
+    stack: Rc<RefCell<ElementOwnerStack>>,
+    previous_len: usize,
+}
+
+impl Drop for ElementOwnerScope {
+    fn drop(&mut self) {
+        self.stack.borrow_mut().frames.truncate(self.previous_len);
+    }
+}
 
 pub(crate) type AnyMouseListener =
     Box<dyn FnMut(&dyn Any, DispatchPhase, &mut Window, &mut App) + 'static>;
@@ -914,6 +1344,7 @@ pub(crate) struct DeferredDraw {
     group_opacity: f32,
     inert_subtree: bool,
     inert_boundaries: SmallVec<[GlobalElementId; 2]>,
+    inert_owner_boundaries: SmallVec<[InertOwnerBoundary; 2]>,
     prepaint_range: Range<PrepaintStateIndex>,
     paint_range: Range<PaintIndex>,
 }
@@ -928,6 +1359,13 @@ pub(crate) struct Frame {
     /// replaying its dispatch tree.
     focus_ids: Vec<FocusId>,
     inert_focus_id_list: Vec<FocusId>,
+    /// Views and structural element boundaries committed beneath inert subtrees. These are used
+    /// to cancel callbacks and pointer capture that were registered before a subtree became inert.
+    inert_view_ids: FxHashSet<EntityId>,
+    inert_owner_paths: FxHashSet<ElementOwnerPath>,
+    live_element_owner_paths: FxHashSet<ElementOwnerPath>,
+    live_element_owner_path_order: Vec<ElementOwnerPath>,
+    owner_path_arena: ElementOwnerPathArena,
     pub(crate) window_active: bool,
     pub(crate) element_states: FxHashMap<(GlobalElementId, TypeId), ElementStateBox>,
     accessed_element_states: Vec<(GlobalElementId, TypeId)>,
@@ -938,10 +1376,7 @@ pub(crate) struct Frame {
     /// Stable element paths parallel to `hitboxes`. `None` means this hitbox's
     /// owning drawable has no stable element ID, so it cannot be matched to a
     /// different frame without risking an unrelated capture.
-    hitbox_owners: Vec<Option<GlobalElementId>>,
-    /// Hitbox owners retained beneath inert boundaries. Paths are normalized by
-    /// removing the newly introduced inert wrapper IDs.
-    inert_hitbox_owners: Vec<GlobalElementId>,
+    hitbox_owners: Vec<Option<ElementOwnerPath>>,
     /// Exact cached hitboxes whose prepaint range was reused under an inert boundary.
     inert_hitbox_ids: Vec<HitboxId>,
     pub(crate) window_control_hitboxes: Vec<(WindowControlArea, Hitbox)>,
@@ -968,6 +1403,7 @@ pub(crate) struct PrepaintStateIndex {
     focus_ids_index: usize,
     inert_focus_ids_index: usize,
     hitbox_owners_index: usize,
+    live_element_owner_paths_index: usize,
     line_layout_index: LineLayoutIndex,
 }
 
@@ -986,6 +1422,8 @@ struct InertSubtreeScope {
     depth: Rc<Cell<usize>>,
     boundary_stack: Rc<RefCell<Vec<GlobalElementId>>>,
     previous_boundary_len: usize,
+    owner_boundary_stack: Rc<RefCell<Vec<InertOwnerBoundary>>>,
+    previous_owner_boundary_len: usize,
 }
 
 impl Drop for InertSubtreeScope {
@@ -996,38 +1434,10 @@ impl Drop for InertSubtreeScope {
         self.boundary_stack
             .borrow_mut()
             .truncate(self.previous_boundary_len);
+        self.owner_boundary_stack
+            .borrow_mut()
+            .truncate(self.previous_owner_boundary_len);
     }
-}
-
-struct HitboxOwnerScope {
-    stack: Rc<RefCell<Vec<Option<GlobalElementId>>>>,
-    previous_len: usize,
-}
-
-impl Drop for HitboxOwnerScope {
-    fn drop(&mut self) {
-        self.stack.borrow_mut().truncate(self.previous_len);
-    }
-}
-
-fn normalize_inert_owner(
-    owner: &GlobalElementId,
-    boundaries: &[GlobalElementId],
-) -> GlobalElementId {
-    let mut path = owner.0.to_vec();
-    for boundary in boundaries.iter().rev() {
-        let boundary_path = boundary.0.as_ref();
-        let Some(boundary_id) = boundary_path.last() else {
-            continue;
-        };
-        let boundary_index = boundary_path.len() - 1;
-        if path.get(..boundary_index) == Some(&boundary_path[..boundary_index])
-            && path.get(boundary_index) == Some(boundary_id)
-        {
-            path.remove(boundary_index);
-        }
-    }
-    GlobalElementId(Arc::from(path))
 }
 
 impl Frame {
@@ -1037,6 +1447,11 @@ impl Frame {
             inert_focus_ids: FxHashSet::default(),
             focus_ids: Vec::new(),
             inert_focus_id_list: Vec::new(),
+            inert_view_ids: FxHashSet::default(),
+            inert_owner_paths: FxHashSet::default(),
+            live_element_owner_paths: FxHashSet::default(),
+            live_element_owner_path_order: Vec::new(),
+            owner_path_arena: ElementOwnerPathArena::default(),
             window_active: false,
             element_states: FxHashMap::default(),
             accessed_element_states: Vec::new(),
@@ -1045,7 +1460,6 @@ impl Frame {
             scene: Scene::default(),
             hitboxes: Vec::new(),
             hitbox_owners: Vec::new(),
-            inert_hitbox_owners: Vec::new(),
             inert_hitbox_ids: Vec::new(),
             window_control_hitboxes: Vec::new(),
             deferred_draws: Vec::new(),
@@ -1076,7 +1490,10 @@ impl Frame {
         self.cursor_styles.clear();
         self.hitboxes.clear();
         self.hitbox_owners.clear();
-        self.inert_hitbox_owners.clear();
+        self.inert_view_ids.clear();
+        self.inert_owner_paths.clear();
+        self.live_element_owner_paths.clear();
+        self.live_element_owner_path_order.clear();
         self.inert_hitbox_ids.clear();
         self.window_control_hitboxes.clear();
         self.deferred_draws.clear();
@@ -1085,6 +1502,11 @@ impl Frame {
         self.inert_focus_ids.clear();
         self.focus_ids.clear();
         self.inert_focus_id_list.clear();
+
+        // Reuse the compact arena buffer when no capture, queued callback, or cached range still
+        // holds one of its path handles. Otherwise allocate a fresh arena and leave the old
+        // immutable path data alive for those exact owners.
+        self.owner_path_arena.reset_or_replace();
 
         #[cfg(any(test, feature = "test-support"))]
         {
@@ -1238,9 +1660,10 @@ pub struct Window {
     /// The wrapper element paths currently defining inert boundaries. Stored
     /// separately so deferred draws can restore the same ownership scope.
     inert_boundary_stack: Rc<RefCell<Vec<GlobalElementId>>>,
-    /// Nearest element path while prepainting; hitboxes reuse its Arc rather
-    /// than allocating a copy of the full element path for each hitbox.
-    hitbox_owner_stack: Rc<RefCell<Vec<Option<GlobalElementId>>>>,
+    inert_owner_boundary_stack: Rc<RefCell<Vec<InertOwnerBoundary>>>,
+    /// Nearest element path while prepainting; hitboxes clone a compact Rc/index handle into the
+    /// frame arena rather than allocating or copying the path per registration.
+    element_owner_stack: Rc<RefCell<ElementOwnerStack>>,
     /// Incremented every time focus moves. Used to invalidate a
     /// pending keyboard activation state when focus changes.
     pub(crate) focus_generation: u64,
@@ -1252,7 +1675,7 @@ pub struct Window {
     /// The hitbox that has captured the pointer, if any.
     /// While captured, mouse events route to this hitbox regardless of hit testing.
     captured_hitbox: Option<HitboxId>,
-    captured_hitbox_owner: Option<GlobalElementId>,
+    captured_hitbox_owner: Option<ElementOwnerPath>,
     #[cfg(any(feature = "inspector", debug_assertions))]
     inspector: Option<Entity<Inspector>>,
     pub(crate) a11y: A11y,
@@ -1738,12 +2161,51 @@ impl Window {
                 last_frame_time.set(Some(now));
 
                 let next_frame_callbacks = next_frame_callbacks.take();
-                if !next_frame_callbacks.is_empty() {
+                let draw_was_already_pending = invalidator.is_dirty() || force_render;
+                let has_scoped_callbacks = next_frame_callbacks
+                    .iter()
+                    .any(|callback| callback.owner.is_some());
+                let mut frame_reconciled_before_callbacks = false;
+                if draw_was_already_pending && has_scoped_callbacks {
+                    // Window-level callbacks retain their existing before-draw timing. Scoped
+                    // callbacks wait until this already-pending frame commits its ownership
+                    // state, so callbacks from a subtree that just became inert can be skipped.
+                    let (window_callbacks, scoped_callbacks): (Vec<_>, Vec<_>) =
+                        next_frame_callbacks
+                            .into_iter()
+                            .partition(|callback| callback.owner.is_none());
+                    if !window_callbacks.is_empty() {
+                        handle
+                            .update(&mut cx, |_, window, cx| {
+                                window.run_frame_callbacks(window_callbacks, cx);
+                            })
+                            .log_err();
+                    }
+
+                    measure("frame duration", || {
+                        handle
+                            .update(&mut cx, |_, window, cx| {
+                                if force_render {
+                                    window.refresh();
+                                }
+                                window.draw(cx).clear(cx);
+                            })
+                            .log_err();
+                    });
+                    frame_reconciled_before_callbacks = true;
+
+                    if !scoped_callbacks.is_empty() {
+                        handle
+                            .update(&mut cx, |_, window, cx| {
+                                window
+                                    .run_scoped_frame_callbacks_and_reconcile(scoped_callbacks, cx);
+                            })
+                            .log_err();
+                    }
+                } else if !next_frame_callbacks.is_empty() {
                     handle
                         .update(&mut cx, |_, window, cx| {
-                            for callback in next_frame_callbacks {
-                                callback(window, cx);
-                            }
+                            window.run_frame_callbacks(next_frame_callbacks, cx);
                         })
                         .log_err();
                 }
@@ -1755,7 +2217,7 @@ impl Window {
                     || needs_present.get()
                     || input_rate_tracker.borrow_mut().is_high_rate();
 
-                if invalidator.is_dirty() || force_render {
+                if invalidator.is_dirty() || (force_render && !frame_reconciled_before_callbacks) {
                     measure("frame duration", || {
                         handle
                             .update(&mut cx, |_, window, cx| {
@@ -1770,7 +2232,7 @@ impl Window {
                             })
                             .log_err();
                     })
-                } else if needs_present {
+                } else if needs_present || frame_reconciled_before_callbacks {
                     handle
                         .update(&mut cx, |_, window, _| window.present())
                         .log_err();
@@ -1995,7 +2457,8 @@ impl Window {
             focus_enabled: true,
             inert_subtree_depth: Rc::new(Cell::new(0)),
             inert_boundary_stack: Rc::new(RefCell::new(Vec::new())),
-            hitbox_owner_stack: Rc::new(RefCell::new(Vec::new())),
+            inert_owner_boundary_stack: Rc::new(RefCell::new(Vec::new())),
+            element_owner_stack: Rc::new(RefCell::new(ElementOwnerStack::default())),
             focus_generation: 0,
             pending_input: None,
             pending_modifier: ModifierState::default(),
@@ -2474,7 +2937,19 @@ impl Window {
         if self.is_inert_subtree() {
             return;
         }
-        RefCell::borrow_mut(&self.next_frame_callbacks).push(Box::new(callback));
+        let owner = self
+            .current_element_owner()
+            .map(FrameCallbackOwner::Element)
+            .or_else(|| {
+                self.rendered_entity_stack
+                    .last()
+                    .copied()
+                    .map(FrameCallbackOwner::View)
+            });
+        RefCell::borrow_mut(&self.next_frame_callbacks).push(FrameCallback {
+            owner,
+            callback: Box::new(callback),
+        });
     }
 
     /// Schedule a frame to be drawn on the next animation frame.
@@ -2501,11 +2976,15 @@ impl Window {
     #[cfg(any(test, feature = "test-support"))]
     pub fn simulate_next_frame(&mut self, cx: &mut App) -> usize {
         let callbacks = self.next_frame_callbacks.take();
-        let count = callbacks.len();
-        for callback in callbacks {
-            callback(self, cx);
-        }
-        count
+        self.run_frame_callbacks(callbacks, cx)
+    }
+
+    /// Simulate the production after-draw path for callbacks whose owners must be reconciled
+    /// against a newly committed frame. Returns `(callbacks_run, reconciliation_draws)`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn simulate_reconciled_next_frame(&mut self, cx: &mut App) -> (usize, usize) {
+        let callbacks = self.next_frame_callbacks.take();
+        self.run_scoped_frame_callbacks_and_reconcile(callbacks, cx)
     }
 
     /// Spawn the future returned by the given closure on the application thread pool.
@@ -3002,6 +3481,12 @@ impl Window {
         self.invalidate_entities();
         cx.entities.clear_accessed();
         debug_assert!(self.rendered_entity_stack.is_empty());
+        {
+            let mut owner_stack = self.element_owner_stack.borrow_mut();
+            debug_assert!(owner_stack.frames.is_empty());
+            owner_stack.next_root_slot = 0;
+        }
+        debug_assert!(self.inert_owner_boundary_stack.borrow().is_empty());
         self.invalidator.set_dirty(false);
         self.requested_autoscroll = None;
 
@@ -3152,15 +3637,15 @@ impl Window {
                         .hitbox_owners
                         .iter()
                         .flatten()
-                        .any(|owner| owner == captured_owner)
+                        .any(|owner| owner.same_owner(captured_owner))
                 });
         let became_inert = self.next_frame.inert_hitbox_ids.contains(&captured_hitbox)
-            || self
-                .next_frame
-                .inert_hitbox_owners
-                .iter()
-                .any(|owner| self.captured_hitbox_owner.as_ref() == Some(owner));
-        if !still_live && became_inert {
+            || self.next_frame.inert_owner_paths.iter().any(|boundary| {
+                self.captured_hitbox_owner
+                    .as_ref()
+                    .is_some_and(|owner| owner.is_within_inert_boundary(boundary))
+            });
+        if !still_live && (self.captured_hitbox_owner.is_some() || became_inert) {
             self.release_pointer();
         }
     }
@@ -3426,6 +3911,7 @@ impl Window {
                     opacities,
                     inert_subtree,
                     inert_boundaries,
+                    inert_owner_boundaries,
                 ) = {
                     let deferred_draw = &mut self.next_frame.deferred_draws[deferred_draw_ix];
                     self.element_id_stack
@@ -3443,6 +3929,7 @@ impl Window {
                         (deferred_draw.element_opacity, deferred_draw.group_opacity),
                         deferred_draw.inert_subtree,
                         deferred_draw.inert_boundaries.clone(),
+                        deferred_draw.inert_owner_boundaries.clone(),
                     )
                 };
                 self.next_frame.dispatch_tree.set_active_node(parent_node);
@@ -3471,17 +3958,25 @@ impl Window {
                         });
                     };
                     if inert_subtree {
-                        self.with_inert_boundaries(&inert_boundaries, |window| {
-                            prepaint(window, &mut element)
-                        });
+                        self.with_inert_boundaries(
+                            &inert_boundaries,
+                            None,
+                            &inert_owner_boundaries,
+                            None,
+                            |window| prepaint(window, &mut element),
+                        );
                     } else {
                         prepaint(self, &mut element);
                     }
                     self.next_frame.deferred_draws[deferred_draw_ix].element = Some(element);
                 } else if inert_subtree {
-                    self.with_inert_boundaries(&inert_boundaries, |window| {
-                        window.reuse_prepaint(prepaint_range)
-                    });
+                    self.with_inert_boundaries(
+                        &inert_boundaries,
+                        None,
+                        &inert_owner_boundaries,
+                        None,
+                        |window| window.reuse_prepaint(prepaint_range),
+                    );
                 } else {
                     self.reuse_prepaint(prepaint_range);
                 }
@@ -3524,6 +4019,7 @@ impl Window {
             let content_mask = deferred_draw.content_mask;
             let inert_subtree = deferred_draw.inert_subtree;
             let inert_boundaries = deferred_draw.inert_boundaries.clone();
+            let inert_owner_boundaries = deferred_draw.inert_owner_boundaries.clone();
             if let Some(element) = deferred_draw.element.as_mut() {
                 let mut paint = |window: &mut Window| {
                     window.with_rendered_view(deferred_draw.current_view, |window| {
@@ -3553,14 +4049,24 @@ impl Window {
                     })
                 };
                 if inert_subtree {
-                    self.with_inert_boundaries(&inert_boundaries, paint);
+                    self.with_inert_boundaries(
+                        &inert_boundaries,
+                        None,
+                        &inert_owner_boundaries,
+                        None,
+                        paint,
+                    );
                 } else {
                     paint(self);
                 }
             } else if inert_subtree {
-                self.with_inert_boundaries(&inert_boundaries, |window| {
-                    window.reuse_paint(deferred_draw.paint_range.clone())
-                });
+                self.with_inert_boundaries(
+                    &inert_boundaries,
+                    None,
+                    &inert_owner_boundaries,
+                    None,
+                    |window| window.reuse_paint(deferred_draw.paint_range.clone()),
+                );
             } else {
                 self.reuse_paint(deferred_draw.paint_range.clone());
             }
@@ -3588,12 +4094,29 @@ impl Window {
             focus_ids_index: self.next_frame.focus_ids.len(),
             inert_focus_ids_index: self.next_frame.inert_focus_id_list.len(),
             hitbox_owners_index: self.next_frame.hitbox_owners.len(),
+            live_element_owner_paths_index: self.next_frame.live_element_owner_path_order.len(),
             line_layout_index: self.text_system.layout_index(),
         }
     }
 
     pub(crate) fn reuse_prepaint(&mut self, range: Range<PrepaintStateIndex>) {
         let is_inert = self.is_inert_subtree();
+        let live_owner_paths = &self.rendered_frame.live_element_owner_path_order
+            [range.start.live_element_owner_paths_index..range.end.live_element_owner_paths_index];
+        for owner_path in live_owner_paths {
+            if self
+                .next_frame
+                .live_element_owner_paths
+                .insert(owner_path.clone())
+            {
+                self.next_frame
+                    .owner_path_arena
+                    .record_cached_handle_reuse();
+                self.next_frame
+                    .live_element_owner_path_order
+                    .push(owner_path.clone());
+            }
+        }
         let hitbox_owners = &self.rendered_frame.hitbox_owners
             [range.start.hitbox_owners_index..range.end.hitbox_owners_index];
         if is_inert {
@@ -3604,15 +4127,6 @@ impl Window {
                     .any(|hitbox| hitbox.id == captured_hitbox)
             {
                 self.next_frame.inert_hitbox_ids.push(captured_hitbox);
-            }
-            if self.captured_hitbox_owner.is_some() {
-                let boundaries = self.inert_boundary_stack.borrow();
-                self.next_frame.inert_hitbox_owners.extend(
-                    hitbox_owners
-                        .iter()
-                        .flatten()
-                        .map(|owner| normalize_inert_owner(owner, &boundaries)),
-                );
             }
         } else {
             self.next_frame.hitboxes.extend(
@@ -3673,6 +4187,7 @@ impl Window {
         if is_inert {
             let parent_node = self.next_frame.dispatch_tree.active_node_id().unwrap();
             let active_boundaries = self.inert_boundary_stack.borrow().clone();
+            let active_owner_boundaries = self.inert_owner_boundary_stack.borrow().clone();
             self.next_frame.deferred_draws.extend(
                 self.rendered_frame.deferred_draws
                     [range.start.deferred_draws_index..range.end.deferred_draws_index]
@@ -3696,6 +4211,19 @@ impl Window {
                             .chain(deferred_draw.inert_boundaries.iter())
                             .cloned()
                             .collect(),
+                        inert_owner_boundaries: {
+                            let mut owner_boundaries = SmallVec::new();
+                            for owner_boundary in active_owner_boundaries
+                                .iter()
+                                .chain(deferred_draw.inert_owner_boundaries.iter())
+                            {
+                                InertOwnerBoundary::push_unique(
+                                    &mut owner_boundaries,
+                                    owner_boundary,
+                                );
+                            }
+                            owner_boundaries
+                        },
                         prepaint_range: deferred_draw.prepaint_range.clone(),
                         paint_range: deferred_draw.paint_range.clone(),
                     }),
@@ -3730,6 +4258,7 @@ impl Window {
                         group_opacity: deferred_draw.group_opacity,
                         inert_subtree: deferred_draw.inert_subtree,
                         inert_boundaries: deferred_draw.inert_boundaries.clone(),
+                        inert_owner_boundaries: deferred_draw.inert_owner_boundaries.clone(),
                         prepaint_range: deferred_draw.prepaint_range.clone(),
                         paint_range: deferred_draw.paint_range.clone(),
                     }),
@@ -3801,54 +4330,251 @@ impl Window {
         self.inert_subtree_depth.get() > 0
     }
 
+    /// Work spent tracking structural callback/capture ownership in the committed frame.
+    /// `nodes_created` counts inline arena entries, `node_storage_growths` counts Vec capacity
+    /// expansions, and `cached_handles_reused` counts cached owner paths replayed by handle.
+    pub(crate) fn element_owner_path_work(&self) -> ElementOwnerPathWork {
+        self.rendered_frame.owner_path_arena.work()
+    }
+
+    pub(crate) fn with_new_element_owner<R>(
+        &mut self,
+        element_id: Option<ElementId>,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> (R, Option<ElementOwnerPath>, usize) {
+        let (path, previous_len) = {
+            let mut owner_stack = self.element_owner_stack.borrow_mut();
+            let (parent, slot, has_parent) = if let Some(parent) = owner_stack.frames.last_mut() {
+                let slot = parent.next_child_slot;
+                parent.next_child_slot = parent.next_child_slot.saturating_add(1);
+                (parent.path.clone(), slot, true)
+            } else {
+                let slot = owner_stack.next_root_slot;
+                owner_stack.next_root_slot = owner_stack.next_root_slot.saturating_add(1);
+                (None, slot, false)
+            };
+            let path = if has_parent && parent.is_none() {
+                None
+            } else {
+                ElementOwnerPath::child(
+                    &self.next_frame.owner_path_arena,
+                    parent.as_ref(),
+                    slot,
+                    element_id,
+                )
+            };
+            let previous_len = owner_stack.frames.len();
+            owner_stack.frames.push(ElementOwnerFrame {
+                path: path.clone(),
+                next_child_slot: 0,
+            });
+            (path, previous_len)
+        };
+        let scope = ElementOwnerScope {
+            stack: self.element_owner_stack.clone(),
+            previous_len,
+        };
+        let result = f(self);
+        let child_count = scope
+            .stack
+            .borrow()
+            .frames
+            .last()
+            .map_or(0, |frame| frame.next_child_slot);
+        drop(scope);
+        (result, path, child_count)
+    }
+
+    pub(crate) fn with_element_owner<R>(
+        &mut self,
+        path: Option<ElementOwnerPath>,
+        next_child_slot: usize,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        if let Some(path) = path.as_ref() {
+            self.record_live_element_owner(path);
+        }
+        let previous_len = {
+            let mut owner_stack = self.element_owner_stack.borrow_mut();
+            let previous_len = owner_stack.frames.len();
+            owner_stack.frames.push(ElementOwnerFrame {
+                path,
+                next_child_slot,
+            });
+            previous_len
+        };
+        let _scope = ElementOwnerScope {
+            stack: self.element_owner_stack.clone(),
+            previous_len,
+        };
+        f(self)
+    }
+
+    fn record_live_element_owner(&mut self, path: &ElementOwnerPath) {
+        if self
+            .next_frame
+            .live_element_owner_paths
+            .insert(path.clone())
+        {
+            self.next_frame
+                .live_element_owner_path_order
+                .push(path.clone());
+        }
+    }
+
+    fn current_element_owner(&self) -> Option<ElementOwnerPath> {
+        self.element_owner_stack
+            .borrow()
+            .frames
+            .last()
+            .and_then(|frame| frame.path.clone())
+    }
+
+    fn callback_owner_is_inert(&self, owner: &FrameCallbackOwner) -> bool {
+        match owner {
+            FrameCallbackOwner::Element(owner) => {
+                self.rendered_frame
+                    .inert_owner_paths
+                    .iter()
+                    .any(|boundary| owner.is_within_inert_boundary(boundary))
+                    || !self.rendered_frame.live_element_owner_paths.contains(owner)
+            }
+            FrameCallbackOwner::View(view_id) => {
+                self.rendered_frame.inert_view_ids.contains(view_id)
+                    || !self.rendered_frame.dispatch_tree.contains_view(*view_id)
+            }
+        }
+    }
+
+    fn run_frame_callbacks(
+        &mut self,
+        callbacks: impl IntoIterator<Item = FrameCallback>,
+        cx: &mut App,
+    ) -> usize {
+        let mut ran = 0;
+        for callback in callbacks {
+            if callback
+                .owner
+                .as_ref()
+                .is_some_and(|owner| self.callback_owner_is_inert(owner))
+            {
+                continue;
+            }
+            ran += 1;
+            (callback.callback)(self, cx);
+        }
+        ran
+    }
+
+    fn run_scoped_frame_callbacks_and_reconcile(
+        &mut self,
+        callbacks: impl IntoIterator<Item = FrameCallback>,
+        cx: &mut App,
+    ) -> (usize, usize) {
+        let ran = self.run_frame_callbacks(callbacks, cx);
+        if self.invalidator.is_dirty() {
+            measure("frame duration", || self.draw(cx).clear(cx));
+            (ran, 1)
+        } else {
+            (ran, 0)
+        }
+    }
+
     /// Run element work with interaction registrations disabled.
     pub(crate) fn with_inert_subtree<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
-        self.with_inert_boundaries(&[], f)
+        let owner = self.current_element_owner();
+        self.with_inert_boundaries(&[], owner, &[], None, f)
     }
 
     pub(crate) fn with_inert_subtree_boundary<R>(
         &mut self,
         boundary: &GlobalElementId,
+        wrapped_child_id: Option<ElementId>,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        self.with_inert_boundaries(std::slice::from_ref(boundary), f)
+        let wrapper_owner = self.current_element_owner();
+        let projected_wrapper = wrapper_owner
+            .as_ref()
+            .and_then(|actual| {
+                self.inert_owner_boundary_stack
+                    .borrow()
+                    .iter()
+                    .rev()
+                    .find(|boundary| boundary.wrapped_child_owner.same_owner(actual))
+                    .map(|boundary| boundary.projected_child_owner.clone())
+            })
+            .or_else(|| wrapper_owner.clone());
+        let projected_child =
+            projected_wrapper.map(|owner| owner.with_final_element_id(wrapped_child_id.clone()));
+        let wrapped_child_owner = wrapper_owner.as_ref().and_then(|owner| {
+            ElementOwnerPath::child(
+                &self.next_frame.owner_path_arena,
+                Some(owner),
+                0,
+                wrapped_child_id,
+            )
+        });
+        let owner_boundary = projected_child.clone().zip(wrapped_child_owner).map(
+            |(projected_child_owner, wrapped_child_owner)| InertOwnerBoundary {
+                wrapped_child_owner,
+                projected_child_owner,
+            },
+        );
+        self.with_inert_boundaries(
+            std::slice::from_ref(boundary),
+            projected_child,
+            &[],
+            owner_boundary,
+            f,
+        )
     }
 
     fn with_inert_boundaries<R>(
         &mut self,
         boundaries: &[GlobalElementId],
+        owner: Option<ElementOwnerPath>,
+        inherited_owner_boundaries: &[InertOwnerBoundary],
+        owner_boundary: Option<InertOwnerBoundary>,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
         self.inert_subtree_depth
             .set(self.inert_subtree_depth.get() + 1);
+        if let Some(owner) = owner {
+            self.next_frame.inert_owner_paths.insert(owner);
+        }
         let previous_boundary_len = {
             let mut boundary_stack = self.inert_boundary_stack.borrow_mut();
             let previous_len = boundary_stack.len();
             boundary_stack.extend(boundaries.iter().cloned());
             previous_len
         };
+        let previous_owner_boundary_len = {
+            let mut owner_boundary_stack = self.inert_owner_boundary_stack.borrow_mut();
+            let previous_len = owner_boundary_stack.len();
+            for boundary in inherited_owner_boundaries {
+                if !owner_boundary_stack
+                    .iter()
+                    .any(|existing| existing.same_mapping(boundary))
+                {
+                    owner_boundary_stack.push(boundary.clone());
+                }
+            }
+            if let Some(owner_boundary) = owner_boundary {
+                if !owner_boundary_stack
+                    .iter()
+                    .any(|existing| existing.same_mapping(&owner_boundary))
+                {
+                    owner_boundary_stack.push(owner_boundary);
+                }
+            }
+            previous_len
+        };
         let _scope = InertSubtreeScope {
             depth: self.inert_subtree_depth.clone(),
             boundary_stack: self.inert_boundary_stack.clone(),
             previous_boundary_len,
-        };
-        f(self)
-    }
-
-    pub(crate) fn with_hitbox_owner<R>(
-        &mut self,
-        owner: Option<&GlobalElementId>,
-        f: impl FnOnce(&mut Self) -> R,
-    ) -> R {
-        let previous_len = {
-            let mut owner_stack = self.hitbox_owner_stack.borrow_mut();
-            let previous_len = owner_stack.len();
-            owner_stack.push(owner.cloned());
-            previous_len
-        };
-        let _scope = HitboxOwnerScope {
-            stack: self.hitbox_owner_stack.clone(),
-            previous_len,
+            owner_boundary_stack: self.inert_owner_boundary_stack.clone(),
+            previous_owner_boundary_len,
         };
         f(self)
     }
@@ -4499,6 +5225,12 @@ impl Window {
             group_opacity: self.group_opacity,
             inert_subtree: self.is_inert_subtree(),
             inert_boundaries: self.inert_boundary_stack.borrow().iter().cloned().collect(),
+            inert_owner_boundaries: self
+                .inert_owner_boundary_stack
+                .borrow()
+                .iter()
+                .cloned()
+                .collect(),
             prepaint_range: PrepaintStateIndex::default()..PrepaintStateIndex::default(),
             paint_range: PaintIndex::default()..PaintIndex::default(),
         });
@@ -5506,22 +6238,8 @@ impl Window {
                 behavior
             },
         };
-        let owner = self
-            .hitbox_owner_stack
-            .borrow()
-            .last()
-            .cloned()
-            .unwrap_or_else(|| Some(GlobalElementId(Arc::from(&*self.element_id_stack))));
-        if self.is_inert_subtree() {
-            if self.captured_hitbox_owner.is_some()
-                && let Some(owner) = owner.as_ref()
-            {
-                let boundaries = self.inert_boundary_stack.borrow();
-                self.next_frame
-                    .inert_hitbox_owners
-                    .push(normalize_inert_owner(owner, &boundaries));
-            }
-        } else {
+        if !self.is_inert_subtree() {
+            let owner = self.current_element_owner();
             self.next_frame.hitboxes.push(hitbox.clone());
             self.next_frame.hitbox_owners.push(owner);
         }
@@ -5577,6 +6295,9 @@ impl Window {
     /// directly instead of always using editors via views.
     pub fn set_view_id(&mut self, view_id: EntityId) {
         self.invalidator.debug_assert_prepaint();
+        if self.is_inert_subtree() {
+            self.next_frame.inert_view_ids.insert(view_id);
+        }
         self.next_frame.dispatch_tree.set_view_id(view_id);
     }
 

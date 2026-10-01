@@ -61,7 +61,10 @@ impl Element for Inert {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let layout_id = if let Some(id) = id {
-            window.with_inert_subtree_boundary(id, |window| self.child.request_layout(window, cx))
+            let wrapped_child_id = self.child.element_id();
+            window.with_inert_subtree_boundary(id, wrapped_child_id, |window| {
+                self.child.request_layout(window, cx)
+            })
         } else {
             window.with_inert_subtree(|window| self.child.request_layout(window, cx))
         };
@@ -78,7 +81,8 @@ impl Element for Inert {
         cx: &mut App,
     ) -> Self::PrepaintState {
         if let Some(id) = id {
-            window.with_inert_subtree_boundary(id, |window| {
+            let wrapped_child_id = self.child.element_id();
+            window.with_inert_subtree_boundary(id, wrapped_child_id, |window| {
                 self.child.prepaint_at(bounds.origin, window, cx)
             });
         } else {
@@ -102,7 +106,10 @@ impl Element for Inert {
         cx: &mut App,
     ) {
         if let Some(id) = id {
-            window.with_inert_subtree_boundary(id, |window| self.child.paint(window, cx));
+            let wrapped_child_id = self.child.element_id();
+            window.with_inert_subtree_boundary(id, wrapped_child_id, |window| {
+                self.child.paint(window, cx)
+            });
         } else {
             window.with_inert_subtree(|window| self.child.paint(window, cx));
         }
@@ -130,7 +137,7 @@ mod tests {
         Entity, FocusHandle, HitboxBehavior, HitboxId, InputHandler, InteractiveElement,
         IntoElement, LayoutId, MouseButton, ParentElement, Pixels, Point, Render,
         StatefulInteractiveElement, Style, StyleRefinement, TestAppContext, UTF16Selection, Window,
-        accesskit, div, point, px, size, styled::Styled,
+        accesskit, deferred, div, point, px, size, styled::Styled,
     };
     use std::{cell::Cell, ops::Range, rc::Rc};
 
@@ -227,6 +234,8 @@ mod tests {
                 })
                 .child(FrameProbe {
                     events: self.events.clone(),
+                    once: None,
+                    invalidate_on_frame: false,
                 })
         }
     }
@@ -288,7 +297,7 @@ mod tests {
     impl Render for PointerCaptureTargetView {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             PointerCaptureProbe {
-                id: "captured-child",
+                id: None,
                 hitbox: self.hitbox.clone(),
             }
         }
@@ -297,24 +306,34 @@ mod tests {
     struct PointerCaptureRoot {
         child: Entity<PointerCaptureTargetView>,
         inert: Rc<Cell<bool>>,
+        replace_child: Rc<Cell<bool>>,
+        child_hitbox: Rc<Cell<Option<HitboxId>>>,
         sibling_hitbox: Rc<Cell<Option<HitboxId>>>,
     }
 
     impl Render for PointerCaptureRoot {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            let cached = self
-                .child
-                .clone()
-                .cached(StyleRefinement::default().w(px(100.)).h(px(60.)));
-            let child: AnyElement = if self.inert.get() {
-                inert(
-                    "captured-child-inert-boundary",
-                    "Captured child is unavailable",
-                    cached,
-                )
+            let child: AnyElement = if self.replace_child.get() {
+                PointerCaptureProbe {
+                    id: Some("replacement-capture-owner"),
+                    hitbox: self.child_hitbox.clone(),
+                }
                 .into_any_element()
             } else {
-                cached.into_any_element()
+                let cached = self
+                    .child
+                    .clone()
+                    .cached(StyleRefinement::default().w(px(100.)).h(px(60.)));
+                if self.inert.get() {
+                    inert(
+                        "captured-child-inert-boundary",
+                        "Captured child is unavailable",
+                        cached,
+                    )
+                    .into_any_element()
+                } else {
+                    cached.into_any_element()
+                }
             };
 
             div()
@@ -324,14 +343,95 @@ mod tests {
                 .flex_row()
                 .child(child)
                 .child(PointerCaptureProbe {
-                    id: "captured-sibling",
+                    id: None,
                     hitbox: self.sibling_hitbox.clone(),
                 })
         }
     }
 
+    struct KeyedCaptureRoot {
+        inert: Rc<Cell<bool>>,
+        reordered: Rc<Cell<bool>>,
+        target_hitbox: Rc<Cell<Option<HitboxId>>>,
+        sibling_hitbox: Rc<Cell<Option<HitboxId>>>,
+    }
+
+    struct FreshIdlessCaptureRoot {
+        inert: Rc<Cell<bool>>,
+        child_hitbox: Rc<Cell<Option<HitboxId>>>,
+        sibling_hitbox: Rc<Cell<Option<HitboxId>>>,
+    }
+
+    impl Render for FreshIdlessCaptureRoot {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let child = PointerCaptureProbe {
+                id: None,
+                hitbox: self.child_hitbox.clone(),
+            };
+            let child: AnyElement = if self.inert.get() {
+                inert("fresh-idless-boundary", "Retained idless child", child).into_any_element()
+            } else {
+                child.into_any_element()
+            };
+            div()
+                .w(px(220.))
+                .h(px(70.))
+                .flex()
+                .flex_row()
+                .child(child)
+                .child(PointerCaptureProbe {
+                    id: None,
+                    hitbox: self.sibling_hitbox.clone(),
+                })
+        }
+    }
+
+    impl Render for KeyedCaptureRoot {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let target = div()
+                .id("keyed-capture-target")
+                .w(px(100.))
+                .h(px(60.))
+                .child(PointerCaptureProbe {
+                    id: None,
+                    hitbox: self.target_hitbox.clone(),
+                });
+            let target: AnyElement = if self.inert.get() {
+                inert(
+                    "keyed-capture-inert-wrapper",
+                    "Keyed capture target is retained",
+                    target,
+                )
+                .into_any_element()
+            } else {
+                target.into_any_element()
+            };
+            let sibling = div()
+                .id("keyed-capture-sibling")
+                .w(px(100.))
+                .h(px(60.))
+                .child(PointerCaptureProbe {
+                    id: None,
+                    hitbox: self.sibling_hitbox.clone(),
+                })
+                .into_any_element();
+            let children = if self.reordered.get() {
+                [sibling, target]
+            } else {
+                [target, sibling]
+            };
+            div()
+                .id("keyed-capture-row")
+                .w(px(220.))
+                .h(px(70.))
+                .flex()
+                .flex_row()
+                .children(children)
+        }
+    }
+
     struct PointerCaptureProbe {
-        id: &'static str,
+        id: Option<&'static str>,
         hitbox: Rc<Cell<Option<HitboxId>>>,
     }
 
@@ -348,7 +448,7 @@ mod tests {
         type PrepaintState = ();
 
         fn id(&self) -> Option<ElementId> {
-            Some(self.id.into())
+            self.id.map(Into::into)
         }
 
         fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
@@ -479,6 +579,8 @@ mod tests {
 
     struct FrameProbe {
         events: Rc<Events>,
+        once: Option<Rc<Cell<bool>>>,
+        invalidate_on_frame: bool,
     }
 
     impl IntoElement for FrameProbe {
@@ -542,12 +644,88 @@ mod tests {
             window: &mut Window,
             _: &mut App,
         ) {
-            let events = self.events.clone();
-            window.on_next_frame(move |_, _| {
-                events
-                    .animation_frames
-                    .set(events.animation_frames.get() + 1)
-            });
+            if self
+                .once
+                .as_ref()
+                .is_none_or(|scheduled| !scheduled.replace(true))
+            {
+                let events = self.events.clone();
+                let invalidate_on_frame = self.invalidate_on_frame;
+                window.on_next_frame(move |window, _| {
+                    events
+                        .animation_frames
+                        .set(events.animation_frames.get() + 1);
+                    if invalidate_on_frame {
+                        window.refresh();
+                    }
+                });
+            }
+        }
+    }
+
+    struct QueuedCallbackView {
+        events: Rc<Events>,
+        scheduled: Rc<Cell<bool>>,
+        deferred: bool,
+    }
+
+    impl Render for QueuedCallbackView {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let probe = FrameProbe {
+                events: self.events.clone(),
+                once: Some(self.scheduled.clone()),
+                invalidate_on_frame: true,
+            };
+            if self.deferred {
+                deferred(probe).into_any_element()
+            } else {
+                probe.into_any_element()
+            }
+        }
+    }
+
+    struct QueuedCallbackRoot {
+        child: Entity<QueuedCallbackView>,
+        sibling: Entity<QueuedCallbackView>,
+        inert: Rc<Cell<bool>>,
+        draws: Rc<Cell<usize>>,
+        sibling_events: Rc<Events>,
+    }
+
+    impl Render for QueuedCallbackRoot {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            self.draws.set(self.draws.get() + 1);
+            let child = self
+                .child
+                .clone()
+                .cached(StyleRefinement::default().w(px(100.)).h(px(30.)));
+            let child: AnyElement = if self.inert.get() {
+                let nested = inert("nested-queued-boundary", "Nested retained child", child);
+                inert(
+                    "queued-callback-boundary",
+                    "Retained callback child",
+                    nested,
+                )
+                .into_any_element()
+            } else {
+                child.into_any_element()
+            };
+            let sibling = self
+                .sibling
+                .clone()
+                .cached(StyleRefinement::default().w(px(100.)).h(px(30.)));
+            div().child(child).child(sibling).when(
+                self.sibling_events.animation_frames.get() > 0,
+                |root| {
+                    root.child(
+                        div()
+                            .id("sibling-callback-updated")
+                            .debug_selector(|| "sibling-callback-updated".to_string())
+                            .w(px(10.))
+                            .h(px(10.)),
+                    )
+                },
+            )
         }
     }
 
@@ -848,6 +1026,56 @@ mod tests {
     }
 
     #[gpui::test]
+    fn freshly_mounted_inert_child_never_registers_interactions(cx: &mut TestAppContext) {
+        let events = Rc::new(Events::default());
+        let child_focus = Rc::new(std::cell::RefCell::new(None));
+        let nested_focus = Rc::new(std::cell::RefCell::new(None));
+        let sibling_focus = Rc::new(std::cell::RefCell::new(None));
+        let (_root, cx) = cx.add_window_view({
+            let events = events.clone();
+            let child_focus = child_focus.clone();
+            let nested_focus = nested_focus.clone();
+            let sibling_focus = sibling_focus.clone();
+            move |_, cx| {
+                let focus = cx.focus_handle();
+                let nested = cx.focus_handle();
+                let sibling = cx.focus_handle();
+                *child_focus.borrow_mut() = Some(focus.clone());
+                *nested_focus.borrow_mut() = Some(nested.clone());
+                *sibling_focus.borrow_mut() = Some(sibling.clone());
+                RootView {
+                    child: cx.new(|_| InertInteractiveView {
+                        focus,
+                        nested_focus: nested,
+                        events: events.clone(),
+                    }),
+                    inert: Rc::new(Cell::new(true)),
+                    sibling_focus: sibling,
+                    events,
+                }
+            }
+        });
+        let child_focus = child_focus.borrow().clone().unwrap();
+        let nested_focus = nested_focus.borrow().clone().unwrap();
+
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.focus(&child_focus, cx);
+            window.focus(&nested_focus, cx);
+            assert!(!child_focus.is_focused(window));
+            assert!(!nested_focus.is_focused(window));
+            assert_eq!(window.simulate_next_frame(cx), 0);
+        });
+        cx.simulate_click(point(px(10.), px(10.)), Default::default());
+        assert_eq!(events.clicks.get(), 0);
+        assert_eq!(events.nested_clicks.get(), 0);
+
+        let sibling_bounds = cx.debug_bounds("active-sibling").unwrap();
+        cx.simulate_click(sibling_bounds.center(), Default::default());
+        assert_eq!(events.sibling_clicks.get(), 1);
+    }
+
+    #[gpui::test]
     fn inert_scope_is_restored_after_unwind(cx: &mut TestAppContext) {
         let window = cx.add_window(|_, _| crate::EmptyView);
         cx.update_window(window.into(), |_, window, _| {
@@ -870,20 +1098,24 @@ mod tests {
     #[gpui::test]
     fn inert_subtree_revokes_only_its_own_pointer_capture(cx: &mut TestAppContext) {
         let inert_state = Rc::new(Cell::new(false));
+        let replace_child = Rc::new(Cell::new(false));
         let child_hitbox = Rc::new(Cell::new(None));
         let sibling_hitbox = Rc::new(Cell::new(None));
         let captured_sibling = Rc::new(Cell::new(None));
         let (_root, cx) = cx.add_window_view({
             let inert_state = inert_state.clone();
+            let replace_child = replace_child.clone();
             let child_hitbox = child_hitbox.clone();
             let sibling_hitbox = sibling_hitbox.clone();
             move |_, cx| {
                 let child = cx.new(|_| PointerCaptureTargetView {
-                    hitbox: child_hitbox,
+                    hitbox: child_hitbox.clone(),
                 });
                 PointerCaptureRoot {
                     child,
                     inert: inert_state,
+                    replace_child,
+                    child_hitbox,
                     sibling_hitbox,
                 }
             }
@@ -902,6 +1134,10 @@ mod tests {
         cx.update(|window, cx| {
             window.refresh();
             window.draw(cx).clear(cx);
+            let owner_work = window.element_owner_path_work();
+            assert!(owner_work.nodes_created > 0);
+            assert!(owner_work.cached_handles_reused > 0);
+            assert!(owner_work.node_storage_growths <= owner_work.nodes_created);
             assert_eq!(
                 window.captured_hitbox(),
                 captured_sibling.get(),
@@ -928,5 +1164,218 @@ mod tests {
                 "capture remained attached to a subtree after it became inert"
             );
         });
+
+        // A removed/replaced active owner no longer has a structural capture target either.
+        inert_state.set(false);
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+            let child = child_hitbox.get().expect("child hitbox was painted");
+            window.capture_pointer(child);
+            assert_eq!(window.captured_hitbox(), Some(child));
+        });
+        replace_child.set(true);
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+            assert_eq!(
+                window.captured_hitbox(),
+                None,
+                "capture remained attached after its identified owner was replaced"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn fresh_idless_inert_child_is_revoked_without_touching_idless_sibling(
+        cx: &mut TestAppContext,
+    ) {
+        let inert_state = Rc::new(Cell::new(false));
+        let child_hitbox = Rc::new(Cell::new(None));
+        let sibling_hitbox = Rc::new(Cell::new(None));
+        let (_root, cx) = cx.add_window_view({
+            let inert_state = inert_state.clone();
+            let child_hitbox = child_hitbox.clone();
+            let sibling_hitbox = sibling_hitbox.clone();
+            move |_, _| FreshIdlessCaptureRoot {
+                inert: inert_state,
+                child_hitbox,
+                sibling_hitbox,
+            }
+        });
+
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            let child = child_hitbox.get().expect("fresh child hitbox was painted");
+            window.capture_pointer(child);
+            assert_eq!(window.captured_hitbox(), Some(child));
+        });
+        inert_state.set(true);
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+            assert_eq!(
+                window.captured_hitbox(),
+                None,
+                "a fresh idless child retained capture after becoming inert"
+            );
+        });
+
+        inert_state.set(false);
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+            let sibling = sibling_hitbox.get().expect("idless sibling was painted");
+            window.capture_pointer(sibling);
+            assert_eq!(window.captured_hitbox(), Some(sibling));
+        });
+        inert_state.set(true);
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+            assert_eq!(
+                window.captured_hitbox(),
+                sibling_hitbox.get(),
+                "the active idless sibling lost capture when its sibling became inert"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn keyed_reorder_and_inert_wrapper_only_revoke_the_wrapped_owner(cx: &mut TestAppContext) {
+        let inert_state = Rc::new(Cell::new(false));
+        let reordered = Rc::new(Cell::new(false));
+        let target_hitbox = Rc::new(Cell::new(None));
+        let sibling_hitbox = Rc::new(Cell::new(None));
+        let (_root, cx) = cx.add_window_view({
+            let inert_state = inert_state.clone();
+            let reordered = reordered.clone();
+            let target_hitbox = target_hitbox.clone();
+            let sibling_hitbox = sibling_hitbox.clone();
+            move |_, _| KeyedCaptureRoot {
+                inert: inert_state,
+                reordered,
+                target_hitbox,
+                sibling_hitbox,
+            }
+        });
+
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            let target = target_hitbox
+                .get()
+                .expect("the keyed target hitbox was painted");
+            window.capture_pointer(target);
+            assert_eq!(window.captured_hitbox(), Some(target));
+        });
+
+        // Moving the keyed target and inserting the exact inert wrapper keeps its owner identity
+        // stable while the captured content itself is revoked.
+        reordered.set(true);
+        inert_state.set(true);
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+            assert_eq!(window.captured_hitbox(), None);
+        });
+
+        // A live keyed sibling moved into the old target slot remains independently captured.
+        inert_state.set(false);
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+            let sibling = sibling_hitbox
+                .get()
+                .expect("the keyed sibling hitbox was painted");
+            window.capture_pointer(sibling);
+            assert_eq!(window.captured_hitbox(), Some(sibling));
+        });
+        inert_state.set(true);
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+            assert_eq!(
+                window.captured_hitbox(),
+                sibling_hitbox.get(),
+                "the keyed sibling lost capture when its sibling became inert"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn queued_frame_callback_is_skipped_for_newly_inert_owner(cx: &mut TestAppContext) {
+        let child_events = Rc::new(Events::default());
+        let sibling_events = Rc::new(Events::default());
+        let inert_state = Rc::new(Cell::new(false));
+        let child_scheduled = Rc::new(Cell::new(false));
+        let sibling_scheduled = Rc::new(Cell::new(false));
+        let draws = Rc::new(Cell::new(0));
+
+        let (_root, cx) = cx.add_window_view({
+            let child_events = child_events.clone();
+            let sibling_events = sibling_events.clone();
+            let inert_state = inert_state.clone();
+            let child_scheduled = child_scheduled.clone();
+            let sibling_scheduled = sibling_scheduled.clone();
+            let draws = draws.clone();
+            move |_, cx| {
+                let sibling_view_events = sibling_events.clone();
+                let child = cx.new(|_| QueuedCallbackView {
+                    events: child_events,
+                    scheduled: child_scheduled,
+                    deferred: true,
+                });
+                let sibling = cx.new(|_| QueuedCallbackView {
+                    events: sibling_view_events,
+                    scheduled: sibling_scheduled,
+                    deferred: false,
+                });
+                QueuedCallbackRoot {
+                    child,
+                    sibling,
+                    inert: inert_state,
+                    draws,
+                    sibling_events: sibling_events.clone(),
+                }
+            }
+        });
+
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        assert!(child_scheduled.get());
+        assert!(sibling_scheduled.get());
+        let initial_draw_count = draws.get();
+        assert_eq!(child_events.animation_frames.get(), 0);
+        assert_eq!(sibling_events.animation_frames.get(), 0);
+
+        inert_state.set(true);
+        cx.update(|window, cx| {
+            window.refresh();
+            // Commit the transition before delivering callbacks queued by the prior active
+            // frame, matching the dirty-frame production path.
+            window.draw(cx).clear(cx);
+            assert_eq!(window.simulate_reconciled_next_frame(cx), (1, 1));
+        });
+
+        assert_eq!(child_events.animation_frames.get(), 0);
+        assert_eq!(sibling_events.animation_frames.get(), 1);
+        assert!(
+            cx.debug_bounds("sibling-callback-updated").is_some(),
+            "callback state must be rendered before the same presentation"
+        );
+        assert_eq!(
+            draws.get(),
+            initial_draw_count + 2,
+            "the transition and one live callback update each draw once"
+        );
+        cx.update(|window, cx| {
+            assert_eq!(window.simulate_reconciled_next_frame(cx), (0, 0));
+        });
+        assert_eq!(
+            draws.get(),
+            initial_draw_count + 2,
+            "idle callback delivery must not add a draw"
+        );
     }
 }

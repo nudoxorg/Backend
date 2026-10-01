@@ -263,6 +263,8 @@ impl GlobalElementId {
 trait ElementObject {
     fn inner_element(&mut self) -> &mut dyn Any;
 
+    fn element_id(&self) -> Option<ElementId>;
+
     fn request_layout(&mut self, window: &mut Window, cx: &mut App) -> LayoutId;
 
     fn prepaint(&mut self, window: &mut Window, cx: &mut App);
@@ -282,6 +284,8 @@ pub struct Drawable<E: Element> {
     /// The drawn element.
     pub element: E,
     phase: ElementDrawPhase<E::RequestLayoutState, E::PrepaintState>,
+    owner_path: Option<crate::window::ElementOwnerPath>,
+    owner_child_count: usize,
 }
 
 #[derive(Default)]
@@ -318,13 +322,16 @@ impl<E: Element> Drawable<E> {
         Drawable {
             element,
             phase: ElementDrawPhase::Start,
+            owner_path: None,
+            owner_child_count: 0,
         }
     }
 
     fn request_layout(&mut self, window: &mut Window, cx: &mut App) -> LayoutId {
         match mem::take(&mut self.phase) {
             ElementDrawPhase::Start => {
-                let global_id = self.element.id().map(|element_id| {
+                let element_id = self.element.id();
+                let global_id = element_id.clone().map(|element_id| {
                     window.element_id_stack.push(element_id);
                     GlobalElementId(Arc::from(&*window.element_id_stack))
                 });
@@ -345,12 +352,17 @@ impl<E: Element> Drawable<E> {
                     inspector_id = None;
                 }
 
-                let (layout_id, request_layout) = self.element.request_layout(
-                    global_id.as_ref(),
-                    inspector_id.as_ref(),
-                    window,
-                    cx,
-                );
+                let ((layout_id, request_layout), owner_path, owner_child_count) = window
+                    .with_new_element_owner(element_id, |window| {
+                        self.element.request_layout(
+                            global_id.as_ref(),
+                            inspector_id.as_ref(),
+                            window,
+                            cx,
+                        )
+                    });
+                self.owner_path = owner_path;
+                self.owner_child_count = owner_child_count;
 
                 if global_id.is_some() {
                     window.element_id_stack.pop();
@@ -432,16 +444,20 @@ impl<E: Element> Drawable<E> {
                 }
 
                 let node_id = window.next_frame.dispatch_tree.push_node();
-                let mut prepaint = window.with_hitbox_owner(global_id.as_ref(), |window| {
-                    self.element.prepaint(
-                        global_id.as_ref(),
-                        inspector_id.as_ref(),
-                        bounds,
-                        &mut request_layout,
-                        window,
-                        cx,
-                    )
-                });
+                let mut prepaint = window.with_element_owner(
+                    self.owner_path.clone(),
+                    self.owner_child_count,
+                    |window| {
+                        self.element.prepaint(
+                            global_id.as_ref(),
+                            inspector_id.as_ref(),
+                            bounds,
+                            &mut request_layout,
+                            window,
+                            cx,
+                        )
+                    },
+                );
                 window.next_frame.dispatch_tree.pop_node();
 
                 if pushed_a11y_node {
@@ -512,15 +528,27 @@ impl<E: Element> Drawable<E> {
                 }
 
                 window.next_frame.dispatch_tree.set_active_node(node_id);
-                self.element.paint(
-                    global_id.as_ref(),
-                    inspector_id.as_ref(),
-                    bounds,
-                    &mut request_layout,
-                    &mut prepaint,
-                    window,
-                    cx,
+                window.with_element_owner(
+                    self.owner_path.clone(),
+                    self.owner_child_count,
+                    |window| {
+                        self.element.paint(
+                            global_id.as_ref(),
+                            inspector_id.as_ref(),
+                            bounds,
+                            &mut request_layout,
+                            &mut prepaint,
+                            window,
+                            cx,
+                        );
+                    },
                 );
+                // Path handles belong to this draw's compact arena and are needed only while
+                // painting descendants. The committed Frame owns the paths used for cached
+                // range replay and captures, so retaining one here would pin an old arena in a
+                // cached Drawable indefinitely.
+                self.owner_path = None;
+                self.owner_child_count = 0;
 
                 if global_id.is_some() {
                     window.element_id_stack.pop();
@@ -595,6 +623,10 @@ where
         &mut self.element
     }
 
+    fn element_id(&self) -> Option<ElementId> {
+        self.element.id()
+    }
+
     #[inline]
     fn request_layout(&mut self, window: &mut Window, cx: &mut App) -> LayoutId {
         Drawable::request_layout(self, window, cx)
@@ -638,6 +670,10 @@ impl AnyElement {
     /// Attempt to downcast a reference to the boxed element to a specific type.
     pub fn downcast_mut<T: 'static>(&mut self) -> Option<&mut T> {
         self.0.inner_element().downcast_mut::<T>()
+    }
+
+    pub(crate) fn element_id(&self) -> Option<ElementId> {
+        self.0.element_id()
     }
 
     /// Request the layout ID of the element stored in this `AnyElement`.

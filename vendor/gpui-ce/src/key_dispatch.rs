@@ -595,6 +595,10 @@ impl DispatchTree {
         .filter_map(|node| node.view_id)
     }
 
+    pub fn contains_view(&self, view_id: EntityId) -> bool {
+        self.view_node_ids.contains_key(&view_id)
+    }
+
     pub fn node(&self, node_id: DispatchNodeId) -> &DispatchNode {
         &self.nodes[node_id.0]
     }
