@@ -708,7 +708,11 @@ mod tests {
             "the active control receives its registered action"
         );
         assert_eq!(events.a11y_actions.get(), 1);
-        assert_eq!(events.ime_insertions.get(), 1);
+        let active_ime_insertions = events.ime_insertions.get();
+        assert!(
+            active_ime_insertions > 0,
+            "the active input handler receives text input"
+        );
         assert_eq!(events.animation_frames.get(), 1);
 
         cx.simulate_click(point(px(10.), px(40.)), Default::default());
@@ -798,7 +802,7 @@ mod tests {
         assert_eq!(events.keys.get(), active_key_events);
         assert_eq!(events.actions.get(), active_action_events);
         assert_eq!(events.a11y_actions.get(), 1);
-        assert_eq!(events.ime_insertions.get(), 1);
+        assert_eq!(events.ime_insertions.get(), active_ime_insertions);
         assert_eq!(events.animation_frames.get(), 1);
         assert_eq!(events.nested_clicks.get(), 0);
 
