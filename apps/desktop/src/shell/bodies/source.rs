@@ -1321,6 +1321,28 @@ mod tests {
                 .iter()
                 .any(|word| word.contains("Line 1 in parts"))
         );
+        rig.repaint();
+        let viewport = rig
+            .cx
+            .debug_bounds("reader-scroll")
+            .expect("native reader viewport");
+        let pointer = gpui::point(
+            px(f32::from(viewport.origin.x) + f32::from(viewport.size.width) / 2.0),
+            px(f32::from(viewport.origin.y) + f32::from(viewport.size.height) / 2.0),
+        );
+        let before_wheel = rig
+            .shell
+            .read_with(rig.cx, |shell, cx| shell.source_reader_scroll_offset(cx));
+        rig.cx
+            .simulate_scroll(pointer, gpui::point(px(0.0), px(-180.0)));
+        rig.repaint();
+        let after_wheel = rig
+            .shell
+            .read_with(rig.cx, |shell, cx| shell.source_reader_scroll_offset(cx));
+        assert_ne!(
+            after_wheel, before_wheel,
+            "the native wheel must scroll the source reader"
+        );
         let before = rig.said();
         activate_reader_target(&mut rig, "source-page-top-next");
         let after = rig.said();
@@ -1329,5 +1351,15 @@ mod tests {
             "the next page must advance within the same long line"
         );
         assert!(after.iter().any(|word| word.contains("Line 1 in parts")));
+        assert!(after.iter().any(|word| word.contains('β')));
+        rig.cx.simulate_resize(gpui::size(px(320.0), px(700.0)));
+        rig.settle();
+        let resized = rig.said();
+        assert!(resized.iter().any(|word| word.contains('β')));
+        assert!(resized.iter().any(|word| word.contains("Line 1 in parts")));
+        let (_, focus) = rig
+            .shell
+            .read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+        assert_eq!(focus.as_deref(), Some("source-line-1"));
     }
 }
