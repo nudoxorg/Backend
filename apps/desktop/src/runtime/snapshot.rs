@@ -30,6 +30,7 @@
 use crate::core::VersionedRoot;
 use crate::model::pages::{PackageRef, PageKey, SeedEntry, SymbolRef};
 use crate::navigation::Route;
+use backend_platform::durable::BoundedWriter;
 use std::fmt;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -441,10 +442,7 @@ fn encode(root: VersionedRoot, pages: &[SeedEntry]) -> io::Result<Vec<u8>> {
             continue;
         }
         let offset = payload.len();
-        let writer = Limited {
-            bytes: &mut payload,
-            maximum: CAP,
-        };
+        let writer = BoundedWriter::new(&mut payload, CAP)?;
         let encoded = match entry {
             SeedEntry::Symbol(_, page) => serde_json::to_writer(writer, page.as_ref()),
             SeedEntry::Source(_, view) => serde_json::to_writer(writer, view.as_ref()),
@@ -466,10 +464,7 @@ fn encode(root: VersionedRoot, pages: &[SeedEntry]) -> io::Result<Vec<u8>> {
     }
     let mut table = Vec::new();
     serde_json::to_writer(
-        Limited {
-            bytes: &mut table,
-            maximum: TABLE_CAP,
-        },
+        BoundedWriter::new(&mut table, TABLE_CAP)?,
         &Table {
             root: SnapRoot::of(root),
             sections,
@@ -484,42 +479,6 @@ fn encode(root: VersionedRoot, pages: &[SeedEntry]) -> io::Result<Vec<u8>> {
     bytes.extend_from_slice(&table);
     bytes.extend_from_slice(&payload);
     Ok(bytes)
-}
-
-/// Serializes directly into the final bounded payload, without materializing
-/// a second, potentially unbounded encoding of each page.
-struct Limited<'a> {
-    bytes: &'a mut Vec<u8>,
-    maximum: usize,
-}
-
-impl Write for Limited<'_> {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() > self.maximum.saturating_sub(self.bytes.len()) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "snapshot byte limit",
-            ));
-        }
-        let needed = self.bytes.len() + bytes.len();
-        if needed > self.bytes.capacity() {
-            let capacity = self
-                .bytes
-                .capacity()
-                .saturating_mul(2)
-                .max(needed)
-                .min(self.maximum);
-            self.bytes
-                .try_reserve_exact(capacity - self.bytes.len())
-                .map_err(|error| io::Error::new(io::ErrorKind::OutOfMemory, error))?;
-        }
-        self.bytes.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
 }
 
 fn decode(bytes: &[u8], wanted: &[PageKey]) -> Result<Seed, Refusal> {

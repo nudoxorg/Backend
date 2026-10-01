@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[path = "durable_read.rs"]
 mod read;
-pub use read::read_regular_bounded;
+pub use read::{BoundedWriter, read_regular_bounded};
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
