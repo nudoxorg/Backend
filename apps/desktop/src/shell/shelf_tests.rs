@@ -14,6 +14,8 @@ use gpui::{Modifiers, TestAppContext, point, px};
 use std::sync::Arc;
 
 const PINNED: &str = "pkg:cargo/toml@0.8.23";
+// This is the fixture's exact comparison target, including build metadata.
+const TARGET: &str = "1.1.6+spec-1.1.0";
 
 /// toml at its pin, with three releases, two dependencies (one resolved to an
 /// indexed release, one not) and one dependent, as the index answers.
@@ -32,7 +34,7 @@ impl PageReader for Registry {
             current: package.version() == Some(version),
         };
         about.versions = Known::Known(Arc::from([
-            release("1.1.6", Standing::Available),
+            release(TARGET, Standing::Available),
             release("0.9.0", Standing::Yanked),
             release("0.8.23", Standing::Available),
         ]));
@@ -105,6 +107,18 @@ fn click_text(rig: &mut Rig, words: &str) {
     let texts = shelf_texts(rig);
     let (_, x, y, w, h) = texts.iter().find(|text| text.0 == words).unwrap_or_else(|| panic!("{words:?} is not in the shelf: {texts:#?}")).clone();
     rig.cx.simulate_click(point(px(x + w / 2.0), px(y + h / 2.0)), Modifiers::default());
+    rig.settle();
+}
+
+/// Click the release list's actual native row, never the identical pin or
+/// viewed-release heading above it. This still exercises pointer activation.
+fn click_release(rig: &mut Rig, version: &str) {
+    rig.repaint();
+    let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
+    let row = ledger.texts.iter()
+        .find(|text| text.key.starts_with("shelf-row:") && text.content == version)
+        .unwrap_or_else(|| panic!("exact release row {version:?} is not drawn"));
+    rig.cx.simulate_click(point(px(row.bounds.x + row.bounds.width / 2.0), px(row.bounds.y + row.bounds.height / 2.0)), Modifiers::default());
     rig.settle();
 }
 
@@ -212,23 +226,25 @@ fn the_versions_lens_lists_releases_newest_first_and_choosing_one_reads_the_book
     let mut rig = open(cx);
     click_text(&mut rig, "Versions");
     let said = said(&mut rig);
+    let releases = &said[at(&said, "RELEASES") + 1..at(&said, "TRAIL")];
     // Newest first; the pin and a yanked release say so; the reader has not moved.
     assert_eq!(said.get(at(&said, "Versions") + 1).map(String::as_str), Some("3"), "the lens on show holds 3 releases: {said:#?}");
-    assert!(at(&said, "RELEASES") < at(&said, "1.1.6"), "{said:#?}");
-    assert!(at(&said, "1.1.6") < at(&said, "0.9.0") && at(&said, "0.9.0") < at(&said, "0.8.23"), "newest first: {said:#?}");
-    assert_eq!(said.get(at(&said, "0.9.0") + 1).map(String::as_str), Some("yanked"), "{said:#?}");
-    assert_eq!(said.get(at(&said, "0.8.23") + 1).map(String::as_str), Some("your pin"), "{said:#?}");
+    assert!(at(&said, "RELEASES") < at(&said, TARGET), "{said:#?}");
+    assert!(at(releases, TARGET) < at(releases, "0.9.0") && at(releases, "0.9.0") < at(releases, "0.8.23"), "newest first: {said:#?}");
+    assert_eq!(releases.get(at(releases, "0.9.0") + 1).map(String::as_str), Some("yanked"), "{said:#?}");
+    assert_eq!(releases.get(at(releases, "0.8.23") + 1).map(String::as_str), Some("your pin"), "{said:#?}");
     assert!(!said.iter().any(|text| text == "BY KIND"), "a lens changes the list, not the page: {said:#?}");
     assert_eq!(rig.route(), toml());
     // Choosing a release reads the book at it; the lens stays, and the row says so.
-    click_text(&mut rig, "1.1.6");
+    click_release(&mut rig, TARGET);
     let Route::Package(route) = rig.route() else { panic!("still the package") };
-    assert_eq!(route.at.as_ref().map(|at| at.as_str().to_owned()), Some("1.1.6".to_owned()));
+    assert_eq!(route.at.as_ref().map(|at| at.as_str().to_owned()), Some(TARGET.to_owned()));
     let said = self::said(&mut rig);
-    assert_eq!(said.get(at(&said, "1.1.6") + 1).map(String::as_str), Some("reading"), "the row names the release being read: {said:#?}");
+    let releases = &said[at(&said, "RELEASES") + 1..at(&said, "TRAIL")];
+    assert_eq!(releases.get(at(releases, TARGET) + 1).map(String::as_str), Some("reading"), "the row names the release being read: {said:#?}");
     assert!(said.iter().any(|text| text == "RELEASES"), "the lens is still Versions: {said:#?}");
     // Choosing the pin comes back.
-    click_text(&mut rig, "0.8.23");
+    click_release(&mut rig, "0.8.23");
     assert_eq!(rig.route(), toml(), "the pin is the route without `at`");
 }
 
@@ -356,7 +372,7 @@ fn typing_narrows_the_versions_lens_by_name_and_says_when_nothing_matches(cx: &m
     rig.keys("g v");
     rig.keys("0 . 9");
     let said = said(&mut rig);
-    assert!(said.iter().any(|text| text == "0.9.0") && !said.iter().any(|text| text == "1.1.6"), "{said:#?}");
+    assert!(said.iter().any(|text| text == "0.9.0") && !said.iter().any(|text| text == TARGET), "{said:#?}");
     assert!(said.iter().any(|text| text == "1 of 3"), "{said:#?}");
     assert!(said.iter().any(|text| text == "RELEASES"), "the heading of what stayed: {said:#?}");
     rig.keys("z");
@@ -468,7 +484,7 @@ fn the_intro_leads_with_what_your_code_uses_and_a_target_release_adds_what_chang
     assert_eq!(&said[from_str..from_str + 3], ["from_str", "de", "4"], "{said:#?}");
     assert!(!said.iter().any(|text| text == "CHANGES"), "nothing is being compared at the pin: {said:#?}");
     // Reading 1.1.6: what changes for you and what is gone lead the list too.
-    rig.go(Intent::SetRelease(Some(crate::navigation::ReleaseId::new("1.1.6").expect("release"))));
+    rig.go(Intent::SetRelease(Some(crate::navigation::ReleaseId::new(TARGET).expect("release"))));
     let said = self::said(&mut rig);
     let changes = at(&said, "CHANGES");
     assert!(at(&said, "YOURS") < changes && changes < at(&said, "BY KIND"), "{said:#?}");
@@ -508,7 +524,7 @@ fn a_removed_member_says_gone_in_the_outline_of_the_release_being_read(cx: &mut 
         project: None,
         package: PackageId::new(PINNED).expect("package"),
         id: crate::navigation::Coordinate::new(&format!("{PINNED}::glyph.rs:138::Map")).expect("coordinate"),
-        at: Some(crate::navigation::ReleaseId::new("1.1.6").expect("release")),
+        at: Some(crate::navigation::ReleaseId::new(TARGET).expect("release")),
         view: crate::navigation::View::Page,
         line: None,
         selected: None,

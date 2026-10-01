@@ -9,6 +9,8 @@ use gpui::{Modifiers, TestAppContext, point, px};
 use std::sync::Arc;
 
 const PINNED: &str = "pkg:cargo/toml@0.8.23";
+// Build metadata belongs to the exact fixture release, not a display alias.
+const TARGET: &str = "1.1.6+spec-1.1.0";
 
 /// A registry package with three releases; each dossier is about the
 /// release it was asked for (its `current`), as the index answers.
@@ -25,7 +27,7 @@ impl PageReader for Registry {
                     standing: Standing::Available,
                     current: package.version() == Some(version),
                 };
-                about.versions = Known::Known(Arc::from([release("1.1.6"), release("1.0.0"), release("0.8.23")]));
+                about.versions = Known::Known(Arc::from([release(TARGET), release("1.0.0"), release("0.8.23")]));
                 Ok(PageValue::Package(about))
             }
             ReadRequest::Symbol(symbol) => {
@@ -118,7 +120,7 @@ fn scrubbing_away_from_the_pin_opens_the_upgrade_lens_and_escape_closes_it(cx: &
     assert_eq!(upgrade(&mut rig), None, "at the pin there is nothing to compare");
     assert!(heading(&mut rig).is_empty());
     scrub_to_newest(&mut rig);
-    assert_eq!(rig.route().at().map(|at| at.as_str().to_owned()), Some("1.1.6".to_owned()));
+    assert_eq!(rig.route().at().map(|at| at.as_str().to_owned()), Some(TARGET.to_owned()));
     assert_eq!(heading(&mut rig), ["Upgrading to 1.1.6"], "the page's section names the release");
     assert_eq!(
         upgrade(&mut rig),
@@ -145,7 +147,7 @@ fn a_package_without_release_data_views_the_release_with_no_lens(cx: &mut TestAp
     let mut rig = open_at(cx, serde);
     scrub_to_newest(&mut rig);
     rig.repaint();
-    assert_eq!(rig.route().at().map(|at| at.as_str().to_owned()), Some("1.1.6".to_owned()), "the release is viewed");
+    assert_eq!(rig.route().at().map(|at| at.as_str().to_owned()), Some(TARGET.to_owned()), "the release is viewed");
     let upgrade = rig.shell.read_with(rig.cx, |shell, cx| shell.shelf_upgrade(cx));
     assert_eq!(upgrade, None, "no release data, no lens");
 }
@@ -158,10 +160,10 @@ fn scrubbing_the_comb_views_a_release_and_escape_returns_to_the_pin(cx: &mut Tes
     // The newest release sits at the comb's right end.
     scrub_to_newest(&mut rig);
     rig.repaint();
-    assert_eq!(rig.route().at().map(|at| at.as_str().to_owned()), Some("1.1.6".to_owned()), "the route views 1.1.6");
+    assert_eq!(rig.route().at().map(|at| at.as_str().to_owned()), Some(TARGET.to_owned()), "the route views 1.1.6");
     let here = rig.graph.store.read_with(rig.cx, |store, _| super::jump::here(&store.snapshot(), store).path.to_string());
-    assert_eq!(here, "viewing 1.1.6 · you pin 0.8.23");
-    assert_eq!(marks(&mut rig), (Some("0.8.23".into()), Some("1.1.6".into())), "the pin stays where you pin it");
+    assert_eq!(here, format!("viewing {TARGET} · you pin 0.8.23"));
+    assert_eq!(marks(&mut rig), (Some("0.8.23".into()), Some(TARGET.into())), "the pin stays where you pin it");
     rig.keys("escape");
     assert_eq!(rig.route(), toml(), "Esc returns to the pin");
 }
