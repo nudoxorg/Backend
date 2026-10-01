@@ -6,7 +6,7 @@
 //!   and no other, and a card touched since costs no second walk;
 //! - a world thread that panics is one typed fault everyone can read, not a
 //!   window waiting for ever;
-//! - a restored window says what it needs of the world before it opens.
+//! - a restored window retains its route and hand before the owner answers.
 //!
 //! The page's anatomy tests are gone with the anatomy: the symbol page draws
 //! from the index alone, and nothing read it.
@@ -327,7 +327,7 @@ fn boot_of(route: crate::model::PersistedRoute, hand: Vec<crate::model::persiste
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 #[test]
-fn prepare_carries_the_launch_need_to_the_thread_that_starts_the_world() {
+fn prepare_restores_the_route_and_hand_before_the_owner_answers() {
     use crate::model::PersistedRoute;
     let held = crate::model::persistence::PersistedHeld {
         package: PACKAGE.to_owned(),
@@ -344,10 +344,14 @@ fn prepare_carries_the_launch_need_to_the_thread_that_starts_the_world() {
         view: view.to_owned(),
         line: None,
     };
-    assert_eq!(boot_of(PersistedRoute::World, Vec::new()).world_need, Some(LaunchNeed::Graph));
-    assert_eq!(boot_of(symbol("graph"), Vec::new()).world_need, Some(LaunchNeed::Graph));
-    assert_eq!(boot_of(symbol("page"), vec![held]).world_need, Some(LaunchNeed::Hand));
-    assert_eq!(boot_of(symbol("page"), Vec::new()).world_need, None, "a page and no cards need no world at launch");
+    let world = boot_of(PersistedRoute::World, Vec::new());
+    assert_eq!(launch_need(world.snapshot.route(), &world.snapshot.session().hand), Some(LaunchNeed::Graph));
+    let graph = boot_of(symbol("graph"), Vec::new());
+    assert_eq!(launch_need(graph.snapshot.route(), &graph.snapshot.session().hand), Some(LaunchNeed::Graph));
+    let holding = boot_of(symbol("page"), vec![held]);
+    assert_eq!(launch_need(holding.snapshot.route(), &holding.snapshot.session().hand), Some(LaunchNeed::Hand));
+    let page = boot_of(symbol("page"), Vec::new());
+    assert_eq!(launch_need(page.snapshot.route(), &page.snapshot.session().hand), None, "a page and no cards need no world at launch");
 }
 
 #[gpui::test]
