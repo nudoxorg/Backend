@@ -236,7 +236,7 @@ impl IdentityAdapter {
                     .file
                     .as_ref()
                     .unwrap_or(&world.modules[node.module as usize].file);
-                let symbol = SymbolRef::new(format!(
+                let symbol = SymbolRef::new(&format!(
                     "{}::{}:{}::{}",
                     package.as_str(), file, node.line, node.name
                 ))

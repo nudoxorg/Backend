@@ -891,7 +891,7 @@ fn module_path(file: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Coverage, MAX_PACKAGES, Origin, PackageRef, RelationCompleteness, RelationKindCoverage,
+        Coverage, Key, MAX_PACKAGES, Origin, OwnerIdentity, PackageRef, RelationCompleteness, RelationKindCoverage,
         relation_gap, retain_package,
     };
     use backend_library::SemanticLinkKind;
