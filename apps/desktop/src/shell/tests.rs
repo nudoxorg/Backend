@@ -60,6 +60,7 @@ fn member(name: &str, kind: DeclarationKind, signature: &str, summary: &str) -> 
         signature: Known::Known(SignatureText {
             text: Arc::from(signature),
             tokens: Arc::from([]),
+            name_link_coverage: crate::model::pages::NameLinkCoverage::Unavailable,
         }),
         summary: Some(Arc::from(summary)),
         docs: Arc::from([DocFragment::Text(Arc::from(summary))]),
@@ -85,6 +86,7 @@ pub(crate) fn page(name: &str) -> SymbolPage {
         signature: Known::Known(SignatureText {
             text: Arc::from(format!("pub enum {name}")),
             tokens: Arc::from([]),
+            name_link_coverage: crate::model::pages::NameLinkCoverage::Unavailable,
         }),
         docs: Arc::from([DocFragment::Text(Arc::from(format!(
             "The readable label of {name}.\n\nIt names one relation group."
@@ -102,6 +104,7 @@ pub(crate) fn page(name: &str) -> SymbolPage {
             }),
         },
         members: Known::Known(Members {
+            coverage: crate::model::pages::MembersCoverage::Complete,
             made_of: Arc::from([
                 member("Typed", DeclarationKind::Variant, "Typed(SemanticLinkKind)", "A relation whose kind is known."),
                 member("Related", DeclarationKind::Variant, "Related", "Related, and nothing more is known."),

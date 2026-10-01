@@ -11,7 +11,8 @@ use crate::model::pages::{
     AdvisorySummary, Arrival, ByteSpan, DeclFacts, DeclRef, Dependency, DependencyScope,
     Derivation, DocEntry, DocFragment, DocSection, DocSections, Downloads, Excerpt, FaultProgress, FileSpan, Gap, GapReason, HealthModel,
     IdentifierSpan, IndexedPackage, IngestModel, Known, LanguageProgress, LineSpan, MatchReason,
-    Member, Members, MethodGroup, OrbitModel, OrbitProject, OutlineNode, OutlinePosition,
+    Member, Members, MembersCoverage, MethodGroup, NameLinkCoverage, OrbitModel, OrbitProject,
+    OutlineNode, OutlinePosition,
     OutlineTree, PackageDossier, PackageRecord, PackageRef, Provenance, Readiness, Receiver,
     RecordSource, ReferenceScope, ReferenceSite, Relation, RelationKind, Rose, SearchContinuation,
     SearchPage, SearchRow, SignatureText, SignatureToken, SourceLocation, SourceOrigin,
@@ -44,6 +45,42 @@ pub struct OutlineIndex {
     children: HashMap<Option<SymbolKey>, Vec<usize>>,
     by_name: HashMap<String, Vec<usize>>,
     complete: bool,
+}
+
+/// Borrowed proof that name lookup covers the complete admitted outline.
+/// There is no public constructor that can upgrade a partial outline.
+pub struct CompleteNameLookup<'a> {
+    outline: &'a OutlineIndex,
+}
+
+impl CompleteNameLookup<'_> {
+    /// Resolves a name only across the complete package row set.
+    #[must_use]
+    pub fn resolve(
+        &self,
+        name: &str,
+        accept: impl Fn(Option<DeclarationKind>) -> bool,
+    ) -> Option<&Row> {
+        let candidates = self.outline.by_name.get(name)?;
+        let mut best: Option<(u8, &Row)> = None;
+        let mut tie = false;
+        for index in candidates {
+            let row = &self.outline.rows[*index];
+            if !accept(row.kind) || is_encoded_signature(row.signature.as_deref().unwrap_or("")) {
+                continue;
+            }
+            let rank = name_rank(row.kind);
+            match best {
+                Some((current, _)) if rank > current => {}
+                Some((current, _)) if rank == current => tie = true,
+                _ => {
+                    best = Some((rank, row));
+                    tie = false;
+                }
+            }
+        }
+        if tie { None } else { best.map(|(_, row)| row) }
+    }
 }
 
 impl OutlineIndex {
@@ -86,6 +123,14 @@ impl OutlineIndex {
     #[must_use]
     pub const fn is_complete(&self) -> bool {
         self.complete
+    }
+
+    /// Grants name-based resolution only when the package-wide index is
+    /// complete. Exact producer-key and coordinate lookups remain available
+    /// on a partial outline through [`Self::row`] and [`Self::row_by_label`].
+    #[must_use]
+    pub fn complete_names(&self) -> Option<CompleteNameLookup<'_>> {
+        self.complete.then_some(CompleteNameLookup { outline: self })
     }
 
     /// Returns the number of indexed rows.
@@ -171,26 +216,12 @@ impl OutlineIndex {
     /// Resolves an identifier to one declaration by name, preferring
     /// nominal types and contracts. Ambiguous names resolve to nothing.
     #[must_use]
-    pub fn resolve_name(&self, name: &str, accept: impl Fn(Option<DeclarationKind>) -> bool) -> Option<&Row> {
-        let candidates = self.by_name.get(name)?;
-        let mut best: Option<(u8, &Row)> = None;
-        let mut tie = false;
-        for index in candidates {
-            let row = &self.rows[*index];
-            if !accept(row.kind) || is_encoded_signature(row.signature.as_deref().unwrap_or("")) {
-                continue;
-            }
-            let rank = name_rank(row.kind);
-            match best {
-                Some((current, _)) if rank > current => {}
-                Some((current, _)) if rank == current => tie = true,
-                _ => {
-                    best = Some((rank, row));
-                    tie = false;
-                }
-            }
-        }
-        if tie { None } else { best.map(|(_, row)| row) }
+    pub fn resolve_name(
+        &self,
+        name: &str,
+        accept: impl Fn(Option<DeclarationKind>) -> bool,
+    ) -> Option<&Row> {
+        self.complete_names()?.resolve(name, accept)
     }
 
     /// Builds the mosaic forest.
@@ -378,6 +409,11 @@ pub fn signature_text(
     Known::Known(SignatureText {
         text: Arc::from(text),
         tokens: tokens.into(),
+        name_link_coverage: match outline {
+            Some(outline) if outline.is_complete() => NameLinkCoverage::Complete,
+            Some(_) => NameLinkCoverage::Partial,
+            None => NameLinkCoverage::Unavailable,
+        },
     })
 }
 
@@ -782,6 +818,7 @@ pub fn members(
     // A callable's children are its local bindings, not members.
     if is_callable(centre_kind) {
         return Members {
+            coverage: members_coverage(outline),
             made_of: Arc::from([]),
             does: Arc::from([]),
             other: Arc::from([]),
@@ -817,9 +854,18 @@ pub fn members(
         })
         .collect::<Vec<_>>();
     Members {
+        coverage: members_coverage(outline),
         made_of: made_of.into(),
         does: does.into(),
         other: other.into(),
+    }
+}
+
+fn members_coverage(outline: Option<&OutlineIndex>) -> MembersCoverage {
+    match outline {
+        Some(outline) if outline.is_complete() => MembersCoverage::Complete,
+        Some(_) => MembersCoverage::Partial,
+        None => MembersCoverage::Unavailable,
     }
 }
 
@@ -1145,6 +1191,12 @@ pub fn outline_position(centre: RowId, outline: Option<&OutlineIndex>, failure: 
             Gap::new(GapReason::ReadFailed, "the package outline was not read")
         }));
     };
+    if !outline.is_complete() {
+        return Known::unknown(
+            GapReason::Unavailable,
+            "the package outline is partial; ancestry and sibling coverage are incomplete",
+        );
+    }
     let RowId::Symbol(key) = centre else {
         return Known::unknown(GapReason::NotCaptured, "the declaration has no symbol row");
     };
@@ -1271,17 +1323,22 @@ pub fn symbol_page(inputs: &SymbolInputs<'_>) -> SymbolPage {
             })
             .unwrap_or_default(),
     };
-    let members_known = if outline.is_some() || neighbourhood.is_some() {
-        Known::Known(members(kind, &children, outline))
-    } else {
-        Known::Unknown(
+    let members_known = match outline {
+        Some(outline) if outline.is_complete() => {
+            Known::Known(members(kind, &children, Some(outline)))
+        }
+        Some(_) => Known::unknown(
+            GapReason::Unavailable,
+            "the package outline is partial; the members ledger may omit declarations",
+        ),
+        None => Known::Unknown(
             inputs
                 .outline
                 .as_ref()
                 .err()
                 .cloned()
-                .unwrap_or_else(|| Gap::new(GapReason::ReadFailed, "members were not read")),
-        )
+                .unwrap_or_else(|| Gap::new(GapReason::Unavailable, "member coverage was not established")),
+        ),
     };
     let references = references(inputs.references, outline);
     SymbolPage {
@@ -1369,6 +1426,12 @@ fn identifier_spans(
     let Some(outline) = outline else {
         return Known::unknown(GapReason::ReadFailed, "the package outline was not read");
     };
+    if !outline.is_complete() {
+        return Known::unknown(
+            GapReason::Unavailable,
+            "the package outline is partial; name-based identifier links may be missing",
+        );
+    }
     let mut spans = Vec::new();
     let bytes = text.as_bytes();
     let mut index = 0;
@@ -2191,6 +2254,163 @@ mod tests {
             RowSpec { label: identity.clone(), kind: DeclarationKind::Struct, signature: Some("pub struct Identity"), parent: Some(&identity_module), doc: Some("One parsed row identity."), site: Some(("identity.rs", 339)) },
         ];
         specs.iter().map(row).collect()
+    }
+
+    #[test]
+    fn name_links_require_complete_outline_but_exact_doc_keys_survive_partial_coverage() {
+        let foo = format!("{PRESENT}::src/lib.rs:3::Foo");
+        let consumer = format!("{PRESENT}::src/lib.rs:8::consume");
+        let rows = vec![
+            row(&RowSpec {
+                label: foo.clone(),
+                kind: DeclarationKind::Struct,
+                signature: Some("pub struct Foo"),
+                parent: None,
+                doc: None,
+                site: Some(("src/lib.rs", 3)),
+            }),
+            row(&RowSpec {
+                label: consumer.clone(),
+                kind: DeclarationKind::Function,
+                signature: Some("pub fn consume(value: Foo)"),
+                parent: None,
+                doc: None,
+                site: Some(("src/lib.rs", 8)),
+            }),
+        ];
+        let complete = OutlineIndex::new(rows.clone(), true);
+        let partial = OutlineIndex::new(rows, false);
+        let complete_signature = signature_text(
+            Some("pub fn consume(value: Foo)"),
+            Language::Rust,
+            None,
+            Some(&complete),
+        );
+        let partial_signature = signature_text(
+            Some("pub fn consume(value: Foo)"),
+            Language::Rust,
+            None,
+            Some(&partial),
+        );
+        assert!(complete_signature.known().unwrap().links().next().is_some());
+        assert!(partial_signature.known().unwrap().links().next().is_none());
+        assert_eq!(
+            complete_signature.known().unwrap().name_link_coverage,
+            NameLinkCoverage::Complete
+        );
+        assert_eq!(
+            partial_signature.known().unwrap().name_link_coverage,
+            NameLinkCoverage::Partial
+        );
+        assert_eq!(
+            complete
+                .complete_names()
+                .unwrap()
+                .resolve("Foo", is_type_like)
+                .unwrap()
+                .label,
+            foo
+        );
+        assert!(partial.complete_names().is_none());
+        assert!(partial.resolve_name("Foo", is_type_like).is_none());
+
+        let duplicate = format!("{PRESENT}::src/other.rs:3::Foo");
+        let partial_duplicates = OutlineIndex::new(
+            vec![
+                row(&RowSpec {
+                    label: foo.clone(),
+                    kind: DeclarationKind::Struct,
+                    signature: Some("pub struct Foo"),
+                    parent: None,
+                    doc: None,
+                    site: Some(("src/lib.rs", 3)),
+                }),
+                row(&RowSpec {
+                    label: duplicate,
+                    kind: DeclarationKind::Struct,
+                    signature: Some("pub struct Foo"),
+                    parent: None,
+                    doc: None,
+                    site: Some(("src/other.rs", 3)),
+                }),
+            ],
+            false,
+        );
+        assert!(partial_duplicates.resolve_name("Foo", is_type_like).is_none());
+
+        let partial_spans = identifier_spans("Foo", None, Some(&partial));
+        assert_eq!(
+            partial_spans.gap().map(|gap| gap.reason),
+            Some(GapReason::Unavailable)
+        );
+        let exact = doc_fragments(
+            &[Fragment::Link {
+                label: "Foo".to_owned(),
+                target: key(&foo),
+            }],
+            Some(&partial),
+        );
+        assert!(matches!(
+            exact.first(),
+            Some(DocFragment::Link { coordinate: Some(coordinate), .. })
+                if coordinate.as_str() == foo
+        ));
+    }
+
+    #[test]
+    fn partial_outline_never_claims_complete_members_or_ancestry() {
+        let rows = present_rows();
+        let outline = OutlineIndex::new(rows.clone(), false);
+        let page_label = present("page.rs:396::Page");
+        let centre = RowId::Symbol(key(&page_label));
+        let position = outline_position(centre, Some(&outline), None);
+        assert_eq!(
+            position.gap().map(|gap| gap.reason),
+            Some(GapReason::Unavailable)
+        );
+        assert!(position.gap().unwrap().detail.contains("partial"));
+        let children = outline.children(key(&page_label)).collect::<Vec<_>>();
+        let observed_members = members(Some(DeclarationKind::Struct), &children, Some(&outline));
+        assert_eq!(observed_members.coverage, MembersCoverage::Partial);
+
+        let coordinate = SymbolRef::new(&page_label).expect("coordinate");
+        let document = present_document(
+            &page_label,
+            "pub struct Page",
+            "One complete declaration page.",
+            ("page.rs", 396),
+            "pub struct Page {\n    prose: Box<[Prose]>,\n}",
+        );
+        let related_rows = rows
+            .iter()
+            .filter(|row| {
+                row.label == page_label
+                    || row.label == present("page.rs")
+                    || row.parent == Some(key(&page_label))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let failure = no_semantics();
+        let page = symbol_page(&SymbolInputs {
+            coordinate: &coordinate,
+            document: &document,
+            related: Ok(Neighbourhood {
+                rows: &related_rows,
+                relations: None,
+                rich: None,
+            }),
+            references: Err(&failure),
+            outline: Ok(&outline),
+        });
+        assert_eq!(
+            page.members.gap().map(|gap| gap.reason),
+            Some(GapReason::Unavailable)
+        );
+        assert!(page.members.gap().unwrap().detail.contains("partial"));
+        assert_eq!(
+            page.outline.gap().map(|gap| gap.reason),
+            Some(GapReason::Unavailable)
+        );
     }
 
     #[test]
