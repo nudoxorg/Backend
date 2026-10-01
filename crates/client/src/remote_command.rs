@@ -951,14 +951,15 @@ mod tests {
                                     reply,
                                 )
                             };
+                            let response = RemoteIndexResponse {
+                                request_id: request.request_id,
+                                outcome: RemoteIndexOutcome::Payload(body.into_boxed_slice()),
+                            };
                             tokio::select! {
                                 _ = &mut shutdown_receiver => return false,
                                 result = tokio::time::timeout(
                                     TEST_IO_TIMEOUT,
-                                    session.send_response(&RemoteIndexResponse {
-                                        request_id: request.request_id,
-                                        outcome: RemoteIndexOutcome::Payload(body.into_boxed_slice()),
-                                    }),
+                                    session.send_response(&response),
                                 ) => {
                                     result.expect("owner reply send timed out")
                                         .expect("send owner product reply");
@@ -976,7 +977,7 @@ mod tests {
                 assert!(completed, "remote-index test server stopped before all sessions");
             });
         });
-        let mut test_server = ProductTestServer {
+        let test_server = ProductTestServer {
             shutdown: Some(shutdown_sender),
             worker: Some(owner_thread),
         };
