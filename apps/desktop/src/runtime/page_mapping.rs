@@ -3287,20 +3287,20 @@ mod tests {
     }
 
     #[test]
-    fn malformed_producer_source_line_is_an_explicit_gap() {
-        let label = present("page.rs:0::render");
+    fn overflowing_producer_source_lines_are_an_explicit_gap() {
+        let label = present("page.rs:4294967295::render");
         let document = present_document(
             &label,
-            "pub fn render() {}",
+            "pub fn render() {\n}",
             "Renders.",
-            ("page.rs", 0),
-            "pub fn render() {}",
+            ("page.rs", u32::MAX),
+            "pub fn render() {\n}",
         );
         let coordinate = SymbolRef::new(&label).expect("coordinate");
         let view = source_view(&coordinate, &document, None, None, &Known::Known(Arc::from([])), None);
-        let gap = view.text.gap().expect("line zero has no unique source-row identity");
+        let gap = view.text.gap().expect("overflow has no unique source-row identity");
         assert_eq!(gap.reason, GapReason::Unavailable);
-        assert!(gap.detail.contains("first line"));
+        assert!(gap.detail.contains("line numbers"));
     }
 
     #[test]
