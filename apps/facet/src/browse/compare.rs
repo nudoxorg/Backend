@@ -479,7 +479,7 @@ mod tests {
         let scroll = ScrollHandle::new();
         let operations = (0..18).map(|at| Operation { path: None, answer: Answer {
             key: format!("symbol-{at}").into(), name: format!("function_{at:02}").into(), kind: Kind::Function,
-            context: None, reason: "indexed".into(), summary: None, pipe: None, signature: None,
+            context: None, reason: "indexed".into(), summary: None, pipe: None, signature: None, source_available: false,
         }}).collect::<Vec<_>>();
         let candidate = |name: &str| Candidate { key: name.to_owned().into(), name: name.to_owned().into(), version: None, description: None, facts: vec![],
             operations: Some(operations.clone()), complete: true, coverage: None };
@@ -598,7 +598,7 @@ mod tests {
         Candidate { key: name.to_owned().into(), name: name.to_owned().into(), version: None, description: None, facts: vec![],
             operations: Some(kinds.iter().enumerate().map(|(at, kind)| Operation { path: None, answer: Answer {
                 key: format!("{name}::{at}").into(), name: "Value".into(), kind: *kind, reason: "indexed".into(), summary: None, pipe: None, signature: None,
-                context: None,
+                context: None, source_available: false,
             }}).collect()), complete, coverage: None }
     }
     #[test]

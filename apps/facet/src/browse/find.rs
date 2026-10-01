@@ -40,6 +40,8 @@ pub struct Answer {
     pub pipe: Option<Pipe>,
     /// Exact source signature, behind disclosure.
     pub signature: Option<SharedString>,
+    /// The reply recorded both a source path and a line for opening Code.
+    pub source_available: bool,
 }
 
 /// A package qualification, with declarations belonging to this exact package.
@@ -139,7 +141,7 @@ pub struct Actions {
     pub query_input: Rc<dyn Fn(&str) -> QueryInput>,
     pub refine: Rc<dyn Fn(SharedString, &mut App)>,
     /// Retries the exact failed current route; absent when the owner cannot serve it.
-    pub retry: Option<Rc<dyn Fn(&mut App)>>,
+    pub retry: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
     pub symbol_routability: Rc<dyn Fn(&SharedString) -> Routability>,
     pub open_symbol: Rc<dyn Fn(SharedString, &mut Window, &mut App)>,
     pub open_code: Rc<dyn Fn(SharedString, &mut Window, &mut App)>,
@@ -218,6 +220,13 @@ struct State {
 }
 
 impl State {
+    fn result_admission(&self, cx: &App) -> Admission {
+        if !self.active { return Admission::Retained("This Find page is departing. Its controls are unavailable.".into()); }
+        let text = self.input.read(cx).value();
+        let loaded = self.loaded_query.as_ref().map_or("", |query| query.as_ref());
+        admit(&text, (self.actions.query_input)(&text), loaded, &self.read_admission)
+    }
+
     fn new(query: SharedString, actions: Actions, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let refine = Rc::clone(&actions.refine);
         let input = cx.new(|cx| {
@@ -249,19 +258,28 @@ impl State {
                 let text = input.read(cx).value();
                 if matches!((state.actions.query_input)(&text), QueryInput::Invalid(_)) { cx.notify(); return; }
                 if !reading_matches(state.loaded_query.as_ref(), &text) {
-                    if text.trim() == state.route_query.as_ref().trim() && !matches!(state.read_admission, ReadAdmission::Current) { return; }
+                    if text.trim() == state.route_query.as_ref().trim() && !matches!(state.read_admission, ReadAdmission::Current) {
+                        if let Some(reason) = state.result_admission(cx).note() { action_notice(&reason, window, cx); }
+                        return;
+                    }
                     state.pending = None;
                     state.generation = state.generation.wrapping_add(1);
                     state.submitted = Some(text.trim().to_owned().into());
                     (state.refine)(text, cx);
                     return;
                 }
-                if !matches!(state.read_admission, ReadAdmission::Current) { return; }
+                if !matches!(state.read_admission, ReadAdmission::Current) {
+                    if let Some(reason) = state.result_admission(cx).note() { action_notice(&reason, window, cx); }
+                    return;
+                }
                 if let Some(selected) = state.selected.clone() {
                     match selected {
                         Selection::Package(key) => (state.actions.open_package)(key, window, cx),
                         Selection::Answer(key) => {
-                            if (state.actions.symbol_routability)(&key).available() { (state.actions.open_symbol)(key, window, cx); }
+                            match (state.actions.symbol_routability)(&key) {
+                                Routability::Available => (state.actions.open_symbol)(key, window, cx),
+                                Routability::Unavailable(reason) => action_notice(&reason, window, cx),
+                            }
                         }
                     }
                 }
@@ -288,9 +306,9 @@ impl State {
         self.refine = Rc::clone(&actions.refine);
         self.actions = actions.clone();
         self.loaded_query = (!model.loading && matches!(self.read_admission, ReadAdmission::Current)).then(|| model.query.clone());
-        if !model.loading && matches!(self.read_admission, ReadAdmission::Current) {
-            self.follow_added_release(model);
-            self.snapshot = Some(Arc::clone(&model));
+        if !model.loading {
+            if matches!(self.read_admission, ReadAdmission::Current) { self.follow_added_release(model); }
+            self.snapshot = Some(Arc::clone(model));
         }
         if self.route_query != model.query {
             let local = self.submitted.as_ref() == Some(&model.query);
@@ -308,6 +326,18 @@ impl State {
         }
     }
 
+}
+
+fn result_action_ready(state: &Entity<State>, window: &mut Window, cx: &mut App) -> bool {
+    let admission = state.read(cx).result_admission(cx);
+    if admission.allows_actions() { return true; }
+    let reason = admission.note().unwrap_or_else(|| "Wait for the current Find reading.".into());
+    action_notice(&reason, window, cx);
+    false
+}
+
+fn action_notice(reason: &str, window: &mut Window, cx: &mut App) {
+    crate::overlay::toast::show(crate::overlay::toast::Toast::new(reason).voice(crate::tokens::Voice::Coral), window, cx);
 }
 
 /// Compose a native Find folio.
@@ -347,15 +377,21 @@ impl RenderOnce for Find {
             state.active = self.active;
             if !self.active { state.pending = None; state.generation = state.generation.wrapping_add(1); }
         });
-        if !self.active { return div().id(self.id).into_any_element(); }
-        state.update(cx, |state, cx| state.accept(&self.model, &self.actions, window, cx));
+        if self.active { state.update(cx, |state, cx| state.accept(&self.model, &self.actions, window, cx)); }
         // A query admission keeps the last immutable reading in place. Its
         // evidence remains inspectable, but navigation waits for the new read.
         let model = state.read(cx).snapshot.clone().unwrap_or_else(|| Arc::clone(&self.model));
         let empty = state.read(cx).input.read(cx).value().trim().is_empty();
         let input_text = state.read(cx).input.read(cx).value();
-        let admission = admit(&input_text, (self.actions.query_input)(&input_text), &model.query, &read_admission);
+        let admission = if self.active {
+            admit(&input_text, (self.actions.query_input)(&input_text), &model.query, &read_admission)
+        } else {
+            Admission::Retained("This Find page is departing. Its controls are unavailable.".into())
+        };
         let updating = !admission.allows_actions();
+        // A retained reading can still be inspected locally while its query
+        // remains the text in the field. Source actions keep their own gate.
+        let inspectable = self.active && input_text.trim() == model.query.as_ref().trim();
         state.update(cx, |state, _| {
             let shown_packages = if state.all_packages { model.candidates.len() } else { 8 };
             let choices = |state: &State| model.candidates.iter().take(shown_packages).flat_map(|candidate| {
@@ -367,12 +403,12 @@ impl RenderOnce for Find {
                 std::iter::once(Selection::Package(candidate.key.clone())).chain(candidate.answers.iter().take(shown).map(|answer| Selection::Answer(answer.key.clone())))
             }).chain(model.loose.iter().map(|answer| Selection::Answer(answer.key.clone()))).collect::<Vec<_>>();
             let keyboard = choices(state);
-            if !empty && !updating && state.selected.as_ref().is_none_or(|selection| !keyboard.contains(selection)) {
+            if !empty && inspectable && state.selected.as_ref().is_none_or(|selection| !keyboard.contains(selection)) {
                 state.selected = model.candidates.first().map(|candidate| candidate.answers.first()
                     .map_or_else(|| Selection::Package(candidate.key.clone()), |answer| Selection::Answer(answer.key.clone())))
                     .or_else(|| model.loose.first().map(|answer| Selection::Answer(answer.key.clone())));
             }
-            state.keyboard = if updating || empty && (!self.model.query.is_empty() || self.model.loading) { vec![] } else { choices(state) };
+            state.keyboard = if !inspectable || empty && (!self.model.query.is_empty() || self.model.loading) { vec![] } else { choices(state) };
         });
         let input = state.read(cx).input.clone();
         crate::controls::field::sync_text_engine(cx);
@@ -381,7 +417,7 @@ impl RenderOnce for Find {
             .child(div().flex().items_center().gap(m.space(Space::Roomy)).py(m.space(Space::Base))
                 .border_b_1().border_color(p.peri.base.hsla())
                 .child(ui(Icon::Search, IconSize::S24, p.peri.base))
-                .child(Input::new(&input).id(child(&self.id, "query")).aria_label("Find query").aria_description("Search package names and indexed declarations. Enter opens the selected current result; Up and Down move through results.").appearance(false).bordered(false).focus_bordered(false)
+                .child(Input::new(&input).id(child(&self.id, "query")).aria_label("Find query").aria_description("Search package names and indexed declarations. Enter opens the selected current result; Up and Down move through results.").disabled(!self.active).appearance(false).bordered(false).focus_bordered(false)
                     .set(ty::TITLE, &m).px(px(0.0)).flex_1().min_w_0()))
             .child(words(child(&self.id, "hint"), "Search package names and indexed declarations. Select an item to inspect its recorded shape.", ty::CAPTION, p.ink2, &m));
         let keyboard_state = state.clone();
@@ -389,6 +425,7 @@ impl RenderOnce for Find {
             .capture_key_down(move |event, _, cx| {
                 let delta = match event.keystroke.key.as_str() { "down" => 1_isize, "up" => -1, _ => return };
                 keyboard_state.update(cx, |state, cx| {
+                    if !state.active { return; }
                     let at = state.selected.as_ref().and_then(|selected| state.keyboard.iter().position(|choice| choice == selected)).unwrap_or(0);
                     let next = at.saturating_add_signed(delta).min(state.keyboard.len().saturating_sub(1));
                     let selected = state.keyboard.get(next).cloned();
@@ -403,8 +440,8 @@ impl RenderOnce for Find {
         }
         if matches!(admission, Admission::Failed(_)) && let Some(retry) = &self.actions.retry {
             let retry = retry.clone();
-            page = page.child(button(child(&self.id, "retry"), "Retry current Find query", &m).primary()
-                .on_click(move |_, cx| retry(cx)));
+            page = page.child(button(child(&self.id, "retry"), "Retry current Find query", &m).primary().disabled(!self.active)
+                .on_click(move |window, cx| retry(window, cx)));
         }
         if !state.read(cx).held.packages().is_empty() {
             page = page.child(held_tray(&child(&self.id, "held-tray"), &state, &self.actions, admission.allows_actions(), &m, cx));
@@ -414,8 +451,9 @@ impl RenderOnce for Find {
                 .child(words(child(&self.id, "examples-label"), "TRY", ty::CAPTION, p.ink2, &m));
             for (at, query) in ["from_str", "toml", "Deserialize"].into_iter().enumerate() {
                 let chosen = state.clone();
-                examples = examples.child(button(child(&self.id, format!("example-{at}")), query, &m).ghost().size(Control::Small).icon(Icon::Spark)
+                examples = examples.child(button(child(&self.id, format!("example-{at}")), query, &m).ghost().size(Control::Small).icon(Icon::Spark).disabled(!self.active)
                     .on_click(move |window, cx| chosen.update(cx, |state, cx| {
+                        if !state.active { return; }
                         state.pending = None;
                         state.generation = state.generation.wrapping_add(1);
                         state.submitted = Some(query.into());
@@ -461,7 +499,7 @@ impl RenderOnce for Find {
         let limit = if state.read(cx).all_packages { model.candidates.len() } else { 8 };
         for candidate in model.candidates.iter().take(limit) {
             let active = resolved.is_some_and(|(current, _)| current.key == candidate.key);
-            let group = candidate_view(&child(&self.id, format!("candidate-{}", candidate.key)), candidate, active, resolved.and_then(|(_, answer)| answer), &state, &self.actions, !updating, &list_m, cx);
+            let group = candidate_view(&child(&self.id, format!("candidate-{}", candidate.key)), candidate, active, resolved.and_then(|(_, answer)| answer), &state, &self.actions, !updating, inspectable, &list_m, cx);
             list = list.child(flow.item(candidate.key.clone(), group));
             if active && !wide {
                 if let Some((candidate, answer)) = resolved {
@@ -472,17 +510,20 @@ impl RenderOnce for Find {
         if model.candidates.len() > limit {
             let count = model.candidates.len() - limit;
             let all = state.clone();
-            list = list.child(button(child(&self.id, "more-packages"), format!("Explore {count} more packages"), &list_m).ghost().disabled(updating).icon(Icon::Layers)
-                .on_click(move |_, cx| all.update(cx, |state, cx| { state.all_packages = true; cx.notify(); })));
+            list = list.child(button(child(&self.id, "more-packages"), format!("Explore {count} more packages"), &list_m).ghost().disabled(!inspectable).icon(Icon::Layers)
+                .on_click(move |_, cx| all.update(cx, |state, cx| { if !state.active { return; } state.all_packages = true; cx.notify(); })));
         }
         for answer in &model.loose {
             let open = Rc::clone(&self.actions.open_symbol);
             let key = answer.key.clone();
+            let action_state = state.clone();
             let route = (self.actions.symbol_routability)(&answer.key);
             if let Some(reason) = route.reason() {
                 list = list.child(words(child(&self.id, format!("loose-{}-unavailable", answer.key)), reason, ty::CAPTION, p.ink2, &list_m));
             }
-            let row = button(child(&self.id, format!("loose-{}", answer.key)), answer.name.clone(), &list_m).ghost().disabled(updating || !route.available()).on_click(move |window, cx| open(key.clone(), window, cx));
+            let row = button(child(&self.id, format!("loose-{}", answer.key)), answer.name.clone(), &list_m).ghost().disabled(updating || !route.available()).on_click(move |window, cx| {
+                if result_action_ready(&action_state, window, cx) { open(key.clone(), window, cx); }
+            });
             list = list.child(if selected.as_ref() == Some(&Selection::Answer(answer.key.clone())) { state.read(cx).reveal.selected(row) } else { row.into_any_element() });
         }
         if let Some(answer) = loose_selected {
@@ -518,18 +559,19 @@ fn held_tray(id: &ElementId, state: &Entity<State>, actions: &Actions, enabled: 
         chips = chips.child(div().flex().items_center().gap(m.space(Space::Tight))
             .child(crate::paint::gem(Kind::Package).size(16.0 * m.scale()))
             .child(words(child(id, format!("name-{}", package.key)), label.clone(), ty::MONO_SMALL, p.ink1, m))
-            .child(button(child(id, format!("remove-{}", package.key)), format!("Remove {label}"), m).ghost().size(Control::Small)
-                .on_click(move |_, cx| remove.update(cx, |state, cx| { state.held.remove(&key); (state.actions.persist_held)(state.held.0.clone(), cx); cx.notify(); }))));
+            .child(button(child(id, format!("remove-{}", package.key)), format!("Remove {label}"), m).ghost().size(Control::Small).disabled(!state.read(cx).active)
+                .on_click(move |_, cx| remove.update(cx, |state, cx| { if !state.active { return; } state.held.remove(&key); (state.actions.persist_held)(state.held.0.clone(), cx); cx.notify(); }))));
     }
     let compare = Rc::clone(&actions.compare);
     let chosen = held.packages().iter().map(|package| package.key.clone()).collect::<Vec<_>>();
+    let compare_state = state.clone();
     div().flex().flex_col().gap(m.space(Space::Base))
         .child(div().flex().items_center().gap(m.space(Space::Base))
             .child(ui(Icon::Split, IconSize::S18, p.peri.base))
             .child(words(child(id, "heading"), "HELD FOR COMPARISON", ty::CAPTION, p.ink1, m)))
         .child(chips)
         .child(button(child(id, "compare"), held.action_label(), m).edge().disabled(!enabled || !held.can_compare())
-            .on_click(move |window, cx| compare(chosen.clone(), window, cx)))
+            .on_click(move |window, cx| { if result_action_ready(&compare_state, window, cx) { compare(chosen.clone(), window, cx); } }))
         .into_any_element()
 }
 
@@ -542,6 +584,7 @@ fn selection_row(id: ElementId, state: &Entity<State>, selection: Selection, nam
         let choose: Rc<dyn Fn(&mut App)> = {
             let state = state.clone();
             Rc::new(move |cx| state.update(cx, |state, cx| {
+                if !state.active { return; }
                 state.selected = Some(selection.clone()); state.source = false; cx.notify();
             }))
         };
@@ -557,7 +600,7 @@ fn selection_row(id: ElementId, state: &Entity<State>, selection: Selection, nam
     row
 }
 
-fn candidate_view(id: &ElementId, candidate: &Candidate, active: bool, selected: Option<&Answer>, state: &Entity<State>, actions: &Actions, enabled: bool, m: &Measure, cx: &mut App) -> AnyElement {
+fn candidate_view(id: &ElementId, candidate: &Candidate, active: bool, selected: Option<&Answer>, state: &Entity<State>, actions: &Actions, enabled: bool, inspectable: bool, m: &Measure, cx: &mut App) -> AnyElement {
     let p = cx.palette();
     let key = candidate.key.clone();
     let held = state.read(cx).held.contains(&key);
@@ -571,10 +614,12 @@ fn candidate_view(id: &ElementId, candidate: &Candidate, active: bool, selected:
     let hold = button(child(id, "hold"), if held { "Held" } else { "Compare" }, m).ghost().size(Control::Small).icon(if held { Icon::Pin } else { Icon::Split })
         .aria_label(format!("{} {}", if held { "Remove from comparison:" } else { "Hold for comparison:" }, held_candidate.label()))
         .disabled(!enabled || (!held && state.read(cx).held.packages().len() == 4))
-        .on_click(move |_, cx| toggle.update(cx, |state, cx| { state.held.toggle(held_candidate.clone()); (state.actions.persist_held)(state.held.0.clone(), cx); cx.notify(); }));
+        .on_click(move |window, cx| { if result_action_ready(&toggle, window, cx) {
+            toggle.update(cx, |state, cx| { state.held.toggle(held_candidate.clone()); (state.actions.persist_held)(state.held.0.clone(), cx); cx.notify(); });
+        } });
     let mut group = div().flex().flex_col().gap(m.space(Space::Tight));
     let row = selection_row(child(id, "select"), state, Selection::Package(key),
-        format!("Inspect package {}", held_candidate_label(candidate)), active && selected.is_none(), enabled)
+        format!("Inspect package {}", held_candidate_label(candidate)), active && selected.is_none(), inspectable)
         .px(m.space(Space::Base)).py(m.space(Space::Base))
         .bg(if active { p.tint.hsla() } else { gpui::transparent_black() }).hover(|style| style.bg(p.tint))
         .child(title);
@@ -587,10 +632,11 @@ fn candidate_view(id: &ElementId, candidate: &Candidate, active: bool, selected:
         let key = answer.key.clone();
         let open = Rc::clone(&actions.open_symbol);
         let open_key = key.clone();
+        let action_state = state.clone();
         let can_open = enabled && (actions.symbol_routability)(&key).available();
         let line = selection_row(child(id, format!("answer-{}", answer.key)), state,
             Selection::Answer(key), format!("Inspect declaration {}{}", answer.name,
-                answer.context.as_ref().map(|context| format!(", {context}")).unwrap_or_default()), answer_selected, enabled).flex().items_start().gap(m.space(Space::Snug))
+                answer.context.as_ref().map(|context| format!(", {context}")).unwrap_or_default()), answer_selected, inspectable).flex().items_start().gap(m.space(Space::Snug))
             .pl(m.space(Space::Wide)).pr(m.space(Space::Base)).py(m.space(Space::Tight)).cursor_pointer()
             .hover(|style| style.bg(p.tint))
             .child(kind_mark(answer.kind, KindSize::Sm, p))
@@ -600,18 +646,18 @@ fn candidate_view(id: &ElementId, candidate: &Candidate, active: bool, selected:
         let line = div().flex().items_center().child(line.flex_1().min_w_0())
             .children(answer_selected.then(|| button(child(id, format!("open-answer-{}", answer.key)), "Open", m)
                 .aria_label(format!("Explore declaration {}", answer.name)).ghost().size(Control::Small).disabled(!can_open)
-                .on_click(move |window, cx| open(open_key.clone(), window, cx))));
+                .on_click(move |window, cx| { if result_action_ready(&action_state, window, cx) { open(open_key.clone(), window, cx); } })));
         group = group.child(if answer_selected { state.read(cx).reveal.selected(line) } else { line.into_any_element() });
     }
     if active && candidate.answers.len() > shown {
         let more = state.clone();
-        group = group.child(button(child(id, "more-answers"), format!("{} more matched declarations", candidate.answers.len() - shown), m).disabled(!enabled).ghost().size(Control::Small)
-            .on_click(move |_, cx| more.update(cx, |state, cx| { state.all_answers = true; cx.notify(); })));
+        group = group.child(button(child(id, "more-answers"), format!("{} more matched declarations", candidate.answers.len() - shown), m).disabled(!inspectable).ghost().size(Control::Small)
+            .on_click(move |_, cx| more.update(cx, |state, cx| { if !state.active { return; } state.all_answers = true; cx.notify(); })));
     }
     group.into_any_element()
 }
 
-fn inspector(id: &ElementId, candidate: &Candidate, answer: Option<&Answer>, _state: &Entity<State>, actions: &Actions, enabled: bool, m: &Measure, cx: &mut App) -> AnyElement {
+fn inspector(id: &ElementId, candidate: &Candidate, answer: Option<&Answer>, state: &Entity<State>, actions: &Actions, enabled: bool, m: &Measure, cx: &mut App) -> AnyElement {
     let p = cx.palette();
     let mut detail = div().flex().flex_col().gap(m.space(Space::Base)).py(m.space(Space::Base));
     let care = match &candidate.offer {
@@ -648,19 +694,22 @@ fn inspector(id: &ElementId, candidate: &Candidate, answer: Option<&Answer>, _st
         let mut actions_row = div().flex().flex_wrap().items_center().gap(m.space(Space::Base));
         let open = Rc::clone(&actions.open_symbol);
         let key = answer.key.clone();
+        let action_state = state.clone();
         actions_row = actions_row.child(button(child(id, "open"), "Explore declaration", m).primary().size(Control::Small).disabled(!enabled).icon(Icon::Trail)
-            .on_click(move |window, cx| open(key.clone(), window, cx)));
-        if answer.signature.is_some() {
+            .on_click(move |window, cx| { if result_action_ready(&action_state, window, cx) { open(key.clone(), window, cx); } }));
+        if answer.source_available {
             let source = Rc::clone(&actions.open_code);
             let key = answer.key.clone();
+            let action_state = state.clone();
             actions_row = actions_row.child(button(child(id, "source-toggle"), "Code", m).aria_label(format!("Open code for {}", answer.name)).ghost().size(Control::Small).disabled(!enabled).icon(Icon::Peel)
-                .on_click(move |window, cx| source(key.clone(), window, cx)));
+                .on_click(move |window, cx| { if result_action_ready(&action_state, window, cx) { source(key.clone(), window, cx); } }));
         }
         if !candidate.key.is_empty() {
             let open = Rc::clone(&actions.open_package);
             let key = candidate.key.clone();
+            let action_state = state.clone();
             actions_row = actions_row.child(button(child(id, "open-package"), "Package", m).aria_label(format!("Explore package {}", held_candidate_label(candidate))).ghost().size(Control::Small).disabled(!enabled).icon(Icon::Package)
-                .on_click(move |window, cx| open(key.clone(), window, cx)));
+                .on_click(move |window, cx| { if result_action_ready(&action_state, window, cx) { open(key.clone(), window, cx); } }));
         }
         detail = detail.child(actions_row);
     } else {
@@ -680,8 +729,9 @@ fn inspector(id: &ElementId, candidate: &Candidate, answer: Option<&Answer>, _st
     if answer.is_none() && !candidate.key.is_empty() {
         let open = Rc::clone(&actions.open_package);
         let key = candidate.key.clone();
+        let action_state = state.clone();
         detail = detail.child(div().flex().child(button(child(id, "open-package"), "Explore package", m).primary().size(Control::Small).disabled(!enabled).icon(Icon::Package)
-            .on_click(move |window, cx| open(key.clone(), window, cx))));
+            .on_click(move |window, cx| { if result_action_ready(&action_state, window, cx) { open(key.clone(), window, cx); } })));
     }
     detail.into_any_element()
 }
