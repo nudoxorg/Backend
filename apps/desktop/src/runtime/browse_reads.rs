@@ -147,7 +147,7 @@ fn prepared_library_model(reading: &backend_present::TreeReading, links: &[TreeR
                                 version: version.clone().into(),
                                 target: None,
                                 unavailable: Some(reason.to_string().into()),
-                                source_detail: None,
+                                source_detail: destination.and_then(|link| link.source_detail.as_ref()).map(|detail| detail.to_string().into()),
                             },
                             None => LibraryReleaseLink {
                                 key,
@@ -244,7 +244,7 @@ pub fn tree_model(tree: &backend_library::browse::ProjectTree) -> TreeModel {
                 row.versions.iter().enumerate().map(|(at, version)| {
                     let reference = row.sources.get(at).and_then(Option::as_ref);
                     let source_detail = (copies.get(version.as_str()).copied().unwrap_or_default() > 1)
-                        .then(|| sources.detail(&row.name, version, reference)).flatten();
+                        .then(|| row.origins.get(at).and_then(origin_detail)).flatten();
                     TreeReleaseLink {
                         version: Arc::from(version.as_str()),
                         destination: sources.destination(&row.name, version, reference),
@@ -309,17 +309,16 @@ impl<'a> TreeSources<'a> {
             |reference| TreeDestination::Open(PackageRef::from_reference(reference.clone())),
         )
     }
+}
 
-    fn detail(&self, name: &str, version: &str, reference: Option<&backend_library::PackageReference>) -> Option<Arc<str>> {
-        let package = self.exact(name, version, reference).ok()?;
-        use backend_library::browse::PackageOrigin;
-        Some(match &package.origin {
-            PackageOrigin::Registry { source } => Arc::from(source.as_str()),
-            PackageOrigin::Git { source } => Arc::from(source.as_str()),
-            PackageOrigin::Vendored { path } => Arc::from(format!("path: {path}")),
-            PackageOrigin::Unresolved { .. } => return None,
-        })
-    }
+fn origin_detail(origin: &backend_library::browse::PackageOrigin) -> Option<Arc<str>> {
+    use backend_library::browse::PackageOrigin;
+    Some(match origin {
+        PackageOrigin::Registry { source } => Arc::from(source.as_str()),
+        PackageOrigin::Git { source } => Arc::from(source.as_str()),
+        PackageOrigin::Vendored { path } => Arc::from(format!("path: {path}")),
+        PackageOrigin::Unresolved { source } => source.as_deref().map(Arc::from)?,
+    })
 }
 
 /// Merge real package identities once, off the UI thread. Exact names lead;

@@ -1191,20 +1191,20 @@ fn row_view(
                 .ghost()
                 .on_click(move |window, cx| open(target.clone(), window, cx)),
             );
-            if let Some(source) = &release.source_detail {
-                detail = detail.child(words(
-                    child(child(id, release.key.clone()), "source-detail"),
-                    source.clone(),
-                    ty::CAPTION,
-                    palette.ink3,
-                    measure,
-                    TextOverflow::Wrap,
-                ));
-            }
         } else if let Some(reason) = &release.unavailable {
             detail = detail.child(words(
                 child(id, release.key.clone()),
                 format!("{} · {reason}", release.version).into(),
+                ty::CAPTION,
+                palette.ink3,
+                measure,
+                TextOverflow::Wrap,
+            ));
+        }
+        if let Some(source) = &release.source_detail {
+            detail = detail.child(words(
+                child(child(id, release.key.clone()), "source-detail"),
+                source.clone(),
                 ty::CAPTION,
                 palette.ink3,
                 measure,

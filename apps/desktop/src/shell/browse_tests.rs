@@ -54,6 +54,7 @@ fn library_release_actions_keep_exact_source_and_row_keys_survive_reorder() {
         description: None,
         versions: vec!["1.0.0".to_owned()].into_boxed_slice(),
         sources: vec![None].into_boxed_slice(),
+        origins: vec![backend_library::browse::PackageOrigin::Unresolved { source: None }].into_boxed_slice(),
     };
     let first_key = crate::runtime::browse_reads::row_key(&row, roles[0].rows.first());
     let alternate_key = crate::runtime::browse_reads::row_key(&row, roles[1].rows.first());

@@ -6,7 +6,7 @@
 
 use backend_library::browse::{
     DirectDependency, Duplicate, LockedInactiveCoverage, LockfileGraphCoverage,
-    LockfileWorkspaceMembership, MemberEdge, ProjectTree, RoleEvidence, RoleId,
+    LockfileWorkspaceMembership, MemberEdge, PackageOrigin, ProjectTree, RoleEvidence, RoleId,
     TreeAdvisory, TreeSource, WhyHop,
 };
 use backend_library::{AdvisoryCoverage, AdvisoryStatus, FreshnessState, PackageReference};
@@ -87,6 +87,9 @@ pub struct RowReading {
     /// Exact owner-issued source reference for each resolved release, in
     /// `versions` order. Equal version text may still name distinct sources.
     pub sources: Box<[Option<PackageReference>]>,
+    /// Exact source spelling for each release, even when a file receipt is
+    /// unavailable and its action must remain disabled.
+    pub origins: Box<[PackageOrigin]>,
 }
 
 /// A package present more than once.
@@ -389,6 +392,7 @@ fn row(dependency: &DirectDependency, twice: &BTreeMap<&str, &Duplicate>) -> Row
         description: dependency.description.clone(),
         versions: dependency.versions.clone(),
         sources: dependency.package_references.clone(),
+        origins: dependency.package_origins.clone(),
     }
 }
 
