@@ -210,6 +210,7 @@ impl PageReader for Fixture {
                 PageValue::Source(SourceView {
                     symbol: decl(&name, DeclarationKind::Enum),
                     file: Known::Known(Arc::from("glyph.rs")),
+                    editor_path: Known::unknown(GapReason::NotServed, "fixture has no editor authority"),
                     text: Known::Known(SourceText {
                         text: Arc::from(format!("// lead\npub enum {name} {{\n    Typed,\n}}\n// tail\n")),
                         first_line: 137,

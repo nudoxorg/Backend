@@ -36,6 +36,7 @@ use backend_library::{
 };
 use backend_present::{Engine, Probe};
 use std::collections::VecDeque;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
@@ -1193,7 +1194,14 @@ fn compose_symbol(
 
 /// Reads a local project file for the source view. Only a local package's
 /// own files are read, and only by package-relative path.
-fn local_file(package: &PackageRef, path: &str) -> Option<String> {
+struct LocalSourceFile {
+    text: String,
+    canonical_path: String,
+}
+
+const MAX_LOCAL_SOURCE_FILE_BYTES: u64 = 4 * 1024 * 1024;
+
+fn local_file(package: &PackageRef, path: &str) -> Option<LocalSourceFile> {
     if !package.is_local() || path.split(['/', '\\']).any(|part| part == "..") {
         return None;
     }
@@ -1201,12 +1209,30 @@ fn local_file(package: &PackageRef, path: &str) -> Option<String> {
     if !root.is_absolute() {
         return None;
     }
-    let file = root.join(path);
-    let metadata = std::fs::metadata(&file).ok()?;
-    if !metadata.is_file() || metadata.len() > 4 * 1024 * 1024 {
+    let root = root.canonicalize().ok()?;
+    let file = root.join(path).canonicalize().ok()?;
+    if !file.starts_with(&root) {
         return None;
     }
-    std::fs::read_to_string(file).ok()
+    let metadata = std::fs::metadata(&file).ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_LOCAL_SOURCE_FILE_BYTES {
+        return None;
+    }
+    let canonical_path = file.to_str()?.to_owned();
+    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).ok()?);
+    std::fs::File::open(file)
+        .ok()?
+        .take(MAX_LOCAL_SOURCE_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if u64::try_from(bytes.len()).ok()? > MAX_LOCAL_SOURCE_FILE_BYTES {
+        return None;
+    }
+    let text = String::from_utf8(bytes).ok()?;
+    Some(LocalSourceFile {
+        text,
+        canonical_path,
+    })
 }
 
 fn compose_source(
@@ -1227,14 +1253,15 @@ fn compose_source(
     let outline_index = outline.as_ref().and_then(|result| result.as_ref().ok());
     let references =
         page_mapping::references(references_reply.as_ref(), outline_index.map(AsRef::as_ref));
-    let text = match (&package, document.location.captured()) {
+    let local_file = match (&package, document.location.captured()) {
         (Some(package), Some(location)) => local_file(package, location.path()),
         _ => None,
     };
     Ok(PageValue::Source(page_mapping::source_view(
         symbol,
         &document,
-        text.as_deref(),
+        local_file.as_ref().map(|file| file.text.as_str()),
+        local_file.as_ref().map(|file| file.canonical_path.as_str()),
         &references,
         outline_index.map(AsRef::as_ref),
     )))
@@ -1783,5 +1810,38 @@ mod tests {
         assert_eq!(signals, 8, "one wake per finished read");
         assert!(receiver.try_take(), "the burst left one pending turn");
         assert!(!receiver.try_take(), "and only one");
+    }
+
+    #[test]
+    fn editor_paths_are_canonical_and_cannot_escape_the_local_package() {
+        static NEXT: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "nudox-source-path-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(root.join("src")).expect("package source directory");
+        std::fs::write(root.join("src/lib.rs"), "pub fn owned() {}\n").expect("source file");
+        let package = PackageRef::parse(root.to_str().expect("UTF-8 temp path")).expect("package");
+        let opened = local_file(&package, "src/lib.rs").expect("local source");
+        assert_eq!(opened.text, "pub fn owned() {}\n");
+        let expected = root
+            .join("src/lib.rs")
+            .canonicalize()
+            .expect("canonical source");
+        assert_eq!(std::path::Path::new(&opened.canonical_path), expected.as_path());
+        assert!(local_file(&package, "../outside.rs").is_none());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let outside = root.with_extension("outside.rs");
+            std::fs::write(&outside, "pub fn outside() {}\n").expect("outside source");
+            symlink(&outside, root.join("src/outside.rs")).expect("source symlink");
+            assert!(local_file(&package, "src/outside.rs").is_none());
+            std::fs::remove_file(outside).expect("remove outside fixture");
+        }
+        std::fs::remove_dir_all(root).expect("remove source fixture");
     }
 }

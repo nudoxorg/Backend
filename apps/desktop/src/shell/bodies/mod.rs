@@ -105,6 +105,8 @@ pub(crate) struct Ctx<'a> {
     pub targets: &'a Targets,
     /// Native reading viewport for keyboard-only reveal of a chosen row.
     pub reader_scroll: gpui::ScrollHandle,
+    /// Signal the reader to reveal an explicitly routed source line.
+    pub reader_reveal: std::rc::Rc<std::cell::Cell<bool>>,
     /// The page's lens (tab) for declaration pages.
     pub lens: Lens,
     /// The text each body renders, recorded for content assertions.

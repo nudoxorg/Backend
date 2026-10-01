@@ -68,6 +68,10 @@ pub struct SourceView {
     pub symbol: DeclRef,
     /// Package-relative file path.
     pub file: Known<Arc<str>>,
+    /// Canonical local file path the worker verified against the indexed
+    /// excerpt, when an editor launch can be safely offered.
+    #[serde(default = "editor_path_unavailable")]
+    pub editor_path: Known<Arc<str>>,
     /// Source text.
     pub text: Known<SourceText>,
     /// Lines the declaration spans.
@@ -78,4 +82,11 @@ pub struct SourceView {
     pub uses: Known<Arc<[ByteSpan]>>,
     /// Uses of this declaration in other files, as the producer spelled them.
     pub uses_elsewhere: Arc<[FileSpan]>,
+}
+
+fn editor_path_unavailable() -> Known<Arc<str>> {
+    Known::unknown(
+        super::common::GapReason::NotRecorded,
+        "no worker-verified local editor path was recorded",
+    )
 }

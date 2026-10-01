@@ -1479,6 +1479,7 @@ pub fn source_view(
     coordinate: &SymbolRef,
     document: &Document,
     local_file: Option<&str>,
+    local_editor_path: Option<&str>,
     references: &Known<Arc<[ReferenceSite]>>,
     outline: Option<&OutlineIndex>,
 ) -> SourceView {
@@ -1514,6 +1515,13 @@ pub fn source_view(
             verify_local_file(file_text, &excerpt.text, location.line).then_some(file_text)
         }
         _ => None,
+    };
+    let editor_path = match (verified, local_editor_path) {
+        (Some(_), Some(path)) if !path.is_empty() => Known::Known(Arc::from(path)),
+        _ => Known::unknown(
+            GapReason::NotServed,
+            "a verified local source file is unavailable for editor handoff",
+        ),
     };
     let text = match (verified, &excerpt, &location) {
         (Some(file_text), Some(excerpt), _) => Known::Known(SourceText {
@@ -1579,6 +1587,7 @@ pub fn source_view(
     SourceView {
         symbol,
         file,
+        editor_path,
         text,
         declaration,
         identifiers,
@@ -3115,13 +3124,14 @@ mod tests {
             }),
             scope: ReferenceScope::Local,
         }]));
-        let view = source_view(&coordinate, &document, Some(file), &uses, Some(&outline));
+        let view = source_view(&coordinate, &document, Some(file), Some("/fixture/page.rs"), &uses, Some(&outline));
         let text = view.text.known().expect("source text");
         assert_eq!(text.origin, SourceOrigin::LocalFile);
         assert_eq!(text.first_line, 1);
         assert_eq!(text.text.as_ref(), file);
         assert_eq!(view.declaration.known(), Some(&LineSpan { first: 3, last: 5 }));
         assert_eq!(view.file.known().map(AsRef::as_ref), Some("page.rs"));
+        assert_eq!(view.editor_path.known().map(AsRef::as_ref), Some("/fixture/page.rs"));
         let linked = view
             .identifiers
             .known()
@@ -3142,9 +3152,10 @@ mod tests {
 
         // A file that no longer matches the excerpt is not trusted.
         let stale = "// edited since indexing\n";
-        let view = source_view(&coordinate, &document, Some(stale), &Known::Known(Arc::from([])), Some(&outline));
+        let view = source_view(&coordinate, &document, Some(stale), Some("/fixture/page.rs"), &Known::Known(Arc::from([])), Some(&outline));
         let text = view.text.known().expect("excerpt text");
         assert_eq!(text.origin, SourceOrigin::Excerpt);
+        assert!(view.editor_path.known().is_none());
         assert_eq!(text.first_line, 3);
         assert_eq!(view.uses.gap().map(|gap| gap.reason), Some(GapReason::NotServed));
     }

@@ -375,6 +375,10 @@ pub(crate) struct Reader {
     pub(crate) targets: Targets,
     hover: HoverIntent,
     scroll: ScrollHandle,
+    /// Recent viewport offsets keyed by exact route and overlay.
+    scroll_memory: Vec<RouteScroll>,
+    /// Applied only after the destination content can paint.
+    pending_scroll_restore: Option<(u64, Point<Pixels>)>,
     /// Bring the focused target into view in the next frame's prepaint (a
     /// keyboard walk, or a reflow that may have moved it).
     reveal: Rc<Cell<bool>>,
@@ -433,6 +437,8 @@ impl Reader {
             targets: Targets::named("reader"),
             hover: HoverIntent::default(),
             scroll: ScrollHandle::new(),
+            scroll_memory: Vec::new(),
+            pending_scroll_restore: None,
             reveal: Rc::new(Cell::new(false)),
             laid_out: None,
             lens: Lens::Reference,
@@ -630,6 +636,9 @@ impl Reader {
         // from A to C, not a skeleton for B leaving and one for C arriving.
         // Drop each unpainted place (the first one, before any frame, stays:
         // there is nothing older) and arrive from the last one painted.
+        if let Some(current) = self.places.last().filter(|place| Some(place.key) == self.painted) {
+            self.remember_scroll(current.route.clone(), current.overlay, self.scroll.offset());
+        }
         let collapsed = drop_unpainted(&mut self.places, self.painted);
         if collapsed && let Some(last) = self.places.last() {
             self.route = last.route.clone();
@@ -672,13 +681,43 @@ impl Reader {
         });
         if !view_switch {
             self.lens = Lens::Reference;
-            // Back puts the parent where it was, so its row is where you left it.
-            let back = arrival.as_ref().filter(|arrival| arrival.verb == Verb::Close);
-            let scroll = back.and_then(|_| self.places.iter().rev().nth(1)).and_then(|leaving| leaving.opened.clone().flatten());
-            self.scroll.set_offset(scroll.map_or(point(px(0.0), px(0.0)), |origin| origin.scroll));
         }
+        // Back puts the parent where it was, so its opened row takes
+        // precedence. Other visits restore this exact route's recent offset.
+        let back = arrival.as_ref().filter(|arrival| arrival.verb == Verb::Close);
+        let opened = back
+            .and_then(|_| self.places.iter().rev().nth(1))
+            .and_then(|leaving| leaving.opened.clone().flatten());
+        let restored = opened
+            .map(|origin| origin.scroll)
+            .or_else(|| self.saved_scroll(next, overlay));
+        self.pending_scroll_restore = Some((
+            self.descents,
+            restored.unwrap_or(point(px(0.0), px(0.0))),
+        ));
         self.arrival = arrival.map(|arrival| Arrival { key: self.descents, ..arrival });
         self.targets.new_page();
+    }
+
+    fn remember_scroll(&mut self, route: Route, overlay: Option<Overlay>, offset: Point<Pixels>) {
+        self.scroll_memory
+            .retain(|saved| saved.route != route || saved.overlay != overlay);
+        self.scroll_memory.push(RouteScroll { route, overlay, offset });
+        if self.scroll_memory.len() > MAX_ROUTE_SCROLL_MEMORY {
+            let excess = self.scroll_memory.len() - MAX_ROUTE_SCROLL_MEMORY;
+            self.scroll_memory.drain(..excess);
+        }
+    }
+
+    fn saved_scroll(&mut self, route: &Route, overlay: Option<Overlay>) -> Option<Point<Pixels>> {
+        let index = self
+            .scroll_memory
+            .iter()
+            .position(|saved| saved.route == *route && saved.overlay == overlay)?;
+        let saved = self.scroll_memory.remove(index);
+        let offset = saved.offset;
+        self.scroll_memory.push(saved);
+        Some(offset)
     }
 
     /// Which plate move a place change plays, and what it needs from the
@@ -1175,8 +1214,14 @@ fn content_loaded(store: &DataStore, keys: &[PageKey]) -> bool {
         PageKey::Symbol(symbol) => store.symbol(symbol).is_loaded(),
         PageKey::Package(package) => store.package(package).is_loaded(),
         PageKey::Orbit => store.orbit().is_loaded(),
-        PageKey::Source(_) | PageKey::Health | PageKey::Browse(_) | PageKey::Search(_) => true,
+        PageKey::Source(symbol) => store.source(symbol).is_loaded(),
+        PageKey::Health | PageKey::Browse(_) | PageKey::Search(_) => true,
     })
+}
+
+/// Stable shared-element key for a one-based source row.
+pub(crate) fn source_line_shared_id(line: u32) -> SharedString {
+    format!("source-line-{line}").into()
 }
 
 fn drop_unpainted(places: &mut Vec<Place>, painted: Option<u64>) -> bool {
@@ -1204,6 +1249,15 @@ struct Place {
     /// Reached by a hop forward (an Open, not a Back): a declaration page
     /// rings the declaration it came from.
     hop: bool,
+}
+
+const MAX_ROUTE_SCROLL_MEMORY: usize = 64;
+
+#[derive(Clone)]
+struct RouteScroll {
+    route: Route,
+    overlay: Option<Overlay>,
+    offset: Point<Pixels>,
 }
 
 /// The reader's column geometry for one frame.
@@ -1312,6 +1366,7 @@ impl Reader {
                 links: &links,
                 targets: &targets,
                 reader_scroll: self.scroll.clone(),
+                reader_reveal: Rc::clone(&self.reveal),
                 lens: if current { self.lens } else { place.lens },
                 said: &mut said,
                 hero: &mut hero,
@@ -1388,7 +1443,20 @@ impl Render for Reader {
         // way" is not a page that can leave (a route that supersedes it cuts
         // past it, and the change in flight goes on to the newer route).
         if content_loaded(self.links.store.read(cx), &place_keys(&current.route, current.overlay)) {
+            if let Some((key, offset)) = self.pending_scroll_restore.take() {
+                if key == current.key {
+                    self.scroll.set_offset(offset);
+                } else {
+                    self.pending_scroll_restore = Some((key, offset));
+                }
+            }
             self.painted = Some(current.key);
+        } else if self
+            .pending_scroll_restore
+            .as_ref()
+            .is_some_and(|(key, _)| *key != current.key)
+        {
+            self.pending_scroll_restore = None;
         }
         // The place change in flight, this frame (window space).
         let reader = self.frame.get();
