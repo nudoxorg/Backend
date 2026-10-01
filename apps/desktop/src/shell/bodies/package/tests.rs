@@ -32,51 +32,6 @@ fn has(ledger: &Ledger, part: &str) -> bool {
     !said(ledger, part).is_empty()
 }
 
-#[test]
-fn rustdoc_filename_resolves_only_a_complete_unique_kind_matched_outline() {
-    let dossier = dossier();
-    let outline = dossier.outline.known().expect("fixture outline");
-    assert!(
-        super::rustdoc_symbol_route(
-            "outline/struct.Outline.html",
-            Some(outline),
-            &dossier.package,
-        )
-        .is_some()
-    );
-    assert!(
-        super::rustdoc_symbol_route(
-            "docs/nonexistent-module/struct.Outline.html",
-            Some(outline),
-            &dossier.package,
-        )
-        .is_none()
-    );
-    assert!(
-        super::rustdoc_symbol_route(
-            "missing/struct.Outline.html",
-            Some(outline),
-            &dossier.package,
-        )
-        .is_none()
-    );
-    assert!(
-        super::rustdoc_symbol_route("struct.RelationLabel.html", Some(outline), &dossier.package,)
-            .is_none()
-    );
-
-    let mut partial = outline.clone();
-    partial.complete = false;
-    assert!(
-        super::rustdoc_symbol_route(
-            "outline/struct.Outline.html",
-            Some(&partial),
-            &dossier.package,
-        )
-        .is_none()
-    );
-}
-
 struct ReadmeActions;
 
 impl crate::runtime::reads::PageReader for ReadmeActions {

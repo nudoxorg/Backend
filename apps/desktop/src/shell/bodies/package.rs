@@ -961,34 +961,6 @@ const fn hex(byte: u8) -> Option<u8> {
     }
 }
 
-#[cfg(test)]
-fn rustdoc_symbol_route(
-    destination: &str,
-    outline: Option<&crate::model::pages::OutlineTree>,
-    package: &PackageRef,
-) -> Option<Route> {
-    let path = destination.split(['#', '?']).next()?;
-    if path.starts_with('/')
-        || path.contains('\\')
-        || path
-            .split('/')
-            .any(|part| part.is_empty() || part == "." || part == "..")
-        || path.contains("://")
-    {
-        return None;
-    }
-    let components = path.split('/').collect::<Vec<_>>();
-    let leaf = *components.last()?;
-    let stem = leaf.strip_suffix(".html")?;
-    let (name, kind) = rustdoc_item_name(stem);
-    let declaration = outline?.complete_names()?.unique_rustdoc_path(
-        &components[..components.len().saturating_sub(1)],
-        name,
-        kind,
-    )?;
-    crate::shell::kit::symbol_route(package.as_str(), &declaration.decl.coordinate)
-}
-
 fn rustdoc_item_name(stem: &str) -> (&str, Option<backend_library::DeclarationKind>) {
     use backend_library::DeclarationKind as Kind;
 

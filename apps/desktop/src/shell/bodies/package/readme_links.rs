@@ -624,6 +624,7 @@ mod tests {
             link("outline/struct.Outline.html#method", None, None),
             link("missing/struct.Outline.html", None, None),
             link("outline/index.html", None, None),
+            link("struct.RelationLabel.html", None, None),
         ]
         .into();
         let complete = Plan::build(
@@ -637,6 +638,7 @@ mod tests {
         assert!(matches!(complete.row(1), Outcome::Unavailable(_)));
         assert!(matches!(complete.row(2), Outcome::Unavailable(_)));
         assert!(matches!(complete.row(3), Outcome::Unavailable(_)));
+        assert!(matches!(complete.row(4), Outcome::Unavailable(_)));
         let mut partial = dossier.outline.known().expect("fixture outline").clone();
         partial.complete = false;
         let partial = Plan::build(
