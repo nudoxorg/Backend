@@ -5,7 +5,7 @@
 pub(crate) mod identity;
 use identity::{IdentityAdapter, MatchFailure, ResolvedSymbol};
 
-use crate::core::{Activity, Resource, ResourceTerminal, VersionedRoot};
+use crate::core::{Activity, ProducerAuthority, Resource, ResourceTerminal, VersionedRoot};
 use crate::model::pages::{PackageRef, PageKey, SearchContinuation, SearchQuery};
 use crate::navigation::{Intent, Route, View};
 use crate::runtime::indexed_world::{self, Coverage, Key as WorldKey};
@@ -13,7 +13,7 @@ use crate::runtime::store::{Branch, StoreEvent, route_symbol};
 use crate::shell::region::Links;
 #[cfg(test)]
 use facet::graph::World;
-use facet::graph::{GraphView, NodeId, Start};
+use facet::graph::{GraphView, GraphWorkStatus as FacetGraphWorkStatus, NodeId, Start};
 use gpui::{
     App, AppContext as _, Context, Entity, Focusable as _, IntoElement, ParentElement, Render,
     Styled, Subscription, Window, div, px,
@@ -25,6 +25,25 @@ use std::sync::Arc;
 pub(crate) use crate::runtime::ui_graph::GraphDestination as OpenView;
 use crate::runtime::ui_graph::GraphViewRequest;
 
+/// A graph-owned operation that can keep a visible map from settling.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MapWorkStatus {
+    /// The exact indexed-world projection is being read by the Memo.
+    ProjectionRead,
+    /// The requested projection waits for an occupied bounded Memo slot.
+    ProjectionSlot,
+    /// A completed projection is waiting for its `GraphView` entity to mount.
+    SceneMount,
+    /// The mounted graph is preparing its discovery index.
+    Discovery,
+    /// The mounted graph is computing a semantic query.
+    Search,
+    /// A result awaits owner-qualified acceptance.
+    PendingAccept,
+    /// A selected symbol awaits resolution before navigation.
+    OpenRequest,
+}
+
 /// One map for the reader's lifetime: its rig survives page/code visits.
 pub(crate) struct Map {
     links: Links,
@@ -35,6 +54,9 @@ pub(crate) struct Map {
         Coverage,
     )>,
     world_key: Option<WorldKey>,
+    /// The bounded Memo has deferred this key until another projection read
+    /// releases a slot. It is pending work, not a terminal load error.
+    projection_waiting: bool,
     projection_origin: Option<indexed_world::Origin>,
     coverage: Option<Coverage>,
     identities: Option<Arc<IdentityAdapter>>,
@@ -157,7 +179,8 @@ impl Map {
                     let snapshot = map.links.snapshot(cx);
                     if owner.read(cx).graph_view_generation() == request.sequence
                         && snapshot.route() == &request.route
-                        && snapshot.key() == request.root
+                        && request.root.authority() == request.authority
+                        && snapshot.key().authority() == request.authority
                         && snapshot.overlay().is_none()
                         && map.visible
                     {
@@ -172,6 +195,7 @@ impl Map {
             graph: None,
             ready_scene,
             world_key,
+            projection_waiting: false,
             projection_origin: None,
             coverage: None,
             identities: None,
@@ -200,6 +224,7 @@ impl Map {
         self.graph = None;
         self.ready_scene = None;
         self.world_key = None;
+        self.projection_waiting = false;
         self.projection_origin = None;
         self.coverage = None;
         self.identities = None;
@@ -244,20 +269,30 @@ impl Map {
             self.projection_origin = None;
             self.resolved.clear();
             self.world_key = Some(key.clone());
+            self.projection_waiting = false;
             self.load_error = None;
         }
+        // Keep the latest diagnostic observation even when the canonical
+        // producer authority (and therefore the scene cache key) is stable.
+        self.world_key = Some(key.clone());
         if self.graph.is_some() || self.ready_scene.is_some() {
             return;
         }
         match indexed_world::get(&key, cx) {
-            indexed_world::State::Reading => self.load_error = None,
+            indexed_world::State::Reading => {
+                self.projection_waiting = false;
+                self.load_error = None;
+            }
             indexed_world::State::Waiting => {
+                self.projection_waiting = true;
                 self.load_error = Some("Waiting for an available graph-read slot…".to_owned());
             }
             indexed_world::State::Unavailable(reason) => {
+                self.projection_waiting = false;
                 self.load_error = Some(reason.to_string());
             }
             indexed_world::State::Ready(projection) => {
+                self.projection_waiting = false;
                 self.load_error = None;
                 self.projection_origin = Some(projection.origin.clone());
                 self.ready_scene = Some((
@@ -274,13 +309,38 @@ impl Map {
     pub(crate) fn ready(&self, cx: &App) -> bool {
         self.pending.is_none()
             && (!self.visible
-                || self.load_error.is_some()
+                || (self.load_error.is_some() && !self.projection_waiting)
                 || (self.ready_scene.is_none()
                     && self.pending.is_none()
                     && self
                         .graph
                         .as_ref()
                         .is_some_and(|graph| graph.read(cx).ready())))
+    }
+
+    /// The exact graph stage keeping this map from becoming ready, if any.
+    pub(crate) fn work_status(&self, cx: &App) -> Option<MapWorkStatus> {
+        if self.pending.is_some() {
+            return Some(MapWorkStatus::OpenRequest);
+        }
+        if self.projection_waiting {
+            return Some(MapWorkStatus::ProjectionSlot);
+        }
+        if self.ready_scene.is_some() {
+            return Some(MapWorkStatus::SceneMount);
+        }
+        if let Some(graph) = &self.graph {
+            return match graph.read(cx).work_status() {
+                FacetGraphWorkStatus::Discovery => Some(MapWorkStatus::Discovery),
+                FacetGraphWorkStatus::Search => Some(MapWorkStatus::Search),
+                FacetGraphWorkStatus::PendingAccept => Some(MapWorkStatus::PendingAccept),
+                FacetGraphWorkStatus::Idle => None,
+            };
+        }
+        self.world_key
+            .as_ref()
+            .filter(|key| indexed_world::read_in_flight(key, cx))
+            .map(|_| MapWorkStatus::ProjectionRead)
     }
 
     pub(crate) fn report(&self, cx: &App) -> String {
@@ -480,7 +540,10 @@ impl Map {
         let Some(page) = resource.loaded_value() else {
             return;
         };
-        if resource.value_root() != Some(self.links.snapshot(cx).key()) {
+        if !resource
+            .value_root()
+            .is_some_and(|root| root.same_authority(self.links.snapshot(cx).key()))
+        {
             return;
         }
         let Some(identities) = &self.identities else {
@@ -608,7 +671,10 @@ impl Map {
                     let package = crate::runtime::store::route_package(snapshot.route())?;
                     let store = self.links.store.read(cx);
                     let resource = store.package(&package);
-                    if resource.value_root() != Some(snapshot.key()) {
+                    if !resource
+                        .value_root()
+                        .is_some_and(|root| root.same_authority(snapshot.key()))
+                    {
                         return None;
                     }
                     let tree = resource.loaded_value()?.outline.known()?;
@@ -661,17 +727,19 @@ impl Map {
         let snapshot = self.links.snapshot(cx);
         CallbackBasis {
             route: snapshot.route().clone(),
-            root: snapshot.key(),
+            authority: snapshot.key().authority(),
             generation: self.open_generation,
         }
     }
 
     fn callback_current(&self, basis: &CallbackBasis, cx: &App) -> bool {
         let snapshot = self.links.snapshot(cx);
-        basis.generation == self.open_generation
-            && basis.route == *snapshot.route()
-            && basis.root == snapshot.key()
-            && snapshot.overlay().is_none()
+        basis.matches(
+            self.open_generation,
+            snapshot.route(),
+            snapshot.key().authority(),
+            snapshot.overlay().is_some(),
+        )
     }
 
     fn peek_action(
@@ -770,6 +838,7 @@ impl Map {
             query: query.clone(),
             route: snapshot.route().clone(),
             root: snapshot.key(),
+            authority: snapshot.key().authority(),
         });
         self.links.store.update(cx, |store, cx| {
             store.ensure(PageKey::Search(query), cx);
@@ -945,7 +1014,10 @@ pub(crate) fn open_value<T>(
         ResourceTerminal::Unavailable(_) => {
             Err("The local index cannot resolve this graph symbol.".into())
         }
-        ResourceTerminal::Complete if resource.value_root() == Some(root) => {
+        ResourceTerminal::Complete
+            if resource
+                .value_root()
+                .is_some_and(|at| at.authority() == root.authority()) =>
             Ok(resource.loaded_value())
         }
         ResourceTerminal::Complete => {
@@ -977,8 +1049,23 @@ enum OpenOrigin {
 #[derive(Clone)]
 struct CallbackBasis {
     route: Route,
-    root: VersionedRoot,
+    authority: ProducerAuthority,
     generation: u64,
+}
+
+impl CallbackBasis {
+    fn matches(
+        &self,
+        generation: u64,
+        route: &Route,
+        authority: ProducerAuthority,
+        has_overlay: bool,
+    ) -> bool {
+        self.generation == generation
+            && self.route == *route
+            && self.authority == authority
+            && !has_overlay
+    }
 }
 
 /// An open belongs to the exact visible route, root and focused symbol.
@@ -994,7 +1081,9 @@ struct OpenRequest {
     source_at_open: Option<gpui::Bounds<gpui::Pixels>>,
     query: SearchQuery,
     route: Route,
+    /// Diagnostic root metadata is kept separately from the canonical key.
     root: VersionedRoot,
+    authority: ProducerAuthority,
 }
 
 impl OpenRequest {
@@ -1008,7 +1097,7 @@ impl OpenRequest {
     ) -> bool {
         self.generation == generation
             && self.route == *route
-            && self.root == root
+            && self.authority == root.authority()
             && focus == self.focus_at_open
             && visible
             && (self.origin == OpenOrigin::Peek || is_graph(route))
@@ -1366,7 +1455,17 @@ mod tests {
             1,
         );
         let r2 = r1.with_generation(2);
+        let observed_r1 = VersionedRoot::from_revision(
+            r1.producer_epoch(),
+            r1.revision(),
+            r1.observation().saturating_add(1),
+        );
         let old = Resource::loaded_at(7_u32, r1);
+        assert_eq!(
+            open_value(&old, observed_r1),
+            Ok(Some(&7)),
+            "a same-authority observation update keeps a completed result current"
+        );
         assert_eq!(open_value(&old.clone().waiting(), r2), Ok(None));
         let failed = old
             .clone()
@@ -1394,6 +1493,30 @@ mod tests {
             open_value(&Resource::loaded_at(9_u32, r2), r2),
             Ok(Some(&9))
         );
+        let changed_epoch = VersionedRoot::from_revision(
+            r1.producer_epoch().saturating_add(1),
+            r1.revision(),
+            r1.observation(),
+        );
+        let changed_cursor = VersionedRoot::from_revision(
+            r1.producer_epoch(),
+            backend_library::Cursor::at(r1.root(), r1.generation().saturating_add(1)),
+            r1.observation(),
+        );
+        let changed_root = VersionedRoot::from_revision(
+            r1.producer_epoch(),
+            backend_library::Cursor::at(
+                backend_library::view_state_root(&[("graph".into(), "other-resource-root".into())]),
+                r1.generation(),
+            ),
+            r1.observation(),
+        );
+        for changed in [changed_epoch, changed_cursor, changed_root] {
+            assert!(
+                open_value(&old, changed).is_err(),
+                "a resource cannot cross a different root, epoch, or cursor"
+            );
+        }
         let unavailable = old.mark_unavailable(UnavailableReason::Unsupported);
         assert!(
             open_value(&unavailable, r2).is_err(),
@@ -1435,6 +1558,28 @@ mod tests {
     }
 
     #[test]
+    fn deferred_graph_callback_uses_exact_authority_and_ignores_observation() {
+        let root = VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("graph".to_owned(), "callback".to_owned())]),
+            2,
+        );
+        let observed_root = VersionedRoot::from_revision(
+            root.producer_epoch(),
+            root.revision(),
+            root.observation().saturating_add(8),
+        );
+        let basis = CallbackBasis {
+            route: Route::World,
+            authority: root.authority(),
+            generation: 4,
+        };
+        assert!(basis.matches(4, &Route::World, observed_root.authority(), false));
+        assert!(!basis.matches(5, &Route::World, root.authority(), false));
+        assert!(!basis.matches(4, &Route::World, root.with_generation(2).authority(), false));
+        assert!(!basis.matches(4, &Route::World, root.authority(), true));
+    }
+
+    #[test]
     fn an_open_rejects_changed_focus_route_root_visibility_or_generation() {
         let root = VersionedRoot::synthetic(
             backend_library::view_state_root(&[("graph".to_owned(), "requests".to_owned())]),
@@ -1451,8 +1596,18 @@ mod tests {
             query: SearchQuery::new("Value", 200).expect("query"),
             route: Route::World,
             root,
+            authority: root.authority(),
         };
         assert!(request.accepts(5, &Route::World, root, Some(7), true));
+        let observed_root = VersionedRoot::from_revision(
+            root.producer_epoch(),
+            root.revision(),
+            root.observation().saturating_add(1),
+        );
+        assert!(
+            request.accepts(5, &Route::World, observed_root, Some(7), true),
+            "diagnostic observation changes do not stale a callback for the same authority"
+        );
         assert!(
             !request.accepts(6, &Route::World, root, Some(7), true),
             "a newer request supersedes the previous one"
@@ -1469,6 +1624,30 @@ mod tests {
             !request.accepts(5, &Route::World, root.with_generation(2), Some(7), true),
             "a retained last-good read is stale"
         );
+        let changed_epoch = VersionedRoot::from_revision(
+            root.producer_epoch().saturating_add(1),
+            root.revision(),
+            root.observation(),
+        );
+        let changed_cursor = VersionedRoot::from_revision(
+            root.producer_epoch(),
+            backend_library::Cursor::at(root.root(), root.generation().saturating_add(1)),
+            root.observation(),
+        );
+        let changed_root = VersionedRoot::from_revision(
+            root.producer_epoch(),
+            backend_library::Cursor::at(
+                backend_library::view_state_root(&[("graph".to_owned(), "other-root".to_owned())]),
+                root.generation(),
+            ),
+            root.observation(),
+        );
+        for changed in [changed_epoch, changed_cursor, changed_root] {
+            assert!(
+                !request.accepts(5, &Route::World, changed, Some(7), true),
+                "changed producer authority cannot complete an old callback"
+            );
+        }
         assert!(!request.accepts(
             5,
             &Route::Orbit(crate::navigation::OrbitRoute::Home),

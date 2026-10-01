@@ -35,4 +35,4 @@ pub(crate) mod gallery;
 
 pub use layout::Layout;
 pub use model::{Edge, Kind, Module, Node, NodeId, Package, Rel, World};
-pub use view::{GraphView, Start};
+pub use view::{GraphView, GraphWorkStatus, Start};

@@ -388,6 +388,18 @@ where
             .count()
     }
 
+    /// Whether this exact key has background work that has not landed yet.
+    /// Unlike [`Self::reading`], this lets a view report only the work that
+    /// keeps its own result from becoming ready.
+    pub(crate) fn is_reading(&self, key: &K) -> bool {
+        self.shared
+            .inner
+            .borrow()
+            .entries
+            .get(key)
+            .is_some_and(|entry| matches!(entry.state, State::Reading))
+    }
+
     /// How many keys are kept.
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {

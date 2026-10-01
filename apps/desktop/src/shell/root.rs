@@ -252,6 +252,13 @@ impl Shell {
     #[must_use]
     pub fn graph_ready(&self, cx: &App) -> bool { self.reader.read(cx).graph_ready(cx) }
 
+    pub(crate) fn graph_work_status(
+        &self,
+        cx: &App,
+    ) -> Option<crate::shell::bodies::graph::MapWorkStatus> {
+        self.reader.read(cx).graph_work_status(cx)
+    }
+
     /// The retained map's actual node count, focus and camera.
     #[must_use]
     pub fn graph_report(&self, cx: &App) -> String { self.reader.read(cx).graph_report(cx) }

@@ -474,10 +474,12 @@ impl Rig {
             let frames = self.cx.update(|window, cx| window.simulate_next_frame(cx));
             self.draw();
             let (queued, running) = self.graph.store.read_with(self.cx, |store, _| store.pool_load());
-            let asking = frames > 0
-                || self.graph.root.read_with(self.cx, |root, _| root.has_pending_work())
-                || !self.shell.read_with(self.cx, |shell, cx| shell.graph_ready(cx));
-            let reading = queued > 0 || running > 0;
+            let (graph_ready, graph_work) = self.shell.read_with(self.cx, |shell, cx| {
+                (shell.graph_ready(cx), shell.graph_work_status(cx))
+            });
+            let root_work = self.graph.root.read_with(self.cx, |root, _| root.has_pending_work());
+            let asking = settle_counts_as_asking(frames, root_work, graph_ready, graph_work);
+            let reading = queued > 0 || running > 0 || graph_work.is_some();
             if !asking && !reading {
                 self.draw();
                 return;
@@ -490,12 +492,12 @@ impl Rig {
             assert!(
                 rounds <= ROUNDS,
                 "the shell never settled: after {ROUNDS} rounds of 700 ms of virtual time it still asks for {frames} frame(s), \
-                 {queued} queued and {running} running read(s); renders so far {:?}",
+                 {queued} queued and {running} running read(s), graph ready={graph_ready}, graph work={graph_work:?}; renders so far {:?}",
                 self.counts()
             );
             assert!(
                 Instant::now() < deadline,
-                "the shell never settled: after {:?} of real time {queued} read(s) are queued and {running} running",
+                "the shell never settled: after {:?} of real time {queued} read(s) are queued, {running} running, graph ready={graph_ready}, graph work={graph_work:?}",
                 self.patience
             );
             std::thread::sleep(Duration::from_millis(2));
@@ -537,6 +539,47 @@ impl Rig {
         self.cx.simulate_keystrokes(keys);
         self.settle();
     }
+}
+
+fn settle_counts_as_asking(
+    frames: usize,
+    root_work: bool,
+    graph_ready: bool,
+    graph_work: Option<super::bodies::graph::MapWorkStatus>,
+) -> bool {
+    frames > 0 || root_work || (!graph_ready && graph_work.is_none())
+}
+
+#[test]
+fn settle_waits_for_named_graph_work_but_keeps_the_frame_and_root_watchdog() {
+    use super::bodies::graph::MapWorkStatus;
+
+    for work in [
+        MapWorkStatus::ProjectionRead,
+        MapWorkStatus::ProjectionSlot,
+        MapWorkStatus::SceneMount,
+        MapWorkStatus::Discovery,
+        MapWorkStatus::Search,
+        MapWorkStatus::PendingAccept,
+        MapWorkStatus::OpenRequest,
+    ] {
+        assert!(
+            !settle_counts_as_asking(0, false, false, Some(work)),
+            "real graph work {work:?} is governed by the patience deadline"
+        );
+    }
+    assert!(
+        settle_counts_as_asking(0, false, false, None),
+        "an unexplained unready shell still trips the round watchdog"
+    );
+    assert!(
+        settle_counts_as_asking(1, false, false, Some(MapWorkStatus::Discovery)),
+        "repeated frames remain bounded even when background work is active"
+    );
+    assert!(
+        settle_counts_as_asking(0, true, false, Some(MapWorkStatus::ProjectionRead)),
+        "root work remains bounded even when a graph read is active"
+    );
 }
 
 #[gpui::test]

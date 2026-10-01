@@ -125,9 +125,12 @@ fn the_first_ask_answers_at_once_and_the_value_lands_after(cx: &mut TestAppConte
         ),
         "the ask does not wait for the work"
     );
+    assert!(memo.is_reading(&1), "the exact requested key is pending");
+    assert!(!memo.is_reading(&2), "unrelated keys are not reported as pending");
     assert_eq!(memo.reading(), 1, "the flight is counted");
     cx.run_until_parked();
     assert_eq!(memo.reading(), 0, "and lands");
+    assert!(!memo.is_reading(&1), "a landed value is no longer pending");
     assert_eq!(
         memo.peek(&1).as_deref().map(String::as_str),
         Some("value 1")

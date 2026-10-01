@@ -11,7 +11,7 @@
 use super::coordinator::{DesktopRuntime, RuntimeEvent};
 use super::reads::ReadPool;
 use super::store::DataStore;
-use crate::core::{IntentDispatcher, SnapshotReadModel};
+use crate::core::{IntentDispatcher, ProducerAuthority, SnapshotReadModel};
 use crate::model::{AppSnapshot, PersistentState};
 use crate::navigation::{FolderPickerOutcome, Intent, OrbitRoute, PackageLane, PackageRoute, Route, View};
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, PathPromptOptions, Task};
@@ -30,7 +30,9 @@ impl GraphDestination {
 pub(crate) struct GraphViewRequest {
     pub target: GraphDestination,
     pub route: Route,
+    /// Full observation metadata retained for diagnostics.
     pub root: crate::core::VersionedRoot,
+    pub authority: ProducerAuthority,
     pub sequence: u64,
 }
 
@@ -221,6 +223,7 @@ impl UiRootEntity {
                     target: if view == View::Page { GraphDestination::Page } else { GraphDestination::Code },
                     route: snapshot.route().clone(),
                     root: snapshot.key(),
+                    authority: snapshot.key().authority(),
                     sequence: self.graph_view_generation,
                 });
             }

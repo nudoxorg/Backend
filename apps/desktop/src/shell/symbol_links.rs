@@ -3,7 +3,7 @@
 
 use super::bodies::graph::identity::{IdentityAdapter, ResolvedSymbol};
 use super::bodies::graph::open_value;
-use crate::core::{Resource, VersionedRoot};
+use crate::core::{ProducerAuthority, Resource, VersionedRoot};
 use crate::model::pages::{PackageDossier, PackageRef, SearchQuery};
 use crate::navigation::Route;
 use facet::graph::{NodeId, World};
@@ -15,6 +15,9 @@ pub(crate) struct Request {
     pub package: Option<PackageRef>,
     pub node: NodeId,
     pub route: Route,
+    /// The authority used for identity comparisons; `root` keeps the complete
+    /// observed key for diagnostics and resource checks.
+    pub authority: ProducerAuthority,
     pub root: VersionedRoot,
     pub generation: u64,
     world: Arc<World>,
@@ -45,6 +48,7 @@ impl Request {
             package,
             node,
             route,
+            authority: root.authority(),
             root,
             generation,
             world,
@@ -63,7 +67,7 @@ impl Request {
     ) -> bool {
         self.generation == generation
             && self.route == *route
-            && self.root == root
+            && self.authority == root.authority()
             && current.is_some_and(|(world, identities)| {
                 Arc::ptr_eq(&self.world, world) && Arc::ptr_eq(&self.identities, identities)
             })
@@ -148,6 +152,10 @@ mod tests {
         let request = Request::new(0, Route::World, root, 4, Arc::clone(&world), Arc::clone(&identities)).expect("link");
         let current = (world, identities);
         assert!(request.accepts(4, &Route::World, root, Some(&current)));
+        assert!(
+            request.accepts(4, &Route::World, root.observed_at(99), Some(&current)),
+            "diagnostic observation changes do not invalidate the captured owner authority"
+        );
         assert!(!request.accepts(5, &Route::World, root, Some(&current)), "returning to the same route cannot revive a cancelled request");
         assert!(!request.accepts(4, &Route::World, root.with_generation(2), Some(&current)));
         assert!(!request.accepts(4, &Route::World, root, None));

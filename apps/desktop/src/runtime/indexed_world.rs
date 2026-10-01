@@ -5,7 +5,7 @@
 //! related reads. Every read is off the UI thread, and truncation or missing
 //! relation authority remains visible in `Coverage`.
 
-use crate::core::VersionedRoot;
+use crate::core::{ProducerAuthority, VersionedRoot};
 use crate::model::pages::{PackageRef, SymbolRef};
 use crate::runtime::offload::{Answer, Cancellation, Memo};
 use crate::shell::bodies::graph::identity::{IdentityAdapter, ResolvedSymbol};
@@ -42,6 +42,9 @@ enum OwnerIdentity {
 
 #[derive(Clone)]
 pub(crate) struct Key {
+    /// Canonical scene identity; `root` below also retains diagnostic
+    /// observation metadata from the most recent request.
+    authority: ProducerAuthority,
     root: VersionedRoot,
     owner: OwnerIdentity,
     /// Keep the current project in the bounded projection when a workspace
@@ -64,7 +67,7 @@ impl std::fmt::Debug for Key {
 
 impl PartialEq for Key {
     fn eq(&self, other: &Self) -> bool {
-        self.root == other.root
+        self.authority == other.authority
             && self.owner == other.owner
             && self.preferred == other.preferred
     }
@@ -74,7 +77,7 @@ impl Eq for Key {}
 
 impl std::hash::Hash for Key {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        std::hash::Hash::hash(&self.root, state);
+        std::hash::Hash::hash(&self.authority, state);
         std::hash::Hash::hash(&self.owner, state);
         std::hash::Hash::hash(&self.preferred, state);
     }
@@ -322,6 +325,12 @@ impl Reads {
     }
 }
 
+/// Whether the exact indexed-world key still has a Memo read in flight.
+pub(crate) fn read_in_flight(key: &Key, cx: &App) -> bool {
+    cx.try_global::<Reads>()
+        .is_some_and(|reads| reads.0.is_reading(key))
+}
+
 pub(crate) enum State {
     Reading,
     Waiting,
@@ -337,7 +346,7 @@ pub(crate) fn key<T: 'static>(
     #[cfg(test)]
     let synthetic = cx
         .try_global::<TestProjection>()
-        .filter(|projection| projection.root == root)
+        .filter(|projection| projection.root.same_authority(root))
         .cloned()
         .map(Arc::new);
     #[cfg(test)]
@@ -356,8 +365,10 @@ pub(crate) fn key<T: 'static>(
         cx.set_global(Reads::new());
     }
     let memo = cx.global::<Reads>().0.clone();
-    memo.retain_keys(|previous| previous.owner == owner && previous.root == root);
+    let authority = root.authority();
+    memo.retain_keys(|previous| previous.owner == owner && previous.authority == authority);
     Some(Key {
+        authority,
         root,
         owner,
         preferred,
@@ -797,7 +808,7 @@ async fn read_synthetic(
     root: VersionedRoot,
 ) -> Result<Arc<Projection>, Arc<str>> {
     let synthetic = synthetic
-        .filter(|projection| projection.id == id && projection.root == root)
+        .filter(|projection| projection.id == id && projection.root.same_authority(root))
         .ok_or_else(|| Arc::<str>::from("the synthetic graph owner changed before its read"))?;
     if let Some(gate) = &synthetic.gate {
         // Deliberately finish despite a forgotten memo flight so the anatomy
@@ -966,21 +977,50 @@ mod tests {
 
     #[cfg(test)]
     #[test]
-    fn synthetic_projection_cache_identity_contains_exact_root_and_owner() {
-        let root = crate::core::VersionedRoot::synthetic(
-            backend_library::view_state_root(&[("graph".into(), "fixture-a".into())]),
-            1,
-        );
-        let next_root = root.with_generation(2);
+    fn projection_cache_uses_producer_authority_not_observation() {
+        fn root(tag: &str, epoch: u64, generation: u64, observation: u64) -> VersionedRoot {
+            let digest = backend_library::view_state_root(&[("graph".into(), tag.into())]);
+            VersionedRoot::from_revision(
+                epoch,
+                backend_library::Cursor::at(digest, generation),
+                observation,
+            )
+        }
+        let captured = root("fixture-a", 3, 7, 1);
+        let observed_again = root("fixture-a", 3, 7, 99);
+        let changed_root = root("fixture-b", 3, 7, 99);
+        let changed_epoch = root("fixture-a", 4, 7, 99);
+        let changed_cursor = root("fixture-a", 3, 8, 99);
         let key = |root, id| Key {
+            authority: root.authority(),
             root,
             owner: OwnerIdentity::Synthetic(id),
             preferred: None,
             synthetic: None,
         };
 
-        assert_ne!(key(root, 1), key(root, 2), "distinct test owners cannot share a projection");
-        assert_ne!(key(root, 1), key(next_root, 1), "a projection never crosses its exact root");
-        assert_eq!(key(root, 1), key(root, 1));
+        let captured_key = key(captured, 1);
+        assert_eq!(
+            captured_key,
+            key(observed_again, 1),
+            "an observation-only update keeps the scene memo key"
+        );
+        let memo = crate::runtime::offload::Memo::new(
+            std::num::NonZeroUsize::new(2).expect("capacity"),
+            |_| 0usize,
+        );
+        memo.seed(captured_key.clone(), 17);
+        assert_eq!(
+            memo.peek(&key(observed_again, 1)).as_deref(),
+            Some(&17),
+            "the captured projection remains available to a new observation"
+        );
+        let mut cached = std::collections::HashSet::new();
+        cached.insert(captured_key.clone());
+        assert!(cached.contains(&key(observed_again, 1)), "Eq and Hash share authority semantics");
+        assert_ne!(captured_key, key(captured, 2), "distinct test owners cannot share a projection");
+        assert_ne!(captured_key, key(changed_root, 1), "a changed root cannot reuse a projection");
+        assert_ne!(captured_key, key(changed_epoch, 1), "a changed producer epoch cannot reuse a projection");
+        assert_ne!(captured_key, key(changed_cursor, 1), "a changed cursor cannot reuse a projection");
     }
 }

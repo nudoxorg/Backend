@@ -515,6 +515,15 @@ impl Reader {
         self.map.as_ref().is_none_or(|map| map.read(cx).ready(cx))
     }
 
+    pub(crate) fn graph_work_status(
+        &self,
+        cx: &gpui::App,
+    ) -> Option<bodies::graph::MapWorkStatus> {
+        self.map
+            .as_ref()
+            .and_then(|map| map.read(cx).work_status(cx))
+    }
+
     pub(crate) fn graph_report(&self, cx: &gpui::App) -> String {
         self.map.as_ref().map_or_else(|| "not mounted".into(), |map| map.read(cx).report(cx))
     }
@@ -1378,6 +1387,42 @@ struct SettingsReturn {
     target: Option<SharedString>,
 }
 
+impl SettingsReturn {
+    fn has_same_authority(&self, root: crate::core::VersionedRoot) -> bool {
+        self.root.same_authority(root)
+    }
+}
+
+#[cfg(test)]
+mod settings_return_tests {
+    use super::SettingsReturn;
+    use crate::core::VersionedRoot;
+    use gpui::SharedString;
+
+    fn root(tag: &str, epoch: u64, sequence: u64, observation: u64) -> VersionedRoot {
+        let digest = backend_library::view_state_root(&[("settings".to_owned(), tag.to_owned())]);
+        VersionedRoot::from_revision(
+            epoch,
+            backend_library::Cursor::at(digest, sequence),
+            observation,
+        )
+    }
+
+    #[test]
+    fn settings_return_survives_observation_only_updates_and_rejects_other_authority() {
+        let captured = root("same", 2, 8, 1);
+        let return_to = SettingsReturn {
+            place: 17,
+            root: captured,
+            target: Some(SharedString::from("graph-target")),
+        };
+        assert!(return_to.has_same_authority(root("same", 2, 8, 9)));
+        assert!(!return_to.has_same_authority(root("different", 2, 8, 9)));
+        assert!(!return_to.has_same_authority(root("same", 3, 8, 9)));
+        assert!(!return_to.has_same_authority(root("same", 2, 9, 9)));
+    }
+}
+
 const MAX_ROUTE_SCROLL_MEMORY: usize = 64;
 const MAX_SOURCE_PAGING_MEMORY: usize = 32;
 const MAX_LIBRARY_STATE_MEMORY: usize = 8;
@@ -1620,7 +1665,10 @@ impl Region for Reader {
                     Some(SettingsReturn {
                         place: self.descents,
                         root: snapshot.key(),
-                        target: departure.filter(|departure| departure.route == *snapshot.route() && departure.root == snapshot.key())
+                        target: departure.filter(|departure| {
+                            departure.route == *snapshot.route()
+                                && departure.root.same_authority(snapshot.key())
+                        })
                             .and_then(|departure| departure.target),
                     })
                 } else {
@@ -1936,7 +1984,7 @@ impl Render for Reader {
             && pending.place == current.key
         {
             if self.painted == Some(current.key) {
-                if snapshot.key() != pending.root { pending.target = None; }
+                if !pending.has_same_authority(snapshot.key()) { pending.target = None; }
                 if self.targets.is_active() {
                     if let Some(target) = pending.target {
                         self.targets.focus(target);
