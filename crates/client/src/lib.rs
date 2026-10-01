@@ -61,11 +61,11 @@ pub enum ClientError {
     /// The connection is gone: the peer closed it, reset it, or stopped
     /// answering on it.
     ///
-    /// This is separate from [`ClientError::Io`] because it is not a fault of
-    /// the request. The daemon closes a connection that has sent nothing for
-    /// its read timeout, so a long-lived client sees this on its first call
-    /// after an idle gap and can recover by connecting again.
+    /// This is separate from [`ClientError::Io`] because the request itself
+    /// may be valid and the client can recover by opening a new connection.
     Disconnected(std::io::ErrorKind),
+    /// A remote-index connect or read-only request exceeded its bounded client lease.
+    RemoteDeadlineExceeded,
     /// A frame, DTO, or identity proof failed admission.
     Protocol(String),
     /// A bounded transport allocation was rejected.
@@ -118,7 +118,10 @@ impl fmt::Display for ClientError {
         match self {
             Self::Io(message) => write!(formatter, "local endpoint: {message}"),
             Self::Disconnected(kind) => {
-                write!(formatter, "local endpoint disconnected: {kind}")
+                write!(formatter, "endpoint disconnected: {kind}")
+            }
+            Self::RemoteDeadlineExceeded => {
+                formatter.write_str("remote index exceeded the bounded client request deadline")
             }
             Self::Protocol(message) => write!(formatter, "protocol: {message}"),
             Self::Transport(error) => write!(formatter, "transport: {error}"),
@@ -1434,11 +1437,12 @@ fn map_peer_authentication_error(
     }
 }
 
-/// Bounded deadline for one read-only command, including health and discovery.
+/// Bounded lease for one read-only command, including health and discovery.
 ///
 /// Every request re-arms this value, so a long mutation cannot make a later
-/// health or query call wait on the mutation lease.
-const CLIENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// health or query call wait on the mutation lease. Direct remote-index setup,
+/// handshake, send, and response read share this same absolute deadline.
+pub(crate) const CLIENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const LOCAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Owner lease for durable writes that may synchronously compile or acquire a

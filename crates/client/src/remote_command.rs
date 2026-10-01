@@ -16,6 +16,8 @@ use backend_library::{
 };
 use std::cell::Cell;
 use std::net::SocketAddr;
+use std::time::Duration;
+use tokio::time::Instant;
 
 /// The producer tuple admitted from the first owner-certified revision.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -221,6 +223,11 @@ struct ActiveProductSession {
 
 impl RemoteIndexCommandTransport {
     /// Creates a client endpoint whose Iroh identity must match the grant.
+    ///
+    /// The direct Iroh handshake is opened on the first request. That request's
+    /// connect, handshake, send, and response read share the standard bounded
+    /// read-only client lease. A disconnected `Revision` may retry once inside
+    /// the same lease; other commands fail closed and require a fresh Revision.
     pub fn connect(
         client_secret: SecretKey,
         owner: backend_engine::cluster_transport::EndpointId,
@@ -236,20 +243,27 @@ impl RemoteIndexCommandTransport {
             .enable_all()
             .build()
             .map_err(|error| ClientError::Io(error.to_string()))?;
+        let deadline = Instant::now() + crate::CLIENT_REQUEST_TIMEOUT;
         let bind_address = match owner_address {
             SocketAddr::V4(_) => SocketAddr::from(([0, 0, 0, 0], 0)),
             SocketAddr::V6(_) => SocketAddr::from(([0_u16; 8], 0)),
         };
-        let endpoint = runtime
-            .block_on(bind_direct(client_secret, bind_address))
-            .map_err(|error| ClientError::Io(error.to_string()))?;
+        let bound = runtime.block_on(tokio::time::timeout_at(
+            deadline,
+            bind_direct(client_secret, bind_address),
+        ));
+        let endpoint = match bound {
+            Ok(Ok(endpoint)) => endpoint,
+            Ok(Err(error)) => return Err(ClientError::Io(error.to_string())),
+            Err(_) => return Err(ClientError::RemoteDeadlineExceeded),
+        };
         capability
             .verify(
                 owner,
                 endpoint.id(),
                 remote_index_now().map_err(map_transport)?,
             )
-            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+            .map_err(|_| ClientError::StaleRemoteCapability)?;
         Ok(Self {
             runtime,
             endpoint,
@@ -259,21 +273,35 @@ impl RemoteIndexCommandTransport {
         })
     }
 
-    fn open_session(&mut self) -> Result<(), ClientError> {
+    fn ensure_current_capability(&mut self) -> Result<(), ClientError> {
+        let now = remote_index_now().map_err(map_transport)?;
+        if self
+            .capability
+            .verify(self.capability.claims.server, self.endpoint.id(), now)
+            .is_err()
+        {
+            self.active = None;
+            return Err(ClientError::StaleRemoteCapability);
+        }
+        Ok(())
+    }
+
+    fn open_session_until(&mut self, deadline: Instant) -> Result<(), ClientError> {
+        self.ensure_current_capability()?;
         let hello =
             RemoteIndexSessionHello::new(self.capability.clone(), RemoteIndexChannel::ProductQuery)
                 .map_err(|error| ClientError::Protocol(error.to_string()))?;
-        let session = self
-            .runtime
-            .block_on(connect_remote_index(
-                &self.endpoint,
-                self.owner_address.clone(),
-                hello,
-            ))
-            .map_err(map_session_transport)?;
-        let (authenticated_peer, capability_receipt) = session
-            .product_coverage_authentication()
-            .ok_or_else(|| {
+        let connected = self.runtime.block_on(tokio::time::timeout_at(
+            deadline,
+            connect_remote_index(&self.endpoint, self.owner_address.clone(), hello),
+        ));
+        let session = match connected {
+            Ok(Ok(session)) => session,
+            Ok(Err(error)) => return Err(map_session_transport(error)),
+            Err(_) => return Err(ClientError::RemoteDeadlineExceeded),
+        };
+        let (authenticated_peer, capability_receipt) =
+            session.product_coverage_authentication().ok_or_else(|| {
                 ClientError::Protocol(
                     "remote product session did not prove its owner-signed grant".to_owned(),
                 )
@@ -287,34 +315,55 @@ impl RemoteIndexCommandTransport {
         Ok(())
     }
 
-    fn request_once(
+    fn request_once_until(
         &mut self,
         request_id: u64,
         body: Box<[u8]>,
+        deadline: Instant,
     ) -> Result<RemoteIndexOutcome, ClientError> {
         if self.active.is_none() {
-            self.open_session()?;
+            self.open_session_until(deadline)?;
+        } else {
+            self.ensure_current_capability()?;
         }
         let Some(active) = self.active.as_mut() else {
             return Err(ClientError::Io("remote session was not opened".to_owned()));
         };
         let request = RemoteIndexRequest { request_id, body };
-        self.runtime
-            .block_on(async {
+        let result = self
+            .runtime
+            .block_on(tokio::time::timeout_at(deadline, async {
                 active.session.send_request(&request).await?;
                 active.session.receive_response(request_id).await
-            })
-            .map(|response| response.outcome)
-            .map_err(map_session_transport)
+            }));
+        match result {
+            Ok(Ok(response)) => Ok(response.outcome),
+            Ok(Err(error)) => {
+                self.active = None;
+                Err(map_session_transport(error))
+            }
+            Err(_) => {
+                self.active = None;
+                Err(ClientError::RemoteDeadlineExceeded)
+            }
+        }
     }
 }
 
 impl CommandTransport for RemoteIndexCommandTransport {
     fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
+        self.request_with_timeout(request, crate::CLIENT_REQUEST_TIMEOUT)
+    }
+}
+
+impl RemoteIndexCommandTransport {
+    fn request_with_timeout(
+        &mut self,
+        request: CommandDto,
+        timeout: Duration,
+    ) -> Result<ReplyDto, ClientError> {
+        let deadline = Instant::now() + timeout;
         let is_revision = matches!(&request.command, Command::Revision);
-        if self.active.is_none() {
-            self.open_session()?;
-        }
         require_remote_product_revision(
             self.active
                 .as_ref()
@@ -322,18 +371,30 @@ impl CommandTransport for RemoteIndexCommandTransport {
             is_revision,
         )?;
         let body = encode_command_body(&request).map_err(ClientError::Protocol)?;
-        let outcome = match self.request_once(request.request_id, body.into_boxed_slice()) {
+        let outcome = match self.request_once_until(
+            request.request_id,
+            body.clone().into_boxed_slice(),
+            deadline,
+        ) {
             Ok(outcome) => outcome,
             Err(error) if matches!(error, ClientError::Disconnected(_)) => {
                 self.active = None;
                 if !is_revision {
                     return Err(error);
                 }
-                self.open_session()?;
-                let body = encode_command_body(&request).map_err(ClientError::Protocol)?;
-                self.request_once(request.request_id, body.into_boxed_slice())?
+                self.request_once_until(request.request_id, body.into_boxed_slice(), deadline)?
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                if matches!(
+                    error,
+                    ClientError::RemoteDeadlineExceeded
+                        | ClientError::Disconnected(_)
+                        | ClientError::StaleRemoteCapability
+                ) {
+                    self.active = None;
+                }
+                return Err(error);
+            }
         };
         match outcome {
             RemoteIndexOutcome::Payload(body) => {
@@ -354,8 +415,8 @@ impl CommandTransport for RemoteIndexCommandTransport {
                     && classify_revision_bootstrap(&body)?
                         == RevisionBootstrapEnvelope::IdentityFreeFailure
                 {
-                    let reply = backend_library::decode_reply_body(&body)
-                        .map_err(ClientError::Protocol)?;
+                    let reply =
+                        backend_library::decode_reply_body(&body).map_err(ClientError::Protocol)?;
                     return admit_reply(&request, reply);
                 }
                 let verifier = if is_revision {
@@ -390,7 +451,8 @@ impl CommandTransport for RemoteIndexCommandTransport {
                             "remote revision omitted its producer observation".to_owned(),
                         )
                     })?;
-                    let binding = bind_remote_product_revision(scope.view_root, *revision, producer)?;
+                    let binding =
+                        bind_remote_product_revision(scope.view_root, *revision, producer)?;
                     if active.revision.is_some_and(|previous| previous != binding) {
                         return Err(ClientError::StaleRemoteCapability);
                     }
@@ -412,10 +474,16 @@ impl CommandTransport for RemoteIndexCommandTransport {
             RemoteIndexOutcome::StaleSemanticSelection => Err(ClientError::StaleSelection),
             RemoteIndexOutcome::Rejected(
                 backend_engine::cluster_transport::RemoteIndexReject::StaleCapability,
-            ) => Err(ClientError::StaleRemoteCapability),
+            ) => {
+                self.active = None;
+                Err(ClientError::StaleRemoteCapability)
+            }
             RemoteIndexOutcome::Rejected(
                 backend_engine::cluster_transport::RemoteIndexReject::CapabilityRevoked,
-            ) => Err(ClientError::RemoteCapabilityRevoked),
+            ) => {
+                self.active = None;
+                Err(ClientError::RemoteCapabilityRevoked)
+            }
             RemoteIndexOutcome::Rejected(reason) => Err(ClientError::Protocol(format!(
                 "remote index request was rejected: {reason:?}"
             ))),
@@ -424,7 +492,7 @@ impl CommandTransport for RemoteIndexCommandTransport {
 
     fn reconnect(&mut self) -> Result<(), ClientError> {
         self.active = None;
-        self.open_session()
+        self.open_session_until(Instant::now() + crate::CLIENT_REQUEST_TIMEOUT)
     }
 }
 
@@ -444,7 +512,9 @@ mod tests {
         RemoteIndexProductScope, RemoteIndexQueryOperation, RemoteIndexResponse,
         accept_remote_index,
     };
-    use backend_library::canonical::{object_version, view_key, view_state_root, view_version_preimage};
+    use backend_library::canonical::{
+        object_version, view_key, view_state_root, view_version_preimage,
+    };
     use backend_library::{
         AuthorityScopeClaim, Basis, CoverageCapability, Cursor, Freshness, Frontier, Query,
         QueryLimit, ViewRoot, ViewSnapshot, WireCertificate, WireClaim, WireSchema,
@@ -459,6 +529,12 @@ mod tests {
     const TEST_IO_TIMEOUT: Duration = Duration::from_secs(10);
     const TEST_SERVER_LIFETIME: Duration = Duration::from_secs(30);
     const TEST_READY_TIMEOUT: Duration = Duration::from_secs(30);
+    const TEST_CLIENT_DEADLINE: Duration = Duration::from_millis(300);
+    const TEST_COMBINED_DEADLINE: Duration = Duration::from_millis(800);
+    const TEST_HANDSHAKE_DELAY: Duration = Duration::from_millis(500);
+    const TEST_RETRY_DEADLINE: Duration = Duration::from_millis(700);
+    const TEST_FIRST_SESSION_LIFETIME: Duration = Duration::from_millis(350);
+    const TEST_EVENT_TIMEOUT: Duration = Duration::from_secs(3);
 
     struct ProductTestServer {
         shutdown: Option<oneshot::Sender<()>>,
@@ -475,7 +551,9 @@ mod tests {
         fn finish(mut self) {
             self.stop();
             if let Some(worker) = self.worker.take() {
-                worker.join().expect("join bounded remote-index test server");
+                worker
+                    .join()
+                    .expect("join bounded remote-index test server");
             }
         }
     }
@@ -509,11 +587,13 @@ mod tests {
             validate_remote_product_observation(&observed, Some(expected)),
             Ok(proof)
         );
-        assert!(validate_remote_product_observation(
-            &observation(ScopeRoot::from_bytes([4; 32])),
-            Some(expected),
-        )
-        .is_err());
+        assert!(
+            validate_remote_product_observation(
+                &observation(ScopeRoot::from_bytes([4; 32])),
+                Some(expected),
+            )
+            .is_err()
+        );
         let wrong_context = UntrustedProducerObservation::new(
             [1; 32],
             ScopeRoot::from_bytes([3; 32]),
@@ -532,34 +612,42 @@ mod tests {
 
     #[test]
     fn remote_product_verifier_rejects_unbounded_or_ambiguous_observations() {
-        assert!(remote_product_producer_proof(&UntrustedProducerObservation::new(
-            [1; 32],
-            ScopeRoot::from_bytes([3; 32]),
-            [2; 32],
-            Vec::new(),
-        ))
-        .is_err());
-        assert!(remote_product_producer_proof(&UntrustedProducerObservation::new(
-            [1; 32],
-            ScopeRoot::from_bytes([0; 32]),
-            [2; 32],
-            b"owner-proof".to_vec(),
-        ))
-        .is_err());
-        assert!(remote_product_producer_proof(&UntrustedProducerObservation::new(
-            [0; 32],
-            ScopeRoot::from_bytes([3; 32]),
-            [2; 32],
-            b"owner-proof".to_vec(),
-        ))
-        .is_err());
-        assert!(remote_product_producer_proof(&UntrustedProducerObservation::new(
-            [1; 32],
-            ScopeRoot::from_bytes([3; 32]),
-            [2; 32],
-            vec![0; backend_library::MAX_COVERAGE_EVIDENCE + 1],
-        ))
-        .is_err());
+        assert!(
+            remote_product_producer_proof(&UntrustedProducerObservation::new(
+                [1; 32],
+                ScopeRoot::from_bytes([3; 32]),
+                [2; 32],
+                Vec::new(),
+            ))
+            .is_err()
+        );
+        assert!(
+            remote_product_producer_proof(&UntrustedProducerObservation::new(
+                [1; 32],
+                ScopeRoot::from_bytes([0; 32]),
+                [2; 32],
+                b"owner-proof".to_vec(),
+            ))
+            .is_err()
+        );
+        assert!(
+            remote_product_producer_proof(&UntrustedProducerObservation::new(
+                [0; 32],
+                ScopeRoot::from_bytes([3; 32]),
+                [2; 32],
+                b"owner-proof".to_vec(),
+            ))
+            .is_err()
+        );
+        assert!(
+            remote_product_producer_proof(&UntrustedProducerObservation::new(
+                [1; 32],
+                ScopeRoot::from_bytes([3; 32]),
+                [2; 32],
+                vec![0; backend_library::MAX_COVERAGE_EVIDENCE + 1],
+            ))
+            .is_err()
+        );
     }
 
     #[test]
@@ -571,13 +659,11 @@ mod tests {
 
     #[test]
     fn non_revision_reply_is_rejected_before_coverage_admission() {
-        assert!(classify_revision_bootstrap(
-            br#"{"reply":{"kind":"search"}}"#
-        )
-        .is_err());
-        assert_eq!(classify_revision_bootstrap(
-            br#"{"reply":{"kind":"revision"}}"#
-        ), Ok(RevisionBootstrapEnvelope::Revision));
+        assert!(classify_revision_bootstrap(br#"{"reply":{"kind":"search"}}"#).is_err());
+        assert_eq!(
+            classify_revision_bootstrap(br#"{"reply":{"kind":"revision"}}"#),
+            Ok(RevisionBootstrapEnvelope::Revision)
+        );
     }
 
     #[test]
@@ -603,10 +689,12 @@ mod tests {
             "reply": { "kind": "error", "data": { "message": "owner unavailable" } },
             "certificate": {},
         });
-        assert!(classify_revision_bootstrap(
-            &serde_json::to_vec(&certified_error).expect("certified error body")
-        )
-        .is_err());
+        assert!(
+            classify_revision_bootstrap(
+                &serde_json::to_vec(&certified_error).expect("certified error body")
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -671,16 +759,11 @@ mod tests {
             proof.evidence.clone(),
         );
         let admitted = admit_producer_observation(observation, &proof).expect("owner proof");
-        let complete = admit_complete_scope(
-            AuthorityScopeClaim::from_object_version(source),
-            admitted,
-        )
-        .expect("complete source coverage");
-        let coverage = CoverageCapability::from_authorized_with_evidence(
-            complete,
-            proof.evidence,
-        )
-        .expect("coverage evidence");
+        let complete =
+            admit_complete_scope(AuthorityScopeClaim::from_object_version(source), admitted)
+                .expect("complete source coverage");
+        let coverage = CoverageCapability::from_authorized_with_evidence(complete, proof.evidence)
+            .expect("coverage evidence");
         let source_root = view_state_root(&[]);
         let basis = Basis::new(source_root, source);
         ViewRoot::empty_checked(
@@ -803,6 +886,37 @@ mod tests {
             .expect("signed product capability")
     }
 
+    fn expired_product_capability(
+        owner: &SecretKey,
+        client: backend_engine::cluster_transport::EndpointId,
+        root: [u8; 32],
+    ) -> RemoteIndexCapability {
+        let now = remote_index_now().expect("clock");
+        let issued = now.saturating_sub(60_000);
+        RemoteIndexCapabilityIssuer::new(owner.clone())
+            .issue(
+                RemoteIndexCapabilityClaims {
+                    version: 2,
+                    server: owner.public(),
+                    client,
+                    grant_id: [0x56; 16],
+                    issued_at_unix_ms: issued,
+                    expires_at_unix_ms: now.saturating_sub(1),
+                    request_budget: 16,
+                    byte_budget: 64 * 1024,
+                    permissions: vec![RemoteIndexPermission::ProductRead],
+                    product: Some(RemoteIndexProductScope {
+                        view_root: root,
+                        operations: vec![RemoteIndexQueryOperation::Search],
+                        index_search_snapshot: None,
+                    }),
+                    semantic: None,
+                },
+                issued,
+            )
+            .expect("signed expired product capability")
+    }
+
     fn unused_loopback_addresses() -> (SocketAddr, SocketAddr) {
         let first = UdpSocket::bind("127.0.0.1:0").expect("reserve first loopback port");
         let second = UdpSocket::bind("127.0.0.1:0").expect("reserve second loopback port");
@@ -839,7 +953,11 @@ mod tests {
         };
         let cursor = Cursor::for_view_root(&root);
         let reply = if revision {
-            CommandReply::Revision(RevisionReceipt::new(root.root(), cursor, root.basis().object))
+            CommandReply::Revision(RevisionReceipt::new(
+                root.root(),
+                cursor,
+                root.basis().object,
+            ))
         } else {
             CommandReply::Search(ViewSnapshot {
                 root: root.clone(),
@@ -850,8 +968,12 @@ mod tests {
             })
         };
         serde_json::to_vec(
-            &ReplyDto::new(request_id, reply)
-                .with_certificate(owner_certificate(&root, &basis_relation, context, &evidence)),
+            &ReplyDto::new(request_id, reply).with_certificate(owner_certificate(
+                &root,
+                &basis_relation,
+                context,
+                &evidence,
+            )),
         )
         .expect("encode owner reply")
     }
@@ -899,9 +1021,7 @@ mod tests {
                         }
                     }
                 });
-                ready_sender
-                    .send(owner.id())
-                    .expect("send owner address");
+                ready_sender.send(owner.id()).expect("send owner address");
                 let serve_sessions = async {
                     // Keep the streams alive until the client acknowledges the
                     // final replies through shutdown; dropping a send stream
@@ -915,9 +1035,8 @@ mod tests {
                                     .expect("owner accepts connection")
                             }
                         };
-                        let connecting = incoming
-                            .accept()
-                            .expect("accept remote product connection");
+                        let connecting =
+                            incoming.accept().expect("accept remote product connection");
                         let connection = tokio::select! {
                             _ = &mut shutdown_receiver => return false,
                             result = tokio::time::timeout(TEST_IO_TIMEOUT, connecting) => {
@@ -961,19 +1080,14 @@ mod tests {
                                 ))
                                 .expect("encode identity-free owner error")
                             } else {
-                                let (reply, reply_context, reply_evidence) =
-                                    match command.command {
-                                        Command::Revision => (true, context, evidence.clone()),
-                                        Command::Search(_) if request.request_id == 3 => {
-                                            (false, [0x99; 32], evidence.clone())
-                                        }
-                                        Command::Search(_) => {
-                                            (false, context, evidence.clone())
-                                        }
-                                        other => panic!(
-                                            "unexpected product command: {other:?}"
-                                        ),
-                                    };
+                                let (reply, reply_context, reply_evidence) = match command.command {
+                                    Command::Revision => (true, context, evidence.clone()),
+                                    Command::Search(_) if request.request_id == 3 => {
+                                        (false, [0x99; 32], evidence.clone())
+                                    }
+                                    Command::Search(_) => (false, context, evidence.clone()),
+                                    other => panic!("unexpected product command: {other:?}"),
+                                };
                                 view_reply(
                                     request.request_id,
                                     root.clone(),
@@ -1007,7 +1121,10 @@ mod tests {
                     .unwrap_or(false);
                 impostor_accept.abort();
                 let _ = impostor_accept.await;
-                assert!(completed, "remote-index test server stopped before all sessions");
+                assert!(
+                    completed,
+                    "remote-index test server stopped before all sessions"
+                );
             });
         });
         let test_server = ProductTestServer {
@@ -1026,11 +1143,8 @@ mod tests {
             capability.clone(),
         )
         .expect("open owner-signed product transport");
-        let wrong_peer_grant = product_capability(
-            &signing_secret,
-            wrong_peer_client_secret.public(),
-            root_id,
-        );
+        let wrong_peer_grant =
+            product_capability(&signing_secret, wrong_peer_client_secret.public(), root_id);
         let mut wrong_peer_transport = RemoteIndexCommandTransport::connect(
             wrong_peer_client_secret,
             owner_id,
@@ -1038,9 +1152,11 @@ mod tests {
             wrong_peer_grant,
         )
         .expect("locally valid grant for the wrong network peer");
-        assert!(wrong_peer_transport
-            .request(CommandDto::new(1, Command::Revision))
-            .is_err());
+        assert!(
+            wrong_peer_transport
+                .request(CommandDto::new(1, Command::Revision))
+                .is_err()
+        );
         let revision = transport
             .request(CommandDto::new(1, Command::Revision))
             .expect("admit owner revision reply");
@@ -1069,7 +1185,9 @@ mod tests {
         ));
         assert!(transport.request(query_request(3)).is_err());
 
-        transport.reconnect().expect("open a fresh accepted session");
+        transport
+            .reconnect()
+            .expect("open a fresh accepted session");
         assert!(transport.request(query_request(4)).is_err());
         assert!(matches!(
             transport
@@ -1086,33 +1204,31 @@ mod tests {
             CommandReply::Search(_)
         ));
 
-        let wrong_client_grant = product_capability(
-            &signing_secret,
-            impostor_client_secret.public(),
-            root_id,
+        let wrong_client_grant =
+            product_capability(&signing_secret, impostor_client_secret.public(), root_id);
+        assert!(
+            RemoteIndexCommandTransport::connect(
+                client_secret.clone(),
+                owner_id,
+                owner_address,
+                wrong_client_grant,
+            )
+            .is_err()
         );
-        assert!(RemoteIndexCommandTransport::connect(
-            client_secret.clone(),
-            owner_id,
-            owner_address,
-            wrong_client_grant,
-        )
-        .is_err());
         let mut forged_grant = capability.clone();
         forged_grant.claims.grant_id[0] ^= 0xff;
-        assert!(RemoteIndexCommandTransport::connect(
-            client_secret,
-            owner_id,
-            owner_address,
-            forged_grant,
-        )
-        .is_err());
-
-        let error_capability = product_capability(
-            &signing_secret,
-            error_client_secret.public(),
-            root_id,
+        assert!(
+            RemoteIndexCommandTransport::connect(
+                client_secret,
+                owner_id,
+                owner_address,
+                forged_grant,
+            )
+            .is_err()
         );
+
+        let error_capability =
+            product_capability(&signing_secret, error_client_secret.public(), root_id);
         let mut error_transport = RemoteIndexCommandTransport::connect(
             error_client_secret,
             owner_id,
@@ -1120,7 +1236,11 @@ mod tests {
             error_capability,
         )
         .expect("open second owner's product session");
-        assert!(error_transport.request(CommandDto::new(1, query())).is_err());
+        assert!(
+            error_transport
+                .request(CommandDto::new(1, query()))
+                .is_err()
+        );
         assert!(matches!(
             error_transport
                 .request(CommandDto::new(1, Command::Revision))
@@ -1131,8 +1251,424 @@ mod tests {
 
         test_server.finish();
     }
-}
+    #[test]
+    fn remote_product_bounds_stalled_handshake_and_withheld_reply_and_clears_authority() {
+        let owner_secret = SecretKey::generate();
+        let signing_secret = owner_secret.clone();
+        let client_secret = SecretKey::generate();
+        let (owner_address, _) = unused_loopback_addresses();
+        let (ready_sender, ready_receiver) = mpsc::channel();
+        let (request_seen_sender, request_seen_receiver) = mpsc::channel();
+        let (shutdown_sender, mut shutdown_receiver) = oneshot::channel();
+        let owner_thread = thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("owner runtime");
+            runtime.block_on(async move {
+                let owner = tokio::time::timeout(
+                    TEST_IO_TIMEOUT,
+                    bind_direct(owner_secret, owner_address),
+                )
+                .await
+                .expect("owner endpoint bind timed out")
+                .expect("owner endpoint");
+                ready_sender.send(owner.id()).expect("send owner address");
+                let serve = async {
+                    let stalled_incoming = tokio::select! {
+                        _ = &mut shutdown_receiver => return false,
+                        result = tokio::time::timeout(TEST_IO_TIMEOUT, owner.accept()) => {
+                            result.expect("stalled-handshake accept timed out")
+                                .expect("stalled-handshake connection")
+                        }
+                    };
+                    let stalled_connecting = stalled_incoming
+                        .accept()
+                        .expect("accept stalled-handshake connection");
+                    let stalled_connection = tokio::select! {
+                        _ = &mut shutdown_receiver => return false,
+                        result = tokio::time::timeout(TEST_IO_TIMEOUT, stalled_connecting) => {
+                            result.expect("stalled-handshake connect timed out")
+                                .expect("complete stalled-handshake connection")
+                        }
+                    };
+                    let (_stalled_send, _stalled_receive) = tokio::time::timeout(
+                        TEST_IO_TIMEOUT,
+                        stalled_connection.accept_bi(),
+                    )
+                    .await
+                    .expect("stalled hello stream timed out")
+                    .expect("accept stalled hello stream");
 
+                    let incoming = tokio::select! {
+                        _ = &mut shutdown_receiver => return false,
+                        result = tokio::time::timeout(TEST_IO_TIMEOUT, owner.accept()) => {
+                            result.expect("withheld-reply accept timed out")
+                                .expect("withheld-reply connection")
+                        }
+                    };
+                    let connecting = incoming
+                        .accept()
+                        .expect("accept withheld-reply connection");
+                    let connection = tokio::select! {
+                        _ = &mut shutdown_receiver => return false,
+                        result = tokio::time::timeout(TEST_IO_TIMEOUT, connecting) => {
+                            result.expect("withheld-reply connect timed out")
+                                .expect("complete withheld-reply connection")
+                        }
+                    };
+                    tokio::select! {
+                        _ = &mut shutdown_receiver => return false,
+                        _ = tokio::time::sleep(TEST_HANDSHAKE_DELAY) => {}
+                    }
+                    let mut session = tokio::select! {
+                        _ = &mut shutdown_receiver => return false,
+                        result = tokio::time::timeout(
+                            TEST_IO_TIMEOUT,
+                            accept_remote_index(connection, owner.id()),
+                        ) => {
+                            result.expect("withheld-reply admission timed out")
+                                .expect("admit signed product grant")
+                        }
+                    };
+                    let request = tokio::select! {
+                        _ = &mut shutdown_receiver => return false,
+                        result = tokio::time::timeout(TEST_IO_TIMEOUT, session.receive_request()) => {
+                            result.expect("withheld product request timed out")
+                                .expect("receive product request")
+                        }
+                    };
+                    let command = backend_library::decode_command_body(&request.body)
+                        .expect("decode withheld product request");
+                    assert!(matches!(command.command, Command::Revision));
+                    request_seen_sender
+                        .send(())
+                        .expect("report accepted product request");
+                    tokio::select! {
+                        _ = &mut shutdown_receiver => true,
+                        _ = tokio::time::sleep(TEST_SERVER_LIFETIME) => false,
+                    }
+                };
+                let completed = tokio::time::timeout(TEST_SERVER_LIFETIME, serve)
+                    .await
+                    .unwrap_or(false);
+                assert!(completed, "bounded remote-index test server did not stop");
+            });
+        });
+        let test_server = ProductTestServer {
+            shutdown: Some(shutdown_sender),
+            worker: Some(owner_thread),
+        };
+
+        let owner_id = ready_receiver
+            .recv_timeout(TEST_READY_TIMEOUT)
+            .expect("owner endpoint became ready before timeout");
+        let root = owner_view().root().to_bytes();
+        let capability = product_capability(&signing_secret, client_secret.public(), root);
+        let mut transport = RemoteIndexCommandTransport::connect(
+            client_secret,
+            owner_id,
+            owner_address,
+            capability,
+        )
+        .expect("create owner-bound product transport");
+
+        let started = std::time::Instant::now();
+        assert!(
+            matches!(
+                transport.request_with_timeout(
+                    CommandDto::new(1, Command::Revision),
+                    TEST_CLIENT_DEADLINE,
+                ),
+                Err(ClientError::RemoteDeadlineExceeded)
+            ),
+            "an owner that withholds handshake acceptance must hit the client lease"
+        );
+        assert!(started.elapsed() < TEST_EVENT_TIMEOUT);
+        assert!(
+            transport.active.is_none(),
+            "timed-out handshake has no authority"
+        );
+
+        let started = std::time::Instant::now();
+        assert!(
+            matches!(
+                transport.request_with_timeout(
+                    CommandDto::new(1, Command::Revision),
+                    TEST_COMBINED_DEADLINE,
+                ),
+                Err(ClientError::RemoteDeadlineExceeded)
+            ),
+            "handshake and withheld reply must share one absolute client lease"
+        );
+        assert!(
+            started.elapsed() < TEST_COMBINED_DEADLINE + Duration::from_millis(200),
+            "handshake time must count against the response deadline"
+        );
+        request_seen_receiver
+            .recv_timeout(TEST_EVENT_TIMEOUT)
+            .expect("owner received the real Revision request before withholding its reply");
+        assert!(
+            transport.active.is_none(),
+            "timed-out reply clears session authority"
+        );
+        assert!(
+            matches!(
+                transport.request_with_timeout(
+                    CommandDto::new(
+                        2,
+                        Command::Search(Query::new(
+                            "needle",
+                            owner_view().root(),
+                            QueryLimit::new(10).expect("valid query limit"),
+                        )),
+                    ),
+                    TEST_CLIENT_DEADLINE,
+                ),
+                Err(ClientError::Protocol(_))
+            ),
+            "a query after timeout requires a fresh Revision"
+        );
+
+        test_server.finish();
+    }
+
+    #[test]
+    fn remote_revision_reconnect_retry_keeps_the_original_absolute_deadline() {
+        let owner_secret = SecretKey::generate();
+        let signing_secret = owner_secret.clone();
+        let client_secret = SecretKey::generate();
+        let (owner_address, _) = unused_loopback_addresses();
+        let (ready_sender, ready_receiver) = mpsc::channel();
+        let (request_seen_sender, request_seen_receiver) = mpsc::channel();
+        let (shutdown_sender, mut shutdown_receiver) = oneshot::channel();
+        let owner_thread = thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("owner runtime");
+            runtime.block_on(async move {
+                let owner =
+                    tokio::time::timeout(TEST_IO_TIMEOUT, bind_direct(owner_secret, owner_address))
+                        .await
+                        .expect("owner endpoint bind timed out")
+                        .expect("owner endpoint");
+                ready_sender.send(owner.id()).expect("send owner identity");
+                let serve = async {
+                    for attempt in 0..2 {
+                        let incoming = tokio::select! {
+                            _ = &mut shutdown_receiver => return false,
+                            result = tokio::time::timeout(TEST_IO_TIMEOUT, owner.accept()) => {
+                                result.expect("revision retry accept timed out")
+                                    .expect("revision retry connection")
+                            }
+                        };
+                        let connecting =
+                            incoming.accept().expect("accept revision retry connection");
+                        let connection = tokio::select! {
+                            _ = &mut shutdown_receiver => return false,
+                            result = tokio::time::timeout(TEST_IO_TIMEOUT, connecting) => {
+                                result.expect("revision retry connect timed out")
+                                    .expect("complete revision retry connection")
+                            }
+                        };
+                        let mut session = tokio::select! {
+                            _ = &mut shutdown_receiver => return false,
+                            result = tokio::time::timeout(
+                                TEST_IO_TIMEOUT,
+                                accept_remote_index(connection, owner.id()),
+                            ) => {
+                                result.expect("revision retry admission timed out")
+                                    .expect("admit signed product grant")
+                            }
+                        };
+                        let request = tokio::select! {
+                            _ = &mut shutdown_receiver => return false,
+                            result = tokio::time::timeout(
+                                TEST_IO_TIMEOUT,
+                                session.receive_request(),
+                            ) => {
+                                result.expect("revision retry request timed out")
+                                    .expect("receive revision retry request")
+                            }
+                        };
+                        let command = backend_library::decode_command_body(&request.body)
+                            .expect("decode revision retry request");
+                        assert!(matches!(command.command, Command::Revision));
+                        request_seen_sender
+                            .send(attempt)
+                            .expect("report accepted revision retry request");
+                        if attempt == 0 {
+                            tokio::select! {
+                                _ = &mut shutdown_receiver => return false,
+                                _ = tokio::time::sleep(TEST_FIRST_SESSION_LIFETIME) => {}
+                            }
+                            drop(session);
+                        } else {
+                            let stopped = tokio::select! {
+                                _ = &mut shutdown_receiver => true,
+                                _ = tokio::time::sleep(TEST_SERVER_LIFETIME) => false,
+                            };
+                            assert!(stopped, "bounded revision retry server did not stop");
+                            return true;
+                        }
+                    }
+                    false
+                };
+                let completed = tokio::time::timeout(TEST_SERVER_LIFETIME, serve)
+                    .await
+                    .unwrap_or(false);
+                assert!(completed, "bounded revision retry server stopped early");
+            });
+        });
+        let test_server = ProductTestServer {
+            shutdown: Some(shutdown_sender),
+            worker: Some(owner_thread),
+        };
+
+        let owner_id = ready_receiver
+            .recv_timeout(TEST_READY_TIMEOUT)
+            .expect("owner endpoint became ready before timeout");
+        let root = owner_view().root().to_bytes();
+        let capability = product_capability(&signing_secret, client_secret.public(), root);
+        let mut transport = RemoteIndexCommandTransport::connect(
+            client_secret,
+            owner_id,
+            owner_address,
+            capability,
+        )
+        .expect("create owner-bound product transport");
+
+        let started = std::time::Instant::now();
+        assert!(matches!(
+            transport
+                .request_with_timeout(CommandDto::new(1, Command::Revision), TEST_RETRY_DEADLINE,),
+            Err(ClientError::RemoteDeadlineExceeded)
+        ));
+        assert!(
+            started.elapsed() < TEST_RETRY_DEADLINE + Duration::from_millis(200),
+            "Revision reconnect must retain the original absolute lease"
+        );
+        assert_eq!(
+            request_seen_receiver
+                .recv_timeout(TEST_EVENT_TIMEOUT)
+                .expect("owner received the first Revision request"),
+            0
+        );
+        assert_eq!(
+            request_seen_receiver
+                .recv_timeout(TEST_EVENT_TIMEOUT)
+                .expect("owner received the retried Revision request"),
+            1
+        );
+        assert!(
+            transport.active.is_none(),
+            "deadline clears session authority"
+        );
+
+        test_server.finish();
+    }
+
+    #[test]
+    fn expired_product_grant_is_rejected_over_a_real_iroh_handshake() {
+        let owner_secret = SecretKey::generate();
+        let signing_secret = owner_secret.clone();
+        let client_secret = SecretKey::generate();
+        let (owner_address, _) = unused_loopback_addresses();
+        let (ready_sender, ready_receiver) = mpsc::channel();
+        let (shutdown_sender, mut shutdown_receiver) = oneshot::channel();
+        let owner_thread = thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("owner runtime");
+            runtime.block_on(async move {
+                let owner =
+                    tokio::time::timeout(TEST_IO_TIMEOUT, bind_direct(owner_secret, owner_address))
+                        .await
+                        .expect("owner endpoint bind timed out")
+                        .expect("owner endpoint");
+                ready_sender.send(owner.id()).expect("send owner address");
+                let incoming = tokio::select! {
+                    _ = &mut shutdown_receiver => return,
+                    result = tokio::time::timeout(TEST_IO_TIMEOUT, owner.accept()) => {
+                        result.expect("expired-grant accept timed out")
+                            .expect("expired-grant connection")
+                    }
+                };
+                let connecting = incoming.accept().expect("accept expired-grant connection");
+                let connection = tokio::select! {
+                    _ = &mut shutdown_receiver => return,
+                    result = tokio::time::timeout(TEST_IO_TIMEOUT, connecting) => {
+                        result.expect("expired-grant connect timed out")
+                            .expect("complete expired-grant connection")
+                    }
+                };
+                let rejected = tokio::select! {
+                    _ = &mut shutdown_receiver => return,
+                    result = tokio::time::timeout(
+                        TEST_IO_TIMEOUT,
+                        accept_remote_index(connection, owner.id()),
+                    ) => {
+                        result.expect("expired-grant admission timed out")
+                            .expect_err("owner must reject an expired signed grant")
+                    }
+                };
+                assert!(
+                    rejected.to_string().contains("capability rejected")
+                        || rejected.to_string().contains("admission denied"),
+                    "owner should reject at capability admission: {rejected}"
+                );
+            });
+        });
+        let test_server = ProductTestServer {
+            shutdown: Some(shutdown_sender),
+            worker: Some(owner_thread),
+        };
+
+        let owner_id = ready_receiver
+            .recv_timeout(TEST_READY_TIMEOUT)
+            .expect("owner endpoint became ready before timeout");
+        let root = owner_view().root().to_bytes();
+        let expired = expired_product_capability(&signing_secret, client_secret.public(), root);
+        assert!(matches!(
+            RemoteIndexCommandTransport::connect(
+                client_secret.clone(),
+                owner_id,
+                owner_address,
+                expired.clone(),
+            ),
+            Err(ClientError::StaleRemoteCapability)
+        ));
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("client runtime");
+        let client_endpoint = runtime
+            .block_on(bind_direct(
+                client_secret,
+                SocketAddr::from(([127, 0, 0, 1], 0)),
+            ))
+            .expect("bind raw expired-grant client");
+        let hello = RemoteIndexSessionHello::new(expired, RemoteIndexChannel::ProductQuery)
+            .expect("construct expired-grant hello");
+        let result = runtime.block_on(tokio::time::timeout(
+            TEST_IO_TIMEOUT,
+            connect_remote_index(
+                &client_endpoint,
+                EndpointAddr::new(owner_id).with_ip_addr(owner_address),
+                hello,
+            ),
+        ));
+        assert!(
+            matches!(result, Ok(Err(_))),
+            "owner rejected over real Iroh wire"
+        );
+
+        test_server.finish();
+    }
+}
 fn map_transport(error: impl std::fmt::Display) -> ClientError {
     ClientError::Io(error.to_string())
 }

@@ -28,9 +28,9 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
+use tokio::time::Instant;
 
 const CONNECTION_FRAME_BUDGET: usize = 240;
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_METADATA_PAGE_BYTES: u64 = 16 * 1024;
 const MAX_METADATA_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SEMANTIC_IMAGE_BYTES: u64 = 128 * 1024 * 1024;
@@ -335,6 +335,23 @@ impl RemoteSemanticRangeConnection {
         address: SocketAddr,
         capability: RemoteIndexCapability,
     ) -> Result<Self, ClientError> {
+        Self::connect_with_timeout(
+            secret,
+            owner,
+            address,
+            capability,
+            crate::CLIENT_REQUEST_TIMEOUT,
+        )
+    }
+
+    fn connect_with_timeout(
+        secret: SecretKey,
+        owner: backend_engine::cluster_transport::EndpointId,
+        address: SocketAddr,
+        capability: RemoteIndexCapability,
+        timeout: Duration,
+    ) -> Result<Self, ClientError> {
+        let deadline = Instant::now() + timeout;
         if capability.claims.semantic.is_none() {
             return Err(ClientError::Protocol(
                 "remote semantic transport needs a semantic-hydration capability".to_owned(),
@@ -348,16 +365,22 @@ impl RemoteSemanticRangeConnection {
             SocketAddr::V4(_) => SocketAddr::from(([0, 0, 0, 0], 0)),
             SocketAddr::V6(_) => SocketAddr::from(([0_u16; 8], 0)),
         };
-        let endpoint = runtime
-            .block_on(bind_direct(secret, bind_address))
-            .map_err(|error| ClientError::Io(error.to_string()))?;
+        let bound = runtime.block_on(tokio::time::timeout_at(
+            deadline,
+            bind_direct(secret, bind_address),
+        ));
+        let endpoint = match bound {
+            Ok(Ok(endpoint)) => endpoint,
+            Ok(Err(error)) => return Err(ClientError::Io(error.to_string())),
+            Err(_) => return Err(ClientError::RemoteDeadlineExceeded),
+        };
         capability
             .verify(
                 owner,
                 endpoint.id(),
                 remote_index_now().map_err(map_transport_error)?,
             )
-            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+            .map_err(|_| ClientError::StaleRemoteCapability)?;
         let mut result = Self {
             runtime,
             endpoint,
@@ -365,79 +388,79 @@ impl RemoteSemanticRangeConnection {
             capability,
             session: None,
         };
-        result.open()?;
+        result.open_until(deadline)?;
         Ok(result)
     }
 
-    fn open(&mut self) -> Result<(), ClientError> {
+    fn ensure_current_capability(&mut self) -> Result<(), ClientError> {
+        let now = remote_index_now().map_err(map_transport_error)?;
+        if self
+            .capability
+            .verify(self.capability.claims.server, self.endpoint.id(), now)
+            .is_err()
+        {
+            self.session = None;
+            return Err(ClientError::StaleRemoteCapability);
+        }
+        Ok(())
+    }
+
+    fn open_until(&mut self, deadline: Instant) -> Result<(), ClientError> {
+        self.ensure_current_capability()?;
         let hello = RemoteIndexSessionHello::new(
             self.capability.clone(),
             RemoteIndexChannel::SemanticHydration,
         )
         .map_err(|error| ClientError::Protocol(error.to_string()))?;
-        let session = self
-            .runtime
-            .block_on(connect_remote_index(
-                &self.endpoint,
-                self.owner_address.clone(),
-                hello,
-            ))
-            .map_err(map_remote_index_transport_error)?;
-        self.session = Some(session);
+        let connected = self.runtime.block_on(tokio::time::timeout_at(
+            deadline,
+            connect_remote_index(&self.endpoint, self.owner_address.clone(), hello),
+        ));
+        match connected {
+            Ok(Ok(session)) => self.session = Some(session),
+            Ok(Err(error)) => return Err(map_remote_index_transport_error(error)),
+            Err(_) => return Err(ClientError::RemoteDeadlineExceeded),
+        }
         Ok(())
     }
 
-    fn reconnect(&mut self) -> Result<(), ClientError> {
+    fn reconnect_until(&mut self, deadline: Instant) -> Result<(), ClientError> {
         self.session = None;
-        self.open()
+        self.open_until(deadline)
     }
 
     fn request(
         &mut self,
         request: &LocalControlRequest,
     ) -> Result<LocalControlResponse, ClientError> {
+        self.request_with_timeout(request, crate::CLIENT_REQUEST_TIMEOUT)
+    }
+
+    fn request_with_timeout(
+        &mut self,
+        request: &LocalControlRequest,
+        timeout: Duration,
+    ) -> Result<LocalControlResponse, ClientError> {
+        let deadline = Instant::now() + timeout;
         let body = backend_replication::encode_request(request, control_limits())
             .map_err(map_control_error)?;
         let request_id = request.request_id();
         if self.session.is_none() {
-            self.open()?;
+            self.open_until(deadline)?;
+        } else {
+            self.ensure_current_capability()?;
         }
-        let result = {
-            let session = self.session.as_mut().ok_or_else(|| {
-                ClientError::Io("remote semantic session was not opened".to_owned())
-            })?;
-            self.runtime.block_on(async {
-                session
-                    .send_request(&RemoteIndexRequest {
-                        request_id,
-                        body: body.into_boxed_slice(),
-                    })
-                    .await?;
-                session.receive_response(request_id).await
-            })
-        };
+        let result = self.exchange_until(request_id, body.clone().into_boxed_slice(), deadline);
         let response = match result {
-            Ok(response) => Ok(response),
-            Err(error) if retryable_remote_index_transport(&error) => {
-                self.reconnect()?;
-                let session = self.session.as_mut().ok_or_else(|| {
-                    ClientError::Io("remote semantic session was not reopened".to_owned())
-                })?;
-                let body = backend_replication::encode_request(request, control_limits())
-                    .map_err(map_control_error)?;
-                self.runtime.block_on(async {
-                    session
-                        .send_request(&RemoteIndexRequest {
-                            request_id,
-                            body: body.into_boxed_slice(),
-                        })
-                        .await?;
-                    session.receive_response(request_id).await
-                })
+            Ok(response) => response,
+            Err(error)
+                if matches!(error, ClientError::Disconnected(_)) && Instant::now() < deadline =>
+            {
+                self.reconnect_until(deadline)?;
+                self.exchange_until(request_id, body.into_boxed_slice(), deadline)?
             }
-            Err(error) => return Err(map_remote_index_transport_error(error)),
-        }
-        .map_err(map_remote_index_transport_error)?;
+            Err(error) => return Err(error),
+        };
         match response.outcome {
             RemoteIndexOutcome::Payload(body) => {
                 backend_replication::decode_response(&body, control_limits())
@@ -457,23 +480,56 @@ impl RemoteSemanticRangeConnection {
             }
             RemoteIndexOutcome::Rejected(
                 backend_engine::cluster_transport::RemoteIndexReject::StaleCapability,
-            ) => Err(ClientError::StaleRemoteCapability),
+            ) => {
+                self.session = None;
+                Err(ClientError::StaleRemoteCapability)
+            }
             RemoteIndexOutcome::Rejected(
                 backend_engine::cluster_transport::RemoteIndexReject::CapabilityRevoked,
-            ) => Err(ClientError::RemoteCapabilityRevoked),
+            ) => {
+                self.session = None;
+                Err(ClientError::RemoteCapabilityRevoked)
+            }
             RemoteIndexOutcome::Rejected(reason) => Err(ClientError::Protocol(format!(
                 "remote semantic request was rejected: {reason:?}"
             ))),
+        }
+    }
+
+    fn exchange_until(
+        &mut self,
+        request_id: u64,
+        body: Box<[u8]>,
+        deadline: Instant,
+    ) -> Result<backend_engine::cluster_transport::RemoteIndexResponse, ClientError> {
+        let result = {
+            let session = self.session.as_mut().ok_or_else(|| {
+                ClientError::Io("remote semantic session was not opened".to_owned())
+            })?;
+            self.runtime
+                .block_on(tokio::time::timeout_at(deadline, async {
+                    session
+                        .send_request(&RemoteIndexRequest { request_id, body })
+                        .await?;
+                    session.receive_response(request_id).await
+                }))
+        };
+        match result {
+            Ok(Ok(response)) => Ok(response),
+            Ok(Err(error)) => {
+                self.session = None;
+                Err(map_remote_index_transport_error(error))
+            }
+            Err(_) => {
+                self.session = None;
+                Err(ClientError::RemoteDeadlineExceeded)
+            }
         }
     }
 }
 
 fn map_transport_error(error: impl std::fmt::Display) -> ClientError {
     ClientError::Io(error.to_string())
-}
-
-fn retryable_remote_index_transport(error: &TransportError) -> bool {
-    matches!(error, TransportError::Iroh(_) | TransportError::Io(_))
 }
 
 fn map_remote_index_transport_error(error: TransportError) -> ClientError {
@@ -1838,6 +1894,10 @@ fn map_residency_error(error: IrResidencyError) -> ClientError {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use backend_engine::cluster_transport::{
+        RemoteIndexCapabilityClaims, RemoteIndexCapabilityIssuer, RemoteIndexPermission,
+        RemoteIndexSemanticSelection,
+    };
     use backend_replication::{
         LocalControlLimits, LocalControlRequest, LocalControlResponse, SemanticCatalogChunk,
         SemanticCatalogGet, decode_request, encode_response, read_frame, write_frame,
@@ -1848,9 +1908,48 @@ mod tests {
     };
     use backend_semantic::vocabulary::{LanguageProfile, RustEdition};
     use std::fs;
+    use std::net::UdpSocket;
     use std::os::unix::net::UnixStream;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::mpsc;
     use std::thread;
+    use std::time::Duration;
+    use tokio::sync::oneshot;
+
+    const REMOTE_TEST_IO_TIMEOUT: Duration = Duration::from_secs(10);
+    const REMOTE_TEST_DEADLINE: Duration = Duration::from_millis(300);
+
+    struct RemoteSemanticTestServer {
+        shutdown: Option<oneshot::Sender<()>>,
+        worker: Option<thread::JoinHandle<()>>,
+    }
+
+    impl RemoteSemanticTestServer {
+        fn finish(mut self) {
+            if let Some(shutdown) = self.shutdown.take() {
+                let _ = shutdown.send(());
+            }
+            if let Some(worker) = self.worker.take() {
+                worker
+                    .join()
+                    .expect("join bounded remote semantic test server");
+            }
+        }
+    }
+
+    impl Drop for RemoteSemanticTestServer {
+        fn drop(&mut self) {
+            if let Some(shutdown) = self.shutdown.take() {
+                let _ = shutdown.send(());
+            }
+            if let Some(worker) = self.worker.take() {
+                let result = worker.join();
+                if !thread::panicking() {
+                    assert!(result.is_ok(), "remote semantic test server panicked");
+                }
+            }
+        }
+    }
 
     struct Source {
         stamp: SelectedGenerationStamp,
@@ -2184,6 +2283,166 @@ mod tests {
             Err(ClientError::StaleSelection)
         );
     }
+
+    #[test]
+    fn remote_semantic_request_deadline_covers_an_accepted_wire_session() {
+        let (target, catalog, stamp) = catalog_fixture();
+        let owner_secret = SecretKey::generate();
+        let signing_secret = owner_secret.clone();
+        let client_secret = SecretKey::generate();
+        let reservation = UdpSocket::bind("127.0.0.1:0").expect("reserve owner address");
+        let address = reservation.local_addr().expect("owner address");
+        drop(reservation);
+        let (ready_sender, ready_receiver) = mpsc::channel();
+        let (request_seen_sender, request_seen_receiver) = mpsc::channel();
+        let (shutdown_sender, mut shutdown_receiver) = oneshot::channel();
+        let owner_thread = thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("owner runtime");
+            runtime.block_on(async move {
+                let owner = tokio::time::timeout(
+                    REMOTE_TEST_IO_TIMEOUT,
+                    bind_direct(owner_secret, address),
+                )
+                .await
+                .expect("owner endpoint bind timed out")
+                .expect("owner endpoint");
+                ready_sender.send(owner.id()).expect("send owner identity");
+                let incoming = tokio::select! {
+                    _ = &mut shutdown_receiver => return,
+                    result = tokio::time::timeout(REMOTE_TEST_IO_TIMEOUT, owner.accept()) => {
+                        result.expect("remote semantic accept timed out")
+                            .expect("remote semantic connection")
+                    }
+                };
+                let connecting = incoming
+                    .accept()
+                    .expect("accept remote semantic connection");
+                let connection = tokio::select! {
+                    _ = &mut shutdown_receiver => return,
+                    result = tokio::time::timeout(REMOTE_TEST_IO_TIMEOUT, connecting) => {
+                        result.expect("remote semantic connect timed out")
+                            .expect("complete remote semantic connection")
+                    }
+                };
+                let mut session = tokio::select! {
+                    _ = &mut shutdown_receiver => return,
+                    result = tokio::time::timeout(
+                        REMOTE_TEST_IO_TIMEOUT,
+                        accept_remote_index(connection, owner.id()),
+                    ) => {
+                        result.expect("remote semantic admission timed out")
+                            .expect("admit exact semantic capability")
+                    }
+                };
+                let request = tokio::select! {
+                    _ = &mut shutdown_receiver => return,
+                    result = tokio::time::timeout(
+                        REMOTE_TEST_IO_TIMEOUT,
+                        session.receive_request(),
+                    ) => {
+                        result.expect("remote semantic request timed out")
+                            .expect("receive actual semantic request")
+                    }
+                };
+                assert_eq!(request.request_id, 1);
+                let decoded = decode_request(&request.body, control_limits())
+                    .expect("decode semantic request from the wire");
+                assert!(matches!(
+                    decoded,
+                    LocalControlRequest::SemanticMetadataGet { request_id: 1, .. }
+                ));
+                request_seen_sender
+                    .send(())
+                    .expect("report accepted semantic request");
+                let stopped = tokio::select! {
+                    _ = &mut shutdown_receiver => true,
+                    _ = tokio::time::sleep(REMOTE_TEST_IO_TIMEOUT) => false,
+                };
+                assert!(stopped, "bounded remote semantic server did not stop");
+            });
+        });
+        let test_server = RemoteSemanticTestServer {
+            shutdown: Some(shutdown_sender),
+            worker: Some(owner_thread),
+        };
+
+        let owner = ready_receiver
+            .recv_timeout(REMOTE_TEST_IO_TIMEOUT)
+            .expect("owner endpoint became ready before timeout");
+        let now = remote_index_now().expect("clock");
+        let client_id = client_secret.public();
+        let scope = RemoteIndexSemanticSelection {
+            package: target.package().to_owned(),
+            coordinate: target.coordinate().to_owned(),
+            profile: <[u8; 2]>::from(target.profile()),
+            namespace: *stamp.namespace(),
+            source_coordinate: *stamp.source_coordinate(),
+            selection_revision: stamp.selection_revision(),
+            selected_root: *stamp.selected_root(),
+            closure_id: *stamp.closure_id(),
+            catalog_root: *stamp.catalog_root().as_bytes(),
+        };
+        let capability = RemoteIndexCapabilityIssuer::new(signing_secret)
+            .issue(
+                RemoteIndexCapabilityClaims {
+                    version: 2,
+                    server: owner,
+                    client: client_id,
+                    grant_id: [0x74; 16],
+                    issued_at_unix_ms: now,
+                    expires_at_unix_ms: now + 60_000,
+                    request_budget: 16,
+                    byte_budget: 64 * 1024,
+                    permissions: vec![RemoteIndexPermission::SemanticHydration],
+                    product: None,
+                    semantic: Some(scope),
+                },
+                now,
+            )
+            .expect("sign exact semantic capability");
+
+        let get = SemanticCatalogGet {
+            request_id: 1,
+            target,
+            selected_stamp: None,
+            catalog_root: None,
+            total_length: None,
+            byte_range: ByteRange::new(0, 1).expect("first catalog byte"),
+        };
+        let request = LocalControlRequest::SemanticMetadataGet {
+            request_id: get.request_id,
+            payload: get
+                .encode()
+                .expect("encode catalog request")
+                .into_boxed_slice(),
+        };
+        let mut remote = RemoteSemanticRangeConnection::connect_with_timeout(
+            client_secret,
+            owner,
+            address,
+            capability,
+            REMOTE_TEST_IO_TIMEOUT,
+        )
+        .expect("open real authenticated semantic session");
+        assert!(catalog.root() == stamp.catalog_root());
+        assert!(matches!(
+            remote.request_with_timeout(&request, REMOTE_TEST_DEADLINE),
+            Err(ClientError::RemoteDeadlineExceeded)
+        ));
+        request_seen_receiver
+            .recv_timeout(REMOTE_TEST_IO_TIMEOUT)
+            .expect("owner received the actual metadata request before withholding its reply");
+        assert!(
+            remote.session.is_none(),
+            "deadline must clear the accepted session"
+        );
+
+        drop(remote);
+        test_server.finish();
+    }
 }
 
 #[cfg(any(unix, windows))]
@@ -2204,8 +2463,8 @@ fn connect_stream(path: &Path) -> Result<backend_replication::LocalStream, Clien
 #[cfg(any(unix, windows))]
 fn configure_stream(stream: &backend_replication::LocalStream) {
     let _ = stream
-        .set_read_timeout(Some(REQUEST_TIMEOUT))
-        .and_then(|()| stream.set_write_timeout(Some(REQUEST_TIMEOUT)));
+        .set_read_timeout(Some(crate::CLIENT_REQUEST_TIMEOUT))
+        .and_then(|()| stream.set_write_timeout(Some(crate::CLIENT_REQUEST_TIMEOUT)));
 }
 
 #[cfg(unix)]
