@@ -47,7 +47,7 @@ pub fn admit_resource<T>(resource: &Resource<T>, current: VersionedRoot, owner_s
         Some(ReadHoldReason::OwnerUnavailable)
     } else if value.is_some() && !resource.value_root().is_some_and(|root| root.same_authority(current)) {
         Some(ReadHoldReason::AuthorityChanged)
-    } else if resource.activity() != Activity::Rest {
+    } else if matches!(resource.terminal(), ResourceTerminal::Partial) || resource.activity() != Activity::Rest {
         Some(ReadHoldReason::Reading)
     } else if value.is_none() {
         Some(ReadHoldReason::NotReady)
@@ -83,6 +83,9 @@ mod tests {
             assert_eq!(admission.retained_value(), Some(&7));
             assert!(matches!(admission, ResourceAdmission::Retained { reason, .. } if reason == expected));
         }
+        let partial = Resource::partial_at(7_u32, root(1)).resting();
+        assert!(matches!(admit_resource(&partial, root(1), true), ResourceAdmission::Retained { reason: ReadHoldReason::Reading, .. }));
+        assert!(!admit_resource(&partial, root(1), true).allows_actions(), "stopped intermediate bytes are never a completed reading");
         let working = resource.working();
         assert!(matches!(admit_resource(&working, root(1), true), ResourceAdmission::Retained { reason: ReadHoldReason::Reading, .. }));
     }
