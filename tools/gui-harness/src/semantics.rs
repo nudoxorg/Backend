@@ -718,7 +718,6 @@ fn validate_native_tree(
             .and_then(serde_json::Value::as_str)
             .expect("validated role");
         if is_interactive_accesskit_role(role)
-            && aria.get("disabled").and_then(serde_json::Value::as_bool) != Some(true)
             && aria.get("hidden").and_then(serde_json::Value::as_bool) != Some(true)
         {
             if !native_node_has_accessible_name(id, nodes, &children_by_node, &mut BTreeSet::new())
@@ -727,10 +726,11 @@ fn validate_native_tree(
                     "interactive native accessibility node {id:?} ({role}) has no accessible name"
                 ));
             }
-            if aria
-                .get("on_action")
-                .and_then(serde_json::Value::as_array)
-                .map_or(true, Vec::is_empty)
+            if aria.get("disabled").and_then(serde_json::Value::as_bool) != Some(true)
+                && aria
+                    .get("on_action")
+                    .and_then(serde_json::Value::as_array)
+                    .map_or(true, Vec::is_empty)
             {
                 return Err(format!(
                     "interactive native accessibility node {id:?} ({role}) has no actions"
@@ -1536,6 +1536,17 @@ mod tests {
                 .expect_err("unlabelled control rejected")
                 .contains("no accessible name")
         );
+    }
+
+    #[test]
+    fn disabled_native_controls_keep_names_without_requiring_activation_actions() {
+        let mut tree = valid_native_tree();
+        tree["nodes"]["button"]["aria"]["disabled"] = serde_json::json!(true);
+        tree["nodes"]["button"]["aria"]
+            .as_object_mut()
+            .unwrap()
+            .remove("on_action");
+        validate_native(&tree).expect("disabled control remains named and may omit actions");
     }
 
     #[test]
