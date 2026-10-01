@@ -36,7 +36,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// The file's name inside the workspace's data directory.
 pub const FILE_NAME: &str = "desktop-snapshot.nxs";
@@ -102,34 +102,81 @@ impl<'de> serde::Deserialize<'de> for Digest {
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Control(Vec<u8>);
 
-/// Which build read a page: the running executable's size and modification
-/// time. A different mapping of the same root is a different page, so a new
-/// build never trusts an old build's snapshot as current.
+/// Which build mapped a page: the exact executable bytes. The fingerprint is
+/// prepared on the launch reader, never by the UI's root comparison. Unknown
+/// identity always requires a worker read; two failed probes never match.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Writer {
-    len: u64,
-    /// Since the epoch; zero when the build's time cannot be read.
-    modified: Duration,
+    executable: Option<Digest>,
 }
 
+static WRITER: OnceLock<Writer> = OnceLock::new();
+
 impl Writer {
-    /// This build (one `stat`, once).
+    /// The fingerprint already prepared off the UI thread.
     fn this_build() -> Self {
-        static WRITER: OnceLock<Writer> = OnceLock::new();
-        *WRITER.get_or_init(|| {
-            std::env::current_exe()
-                .and_then(std::fs::metadata)
-                .map(|meta| Self {
-                    len: meta.len(),
-                    modified: meta
-                        .modified()
-                        .ok()
-                        .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
-                        .unwrap_or_default(),
-                })
-                .unwrap_or_default()
-        })
+        WRITER.get().copied().unwrap_or_default()
     }
+
+    /// Called only by the launch read worker. The executable is streamed once
+    /// through one held regular-file handle with a fixed 64KiB scratch buffer.
+    fn prepare_this_build() {
+        WRITER.get_or_init(|| Self {
+            executable: std::env::current_exe()
+                .ok()
+                .and_then(|path| fingerprint_executable(&path).ok()),
+        });
+    }
+}
+
+fn fingerprint_executable(path: &Path) -> io::Result<Digest> {
+    use sha2::Digest as _;
+    use std::io::Read as _;
+
+    const MAX_EXECUTABLE_BYTES: u64 = 512 << 20;
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::other("executable has no parent"))?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| io::Error::other("executable has no Unicode name"))?;
+    let directory =
+        backend_platform::directory::DirectoryCapability::open_read_only_source(parent)?;
+    let mut file = directory.open_file_read(name)?;
+    let before = file.metadata()?;
+    if before.len() > MAX_EXECUTABLE_BYTES {
+        return Err(io::Error::other(
+            "executable exceeds fingerprint byte limit",
+        ));
+    }
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(b"nudox.desktop.mapping.executable.v1\0");
+    let mut scratch = [0; 64 << 10];
+    let mut total = 0_u64;
+    loop {
+        let count = file.read(&mut scratch)?;
+        if count == 0 {
+            break;
+        }
+        total += count as u64;
+        if total > MAX_EXECUTABLE_BYTES {
+            return Err(io::Error::other(
+                "executable grew beyond fingerprint byte limit",
+            ));
+        }
+        hasher.update(&scratch[..count]);
+    }
+    let after = file.metadata()?;
+    if total != before.len()
+        || after.len() != before.len()
+        || after.modified()? != before.modified()?
+    {
+        return Err(io::Error::other(
+            "executable changed during fingerprint read",
+        ));
+    }
+    Ok(Digest(hasher.finalize().into()))
 }
 
 /// The root a snapshot's pages were read at, and the build that read them.
@@ -153,7 +200,7 @@ impl SnapRoot {
     /// were read at: then they are current as they are.
     #[must_use]
     pub fn serves(&self, root: VersionedRoot) -> bool {
-        !root.is_unserved() && *self == Self::of(root)
+        !root.is_unserved() && self.writer.executable.is_some() && *self == Self::of(root)
     }
 }
 
@@ -277,6 +324,7 @@ impl SnapshotFile {
     /// hold are simply absent from the seed.
     #[must_use]
     pub fn read(&self, wanted: &[PageKey]) -> Option<Seed> {
+        Writer::prepare_this_build();
         let reading = Instant::now();
         let bytes = match backend_platform::durable::read_regular_bounded(&self.path, FILE_CAP) {
             Ok(bytes) => bytes,
@@ -604,7 +652,9 @@ fn entry(key: &PageKey, body: &[u8]) -> Result<SeedEntry, serde_json::Error> {
         // Only kept families reach this decoder. No table claim is parsed
         // into a SymbolRef, PackageRef or any producer capability.
         PageKey::Search(_) | PageKey::Health | PageKey::Browse(_) => {
-            return Err(<serde_json::Error as serde::de::Error>::custom("unkept snapshot family"));
+            return Err(<serde_json::Error as serde::de::Error>::custom(
+                "unkept snapshot family",
+            ));
         }
     })
 }
