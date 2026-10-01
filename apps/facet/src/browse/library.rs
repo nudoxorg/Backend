@@ -48,24 +48,73 @@ pub struct ReleaseLink {
 
 /// An action address into the immutable tree that produced one rendered page.
 /// It is never interpreted as a package coordinate by the component.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct ReleaseHandle {
     role: usize,
     row: usize,
     release: usize,
+    identity: ReleaseIdentity,
+}
+
+impl PartialEq for ReleaseHandle {
+    fn eq(&self, other: &Self) -> bool {
+        self.identity == other.identity
+    }
+}
+
+impl Eq for ReleaseHandle {}
+
+impl std::hash::Hash for ReleaseHandle {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&self.identity, state);
+    }
+}
+
+/// A source release's stable identity across row and source order changes.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct ReleaseIdentity {
+    role: SharedString,
+    row: SharedString,
+    release: SharedString,
 }
 
 impl ReleaseHandle {
-    /// Names a release in the same immutable tree as the rendered model.
+    /// Positional test helper; production releases use exact source keys.
+    #[cfg(test)]
     #[must_use]
-    pub const fn new(role: usize, row: usize, release: usize) -> Self {
-        Self { role, row, release }
+    pub fn new(role: usize, row: usize, release: usize) -> Self {
+        Self::identified(role, row, release,
+            format!("role-{role}"), format!("row-{row}"), format!("release-{release}"))
+    }
+
+    /// Binds current positions to an exact role, row, and source release.
+    #[must_use]
+    pub fn identified(
+        role: usize,
+        row: usize,
+        release: usize,
+        role_key: impl Into<SharedString>,
+        row_key: impl Into<SharedString>,
+        release_key: impl Into<SharedString>,
+    ) -> Self {
+        Self {
+            role, row, release,
+            identity: ReleaseIdentity {
+                role: role_key.into(), row: row_key.into(), release: release_key.into(),
+            },
+        }
     }
 
     /// The positions to resolve against that immutable tree's typed links.
     #[must_use]
-    pub const fn positions(self) -> (usize, usize, usize) {
+    pub const fn positions(&self) -> (usize, usize, usize) {
         (self.role, self.row, self.release)
+    }
+
+    /// The exact identities represented by these positions.
+    #[must_use]
+    pub fn keys(&self) -> (&str, &str, &str) {
+        (self.identity.role.as_ref(), self.identity.row.as_ref(), self.identity.release.as_ref())
     }
 }
 
@@ -179,9 +228,9 @@ pub struct State {
     lists: BTreeMap<SharedString, ListCache>,
     open: VecDeque<SharedString>,
     all_alerts: bool,
-    focuses: VecDeque<(ReleaseHandle, FocusHandle)>,
+    focuses: VecDeque<(ReleaseIdentity, FocusHandle)>,
     release_pages: VecDeque<(SharedString, usize)>,
-    return_focus: Option<(ReleaseHandle, u64)>,
+    return_focus: Option<(ReleaseIdentity, u64)>,
 }
 
 struct ListCache {
@@ -194,23 +243,24 @@ impl State {
     /// Remembers the exact release that opened the next page. Its button is
     /// focused only if this same tree is painted at a later Reader place.
     pub fn remember_open(&mut self, release: ReleaseHandle, place_key: u64) {
-        self.return_focus = Some((release, place_key));
+        self.return_focus = Some((release.identity, place_key));
     }
 
-    fn return_target(&self, place_key: u64, active: bool) -> Option<ReleaseHandle> {
+    fn return_target(&self, place_key: u64, active: bool) -> Option<ReleaseIdentity> {
         self.return_focus
+            .as_ref()
             .filter(|(_, from)| active && *from != place_key)
-            .map(|(release, _)| release)
+            .map(|(release, _)| release.clone())
     }
 
-    fn take_return(&mut self, release: ReleaseHandle, place_key: u64, active: bool) -> bool {
-        if self.return_target(place_key, active) != Some(release) { return false; }
+    fn take_return(&mut self, release: &ReleaseIdentity, place_key: u64, active: bool) -> bool {
+        if self.return_target(place_key, active).as_ref() != Some(release) { return false; }
         self.return_focus = None;
         true
     }
 
-    fn focus_for(&mut self, release: ReleaseHandle, cx: &mut App) -> FocusHandle {
-        if let Some(at) = self.focuses.iter().position(|(key, _)| *key == release)
+    fn focus_for(&mut self, release: &ReleaseIdentity, cx: &mut App) -> FocusHandle {
+        if let Some(at) = self.focuses.iter().position(|(key, _)| key == release)
             && let Some((key, focus)) = self.focuses.remove(at)
         {
             self.focuses.push_back((key, focus.clone()));
@@ -218,12 +268,12 @@ impl State {
         }
         let focus = cx.focus_handle().tab_stop(true);
         if self.focuses.len() == 64 {
-            if self.focuses.front().is_some_and(|(key, _)| self.return_focus.is_some_and(|(returning, _)| *key == returning)) {
+            if self.focuses.front().is_some_and(|(key, _)| self.return_focus.as_ref().is_some_and(|(returning, _)| key == returning)) {
                 self.focuses.rotate_left(1);
             }
             self.focuses.pop_front();
         }
-        self.focuses.push_back((release, focus.clone()));
+        self.focuses.push_back((release.clone(), focus.clone()));
         focus
     }
 
@@ -286,6 +336,22 @@ mod state_tests {
     use super::{ReleaseHandle, State};
 
     #[test]
+    fn exact_release_handle_identity_ignores_reordered_position_hints() {
+        use std::hash::{Hash as _, Hasher as _};
+        let before = ReleaseHandle::identified(0, 4, 0, "formats", "shared", "registry-a");
+        let after = ReleaseHandle::identified(2, 7, 1, "formats", "shared", "registry-a");
+        let sibling = ReleaseHandle::identified(0, 4, 0, "formats", "shared", "registry-b");
+        assert_eq!(before, after);
+        assert_ne!(before, sibling);
+        let digest = |handle: &ReleaseHandle| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            handle.hash(&mut hasher);
+            hasher.finish()
+        };
+        assert_eq!(digest(&before), digest(&after));
+    }
+
+    #[test]
     fn disclosure_follows_exact_row_identity_and_stays_bounded() {
         let mut state = State::default();
         state.toggle("role:source-a@1".into());
@@ -305,12 +371,12 @@ mod state_tests {
     fn return_focus_waits_for_a_new_active_place_and_is_one_shot() {
         let mut state = State::default();
         let release = ReleaseHandle::new(2, 97, 1);
-        state.remember_open(release, 8);
+        state.remember_open(release.clone(), 8);
         assert_eq!(state.return_target(8, true), None);
         assert_eq!(state.return_target(9, false), None);
-        assert_eq!(state.return_target(9, true), Some(release));
-        assert!(!state.take_return(ReleaseHandle::new(2, 97, 0), 9, true));
-        assert!(state.take_return(release, 9, true));
+        assert_eq!(state.return_target(9, true), Some(release.identity.clone()));
+        assert!(!state.take_return(&ReleaseHandle::new(2, 97, 0).identity, 9, true));
+        assert!(state.take_return(&release.identity, 9, true));
         assert_eq!(state.return_target(9, true), None);
     }
 }
@@ -341,7 +407,7 @@ mod mounted_tests {
             let opened = Rc::clone(&self.opened);
             let place_key = self.place_key;
             let actions = Actions { open_package: Rc::new(move |release, _, _| {
-                state.borrow_mut().remember_open(release, place_key);
+                state.borrow_mut().remember_open(release.clone(), place_key);
                 opened.borrow_mut().push(release);
             }) };
             div().w(self.width).h(px(900.0)).child(library(
@@ -374,13 +440,13 @@ mod mounted_tests {
             set_facet(Facet { text_scale: 2.0, reduced_motion: true, ..Facet::default() }, cx);
             probe::enable(cx);
         });
-        let release = ReleaseHandle::new(0, 499, 0);
+        let release = ReleaseHandle::identified(0, 499, 0, "formats", "exact-package", "release-1");
         let rows = (0..500).map(|at| Row {
             key: if at == 499 { "exact-package".into() } else { format!("other-{at:03}").into() },
             name: if at == 499 { "exact-package".into() } else { format!("other-{at:03}").into() },
             at_rest: None, why: "an admitted release".into(), about: None,
             releases: if at == 499 { vec![ReleaseLink { key: "release-1".into(), version: "1".into(),
-                target: Some(release), unavailable: None, source_detail: None }] } else { vec![] },
+                target: Some(release.clone()), unavailable: None, source_detail: None }] } else { vec![] },
         }).collect();
         let model = Arc::new(Model {
             name: "project".into(), lede: "Its dependencies".into(), lede_tip: None,
@@ -423,6 +489,62 @@ mod mounted_tests {
     }
 
     #[gpui::test]
+    fn back_after_same_version_source_reorder_focuses_the_opened_authority(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            set_facet(Facet { text_scale: 2.0, reduced_motion: true, ..Facet::default() }, cx);
+            probe::enable(cx);
+        });
+        let releases = ["registry-a", "registry-b"].into_iter().enumerate().map(|(at, source)| ReleaseLink {
+            key: source.into(), version: "1.0.0".into(),
+            target: Some(ReleaseHandle::identified(0, 0, at, "formats", "shared-row", source)),
+            unavailable: None, source_detail: Some(source.into()),
+        }).collect();
+        let model = Arc::new(Model {
+            name: "project".into(), lede: "Two exact sources".into(), lede_tip: None,
+            note: None, alerts: vec![], facts: vec![],
+            roles: vec![Role { key: "formats".into(), icon: Icon::Split, label: "speaks formats".into(),
+                serving: None, brings: None, rows: vec![Row { key: "shared-row".into(),
+                    name: "shared".into(), at_rest: None, why: "two sources".into(),
+                    about: None, releases }] }],
+            twice_heading: None, twice: vec![],
+        });
+        let state = Rc::new(RefCell::new(State::default()));
+        let opened = Rc::new(RefCell::new(Vec::new()));
+        let (host, cx) = cx.add_window_view(|_, _| Mounted {
+            model, state: Rc::clone(&state), opened: Rc::clone(&opened),
+            width: px(260.0), place_key: 1, visible: true,
+        });
+        let first = draw(cx);
+        click(cx, &first, "shared-row");
+        let expanded = draw(cx);
+        click(cx, &expanded, "registry-b");
+        assert_eq!(opened.borrow().last().map(ReleaseHandle::keys), Some(("formats", "shared-row", "registry-b")));
+        host.update(cx, |host, cx| { host.visible = false; cx.notify(); });
+        draw(cx);
+        host.update(cx, |host, cx| {
+            let mut changed = (*host.model).clone();
+            changed.roles[0].rows[0].releases.swap(0, 1);
+            for (at, release) in changed.roles[0].rows[0].releases.iter_mut().enumerate() {
+                release.target = Some(ReleaseHandle::identified(0, 0, at, "formats", "shared-row", release.key.clone()));
+            }
+            host.model = Arc::new(changed);
+            host.visible = true;
+            host.place_key = 2;
+            host.width = px(320.0);
+            cx.notify();
+        });
+        draw(cx);
+        cx.simulate_keystrokes("left");
+        let returned = draw(cx);
+        assert!(returned.targets.iter().any(|target| target.key.contains("registry-b") && target.state.focused),
+            "Back must focus the opened source after source order and width change");
+        assert!(!returned.targets.iter().any(|target| target.key.contains("registry-a") && target.state.focused),
+            "Back must not transfer focus to the other same-version source");
+        assert!(state.borrow().return_focus.is_none(), "exact-source return focus is one shot");
+    }
+
+    #[gpui::test]
     fn an_expanded_row_mounts_a_bounded_release_window_with_a_reachable_tail(cx: &mut TestAppContext) {
         cx.update(|cx| {
             gpui_component::init(cx);
@@ -431,7 +553,7 @@ mod mounted_tests {
         });
         let releases = (0..1_000).map(|at| ReleaseLink {
             key: format!("release-{at}").into(), version: at.to_string().into(),
-            target: Some(ReleaseHandle::new(0, 0, at)), unavailable: None, source_detail: None,
+            target: Some(ReleaseHandle::identified(0, 0, at, "formats", "exact-package", format!("release-{at}"))), unavailable: None, source_detail: None,
         }).collect();
         let model = Arc::new(Model {
             name: "project".into(), lede: "Its dependencies".into(), lede_tip: None,
@@ -461,7 +583,7 @@ mod mounted_tests {
         assert!(tail.targets.iter().any(|target| target.key.contains("release-996")),
             "Last releases must reach the final bounded window");
         click(cx, &tail, "release-996");
-        assert_eq!(opened.borrow().as_slice(), &[ReleaseHandle::new(0, 0, 996)]);
+        assert_eq!(opened.borrow().as_slice(), &[ReleaseHandle::identified(0, 0, 996, "formats", "exact-package", "release-996")]);
         host.update(cx, |host, cx| { host.visible = false; cx.notify(); });
         draw(cx);
         host.update(cx, |host, cx| { host.visible = true; host.place_key = 2; cx.notify(); });
@@ -930,10 +1052,11 @@ fn role_block(
         .flex_col()
         .gap(measure.space(Space::Tight))
         .child(head);
-    let returning = state.borrow().return_target(place_key, active)
-        .filter(|target| target.role == role_index && target.row < role.rows.len());
-    if let Some(target) = returning {
-        let row = &role.rows[target.row];
+    let returning_row = state.borrow().return_target(place_key, active)
+        .filter(|target| target.role == role.key)
+        .and_then(|target| role.rows.iter().position(|row| row.key == target.row));
+    if let Some(at) = returning_row {
+        let row = &role.rows[at];
         state.borrow_mut().ensure_open(format!("{}:{}", role.key, row.key).into());
     }
     let mut keyboard = None;
@@ -949,7 +1072,7 @@ fn role_block(
                 state,
                 state_key,
                 None,
-                ReleaseHandle::new(role_index, row_index, 0),
+                ReleaseHandle::identified(role_index, row_index, 0, role.key.clone(), row.key.clone(), ""),
                 place_key,
                 active,
                 window,
@@ -959,9 +1082,9 @@ fn role_block(
     } else {
         let list_key: SharedString = format!("role-list-{}", role.key).into();
         let list_state = state.borrow_mut().list(list_key, role.rows.len(), measure);
-        if let Some(target) = returning {
-            list_state.remeasure_items(target.row..target.row + 1);
-            list_state.scroll_to(ListOffset { item_ix: target.row, offset_in_item: px(0.) });
+        if let Some(at) = returning_row {
+            list_state.remeasure_items(at..at + 1);
+            list_state.scroll_to(ListOffset { item_ix: at, offset_in_item: px(0.) });
         }
         let rows_model = Arc::clone(&model);
         let actions = actions.clone();
@@ -987,7 +1110,8 @@ fn role_block(
                     &state,
                     state_key,
                     Some((rendered_list.clone(), at)),
-                    ReleaseHandle::new(role_index, at, 0),
+                    ReleaseHandle::identified(role_index, at, 0,
+                        rows_model.roles[role_index].key.clone(), row.key.clone(), ""),
                     place_key,
                     active,
                     window,
@@ -1050,7 +1174,7 @@ fn row_view(
     cx: &mut App,
 ) -> AnyElement {
     let returning = state.borrow().return_target(place_key, active)
-        .is_some_and(|target| target.role == row_address.role && target.row == row_address.row);
+        .is_some_and(|target| target.role == row_address.identity.role && target.row == row_address.identity.row);
     let is_expanded = state.borrow().is_open(&state_key);
     let toggle = Rc::clone(state);
     let mut line = div()
@@ -1137,9 +1261,11 @@ fn row_view(
     }
     let release_count = row.releases.len();
     let return_release = state.borrow().return_target(place_key, active)
-        .filter(|target| target.role == row_address.role && target.row == row_address.row);
+        .filter(|target| target.role == row_address.identity.role && target.row == row_address.identity.row);
     if let Some(target) = return_release {
-        state.borrow_mut().set_release_start(state_key.clone(), target.release, release_count);
+        if let Some(at) = row.releases.iter().position(|release| release.key == target.release) {
+            state.borrow_mut().set_release_start(state_key.clone(), at, release_count);
+        }
     }
     let release_start = state.borrow().release_start(&state_key, release_count);
     let release_end = release_start.saturating_add(RELEASE_WINDOW).min(release_count);
@@ -1162,11 +1288,11 @@ fn row_view(
     }
     for release in row.releases.iter().skip(release_start).take(RELEASE_WINDOW) {
         if let Some(target) = &release.target {
-            let target = *target;
+            let target = target.clone();
             let open = Rc::clone(&actions.open_package);
             let button_id = child(id, release.key.clone());
-            let focus = state.borrow_mut().focus_for(target, cx);
-            if returning && state.borrow_mut().take_return(target, place_key, active) {
+            let focus = state.borrow_mut().focus_for(&target.identity, cx);
+            if returning && state.borrow_mut().take_return(&target.identity, place_key, active) {
                 let returning_focus = focus.clone();
                 window.defer(cx, move |window, cx| window.focus(&returning_focus, cx));
             }

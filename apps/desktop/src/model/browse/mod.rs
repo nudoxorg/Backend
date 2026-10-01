@@ -162,6 +162,8 @@ pub struct TreeRoleLinks {
 pub struct TreeRowLinks {
     /// Guards the alignment with the prose row.
     pub name: Arc<str>,
+    /// Stable identity of this row's exact multiset of source releases.
+    pub key: Arc<str>,
     /// Exact version identity and destination or its explicit reason.
     pub releases: Arc<[TreeReleaseLink]>,
 }
@@ -171,6 +173,9 @@ pub struct TreeRowLinks {
 pub struct TreeReleaseLink {
     /// Version from the same project-tree reply as its source.
     pub version: Arc<str>,
+    /// Stable exact source identity, including a disambiguator only for
+    /// indistinguishable duplicate occurrences.
+    pub key: Arc<str>,
     /// A route only when the source identity admits one.
     pub destination: TreeDestination,
     /// Full exact source spelling when equal visible versions need disambiguation.

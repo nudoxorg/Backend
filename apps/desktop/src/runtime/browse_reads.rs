@@ -32,27 +32,55 @@ fn key_part(into: &mut String, part: &str) {
 }
 
 /// Exact release source, including registry authority, participates in the
-/// element key. A reorder never lends another release its focus or disclosure.
-fn release_key(version: &str, destination: Option<&TreeDestination>) -> SharedString {
+/// element key. A change in availability does not change source identity.
+fn release_key(
+    version: &str,
+    reference: Option<&backend_library::PackageReference>,
+    origin: Option<&backend_library::browse::PackageOrigin>,
+) -> SharedString {
+    use backend_library::browse::PackageOrigin;
     let mut key = String::new();
     key_part(&mut key, version);
-    match destination {
-        Some(TreeDestination::Open(package)) => key_part(&mut key, package.as_str()),
-        Some(TreeDestination::Unavailable(reason)) => key_part(&mut key, reason),
-        None => key_part(&mut key, "unresolved"),
+    if let Some(reference) = reference {
+        key_part(&mut key, "qualified");
+        key_part(&mut key, reference.as_str());
+    } else {
+        match origin {
+            Some(PackageOrigin::Registry { source }) => { key_part(&mut key, "registry"); key_part(&mut key, source); }
+            Some(PackageOrigin::Git { source }) => { key_part(&mut key, "git"); key_part(&mut key, source); }
+            Some(PackageOrigin::Vendored { path }) => { key_part(&mut key, "vendored"); key_part(&mut key, path); }
+            Some(PackageOrigin::Unresolved { source }) => {
+                key_part(&mut key, "unresolved");
+                key_part(&mut key, source.as_deref().unwrap_or("unknown"));
+            }
+            None => key_part(&mut key, "unknown"),
+        }
+    }
+    key.into()
+}
+
+fn row_key_from_releases(name: &str, releases: &[TreeReleaseLink]) -> SharedString {
+    let mut key = String::new();
+    key_part(&mut key, name);
+    let mut exact = releases.iter().map(|release| release.key.as_ref()).collect::<Vec<_>>();
+    exact.sort_unstable();
+    for release in exact {
+        key_part(&mut key, release);
     }
     key.into()
 }
 
 pub(crate) fn row_key(row: &backend_present::RowReading, links: Option<&crate::model::browse::TreeRowLinks>) -> SharedString {
+    if let Some(links) = links.filter(|links| links.name.as_ref() == row.name.as_str()) {
+        return row_key_from_releases(&row.name, &links.releases);
+    }
     let mut key = String::new();
     key_part(&mut key, &row.name);
-    for (at, version) in row.versions.iter().enumerate() {
-        let destination = links.and_then(|links| links.releases.get(at))
-            .filter(|release| release.version.as_ref() == version)
-            .map(|release| &release.destination);
-        key_part(&mut key, release_key(version, destination).as_ref());
-    }
+    let mut exact = row.versions.iter().enumerate().map(|(at, version)| {
+        release_key(version, row.sources.get(at).and_then(Option::as_ref), row.origins.get(at)).to_string()
+    }).collect::<Vec<_>>();
+    exact.sort_unstable();
+    for release in exact { key_part(&mut key, &release); }
     key.into()
 }
 
@@ -109,11 +137,13 @@ fn prepared_library_model(reading: &backend_present::TreeReading, links: &[TreeR
                 .rows
                 .iter()
                 .enumerate()
-                .map(|(row_at, row)| LibraryRow {
-                    key: row_key(row, links.get(role_at)
+                .map(|(row_at, row)| {
+                    let stable_row_key = row_key(row, links.get(role_at)
                         .filter(|links| links.role == role.id)
                         .and_then(|links| links.rows.get(row_at))
-                        .filter(|links| links.name.as_ref() == row.name)),
+                        .filter(|links| links.name.as_ref() == row.name));
+                    LibraryRow {
+                    key: stable_row_key.clone(),
                     name: say(&row.name),
                     at_rest: row.at_rest.as_deref().map(&mut say),
                     why: row.evidence.clone().into(),
@@ -125,20 +155,15 @@ fn prepared_library_model(reading: &backend_present::TreeReading, links: &[TreeR
                             .filter(|links| links.name.as_ref() == row.name)
                             .and_then(|links| links.releases.get(version_at))
                             .filter(|link| link.version.as_ref() == version);
-                        let key = release_key(version, destination.map(|link| &link.destination));
-                        // Two unresolved copies can have identical visible
-                        // version/reason text. They have no action to lend;
-                        // disambiguate only those element ids.
-                        let key = if matches!(destination.map(|link| &link.destination), Some(TreeDestination::Open(_))) {
-                            key
-                        } else {
-                            format!("{key}#{version_at}").into()
-                        };
+                        let key: SharedString = destination
+                            .map(|link| link.key.to_string().into())
+                            .unwrap_or_else(|| release_key(version, row.sources.get(version_at).and_then(Option::as_ref), row.origins.get(version_at)));
                         match destination.map(|link| &link.destination) {
                             Some(TreeDestination::Open(_package)) => LibraryReleaseLink {
-                                key,
+                                key: key.clone(),
                                 version: version.clone().into(),
-                                target: Some(ReleaseHandle::new(role_at, row_at, version_at)),
+                                target: Some(ReleaseHandle::identified(role_at, row_at, version_at,
+                                    role.id.as_str(), stable_row_key.clone(), key.clone())),
                                 unavailable: None,
                                 source_detail: destination.and_then(|link| link.source_detail.as_ref()).map(|detail| detail.to_string().into()),
                             },
@@ -158,7 +183,7 @@ fn prepared_library_model(reading: &backend_present::TreeReading, links: &[TreeR
                             },
                         }
                     }).collect(),
-                })
+                }})
                 .collect(),
             brings: role.brings.as_deref().map(&mut say),
         })
@@ -236,22 +261,32 @@ pub fn tree_model(tree: &backend_library::browse::ProjectTree) -> TreeModel {
     let sources = TreeSources::new(tree);
     let links: Arc<[TreeRoleLinks]> = reading.roles.iter().map(|role| TreeRoleLinks {
         role: role.id,
-        rows: role.rows.iter().map(|row| TreeRowLinks {
-            name: Arc::from(row.name.as_str()),
-            releases: {
+        rows: role.rows.iter().map(|row| {
+            let releases: Arc<[TreeReleaseLink]> = {
                 let mut copies = BTreeMap::<&str, usize>::new();
                 for version in &row.versions { *copies.entry(version).or_default() += 1; }
+                let mut same_identity = BTreeMap::<String, usize>::new();
                 row.versions.iter().enumerate().map(|(at, version)| {
                     let reference = row.sources.get(at).and_then(Option::as_ref);
+                    let base = release_key(version, reference, row.origins.get(at));
+                    let occurrence = same_identity.entry(base.to_string()).or_default();
+                    let key: Arc<str> = Arc::from(format!("{base}#{}", *occurrence));
+                    *occurrence += 1;
                     let source_detail = (copies.get(version.as_str()).copied().unwrap_or_default() > 1)
                         .then(|| row.origins.get(at).and_then(origin_detail)).flatten();
                     TreeReleaseLink {
                         version: Arc::from(version.as_str()),
+                        key,
                         destination: sources.destination(&row.name, version, reference),
                         source_detail,
                     }
                 }).collect::<Vec<_>>().into()
-            },
+            };
+            TreeRowLinks {
+                name: Arc::from(row.name.as_str()),
+                key: Arc::from(row_key_from_releases(&row.name, &releases).to_string()),
+                releases,
+            }
         }).collect::<Vec<_>>().into(),
     }).collect::<Vec<_>>().into();
     let prepared = Arc::new(prepared_library_model(&reading, &links));
@@ -421,6 +456,18 @@ mod find_tests {
     use super::*;
     use crate::model::browse::FindPackage;
     use crate::model::pages::PackageRef;
+
+    #[test]
+    fn unavailable_release_keys_preserve_exact_registry_transport_and_git_commit() {
+        use backend_library::browse::PackageOrigin;
+        let registry = PackageOrigin::Registry { source: "registry+https://registry.example/index".to_owned() };
+        let sparse = PackageOrigin::Registry { source: "sparse+https://registry.example/index".to_owned() };
+        let git_a = PackageOrigin::Git { source: "git+https://example.test/lib?branch=main#aaaaaaaa".to_owned() };
+        let git_b = PackageOrigin::Git { source: "git+https://example.test/lib?branch=main#bbbbbbbb".to_owned() };
+        assert_ne!(release_key("1.0.0", None, Some(&registry)), release_key("1.0.0", None, Some(&sparse)));
+        assert_ne!(release_key("1.0.0", None, Some(&git_a)), release_key("1.0.0", None, Some(&git_b)));
+        assert_ne!(release_key("1.0.0", None, Some(&registry)), release_key("1.0.0", None, Some(&git_a)));
+    }
 
     fn candidate(name: &str, indexed: bool) -> FindPackage {
         FindPackage { package: PackageRef::parse(&format!("pkg:cargo/{name}@1.0.0")).unwrap(), name: Arc::from(name), description: None, indexed, record: None, offer: None }
