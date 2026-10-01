@@ -383,6 +383,12 @@ impl Shelf {
             Do::Lens(lens) => self.set_lens(*lens, cx),
             Do::Release(at) => self.links.dispatch(Intent::SetRelease(at.clone()), cx),
             Do::Project(id) => self.links.dispatch(Intent::ActivateProject(id.clone()), cx),
+            Do::ProjectTree(id) => {
+                self.links.dispatch(Intent::ActivateProject(id.clone()), cx);
+                self.links.dispatch(Intent::Navigate(Route::Orbit(crate::navigation::OrbitRoute::Browse(
+                    crate::navigation::BrowseRoute::Tree(id.clone()),
+                ))), cx);
+            }
             Do::Settings(page) => self.links.dispatch(Intent::OpenSettings(*page), cx),
             Do::Via(name) => {
                 // Choosing your crate again lets it go; choosing one shows

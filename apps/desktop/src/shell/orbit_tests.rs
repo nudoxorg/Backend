@@ -10,6 +10,49 @@ use crate::runtime::reads::{PageReader, ReadContext, ReadPool, ReadRequest};
 use gpui::TestAppContext;
 use std::sync::{Arc, Mutex};
 
+/// Two real project folders remain distinct targets. The tree control opens
+/// the chosen project's typed route, which Back can return from.
+#[gpui::test]
+fn two_project_tiles_offer_exact_tree_routes_and_back_returns_to_library(cx: &mut TestAppContext) {
+    use crate::core::LocalProjectId;
+    use crate::model::{ProjectPhase, WorkspaceProject};
+    use crate::navigation::{BrowseRoute, Intent};
+    use gpui::{Modifiers, point, px};
+
+    let mut rig = super::tests::rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 1000.0, 800.0);
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
+    let folders = [
+        root.join("frontends/rust/fixtures/toml_pin"),
+        root.join("apps/desktop/tests/fixtures/browse_tree"),
+    ];
+    let projects = folders.iter().map(|path| {
+        let id = LocalProjectId::from_path(path).unwrap();
+        let mut project = WorkspaceProject::indexing_with_id(id);
+        project.phase = ProjectPhase::Ready;
+        project
+    }).collect::<Vec<_>>();
+    let chosen = projects[1].id.clone();
+    let snapshot = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let mut workspace = snapshot.workspace().clone();
+    workspace.projects = projects.into();
+    workspace.active = Some(chosen.clone());
+    workspace.host = Some(chosen.clone());
+    rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::new(snapshot.with_workspace(workspace)), cx));
+    rig.repaint();
+    let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
+    let targets: Vec<_> = ledger.targets.iter().filter(|target| target.key.starts_with("orbit-tree-")).collect();
+    assert_eq!(targets.len(), 2, "both real folders have a tree route: {targets:#?}");
+    let wanted = format!("orbit-tree-{}", chosen.as_str());
+    let target = targets.iter().find(|target| target.key == wanted).unwrap();
+    let at = target.bounds;
+    rig.cx.simulate_click(point(px(at.x + at.width / 2.0), px(at.y + at.height / 2.0)), Modifiers::default());
+    rig.settle();
+    assert_eq!(rig.route(), Route::Orbit(OrbitRoute::Browse(BrowseRoute::Tree(chosen))));
+    rig.go(Intent::Back);
+    assert_eq!(rig.route(), Route::Orbit(OrbitRoute::Home));
+}
+
 /// The fixture's pages, with a Library whose packages are what `packages`
 /// holds when it is read (an install adds to it between reads).
 struct Growing {
@@ -37,6 +80,31 @@ impl PageReader for Growing {
         }
         Fixture.read(request, context)
     }
+}
+
+struct UnknownPackages;
+
+impl PageReader for UnknownPackages {
+    fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+        if matches!(request, ReadRequest::Orbit) {
+            return Ok(PageValue::Orbit(OrbitModel {
+                indexed: Known::unknown(GapReason::Unavailable, "owner did not answer packages"),
+                projects: Known::Known(Arc::from([])),
+                explore: Known::unknown(GapReason::NotServed, ""),
+                tree: Known::unknown(GapReason::NotServed, ""),
+            }));
+        }
+        Fixture.read(request, context)
+    }
+}
+
+#[gpui::test]
+fn unavailable_packages_are_not_painted_as_an_empty_library(cx: &mut TestAppContext) {
+    let pool = ReadPool::start(1, |_| UnknownPackages).expect("pool");
+    let mut rig = rig_with_reads(cx, Some(Route::Orbit(OrbitRoute::Home)), 320.0, 800.0, pool);
+    let said = rig.said();
+    assert!(said.iter().any(|line| line.contains("packages around your projects are unavailable")), "{said:#?}");
+    assert!(!said.iter().any(|line| line.contains("Your library is empty")), "unknown cannot mean empty: {said:#?}");
 }
 
 /// Where each chip of the ring was drawn, from the flow's own probe tracks,

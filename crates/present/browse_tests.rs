@@ -6,7 +6,7 @@
 
 use crate::browse::read_tree;
 use backend_advisory::{AdvisoryAuthority, AdvisorySource, AuthorityFeed, normalize_package};
-use backend_library::browse::{ProjectTree, RoleId, build_tree, metadata_input};
+use backend_library::browse::{PackageOrigin, ProjectTree, RoleId, build_tree, metadata_input};
 
 const METADATA: &[u8] = include_bytes!("../library/browse/fixtures/tree-2026-09-27/metadata.json");
 const LOCKFILE: &str = include_str!("../library/browse/fixtures/tree-2026-09-27/Cargo.lock");
@@ -99,6 +99,29 @@ fn each_role_says_what_it_is_for_and_why_a_dependency_is_in_it() {
         "{:?}",
         window.brings
     );
+}
+
+#[test]
+fn dependency_rows_retain_exact_source_origin_and_refuse_ambiguous_releases() {
+    let mut source = tree();
+    let reading = read_tree(&source);
+    let toml = reading.roles.iter().flat_map(|role| &role.rows).find(|row| row.name == "toml").expect("toml");
+    assert_eq!(toml.versions.len(), toml.sources.len());
+    assert!(toml.sources.iter().all(|source| matches!(source, Some(PackageOrigin::Registry))));
+    let gpui = reading.roles.iter().flat_map(|role| &role.rows).find(|row| row.name == "gpui-ce").expect("vendored direct dependency");
+    assert!(gpui.sources.iter().any(|source| matches!(source, Some(PackageOrigin::Vendored { path }) if path == "vendor/gpui-ce")));
+
+    let version = toml.versions[0].clone();
+    let duplicate = source.packages.iter().find(|package| package.name == "toml" && package.version == version).expect("toml package").clone();
+    let mut duplicate = duplicate;
+    duplicate.origin = PackageOrigin::Git { url: "https://example.invalid/toml".to_owned() };
+    let mut packages = source.packages.to_vec();
+    packages.push(duplicate);
+    source.packages = packages.into_boxed_slice();
+    let reading = read_tree(&source);
+    let toml = reading.roles.iter().flat_map(|role| &role.rows).find(|row| row.name == "toml").expect("toml");
+    let at = toml.versions.iter().position(|candidate| *candidate == version).expect("version");
+    assert_eq!(toml.sources[at], None, "same name and release at two origins has no safe link");
 }
 
 #[test]

@@ -26,7 +26,7 @@ use crate::model::pages::{
     DependencyScope, Known, OrbitModel, OutlineNode, OutlineTree, PackageDossier, PackageRef,
     PageKey, RecordSource, SearchQuery, Standing, SymbolRef,
 };
-use crate::navigation::{ReleaseId, Route, SettingsPage};
+use crate::navigation::{BrowseRoute, OrbitRoute, ReleaseId, Route, SettingsPage};
 use crate::shell::jump::settings_name;
 use crate::shell::kit::{gap_words, package_route};
 use facet::data::release::Crate;
@@ -332,16 +332,19 @@ fn library(inputs: &Inputs<'_>) -> Listing {
         .and_then(|model| model.indexed.known())
         .map(|list| beside_your_projects(list, workspace, LibraryOrder::Name));
     let indexed = library.as_deref();
-    let packages = indexed.map_or(0, <[_]>::len);
+    let packages = indexed.map(<[_]>::len);
     let projects = workspace.projects.len();
-    let detail = format!(
-        "{projects} project{} · {packages} package{}",
-        if projects == 1 { "" } else { "s" },
-        if packages == 1 { "" } else { "s" }
-    );
+    let detail = match packages {
+        Some(packages) => format!(
+            "{projects} project{} · {packages} package{}",
+            if projects == 1 { "" } else { "s" },
+            if packages == 1 { "" } else { "s" }
+        ),
+        None => format!("{projects} project{} · packages unavailable", if projects == 1 { "" } else { "s" }),
+    };
     // The count is what the list shows: your projects and the packages beside them.
     let counts = Counts {
-        contents: Some(projects + packages),
+        contents: packages.map(|packages| projects + packages),
         versions: None,
         rests_on: None,
         used_by: Some(projects),
@@ -354,7 +357,7 @@ fn library(inputs: &Inputs<'_>) -> Listing {
         ..Head::default()
     };
     let project_rows = || {
-        workspace.projects.iter().map(|project| {
+        workspace.projects.iter().flat_map(|project| {
             let mut item = Item::new(
                 RowId::Project(project.path.clone()),
                 0,
@@ -363,12 +366,35 @@ fn library(inputs: &Inputs<'_>) -> Listing {
                 Do::Project(project.id.clone()),
             );
             item.current = workspace.active.as_ref() == Some(&project.id);
-            Row::Item(item)
+            if project.phase != crate::model::ProjectPhase::Ready {
+                item.trailing = Trailing::Words(project.phase.label().into());
+            }
+            let mut rows = vec![Row::Item(item)];
+            if project.phase != crate::model::ProjectPhase::Missing {
+                let mut tree = Item::new(
+                    RowId::ProjectTree(project.id.clone()),
+                    1,
+                    Mark::Icon(Icon::Layers),
+                    "Dependency tree",
+                    Do::ProjectTree(project.id.clone()),
+                );
+                tree.current = matches!(inputs.route, Route::Orbit(OrbitRoute::Browse(BrowseRoute::Tree(id))) if *id == project.id);
+                rows.push(Row::Item(tree));
+            }
+            rows
         })
     };
     let mut rows = Vec::new();
     match inputs.lens {
         Lens::Contents => {
+            rows.push(Row::heading("Find", 1));
+            rows.push(Row::Item(Item::new(
+                RowId::Find,
+                0,
+                Mark::Icon(Icon::Search),
+                "Find packages and declarations",
+                Do::Go(Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome))),
+            )));
             if projects > 0 {
                 rows.push(Row::heading("Yours", projects));
                 rows.extend(project_rows());
@@ -404,9 +430,10 @@ fn library(inputs: &Inputs<'_>) -> Listing {
                         rows.push(Row::Item(item));
                     }
                 }
-                None => rows.push(Row::Note(
-                    "The library's packages are still being read.".into(),
-                )),
+                None => rows.push(Row::Note(match inputs.orbit.and_then(|orbit| orbit.indexed.gap()) {
+                    Some(gap) => format!("The library's packages are unavailable. {}", gap_words(gap)).into(),
+                    None => "The library's packages are still being read.".into(),
+                })),
             }
         }
         Lens::UsedBy => {
