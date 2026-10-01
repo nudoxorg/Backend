@@ -1875,6 +1875,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     edition,
                     target.stage,
                     authority_configuration.features,
+                    authority_configuration.metadata_policy,
                     toolchain_identity,
                     environment_identity,
                     local_authority_identity,

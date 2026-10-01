@@ -995,6 +995,7 @@ pub struct RustWorkspaceSessionKey {
     edition: RustEdition,
     stage: Stage,
     features: RustWorkspaceFeatureKey,
+    metadata_policy: RustCargoMetadataPolicy,
     toolchain_identity: Option<[u8; 32]>,
     environment_identity: Option<[u8; 32]>,
     local_authority_identity: Option<[u8; 32]>,
@@ -1103,6 +1104,7 @@ impl RustWorkspaceSessionKey {
         edition: RustEdition,
         stage: Stage,
         features: RustFeatureControl<'_>,
+        metadata_policy: RustCargoMetadataPolicy,
         toolchain_identity: Option<[u8; 32]>,
         environment_identity: Option<[u8; 32]>,
         local_authority_identity: Option<[u8; 32]>,
@@ -1161,6 +1163,7 @@ impl RustWorkspaceSessionKey {
                 no_default_features: features.no_default_features,
                 features: selected_features.into_boxed_slice(),
             },
+            metadata_policy,
             toolchain_identity,
             environment_identity,
             local_authority_identity,
@@ -1353,11 +1356,12 @@ impl RustWorkspaceSessionLane {
             no_default_features: key.features.no_default_features,
             features: &selected_features,
         };
-        let workspace = RustWorkspace::open_with_features_unindexed(
+        let workspace = RustWorkspace::open_with_features_and_metadata_policy_unindexed(
             &key.root,
             &key.toolchain,
             key.edition,
             features,
+            key.metadata_policy,
             control,
         );
         self.stats.workspace_load_nanos = self
@@ -1694,23 +1698,6 @@ impl RustWorkspace {
         )?;
         workspace.prepare_source_ownership_index(control)?;
         Ok(workspace)
-    }
-
-    fn open_with_features_unindexed(
-        root: impl AsRef<Path>,
-        toolchain: &RustToolchain,
-        edition: RustEdition,
-        features: RustFeatureControl<'_>,
-        control: RustAnalysisControl<'_>,
-    ) -> Result<Self, RustAuthorityError> {
-        Self::open_with_features_and_metadata_policy_unindexed(
-            root,
-            toolchain,
-            edition,
-            features,
-            RustCargoMetadataPolicy::Offline,
-            control,
-        )
     }
 
     fn open_with_features_and_metadata_policy_unindexed(
