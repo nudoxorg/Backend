@@ -347,10 +347,7 @@ fn oversized_page_rolls_back_without_starving_later_pages_or_copying_its_encodin
     );
 
     let mut payload = Vec::new();
-    let mut writer = Limited {
-        bytes: &mut payload,
-        maximum: 31,
-    };
+    let mut writer = BoundedWriter::new(&mut payload, 31).expect("bounded output");
     writer.write_all(&[1; 20]).expect("first chunk");
     assert!(writer.write_all(&[2; 12]).is_err());
     assert_eq!(

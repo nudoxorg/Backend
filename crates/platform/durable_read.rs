@@ -1,7 +1,7 @@
 //! Bounded reads of ordinary state and cache files published atomically.
 
 use crate::directory::DirectoryCapability;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::Path;
 
 /// Reads at most `maximum` bytes from an opened regular file.
@@ -69,6 +69,66 @@ fn oversized(maximum: usize) -> io::Error {
     )
 }
 
+/// A borrowed serialization sink whose total output cannot exceed a byte limit.
+///
+/// Serializers write directly into the caller's reusable allocation instead of
+/// first producing an unbounded temporary encoding. An over-budget write leaves
+/// that entire chunk out. On a serializer error the caller may truncate to its
+/// own checkpoint, so a rejected record cannot consume later records' budget.
+pub struct BoundedWriter<'a> {
+    output: &'a mut Vec<u8>,
+    maximum: usize,
+}
+
+impl std::fmt::Debug for BoundedWriter<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BoundedWriter")
+            .field("length", &self.output.len())
+            .field("maximum", &self.maximum)
+            .finish()
+    }
+}
+
+impl<'a> BoundedWriter<'a> {
+    /// Borrows an output buffer, including any bytes already in it in the limit.
+    ///
+    /// # Errors
+    /// Returns `InvalidData` when the existing buffer already exceeds the limit.
+    pub fn new(output: &'a mut Vec<u8>, maximum: usize) -> io::Result<Self> {
+        if output.len() > maximum {
+            return Err(oversized(maximum));
+        }
+        Ok(Self { output, maximum })
+    }
+}
+
+impl Write for BoundedWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() > self.maximum - self.output.len() {
+            return Err(oversized(self.maximum));
+        }
+        let needed = self.output.len() + bytes.len();
+        if needed > self.output.capacity() {
+            let capacity = self
+                .output
+                .capacity()
+                .saturating_mul(2)
+                .max(needed)
+                .min(self.maximum);
+            self.output
+                .try_reserve_exact(capacity - self.output.len())
+                .map_err(|error| io::Error::new(io::ErrorKind::OutOfMemory, error))?;
+        }
+        self.output.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,6 +180,34 @@ mod tests {
             "only the limit plus one sentinel byte is read"
         );
         assert!(read_bounded(&b""[..], 0, 0).expect("empty file").is_empty());
+    }
+
+    #[test]
+    fn borrowed_writer_counts_existing_bytes_and_rejects_whole_over_budget_chunks() {
+        let mut output = vec![1; 7];
+        {
+            let mut writer = BoundedWriter::new(&mut output, 31).expect("bounded output");
+            writer.write_all(&[2; 13]).expect("fits");
+            assert_eq!(
+                writer
+                    .write_all(&[3; 12])
+                    .expect_err("one byte over")
+                    .kind(),
+                io::ErrorKind::InvalidData
+            );
+            writer
+                .write_all(&[4; 11])
+                .expect("rejection consumed no room");
+        }
+        assert_eq!(&output[..7], &[1; 7]);
+        assert_eq!(&output[7..20], &[2; 13]);
+        assert_eq!(&output[20..], &[4; 11]);
+        assert_eq!(output.len(), 31);
+        assert!(
+            output.capacity() <= 31,
+            "requested growth stays inside the budget"
+        );
+        assert!(BoundedWriter::new(&mut output, 30).is_err());
     }
 
     #[test]
