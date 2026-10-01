@@ -345,6 +345,10 @@ fn density_art(density: Density, size: Pixels, ink: Hsla) -> AnyElement {
 impl RenderOnce for Seg {
     #[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let mut names = std::collections::HashSet::new();
+        for choice in &self.choices {
+            assert!(names.insert(choice.name.clone()), "seg {:?} has duplicate choice identity {:?}; choice names must be unique", self.id, choice.name);
+        }
         let palette = cx.palette();
         let measure = self.measure;
         let active = !self.disabled;
@@ -583,8 +587,10 @@ impl RenderOnce for Seg {
                 });
                 if let Some(select) = self.on_select.clone() {
                     let accessible_select = select.clone();
+                    let accessible_focus = touch.focus.clone();
+                    let pointer_focus = touch.focus.clone();
                     item = item
-                        .on_a11y_action(gpui::AccessibleAction::Click, move |_, window, cx| accessible_select(index, window, cx))
+                        .on_a11y_action(gpui::AccessibleAction::Click, move |_, window, cx| { window.focus(&accessible_focus); accessible_select(index, window, cx); })
                         .on_key_down({
                             let select = select.clone();
                             move |event, window, cx| {
@@ -594,7 +600,7 @@ impl RenderOnce for Seg {
                                 }
                             }
                         })
-                        .on_click(move |_, window, cx| select(index, window, cx));
+                        .on_click(move |_, window, cx| { window.focus(&pointer_focus); select(index, window, cx); });
                 }
             }
             row = row.child(item);
