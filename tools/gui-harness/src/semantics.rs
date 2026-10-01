@@ -446,44 +446,39 @@ impl NativeAccessibilityFrame {
             .get("nodes")
             .and_then(serde_json::Value::as_object)
             .ok_or_else(|| "native accessibility tree has no node map".to_owned())?;
+        if frame.get("node_count").and_then(serde_json::Value::as_u64) != Some(nodes.len() as u64) {
+            return Err("native accessibility node count does not match the tree".to_owned());
+        }
         let root = self
             .tree
             .get("root")
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| "native accessibility tree has no root".to_owned())?;
-        if !nodes.contains_key(root) {
-            return Err("native accessibility root is absent from the node map".to_owned());
-        }
-        if let Some(focused) = self
+        let parent_of = validate_native_tree(nodes, root)?;
+        let gpui_focus = optional_tree_node(&self.tree, "gpui_focus", nodes)?;
+        let active_descendant = optional_tree_node(&self.tree, "active_descendant_focus", nodes)?;
+        let accesskit_focus = self
             .tree
-            .get("gpui_focus")
+            .get("accesskit_focus")
             .and_then(serde_json::Value::as_str)
-        {
-            let node = nodes
-                .get(focused)
-                .ok_or_else(|| "native accessibility focus is absent from the node map".to_owned())?;
-            let bounds = node
-                .get("bounds")
-                .and_then(serde_json::Value::as_object)
-                .ok_or_else(|| "native accessibility focus has no measured bounds".to_owned())?;
-            let mut rect = [0.0_f64; 4];
-            for (index, edge) in ["x", "y", "width", "height"].into_iter().enumerate() {
-                rect[index] = bounds
-                    .get(edge)
-                    .and_then(serde_json::Value::as_f64)
-                    .ok_or_else(|| format!("focused node bounds have no {edge}"))?;
-                if !rect[index].is_finite() {
-                    return Err(format!("focused node bounds have non-finite {edge}"));
-                }
+            .ok_or_else(|| "native accessibility tree has no AccessKit focus node".to_owned())?;
+        if !nodes.contains_key(accesskit_focus) {
+            return Err("native AccessKit focus is absent from the node map".to_owned());
+        }
+        if let Some(active) = active_descendant {
+            let focused = gpui_focus.ok_or_else(|| {
+                "native active descendant exists without a GPUI focus owner".to_owned()
+            })?;
+            if active == focused || !is_tree_descendant(active, focused, &parent_of) {
+                return Err("native active descendant is not below its focused owner".to_owned());
             }
-            if rect[0] < 0.0 || rect[1] < 0.0 || rect[2] <= 0.0 || rect[3] <= 0.0 {
-                return Err("native accessibility focus has empty bounds".to_owned());
-            }
-            if rect[0] + rect[2] > f64::from(self.viewport.width) + 0.01
-                || rect[1] + rect[3] > f64::from(self.viewport.height) + 0.01
-            {
-                return Err("native accessibility focus bounds escape the screenshot viewport".to_owned());
-            }
+        }
+        let expected_accesskit_focus = active_descendant.or(gpui_focus).unwrap_or(root);
+        if accesskit_focus != expected_accesskit_focus {
+            return Err("native AccessKit focus does not match the GPUI focus owner".to_owned());
+        }
+        if let Some(focused) = gpui_focus {
+            validate_focus_bounds(focused, nodes)?;
         }
         if self.screenshot_sha256.len() != 64
             || !self
@@ -503,10 +498,15 @@ impl NativeAccessibilityFrame {
             .get("nodes")
             .and_then(serde_json::Value::as_object)
             .is_some_and(|nodes| {
-                nodes.values().any(|node| {
-                    node.get("aria").and_then(|aria| aria.get("label"))
-                        .and_then(serde_json::Value::as_str)
-                        == Some(label)
+                let children = native_children_map(nodes);
+                nodes.keys().any(|id| {
+                    native_node_contains_accessible_label(
+                        id,
+                        label,
+                        nodes,
+                        &children,
+                        &mut BTreeSet::new(),
+                    )
                 })
             })
     }
@@ -516,11 +516,8 @@ impl NativeAccessibilityFrame {
     pub fn focused_label(&self) -> Option<&str> {
         let nodes = self.tree.get("nodes")?.as_object()?;
         let focused = self.tree.get("gpui_focus")?.as_str()?;
-        nodes
-            .get(focused)?
-            .get("aria")?
-            .get("label")?
-            .as_str()
+        let child_map = native_children_map(nodes)?;
+        native_node_accessible_label(focused, nodes, &child_map, &mut BTreeSet::new())
     }
 
     /// Checks identity and pixel hash against the screenshot record that
@@ -544,6 +541,432 @@ impl NativeAccessibilityFrame {
         }
         Ok(())
     }
+}
+
+fn optional_tree_node<'a>(
+    tree: &'a serde_json::Value,
+    field: &str,
+    nodes: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Option<&'a str>, String> {
+    let Some(value) = tree.get(field) else {
+        return Ok(None);
+    };
+    let id = value
+        .as_str()
+        .ok_or_else(|| format!("native accessibility {field} is not a node id"))?;
+    if !nodes.contains_key(id) {
+        return Err(format!(
+            "native accessibility {field} is absent from the node map"
+        ));
+    }
+    Ok(Some(id))
+}
+
+fn validate_native_tree(
+    nodes: &serde_json::Map<String, serde_json::Value>,
+    root: &str,
+) -> Result<BTreeMap<String, String>, String> {
+    if !nodes.contains_key(root) {
+        return Err("native accessibility root is absent from the node map".to_owned());
+    }
+
+    let mut raw_ids = BTreeSet::<&str>::new();
+    let mut children_by_node = BTreeMap::<String, Vec<String>>::new();
+    let mut parent_of = BTreeMap::<String, String>::new();
+    for (id, node) in nodes {
+        let raw_id = node
+            .get("accesskit_id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|raw| !raw.is_empty())
+            .ok_or_else(|| format!("native accessibility node {id:?} has no AccessKit id"))?;
+        if !raw_ids.insert(raw_id) {
+            return Err(format!(
+                "native accessibility reuses AccessKit id {raw_id:?}"
+            ));
+        }
+
+        let aria = node
+            .get("aria")
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| format!("native accessibility node {id:?} has no ARIA properties"))?;
+        let role = aria
+            .get("role")
+            .and_then(serde_json::Value::as_str)
+            .filter(|role| !role.trim().is_empty())
+            .ok_or_else(|| format!("native accessibility node {id:?} has no role"))?;
+        if matches!(role, "Unknown" | "GenericContainer") {
+            return Err(format!(
+                "native accessibility node {id:?} has non-semantic role {role}"
+            ));
+        }
+
+        if let Some(actions) = aria.get("on_action") {
+            let actions = actions.as_array().ok_or_else(|| {
+                format!("native accessibility node {id:?} actions are not an array")
+            })?;
+            let mut unique_actions = BTreeSet::new();
+            for action in actions {
+                let action = action
+                    .as_str()
+                    .filter(|action| !action.trim().is_empty())
+                    .ok_or_else(|| {
+                        format!("native accessibility node {id:?} has an invalid action")
+                    })?;
+                if !unique_actions.insert(action) {
+                    return Err(format!(
+                        "native accessibility node {id:?} repeats action {action:?}"
+                    ));
+                }
+            }
+        }
+
+        let mut children = Vec::new();
+        if let Some(value) = node.get("children") {
+            let list = value.as_array().ok_or_else(|| {
+                format!("native accessibility node {id:?} children are not an array")
+            })?;
+            let mut unique_children = BTreeSet::new();
+            for child in list {
+                let child = child
+                    .as_str()
+                    .filter(|child| !child.is_empty())
+                    .ok_or_else(|| {
+                        format!("native accessibility node {id:?} has an invalid child id")
+                    })?;
+                if !unique_children.insert(child.to_owned()) {
+                    return Err(format!(
+                        "native accessibility node {id:?} repeats child {child:?}"
+                    ));
+                }
+                if !nodes.contains_key(child) {
+                    return Err(format!(
+                        "native accessibility node {id:?} has dangling child {child:?}"
+                    ));
+                }
+                if parent_of.insert(child.to_owned(), id.clone()).is_some() {
+                    return Err(format!(
+                        "native accessibility node {child:?} has multiple parents"
+                    ));
+                }
+                children.push(child.to_owned());
+            }
+        }
+        children_by_node.insert(id.clone(), children);
+
+        if let Some(value) = node.get("labelled_by") {
+            let list = value.as_array().ok_or_else(|| {
+                format!("native accessibility node {id:?} labels are not an array")
+            })?;
+            let mut unique_labels = BTreeSet::new();
+            for target in list {
+                let target = target
+                    .as_str()
+                    .filter(|target| !target.is_empty())
+                    .ok_or_else(|| {
+                        format!("native accessibility node {id:?} has an invalid label id")
+                    })?;
+                if !unique_labels.insert(target.to_owned()) {
+                    return Err(format!(
+                        "native accessibility node {id:?} repeats label relation {target:?}"
+                    ));
+                }
+                if !nodes.contains_key(target) {
+                    return Err(format!(
+                        "native accessibility node {id:?} has dangling label relation {target:?}"
+                    ));
+                }
+            }
+        }
+    }
+
+    let root_role = nodes[root]
+        .get("aria")
+        .and_then(|aria| aria.get("role"))
+        .and_then(serde_json::Value::as_str);
+    if root_role != Some("Window") {
+        return Err("native accessibility root does not have Window role".to_owned());
+    }
+    if parent_of.contains_key(root) {
+        return Err("native accessibility root is a child of another node".to_owned());
+    }
+    for id in nodes.keys() {
+        if id != root && !parent_of.contains_key(id) {
+            return Err(format!("native accessibility node {id:?} is disconnected"));
+        }
+    }
+
+    // Require one rooted tree, rather than merely ensuring every edge points
+    // somewhere. This also rejects cycles and multiply-reachable components.
+    let mut reached = BTreeSet::new();
+    let mut pending = vec![root.to_owned()];
+    while let Some(id) = pending.pop() {
+        if !reached.insert(id.clone()) {
+            return Err(format!(
+                "native accessibility tree contains a cycle at {id:?}"
+            ));
+        }
+        pending.extend(children_by_node.get(&id).into_iter().flatten().cloned());
+    }
+    if reached.len() != nodes.len() {
+        return Err("native accessibility tree contains unreachable nodes".to_owned());
+    }
+
+    for (id, node) in nodes {
+        let aria = node.get("aria").expect("validated ARIA object");
+        let role = aria
+            .get("role")
+            .and_then(serde_json::Value::as_str)
+            .expect("validated role");
+        if is_interactive_accesskit_role(role)
+            && aria.get("disabled").and_then(serde_json::Value::as_bool) != Some(true)
+            && aria.get("hidden").and_then(serde_json::Value::as_bool) != Some(true)
+        {
+            if !native_node_has_accessible_name(id, nodes, &children_by_node, &mut BTreeSet::new())
+            {
+                return Err(format!(
+                    "interactive native accessibility node {id:?} ({role}) has no accessible name"
+                ));
+            }
+            if aria
+                .get("on_action")
+                .and_then(serde_json::Value::as_array)
+                .map_or(true, Vec::is_empty)
+            {
+                return Err(format!(
+                    "interactive native accessibility node {id:?} ({role}) has no actions"
+                ));
+            }
+        }
+    }
+
+    Ok(parent_of)
+}
+
+fn is_interactive_accesskit_role(role: &str) -> bool {
+    matches!(
+        role,
+        "Button"
+            | "DefaultButton"
+            | "Link"
+            | "CheckBox"
+            | "RadioButton"
+            | "Switch"
+            | "TextInput"
+            | "MultilineTextInput"
+            | "SearchInput"
+            | "DateInput"
+            | "DateTimeInput"
+            | "WeekInput"
+            | "MonthInput"
+            | "TimeInput"
+            | "EmailInput"
+            | "NumberInput"
+            | "PasswordInput"
+            | "PhoneNumberInput"
+            | "UrlInput"
+            | "ComboBox"
+            | "EditableComboBox"
+            | "ListBoxOption"
+            | "MenuItem"
+            | "MenuListOption"
+            | "MenuItemCheckBox"
+            | "MenuItemRadio"
+            | "DisclosureTriangle"
+            | "ScrollBar"
+            | "Slider"
+            | "SpinButton"
+            | "Splitter"
+            | "Tab"
+            | "TreeItem"
+    )
+}
+
+fn native_node_has_accessible_name(
+    id: &str,
+    nodes: &serde_json::Map<String, serde_json::Value>,
+    children_by_node: &BTreeMap<String, Vec<String>>,
+    visited: &mut BTreeSet<String>,
+) -> bool {
+    native_node_accessible_label(id, nodes, children_by_node, visited).is_some()
+}
+
+fn native_node_accessible_label<'a>(
+    id: &str,
+    nodes: &'a serde_json::Map<String, serde_json::Value>,
+    children_by_node: &BTreeMap<String, Vec<String>>,
+    visited: &mut BTreeSet<String>,
+) -> Option<&'a str> {
+    if !visited.insert(id.to_owned()) {
+        return None;
+    }
+    let node = nodes.get(id)?;
+    let aria = node.get("aria");
+        if let Some(label) = aria
+            .and_then(|aria| aria.get("label"))
+            .and_then(serde_json::Value::as_str)
+            .filter(|label| !label.trim().is_empty())
+        {
+            return Some(label);
+    }
+
+    let role = aria
+        .and_then(|aria| aria.get("role"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if matches!(role, "TextRun" | "Label" | "StaticText") {
+        if let Some(value) = aria
+            .and_then(|aria| aria.get("value"))
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+        {
+            return Some(value);
+        }
+    }
+
+    for target in node
+        .get("labelled_by")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+    {
+        if let Some(label) = native_node_accessible_label(target, nodes, children_by_node, visited) {
+            return Some(label);
+        }
+    }
+
+    for child in children_by_node.get(id).into_iter().flatten() {
+        if let Some(label) = native_node_accessible_label(child, nodes, children_by_node, visited) {
+            return Some(label);
+        }
+    }
+    None
+}
+
+fn native_node_contains_accessible_label(
+    id: &str,
+    expected: &str,
+    nodes: &serde_json::Map<String, serde_json::Value>,
+    children_by_node: &BTreeMap<String, Vec<String>>,
+    visited: &mut BTreeSet<String>,
+) -> bool {
+    if !visited.insert(id.to_owned()) {
+        return false;
+    }
+    let Some(node) = nodes.get(id) else {
+        return false;
+    };
+    let aria = node.get("aria");
+    if aria
+        .and_then(|aria| aria.get("label"))
+        .and_then(serde_json::Value::as_str)
+        == Some(expected)
+    {
+        return true;
+    }
+    let is_text = matches!(
+        aria.and_then(|aria| aria.get("role"))
+            .and_then(serde_json::Value::as_str),
+        Some("TextRun" | "Label" | "StaticText")
+    );
+    if is_text
+        && aria
+            .and_then(|aria| aria.get("value"))
+            .and_then(serde_json::Value::as_str)
+            == Some(expected)
+    {
+        return true;
+    }
+    let labelled_by = node
+        .get("labelled_by")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str);
+    if labelled_by.into_iter().any(|target| {
+        native_node_contains_accessible_label(
+            target,
+            expected,
+            nodes,
+            children_by_node,
+            visited,
+        )
+    }) {
+        return true;
+    }
+    children_by_node
+        .get(id)
+        .into_iter()
+        .flatten()
+        .any(|child| {
+            native_node_contains_accessible_label(
+                child,
+                expected,
+                nodes,
+                children_by_node,
+                visited,
+            )
+        })
+}
+
+fn native_children_map(
+    nodes: &serde_json::Map<String, serde_json::Value>,
+) -> BTreeMap<String, Vec<String>> {
+    nodes
+        .iter()
+        .map(|(id, node)| {
+            let children = node
+                .get("children")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect();
+            (id.clone(), children)
+        })
+        .collect()
+}
+
+fn is_tree_descendant(id: &str, ancestor: &str, parent_of: &BTreeMap<String, String>) -> bool {
+    let mut current = id;
+    while let Some(parent) = parent_of.get(current) {
+        if parent == ancestor {
+            return true;
+        }
+        current = parent;
+    }
+    false
+}
+
+fn validate_focus_bounds(
+    id: &str,
+    nodes: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    let node = nodes
+        .get(id)
+        .ok_or_else(|| "native accessibility focus is absent from the node map".to_owned())?;
+    let bounds = node
+        .get("bounds")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "native accessibility focus has no measured bounds".to_owned())?;
+    let mut rect = [0.0_f64; 4];
+    for (index, edge) in ["x", "y", "width", "height"].into_iter().enumerate() {
+        rect[index] = bounds
+            .get(edge)
+            .and_then(serde_json::Value::as_f64)
+            .ok_or_else(|| format!("focused node bounds have no {edge}"))?;
+        if !rect[index].is_finite() {
+            return Err(format!("focused node bounds have non-finite {edge}"));
+        }
+    }
+    // A focused node may legitimately be outside the current viewport after a
+    // scroll or while a reveal animation is settling. Visibility is checked by
+    // explicit interaction gates after asking the product to reveal the node.
+    if rect[2] <= 0.0 || rect[3] <= 0.0 {
+        return Err("native accessibility focus has empty bounds".to_owned());
+    }
+    Ok(())
 }
 
 impl SemanticProbe {
@@ -1007,6 +1430,135 @@ mod tests {
             width: 44,
             height: 44,
         })
+    }
+
+    fn valid_native_tree() -> serde_json::Value {
+        serde_json::json!({
+            "root": "root",
+            "accesskit_focus": "button",
+            "gpui_focus": "button",
+            "frame": {
+                "frame_number": 1,
+                "node_count": 3,
+                "viewport_size": {"width": 120.0, "height": 80.0},
+                "scale_factor": 1.0
+            },
+            "nodes": {
+                "root": {
+                    "accesskit_id": "1",
+                    "children": ["button"],
+                    "aria": {"role": "Window"}
+                },
+                "button": {
+                    "accesskit_id": "2",
+                    "bounds": {"x": -14.0, "y": 20.0, "width": 40.0, "height": 32.0},
+                    "children": ["button-label"],
+                    "labelled_by": ["button-label"],
+                    "aria": {"role": "Button", "on_action": ["Click", "Focus"]}
+                },
+                "button-label": {
+                    "accesskit_id": "3",
+                    "aria": {"role": "TextRun", "value": "Open settings"}
+                }
+            }
+        })
+    }
+
+    fn validate_native(tree: &serde_json::Value) -> Result<NativeAccessibilityFrame, String> {
+        NativeAccessibilityFrame::new(
+            "native",
+            0,
+            crate::Viewport::new(120, 80, 1).expect("viewport"),
+            1,
+            &tree.to_string(),
+            &image(),
+        )
+    }
+
+    #[test]
+    fn native_tree_integrity_accepts_named_controls_and_scrolled_focus_bounds() {
+        let evidence = validate_native(&valid_native_tree())
+            .expect("complete native tree with focus outside the viewport");
+        assert_eq!(evidence.focused_label(), Some("Open settings"));
+        assert!(evidence.has_label("Open settings"));
+    }
+
+    #[test]
+    fn native_tree_integrity_rejects_dangling_or_unreachable_nodes() {
+        let mut tree = valid_native_tree();
+        tree["nodes"]["root"]["children"] = serde_json::json!(["missing"]);
+        assert!(
+            validate_native(&tree)
+                .expect_err("dangling child rejected")
+                .contains("dangling child")
+        );
+
+        let mut tree = valid_native_tree();
+        tree["nodes"]["root"]["children"] = serde_json::json!([]);
+        assert!(
+            validate_native(&tree)
+                .expect_err("unreachable node rejected")
+                .contains("disconnected")
+        );
+
+        let mut tree = valid_native_tree();
+        tree["nodes"]["button-label"]["children"] = serde_json::json!(["button"]);
+        assert!(
+            validate_native(&tree)
+                .expect_err("cycle rejected")
+                .contains("multiple parents")
+        );
+    }
+
+    #[test]
+    fn native_tree_integrity_rejects_reused_ids_and_unlabelled_controls() {
+        let mut tree = valid_native_tree();
+        tree["nodes"]["button-label"]["accesskit_id"] = serde_json::json!("2");
+        assert!(
+            validate_native(&tree)
+                .expect_err("reused raw id rejected")
+                .contains("reuses AccessKit id")
+        );
+
+        let mut tree = valid_native_tree();
+        tree["nodes"]["button"]
+            .as_object_mut()
+            .unwrap()
+            .remove("labelled_by");
+        tree["nodes"]["button"]["children"] = serde_json::json!([]);
+        tree["nodes"]
+            .as_object_mut()
+            .unwrap()
+            .remove("button-label");
+        tree["frame"]["node_count"] = serde_json::json!(2);
+        assert!(
+            validate_native(&tree)
+                .expect_err("unlabelled control rejected")
+                .contains("no accessible name")
+        );
+    }
+
+    #[test]
+    fn native_tree_integrity_requires_accesskit_focus_to_match_active_descendant() {
+        let mut tree = valid_native_tree();
+        tree["nodes"]["root"]["children"] = serde_json::json!(["button", "other"]);
+        tree["nodes"]["button"]["children"] = serde_json::json!(["button-label"]);
+        tree["nodes"]["other"] = serde_json::json!({
+            "accesskit_id": "4",
+            "aria": {"role": "TextRun", "value": "Other"}
+        });
+        tree["frame"]["node_count"] = serde_json::json!(4);
+        tree["active_descendant_focus"] = serde_json::json!("button-label");
+        tree["accesskit_focus"] = serde_json::json!("button-label");
+        validate_native(&tree).expect("descendant focus remains in its focused owner");
+
+        tree["active_descendant_focus"] = serde_json::json!("other");
+        tree["accesskit_focus"] = serde_json::json!("other");
+        assert!(
+            validate_native(&tree)
+                .expect_err("active descendant outside focus owner rejected")
+                .contains("not below its focused owner")
+        );
     }
 
     #[test]

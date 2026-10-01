@@ -177,9 +177,11 @@ impl A11yDebug {
             .as_ref()
             .map(|tree| tree.root)
             .and_then(|id| ephemeral.get(&id).cloned());
+        let accesskit_focus = ephemeral.get(&update.focus).cloned();
 
         let value = serde_json::json!({
             "root": root,
+            "accesskit_focus": accesskit_focus,
             "gpui_focus": self.last_gpui_focus.and_then(|id| ephemeral.get(&id).cloned()),
             "active_descendant_focus": self.last_active_descendant.and_then(|id| ephemeral.get(&id).cloned()),
             "frame": frame,
@@ -232,6 +234,19 @@ fn node_to_json(
         .collect();
     if !children.is_empty() {
         map.insert("children".into(), json!(children));
+    }
+    let labelled_by: Vec<String> = node
+        .labelled_by()
+        .iter()
+        .map(|target| {
+            ephemeral
+                .get(target)
+                .cloned()
+                .unwrap_or_else(|| target.0.to_string())
+        })
+        .collect();
+    if !labelled_by.is_empty() {
+        map.insert("labelled_by".into(), json!(labelled_by));
     }
 
     // Provenance (debug builds only), ordered before the accessibility section.

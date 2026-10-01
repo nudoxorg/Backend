@@ -1108,9 +1108,11 @@ mod tests {
         let viewport = Viewport::new(4, 3, 2).expect("effective viewport");
         let tree = serde_json::json!({
             "root": "a",
+            "accesskit_focus": "b",
             "gpui_focus": "b",
             "frame": {
                 "frame_number": 9,
+                "node_count": 2,
                 "viewport_size": {"width": 4.0, "height": 3.0},
                 "scale_factor": 2.0
             },
@@ -1118,12 +1120,17 @@ mod tests {
                 "a": {
                     "accesskit_id": "1",
                     "bounds": {"x": 0.0, "y": 0.0, "width": 4.0, "height": 3.0},
+                    "children": ["b"],
                     "aria": {"role": "Window"}
                 },
                 "b": {
                     "accesskit_id": "2",
                     "bounds": {"x": 0.0, "y": 0.0, "width": 4.0, "height": 1.0},
-                    "aria": {"role": "Button", "label": "Open settings"}
+                    "aria": {
+                        "role": "Button",
+                        "label": "Open settings",
+                        "on_action": ["Click", "Focus"]
+                    }
                 }
             }
         });
