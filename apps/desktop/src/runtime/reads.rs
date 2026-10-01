@@ -25,6 +25,7 @@ use super::liveness::{report_if_dead, transport_break};
 use super::page_mapping::{self, OutlineIndex, PackageInputs, SymbolInputs};
 use super::wake::{WakeReceiver, WakeSender, wake_channel};
 use crate::core::{ErrorValue, FaultCode, LocalProjectId};
+use crate::model::browse::{BrowseValue, CargoSourceInventoryKey, CargoSourceInventoryModel};
 use crate::model::local_package::LocalPackageLoader;
 use crate::model::pages::{
     CargoSourceKey, CargoSourcePage, Gap, GapReason, Generation, PackageRef, PageKey, PageValue, ReadFailure, SearchContinuation,
@@ -33,7 +34,8 @@ use crate::model::pages::{
 use backend_client::{ClientError, Session};
 use backend_library::{
     CargoPackageSourceFileResultV1, CargoPackageSourcePathV1, CargoPackageSourceReadFailureV1,
-    CargoPackageSourceSemanticStatusV1,
+    CargoPackageSourceSemanticStatusV1, CargoPackageSourceInventoryResultV1,
+    CargoPackageSourceInventoryFailureV1,
     CommandFailure, CommandReply, HealthReport, PageContinuation, PageTerminal, ProductText,
     ReplyDto, Row, SurfaceCommand, SurfaceReply, ViewSnapshot, ViewStateRoot,
 };
@@ -826,6 +828,7 @@ pub(crate) const fn read_only(command: &SurfaceCommand) -> bool {
             | SurfaceCommand::Tree
             | SurfaceCommand::ProjectTree { .. }
             | SurfaceCommand::CargoPackageSourceFile { .. }
+            | SurfaceCommand::CargoPackageSourceInventory { .. }
     )
 }
 
@@ -968,6 +971,9 @@ impl<E: ReadEngine> PageReader for SessionReader<E> {
             ReadRequest::Browse(key) => match key {
                 crate::model::browse::BrowseKey::Tree(_) => {
                     super::browse_reads::compose(&mut self.engine, key)
+                }
+                crate::model::browse::BrowseKey::CargoSourceInventory(key) => {
+                    compose_cargo_source_inventory(&mut self.engine, key, context)
                 }
                 crate::model::browse::BrowseKey::FindHome => {
                     compose_find(&mut self.engine, None, context).map(|page| {
@@ -1437,7 +1443,7 @@ fn compose_cargo_source(
         // project is only an address: the owner reads it again, then this
         // worker verifies that its current tree contains the exact qualified
         // package before asking for bytes. No UI path becomes file authority.
-        rehydrate_cargo_source_authority(engine, key, context.cancel)?;
+        rehydrate_cargo_source_authority(engine, &key.project, &key.package, context.cancel)?;
         check(context.cancel)?;
         let reply = request_cargo_source_file(engine, key, &path)?;
         check(context.cancel)?;
@@ -1464,11 +1470,12 @@ fn request_cargo_source_file(
 
 fn rehydrate_cargo_source_authority(
     engine: &mut dyn Engine,
-    key: &CargoSourceKey,
+    project: &LocalProjectId,
+    package: &PackageRef,
     cancel: &CancellationToken,
 ) -> Result<(), ReadFailure> {
     check(cancel)?;
-    let root = key.project.service_coordinate().map_err(|_| {
+    let root = project.service_coordinate().map_err(|_| {
         ReadFailure::Fault(ErrorValue::new(
             FaultCode::Protocol,
             "This project path cannot be sent to the Cargo owner.",
@@ -1487,7 +1494,7 @@ fn rehydrate_cargo_source_authority(
     if !tree.has_admissible_shape() {
         return Err(shape("Cargo project-tree proof"));
     }
-    if tree.package_by_reference(key.package.reference()).is_none() {
+    if tree.package_by_reference(package.reference()).is_none() {
         return Err(ReadFailure::Fault(ErrorValue::new(
             FaultCode::Missing,
             "This exact Cargo package is no longer in the project tree.",
@@ -1562,6 +1569,103 @@ fn cargo_source_failure(reason: CargoPackageSourceReadFailureV1) -> (FaultCode, 
             (FaultCode::Unsupported, "This source file is too large for the bounded reader."),
         Reason::NotUtf8Text =>
             (FaultCode::Unsupported, "This source file is not UTF-8 text."),
+    }
+}
+
+/// Reads navigation hints independently from file bytes. This runs in the
+/// read pool and can finish after the file; it never delays the first text.
+fn compose_cargo_source_inventory(
+    engine: &mut dyn Engine,
+    key: &CargoSourceInventoryKey,
+    context: &ReadContext<'_>,
+) -> Result<PageValue, ReadFailure> {
+    check(context.cancel)?;
+    let reply = request_cargo_source_inventory(engine, key)?;
+    check(context.cancel)?;
+    let SurfaceReply::CargoPackageSourceInventory(result) = reply else {
+        return Err(shape("Cargo source inventory"));
+    };
+    if !result.has_admissible_shape() {
+        return Err(shape("Cargo source inventory proof"));
+    }
+    if matches!(
+        &result,
+        CargoPackageSourceInventoryResultV1::Unavailable {
+            package,
+            reason: CargoPackageSourceInventoryFailureV1::AuthorityUnavailable,
+        } if package.as_ref().is_none_or(|package| package == key.package.reference())
+    ) {
+        rehydrate_cargo_source_authority(engine, &key.project, &key.package, context.cancel)?;
+        check(context.cancel)?;
+        let reply = request_cargo_source_inventory(engine, key)?;
+        check(context.cancel)?;
+        let SurfaceReply::CargoPackageSourceInventory(result) = reply else {
+            return Err(shape("Cargo source inventory"));
+        };
+        return cargo_source_inventory_page(key, result);
+    }
+    cargo_source_inventory_page(key, result)
+}
+
+fn request_cargo_source_inventory(
+    engine: &mut dyn Engine,
+    key: &CargoSourceInventoryKey,
+) -> Result<SurfaceReply, ReadFailure> {
+    engine
+        .surface(SurfaceCommand::CargoPackageSourceInventory {
+            package: key.package.reference().clone(),
+        })
+        .map_err(|error| failure(&error))
+}
+
+fn cargo_source_inventory_page(
+    key: &CargoSourceInventoryKey,
+    result: CargoPackageSourceInventoryResultV1,
+) -> Result<PageValue, ReadFailure> {
+    if !result.has_admissible_shape() {
+        return Err(shape("Cargo source inventory proof"));
+    }
+    match result {
+        CargoPackageSourceInventoryResultV1::Listed(inventory)
+            if inventory.package == *key.package.reference()
+                && inventory.authority.matches_package_reference(&inventory.package) => {
+                let paths = inventory
+                    .paths
+                    .iter()
+                    .map(|path| {
+                        crate::navigation::CargoSourcePath::new(path.as_str())
+                            .ok_or_else(|| shape("Cargo source inventory path"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(PageValue::Browse(BrowseValue::CargoSourceInventory(Arc::new(
+                    CargoSourceInventoryModel {
+                        package: key.package.clone(),
+                        paths: paths.into(),
+                        coverage: inventory.coverage,
+                        source_revision: inventory.authority.source_revision(),
+                    },
+                ))))
+        }
+        CargoPackageSourceInventoryResultV1::Stale { package }
+            if package == *key.package.reference() => Err(ReadFailure::Fault(ErrorValue::new(
+                FaultCode::Missing,
+                "The Cargo source changed. Reopen the project tree for its current files.",
+            ))),
+        CargoPackageSourceInventoryResultV1::Unavailable { package, reason }
+            if package.as_ref().is_none_or(|package| package == key.package.reference()) => {
+                let message = match reason {
+                    CargoPackageSourceInventoryFailureV1::AuthorityUnavailable =>
+                        "This Cargo package has no current source receipt. Reopen its project tree.",
+                    CargoPackageSourceInventoryFailureV1::StaleAuthority =>
+                        "The Cargo source changed. Reopen its project tree.",
+                    CargoPackageSourceInventoryFailureV1::PackageRootUnavailable =>
+                        "The admitted Cargo source folder is no longer available.",
+                    CargoPackageSourceInventoryFailureV1::DirectoryUnavailable =>
+                        "The owner could not safely list this Cargo source folder.",
+                };
+                Err(ReadFailure::Fault(ErrorValue::new(FaultCode::Missing, message)))
+            }
+        _ => Err(shape("Cargo source inventory address mismatch")),
     }
 }
 
@@ -1936,6 +2040,62 @@ mod tests {
         let mut engine = ColdEngine { tree: engine.tree, current: engine.current, seen: Vec::new() };
         assert!(matches!(compose_cargo_source(&mut engine, &other, &context), Err(ReadFailure::Fault(error)) if error.code() == FaultCode::Missing));
         assert_eq!(engine.seen, ["file", "tree"], "an unrelated tree cannot trigger a file retry");
+    }
+
+    #[test]
+    fn cargo_inventory_preserves_exact_paths_and_partial_coverage_without_file_proof() {
+        use backend_library::{
+            CargoPackageSourceAuthorityStateV1, CargoPackageSourceInventoryCoverageV1,
+            CargoPackageSourceInventoryGapV1, CargoPackageSourceInventoryV1,
+        };
+        const METADATA: &[u8] = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../crates/library/browse/fixtures/tree-2026-09-27/metadata.json"
+        ));
+        let input = backend_library::browse::metadata_input_with_stable_source_witness(
+            METADATA, "aarch64-apple-darwin", None, [7; 32],
+        ).expect("Cargo metadata fixture");
+        let row = input.packages.iter().find(|row| row.name == "serde" && row.version == "1.0.219")
+            .expect("resolved package");
+        let CargoPackageSourceAuthorityStateV1::Admitted(authority) = &row.source_authority
+            else { panic!("source receipt") };
+        let package = authority.package_reference().expect("qualified package");
+        let key = CargoSourceInventoryKey {
+            project: LocalProjectId::new("/workspace/backend").expect("tree"),
+            package: PackageRef::from_reference(package.clone()),
+        };
+        let paths = ["Cargo.toml", "src/lib.rs"]
+            .into_iter()
+            .map(|path| CargoPackageSourcePathV1::new(path).expect("path"))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let inventory = CargoPackageSourceInventoryV1 {
+            package: package.clone(),
+            authority: authority.clone(),
+            paths,
+            coverage: CargoPackageSourceInventoryCoverageV1::Partial {
+                reason: CargoPackageSourceInventoryGapV1::DirectoryUnavailable,
+            },
+        };
+        let PageValue::Browse(BrowseValue::CargoSourceInventory(model)) =
+            cargo_source_inventory_page(&key, CargoPackageSourceInventoryResultV1::Listed(inventory.clone()))
+                .expect("exact inventory")
+        else { panic!("inventory page") };
+        assert_eq!(model.paths.iter().map(|path| path.as_str()).collect::<Vec<_>>(), ["Cargo.toml", "src/lib.rs"]);
+        assert_eq!(model.coverage, inventory.coverage);
+        assert_eq!(model.source_revision, authority.source_revision());
+
+        let mut wrong = inventory.clone();
+        wrong.paths.swap(0, 1);
+        assert!(cargo_source_inventory_page(&key, CargoPackageSourceInventoryResultV1::Listed(wrong)).is_err(),
+            "a wire list with unverified ordering is not a navigable file index");
+        let other = CargoSourceInventoryKey {
+            package: PackageRef::parse("pkg:cargo/serde@1.0.219?cargo-authority=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+                .expect("other source"),
+            ..key
+        };
+        assert!(cargo_source_inventory_page(&other, CargoPackageSourceInventoryResultV1::Listed(inventory)).is_err(),
+            "paths from a different source cannot be lent to this route");
     }
 
     #[test]

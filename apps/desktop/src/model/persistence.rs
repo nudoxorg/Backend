@@ -1687,7 +1687,8 @@ mod tests {
         let decoded: PersistedDesktopState = serde_json::from_slice(&bytes).expect("decode address");
         let restored = PersistentState::at("unused").cold_reload(&decoded);
         assert_eq!(restored.route, route);
-        assert_eq!(crate::runtime::store::route_keys(&restored.route).len(), 1, "cold address requires a fresh owner read");
+        assert_eq!(crate::runtime::store::route_keys(&restored.route).len(), 2,
+            "cold address requires separate fresh owner reads for file bytes and bounded paths");
 
         let mut forged = decoded;
         forged.route = PersistedRoute::CargoSource {

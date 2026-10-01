@@ -833,6 +833,28 @@ impl PageStore {
         }
     }
 
+    /// A path inventory is an observation of the current owner, not a saved
+    /// file capability. Recheck it when its source route is revisited.
+    pub fn revoke_cargo_source_inventory(&mut self, key: &crate::model::browse::CargoSourceInventoryKey) {
+        let browse = crate::model::browse::BrowseKey::CargoSourceInventory(key.clone());
+        if let Some(slot) = self.browse.map.get_mut(&browse) {
+            slot.resource = Resource::not_yet();
+            slot.asked_at = None;
+            slot.revision = slot.revision.next();
+        }
+    }
+
+    /// An owner restart invalidates all retained file-address listings.
+    pub fn revoke_all_cargo_source_inventories(&mut self) {
+        for (key, slot) in &mut self.browse.map {
+            if matches!(key, crate::model::browse::BrowseKey::CargoSourceInventory(_)) {
+                slot.resource = Resource::not_yet();
+                slot.asked_at = None;
+                slot.revision = slot.revision.next();
+            }
+        }
+    }
+
     /// Returns the package dossier resource.
     #[must_use]
     pub fn package(&self, package: &PackageRef) -> Resource<PackageDossier> {

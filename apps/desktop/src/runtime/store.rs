@@ -342,13 +342,20 @@ pub fn route_keys(route: &Route) -> Vec<PageKey> {
             .collect(),
         Route::CargoSource(route) => PackageRef::parse(route.package.as_str())
             .ok()
-            .map(|package| PageKey::CargoSource(crate::model::pages::CargoSourceKey {
-                project: route.project.clone(),
-                package,
-                file: route.file.clone(),
-            }))
-            .into_iter()
-            .collect(),
+            .map(|package| vec![
+                PageKey::CargoSource(crate::model::pages::CargoSourceKey {
+                    project: route.project.clone(),
+                    package: package.clone(),
+                    file: route.file.clone(),
+                }),
+                PageKey::Browse(crate::model::browse::BrowseKey::CargoSourceInventory(
+                    crate::model::browse::CargoSourceInventoryKey {
+                        project: route.project.clone(),
+                        package,
+                    },
+                )),
+            ])
+            .unwrap_or_default(),
         Route::Symbol(symbol) => route_symbol(route)
             .map(|id| match symbol.view {
                 crate::navigation::View::Code => PageKey::Source(id),
@@ -359,6 +366,14 @@ pub fn route_keys(route: &Route) -> Vec<PageKey> {
             .into_iter()
             .collect(),
     }
+}
+
+fn is_cargo_source_resource(key: &PageKey) -> bool {
+    matches!(
+        key,
+        PageKey::CargoSource(_)
+            | PageKey::Browse(crate::model::browse::BrowseKey::CargoSourceInventory(_))
+    )
 }
 
 impl DataStore {
@@ -672,6 +687,9 @@ impl DataStore {
     pub fn focus(&mut self, keys: Vec<PageKey>, cx: &mut Context<Self>) {
         let next = keys.iter().cloned().collect::<BTreeSet<_>>();
         let previous = self.focused.clone();
+        let previous_file = previous.iter().find(|key| matches!(key, PageKey::CargoSource(_)));
+        let next_file = next.iter().find(|key| matches!(key, PageKey::CargoSource(_)));
+        let file_changed = next_file.is_some() && previous_file != next_file;
         let dropped = self.focused.difference(&next).cloned().collect::<Vec<_>>();
         self.owner.retain_held(|key| next.contains(key));
         self.focused = next;
@@ -682,15 +700,21 @@ impl DataStore {
             self.cancel_key(&key, cx);
         }
         for key in keys {
-            if matches!(key, PageKey::CargoSource(_))
-                && !previous.contains(&key)
+            if is_cargo_source_resource(&key)
+                && (!previous.contains(&key)
+                    || (file_changed
+                        && matches!(key, PageKey::Browse(crate::model::browse::BrowseKey::CargoSourceInventory(_)))))
                 && self.pages.contains(&key)
             {
                 // A file page is a current source capability, not a durable
                 // snapshot. Back/Forward after leaving must revalidate even
                 // when the global index root has not changed.
-                if let PageKey::CargoSource(file) = &key {
-                    self.pages.revoke_cargo_source(file);
+                match &key {
+                    PageKey::CargoSource(file) => self.pages.revoke_cargo_source(file),
+                    PageKey::Browse(crate::model::browse::BrowseKey::CargoSourceInventory(inventory)) => {
+                        self.pages.revoke_cargo_source_inventory(inventory);
+                    }
+                    _ => {}
                 }
                 self.retry(key, cx);
             } else {
@@ -895,6 +919,7 @@ impl DataStore {
         // producer root. Quiet snapshot reads keep their last painted value.
         self.revoke_inflight(cx);
         self.pages.revoke_all_cargo_sources();
+        self.pages.revoke_all_cargo_source_inventories();
         let mut keys = self.owner.failed(fault.clone());
         keys.extend(self.focused.iter().cloned());
         for key in keys {
@@ -942,12 +967,13 @@ impl DataStore {
     /// The owner is starting (again): pages asked from now on are held.
     pub(crate) fn owner_starting(&mut self, cx: &mut Context<Self>) {
         let cargo_reads = self.pages.keys().into_iter()
-            .filter(|key| matches!(key, PageKey::CargoSource(_)) && self.pages.inflight(key).is_some())
+            .filter(|key| is_cargo_source_resource(key) && self.pages.inflight(key).is_some())
             .collect::<Vec<_>>();
         for key in cargo_reads {
             self.cancel_key(&key, cx);
         }
         self.pages.revoke_all_cargo_sources();
+        self.pages.revoke_all_cargo_source_inventories();
         if self.owner.attachment_changed() {
             self.revoke_inflight(cx);
         }
