@@ -441,9 +441,14 @@ pub(crate) fn rig_with_engine(
 }
 
 impl Rig {
-    /// Draws one frame.
-    pub(crate) fn draw(&mut self) {
+    /// Draws exactly one frame without consuming its deferred wake.
+    pub(crate) fn draw_frame(&mut self) {
         self.cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    /// Draws a frame and drains its effects, including notified follow-up draws.
+    pub(crate) fn draw(&mut self) {
+        self.draw_frame();
         self.cx.run_until_parked();
     }
 
@@ -676,7 +681,7 @@ fn hidden_graph_projection_slot_does_not_hold_settle_and_reopens_into_the_scene(
     rig.graph.root.update(rig.cx, |root, cx| {
         root.dispatch(Intent::Navigate(Route::World), cx);
     });
-    rig.draw();
+    rig.draw_frame();
     assert_eq!(
         rig.shell
             .read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)),
