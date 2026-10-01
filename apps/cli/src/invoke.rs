@@ -217,6 +217,7 @@ options
   --project PATH                Select the project; defaults to the current directory.
   --workspace PATH              Select durable state; defaults to this project's private app-data root.
   --endpoint PATH               Connect to a specific local daemon.
+  --passive                     With health/status, connect without starting locald or creating state.
   -h, --help                    Show this help, or one command's help after its name.
   -V, --version                 Show the version.
 

@@ -90,14 +90,21 @@ fn run_words(words: &[String], options: &Options) -> Result<String, Fault> {
     let workspace = workspace(options)?;
     let project = workspace.project().to_string_lossy().into_owned();
     let request = plan(words, options, &project)?;
-    let endpoint = backend_runtime::ensure_locald(&workspace).map_err(|error| {
+    let endpoint_result = if options.passive() {
+        backend_runtime::connect_existing_locald(&workspace)
+    } else {
+        backend_runtime::ensure_locald(&workspace)
+    };
+    let endpoint = endpoint_result.map_err(|error| {
+        let message = if options.passive() {
+            format!("the existing local owner could not be reached without starting it: {error}")
+        } else {
+            format!("the local daemon could not be started or reached: {error}")
+        };
         Fault::new(
             FaultSlug::Endpoint,
             Operand::Path(workspace.endpoint().to_string_lossy().into_owned()),
-            Cause::new(
-                CauseSlug::Unreachable,
-                format!("the local daemon could not be started or reached: {error}"),
-            ),
+            Cause::new(CauseSlug::Unreachable, message),
             Affordance::Retry,
         )
     })?;

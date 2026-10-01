@@ -7,7 +7,7 @@
 //! produce byte-identical output, which is what makes the captured goldens in
 //! the journeys meaningful.
 
-use backend_present::{Detail, Fault, Theme, Width};
+use backend_present::{Detail, Fault, Theme, Width, grammar_for};
 use std::io::IsTerminal as _;
 use std::path::PathBuf;
 
@@ -54,6 +54,7 @@ pub struct Options {
     endpoint: Option<PathBuf>,
     limit: Option<String>,
     detail: Detail,
+    passive: bool,
 }
 
 impl Options {
@@ -71,6 +72,7 @@ impl Options {
             endpoint: None,
             limit: None,
             detail: Detail::Summary,
+            passive: false,
         }
     }
 
@@ -129,6 +131,12 @@ impl Options {
         self.detail
     }
 
+    /// Returns whether health must connect to an already running owner only.
+    #[must_use]
+    pub const fn passive(&self) -> bool {
+        self.passive
+    }
+
     /// Returns whether the caller asked for a machine rendering.
     #[must_use]
     pub const fn is_machine(&self) -> bool {
@@ -149,6 +157,7 @@ pub fn split(args: &[String]) -> Result<(Options, Vec<String>), Fault> {
     let mut endpoint = None;
     let mut limit = None;
     let mut detail = None;
+    let mut passive = false;
     let mut rest = Vec::with_capacity(args.len());
     let mut at = 0_usize;
     while let Some(argument) = args.get(at) {
@@ -162,6 +171,7 @@ pub fn split(args: &[String]) -> Result<(Options, Vec<String>), Fault> {
             "--workspace" => workspace = Some(PathBuf::from(take(args, &mut at, "--workspace")?)),
             "--endpoint" => endpoint = Some(PathBuf::from(take(args, &mut at, "--endpoint")?)),
             "--limit" => limit = Some(take(args, &mut at, "--limit")?),
+            "--passive" => passive = true,
             "--detail" => {
                 let value = take(args, &mut at, "--detail")?;
                 detail = Some(Detail::parse(&value).ok_or_else(|| {
@@ -174,6 +184,17 @@ pub fn split(args: &[String]) -> Result<(Options, Vec<String>), Fault> {
             other => rest.push(other.to_owned()),
         }
     }
+    if passive
+        && !rest
+            .first()
+            .and_then(|word| grammar_for(word))
+            .is_some_and(|grammar| grammar.name() == "health")
+    {
+        return Err(Fault::usage(
+            "--passive",
+            "--passive is available only with health/status",
+        ));
+    }
     let format = format.unwrap_or_default();
     let detail = detail.unwrap_or_else(|| default_detail(rest.first().map(String::as_str)));
     Ok((
@@ -185,6 +206,7 @@ pub fn split(args: &[String]) -> Result<(Options, Vec<String>), Fault> {
             endpoint,
             limit,
             detail,
+            passive,
         },
         rest,
     ))

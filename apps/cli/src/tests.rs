@@ -424,6 +424,20 @@ fn help_is_grouped_by_domain_and_names_every_domain() {
     }
     assert!(help.contains("surface <JSON>"), "the escape hatch stays");
     assert!(help.contains("--format human|markdown|json"));
+    assert!(help.contains("--passive"));
+}
+
+#[test]
+fn passive_connection_mode_is_limited_to_health_and_status() {
+    let (options, words) =
+        options::split(&words("--passive status")).expect("status accepts a passive connection");
+    assert!(options.passive());
+    assert_eq!(words, vec!["status".to_owned()]);
+
+    let error = options::split(&words("--passive search symbols"))
+        .expect_err("passive mode must not alter ordinary commands");
+    assert_eq!(error.slug(), FaultSlug::Usage);
+    assert_eq!(error.operand().render(), "--passive");
 }
 
 #[test]

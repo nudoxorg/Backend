@@ -974,8 +974,7 @@ after the owner ACK:
   --config /etc/nudox-worker/cluster.bin --data-dir /var/lib/nudox-worker
 ```
 
-On the owner, verify the selected head, indexed symbol, document, and local
-MCP path:
+On the owner, verify the selected head, indexed symbol, status, and trust grant:
 
 ```sh
 "$BACKEND" --workspace "$OWNER_DATA" --project "$PROJECT" \
@@ -983,18 +982,60 @@ MCP path:
 "$BACKEND" --workspace "$OWNER_DATA" --project "$PROJECT" \
   --endpoint "$ENDPOINT" --format json search cluster_deploy_smoke --limit 20
 "$BACKEND" --workspace "$OWNER_DATA" --project "$PROJECT" \
+  --endpoint "$ENDPOINT" --format json --passive health
+"$BACKEND" --workspace "$OWNER_DATA" --project "$PROJECT" \
   --endpoint "$ENDPOINT" --format json cluster trust list
+```
 
+The health JSON reports the current revision, source, sequence, row count,
+lane coverage, and capability inventory. `readiness` describes index
+coverage: `ready` means every declared lane is complete, `indexing` means a
+lane is partial, `unavailable` means a declared lane failed, and `unknown`
+means coverage is not yet known. An unconfigured optional lane does not
+withhold `ready`; inspect `coverage` and `capabilities` for the actual scope.
+Health is an owner request, not process-manager state. Before querying, check
+the service manager (`sudo systemctl is-active nudox-index.service` on Linux
+or `sudo launchctl print system/com.nudox.index` on macOS). If the managed owner is
+inactive, inspect its logs and restart that service first. Ordinary CLI
+commands may start `locald` when the endpoint is absent. For an operational
+probe that must not start a replacement, use `backend-cli --passive ...
+health` (or `status`): it connects only to the configured existing endpoint,
+does not create workspace state or remove a stale socket, and returns the
+underlying not-found/refused cause if no owner answers. This option is limited
+to `health/status`; normal interactive commands keep their existing
+auto-start behavior.
+
+The MCP server uses stdio by default. Initialization and `tools/list` are
+local protocol operations and do not connect to the owner; they prove client
+discovery only. Include `backend.status` to test an owner-backed request. The
+advertised tool list includes `backend.packages`, `backend.index`,
+`backend.remove`, `backend.status`, `backend.outline`, `backend.search`,
+`backend.resolve`, `backend.document`, `backend.source`, `backend.read`,
+`backend.references`, `backend.graph`, `backend.index_start`,
+`backend.index_progress`, and `backend.index_cancel`. This is the supported
+MCP session surface, not every CLI command. An owner-backed tool request uses
+the shared runtime and may start `locald` if its endpoint is absent, so check
+the service manager and the passive CLI probe above before using this MCP
+sequence as a managed-service smoke test.
+
+```sh
 printf '%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"deployment-check","version":"1"}}}' \
   '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}' \
-  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"backend.search","arguments":{"query":"cluster_deploy_smoke","limit":20}}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"backend.status","arguments":{}}}' \
+  '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"backend.search","arguments":{"query":"cluster_deploy_smoke","limit":20}}}' \
   | /opt/nudox/current/bin/backend-mcp --project "$PROJECT" \
       --workspace "$OWNER_DATA" --endpoint "$ENDPOINT"
 ```
 
-The search must return `cluster_deploy_smoke`; `semantic-versions` must show
-a selected generation; MCP's `backend.search` must return the same symbol.
+Expect an `initialize` result, a `tools/list` result containing the names
+above, a successful structured result for `backend.status`, and the same
+`cluster_deploy_smoke` symbol from MCP `backend.search` as from the CLI. A
+successful handshake or tool listing with a failed status call means the MCP
+process started but its owner request did not complete. The search must return
+`cluster_deploy_smoke`, `semantic-versions` must show a selected generation,
+and health must report the expected coverage.
 The desktop application currently works with its login user's local owner.
 Its launch environment may select that local session with `BACKEND_PROJECT`,
 `BACKEND_LOCALD_WORKSPACE`, `BACKEND_LOCALD_ENDPOINT`, and
@@ -1048,6 +1089,11 @@ inspect each launch daemon's configured stdout/stderr files and
    preserve that directory while diagnosing selection or transfer failures.
 7. The owner CLI's `semantic-versions`, `search`, and `show`, and local MCP
    query all use the expected workspace and socket.
+8. Use the `--passive` health command above as `nudox-index` to query the
+   current owner without starting a replacement. A not-found or refused
+   endpoint means the owner is not accepting connections; check the manager,
+   endpoint path, and service-account permissions before changing socket or
+   workspace files.
 
 When `BACKEND_S3_*` is enabled, diagnose owner credentials and bucket policy
 on the owner only. Workers do not publish index packs. S3 availability does

@@ -79,6 +79,7 @@ const LIVE_START_TIMEOUT: Duration = Duration::from_secs(90);
 /// window after an exit is short and the window before it is not.
 const EXITED_START_GRACE: Duration = Duration::from_secs(5);
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
+const PASSIVE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Domain separator so an endpoint digest can never be confused with another
 /// blake3 use of the same path bytes.
 const ENDPOINT_DOMAIN: &[u8] = b"backend-v2-local-endpoint\0";
@@ -323,6 +324,35 @@ pub fn try_attach(paths: &WorkspacePaths) -> Option<LiveEndpoint> {
         .map(|_probe| LiveEndpoint {
             endpoint: paths.endpoint().to_path_buf(),
         })
+}
+
+/// Connects to the selected local endpoint with a bounded dial and no
+/// composition or startup attempt.
+///
+/// Unlike [`ensure_locald`], this function never creates workspace state,
+/// removes a stale endpoint, locates a daemon executable, or starts a process.
+/// It is intended for health probes whose result must describe the configured
+/// service rather than cause that service to start. The caller should still
+/// authenticate and query the connected owner before treating it as healthy.
+///
+/// # Errors
+/// Returns the original connection error and endpoint path when no owner
+/// accepts the connection.
+#[cfg(any(unix, windows))]
+pub fn connect_existing_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
+    backend_platform::local::connect_timeout(paths.endpoint(), PASSIVE_CONNECT_TIMEOUT)
+        .map(|_probe| paths.endpoint().to_path_buf())
+        .map_err(|source| RuntimeError::EndpointUnavailable {
+            endpoint: paths.endpoint().to_path_buf(),
+            source,
+        })
+}
+
+/// Reports that passive local endpoint connections are unavailable on this
+/// platform.
+#[cfg(not(any(unix, windows)))]
+pub fn connect_existing_locald(_paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
+    Err(RuntimeError::Unsupported)
 }
 
 /// Reports that endpoint probing is unavailable on platforms without a local
@@ -930,6 +960,13 @@ pub enum RuntimeError {
         /// Process creation failure.
         source: std::io::Error,
     },
+    /// A passive connection could not reach the existing owner endpoint.
+    EndpointUnavailable {
+        /// Endpoint selected by the caller.
+        endpoint: PathBuf,
+        /// Original local-socket connection error, including its kind.
+        source: std::io::Error,
+    },
     /// The daemon exited before accepting clients.
     DaemonExited(Option<i32>),
     /// The daemon did not become ready before the bounded deadline.
@@ -976,6 +1013,11 @@ impl fmt::Display for RuntimeError {
             Self::Spawn { executable, source } => {
                 write!(formatter, "start {}: {source}", executable.display())
             }
+            Self::EndpointUnavailable { endpoint, source } => write!(
+                formatter,
+                "no existing local owner answered at {}: {source}",
+                endpoint.display()
+            ),
             Self::DaemonExited(code) => {
                 write!(formatter, "backend-locald exited during startup ({code:?})")
             }
@@ -989,12 +1031,98 @@ impl fmt::Display for RuntimeError {
     }
 }
 
-impl std::error::Error for RuntimeError {}
+impl std::error::Error for RuntimeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(source)
+            | Self::EndpointUnavailable { source, .. }
+            | Self::Spawn { source, .. } => Some(source),
+            Self::InvalidPath(_)
+            | Self::WorkspaceProjectMismatch { .. }
+            | Self::InvalidCredential(_)
+            | Self::EndpointTooLong { .. }
+            | Self::MissingExecutable(_)
+            | Self::DaemonExited(_)
+            | Self::StartTimeout(_)
+            | Self::Unsupported => None,
+        }
+    }
+}
 
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn passive_connect_preserves_missing_endpoint_cause_without_creating_state() {
+        let root = test_directory("passive-owner-absent");
+        let project = root.join("project");
+        let workspace = root.join("state");
+        let endpoint = root.join("run").join("locald.sock");
+        fs::create_dir_all(&project).expect("create project only");
+        let paths = WorkspacePaths::discover(
+            Some(project),
+            Some(workspace.clone()),
+            Some(endpoint.clone()),
+        )
+        .expect("explicit passive paths");
+
+        let error = connect_existing_locald(&paths).expect_err("owner is absent");
+        assert!(matches!(
+            error,
+            RuntimeError::EndpointUnavailable { source, .. }
+                if source.kind() == std::io::ErrorKind::NotFound
+        ));
+        assert!(
+            !workspace.exists(),
+            "passive connect created workspace state"
+        );
+        assert!(
+            !endpoint.parent().expect("endpoint parent").exists(),
+            "passive connect created the endpoint directory"
+        );
+
+        fs::remove_dir_all(root).expect("remove passive fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn passive_connect_preserves_refused_stale_socket_cause() {
+        use std::os::unix::net::UnixListener;
+
+        let root = test_directory("passive-owner-refused");
+        fs::create_dir_all(&root).expect("create fixture root");
+        let project = root.join("project");
+        let workspace = root.join("state");
+        let endpoint = root.join("locald.sock");
+        fs::create_dir(&project).expect("create project only");
+        let paths = WorkspacePaths::discover(
+            Some(project),
+            Some(workspace.clone()),
+            Some(endpoint.clone()),
+        )
+        .expect("explicit passive paths");
+        drop(UnixListener::bind(&endpoint).expect("bind stale socket"));
+
+        let error = connect_existing_locald(&paths).expect_err("stale socket refuses connection");
+        assert!(matches!(
+            error,
+            RuntimeError::EndpointUnavailable { source, .. }
+                if source.kind() == std::io::ErrorKind::ConnectionRefused
+        ));
+        assert!(
+            endpoint.exists(),
+            "passive connect removed the stale socket while probing it"
+        );
+        assert!(
+            !workspace.exists(),
+            "passive connect created workspace state"
+        );
+
+        fs::remove_dir_all(root).expect("remove passive fixture");
+    }
 
     #[test]
     fn discover_rejects_an_endpoint_that_overflows_sun_path() {
