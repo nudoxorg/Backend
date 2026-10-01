@@ -252,6 +252,13 @@ mod tests {
         cx.executor().advance_clock(Duration::from_millis(500));
         cx.update(|cx| {
             let (active, value, _) = transition.raw_evaluate(cx);
+            assert!(active, "retargeting starts a fresh duration-based pass");
+            assert_eq!(value, 12.5);
+        });
+
+        cx.executor().advance_clock(Duration::from_millis(500));
+        cx.update(|cx| {
+            let (active, value, _) = transition.raw_evaluate(cx);
             assert!(!active);
             assert_eq!(value, 20.0);
         });

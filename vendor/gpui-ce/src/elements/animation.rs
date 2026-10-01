@@ -732,14 +732,18 @@ mod tests {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
             let target = self.target.get();
             let rendered_values = self.rendered_values.clone();
-            div().size_full().child(div().with_spring(
-                "retargetable-spring",
-                SpringAnimation::new(SpringConfig::new(100.0, 1.0, 1.0)).to(target),
-                move |element, value| {
-                    rendered_values.borrow_mut().push(value);
-                    element
-                },
-            ))
+            div().size_full().child(
+                div().with_spring(
+                    "retargetable-spring",
+                    SpringAnimation::new(SpringConfig::new(100.0, 1.0, 1.0))
+                        .from(0.0)
+                        .to(target),
+                    move |element, value| {
+                        rendered_values.borrow_mut().push(value);
+                        element
+                    },
+                ),
+            )
         }
     }
 
