@@ -1,6 +1,6 @@
 //! Bounded reads of ordinary state and cache files published atomically.
 
-use crate::DirectoryCapability;
+use crate::directory::DirectoryCapability;
 use std::io::{self, Read};
 use std::path::Path;
 
