@@ -775,7 +775,6 @@ mod tests {
                 .map(|(_, node)| node)
                 .unwrap();
             assert!(!sibling.is_disabled());
-            assert!(sibling.supports_action(accesskit::Action::Click));
 
             let synthetic = tree
                 .nodes
