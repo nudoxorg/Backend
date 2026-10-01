@@ -2462,21 +2462,21 @@ impl RustWorkspace {
                             path: requested_path,
                         });
                     }
-                    let source_root = self
+                    let indexed_source_root = self
                         .database
                         .file_source_root(file_id)
                         .source_root_id(&self.database);
                     let indexed_path = self
                         .database
-                        .source_root(source_root)
+                        .source_root(indexed_source_root)
                         .source_root(&self.database)
                         .path_for_file(&file_id)
                         .cloned();
-                    if indexed_path.is_some() && !local_roots.contains(&source_root) {
+                    if indexed_path.is_some() && !local_roots.contains(&indexed_source_root) {
                         return Err(RustAuthorityError::SessionSourceRootAmbiguous);
                     }
                     if indexed_path.as_ref() == Some(&vfs_path) {
-                        selected_source_roots.insert(source_root);
+                        selected_source_roots.insert(indexed_source_root);
                         (file_id, false)
                     } else {
                         // VFS identity alone does not prove that the FileId is
@@ -2491,24 +2491,28 @@ impl RustWorkspace {
                             local_roots_by_directory =
                                 Some(self.local_source_roots_by_directory(&local_roots, control)?);
                         }
-                        let source_root = Self::source_root_for_new_file(
+                        let destination_source_root = Self::source_root_for_new_file(
                             &self.root,
                             &requested_path,
                             local_roots_by_directory
                                 .as_mut()
                                 .expect("local source-root index was initialized"),
                         )?;
-                        selected_source_roots.insert(source_root);
-                        added_ids.push((source_root, file_id, vfs_path.clone()));
+                        selected_source_roots.insert(destination_source_root);
+                        added_ids.push((destination_source_root, file_id, vfs_path.clone()));
                         if let Some(parent) = requested_path.parent() {
                             local_roots_by_directory
                                 .as_mut()
                                 .expect("local source-root index was initialized")
                                 .entry(parent.to_path_buf())
                                 .or_default()
-                                .insert(source_root);
+                                .insert(destination_source_root);
                         }
                         if indexed_path.is_some() {
+                            // The old and destination roots are both touched:
+                            // the FileId must leave its prior FileSet even
+                            // when the lexical path now selects another root.
+                            selected_source_roots.insert(indexed_source_root);
                             rehomed_file_ids.insert(file_id);
                         }
                         added = added.saturating_add(1);
@@ -2579,6 +2583,10 @@ impl RustWorkspace {
                 return Err(RustAuthorityError::SessionSourceRootAmbiguous);
             }
             roots.reserve(max_root_id as usize + 1);
+            // Rebuild the complete root inventory, including a rehomed
+            // FileId's old root when it differs from its selected destination.
+            // `selected_source_roots` is a touched-root count, not a filter on
+            // this loop: stale membership must be removed from every old root.
             for raw_id in 0..=max_root_id {
                 control.check()?;
                 let root_id = SourceRootId(raw_id);
