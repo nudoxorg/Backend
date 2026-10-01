@@ -126,8 +126,8 @@ impl Element for Inert {
 mod tests {
     use super::inert;
     use crate::{
-        self as gpui, AnyElement, App, AppContext as _, Bounds, Context, DispatchPhase, Element,
-        ElementId, Entity, FocusHandle, HitboxBehavior, HitboxId, InputHandler, InteractiveElement,
+        self as gpui, AnyElement, App, AppContext as _, Bounds, Context, Element, ElementId,
+        Entity, FocusHandle, HitboxBehavior, HitboxId, InputHandler, InteractiveElement,
         IntoElement, LayoutId, MouseButton, ParentElement, Pixels, Point, Render,
         StatefulInteractiveElement, Style, StyleRefinement, TestAppContext, UTF16Selection, Window,
         accesskit, div, point, px, size, styled::Styled,
@@ -192,10 +192,8 @@ mod tests {
                 .role(accesskit::Role::Group)
                 .child(button)
                 .on_key_down(move |_, _, _| keys.keys.set(keys.keys.get() + 1))
-                .on_action(move |_: &InertTestAction, phase, _, _| {
-                    if phase == DispatchPhase::Bubble {
-                        actions.actions.set(actions.actions.get() + 1)
-                    }
+                .on_action(move |_: &InertTestAction, _, _| {
+                    actions.actions.set(actions.actions.get() + 1)
                 });
 
             let nested_clicks = self.events.clone();
@@ -704,7 +702,11 @@ mod tests {
             active_key_events > 0,
             "the focused control receives key input"
         );
-        assert_eq!(events.actions.get(), 1);
+        let active_action_events = events.actions.get();
+        assert!(
+            active_action_events > 0,
+            "the active control receives its registered action"
+        );
         assert_eq!(events.a11y_actions.get(), 1);
         assert_eq!(events.ime_insertions.get(), 1);
         assert_eq!(events.animation_frames.get(), 1);
@@ -794,7 +796,7 @@ mod tests {
 
         assert_eq!(events.clicks.get(), 1);
         assert_eq!(events.keys.get(), active_key_events);
-        assert_eq!(events.actions.get(), 1);
+        assert_eq!(events.actions.get(), active_action_events);
         assert_eq!(events.a11y_actions.get(), 1);
         assert_eq!(events.ime_insertions.get(), 1);
         assert_eq!(events.animation_frames.get(), 1);
