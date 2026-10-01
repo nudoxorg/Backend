@@ -431,10 +431,13 @@ impl<K: Ord + Clone, T> Slots<K, T> {
         let Some(slot) = self.map.get_mut(key) else { return Landing::Superseded };
         let Fetch::Running { generation: running, manner } = slot.fetch else { return Landing::Superseded };
         if running != generation { return Landing::Superseded; }
-        if manner == Manner::Quiet || slot.resource.is_loaded() || slot.resource.loaded_value() == Some(&value) {
+        if manner == Manner::Quiet || slot.resource.is_loaded() {
             return Landing::Unchanged;
         }
         let Some(root) = slot.asked_at else { return Landing::Superseded };
+        if slot.resource.loaded_value() == Some(&value) && slot.resource.value_root() == Some(root) {
+            return Landing::Unchanged;
+        }
         slot.resource = Resource::partial_at(value, root);
         slot.revision = slot.revision.next();
         Landing::Applied
