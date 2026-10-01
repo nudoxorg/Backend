@@ -11,14 +11,14 @@ impl Render for Host {
     }
 }
 
-struct MountedFind { state: Entity<State>, scroll: ScrollHandle, model: Arc<Model>, actions: Actions }
+struct MountedFind { active: bool, state: Entity<State>, scroll: ScrollHandle, model: Arc<Model>, actions: Actions }
 impl Render for MountedFind {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::probe::draw_started(cx);
         let id: ElementId = "mounted-find".into();
         let measure = Measure::new(px(360.0), &cx.facet());
         div().id("mounted-find-scroll").w(px(360.0)).h(px(220.0)).overflow_y_scroll().track_scroll(&self.scroll)
-            .child(Find { id, model: Arc::clone(&self.model), actions: self.actions.clone(), measure, test_state: Some(self.state.clone()) })
+            .child(Find { active: self.active, id, model: Arc::clone(&self.model), actions: self.actions.clone(), measure, test_state: Some(self.state.clone()) })
     }
 }
 
@@ -49,7 +49,7 @@ fn mounted_find_arrows_reveal_offscreen_choice_without_pointer_auto_scroll(cx: &
     let model = Arc::new(Model { query: "package".into(), candidates, loose: vec![], coverage: vec![], more_answers: false, loading: false });
     let (host, cx) = cx.add_window_view(|window, cx| {
         let state = cx.new(|cx| State::new(model.query.clone(), actions.clone(), window, cx));
-        MountedFind { state, scroll: scroll.clone(), model, actions }
+        MountedFind { active: true, state, scroll: scroll.clone(), model, actions }
     });
     draw(cx);
     let state = host.read_with(cx, |host, _| host.state.clone());
