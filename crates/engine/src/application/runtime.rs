@@ -2944,7 +2944,9 @@ fn run_worker_generation(
     let native_work_root = configuration.paths.native_work_directory.to_path_buf();
     let image_cap = maximum_image_bytes(configuration);
     let embedding_runtime = configuration.embedding_runtime.clone();
-    let embedding_cache_session = configuration.embedding_cache_session;
+    // The session belongs to this worker configuration across generations. Lanes only borrow it
+    // for the duration of this scoped generation so a reconfiguration cannot consume/drop it.
+    let embedding_cache_session = configuration.embedding_cache_session.as_ref();
     let embedding_requirement = configuration.embedding_requirement;
     let embedding_provisioning_failure = configuration.embedding_provisioning_failure;
     let embedding_payload_max = embedding_runtime
@@ -3001,7 +3003,7 @@ fn run_worker_lanes(
     capabilities: LocalCompilerCapabilities,
     lane_scratches: Vec<LocalCompilerScratch>,
     embedding_runtime: Option<Arc<EmbeddingExecutable>>,
-    embedding_cache_session: Option<EmbeddingCacheSession>,
+    embedding_cache_session: Option<&EmbeddingCacheSession>,
     embedding_requirement: EmbeddingRequirement,
     embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
     embedding_payload_max: usize,
@@ -3029,7 +3031,7 @@ fn run_worker_lanes(
                 .with_native_work_directory(native_root.join(format!("lane-{lane}")));
             let completions = completion_tx.clone();
             let lane_embedding_runtime = embedding_runtime.clone();
-            let lane_cache_session = embedding_cache_session.as_ref();
+            let lane_cache_session = embedding_cache_session;
             let lane_embedding_provisioning_failure = embedding_provisioning_failure;
             let name = format!("nudox-compiler-lane-{lane}");
             if let Err(source) = thread::Builder::new()
