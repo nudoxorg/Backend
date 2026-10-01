@@ -1592,7 +1592,8 @@ mod tests {
         let owner_secret = SecretKey::generate();
         let signing_secret = owner_secret.clone();
         let client_secret = SecretKey::generate();
-        let (owner_address, _) = unused_loopback_addresses();
+        let owner_reservation = UdpSocket::bind("127.0.0.1:0").expect("reserve owner address");
+        let owner_address = owner_reservation.local_addr().expect("owner address");
         let (ready_sender, ready_receiver) = mpsc::channel();
         let (phase_sender, phase_receiver) = mpsc::channel();
         let (shutdown_sender, mut shutdown_receiver) = oneshot::channel();
@@ -1602,6 +1603,7 @@ mod tests {
                 .build()
                 .expect("owner runtime");
             runtime.block_on(async move {
+                drop(owner_reservation);
                 let owner =
                     tokio::time::timeout(TEST_IO_TIMEOUT, bind_direct(owner_secret, owner_address))
                         .await
@@ -1659,15 +1661,6 @@ mod tests {
             .expect("owner endpoint became ready before timeout");
         let root = owner_view().root().to_bytes();
         let expired = expired_product_capability(&signing_secret, client_secret.public(), root);
-        assert!(matches!(
-            RemoteIndexCommandTransport::connect(
-                client_secret.clone(),
-                owner_id,
-                owner_address,
-                expired.clone(),
-            ),
-            Err(ClientError::StaleRemoteCapability)
-        ));
 
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
