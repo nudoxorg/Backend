@@ -722,12 +722,14 @@ fn cancelled_fault(request: &EngineRequest) -> EngineFault {
 
 #[cfg(test)]
 mod tests {
-    use super::{ActorStartError, CancellationToken, EngineActor, EngineRequest};
+    use super::{ActorStartError, CancellationToken, EngineActor, EngineClient, EngineDto, EngineFault, EngineRequest};
     use crate::core::{LocalProjectId, VersionedRoot};
     use crate::navigation::RequestId;
     use crate::runtime::client::LocalEngineClient;
     use crate::runtime::owner::OwnerGate;
     use std::sync::mpsc;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     #[test]
@@ -759,5 +761,60 @@ mod tests {
         std::thread::spawn(move || sent.send(drop(actor)).expect("actor closed"));
         received.recv_timeout(Duration::from_secs(1)).expect("actor shutdown did not wait for the owner's 60-second patience");
         assert_eq!(gate.state(), crate::runtime::owner::OwnerState::Starting);
+    }
+
+    #[test]
+    fn closing_the_actor_never_executes_a_queued_index_mutation() {
+        struct Stalled {
+            gate: OwnerGate,
+            started: mpsc::Sender<()>,
+            mutations: Arc<AtomicUsize>,
+        }
+
+        impl EngineClient for Stalled {
+            fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
+                match request {
+                    EngineRequest::Root { cancel, .. } => {
+                        self.started.send(()).expect("root entered its owner wait");
+                        let _ = self.gate.wait_cancelled(cancel);
+                        Err(EngineFault::Cancelled)
+                    }
+                    EngineRequest::IndexProject { .. } => {
+                        self.mutations.fetch_add(1, Ordering::SeqCst);
+                        Err(EngineFault::Cancelled)
+                    }
+                    _ => Err(EngineFault::Cancelled),
+                }
+            }
+        }
+
+        let gate = OwnerGate::starting();
+        let mutations = Arc::new(AtomicUsize::new(0));
+        let (started, entered) = mpsc::channel();
+        let actor = EngineActor::start(Stalled {
+            gate,
+            started,
+            mutations: Arc::clone(&mutations),
+        }, 4).expect("actor");
+        assert!(matches!(actor.try_submit(EngineRequest::Root {
+            request: RequestId::new(1),
+            basis: VersionedRoot::unserved(),
+            cancel: CancellationToken::new(),
+        }), super::PushResult::Enqueued));
+        entered.recv_timeout(Duration::from_secs(1)).expect("root entered");
+
+        let project = LocalProjectId::from_path(std::path::Path::new("/tmp"))
+            .expect("project identity");
+        assert!(matches!(actor.try_submit(EngineRequest::IndexProject {
+            request: RequestId::new(2),
+            project,
+            basis: VersionedRoot::unserved(),
+            cancel: CancellationToken::new(),
+        }), super::PushResult::Enqueued));
+
+        let (closed, finished) = mpsc::channel();
+        std::thread::spawn(move || closed.send(drop(actor)).expect("actor closed"));
+        finished.recv_timeout(Duration::from_secs(1)).expect("closing the actor released its root wait");
+        assert_eq!(mutations.load(Ordering::SeqCst), 0, "a queued mutation cannot reach the client after close");
     }
 }
