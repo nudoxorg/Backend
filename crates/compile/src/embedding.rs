@@ -715,7 +715,9 @@ impl EmbeddingArtifactWorkspace {
         workspace: &Path,
         model: &EmbeddingArtifact,
         tokenizer: &EmbeddingArtifact,
+        deadline: Instant,
     ) -> Result<Self, EmbeddingExecutableError> {
+        check_request_deadline(None, deadline)?;
         if model.bytes().len() > MAX_EMBEDDING_MODEL_BYTES {
             return Err(EmbeddingExecutableError::ArtifactLimit {
                 artifact: "model",
@@ -746,6 +748,7 @@ impl EmbeddingArtifactWorkspace {
         );
         let directory = workspace.join(&name);
 
+        check_request_deadline(None, deadline)?;
         #[cfg(unix)]
         create_private_artifact_directory(&directory)?;
         #[cfg(windows)]
@@ -777,13 +780,23 @@ impl EmbeddingArtifactWorkspace {
             #[cfg(windows)]
             directory_handle,
         };
+        check_request_deadline(None, deadline)?;
         artifacts.write_artifact(MODEL_FILE_NAME, model.bytes())?;
+        check_request_deadline(None, deadline)?;
         artifacts.write_artifact(TOKENIZER_FILE_NAME, tokenizer.bytes())?;
-        artifacts.verify_artifact(MODEL_FILE_NAME, model.identity, model.bytes().len())?;
+        artifacts.verify_artifact(
+            MODEL_FILE_NAME,
+            model.identity,
+            model.bytes().len(),
+            None,
+            deadline,
+        )?;
         artifacts.verify_artifact(
             TOKENIZER_FILE_NAME,
             tokenizer.identity,
             tokenizer.bytes().len(),
+            None,
+            deadline,
         )?;
         Ok(artifacts)
     }
@@ -1294,7 +1307,9 @@ impl EmbeddingExecutable {
     }
 
     /// Verifies the executable and performs one supervised inference self-test before returning an
-    /// active runtime.
+    /// active runtime. Activation construction and its readiness self-test share one deadline
+    /// derived from the configured process wall-time limit; later inference calls each receive a
+    /// fresh call-wide deadline of the same duration.
     ///
     /// # Errors
     ///
@@ -1340,6 +1355,8 @@ impl EmbeddingExecutable {
     ///
     /// The model and tokenizer are durably materialized into a private child workspace. Their
     /// paths replace any caller-supplied artifact path variables before the first self-test.
+    /// Activation construction and readiness use one deadline derived from the configured
+    /// process wall-time limit.
     ///
     /// # Errors
     ///
@@ -1418,14 +1435,22 @@ impl EmbeddingExecutable {
         model: EmbeddingArtifact,
         tokenizer: EmbeddingArtifact,
     ) -> Result<Self, EmbeddingExecutableError> {
+        // Activation construction, artifact verification, and the initial readiness self-test
+        // share one explicit budget. This is separate from later inference-call deadlines.
+        let activation_deadline = Instant::now()
+            .checked_add(process_limits.wall_time())
+            .ok_or(EmbeddingExecutableError::Process(ProcessError::Deadline))?;
+        check_request_deadline(None, activation_deadline)?;
         if maximum_text_bytes == 0 {
             return Err(EmbeddingExecutableError::ZeroTextLimit);
         }
         let _maximum_text_bytes = u32::try_from(maximum_text_bytes)
             .map_err(|_| EmbeddingExecutableError::RequestExtent)?;
+        let uncancelled = AtomicBool::new(false);
         executable
-            .verify_path(&program)
+            .verify_path_until(&program, &uncancelled, activation_deadline)
             .map_err(EmbeddingExecutableError::Process)?;
+        check_request_deadline(None, activation_deadline)?;
         if model.bytes().is_empty() || tokenizer.bytes().is_empty() {
             return Err(EmbeddingExecutableError::EmptyArtifact);
         }
@@ -1451,8 +1476,13 @@ impl EmbeddingExecutable {
             &environment,
             process_limits,
         );
-        let artifact_workspace =
-            EmbeddingArtifactWorkspace::create(&workspace, &model, &tokenizer)?;
+        let artifact_workspace = EmbeddingArtifactWorkspace::create(
+            &workspace,
+            &model,
+            &tokenizer,
+            activation_deadline,
+        )?;
+        check_request_deadline(None, activation_deadline)?;
         let environment = embedding_environment(&environment, &artifact_workspace)?;
         let mut runtime = Self {
             program,
@@ -1477,7 +1507,7 @@ impl EmbeddingExecutable {
             batch_protocol: EmbeddingBatchProtocol::SingleV1,
             active: true,
         };
-        if let Err(error) = runtime.probe_ready() {
+        if let Err(error) = runtime.probe_ready_until(activation_deadline) {
             runtime.active = false;
             return Err(error);
         }
@@ -1491,9 +1521,16 @@ impl EmbeddingExecutable {
     /// Returns [`EmbeddingExecutableError::Revoked`] after revocation, or the exact bounded
     /// process/protocol/output validation failure.
     pub fn probe_ready(&mut self) -> Result<(), EmbeddingExecutableError> {
+        let deadline = self.request_deadline()?;
+        self.probe_ready_until(deadline)
+    }
+
+    fn probe_ready_until(&mut self, deadline: Instant) -> Result<(), EmbeddingExecutableError> {
+        check_request_deadline(None, deadline)?;
         if !self.active {
             return Err(EmbeddingExecutableError::Revoked);
         }
+        let _permit = self.inference_gate.acquire(None, deadline)?;
         let probe = EmbeddingInvocation {
             purpose: EmbeddingPurpose::Query,
             text: "backend embedding readiness",
@@ -1512,14 +1549,25 @@ impl EmbeddingExecutable {
                 },
             ];
             for invocation in persistent_probes {
+                check_request_deadline(None, deadline)?;
                 let batch = [(
-                    EmbeddingInputIdentity::new(self.execution_identity(), invocation),
+                    EmbeddingInputIdentity::new_until(
+                        self.execution_identity(),
+                        invocation,
+                        None,
+                        deadline,
+                    )?,
                     invocation.text,
                 )];
-                if !self.batch_request_fits(&batch) {
+                if !self.batch_request_fits_until(&batch, None, deadline)? {
                     return Err(EmbeddingExecutableError::BatchRequestExtent);
                 }
-                let coordinates = self.run_persistent_batch_v2(&batch, invocation.purpose, None)?;
+                let coordinates = self.run_persistent_batch_v2_admitted(
+                    &batch,
+                    invocation.purpose,
+                    None,
+                    deadline,
+                )?;
                 if coordinates.len() != 1 || coordinates[0].purpose() != invocation.purpose {
                     return Err(EmbeddingExecutableError::Protocol);
                 }
@@ -1527,21 +1575,41 @@ impl EmbeddingExecutable {
             self.batch_protocol = EmbeddingBatchProtocol::PersistentBatchV2;
             return Ok(());
         }
-        let batch = probes.map(|invocation| {
-            (
-                EmbeddingInputIdentity::new(self.execution_identity(), invocation),
+        let mut batch = Vec::with_capacity(probes.len());
+        for invocation in probes {
+            check_request_deadline(None, deadline)?;
+            batch.push((
+                EmbeddingInputIdentity::new_until(
+                    self.execution_identity(),
+                    invocation,
+                    None,
+                    deadline,
+                )?,
                 invocation.text,
-            )
-        });
-        if batch_single_request_fits(self.maximum_text_bytes, self.process_limits.input_bytes())
-            && let Ok(coordinates) = self.run_batch_v2(&batch, probe.purpose, None)
-            && coordinates.len() == probes.len()
-        {
-            self.batch_protocol = EmbeddingBatchProtocol::BatchV2;
-            return Ok(());
+            ));
+        }
+        if batch_single_request_fits(self.maximum_text_bytes, self.process_limits.input_bytes()) {
+            match self.run_batch_v2_admitted(&batch, probe.purpose, None, deadline) {
+                Ok(coordinates) if coordinates.len() == probes.len() => {
+                    self.batch_protocol = EmbeddingBatchProtocol::BatchV2;
+                    return Ok(());
+                }
+                Err(error)
+                    if matches!(
+                        error,
+                        EmbeddingExecutableError::Process(
+                            ProcessError::Deadline | ProcessError::Cancelled
+                        )
+                    ) =>
+                {
+                    return Err(error);
+                }
+                _ => {}
+            }
         }
         self.batch_protocol = EmbeddingBatchProtocol::SingleV1;
-        self.infer_inner(probe, false).map(|_| ())
+        self.infer_inner_admitted(probe, false, None, deadline)
+            .map(|_| ())
     }
 
     /// Executes one supervised, recipe-bound embedding request.
@@ -1773,6 +1841,9 @@ impl EmbeddingExecutable {
                 }
             }
             misses = still_missing;
+            // Durable lookups can block on the cache actor and filesystem. Do not hold the
+            // process-local result-cache mutex while waiting on that independent owner.
+            drop(cache);
             self.load_cache_session_results(
                 cache_session,
                 purpose,
@@ -4815,6 +4886,35 @@ while True:
         drop(runtime);
         fs::remove_dir_all(root)?;
         fs::remove_dir_all(counter_root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn artifact_workspace_rejects_an_expired_activation_budget_before_writing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let workspace = std::env::temp_dir().join(format!(
+            "backend-embedding-expired-artifacts-{}-{stamp}",
+            std::process::id()
+        ));
+        fs::create_dir(&workspace)?;
+        fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700))?;
+        let model = EmbeddingArtifact::new(Arc::from(MODEL_BYTES));
+        let tokenizer = EmbeddingArtifact::new(Arc::from(TOKENIZER_BYTES));
+
+        let result = EmbeddingArtifactWorkspace::create(
+            &workspace,
+            &model,
+            &tokenizer,
+            Instant::now() - Duration::from_millis(1),
+        );
+
+        assert!(matches!(
+            result,
+            Err(EmbeddingExecutableError::Process(ProcessError::Deadline))
+        ));
+        assert_eq!(fs::read_dir(&workspace)?.count(), 0);
+        fs::remove_dir(&workspace)?;
         Ok(())
     }
 

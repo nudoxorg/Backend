@@ -209,9 +209,9 @@ impl EmbeddingCacheSession {
 impl Drop for EmbeddingCacheSession {
     fn drop(&mut self) {
         let _ = self.sender.try_send(CacheBrokerMessage::Shutdown);
-        let mut worker = self
+        let worker = self
             .worker
-            .lock()
+            .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(handle) = worker.take() else {
             return;
@@ -1146,6 +1146,58 @@ mod tests {
                 .is_err()
         );
         assert!(!entry_path(&fixture.directory, &identity.as_bytes()).exists());
+    }
+
+    #[test]
+    fn interrupted_store_cleans_temporary_file_and_keeps_inventory_unchanged() {
+        let fixture = Fixture::new();
+        let identity = input_identity(0x75);
+        let mut cache = fixture.cache();
+
+        let result = cache.store_batch_with_checkpoint(&[(identity, &[0.6, 0.8])], || {
+            let temporary_exists = fs::read_dir(&fixture.directory)?
+                .filter_map(Result::ok)
+                .any(|entry| {
+                    entry
+                        .file_name()
+                        .to_str()
+                        .is_some_and(|name| name.ends_with(".tmp"))
+                });
+            if temporary_exists {
+                Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "simulated cancellation after temporary creation",
+                ))
+            } else {
+                Ok(())
+            }
+        });
+
+        assert_eq!(
+            result
+                .expect_err("injected checkpoint must stop store")
+                .kind(),
+            io::ErrorKind::Interrupted
+        );
+        assert!(!entry_path(&fixture.directory, &identity.as_bytes()).exists());
+        assert_eq!(
+            fs::read_dir(&fixture.directory)
+                .expect("cache directory")
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_str()
+                        .is_some_and(|name| name.ends_with(".tmp"))
+                })
+                .count(),
+            0,
+            "the interrupted write removes its temporary entry"
+        );
+        assert_eq!(cache.bytes_used, 0);
+        assert!(cache.entries.is_empty());
+        assert_eq!(cache.stranded_temporary_bytes, 0);
+        assert!(!cache.storage_poisoned);
     }
 }
 
