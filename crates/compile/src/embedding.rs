@@ -4565,41 +4565,53 @@ while True:
     }
 
     #[test]
-    fn foreign_dimension_cache_session_is_ignored_without_mutating_its_files()
+    fn foreign_runtime_cache_sessions_are_ignored_without_mutating_their_files()
     -> Result<(), Box<dyn std::error::Error>> {
         let (root, _, runtime) = runtime()?;
-        let cache_root = root.join("foreign-dimension-cache");
-        fs::create_dir(&cache_root)?;
-        fs::set_permissions(&cache_root, fs::Permissions::from_mode(0o700))?;
-        let mut foreign_identity = runtime.execution_identity();
-        foreign_identity.dimension += 1;
-        let foreign_session = EmbeddingCacheSession::open(
-            backend_platform::DirectoryCapability::open(&cache_root)?,
-            foreign_identity,
-        )
-        .ok_or("foreign cache actor admission failed")?;
+        let identity = runtime.execution_identity();
+        let mut different_dimension = identity;
+        different_dimension.dimension += 1;
+        let mut different_recipe = identity;
+        different_recipe.recipe[0] ^= 1;
+        let mut different_launch = identity;
+        different_launch.launch_configuration[0] ^= 1;
+        for (name, foreign_identity, text) in [
+            ("foreign-dimension-cache", different_dimension, "alpha beta"),
+            ("foreign-recipe-cache", different_recipe, "gamma alpha"),
+            ("foreign-launch-cache", different_launch, "beta gamma"),
+        ] {
+            let cache_root = root.join(name);
+            fs::create_dir(&cache_root)?;
+            fs::set_permissions(&cache_root, fs::Permissions::from_mode(0o700))?;
+            let foreign_session = EmbeddingCacheSession::open(
+                backend_platform::DirectoryCapability::open(&cache_root)?,
+                foreign_identity,
+            )
+            .ok_or("foreign cache actor admission failed")?;
 
-        let result = runtime.infer_batch_with_cache_session(
-            EmbeddingPurpose::Document,
-            &["alpha beta"],
-            &AtomicBool::new(false),
-            &foreign_session,
-        )?;
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].values().len(), 2);
-        assert_eq!(
-            fs::read_dir(&cache_root)?
-                .filter_map(Result::ok)
-                .filter(|entry| entry
-                    .path()
-                    .extension()
-                    .is_some_and(|extension| extension == "vec"))
-                .count(),
-            0,
-            "a cache session for another output shape must remain untouched"
-        );
+            let result = runtime.infer_batch_with_cache_session(
+                EmbeddingPurpose::Document,
+                &[text],
+                &AtomicBool::new(false),
+                &foreign_session,
+            )?;
+            assert_eq!(result.len(), 1);
+            assert_eq!(result[0].values().len(), 2);
+            drop(foreign_session);
+            assert_eq!(
+                fs::read_dir(&cache_root)?
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry
+                        .path()
+                        .extension()
+                        .is_some_and(|extension| extension == "vec"))
+                    .count(),
+                0,
+                "foreign identity {name} must not read or mutate its cache files"
+            );
+        }
 
-        drop((foreign_session, runtime));
+        drop(runtime);
         fs::remove_dir_all(root)?;
         Ok(())
     }
