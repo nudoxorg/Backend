@@ -11,7 +11,7 @@ use facet::{Measure, Space};
 use gpui::{
     App, ClickEvent, ElementId, IntoElement, ParentElement, SharedString, Styled, Window, div, px,
 };
-use gpui_component::text::{MarkdownExtensions, MarkdownNode, TextView};
+use gpui_component::text::{MarkdownExtensions, MarkdownNode, PreparedMarkdown, TextView};
 use std::sync::OnceLock;
 
 /// Action dispatched by the Markdown component when a rendered link is
@@ -63,13 +63,17 @@ fn readme_extensions() -> &'static MarkdownExtensions {
                 let inline_id: SharedString = format!("readme-heading-{offset}:inline").into();
                 let raw = context.node_source(node)?;
                 let inline: SharedString = heading_inline_source(raw).into();
+                // This parser runs with the parent document on the worker.
+                // Prepare native inline marks once so the heading is complete
+                // in the parent's first published layout, without a child task.
+                let prepared = PreparedMarkdown::parse(inline.as_str()).ok()?;
                 Some(
                     MarkdownNode::new(
                         "readme-heading-anchor",
                         HeadingData {
                             element_id,
                             inline_id,
-                            inline: inline.clone(),
+                            prepared,
                             level: heading.depth,
                         },
                     )
@@ -89,11 +93,10 @@ fn readme_extensions() -> &'static MarkdownExtensions {
                     2 => ty::TITLE,
                     _ => ty::PROSE,
                 });
-                let inline = TextView::markdown(
+                let inline = TextView::prepared_markdown(
                     ElementId::Name(data.inline_id.clone()),
-                    data.inline.clone(),
+                    data.prepared.clone(),
                 )
-                .background_parse()
                 .selectable(true)
                 .on_link_click(emit_link_action);
                 facet::motion::shared::shared(
@@ -116,7 +119,7 @@ fn readme_extensions() -> &'static MarkdownExtensions {
 struct HeadingData {
     element_id: SharedString,
     inline_id: SharedString,
-    inline: SharedString,
+    prepared: PreparedMarkdown,
     level: u8,
 }
 

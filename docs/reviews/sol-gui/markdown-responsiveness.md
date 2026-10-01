@@ -5,8 +5,14 @@ worktree. The integration owner must compile the exact admitted commit, run the
 component tests and capture a real package README before accepting the slice.
 
 The desktop continues to use GPUI CE component TextView for Markdown, selection,
-layout and pointer links. `background_parse()` opts its document and nested
-heading views out of the component's small-document synchronous parser. Keyed
+layout and pointer links. `background_parse()` opts its document out of the
+component's small-document synchronous parser. The heading extension prepares
+its native inline projection on the same parent worker. An immutable prepared
+TextView consumes that projection immediately, with no heading parser/receive
+task or additional empty publication frame. Its native marks preserve inline
+links and selectable/copyable text; a changed heading snapshot replaces its
+projection directly. If preparation fails the parent parser retains its native
+heading conversion. Keyed
 state receives the configured extensions before its first publication, removing
 the initial default parse followed by a custom-heading reparse. Until that first
 parse arrives the Markdown view is empty; no default-extension content is painted.
@@ -43,7 +49,8 @@ no new byte-limit contract to the vendor API. A future owner stream needs an
 explicit cumulative byte admission bound and revision protocol before storage
 bounds can be claimed for it.
 
-Added source tests cover deferred parsing even for small Unicode headings,
+Added source tests cover prepared heading native marks/copy and immediate
+replacement without child worker tasks, deferred parsing even for small Unicode headings,
 custom-heading AST and exact local link destinations, unchanged-source/options
 reuse, A held while B/C supersede it, stale success/failure rejection, ordered
 append reduction, cancelled receiver retention, a README near the real size

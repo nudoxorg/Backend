@@ -13,7 +13,7 @@ use crate::scroll::ScrollableElement;
 use crate::text::TextViewFormat;
 use crate::text::markdown_ext::{MarkdownExtensions, MarkdownNode, MarkdownPlugin};
 use crate::text::node::{CodeBlock, TableData};
-use crate::text::state::{LineSpan, SelectionFormat, TextViewState};
+use crate::text::state::{LineSpan, PreparedMarkdown, SelectionFormat, TextViewState};
 use crate::{global_state::UiGlobalState, text::TextViewStyle};
 
 /// Type for code block actions generator function.
@@ -80,6 +80,7 @@ pub struct TextView {
     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
     markdown_extensions: Arc<MarkdownExtensions>,
     background_parse: bool,
+    prepared: Option<PreparedMarkdown>,
 }
 
 /// A plugin that can configure a [`TextView`].
@@ -124,6 +125,7 @@ impl TextView {
             link_click_handler: None,
             markdown_extensions: Arc::default(),
             background_parse: false,
+            prepared: None,
         }
     }
 
@@ -145,7 +147,19 @@ impl TextView {
             link_click_handler: None,
             markdown_extensions: Arc::default(),
             background_parse: false,
+            prepared: None,
         }
+    }
+
+    /// Render an immutable worker-prepared Markdown snapshot immediately.
+    /// Uses native selection and links without scheduling a parse task.
+    /// Extension parsing is fixed by the prepared projection.
+    pub fn prepared_markdown(id: impl Into<ElementId>, prepared: PreparedMarkdown) -> Self {
+        let mut view = Self::markdown(id, prepared.source());
+        view.text = None;
+        view.background_parse = true;
+        view.prepared = Some(prepared);
+        view
     }
 
     /// Create a new html text view.
@@ -166,6 +180,7 @@ impl TextView {
             link_click_handler: None,
             markdown_extensions: Arc::default(),
             background_parse: false,
+            prepared: None,
         }
     }
 
@@ -467,11 +482,15 @@ impl Element for TextView {
             let default_text = self.text.clone().unwrap_or_default();
             let extensions = self.markdown_extensions.clone();
             let background_parse = self.background_parse;
+            let prepared = self.prepared.clone();
 
             let state = window.use_keyed_state(
                 SharedString::from(format!("{}/state", self.id)),
                 cx,
                 move |_, cx| {
+                    if let Some(prepared) = prepared {
+                        return TextViewState::new_prepared(prepared, cx);
+                    }
                     TextViewState::new_configured(
                         default_format,
                         default_text.as_str(),
@@ -494,7 +513,11 @@ impl Element for TextView {
             state.code_block_actions = self.code_block_actions.clone();
             state.table_actions = self.table_actions.clone();
             state.link_click_handler = self.link_click_handler.clone();
-            state.set_markdown_extensions(self.markdown_extensions.clone(), cx);
+            if let Some(prepared) = &self.prepared {
+                state.set_prepared(prepared, cx);
+            } else {
+                state.set_markdown_extensions(self.markdown_extensions.clone(), cx);
+            }
             state.selectable = self.selectable;
             state.selection_format = self.selection_format;
             state.scrollable = self.scrollable;

@@ -80,6 +80,26 @@ pub(super) struct LineSpan {
     pub(super) line_height: Pixels,
 }
 
+/// An immutable Markdown projection prepared outside the UI thread.
+///
+/// Keeps the component's native marks, links and selection model. Preparing
+/// parses synchronously; invoke this from a worker, never render or layout.
+#[derive(Clone)]
+pub struct PreparedMarkdown(Arc<ParsedContent>);
+
+impl PreparedMarkdown {
+    /// Parse a standalone fragment with the component's default Markdown rules.
+    pub fn parse(source: &str) -> Result<Self, SharedString> {
+        let mut node_cx = NodeContext::default();
+        let document = format::markdown::parse(source, &mut node_cx)?;
+        Ok(Self(Arc::new(ParsedContent { document, node_cx })))
+    }
+
+    pub(super) fn source(&self) -> SharedString {
+        self.0.document.source.clone()
+    }
+}
+
 /// The state of a TextView.
 pub struct TextViewState {
     pub(super) focus_handle: FocusHandle,
@@ -111,6 +131,7 @@ pub struct TextViewState {
     pub(super) selection_adapter: TextViewSelectionAdapter,
 
     pub(super) parsed_content: ParsedContent,
+    prepared_snapshot: Option<PreparedMarkdown>,
     /// Content format (markdown / html), used for bounded synchronous parsing
     /// of small full-replace updates.
     format: TextViewFormat,
@@ -148,22 +169,59 @@ impl TextViewState {
         background_parse: bool,
         cx: &mut Context<Self>,
     ) -> Self {
+        Self::new_inner(
+            format,
+            text,
+            markdown_extensions,
+            background_parse,
+            None,
+            cx,
+        )
+    }
+
+    pub(super) fn new_prepared(prepared: PreparedMarkdown, cx: &mut Context<Self>) -> Self {
+        Self::new_inner(
+            TextViewFormat::Markdown,
+            prepared.0.document.source.as_str(),
+            Arc::default(),
+            true,
+            Some(prepared.clone()),
+            cx,
+        )
+    }
+
+    fn new_inner(
+        format: TextViewFormat,
+        text: &str,
+        markdown_extensions: Arc<MarkdownExtensions>,
+        background_parse: bool,
+        prepared: Option<PreparedMarkdown>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
         let selection_adapter = TextViewSelectionAdapter::new(cx.entity().downgrade(), cx);
 
         let (tx, rx) = pending_update::channel(UpdateOptions::merge);
         let (tx_result, mut rx_result) = pending_update::channel(ParsedUpdate::merge);
-        let _receive_task = cx.spawn({
-            async move |weak_self, cx| {
-                while let Some(parsed_update) = rx_result.next().await {
-                    _ = weak_self.update(cx, |state, cx| {
-                        state.accept_parsed_update(parsed_update, cx);
-                    });
+        let _receive_task = if prepared.is_none() {
+            cx.spawn({
+                async move |weak_self, cx| {
+                    while let Some(parsed_update) = rx_result.next().await {
+                        _ = weak_self.update(cx, |state, cx| {
+                            state.accept_parsed_update(parsed_update, cx);
+                        });
+                    }
                 }
-            }
-        });
+            })
+        } else {
+            Task::ready(())
+        };
 
-        let _parse_task = cx.background_spawn(UpdateFuture::new(format, rx, tx_result));
+        let _parse_task = if prepared.is_none() {
+            cx.background_spawn(UpdateFuture::new(format, rx, tx_result))
+        } else {
+            Task::ready(())
+        };
 
         let mut this = Self {
             focus_handle,
@@ -190,7 +248,10 @@ impl TextViewState {
             is_selecting: false,
             auto_scroll: AutoScroll::default(),
             selection_adapter,
-            parsed_content: Default::default(),
+            parsed_content: prepared
+                .as_ref()
+                .map_or_else(ParsedContent::default, |snapshot| (*snapshot.0).clone()),
+            prepared_snapshot: prepared.clone(),
             format,
             background_parse,
             parsed_error: None,
@@ -202,8 +263,34 @@ impl TextViewState {
             _parse_task,
             _receive_task,
         };
-        this.increment_update(&text, false, cx);
+        if prepared.is_none() {
+            this.increment_update(text, false, cx);
+        }
         this
+    }
+
+    pub(super) fn set_prepared(&mut self, prepared: &PreparedMarkdown, cx: &mut Context<Self>) {
+        if self
+            .prepared_snapshot
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(&current.0, &prepared.0))
+        {
+            return;
+        }
+        self.prepared_snapshot = Some(prepared.clone());
+        if self.text == prepared.0.document.source.as_str() {
+            return;
+        }
+        self.text = prepared.0.document.source.to_string();
+        self.revision = self.revision.wrapping_add(1);
+        self.selection_revision = self.selection_revision.wrapping_add(1);
+        self.parsed_content = (*prepared.0).clone();
+        self.parsed_error = None;
+        self.compatible_layout_update = false;
+        if !self.is_selecting {
+            self.reset_selection_and_adapter(cx);
+        }
+        cx.notify();
     }
 
     fn accept_parsed_update(
@@ -839,6 +926,81 @@ mod tests {
     use super::*;
     use crate::text::MarkdownNode;
     use gpui::TestAppContext;
+
+    #[gpui::test]
+    fn prepared_heading_is_complete_before_executor_runs_and_keeps_native_links_and_copy(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::init);
+        // The production heading extension performs this preparation in its
+        // worker callback. Instantiating a TextView consumes only the snapshot.
+        let prepared = PreparedMarkdown::parse("🦀 **Guide** [local](src/lib.rs#L7)").unwrap();
+        let state = cx.update(|cx| cx.new(|cx| TextViewState::new_prepared(prepared.clone(), cx)));
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.parsed_content.document.blocks.len(), 1);
+            let node::BlockNode::Paragraph(paragraph) = &state.parsed_content.document.blocks[0]
+            else {
+                panic!("native inline paragraph missing");
+            };
+            assert_eq!(paragraph.text(), "🦀 Guide local");
+            let destinations: Vec<_> = paragraph
+                .children
+                .iter()
+                .flat_map(|run| run.marks.iter())
+                .filter_map(|(_, mark)| mark.link.as_ref().map(|link| link.url.as_str()))
+                .collect();
+            assert_eq!(destinations, ["src/lib.rs#L7"]);
+            // A prepared heading has no parser consumer or background receive
+            // task: it must not depend on another executor turn to fill in.
+            assert!(
+                state
+                    .tx
+                    .try_send(UpdateOptions {
+                        revision: 1,
+                        pending_text: "unwanted parse".into(),
+                        append: false,
+                        mode: ParseMode::Replace,
+                        markdown_extensions: Arc::default(),
+                    })
+                    .is_err()
+            );
+        });
+        state.update(cx, |state, cx| {
+            state.selectable = true;
+            state.select_all(cx);
+            assert_eq!(state.selected_text().trim(), "🦀 Guide local");
+            state.selection_format = SelectionFormat::Source;
+            assert_eq!(state.selected_text(), "🦀 **Guide** [local](src/lib.rs#L7)");
+            let selected_revision = state.selection_revision;
+            state.set_prepared(&prepared, cx);
+            assert_eq!(state.selection_revision, selected_revision);
+            assert!(state.select_all);
+        });
+        cx.run_until_parked();
+        state.read_with(cx, |state, _| {
+            assert_eq!(
+                state.source().as_str(),
+                "🦀 **Guide** [local](src/lib.rs#L7)"
+            )
+        });
+    }
+
+    #[gpui::test]
+    fn prepared_heading_replacement_updates_without_worker_and_clears_old_selection(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::init);
+        let first = PreparedMarkdown::parse("old [link](#old)").unwrap();
+        let replacement = PreparedMarkdown::parse("**new** [guide](#guide)").unwrap();
+        let state = cx.update(|cx| cx.new(|cx| TextViewState::new_prepared(first, cx)));
+        state.update(cx, |state, cx| {
+            state.select_all(cx);
+            state.set_prepared(&replacement, cx);
+            assert!(!state.select_all);
+            assert_eq!(state.parsed_content.document.text().trim(), "new guide");
+            assert_eq!(state.source().as_str(), "**new** [guide](#guide)");
+        });
+    }
 
     #[gpui::test]
     fn background_small_markdown_installs_extensions_once_before_parsing(cx: &mut TestAppContext) {
