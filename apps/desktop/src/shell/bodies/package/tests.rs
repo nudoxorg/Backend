@@ -776,7 +776,14 @@ fn the_past_says_so_and_offers_the_way_back_with_or_without_a_ticker(cx: &mut Te
         900.0,
         pool,
     );
-    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    rig.cx.update(|_, cx| {
+        facet::probe::enable(cx);
+        crate::runtime::releases::install_test_unavailable(
+            &pinned,
+            "this case deliberately has no release history",
+            cx,
+        );
+    });
     rig.go(Intent::SetRelease(Some(
         crate::navigation::ReleaseId::new("0.3.0").expect("release"),
     )));
@@ -1408,9 +1415,9 @@ fn a_dependency_links_to_the_release_the_library_holds() {
         "the release the resolver chose"
     );
     assert_eq!(
-        linked(&wants("toml", "0.5", Some("pkg:gem/toml@0.5.11"))),
+        linked(&wants("toml", "0.5", Some("pkg:npm/toml@0.5.11"))),
         None,
-        "same display name/version from another ecosystem is not the resolved Cargo package"
+        "the same name and version under npm is not the resolved Cargo package"
     );
     assert_eq!(
         linked(&wants(

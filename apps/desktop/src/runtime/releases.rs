@@ -58,8 +58,8 @@ impl Global for ReleaseReads {}
 /// production reader never consults this global; it is absent from release
 /// builds and keeps old display fixtures out of the owner-backed path.
 #[cfg(test)]
-#[derive(Default)]
-struct TestReleaseReads(HashMap<PackageRef, Arc<ReleaseData>>);
+#[derive(Clone, Default)]
+struct TestReleaseReads(HashMap<PackageRef, Result<Arc<ReleaseData>, Arc<str>>>);
 
 #[cfg(test)]
 impl Global for TestReleaseReads {}
@@ -75,12 +75,28 @@ pub(crate) fn install_test_fixtures(crates: &[Crate], cx: &mut App) {
         };
         fixtures.insert(
             package,
-            Arc::new(ReleaseData {
+            Ok(Arc::new(ReleaseData {
                 krate: Arc::new(krate.clone()),
                 note: None,
-            }),
+            })),
         );
     }
+    cx.set_global(TestReleaseReads(fixtures));
+}
+
+/// Forces one exact test page to exercise the no-history state, even when a
+/// separate test has installed or composed release data in the shared app.
+#[cfg(test)]
+pub(crate) fn install_test_unavailable(
+    package: &PackageRef,
+    reason: impl Into<Arc<str>>,
+    cx: &mut App,
+) {
+    let mut fixtures = cx
+        .try_global::<TestReleaseReads>()
+        .map(|reads| reads.0.clone())
+        .unwrap_or_default();
+    fixtures.insert(package.clone(), Err(reason.into()));
     cx.set_global(TestReleaseReads(fixtures));
 }
 
@@ -113,11 +129,14 @@ pub(crate) fn get<T: 'static>(
     cx: &mut Context<T>,
 ) -> Read {
     #[cfg(test)]
-    if let Some(data) = cx
+    if let Some(response) = cx
         .try_global::<TestReleaseReads>()
         .and_then(|fixtures| fixtures.0.get(package))
     {
-        return Read::Ready(Arc::clone(data));
+        return match response {
+            Ok(data) => Read::Ready(Arc::clone(data)),
+            Err(reason) => Read::Unavailable(Arc::clone(reason)),
+        };
     }
     let Some(composition) = crate::host::registry::composed() else {
         return Read::Unavailable(Arc::from("the local registry reader is not ready yet"));
