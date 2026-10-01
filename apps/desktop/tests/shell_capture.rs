@@ -20,22 +20,27 @@
 use backend_client::Session;
 use backend_desktop::core::{LocalProjectId, PackageId, VersionedRoot};
 use backend_desktop::model::{
-    AppSnapshot, AppearancePreference, DensityPreference, SessionState, SettingsState,
+    AppSnapshot, AppearancePreference, DensityPreference, ProjectPhase, SessionState,
+    SettingsState, WorkspaceProject, WorkspaceState,
 };
 use backend_desktop::navigation::{
     Coordinate, Intent, OrbitRoute, PackageLane, PackageRoute, Route, SymbolRoute, View,
 };
-use backend_desktop::runtime::actor::{EngineActor, EngineClient, EngineDto, EngineFault, EngineRequest};
+use backend_desktop::runtime::actor::EngineActor;
+use backend_desktop::runtime::client::LocalEngineClient;
 use backend_desktop::runtime::reads::{ReadPool, SessionReader};
 use backend_desktop::runtime::store::DataStore;
-use backend_desktop::runtime::{DesktopRuntime, UiEntityGraph};
+use backend_desktop::runtime::{DesktopRuntime, UiEntityGraph, UiRootEntity};
 use backend_desktop::shell::Shell;
 use backend_gui_harness::{
-    AnimationFrame, CaptureError, GpuiCaptureOptions, GuiState, InputStep, Viewport,
-    capture_gpui_state_with_adapters_result_and_semantics,
+    AnimationFrame, CaptureConfig, CaptureError, CaptureSession, GpuiCaptureOptions, GuiState,
+    InputStep, ThemeState, Viewport, capture_gpui_state_with_adapters_result_and_semantics,
 };
 use backend_library::{CommandReply, DeclarationKind, RowState};
-use gpui::{App, AppContext as _, Entity, Modifiers, Window};
+use gpui::{
+    App, AppContext as _, Context, Entity, IntoElement, Modifiers, Render, Styled, WeakEntity,
+    Window, div, rgb,
+};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -50,38 +55,33 @@ fn repo() -> PathBuf {
         .expect("repository root")
 }
 
-/// The index/admin lane is not needed to read pages; this client answers
-/// nothing, so the bootstrapped root stays the one every page is read at.
-struct Idle;
-
-impl EngineClient for Idle {
-    fn execute(&mut self, _: &EngineRequest) -> Result<EngineDto, EngineFault> {
-        Err(EngineFault::Cancelled)
-    }
-}
-
-/// Starts (or reattaches to) an embedded owner over `crates/present`.
-fn serve(project: &Path) -> (backend_desktop::DesktopHost, PathBuf) {
+/// Starts an embedded owner and waits until every requested project is Ready.
+fn serve(projects: &[PathBuf]) -> (backend_desktop::DesktopHost, PathBuf) {
+    let primary = projects.first().expect("at least one indexed project");
     let state = PathBuf::from(std::env::var("NUDOX_CAPTURE_STATE").unwrap_or_else(|_| "/tmp/nx-shell-cap".to_owned()));
     let endpoint = PathBuf::from(format!("{}.sock", state.display()));
     std::fs::create_dir_all(state.join("data")).expect("state dir");
     let paths = backend_runtime::WorkspacePaths::discover(
-        Some(project.to_path_buf()),
+        Some(primary.clone()),
         Some(state.join("data")),
         Some(endpoint.clone()),
     )
     .expect("workspace paths");
     let host = backend_desktop::DesktopHost::start_with_paths(paths).expect("embedded owner");
     let mut session = Session::connect(&endpoint).expect("session");
-    let root = project.to_str().expect("utf-8 path");
-    session.index(root).expect("index request");
+    for project in projects {
+        session
+            .index(project.to_str().expect("utf-8 path"))
+            .expect("index request");
+    }
     let started = Instant::now();
     let (mut last, mut stable) = (0, 0);
     loop {
-        let ready = matches!(
-            session.packages().map(|reply| reply.reply),
-            Ok(CommandReply::Packages(snapshot))
-                if snapshot.root.rows().iter().any(|row| row.label == root && row.state == RowState::Ready)
+        let ready = matches!(session.packages().map(|reply| reply.reply),
+            Ok(CommandReply::Packages(snapshot)) if projects.iter().all(|project| {
+                let root = project.to_str().expect("utf-8 project path");
+                snapshot.root.rows().iter().any(|row| row.label == root && row.state == RowState::Ready)
+            })
         );
         let rows = session.health().map_or(0, |health| health.row_count());
         stable = if ready && rows > 0 && rows == last { stable + 1 } else { 0 };
@@ -129,6 +129,93 @@ enum Script {
 struct Places {
     page: Route,
     package: Route,
+}
+
+/// Weak handles let the mounted window own the production graph throughout capture,
+/// without retaining it past an early renderer or semantic error.
+struct ShellCaptureEntities {
+    root: WeakEntity<UiRootEntity>,
+    store: WeakEntity<DataStore>,
+    shell: WeakEntity<Shell>,
+}
+
+fn upgrade_capture_entity<T: 'static>(
+    entity: &WeakEntity<T>,
+    name: &'static str,
+) -> Result<Entity<T>, CaptureError> {
+    entity
+        .upgrade()
+        .ok_or_else(|| CaptureError::Gpui(format!("capture {name} entity was released early")))
+}
+
+struct EarlySemanticErrorRoot;
+
+impl Render for EarlySemanticErrorRoot {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().bg(rgb(0x202020))
+    }
+}
+
+#[test]
+fn early_semantic_error_is_preserved_without_retaining_capture_entities() {
+    let viewport = Viewport::new(64, 64, 1).expect("viewport");
+    let frames = [AnimationFrame {
+        label: "early-error".to_owned(),
+        time_ms: 0,
+    }];
+    let slot = Rc::new(RefCell::new(None::<WeakEntity<EarlySemanticErrorRoot>>));
+    let build_slot = Rc::clone(&slot);
+    let semantic_slot = Rc::clone(&slot);
+    let drew_frame = Rc::new(std::cell::Cell::new(false));
+    let drew_frame_mark = Rc::clone(&drew_frame);
+    let result = capture_gpui_state_with_adapters_result_and_semantics(
+        viewport,
+        GuiState::new("early-semantic-error", None, None),
+        &[],
+        &frames,
+        GpuiCaptureOptions {
+            capture_native_accessibility: false,
+            ..GpuiCaptureOptions::default()
+        },
+        |_frame, _window, _cx| Ok(()),
+        |_step, _window, _cx| {},
+        move |_frame, image, _viewport, _window, _cx| {
+            assert_eq!(image.dimensions(), (64, 64));
+            assert!(
+                semantic_slot
+                    .borrow()
+                    .as_ref()
+                    .and_then(WeakEntity::upgrade)
+                    .is_some(),
+                "the native root must remain alive while the semantic hook runs"
+            );
+            drew_frame_mark.set(true);
+            Err(CaptureError::Accessibility(
+                "intentional early semantic error".to_owned(),
+            ))
+        },
+        move |_window, cx| {
+            let root = cx.new(|_| EarlySemanticErrorRoot);
+            *build_slot.borrow_mut() = Some(root.downgrade());
+            root
+        },
+    );
+
+    assert!(
+        drew_frame.get(),
+        "the renderer must draw before the injected error"
+    );
+    assert!(matches!(
+        result,
+        Err(CaptureError::Accessibility(message)) if message == "intentional early semantic error"
+    ));
+    assert!(
+        slot.borrow()
+            .as_ref()
+            .and_then(WeakEntity::upgrade)
+            .is_none(),
+        "the window should release the root after the capture returns"
+    );
 }
 
 fn places(endpoint: &Path, project: &Path) -> Places {
@@ -188,7 +275,19 @@ fn land(store: &Entity<DataStore>, cx: &mut App) {
     }
 }
 
-fn capture(shot: &Shot, endpoint: &Path, snapshot_key: VersionedRoot, out: &Path) {
+fn capture(
+    shot: &Shot,
+    endpoint: &Path,
+    snapshot_key: VersionedRoot,
+    projects: &[PathBuf],
+    out: &Path,
+) {
+    assert_eq!(
+        shot.frames.first().copied(),
+        Some(0),
+        "capture {} must include a time-zero frame",
+        shot.name
+    );
     let viewport = Viewport::new(shot.width, shot.height, 1).expect("viewport");
     let frames = shot
         .frames
@@ -199,7 +298,7 @@ fn capture(shot: &Shot, endpoint: &Path, snapshot_key: VersionedRoot, out: &Path
             time_ms: *time,
         })
         .collect::<Vec<_>>();
-    let graph_slot: Rc<RefCell<Option<(UiEntityGraph, Entity<Shell>)>>> = Rc::new(RefCell::new(None));
+    let graph_slot: Rc<RefCell<Option<ShellCaptureEntities>>> = Rc::new(RefCell::new(None));
     let build_slot = Rc::clone(&graph_slot);
     let hook_slot = Rc::clone(&graph_slot);
     let last_slot = Rc::clone(&graph_slot);
@@ -209,51 +308,85 @@ fn capture(shot: &Shot, endpoint: &Path, snapshot_key: VersionedRoot, out: &Path
     let endpoint = endpoint.to_path_buf();
     let shot_build = shot.clone();
     let shot_hook = shot.clone();
+    let active_project = LocalProjectId::from_path(
+        projects.first().expect("at least one indexed project"),
+    )
+    .expect("active project identity");
+    let workspace_projects = projects
+        .iter()
+        .map(|path| {
+            let id = LocalProjectId::from_path(path).expect("workspace project identity");
+            let mut project = WorkspaceProject::indexing_with_id(id);
+            project.phase = ProjectPhase::Ready;
+            project
+        })
+        .collect::<Vec<_>>();
     // The window narrows through 900 (the shelf becomes a spine) at 100 ms.
     let actions = if shot.script == Script::Narrow {
         vec![InputStep::Wait { milliseconds: 100 }, InputStep::Resize { width: 880, height: shot.height }]
     } else {
         Vec::new()
     };
-    let set = capture_gpui_state_with_adapters_result_and_semantics(
+    let mut set = capture_gpui_state_with_adapters_result_and_semantics(
         viewport,
         GuiState::new(shot.name.clone(), None, None),
         &actions,
         &frames,
         GpuiCaptureOptions {
             asset_source: std::sync::Arc::new(facet::icons::Assets),
+            capture_native_accessibility: true,
             ..GpuiCaptureOptions::default()
         },
         move |frame: &AnimationFrame, window: &mut Window, cx: &mut App| -> Result<(), CaptureError> {
             let slot = hook_slot.borrow();
-            let (graph, shell) = slot.as_ref().expect("built");
+            let entities = slot
+                .as_ref()
+                .ok_or_else(|| CaptureError::Gpui("capture graph was not built".to_owned()))?;
+            let root = upgrade_capture_entity(&entities.root, "state root")?;
+            let store = upgrade_capture_entity(&entities.store, "data store")?;
+            let shell = upgrade_capture_entity(&entities.shell, "shell")?;
             let index = frames_index(&frame.label);
             match (shot_hook.script, index) {
                 (Script::Descent, 1) => {
-                    graph.root.update(cx, |root, cx| root.dispatch(Intent::Navigate(shot_hook.route.clone()), cx));
-                    land(&graph.store, cx);
+                    root.update(cx, |root, cx| {
+                        root.dispatch(Intent::Navigate(shot_hook.route.clone()), cx)
+                    });
+                    land(&store, cx);
                 }
                 (Script::Descent, 7) => {
-                    graph.root.update(cx, |root, cx| root.dispatch(Intent::ZoomOut, cx));
-                    land(&graph.store, cx);
+                    root.update(cx, |root, cx| root.dispatch(Intent::ZoomOut, cx));
+                    land(&store, cx);
                 }
-                (Script::HoldCommand, 1) => shell.update(cx, |shell, cx| {
-                    shell.modifiers(Modifiers { platform: true, ..Modifiers::default() }, cx);
-                }),
-                (Script::HoldOption, 1) => shell.update(cx, |shell, cx| {
-                    shell.modifiers(Modifiers { alt: true, ..Modifiers::default() }, cx);
-                }),
-                (Script::Walk, index) if index > 0 => shell.update(cx, |shell, cx| shell.walk(1, window, cx)),
+                (Script::HoldCommand, 1) => {
+                    shell.update(cx, |shell, cx| {
+                        shell.modifiers(Modifiers { platform: true, ..Modifiers::default() }, cx);
+                    });
+                }
+                (Script::HoldOption, 1) => {
+                    shell.update(cx, |shell, cx| {
+                        shell.modifiers(Modifiers { alt: true, ..Modifiers::default() }, cx);
+                    });
+                }
+                (Script::Walk, index) if index > 0 => {
+                    shell.update(cx, |shell, cx| shell.walk(1, window, cx));
+                }
                 _ => {}
             }
-            land(&graph.store, cx);
+            land(&store, cx);
             Ok(())
         },
         |_, _, _| {},
-        move |frame: &AnimationFrame, _, _, _, _| {
-            // Release the entity handles before the capture's app drops.
+        move |frame: &AnimationFrame, _, _, _, _| -> Result<_, CaptureError> {
+            // Confirm the mounted Root still owns the graph through its final frame.
             if frame.label == last_label {
-                built_mark.set(last_slot.borrow_mut().take().is_some());
+                let slot = last_slot.borrow();
+                let entities = slot.as_ref().ok_or_else(|| {
+                    CaptureError::Gpui("capture graph was not built".to_owned())
+                })?;
+                let _root = upgrade_capture_entity(&entities.root, "state root")?;
+                let _store = upgrade_capture_entity(&entities.store, "data store")?;
+                let _shell = upgrade_capture_entity(&entities.shell, "shell")?;
+                built_mark.set(true);
             }
             Ok(None)
         },
@@ -286,10 +419,15 @@ fn capture(shot: &Shot, endpoint: &Path, snapshot_key: VersionedRoot, out: &Path
             let snapshot = AppSnapshot::empty(snapshot_key)
                 .with_settings(settings)
                 .with_session(session);
-            let mut workspace = snapshot.workspace().clone();
-            workspace.host = LocalProjectId::from_path(&repo().join("crates/present")).ok();
+            let workspace = WorkspaceState {
+                projects: workspace_projects.clone().into(),
+                active: Some(active_project.clone()),
+                host: Some(active_project.clone()),
+                ..WorkspaceState::default()
+            };
             let snapshot = snapshot.with_workspace(workspace);
-            let actor = EngineActor::start(Idle, 8).expect("actor");
+            let actor = EngineActor::start(LocalEngineClient::new(&endpoint, active_project.clone()), 32)
+                .expect("live local owner actor");
             let runtime = DesktopRuntime::new(snapshot, actor);
             let reader_endpoint = endpoint.clone();
             let pool = ReadPool::start(3, move |_| SessionReader::connect(&reader_endpoint)).expect("pool");
@@ -301,48 +439,52 @@ fn capture(shot: &Shot, endpoint: &Path, snapshot_key: VersionedRoot, out: &Path
             graph.root.update(cx, |root, cx| root.dispatch(Intent::ZoomTo { display, percent }, cx));
             land(&graph.store, cx);
             let root = cx.new(|cx| gpui_component::Root::new(shell.clone(), window, cx).bordered(false));
-            *build_slot.borrow_mut() = Some((graph, shell));
+            *build_slot.borrow_mut() = Some(ShellCaptureEntities {
+                root: graph.root.downgrade(),
+                store: graph.store.downgrade(),
+                shell: shell.downgrade(),
+            });
             root
         },
     )
     .expect("capture");
-    let dir = out.join(&shot.name);
-    std::fs::create_dir_all(&dir).expect("out dir");
-    for record in &set.frames {
-        let path = if set.frames.len() == 1 {
-            out.join(format!("{}.png", shot.name))
-        } else {
-            dir.join(format!("{}.png", record.label))
-        };
-        record.image.save(&path).expect("png");
-    }
-    if set.frames.len() > 1 {
-        strip(&set.frames.iter().map(|record| &record.image).collect::<Vec<_>>(), &out.join(format!("{}-strip.png", shot.name)));
-    }
-    assert!(built.get(), "the shell was built and released");
+    let mut config = CaptureConfig::deterministic(viewport);
+    config.theme = match shot.appearance {
+        AppearancePreference::Abyss => ThemeState::Abyss,
+        AppearancePreference::Glacier => ThemeState::Glacier,
+        AppearancePreference::System => {
+            panic!("resolve System appearance before writing a capture manifest")
+        }
+    };
+    config.data_revision = format!("locald-root:{snapshot_key}");
+    let route_name = match &shot.route {
+        Route::Orbit(_) => "orbit",
+        Route::Package(_) => "package",
+        Route::Symbol(_) => "symbol",
+        _ => "other",
+    };
+    let script_name = match shot.script {
+        Script::Still => "still",
+        Script::Descent => "descent",
+        Script::HoldCommand => "command-hold",
+        Script::HoldOption => "option-hold",
+        Script::Walk => "keyboard-walk",
+        Script::Narrow => "resize-narrow",
+    };
+    let script_id = format!(
+        "real-locald-shell|shot={}|route={route_name}|text-scale={}|density={:?}|actions={script_name}",
+        shot.name, shot.percent, shot.density
+    );
+    let session = CaptureSession::new(config, out).expect("capture artifact session");
+    session
+        .write_set(&mut set, Some(&script_id), None)
+        .expect("write PNG, paired native tree, and provenance manifest");
+    assert!(built.get(), "the mounted shell graph survived through the final frame");
     eprintln!("captured {} ({} frames)", shot.name, set.frames.len());
 }
 
 fn frames_index(label: &str) -> usize {
     label[1..3].parse().unwrap_or(0)
-}
-
-/// Lays frames side by side at half size.
-fn strip(frames: &[&image::RgbaImage], path: &Path) {
-    let scaled = frames
-        .iter()
-        .map(|frame| image::imageops::resize(*frame, frame.width() / 2, frame.height() / 2, image::imageops::FilterType::Triangle))
-        .collect::<Vec<_>>();
-    let gap = 8;
-    let width = scaled.iter().map(image::RgbaImage::width).sum::<u32>() + gap * (scaled.len() as u32 - 1);
-    let height = scaled.iter().map(image::RgbaImage::height).max().unwrap_or(1);
-    let mut canvas = image::RgbaImage::from_pixel(width, height, image::Rgba([12, 12, 16, 255]));
-    let mut x = 0;
-    for frame in &scaled {
-        image::imageops::overlay(&mut canvas, frame, i64::from(x), 0);
-        x += frame.width() + gap;
-    }
-    canvas.save(path).expect("strip png");
 }
 
 #[test]
@@ -353,13 +495,22 @@ fn capture_the_shell_over_a_real_index() {
         return;
     };
     let out = PathBuf::from(out);
-    std::fs::create_dir_all(&out).expect("out");
-    let project = repo().join("crates/present");
-    let (host, endpoint) = serve(&project);
+    if out.exists() {
+        assert_eq!(
+            std::fs::read_dir(&out).expect("capture output").count(),
+            0,
+            "use a new empty NUDOX_CAPTURE_OUT for every run"
+        );
+    } else {
+        std::fs::create_dir_all(&out).expect("out");
+    }
+    let projects = vec![repo().join("crates/present"), repo().join("crates/runtime")];
+    let project = projects.first().expect("primary project");
+    let (host, endpoint) = serve(&projects);
     let mut subscription = backend_client::LocalSubscriptionTransport::connect(&endpoint).expect("subscription");
     let (_, revision) = subscription.bootstrap_root().expect("root");
     let key = VersionedRoot::from_revision(1, revision, 0);
-    let places = places(&endpoint, &project);
+    let places = places(&endpoint, project);
     let only = std::env::var("NUDOX_CAPTURE_ONLY").ok();
     let still = |name: &str, width: u32, height: u32, percent: u16, density, appearance, route: &Route| Shot {
         name: name.to_owned(),
@@ -369,12 +520,13 @@ fn capture_the_shell_over_a_real_index() {
         density,
         appearance,
         route: route.clone(),
-        frames: vec![700],
+        frames: vec![0, 700],
         script: Script::Still,
     };
     use AppearancePreference::{Abyss, Glacier};
     use DensityPreference::{Comfortable, Compact, Dense};
     let mut shots = vec![
+        still("orbit-two-real-projects", 1440, 900, 100, Comfortable, Abyss, &Route::Orbit(OrbitRoute::Home)),
         still("flow-2560", 2560, 1440, 100, Comfortable, Abyss, &places.page),
         still("flow-1440", 1440, 900, 100, Comfortable, Abyss, &places.page),
         still("flow-1100", 1100, 900, 100, Comfortable, Abyss, &places.page),
@@ -413,7 +565,7 @@ fn capture_the_shell_over_a_real_index() {
         if only.as_ref().is_some_and(|only| !shot.name.contains(only.as_str())) {
             continue;
         }
-        capture(&shot, &endpoint, key, &out);
+        capture(&shot, &endpoint, key, &projects, &out);
     }
     drop(subscription);
     drop(host);
