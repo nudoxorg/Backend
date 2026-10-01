@@ -74,6 +74,8 @@ printf '%s\n' '#!/bin/sh' \
 '  printf "%s\\n" "$NUDOX_TEST_WORKTREE" > "$marker"' \
 'fi' \
 'if [ "${NUDOX_TEST_CREATE_OUTPUT:-0}" != 0 ]; then mkdir -p "$CARGO_TARGET_DIR/debug"; printf "test executable\\n" > "$CARGO_TARGET_DIR/debug/fake-bin"; chmod +x "$CARGO_TARGET_DIR/debug/fake-bin"; fi' \
+'if [ -n "${NUDOX_TEST_MUTATE_RUSTC:-}" ]; then printf "# changed during cargo\\n" >> "$NUDOX_TEST_MUTATE_RUSTC"; fi' \
+'if [ "${NUDOX_TEST_BREAK_PROVENANCE:-0}" != 0 ]; then printf "not a directory\\n" > "$CARGO_TARGET_DIR/.nudox-provenance"; fi' \
 'printf "%s|%s|%s|%s|%s|%s\\n" "${NUDOX_TEST_WORKTREE:-}" "${CARGO_BUILD_BUILD_DIR:-}" "${CARGO_TARGET_DIR:-}" "$*" "${CARGO_BUILD_JOBS:-}" "${RUSTC_WRAPPER:-}" >> "$NUDOX_TEST_LOG"' \
 'if [ -n "${NUDOX_TEST_CHILD_PID_FILE:-}" ]; then printf "%s\\n" "$$" > "$NUDOX_TEST_CHILD_PID_FILE"; fi' \
   'trap '\''if [ -n "${NUDOX_TEST_CHILD_DONE_FILE:-}" ]; then : > "$NUDOX_TEST_CHILD_DONE_FILE"; fi; exit 143'\'' HUP INT TERM' \
@@ -929,6 +931,18 @@ assert value["features"]["features"] == ["smoke"]
 assert value["cargo_exit_status"] == 17
 assert value["toolchain"]["cargo"] == "cargo 1.97.1-test"
 assert value["toolchain"]["rustc"].startswith("rustc 1.97.1-test")
+assert value["toolchain"]["rustdoc"] == "rustdoc 1.97.1-test"
+assert value["toolchain"]["cargo_path"].endswith("/bin/cargo")
+assert value["toolchain"]["rustc_path"].endswith("/bin/rustc")
+assert value["toolchain"]["rustdoc_path"].endswith("/bin/rustdoc")
+assert value["toolchain"]["capture_complete"] is True
+assert value["toolchain"]["changed_during_build"] is False
+for executable in ("cargo", "rustc", "rustdoc"):
+    before = value["toolchain"]["executables_before"][executable]
+    after = value["toolchain"]["executables_after"][executable]
+    assert len(before["sha256"]) == 64
+    assert before["sha256"] == after["sha256"]
+    assert before["resolved_path"] == after["resolved_path"]
 assert len(value["wrapper"]["runtime_sha256"]) == 64
 assert len(value["wrapper"]["source_sha256"]) == 64
 assert value["wrapper"]["rustc_path"].endswith("rustc-cache-wrapper")
@@ -936,5 +950,89 @@ assert len(value["wrapper"]["rustc_sha256"]) == 64
 outputs = {item["path"]: item["sha256"] for item in value["outputs"]}
 assert outputs["debug/fake-bin"] == hashlib.sha256(b"test executable\n").hexdigest()
 PY
+
+# Missing tool bytes/version data is an explicit capture refusal, not a
+# successful-looking manifest with null compiler identities.
+incomplete_build_root="$test_root/incomplete-build"
+incomplete_target_root="$test_root/incomplete-target"
+mkdir -p "$incomplete_build_root" "$incomplete_target_root"
+if python3 "$repo_root/.config/scripts/cargo-provenance.py" begin \
+  "$provenance_root" "$incomplete_build_root" "$incomplete_target_root" \
+  "$test_root/wrapper" "$repo_root/.config/scripts/cargo-shared-cache.sh" \
+  "$test_root/bin/cargo" "$test_root/bin/rustc" "$test_root/bin/missing-rustdoc" \
+  "$test_root/bin/sccache" build 2> "$test_root/incomplete.stderr"; then
+  fail "incomplete executable identity was accepted"
+else
+  incomplete_status="$?"
+fi
+assert_eq 78 "$incomplete_status"
+if ! grep -q 'incomplete tool identity' "$test_root/incomplete.stderr"; then
+  fail "incomplete tool identity failure was not explained"
+fi
+if find "$incomplete_build_root" -name '.nudox-provenance-start-*.json' -print | grep -q .; then
+  fail "incomplete tool identity emitted a start record that could look complete"
+fi
+
+# Cargo can finish successfully after a selected compiler is replaced. Keep
+# an after-hash manifest, but refuse the build result with a distinct status.
+mutation_root="$test_root/mutation-root"
+mutation_build_root="$test_root/mutation-build"
+mutation_target_root="$test_root/mutation-target"
+mutation_log="$test_root/mutation.log"
+mkdir -p "$mutation_root"
+printf 'test lockfile\n' > "$mutation_root/Cargo.lock"
+cp -p "$test_root/bin/rustc" "$test_root/bin/rustc.before-mutation-test"
+if NUDOX_TEST_WORKTREE="$mutation_root" NUDOX_TEST_LOG="$mutation_log" \
+  NUDOX_TEST_MUTATE_RUSTC="$test_root/bin/rustc" NUDOX_TEST_CARGO_STATUS=0 \
+  NUDOX_BUILD_CACHE_ROOT="$test_root/mutation-cache" NUDOX_CARGO_BUILD_SLOTS=1 \
+  CARGO_BUILD_BUILD_DIR="$mutation_build_root" CARGO_TARGET_DIR="$mutation_target_root" \
+  SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+  "$test_root/wrapper" build --locked; then
+  fail "Cargo result was accepted after selected rustc changed"
+else
+  mutation_status="$?"
+fi
+assert_eq 74 "$mutation_status"
+mutation_manifest="$(find "$mutation_target_root/.nudox-provenance" -maxdepth 1 -type f -name '*.json' -print | head -n 1)"
+[ -n "$mutation_manifest" ] || fail "changed-tool provenance manifest was not emitted"
+python3 - "$mutation_manifest" <<'PY'
+import json
+import pathlib
+import sys
+
+value = json.loads(pathlib.Path(sys.argv[1]).read_text())
+toolchain = value["toolchain"]
+assert toolchain["capture_complete"] is True
+assert toolchain["changed_during_build"] is True
+assert toolchain["changed_executables"] == ["rustc"]
+assert toolchain["executables_before"]["rustc"]["sha256"] != toolchain["executables_after"]["rustc"]["sha256"]
+PY
+mv "$test_root/bin/rustc.before-mutation-test" "$test_root/bin/rustc"
+
+# A successful compiler process is still refused if its after-build evidence
+# cannot be persisted; retain the start record for recovery/inspection.
+finalize_root="$test_root/finalize-root"
+finalize_build_root="$test_root/finalize-build"
+finalize_target_root="$test_root/finalize-target"
+finalize_log="$test_root/finalize.log"
+mkdir -p "$finalize_root"
+printf 'test lockfile\n' > "$finalize_root/Cargo.lock"
+if NUDOX_TEST_WORKTREE="$finalize_root" NUDOX_TEST_LOG="$finalize_log" \
+  NUDOX_TEST_BREAK_PROVENANCE=1 NUDOX_TEST_CARGO_STATUS=0 \
+  NUDOX_BUILD_CACHE_ROOT="$test_root/finalize-cache" NUDOX_CARGO_BUILD_SLOTS=1 \
+  CARGO_BUILD_BUILD_DIR="$finalize_build_root" CARGO_TARGET_DIR="$finalize_target_root" \
+  SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+  "$test_root/wrapper" build --locked 2> "$test_root/finalize.stderr"; then
+  fail "successful Cargo exit was accepted without a final provenance manifest"
+else
+  finalize_status="$?"
+fi
+assert_eq 74 "$finalize_status"
+if ! grep -q 'refusing Cargo result; exact provenance finalization failed' "$test_root/finalize.stderr"; then
+  fail "provenance write failure did not refuse the Cargo result"
+fi
+if ! find "$finalize_build_root" -name '.nudox-provenance-start-*.json' -print | grep -q .; then
+  fail "provenance start record was not retained after finalization failure"
+fi
 
 echo "cargo-shared-cache: PASS (affinity, role-graph leases, isolation, hard ceiling, stamps, provenance, exit propagation, stale recovery)"

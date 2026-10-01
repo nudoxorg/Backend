@@ -429,6 +429,7 @@ released=false
 worktree_lock_acquired=false
 cargo_pid=""
 provenance_start=""
+provenance_identity_refused=false
 
 release_explicit_graph_lock() {
   if [ "$selected_graph_lock_acquired" = true ] && [ -n "$selected_graph_lock" ]; then
@@ -481,12 +482,23 @@ finish_provenance() {
   if [ -n "$provenance_start" ]; then
     start_path="$provenance_start"
     provenance_start=""
-    if provenance_path="$(NUDOX_PROVENANCE_GIT="@git@" @python3@ @provenance@ finish "$start_path" "$status" 2>/dev/null)"; then
+    if provenance_path="$(NUDOX_PROVENANCE_GIT="@git@" @python3@ @provenance@ finish "$start_path" "$status")"; then
       if [ "${NUDOX_CARGO_CACHE_VERBOSE:-0}" = 1 ]; then
         echo "nudox cargo: provenance $provenance_path" >&2
       fi
     else
-      echo "nudox cargo: build provenance could not be finalized" >&2
+      provenance_status="$?"
+      if [ "$provenance_status" -eq 74 ]; then
+        provenance_identity_refused=true
+        if [ -n "$provenance_path" ]; then
+          echo "nudox cargo: refusing Cargo result; selected tool identity changed or became unreadable: $provenance_path" >&2
+        else
+          echo "nudox cargo: refusing Cargo result; exact provenance finalization failed" >&2
+        fi
+      else
+        provenance_identity_refused=true
+        echo "nudox cargo: refusing Cargo result; build provenance could not be finalized (status $provenance_status)" >&2
+      fi
     fi
   fi
 }
@@ -860,10 +872,12 @@ export RUSTDOC
 
 if provenance_start="$(NUDOX_PROVENANCE_GIT="@git@" @python3@ @provenance@ begin \
   "$workspace_root" "$CARGO_BUILD_BUILD_DIR" "$CARGO_TARGET_DIR" "$0" \
-  "@wrapper_source@" "@cargo@" "$RUSTC" "$RUSTC_WRAPPER" "$@" 2>/dev/null)"; then
+  "@wrapper_source@" "@cargo@" "$RUSTC" "$RUSTDOC" "$RUSTC_WRAPPER" "$@")"; then
   :
 else
-  echo "nudox cargo: build provenance capture could not start" >&2
+  provenance_status="$?"
+  echo "nudox cargo: refusing Cargo invocation; exact toolchain provenance could not start (status $provenance_status)" >&2
+  exit 74
 fi
 
 # Cargo runs under the already-installed signal traps. A normal exit is
@@ -884,4 +898,7 @@ else
 fi
 cargo_pid=""
 finish_provenance "$cargo_status"
+if [ "$provenance_identity_refused" = true ]; then
+  exit 74
+fi
 exit "$cargo_status"

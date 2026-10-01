@@ -19,8 +19,18 @@ def _sha256_path(path: pathlib.Path) -> str | None:
     try:
         digest = hashlib.sha256()
         with path.open("rb") as source:
+            before = os.fstat(source.fileno())
             for chunk in iter(lambda: source.read(1024 * 1024), b""):
                 digest.update(chunk)
+            after = os.fstat(source.fileno())
+        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        ):
+            return None
         return digest.hexdigest()
     except OSError:
         return None
@@ -93,6 +103,47 @@ def _version(command: str, *args: str) -> str | None:
     return value if result.returncode == 0 else None
 
 
+class _ToolIdentityError(Exception):
+    pass
+
+
+def _executable_snapshot(command: str) -> dict[str, str]:
+    """Capture the exact executable bytes behind one absolute tool path."""
+    selected = pathlib.Path(command)
+    if not selected.is_absolute():
+        raise _ToolIdentityError("selected path is not absolute")
+    if not selected.is_file() or not os.access(selected, os.X_OK):
+        raise _ToolIdentityError("selected path is not an executable file")
+    try:
+        resolved = selected.resolve(strict=True)
+    except OSError as error:
+        raise _ToolIdentityError(f"cannot resolve selected executable ({type(error).__name__})") from error
+    digest = _sha256_path(resolved)
+    if digest is None:
+        raise _ToolIdentityError("cannot read selected executable bytes")
+    try:
+        resolved_after = selected.resolve(strict=True)
+    except OSError as error:
+        raise _ToolIdentityError(f"selected executable disappeared ({type(error).__name__})") from error
+    if resolved_after != resolved:
+        raise _ToolIdentityError("selected executable path changed during capture")
+    return {"path": command, "resolved_path": str(resolved), "sha256": digest}
+
+
+def _toolchain_snapshot(commands: dict[str, tuple[str, tuple[str, ...]]]) -> dict[str, dict[str, str]]:
+    captured: dict[str, dict[str, str]] = {}
+    for name, (command, version_args) in commands.items():
+        before = _executable_snapshot(command)
+        version = _version(command, *version_args)
+        after = _executable_snapshot(command)
+        if before != after:
+            raise _ToolIdentityError(f"{name} changed while its identity was being captured")
+        if version is None:
+            raise _ToolIdentityError(f"{name} did not return a successful version")
+        captured[name] = {**before, "version": version}
+    return captured
+
+
 def _command_path(command: str | None) -> pathlib.Path | None:
     if not command:
         return None
@@ -149,15 +200,26 @@ def _atomic_json(path: pathlib.Path, value: dict[str, object]) -> None:
 
 
 def _begin(arguments: list[str]) -> int:
-    if len(arguments) < 8:
+    if len(arguments) < 9:
         return 64
-    root, build_dir, target_dir, runtime_wrapper, source_wrapper, cargo, rustc, rustc_wrapper, *cargo_args = arguments
+    root, build_dir, target_dir, runtime_wrapper, source_wrapper, cargo, rustc, rustdoc, rustc_wrapper, *cargo_args = arguments
     workspace = pathlib.Path(root)
+    try:
+        toolchain = _toolchain_snapshot(
+            {
+                "cargo": (cargo, ("--version",)),
+                "rustc": (rustc, ("--version", "--verbose")),
+                "rustdoc": (rustdoc, ("--version",)),
+            }
+        )
+    except _ToolIdentityError as error:
+        print(f"cargo provenance: incomplete tool identity: {error}", file=sys.stderr)
+        return 78
     now_ns = time.time_ns()
     run_id = f"{now_ns}-{os.getpid()}"
     lockfile = workspace / "Cargo.lock"
     value: dict[str, object] = {
-        "schema": 1,
+        "schema": 2,
         "run_id": run_id,
         "started_at_utc": _datetime.datetime.now(_datetime.timezone.utc).isoformat(),
         "started_at_ns": now_ns,
@@ -169,9 +231,14 @@ def _begin(arguments: list[str]) -> int:
         "cargo_target_dir": target_dir,
         "features": _features(cargo_args),
         "toolchain": {
-            "cargo": _version(cargo, "--version"),
-            "rustc": _version(rustc, "--version", "--verbose"),
-            "rustc_path": rustc,
+            "cargo": toolchain["cargo"]["version"],
+            "cargo_path": toolchain["cargo"]["path"],
+            "rustc": toolchain["rustc"]["version"],
+            "rustc_path": toolchain["rustc"]["path"],
+            "rustdoc": toolchain["rustdoc"]["version"],
+            "rustdoc_path": toolchain["rustdoc"]["path"],
+            "executables_before": toolchain,
+            "capture_complete": True,
         },
         "wrapper": {
             "runtime_path": runtime_wrapper,
@@ -235,13 +302,43 @@ def _finish(arguments: list[str]) -> int:
     )
     value["cargo_lock_sha256_after"] = _sha256_path(lockfile)
     value["cargo_exit_status"] = cargo_status
+    before = value["toolchain"].get("executables_before", {})
+    after: dict[str, dict[str, str]] = {}
+    changes: list[str] = []
+    for name, initial in before.items():
+        command = str(initial.get("path", ""))
+        try:
+            current = _executable_snapshot(command)
+        except _ToolIdentityError as error:
+            current = {"path": command, "error": str(error)}
+            changes.append(name)
+        after[name] = current
+        if "error" not in current and (
+            current.get("resolved_path") != initial.get("resolved_path")
+            or current.get("sha256") != initial.get("sha256")
+        ):
+            changes.append(name)
+    value["toolchain"]["executables_after"] = after
+    value["toolchain"]["changed_during_build"] = bool(changes)
+    value["toolchain"]["changed_executables"] = sorted(set(changes))
+    value["toolchain"]["capture_complete"] = not any("error" in item for item in after.values())
     value["outputs"] = _output_hashes(target_dir, int(value["started_at_ns"]))
     manifest_dir = target_dir / ".nudox-provenance"
     manifest_path = manifest_dir / f"{value['run_id']}.json"
-    _atomic_json(manifest_path, value)
+    try:
+        _atomic_json(manifest_path, value)
+    except OSError as error:
+        print(
+            f"cargo provenance: final manifest could not be written ({type(error).__name__})",
+            file=sys.stderr,
+        )
+        return 74
     start_path.unlink(missing_ok=True)
     print(manifest_path)
-    return 0
+    # A changed or missing tool identity means Cargo's output cannot be
+    # attributed to the executable recorded at start. Keep the manifest as
+    # evidence, but make the wrapper refuse the build result.
+    return 74 if changes else 0
 
 
 def main() -> int:
