@@ -8,7 +8,7 @@
 //! current effect cycle, and engine results arrive through the actor's wake
 //! task, so nothing here ever needs a frame.
 
-use super::coordinator::{DesktopRuntime, RuntimeEvent};
+use super::coordinator::{DesktopRuntime, RequestOutcome, RuntimeEvent};
 use super::reads::ReadPool;
 use super::store::DataStore;
 use crate::core::{IntentDispatcher, ProducerAuthority, SnapshotReadModel};
@@ -26,6 +26,49 @@ pub(crate) enum GraphDestination { Page, Code }
 impl GraphDestination {
     pub(crate) const fn view(self) -> View { match self { Self::Page => View::Page, Self::Code => View::Code } }
 }
+
+#[derive(Default)]
+struct ConnectionProbeLatch {
+    active: Option<ActiveConnectionProbe>,
+}
+
+struct ActiveConnectionProbe {
+    request: crate::navigation::RequestId,
+}
+
+impl ConnectionProbeLatch {
+    fn begin(&mut self, request: crate::navigation::RequestId) -> bool {
+        if self.active.is_some() {
+            return false;
+        }
+        self.active = Some(ActiveConnectionProbe { request });
+        true
+    }
+
+    fn finish(
+        &mut self,
+        request: crate::navigation::RequestId,
+        outcome: RequestOutcome,
+    ) -> Option<Intent> {
+        let active = self.active.as_ref()?;
+        if active.request != request {
+            return None;
+        }
+        self.active.take()?;
+        Some(match outcome {
+            RequestOutcome::Succeeded => Intent::ConnectionResult { connected: true },
+            RequestOutcome::Failed => Intent::ConnectionResult { connected: false },
+            RequestOutcome::Cancelled
+            | RequestOutcome::Superseded
+            | RequestOutcome::Refused(_) => Intent::ConnectionProbeAborted,
+        })
+    }
+
+    fn is_active(&self) -> bool {
+        self.active.is_some()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct GraphViewRequest {
     pub target: GraphDestination,
@@ -43,7 +86,7 @@ pub struct UiRootEntity {
     persistence: Option<PersistentState>,
     first_catalog_route_admitted: bool,
     folder_picker_task: Option<Task<()>>,
-    connection_probe: Option<crate::navigation::RequestId>,
+    connection_probe: ConnectionProbeLatch,
     /// The data plane: snapshot mirror, keyed page resources, read pool.
     store: Option<Entity<DataStore>>,
     /// The one task that drains engine results when the actor wakes it.
@@ -75,7 +118,7 @@ impl UiRootEntity {
             persistence,
             first_catalog_route_admitted: false,
             folder_picker_task: None,
-            connection_probe: None,
+            connection_probe: ConnectionProbeLatch::default(),
             store: None,
             engine_wake: None,
             flush_scheduled: false,
@@ -243,17 +286,18 @@ impl UiRootEntity {
                 crate::host::editor::open(launch.as_ref(), None, &path, line);
             }
             Intent::TestConnection => {
-                self.dispatch_runtime(Intent::TestConnection, cx);
-                if self.connection_probe.is_none() {
+                if !self.connection_probe.is_active() {
                     let request = self.runtime.allocate_request();
-                    self.connection_probe = Some(request);
-                    self.dispatch_runtime(
-                        Intent::RefreshRoot {
-                            basis: self.snapshot().key(),
-                            request,
-                        },
-                        cx,
-                    );
+                    if self.connection_probe.begin(request) {
+                        self.dispatch_runtime(Intent::TestConnection, cx);
+                        self.dispatch_runtime(
+                            Intent::RefreshRoot {
+                                basis: self.snapshot().key(),
+                                request,
+                            },
+                            cx,
+                        );
+                    }
                 }
             }
             Intent::FolderPickerResult { outcome } => {
@@ -423,18 +467,12 @@ impl UiRootEntity {
                         let _ = persistence.save(&PersistentState::project(&snapshot));
                     }
                 }
-                RuntimeEvent::RequestCompleted { request, succeeded }
-                    if self.connection_probe == Some(request) =>
-                {
-                    self.connection_probe = None;
-                    self.dispatch_runtime(
-                        Intent::ConnectionResult {
-                            connected: succeeded,
-                        },
-                        cx,
-                    );
+                RuntimeEvent::RequestCompleted { request, outcome } => {
+                    if let Some(intent) = self.connection_probe.finish(request, outcome) {
+                        self.dispatch_runtime(intent, cx);
+                    }
                 }
-                RuntimeEvent::RequestCompleted { .. } | RuntimeEvent::RejectedStale(_) => {}
+                RuntimeEvent::RejectedStale(_) => {}
             }
         }
         self.publish_snapshot(cx);
@@ -586,5 +624,59 @@ impl UiEntityGraph {
             super::owner::watch(gate, &root, &store, cx);
         }
         Self { root, store }
+    }
+}
+
+#[cfg(test)]
+mod connection_probe_tests {
+    use super::*;
+
+    #[test]
+    fn superseded_probe_retires_once_and_allows_a_later_reconnect() {
+        let mut probe = ConnectionProbeLatch::default();
+        let first = crate::navigation::RequestId::new(701);
+        let second = crate::navigation::RequestId::new(702);
+
+        assert!(probe.begin(first));
+        assert_eq!(
+            probe.finish(crate::navigation::RequestId::new(799), RequestOutcome::Succeeded),
+            None,
+            "an unrelated request terminal cannot release this probe"
+        );
+        assert!(!probe.begin(second));
+        assert_eq!(
+            probe.finish(first, RequestOutcome::Superseded),
+            Some(Intent::ConnectionProbeAborted)
+        );
+        assert_eq!(probe.finish(first, RequestOutcome::Succeeded), None);
+        assert!(!probe.is_active());
+
+        assert!(probe.begin(second));
+        assert_eq!(
+            probe.finish(second, RequestOutcome::Succeeded),
+            Some(Intent::ConnectionResult { connected: true })
+        );
+        assert!(!probe.is_active());
+    }
+
+    #[test]
+    fn refusal_and_actor_failure_are_not_reported_as_success() {
+        let mut probe = ConnectionProbeLatch::default();
+        let refused = crate::navigation::RequestId::new(703);
+        assert!(probe.begin(refused));
+        assert_eq!(
+            probe.finish(
+                refused,
+                RequestOutcome::Refused(super::super::coordinator::RequestRefusalReason::Closed),
+            ),
+            Some(Intent::ConnectionProbeAborted)
+        );
+
+        let failed = crate::navigation::RequestId::new(704);
+        assert!(probe.begin(failed));
+        assert_eq!(
+            probe.finish(failed, RequestOutcome::Failed),
+            Some(Intent::ConnectionResult { connected: false })
+        );
     }
 }

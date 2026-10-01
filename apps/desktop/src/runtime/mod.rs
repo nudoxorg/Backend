@@ -45,7 +45,9 @@ pub use actor::{
     EngineFault, EngineRequest, LocalRead, ProjectDto,
 };
 pub use client::LocalEngineClient;
-pub use coordinator::{DesktopRuntime, RuntimeEvent};
+pub use coordinator::{
+    DesktopRuntime, RequestOutcome, RequestRefusalReason, RuntimeEvent,
+};
 pub use mailbox::{CoalesceKey, Coalescible, CoalescingMailbox, PushResult};
 pub use mapping::{MappingError, map_event};
 pub use ui_graph::{UiEntityGraph, UiRootEntity};

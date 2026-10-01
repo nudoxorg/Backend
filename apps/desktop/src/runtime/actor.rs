@@ -548,6 +548,12 @@ impl EngineActor {
         result
     }
 
+    #[cfg(test)]
+    pub(crate) fn close_request_channels_for_test(&self) {
+        self.mailbox.close();
+        self.local.close();
+    }
+
     /// Drains currently available events without waiting.
     #[must_use]
     pub fn drain_events(&self) -> Vec<EngineEvent> {

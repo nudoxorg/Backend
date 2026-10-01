@@ -29,14 +29,38 @@ pub enum RuntimeEvent {
     RejectedStale(MappingError),
     /// Persistence was requested by the reducer.
     PersistRequested(Arc<AppSnapshot>),
-    /// One actor request reached a terminal mapping outcome. The UI uses this
-    /// only for the connection probe; ordinary reads remain snapshot-driven.
+    /// One request reached exactly one terminal outcome, including requests
+    /// cancelled or refused before the actor could answer.
     RequestCompleted {
         /// Request identity allocated by the runtime.
         request: RequestId,
-        /// Whether the response was admitted as a typed snapshot update.
-        succeeded: bool,
+        /// The terminal outcome; cancellation and refusal never imply success.
+        outcome: RequestOutcome,
     },
+}
+
+/// Closed terminal state for one request lifecycle.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RequestOutcome {
+    /// The producer response was admitted into the snapshot.
+    Succeeded,
+    /// The producer answered with an error or its response failed admission.
+    Failed,
+    /// Work that had been accepted was stopped without claiming a result.
+    Cancelled,
+    /// A newer request made this request's result irrelevant.
+    Superseded,
+    /// Work could not be admitted to the actor's bounded request queue.
+    Refused(RequestRefusalReason),
+}
+
+/// Why a request could not be admitted to the actor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RequestRefusalReason {
+    /// The bounded actor queue had no free slot.
+    QueueFull,
+    /// The actor's request channel had already closed.
+    Closed,
 }
 
 /// The only state owner on the UI thread. Engine work is submitted and polled
@@ -89,7 +113,7 @@ impl DesktopRuntime {
         let mut events = vec![RuntimeEvent::SnapshotChanged(Arc::clone(&self.snapshot))];
         for effect in reduction.effects {
             match effect {
-                Effect::Engine(command) => self.submit(command),
+                Effect::Engine(command) => events.extend(self.submit(command)),
                 Effect::Persist => {
                     events.push(RuntimeEvent::PersistRequested(Arc::clone(&self.snapshot)));
                 }
@@ -101,20 +125,19 @@ impl DesktopRuntime {
     }
 
     #[allow(clippy::too_many_lines)] // one arm per engine command, kept flat
-    fn submit(&mut self, command: EngineCommand) {
+    fn submit(&mut self, command: EngineCommand) -> Vec<RuntimeEvent> {
         let (request, engine_request, basis, cancel) = match command {
             EngineCommand::ReadLocalPackage {
                 project,
                 basis,
                 request,
             } => {
-                self.submit_local(LocalRead {
+                return self.submit_local(LocalRead {
                     request,
                     project,
                     basis,
                     cancel: CancellationToken::new(),
                 });
-                return;
             }
             EngineCommand::ReadRoot { basis, request } => {
                 let cancel = CancellationToken::new();
@@ -187,18 +210,7 @@ impl DesktopRuntime {
             }
         };
         let lane = engine_request.coalesce_key();
-        let same_lane = self
-            .inflight
-            .iter()
-            .filter_map(|(id, old)| {
-                (lane.is_some() && old.lane == lane && *id != request)
-                    .then_some((*id, old.cancel.clone()))
-            })
-            .collect::<Vec<_>>();
-        for (id, token) in same_lane {
-            token.cancel();
-            self.inflight.remove(&id);
-        }
+        let mut events = self.retire_lane(request, lane, RequestOutcome::Superseded);
         self.inflight.insert(
             request,
             InflightRequest {
@@ -215,25 +227,38 @@ impl DesktopRuntime {
         match self.actor.try_submit_coalesced(engine_request) {
             super::mailbox::PushResult::Enqueued => {}
             super::mailbox::PushResult::Coalesced(old) => {
-                if let Some(old) = self.inflight.remove(&old.request()) {
-                    old.cancel.cancel();
+                if let Some(event) =
+                    self.retire_request(old.request(), RequestOutcome::Superseded)
+                {
+                    events.push(event);
                 }
             }
-            super::mailbox::PushResult::Full(request)
-            | super::mailbox::PushResult::Closed(request) => {
-                if let Some(old) = self.inflight.remove(&request.request()) {
-                    old.cancel.cancel();
+            super::mailbox::PushResult::Full(request) => {
+                if let Some(event) = self.retire_request(
+                    request.request(),
+                    RequestOutcome::Refused(RequestRefusalReason::QueueFull),
+                ) {
+                    events.push(event);
+                }
+            }
+            super::mailbox::PushResult::Closed(request) => {
+                if let Some(event) = self.retire_request(
+                    request.request(),
+                    RequestOutcome::Refused(RequestRefusalReason::Closed),
+                ) {
+                    events.push(event);
                 }
             }
         }
+        events
     }
 
     /// Submits one local read on the actor's local lane, replacing any
     /// older read for the same project.
-    fn submit_local(&mut self, read: LocalRead) {
+    fn submit_local(&mut self, read: LocalRead) -> Vec<RuntimeEvent> {
         let request = read.request;
         let lane = read.coalesce_key();
-        self.retire_lane(request, lane);
+        let mut events = self.retire_lane(request, lane, RequestOutcome::Superseded);
         self.inflight.insert(
             request,
             InflightRequest {
@@ -247,14 +272,28 @@ impl DesktopRuntime {
         match self.actor.try_submit_local(read) {
             super::mailbox::PushResult::Enqueued => {}
             super::mailbox::PushResult::Coalesced(old) => {
-                self.inflight.remove(&old.request);
+                if let Some(event) = self.retire_request(old.request, RequestOutcome::Superseded) {
+                    events.push(event);
+                }
             }
-            super::mailbox::PushResult::Full(read) | super::mailbox::PushResult::Closed(read) => {
-                if let Some(old) = self.inflight.remove(&read.request) {
-                    old.cancel.cancel();
+            super::mailbox::PushResult::Full(read) => {
+                if let Some(event) = self.retire_request(
+                    read.request,
+                    RequestOutcome::Refused(RequestRefusalReason::QueueFull),
+                ) {
+                    events.push(event);
+                }
+            }
+            super::mailbox::PushResult::Closed(read) => {
+                if let Some(event) = self.retire_request(
+                    read.request,
+                    RequestOutcome::Refused(RequestRefusalReason::Closed),
+                ) {
+                    events.push(event);
                 }
             }
         }
+        events
     }
 
     fn cancel(&mut self, request: RequestId) -> Vec<RuntimeEvent> {
@@ -265,7 +304,10 @@ impl DesktopRuntime {
         {
             cancel.cancel();
             if !is_index {
-                self.inflight.remove(&request);
+                return self
+                    .retire_request(request, RequestOutcome::Cancelled)
+                    .into_iter()
+                    .collect();
             }
         }
         Vec::new()
@@ -273,13 +315,19 @@ impl DesktopRuntime {
 
     fn cancel_all(&mut self) -> Vec<RuntimeEvent> {
         let inflight = std::mem::take(&mut self.inflight);
+        let mut events = Vec::new();
         for (id, request) in inflight {
             request.cancel.cancel();
             if request.index_project.is_some() {
                 self.inflight.insert(id, request);
+            } else {
+                events.push(RuntimeEvent::RequestCompleted {
+                    request: id,
+                    outcome: RequestOutcome::Cancelled,
+                });
             }
         }
-        Vec::new()
+        events
     }
 
     /// Polls actor events without waiting on the UI thread.
@@ -305,11 +353,20 @@ impl DesktopRuntime {
                 }));
                 events.push(RuntimeEvent::RequestCompleted {
                     request,
-                    succeeded: false,
+                    outcome: RequestOutcome::Superseded,
                 });
                 continue;
             }
-            self.retire_lane(request, inflight.lane);
+            let actor_outcome = match &event.result {
+                Err(
+                    super::actor::EngineFault::Cancelled
+                    | super::actor::EngineFault::IndexCancelled { .. },
+                ) => RequestOutcome::Cancelled,
+                Err(super::actor::EngineFault::Superseded) => RequestOutcome::Superseded,
+                Err(_) => RequestOutcome::Failed,
+                Ok(_) => RequestOutcome::Succeeded,
+            };
+            events.extend(self.retire_lane(request, inflight.lane, RequestOutcome::Superseded));
             match map_event(&self.snapshot, event) {
                 Ok(snapshot) => {
                     // An index that finished, failed or was stopped changes what
@@ -323,15 +380,30 @@ impl DesktopRuntime {
                     }
                     events.push(RuntimeEvent::RequestCompleted {
                         request,
-                        succeeded: true,
+                        outcome: actor_outcome,
                     });
                 }
                 Err(error) => {
+                    let outcome = match error {
+                        MappingError::StaleRoot { .. }
+                        | MappingError::Engine(super::actor::EngineFault::Superseded) => {
+                            RequestOutcome::Superseded
+                        }
+                        MappingError::Engine(
+                            super::actor::EngineFault::Cancelled
+                            | super::actor::EngineFault::IndexCancelled { .. },
+                        ) => RequestOutcome::Cancelled,
+                        MappingError::Engine(
+                            super::actor::EngineFault::IndexUnconfirmed { .. }
+                            | super::actor::EngineFault::MutationUnconfirmed
+                            | super::actor::EngineFault::Failed(_)
+                            | super::actor::EngineFault::IndexFailed { .. },
+                        )
+                        | MappingError::BasisMismatch { .. }
+                        | MappingError::RequestMismatch { .. } => RequestOutcome::Failed,
+                    };
                     events.push(RuntimeEvent::RejectedStale(error));
-                    events.push(RuntimeEvent::RequestCompleted {
-                        request,
-                        succeeded: false,
-                    });
+                    events.push(RuntimeEvent::RequestCompleted { request, outcome });
                 }
             }
         }
@@ -374,22 +446,39 @@ impl DesktopRuntime {
         self.actor.take_wake()
     }
 
-    fn retire_lane(&mut self, request: RequestId, lane: Option<CoalesceKey>) {
+    fn retire_lane(
+        &mut self,
+        request: RequestId,
+        lane: Option<CoalesceKey>,
+        outcome: RequestOutcome,
+    ) -> Vec<RuntimeEvent> {
         let Some(lane) = lane else {
-            return;
+            return Vec::new();
         };
         let superseded = self
             .inflight
             .iter()
             .filter_map(|(id, candidate)| {
-                (*id != request && candidate.lane == Some(lane))
-                    .then_some((*id, candidate.cancel.clone()))
+                (*id != request && candidate.lane == Some(lane)).then_some(*id)
             })
             .collect::<Vec<_>>();
-        for (id, token) in superseded {
-            token.cancel();
-            self.inflight.remove(&id);
+        let mut events = Vec::with_capacity(superseded.len());
+        for id in superseded {
+            if let Some(event) = self.retire_request(id, outcome) {
+                events.push(event);
+            }
         }
+        events
+    }
+
+    fn retire_request(
+        &mut self,
+        request: RequestId,
+        outcome: RequestOutcome,
+    ) -> Option<RuntimeEvent> {
+        let inflight = self.inflight.remove(&request)?;
+        inflight.cancel.cancel();
+        Some(RuntimeEvent::RequestCompleted { request, outcome })
     }
 }
 

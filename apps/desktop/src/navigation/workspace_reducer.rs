@@ -332,6 +332,14 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
             };
             next = next.with_settings(settings);
         }
+        Intent::ConnectionProbeAborted => {
+            let mut settings = next.settings().clone();
+            if settings.connection == ConnectionStatus::Testing {
+                settings.connection = ConnectionStatus::Unknown;
+                next = next.with_settings(settings);
+                effects.push(Effect::Persist);
+            }
+        }
         Intent::OwnerReady { key, mode } => {
             // The owner's own root, read by the owner thread the moment it
             // answered; no read was ever asked at the unserved one.
@@ -823,6 +831,44 @@ mod tests {
         assert_eq!(resized.effects, [Effect::Persist]);
         let same = reduce(&resized.snapshot, &Intent::WindowResized { width: 1100, height: 800 }).expect("workspace");
         assert!(same.effects.is_empty(), "the same size writes nothing");
+    }
+
+    #[test]
+    fn an_aborted_connection_probe_clears_testing_without_overriding_owner_state() {
+        let mut settings = snapshot().settings().clone();
+        settings.connection = ConnectionStatus::Disconnected;
+        let initial = snapshot().with_settings(settings);
+        let testing = reduce(&initial, &Intent::TestConnection)
+            .expect("connection probe")
+            .snapshot;
+        assert_eq!(testing.settings().connection, ConnectionStatus::Testing);
+
+        let restored = reduce(&testing, &Intent::ConnectionProbeAborted)
+            .expect("aborted probe")
+            .snapshot;
+        assert_eq!(restored.settings().connection, ConnectionStatus::Unknown);
+
+        let owner_key = VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("root".to_owned(), "owner".to_owned())]),
+            2,
+        );
+        let connected = reduce(
+            &testing,
+            &Intent::OwnerReady {
+                key: owner_key,
+                mode: crate::model::ServiceMode::Attached,
+            },
+        )
+        .expect("owner ready")
+        .snapshot;
+        let after_late_abort = reduce(&connected, &Intent::ConnectionProbeAborted)
+            .expect("late probe cancellation")
+            .snapshot;
+        assert_eq!(
+            after_late_abort.settings().connection,
+            ConnectionStatus::Connected,
+            "a newer owner observation must win over a late cancellation"
+        );
     }
 
     #[test]

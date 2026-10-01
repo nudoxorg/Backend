@@ -251,6 +251,7 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
         | Intent::CancelIndex(_)
         | Intent::TestConnection
         | Intent::ConnectionResult { .. }
+        | Intent::ConnectionProbeAborted
         | Intent::OwnerReady { .. }
         | Intent::DismissNote(_)
         | Intent::LibraryRebuilding { .. }

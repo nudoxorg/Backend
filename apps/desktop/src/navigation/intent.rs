@@ -227,6 +227,9 @@ pub enum Intent {
         /// Whether the service answered.
         connected: bool,
     },
+    /// Retire an interrupted connection probe without claiming the service is
+    /// unavailable. A newer OwnerReady observation keeps its Connected state.
+    ConnectionProbeAborted,
     /// The index owner answered for the first time (W-Open I1): the window
     /// opened before it, at the unserved root, and adopts this one.
     OwnerReady {
