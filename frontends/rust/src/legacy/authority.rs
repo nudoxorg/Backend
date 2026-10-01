@@ -2444,6 +2444,7 @@ impl RustWorkspace {
         }
         let mut selected_source_roots = HashSet::new();
         let mut local_roots_by_directory = None;
+        let mut rehomed_file_ids = HashSet::new();
         for (index, file) in files.iter().enumerate() {
             control.check()?;
             let source_path = &key.canonical_source_paths[index];
@@ -2465,28 +2466,27 @@ impl RustWorkspace {
                         .database
                         .file_source_root(file_id)
                         .source_root_id(&self.database);
-                    let present_in_source_root = self
+                    let indexed_path = self
                         .database
                         .source_root(source_root)
                         .source_root(&self.database)
                         .path_for_file(&file_id)
-                        .is_some();
-                    if present_in_source_root && !local_roots.contains(&source_root) {
+                        .cloned();
+                    if indexed_path.is_some() && !local_roots.contains(&source_root) {
                         return Err(RustAuthorityError::SessionSourceRootAmbiguous);
                     }
-                    let belongs_to_local_root = present_in_source_root;
-                    if belongs_to_local_root {
+                    if indexed_path.as_ref() == Some(&vfs_path) {
                         selected_source_roots.insert(source_root);
                         (file_id, false)
                     } else {
                         // VFS identity alone does not prove that the FileId is
-                        // indexed in an active local SourceRoot. A file can be
-                        // visible in the VFS while its path is absent from the
-                        // RootDatabase FileSet (notably after a session source
-                        // overlay). Re-home that exact existing identity into
-                        // the unambiguous package-local root before rebuilding
-                        // DefMaps; treating it as already admitted leaves an
-                        // unconditional `mod` invisible to HIR.
+                        // indexed at this exact lexical path in an active local
+                        // SourceRoot. It may be visible but unrooted after a
+                        // prior overlay, or the root FileSet may retain a
+                        // different path for the same VFS identity. Re-home it
+                        // before rebuilding DefMaps; otherwise an unconditional
+                        // module can remain invisible to HIR or bind through a
+                        // different path.
                         if local_roots_by_directory.is_none() {
                             local_roots_by_directory =
                                 Some(self.local_source_roots_by_directory(&local_roots, control)?);
@@ -2507,6 +2507,9 @@ impl RustWorkspace {
                                 .entry(parent.to_path_buf())
                                 .or_default()
                                 .insert(source_root);
+                        }
+                        if indexed_path.is_some() {
+                            rehomed_file_ids.insert(file_id);
                         }
                         added = added.saturating_add(1);
                         (file_id, true)
@@ -2586,6 +2589,9 @@ impl RustWorkspace {
                 let mut file_set = FileSet::default();
                 for file_id in old_root.iter() {
                     control.check()?;
+                    if rehomed_file_ids.contains(&file_id) {
+                        continue;
+                    }
                     let Some(path) = old_root.path_for_file(&file_id) else {
                         return Err(RustAuthorityError::SessionSourceRootAmbiguous);
                     };
@@ -2619,15 +2625,23 @@ impl RustWorkspace {
         // complete ownership cache now, before this workspace is shared with
         // source analysis or documentation loading.
         self.prepare_source_ownership_index(control)?;
+        let selected_source_paths = files
+            .iter()
+            .map(|file| self.root.join(file.relative_path))
+            .collect::<Vec<_>>();
+        let documentation_sources = files
+            .iter()
+            .zip(&selected_source_paths)
+            .map(|(file, path)| DocumentationSource {
+                // Read Rustdoc attributes from the exact selected VFS path.
+                // Canonicalizing a symlink here can alias two selected buffers
+                // to one physical path and bind one buffer to the other.
+                path,
+                source: file.source.as_bytes(),
+            })
+            .collect::<Vec<_>>();
         self.preload_documentation_inputs(
-            &files
-                .iter()
-                .enumerate()
-                .map(|(index, file)| DocumentationSource {
-                    path: key.canonical_source_paths[index].as_path(),
-                    source: file.source.as_bytes(),
-                })
-                .collect::<Vec<_>>(),
+            &documentation_sources,
             control,
             observer.as_mut().map(|observer| &mut **observer),
             read_frontier_summary,
@@ -2635,12 +2649,8 @@ impl RustWorkspace {
         control.check()?;
         self.selected_source_paths = files
             .iter()
-            .map(|file| {
-                (
-                    file.relative_path.to_path_buf(),
-                    self.root.join(file.relative_path),
-                )
-            })
+            .zip(selected_source_paths)
+            .map(|(file, path)| (file.relative_path.to_path_buf(), path))
             .collect();
         if let (Some(observer), Some(selected_file_ids)) =
             (observer.as_mut(), selected_file_ids.as_ref())
