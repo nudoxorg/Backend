@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AccessibleAction, AnyElement, App, DefiniteLength, Edges, Entity, FocusHandle, Hsla,
+    AccessibleAction, AnyElement, App, DefiniteLength, ElementId, Edges, Entity, FocusHandle, Hsla,
     InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Rems, RenderOnce, Role,
     SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled, TextAlign, Window, div,
     px, relative,
@@ -126,6 +126,7 @@ pub struct Input {
     selected: bool,
     content_type: Option<InputContentType>,
     role: RoleOverride,
+    element_id: Option<ElementId>,
     accessibility_id: Option<SharedString>,
     aria_label: Option<SharedString>,
     aria_description: Option<SharedString>,
@@ -204,6 +205,7 @@ impl Input {
             selected: false,
             content_type: None,
             role: RoleOverride::default(),
+            element_id: None,
             accessibility_id: None,
             aria_label: None,
             aria_description: None,
@@ -212,6 +214,14 @@ impl Input {
             on_press_observed: None,
             context_menu_builder: None,
         }
+    }
+
+    /// Sets the native element identity inside its parent namespace.
+    /// The InputState still owns text, selection and focus. Active siblings must
+    /// use distinct IDs; leaving this unset preserves the entity-derived identity.
+    pub fn id(mut self, id: impl Into<ElementId>) -> Self {
+        self.element_id = Some(id.into());
+        self
     }
 
     /// Retain the legacy accessibility-id builder for source compatibility.
@@ -601,13 +611,11 @@ impl RenderOnce for Input {
             None if placeholder_is_mask => None,
             None => placeholder.clone(),
         };
-        BaseInput::new(("input", state.entity_id()))
+        BaseInput::new(self.element_id.unwrap_or_else(|| ("input", state.entity_id()).into()))
             .focused(focused)
             .disabled(disabled)
-            // The semantic TextInput node must track the editor's actual
-            // focus handle. Programmatic focus (Ask, search, restore) goes to
-            // the presentation, while the frame handle is only a visual
-            // fallback; binding the node to it leaves AccessKit at Window.
+            // The semantic TextInput node tracks the editor's actual focus
+            // handle, including programmatic focus and restoration.
             .track_focus(presentation.focus_handle())
             .tab_index(self.tab_index)
             .tab_stop(self.tab_stop)
@@ -925,6 +933,39 @@ mod tests {
             Input::handle_accessibility_set_value(&base, Some(&action), window, cx);
         });
         assert_eq!(state.read_with(cx, |state, _| state.value()), "updated");
+    }
+
+    #[gpui::test]
+    fn named_input_identity_survives_rerender_and_state_replacement(cx: &mut gpui::TestAppContext) {
+        use gpui::{AppContext as _, Element as _, IntoElement as _, Render};
+        use std::sync::{Arc, Mutex};
+        struct Probe { state: Entity<InputState>, ids: Arc<Mutex<Vec<ElementId>>> }
+        impl Render for Probe {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                let state = self.state.clone();
+                let ids = self.ids.clone();
+                div().on_prepaint(move |_, window, cx| {
+                    let element = Input::new(&state).id("find-query").aria_label("Find query").render(window, cx).into_element();
+                    ids.lock().unwrap().push(element.id().expect("named native input"));
+                    let legacy = Input::new(&state).render(window, cx).into_element();
+                    assert_eq!(legacy.id(), Some(("input", state.entity_id()).into()));
+                })
+            }
+        }
+        cx.update(crate::init);
+        let ids = Arc::new(Mutex::new(Vec::new()));
+        let captured = ids.clone();
+        let (probe, cx) = cx.add_window_view(move |window, cx| Probe {
+            state: cx.new(|cx| InputState::new(window, cx)), ids,
+        });
+        for _ in 0..2 { cx.update(|window, cx| { window.draw(cx).clear(cx); }); }
+        cx.update(|window, cx| {
+            let replacement = cx.new(|cx| InputState::new(window, cx));
+            probe.update(cx, |probe, cx| { probe.state = replacement; cx.notify(); });
+        });
+        cx.update(|window, cx| { window.draw(cx).clear(cx); });
+        assert!(captured.lock().unwrap().iter().all(|id| id == &ElementId::from("find-query")));
+        assert!(captured.lock().unwrap().len() >= 3);
     }
 
     #[gpui::test]
