@@ -416,6 +416,7 @@ mod launch_snapshot {
             worker: 0,
             cancel: &cancel,
             outlines: &outlines,
+            progress: None,
         };
         match Fixture.read(&ReadRequest::Orbit, &context) {
             Ok(PageValue::Orbit(model)) => model,

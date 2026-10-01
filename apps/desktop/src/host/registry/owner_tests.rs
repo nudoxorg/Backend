@@ -69,6 +69,7 @@ fn names_at(endpoint: &Path, tree: &SourceTree) -> Vec<String> {
         worker: 0,
         cancel: &cancel,
         outlines: &outlines,
+        progress: None,
     };
     let Ok(PageValue::Package(dossier)) = reader.read(&ReadRequest::Package(package), &context)
     else {
@@ -561,6 +562,7 @@ fn a_multi_module_crates_names_carry_the_file_they_are_declared_in() {
         worker: 0,
         cancel: &cancel,
         outlines: &outlines,
+        progress: None,
     };
     let Ok(PageValue::Package(dossier)) = reader.read(&ReadRequest::Package(package), &context)
     else {
@@ -963,6 +965,7 @@ fn searched_at(endpoint: &Path, text: &str) -> Result<Vec<(String, Option<String
         worker: 0,
         cancel: &cancel,
         outlines: &outlines,
+        progress: None,
     };
     let query = crate::model::pages::SearchQuery::new(
         text,
@@ -1162,6 +1165,7 @@ fn every_place_a_use_is_named_at_is_the_name_in_code() {
         worker: 0,
         cancel: &cancel,
         outlines: &outlines,
+        progress: None,
     };
     let Ok(PageValue::Package(dossier)) = reader.read(&ReadRequest::Package(package), &context)
     else {
@@ -1436,6 +1440,7 @@ fn the_compilers_own_rows_carry_the_file_each_type_is_declared_in() {
         worker: 0,
         cancel: &cancel,
         outlines: &outlines,
+        progress: None,
     };
     let Ok(PageValue::Package(dossier)) = reader.read(&ReadRequest::Package(package), &context)
     else {
@@ -1497,6 +1502,7 @@ fn probe_outline_rows_named() {
         worker: 0,
         cancel: &cancel,
         outlines: &outlines,
+        progress: None,
     };
     let Ok(PageValue::Package(dossier)) = reader.read(&ReadRequest::Package(package), &context)
     else {
@@ -1599,6 +1605,7 @@ fn probe_module_paths_on_a_real_owner() {
         worker: 0,
         cancel: &cancel,
         outlines: &outlines,
+        progress: None,
     };
     let Ok(PageValue::Package(dossier)) = reader.read(&ReadRequest::Package(package), &context)
     else {
@@ -1657,6 +1664,7 @@ fn probe_registry_roots_on_a_real_owner() {
         worker: 0,
         cancel: &cancel,
         outlines: &outlines,
+        progress: None,
     };
     for release in ["anyhow-1.0.104", "toml-0.5.11"] {
         let package = PackageRef::parse(cached(release).to_str().expect("utf8")).expect("package");

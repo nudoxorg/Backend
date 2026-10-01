@@ -129,7 +129,7 @@ fn the_library_page_shows_a_real_tree_read_by_a_real_owner(cx: &mut TestAppConte
         let key = crate::model::browse::BrowseKey::Tree(LocalProjectId::from_path(root).expect("project"));
         let cancel = crate::runtime::CancellationToken::new();
         let outlines = crate::runtime::reads::OutlineCache::default();
-        let context = crate::runtime::reads::ReadContext { worker: 0, cancel: &cancel, outlines: &outlines };
+        let context = crate::runtime::reads::ReadContext { worker: 0, cancel: &cancel, outlines: &outlines, progress: None };
         match crate::runtime::reads::PageReader::read(reader, &crate::runtime::reads::ReadRequest::Browse(key), &context) {
             Ok(crate::model::pages::PageValue::Browse(value)) => value.tree().expect("a tree").reading.clone(),
             other => panic!("the tree read failed: {other:?}"),

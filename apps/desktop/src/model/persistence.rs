@@ -7,7 +7,7 @@ use super::workspace::{
     ZoomPreference, WindowSize, WorkspaceProject, WorkspaceState,
 };
 use crate::core::ids::LocalProjectId;
-use crate::navigation::{Coordinate, Overlay, PackageLane, ReleaseId, Route, SettingsPage, View};
+use crate::navigation::{BrowseRoute, CompareSet, Coordinate, Overlay, PackageLane, ReleaseId, Route, SettingsPage, View};
 use backend_platform::durable;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -329,6 +329,25 @@ pub enum PersistedRoute {
         /// Producer project identity.
         project: u64,
     },
+    /// A local project's dependency tree.
+    Tree {
+        /// Native project path, admitted again on reload.
+        project: String,
+    },
+    /// Find before a query is entered.
+    FindHome,
+    /// Find results at a stable query and page size.
+    Find {
+        /// The indexed query.
+        text: String,
+        /// Requested result page size.
+        limit: u16,
+    },
+    /// Two to four packages in their chosen order.
+    Compare {
+        /// Exact package references.
+        packages: Vec<String>,
+    },
     /// A package route with its closed lane.
     Package {
         /// Optional producer project.
@@ -420,6 +439,40 @@ impl From<PersistedPackageLane> for PackageLane {
             PersistedPackageLane::Releases => Self::Releases,
             PersistedPackageLane::Security => Self::Security,
         }
+    }
+}
+
+/// Keeps the content place even while Settings is layered over it. The
+/// transient overlay is recorded separately in `settings_page`.
+fn persist_route(route: &Route) -> PersistedRoute {
+    match route {
+        Route::Orbit(crate::navigation::OrbitRoute::Home) => PersistedRoute::Home,
+        Route::Orbit(crate::navigation::OrbitRoute::Project(project)) => PersistedRoute::Project {
+            project: project.get().get(),
+        },
+        Route::Orbit(crate::navigation::OrbitRoute::Browse(browse)) => match browse {
+            BrowseRoute::Tree(project) => PersistedRoute::Tree { project: project.as_str().to_owned() },
+            BrowseRoute::FindHome => PersistedRoute::FindHome,
+            BrowseRoute::Find(query) => PersistedRoute::Find { text: query.text.to_string(), limit: query.limit },
+            BrowseRoute::Compare(selection) => PersistedRoute::Compare {
+                packages: selection.packages().iter().map(|package| package.as_str().to_owned()).collect(),
+            },
+        },
+        Route::Package(route) => PersistedRoute::Package {
+            project: route.project.as_ref().map(|project| project.get().get()),
+            package: route.package.as_str().to_owned(),
+            lane: route.lane.into(),
+            at: route.at.as_ref().map(|at| at.as_str().to_owned()),
+        },
+        Route::Symbol(route) => PersistedRoute::Symbol {
+            project: route.project.as_ref().map(|project| project.get().get()),
+            package: route.package.as_str().to_owned(),
+            id: route.id.as_str().to_owned(),
+            at: route.at.as_ref().map(|at| at.as_str().to_owned()),
+            view: route.view.as_str().to_owned(),
+            line: route.line,
+        },
+        Route::World => PersistedRoute::World,
     }
 }
 
@@ -782,39 +835,7 @@ impl PersistentState {
                 .settings()
                 .window
                 .map(|window| PersistedWindow { width: window.width, height: window.height }),
-            route: match snapshot.overlay() {
-                Some(Overlay::Settings(_)) => PersistedRoute::Settings,
-                Some(Overlay::AddProject | Overlay::CommandPalette | Overlay::Inbox) | None => {
-                    match snapshot.committed_route() {
-                        // A browsing page reopens at home: its read model is
-                        // one owner round trip away, and its route is not a
-                        // persisted shape yet.
-                        Route::Orbit(
-                            crate::navigation::OrbitRoute::Home | crate::navigation::OrbitRoute::Browse(_),
-                        ) => PersistedRoute::Home,
-                        Route::Orbit(crate::navigation::OrbitRoute::Project(project)) => {
-                            PersistedRoute::Project {
-                                project: project.get().get(),
-                            }
-                        }
-                        Route::Package(route) => PersistedRoute::Package {
-                            project: route.project.as_ref().map(|project| project.get().get()),
-                            package: route.package.as_str().to_owned(),
-                            lane: route.lane.into(),
-                            at: route.at.as_ref().map(|at| at.as_str().to_owned()),
-                        },
-                        Route::Symbol(route) => PersistedRoute::Symbol {
-                            project: route.project.as_ref().map(|project| project.get().get()),
-                            package: route.package.as_str().to_owned(),
-                            id: route.id.as_str().to_owned(),
-                            at: route.at.as_ref().map(|at| at.as_str().to_owned()),
-                            view: route.view.as_str().to_owned(),
-                            line: route.line,
-                        },
-                        Route::World => PersistedRoute::World,
-                    }
-                }
-            },
+            route: persist_route(snapshot.committed_route()),
             settings_page: match snapshot.overlay() {
                 Some(Overlay::Settings(page)) => Some(page.as_str().to_owned()),
                 Some(Overlay::AddProject | Overlay::CommandPalette | Overlay::Inbox) | None => None,
@@ -830,20 +851,35 @@ impl PersistentState {
             .as_deref()
             .and_then(SettingsPage::parse)
             .unwrap_or_default();
-        let overlay = match &state.route {
-            PersistedRoute::Settings => Some(Overlay::Settings(settings_page)),
-            PersistedRoute::Home
-            | PersistedRoute::Project { .. }
-            | PersistedRoute::Package { .. }
-            | PersistedRoute::Page { .. }
-            | PersistedRoute::Source { .. }
-            | PersistedRoute::Symbol { .. }
-            | PersistedRoute::World => None,
+        let overlay = if matches!(state.route, PersistedRoute::Settings) || state.settings_page.is_some() {
+            Some(Overlay::Settings(settings_page))
+        } else {
+            None
         };
         let route = match &state.route {
             PersistedRoute::Settings | PersistedRoute::Home => {
                 Route::Orbit(crate::navigation::OrbitRoute::Home)
             }
+            PersistedRoute::Tree { project } => crate::core::LocalProjectId::new(project)
+                .map(BrowseRoute::Tree)
+                .map(crate::navigation::OrbitRoute::Browse)
+                .map(Route::Orbit)
+                .unwrap_or_else(|_| Route::Orbit(crate::navigation::OrbitRoute::Home)),
+            PersistedRoute::FindHome => Route::Orbit(crate::navigation::OrbitRoute::Browse(BrowseRoute::FindHome)),
+            PersistedRoute::Find { text, limit } => crate::model::pages::SearchQuery::new(text, *limit)
+                .map(BrowseRoute::Find)
+                .map(crate::navigation::OrbitRoute::Browse)
+                .map(Route::Orbit)
+                .unwrap_or_else(|_| Route::Orbit(crate::navigation::OrbitRoute::Home)),
+            PersistedRoute::Compare { packages } => packages.iter()
+                .map(|package| crate::model::pages::PackageRef::parse(package))
+                .collect::<Result<Vec<_>, _>>()
+                .ok()
+                .and_then(|packages| CompareSet::new(packages).ok())
+                .map(BrowseRoute::Compare)
+                .map(crate::navigation::OrbitRoute::Browse)
+                .map(Route::Orbit)
+                .unwrap_or_else(|| Route::Orbit(crate::navigation::OrbitRoute::Home)),
             PersistedRoute::Project { project } => std::num::NonZeroU64::new(*project)
                 .map(|project| {
                     crate::core::ProjectId::from_backend(backend_library::ProjectId::new(project))
@@ -1396,6 +1432,37 @@ mod tests {
         let restored = PersistentState::at("unused").cold_reload(&value);
         assert_eq!(restored.route, snapshot.route().clone(), "view, release and line survive");
         assert_eq!(restored.overlay, None);
+    }
+
+    #[test]
+    fn browsing_places_and_settings_overlay_survive_a_cold_restart() {
+        let snapshot = AppSnapshot::empty(crate::core::VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("persistence".to_owned(), "browse".to_owned())]),
+            1,
+        ));
+        let browse = [
+            BrowseRoute::Tree(LocalProjectId::new("/tmp/nudox-tree").expect("tree")),
+            BrowseRoute::FindHome,
+            BrowseRoute::Find(crate::model::pages::SearchQuery::new("serde map", 73).expect("query")),
+            BrowseRoute::Compare(CompareSet::new([
+                crate::model::pages::PackageRef::parse("pkg:cargo/toml@0.8.23").expect("first"),
+                crate::model::pages::PackageRef::parse("pkg:cargo/serde@1.0.0").expect("second"),
+            ]).expect("compare")),
+        ];
+        for place in browse {
+            let route = Route::Orbit(crate::navigation::OrbitRoute::Browse(place));
+            let session = SessionState {
+                route: route.clone(),
+                overlay: Some(Overlay::Settings(SettingsPage::Help)),
+                ..SessionState::default()
+            };
+            let persisted = PersistentState::project(&snapshot.with_session(session));
+            let bytes = serde_json::to_vec(&persisted).expect("serialize");
+            let decoded: PersistedDesktopState = serde_json::from_slice(&bytes).expect("deserialize");
+            let reopened = PersistentState::at("unused").cold_reload(&decoded);
+            assert_eq!(reopened.route, route);
+            assert_eq!(reopened.overlay, Some(Overlay::Settings(SettingsPage::Help)));
+        }
     }
 
     /// Quitting while the query previews a result reopens where you were,
