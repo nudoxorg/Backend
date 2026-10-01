@@ -7,6 +7,7 @@ import hashlib
 import os
 import pathlib
 import selectors
+import signal
 import stat
 import subprocess
 import time
@@ -115,6 +116,7 @@ def _git(git: str, workspace: pathlib.Path, *arguments: str) -> str:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            start_new_session=True,
         )
     except OSError as error:
         raise OverlayInputError(f"could not start git {' '.join(arguments)}: {error}") from error
@@ -126,18 +128,24 @@ def _git(git: str, workspace: pathlib.Path, *arguments: str) -> str:
         selector.register(pipe, selectors.EVENT_READ)
     deadline = time.monotonic() + GIT_COMMAND_TIMEOUT_SECONDS
     total = 0
+    settled = False
+
+    def terminate() -> None:
+        nonlocal settled
+        if not settled:
+            settled = True
+            _terminate_git(process)
+
     try:
         while selector.get_map():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                _terminate_git(process)
+                terminate()
                 raise OverlayInputError(f"git {' '.join(arguments)} exceeded its time limit")
             ready = selector.select(remaining)
             if not ready:
-                if process.poll() is None:
-                    _terminate_git(process)
-                    raise OverlayInputError(f"git {' '.join(arguments)} exceeded its time limit")
-                continue
+                terminate()
+                raise OverlayInputError(f"git {' '.join(arguments)} exceeded its time limit")
             for key, _ in ready:
                 pipe = key.fileobj
                 remaining_bytes = GIT_COMMAND_MAX_OUTPUT_BYTES - total
@@ -148,25 +156,25 @@ def _git(git: str, workspace: pathlib.Path, *arguments: str) -> str:
                     continue
                 total += len(block)
                 if total > GIT_COMMAND_MAX_OUTPUT_BYTES:
-                    _terminate_git(process)
+                    terminate()
                     raise OverlayInputError(f"git {' '.join(arguments)} exceeded its output limit")
                 outputs[pipe].extend(block)
 
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            _terminate_git(process)
+            terminate()
             raise OverlayInputError(f"git {' '.join(arguments)} exceeded its time limit")
         returncode = process.wait(timeout=remaining)
+        settled = True
     except subprocess.TimeoutExpired as error:
-        _terminate_git(process)
+        terminate()
         raise OverlayInputError(f"git {' '.join(arguments)} exceeded its time limit") from error
     finally:
         selector.close()
         for pipe in outputs:
             if pipe is not None and not pipe.closed:
                 pipe.close()
-        if process.poll() is None:
-            _terminate_git(process)
+        terminate()
 
     stdout = bytes(outputs[process.stdout]).decode("utf-8", errors="replace")
     stderr = bytes(outputs[process.stderr]).decode("utf-8", errors="replace")
@@ -177,9 +185,31 @@ def _git(git: str, workspace: pathlib.Path, *arguments: str) -> str:
 
 
 def _terminate_git(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is None:
-        process.kill()
-        process.wait()
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except PermissionError as error:
+        # Never signal a process group we cannot prove we own. The leader is
+        # still our direct child, so it is safe to stop that one process; a
+        # group-level cleanup failure remains an explicit refusal.
+        if process.returncode is None:
+            process.kill()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                raise OverlayInputError("cannot reap the private git process") from error
+        raise OverlayInputError("cannot retire the private git process group") from error
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired as error:
+        if process.returncode is None:
+            process.kill()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+        raise OverlayInputError("cannot reap the private git process") from error
 
 
 def verify_source_snapshot(
@@ -264,7 +294,12 @@ def verify_source_snapshot(
     return current_head
 
 
-def verify_provider_identity(name: str, identity: Mapping[str, object]) -> pathlib.Path:
+def verify_provider_identity(
+    name: str,
+    identity: Mapping[str, object],
+    *,
+    require_executable: bool = False,
+) -> pathlib.Path:
     """Verify an exact path, resolved path, and SHA-256 for a runtime provider."""
 
     path_value = identity.get("path")
@@ -275,6 +310,8 @@ def verify_provider_identity(name: str, identity: Mapping[str, object]) -> pathl
     if len(expected_hash) != 64 or any(character not in "0123456789abcdef" for character in expected_hash):
         raise OverlayInputError(f"runtime provider SHA-256 is invalid: {name}")
     path = pathlib.Path(path_value)
+    if not path.is_absolute() or not pathlib.Path(resolved_value).is_absolute():
+        raise OverlayInputError(f"runtime provider paths must be absolute: {name}")
     try:
         entry_before = path.stat(follow_symlinks=False)
         resolved = path.resolve(strict=True)
@@ -282,13 +319,24 @@ def verify_provider_identity(name: str, identity: Mapping[str, object]) -> pathl
         raise OverlayInputError(f"cannot resolve runtime provider {name}: {error}") from error
     if str(resolved) != resolved_value:
         raise OverlayInputError(f"runtime provider path changed: {name}")
-    if not resolved.is_file() or sha256_file(resolved) != expected_hash:
-        raise OverlayInputError(f"runtime provider content changed: {name}")
     try:
+        target_before = resolved.stat(follow_symlinks=False)
+    except OSError as error:
+        raise OverlayInputError(f"cannot stat runtime provider {name}: {error}") from error
+    if not stat.S_ISREG(target_before.st_mode) or sha256_file(resolved) != expected_hash:
+        raise OverlayInputError(f"runtime provider content changed: {name}")
+    if require_executable and not (target_before.st_mode & 0o111):
+        raise OverlayInputError(f"runtime provider is not executable: {name}")
+    try:
+        target_after = resolved.stat(follow_symlinks=False)
         entry_after = path.stat(follow_symlinks=False)
         resolved_after = path.resolve(strict=True)
     except OSError as error:
         raise OverlayInputError(f"runtime provider changed while hashing: {name}") from error
-    if _stat_identity(entry_before) != _stat_identity(entry_after) or resolved_after != resolved:
+    if (
+        _stat_identity(target_before) != _stat_identity(target_after)
+        or _stat_identity(entry_before) != _stat_identity(entry_after)
+        or resolved_after != resolved
+    ):
         raise OverlayInputError(f"runtime provider path changed while hashing: {name}")
     return path

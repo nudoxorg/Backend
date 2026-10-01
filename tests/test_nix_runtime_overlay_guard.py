@@ -113,12 +113,12 @@ class OverlaySourceGuardTests(unittest.TestCase):
             "resolved_path": str(resolved),
             "sha256": hashlib.sha256(provider.read_bytes()).hexdigest(),
         }
-        guard.verify_provider_identity("fixture-tool", identity)
+        guard.verify_provider_identity("fixture-tool", identity, require_executable=True)
 
         provider.write_bytes(b"replacement executable bytes")
 
         with self.assertRaisesRegex(guard.OverlayInputError, "runtime provider content changed: fixture-tool"):
-            guard.verify_provider_identity("fixture-tool", identity)
+            guard.verify_provider_identity("fixture-tool", identity, require_executable=True)
 
     def test_file_mutation_during_chunked_hash_is_refused(self) -> None:
         provider = self.root / "large-provider"
@@ -222,15 +222,19 @@ class OverlaySourceGuardTests(unittest.TestCase):
 
     def test_git_output_capture_has_a_hard_bound(self) -> None:
         fake_git = self.root / "fake-git-output"
-        fake_git.write_text("#!/bin/sh\nprintf '%20000s' x\n", encoding="utf-8")
+        fake_git.write_text("#!/bin/sh\nprintf '%20000s' x\nexec /bin/sleep 0.5\n", encoding="utf-8")
         fake_git.chmod(0o755)
 
         with self.assertRaisesRegex(guard.OverlayInputError, "exceeded its output limit"):
             guard._git(str(fake_git), self.root, "status")
 
-    def test_git_command_has_a_deadline_and_stops_its_child(self) -> None:
+    def test_git_command_deadline_kills_a_descendant_holding_its_pipes(self) -> None:
         fake_git = self.root / "fake-git-hang"
-        fake_git.write_text("#!/bin/sh\nwhile :; do :; done\n", encoding="utf-8")
+        marker = self.root / "surviving-descendant"
+        fake_git.write_text(
+            f"#!/bin/sh\n(/bin/sleep 0.35; printf survived > '{marker}') &\nexit 0\n",
+            encoding="utf-8",
+        )
         fake_git.chmod(0o755)
 
         with mock.patch.object(guard, "GIT_COMMAND_TIMEOUT_SECONDS", 0.05):
@@ -239,6 +243,8 @@ class OverlaySourceGuardTests(unittest.TestCase):
                 guard._git(str(fake_git), self.root, "status")
 
         self.assertLess(time.monotonic() - started, 2.0)
+        time.sleep(0.4)
+        self.assertFalse(marker.exists(), "the private process group should not outlive the deadline")
 
 
 if __name__ == "__main__":
