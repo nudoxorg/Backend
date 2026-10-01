@@ -27,6 +27,10 @@ pub(super) fn body(
     window: &mut Window,
     cx: &mut Context<Reader>,
 ) -> Vec<Leaf> {
+    // Departing Settings does not own a second native control/fact tree.
+    // Reader supplies its transition chrome; the settled destination mounts
+    // these controls once it owns the route.
+    if !ctx.active { return Vec::new(); }
     match page {
         SettingsPage::Index => index(store, ctx),
         SettingsPage::Registry => registry(snapshot, ctx),
