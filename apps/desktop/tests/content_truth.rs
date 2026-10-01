@@ -426,15 +426,15 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
     let declaration = source.declaration.known().expect("declaration lines");
     let first = text
         .line_span(declaration.first)
-        .map(|span| &text.text[span.range()])
+        .and_then(|span| text.text().get(span.range()))
         .expect("declaration line");
     assert_eq!(first, "pub trait Engine {");
     let on_disk = std::fs::read_to_string(present.join("drive.rs")).expect("drive.rs");
-    assert_eq!(text.text.as_ref(), on_disk.as_str());
+    assert_eq!(text.text(), on_disk.as_str());
     let identifiers = source.identifiers.known().expect("identifiers");
     assert!(
         identifiers.iter().any(|span| {
-            &text.text[span.span.range()] == "Probe"
+            text.text().get(span.span.range()) == Some("Probe")
                 && span.link.target.as_str().contains("drive.rs:")
                 && span.link.target.as_str().ends_with("::Probe")
         }),

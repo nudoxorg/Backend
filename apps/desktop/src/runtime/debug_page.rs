@@ -336,7 +336,7 @@ pub fn source_text(view: &SourceView) -> String {
             .take(24)
             .map(|span| {
                 let word = text
-                    .and_then(|text| text.text.get(span.span.range()))
+                    .and_then(|text| text.text().get(span.span.range()))
                     .unwrap_or("?");
                 format!("{word}@{}→{}", span.span.start, span.link.target)
             })
@@ -348,7 +348,7 @@ pub fn source_text(view: &SourceView) -> String {
     match &view.text {
         Known::Known(text) => {
             let _ = writeln!(out, "  text ({:?}, from line {}):", text.origin, text.first_line);
-            for (offset, line) in text.text.lines().enumerate().take(40) {
+            for (offset, line) in text.text().lines().enumerate().take(40) {
                 let _ = writeln!(out, "    {:>5} │ {line}", text.first_line as usize + offset);
             }
         }

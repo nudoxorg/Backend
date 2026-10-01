@@ -15,7 +15,8 @@ use crate::model::pages::{
     OutlineNode, OutlinePosition,
     OutlineTree, PackageDossier, PackageRecord, PackageRef, Provenance, Readiness, Receiver,
     RecordSource, ReferenceScope, ReferenceSite, Relation, RelationKind, Rose, SearchContinuation,
-    SearchPage, SearchRow, SignatureText, SignatureToken, SourceLocation, SourceOrigin,
+    SearchPage, SearchRow, SignatureText, SignatureToken, SourceCoverage, SourceLocation,
+    SourceOrigin,
     SourceSite, SourceText, SourceView, Standing, SymbolLink, SymbolPage, SymbolRef, TokenClass,
     TreeNode, TreeOpener, TreeSubject, VersionEntry,
 };
@@ -53,14 +54,14 @@ pub struct CompleteNameLookup<'a> {
     outline: &'a OutlineIndex,
 }
 
-impl CompleteNameLookup<'_> {
+impl<'a> CompleteNameLookup<'a> {
     /// Resolves a name only across the complete package row set.
     #[must_use]
     pub fn resolve(
         &self,
         name: &str,
         accept: impl Fn(Option<DeclarationKind>) -> bool,
-    ) -> Option<&Row> {
+    ) -> Option<&'a Row> {
         let candidates = self.outline.by_name.get(name)?;
         let mut best: Option<(u8, &Row)> = None;
         let mut tie = false;
@@ -1400,29 +1401,45 @@ fn line_offset(text: &str, line: u32) -> Option<usize> {
 }
 
 /// Checks a local file against the engine's excerpt at the declared line.
-/// Returns the file text only when the excerpt is found starting on that line.
+/// Returns whether that exact excerpt is present at the declared line.
 #[must_use]
 pub fn verify_local_file(file: &str, excerpt: &str, line: u32) -> bool {
+    verified_local_excerpt(file, excerpt, line).is_some()
+}
+
+fn verified_local_excerpt(file: &str, excerpt: &str, line: u32) -> Option<ByteSpan> {
     let Some(start) = line_offset(file, line) else {
-        return false;
+        return None;
     };
     let rest = &file[start..];
     let excerpt = excerpt.trim_end();
     if excerpt.is_empty() {
-        return false;
+        return None;
     }
     // The excerpt may begin after indentation on its first line.
     let line_end = rest.find('\n').unwrap_or(rest.len());
     let first_line = &rest[..line_end];
-    first_line
-        .find(excerpt.lines().next().unwrap_or_default().trim_start())
-        .is_some_and(|column| rest[column..].starts_with(excerpt))
+    let column = first_line.find(excerpt.lines().next().unwrap_or_default().trim_start())?;
+    if !rest.get(column..)?.starts_with(excerpt) {
+        return None;
+    }
+    let matched_start = start.checked_add(column)?;
+    let matched_end = matched_start.checked_add(excerpt.len())?;
+    ByteSpan::new(
+        u32::try_from(matched_start).ok()?,
+        u32::try_from(matched_end).ok()?,
+    )
 }
 
+/// Builds name links only from a complete outline and a byte region whose
+/// source provenance is exact. Emitted spans are non-overlapping and in byte
+/// order because the scanner advances across each complete identifier token;
+/// the source renderer relies on that invariant for interval seeking.
 fn identifier_spans(
     text: &str,
     own: Option<crate::model::pages::RowKey>,
     outline: Option<&OutlineIndex>,
+    verified_region: Option<ByteSpan>,
 ) -> Known<Arc<[IdentifierSpan]>> {
     let Some(outline) = outline else {
         return Known::unknown(GapReason::ReadFailed, "the package outline was not read");
@@ -1433,6 +1450,18 @@ fn identifier_spans(
             "the package outline is partial; name-based identifier links may be missing",
         );
     }
+    let (text, source_offset) = match verified_region {
+        Some(bytes) => {
+            let Some(region) = text.get(bytes.range()) else {
+                return Known::unknown(
+                    GapReason::Unavailable,
+                    "the verified source excerpt no longer matches its byte range",
+                );
+            };
+            (region, bytes.start as usize)
+        }
+        None => (text, 0),
+    };
     let mut spans = Vec::new();
     let bytes = text.as_bytes();
     let mut index = 0;
@@ -1450,9 +1479,9 @@ fn identifier_spans(
                 })
                 && own.is_none_or(|own| !matches!(row.id, RowId::Symbol(key) if crate::model::pages::RowKey::from(key) == own))
                 && let (Some(span), Ok(target)) = (
-                    u32::try_from(start)
+                    u32::try_from(start.saturating_add(source_offset))
                         .ok()
-                        .zip(u32::try_from(index).ok())
+                        .zip(u32::try_from(index.saturating_add(source_offset)).ok())
                         .and_then(|(start, end)| ByteSpan::new(start, end)),
                     SymbolRef::new(&row.label),
                 )
@@ -1513,7 +1542,8 @@ pub fn source_view(
     let location = site.location.known().cloned();
     let verified = match (local_file, &excerpt, &location) {
         (Some(file_text), Some(excerpt), Some(location)) => {
-            verify_local_file(file_text, &excerpt.text, location.line).then_some(file_text)
+            verified_local_excerpt(file_text, &excerpt.text, location.line)
+                .map(|bytes| (file_text, bytes))
         }
         _ => None,
     };
@@ -1525,12 +1555,17 @@ pub fn source_view(
         ),
     };
     let text = match (verified, &excerpt, &location) {
-        (Some(file_text), Some(excerpt), _) => Known::Known(SourceText::new(
-            Arc::from(file_text),
-            1,
-            SourceOrigin::LocalFile,
-            excerpt.complete,
-        )),
+        (Some((file_text, verified_bytes)), Some(excerpt), _) => {
+            Known::Known(
+                SourceText::new(
+                    Arc::from(file_text),
+                    1,
+                    SourceOrigin::LocalFile,
+                    excerpt.complete,
+                )
+                .with_verified_local_excerpt(verified_bytes),
+            )
+        }
         (None, Some(excerpt), location) => Known::Known(SourceText::new(
             Arc::clone(&excerpt.text),
             location.as_ref().map_or(1, |location| location.line),
@@ -1552,32 +1587,41 @@ pub fn source_view(
             Known::Known,
         );
     let identifiers = match &text {
-        Known::Known(source) => identifier_spans(&source.text, symbol.key, outline),
+        Known::Known(source) => match source.coverage() {
+            SourceCoverage::CapturedExcerpt => {
+                identifier_spans(source.text(), symbol.key, outline, None)
+            }
+            SourceCoverage::LiveFileExcerptVerified { bytes } => {
+                identifier_spans(source.text(), symbol.key, outline, Some(bytes))
+            }
+            SourceCoverage::Unverified => Known::unknown(
+                GapReason::Unavailable,
+                "source links are disabled because live source bytes have no verified excerpt",
+            ),
+        },
         Known::Unknown(gap) => Known::Unknown(gap.clone()),
     };
     let (uses, uses_elsewhere) = match (references, &text, &file) {
-        (Known::Known(sites), Known::Known(source), Known::Known(path)) => {
-            let mut here = Vec::new();
-            let mut elsewhere = Vec::new();
-            for span in sites.iter().filter_map(|site| site.span.known()) {
-                let in_text = source.origin == SourceOrigin::LocalFile
-                    && span.file.as_ref() == path.as_ref()
-                    && (span.bytes.end as usize) <= source.text.len();
-                if in_text {
-                    here.push(span.bytes);
-                } else {
-                    elsewhere.push(span.clone());
+        (Known::Known(sites), Known::Known(source), Known::Known(_path)) => {
+            let detail = match source.coverage() {
+                SourceCoverage::CapturedExcerpt => {
+                    "use spans are file byte offsets and the producer serves only a declaration excerpt"
                 }
-            }
-            let uses = if source.origin == SourceOrigin::LocalFile {
-                Known::Known(here.into())
-            } else {
-                Known::unknown(
-                    GapReason::NotServed,
-                    "use spans are file byte offsets and the engine serves only the declaration excerpt",
-                )
+                SourceCoverage::LiveFileExcerptVerified { .. } => {
+                    "the live file is excerpt-verified only; no full-file digest proves use offsets"
+                }
+                SourceCoverage::Unverified => {
+                    "the displayed source bytes are not verified against the indexed producer"
+                }
             };
-            (uses, elsewhere)
+            (
+                Known::unknown(GapReason::NotServed, detail),
+                sites
+                    .iter()
+                    .filter_map(|site| site.span.known())
+                    .cloned()
+                    .collect(),
+            )
         }
         (Known::Unknown(gap), _, _) => (Known::Unknown(gap.clone()), Vec::new()),
         _ => (
@@ -3163,17 +3207,19 @@ mod tests {
     }
 
     #[test]
-    fn a_local_source_view_is_the_whole_verified_file_with_linked_identifiers() {
+    fn local_file_source_links_only_excerpt_verified_identifiers() {
         let rows = present_rows();
         let outline = OutlineIndex::new(rows, true);
         let label = present("page.rs:3::render");
         let file = "use crate::Page;\n\npub fn render(page: &Page) -> Identity {\n    page.identity().clone()\n}\n";
+        let captured_excerpt =
+            "pub fn render(page: &Page) -> Identity {\n    page.identity().clone()\n}";
         let mut document = present_document(
             &label,
             "pub fn render(page: &Page) -> Identity",
             "Renders one page.",
             ("page.rs", 3),
-            "pub fn render(page: &Page) -> Identity {\n    page.identity().clone()\n}",
+            captured_excerpt,
         );
         document.symbol = key(&label);
         let coordinate = SymbolRef::new(&label).expect("coordinate");
@@ -3191,7 +3237,17 @@ mod tests {
         let text = view.text.known().expect("source text");
         assert_eq!(text.origin, SourceOrigin::LocalFile);
         assert_eq!(text.first_line, 1);
-        assert_eq!(text.text.as_ref(), file);
+        assert_eq!(text.text(), file);
+        let verified_start = u32::try_from(file.find("pub fn render").expect("excerpt start"))
+            .expect("source offset");
+        let verified_end = verified_start
+            + u32::try_from(captured_excerpt.trim_end().len()).expect("excerpt length");
+        assert_eq!(
+            text.coverage(),
+            SourceCoverage::LiveFileExcerptVerified {
+                bytes: ByteSpan::new(verified_start, verified_end).expect("verified range"),
+            }
+        );
         assert_eq!(view.declaration.known(), Some(&LineSpan { first: 3, last: 5 }));
         assert_eq!(view.file.known().map(AsRef::as_ref), Some("page.rs"));
         assert_eq!(view.editor_path.known().map(AsRef::as_ref), Some("/fixture/page.rs"));
@@ -3200,18 +3256,24 @@ mod tests {
             .known()
             .expect("identifiers")
             .iter()
-            .map(|span| (&text.text[span.span.range()], span.link.target.as_str().to_owned()))
+            .map(|span| (&text.text()[span.span.range()], span.link.target.as_str().to_owned()))
             .collect::<Vec<_>>();
+        assert!(view
+            .identifiers
+            .known()
+            .expect("identifiers")
+            .windows(2)
+            .all(|pair| pair[0].span.end <= pair[1].span.start));
         assert_eq!(
             linked,
             [
                 ("Page", present("page.rs:396::Page")),
-                ("Page", present("page.rs:396::Page")),
                 ("Identity", present("identity.rs:339::Identity")),
             ]
         );
-        let uses = view.uses.known().expect("uses in this file");
-        assert_eq!(&text.text[uses[0].range()], "Page");
+        let uses_gap = view.uses.gap().expect("whole-file offsets stay unplaced");
+        assert!(uses_gap.detail.contains("no full-file digest"));
+        assert_eq!(view.uses_elsewhere.len(), 1);
 
         // A file that no longer matches the excerpt is not trusted.
         let stale = "// edited since indexing\n";

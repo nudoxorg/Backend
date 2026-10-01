@@ -4,7 +4,7 @@
 
 use super::state::{Shown, not_ready, shown};
 use super::{Ctx, Leaf};
-use crate::model::pages::{DocFragment, PageKey, SourceView, SymbolRef};
+use crate::model::pages::{DocFragment, PageKey, SourceCoverage, SourceOrigin, SourceView, SymbolRef};
 use crate::navigation::{Intent, Route, SymbolRoute};
 use crate::shell::focus::Target;
 use crate::shell::kit::{gap_words, quiet, symbol_route, text};
@@ -67,6 +67,23 @@ pub(super) fn body(
     ));
     match view.text.known() {
         Some(source) => {
+            if source.origin == SourceOrigin::LocalFile
+                || source.coverage() == SourceCoverage::Unverified
+            {
+                let status = match source.coverage() {
+                    SourceCoverage::LiveFileExcerptVerified { .. } => {
+                        "Current local file · only the declaration excerpt matches indexed source; surrounding bytes may have changed."
+                    }
+                    SourceCoverage::Unverified => {
+                        "Saved source text · these bytes have not been revalidated; source links are disabled."
+                    }
+                    SourceCoverage::CapturedExcerpt => {
+                        "Local source · indexed source coverage is not established."
+                    }
+                };
+                let words = ctx.say(status);
+                leaves.push(Leaf::new(quiet(words, &measure, palette)));
+            }
             let note = margin(&view, store, &symbol, route, ctx);
             let code = code(&view, source, route, ctx, window, cx);
             let leaf = Leaf::new(code);
@@ -143,7 +160,7 @@ fn code(
             break;
         }
         let number = from.saturating_add(u32::try_from(source_index).unwrap_or(u32::MAX));
-        let line = source.text.get(span.range()).unwrap_or_default();
+        let line = source.text().get(span.range()).unwrap_or_default();
         let visible = utf8_prefix(line, MAX_SOURCE_LINE_BYTES);
         if shown.len().saturating_add(visible.len()).saturating_add(1) > MAX_SOURCE_BYTES {
             break;
@@ -196,7 +213,13 @@ fn code(
     // table for every line (and every wrapped line) on each render frame.
     let mut identifiers_by_line =
         vec![Vec::<&crate::model::pages::IdentifierSpan>::new(); numbers.len()];
-    if let Some(identifiers) = view.identifiers.known() {
+    let identifiers = match source.coverage() {
+        SourceCoverage::CapturedExcerpt | SourceCoverage::LiveFileExcerptVerified { .. } => {
+            view.identifiers.known()
+        }
+        SourceCoverage::Unverified => None,
+    };
+    if let Some(identifiers) = identifiers {
         let visible_start = source_starts.first().copied().unwrap_or(usize::MAX);
         let mut cursor = identifiers.partition_point(|identifier| {
             usize::try_from(identifier.span.end).unwrap_or(usize::MAX) <= visible_start
@@ -310,6 +333,7 @@ fn code(
             let requested = requested_line == Some(number);
             let copy_gutter = copy_line.clone();
             let line_number = div()
+                .id(format!("source-copy-line-{number}"))
                 .flex_none()
                 .w(number_width)
                 .flex()

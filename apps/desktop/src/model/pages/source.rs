@@ -10,40 +10,79 @@ use std::sync::Arc;
 )]
 pub enum SourceOrigin {
     /// The engine's bounded declaration excerpt: the declaration only, at
-    /// most 4096 bytes.
+    /// most 4096 bytes. These are producer-captured bytes.
     Excerpt,
-    /// The whole local file, read from disk and checked against the engine's
-    /// excerpt at the declared line, so it is the text the index saw.
+    /// The current whole local file, read from a held directory capability.
+    /// This does not imply that bytes outside a verified declaration excerpt
+    /// still match the version the engine indexed.
     LocalFile,
 }
 
+/// Evidence describing which source bytes are tied to the indexed producer.
+///
+/// This value is not serialized: it is rebuilt by the live read worker, and a
+/// decoded claim must not become proof of a current source match.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SourceCoverage {
+    /// No live producer/source-byte relationship has been verified.
+    #[default]
+    Unverified,
+    /// The source view contains only the producer-captured excerpt.
+    CapturedExcerpt,
+    /// Only this exact range of the current live file matched the producer's
+    /// declaration excerpt; bytes before and after it remain live-only.
+    LiveFileExcerptVerified {
+        /// Exact byte range found at the producer's declared source line.
+        bytes: ByteSpan,
+    },
+}
+
 /// Source text with the line its first byte sits on.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct SourceText {
     /// The text.
-    pub text: Arc<str>,
+    text: Arc<str>,
     /// Sparse immutable line checkpoints built on the read worker. The
     /// bounded index supports binary seeking plus one monotone scan of the
     /// visible window, without retaining one offset pair per source line.
-    #[serde(default)]
+    #[serde(skip)]
     line_index: SourceLineIndex,
+    /// Source-match evidence established by a live read worker.
+    #[serde(skip)]
+    coverage: SourceCoverage,
     /// One-based line of the text's first byte.
     pub first_line: u32,
     /// Where the text came from.
     pub origin: SourceOrigin,
-    /// Whether the producer retained the complete declaration.
+    /// Whether the producer's declaration excerpt is complete.
     pub complete: bool,
 }
 
-const LINE_CHECKPOINT_STRIDE: usize = 64;
+// The sparse index and live-read coverage are derived/runtime-only state.
+// Equality describes the persisted text/source facts, so a warm read and its
+// cold-restored form remain equal even though the latter must revalidate live
+// file coverage before enabling source links.
+impl PartialEq for SourceText {
+    fn eq(&self, other: &Self) -> bool {
+        self.text == other.text
+            && self.first_line == other.first_line
+            && self.origin == other.origin
+            && self.complete == other.complete
+    }
+}
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+impl Eq for SourceText {}
+
+const LINE_CHECKPOINT_STRIDE: usize = 64;
+const MAX_DESERIALIZED_SOURCE_BYTES: usize = 4 * 1024 * 1024;
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct SourceLineIndex {
     line_count: u32,
     checkpoints: Arc<[SourceLineCheckpoint]>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct SourceLineCheckpoint {
     line_index: u32,
     byte_offset: u32,
@@ -57,10 +96,36 @@ impl SourceText {
         Self {
             text,
             line_index,
+            coverage: match origin {
+                SourceOrigin::Excerpt => SourceCoverage::CapturedExcerpt,
+                SourceOrigin::LocalFile => SourceCoverage::Unverified,
+            },
             first_line,
             origin,
             complete,
         }
+    }
+
+    /// Records the exact excerpt range independently verified in this live
+    /// file by the bounded source worker.
+    #[must_use]
+    pub(crate) fn with_verified_local_excerpt(mut self, bytes: ByteSpan) -> Self {
+        if self.origin == SourceOrigin::LocalFile && self.text.get(bytes.range()).is_some() {
+            self.coverage = SourceCoverage::LiveFileExcerptVerified { bytes };
+        }
+        self
+    }
+
+    /// Returns the immutable source text.
+    #[must_use]
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// Returns the source-match evidence established by the read worker.
+    #[must_use]
+    pub const fn coverage(&self) -> SourceCoverage {
+        self.coverage
     }
 
     /// Returns the byte span of one one-based line inside `text`.
@@ -75,17 +140,44 @@ impl SourceText {
     /// nearest checkpoint and the requested rows are scanned.
     #[must_use]
     pub fn line_spans_in(&self, first_index: usize, maximum: usize) -> Vec<ByteSpan> {
-        self.line_index.spans_in(&self.text, first_index, maximum)
+        self.line_index.spans_in(self.text(), first_index, maximum)
     }
 
     /// Returns the number of lines in the text.
     #[must_use]
     pub fn line_count(&self) -> usize {
-        if self.line_index.line_count == 0 && !self.text.is_empty() {
-            SourceLineIndex::build(&self.text).line_count as usize
-        } else {
-            self.line_index.line_count as usize
+        self.line_index.line_count as usize
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct SourceTextWire {
+    text: Arc<str>,
+    first_line: u32,
+    origin: SourceOrigin,
+    complete: bool,
+}
+
+impl<'de> serde::Deserialize<'de> for SourceText {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = <SourceTextWire as serde::Deserialize>::deserialize(deserializer)?;
+        if wire.text.len() > MAX_DESERIALIZED_SOURCE_BYTES {
+            return Err(<D::Error as serde::de::Error>::custom(
+                "saved source exceeds the bounded local-source limit",
+            ));
         }
+        let line_index = SourceLineIndex::build(&wire.text);
+        Ok(Self {
+            text: wire.text,
+            line_index,
+            coverage: SourceCoverage::Unverified,
+            first_line: wire.first_line,
+            origin: wire.origin,
+            complete: wire.complete,
+        })
     }
 }
 
@@ -117,19 +209,14 @@ impl SourceLineIndex {
     }
 
     fn spans_in(&self, text: &str, first_index: usize, maximum: usize) -> Vec<ByteSpan> {
-        if maximum == 0 || text.is_empty() {
+        if maximum == 0 || text.is_empty() || self.line_count == 0 {
             return Vec::new();
         }
-        let index = if self.line_count == 0 {
-            Self::build(text)
-        } else {
-            self.clone()
-        };
-        if first_index >= index.line_count as usize {
+        if first_index >= self.line_count as usize {
             return Vec::new();
         }
         let checkpoint_index = first_index / LINE_CHECKPOINT_STRIDE;
-        let Some(checkpoint) = index.checkpoints.get(checkpoint_index).copied() else {
+        let Some(checkpoint) = self.checkpoints.get(checkpoint_index).copied() else {
             return Vec::new();
         };
         let checkpoint_line = checkpoint.line_index as usize;
@@ -137,12 +224,14 @@ impl SourceLineIndex {
         let skip = first_index.saturating_sub(checkpoint_line);
         let last_index = first_index
             .saturating_add(maximum)
-            .min(index.line_count as usize);
+            .min(self.line_count as usize);
         let mut spans = Vec::with_capacity(last_index.saturating_sub(first_index));
         let mut byte_offset = checkpoint_offset;
         let mut segments = text[checkpoint_offset..].split_inclusive('\n');
         for _ in 0..skip {
-            let segment = segments.next()?;
+            let Some(segment) = segments.next() else {
+                return spans;
+            };
             byte_offset = byte_offset.saturating_add(segment.len());
         }
         for segment in segments.take(last_index.saturating_sub(first_index)) {
@@ -164,7 +253,7 @@ impl SourceLineIndex {
 /// One identifier inside the text that links to a declaration.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct IdentifierSpan {
-    /// Byte span inside [`SourceText::text`].
+    /// Byte span inside the immutable [`SourceText::text`] view.
     pub span: ByteSpan,
     /// Where it links, with the evidence.
     pub link: SymbolLink,
@@ -187,9 +276,11 @@ pub struct SourceView {
     pub declaration: Known<LineSpan>,
     /// Identifiers in `text` that link elsewhere.
     pub identifiers: Known<Arc<[IdentifierSpan]>>,
-    /// Uses of this declaration located in `text`, as spans in `text`.
+    /// Uses whose spans are proven to be in the displayed source bytes.
     pub uses: Known<Arc<[ByteSpan]>>,
-    /// Uses of this declaration in other files, as the producer spelled them.
+    /// Use sites not proven to be inside the displayed source bytes, as the
+    /// producer spelled them. This may include this file outside a verified
+    /// excerpt range.
     pub uses_elsewhere: Arc<[FileSpan]>,
 }
 
@@ -202,7 +293,8 @@ fn editor_path_unavailable() -> Known<Arc<str>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SourceOrigin, SourceText};
+    use super::{SourceCoverage, SourceOrigin, SourceText};
+    use crate::model::pages::ByteSpan;
     use std::sync::Arc;
 
     #[test]
@@ -221,13 +313,13 @@ mod tests {
                 .next()
                 .expect("indexed line exists");
             let expected = format!("line-{line_index:03}");
-            assert_eq!(source.text.get(span.range()), Some(expected.as_str()));
+            assert_eq!(source.text().get(span.range()), Some(expected.as_str()));
         }
 
         let window = source.line_spans_in(62, 5);
         assert_eq!(window.len(), 5);
-        assert_eq!(source.text.get(window[0].range()), Some("line-062"));
-        assert_eq!(source.text.get(window[4].range()), Some("line-066"));
+        assert_eq!(source.text().get(window[0].range()), Some("line-062"));
+        assert_eq!(source.text().get(window[4].range()), Some("line-066"));
         assert!(source.line_spans_in(200, 1).is_empty());
     }
 
@@ -243,15 +335,57 @@ mod tests {
         assert_eq!(
             source
                 .line_span(10)
-                .and_then(|span| source.text.get(span.range())),
+                .and_then(|span| source.text().get(span.range())),
             Some("first")
         );
         assert_eq!(
             source
                 .line_span(11)
-                .and_then(|span| source.text.get(span.range())),
+                .and_then(|span| source.text().get(span.range())),
             Some("second")
         );
         assert!(source.line_span(12).is_none());
+    }
+
+    #[test]
+    fn deserialization_rebuilds_offsets_and_does_not_restore_coverage_proof() {
+        let source = SourceText::new(
+            Arc::from("one\ntwo\n"),
+            1,
+            SourceOrigin::LocalFile,
+            true,
+        )
+        .with_verified_local_excerpt(ByteSpan::new(0, 3).expect("excerpt range"));
+        assert!(matches!(
+            source.coverage(),
+            SourceCoverage::LiveFileExcerptVerified { .. }
+        ));
+
+        let mut wire = serde_json::to_value(&source).expect("serialize source view");
+        wire["line_index"] = serde_json::json!({
+            "line_count": 80_000,
+            "checkpoints": [{ "line_index": 0, "byte_offset": u32::MAX }],
+        });
+        let restored: SourceText = serde_json::from_value(wire).expect("rebuild source view");
+        assert_eq!(restored.line_count(), 2);
+        assert_eq!(restored, source);
+        assert_eq!(
+            restored
+                .line_span(2)
+                .and_then(|span| restored.text().get(span.range())),
+            Some("two")
+        );
+        assert_eq!(restored.coverage(), SourceCoverage::Unverified);
+    }
+
+    #[test]
+    fn deserialization_rejects_source_larger_than_the_worker_limit() {
+        let wire = serde_json::json!({
+            "text": "x".repeat(MAX_DESERIALIZED_SOURCE_BYTES + 1),
+            "first_line": 1,
+            "origin": "LocalFile",
+            "complete": true,
+        });
+        assert!(serde_json::from_value::<SourceText>(wire).is_err());
     }
 }
