@@ -197,7 +197,10 @@ fn code(
     let mut identifiers_by_line =
         vec![Vec::<&crate::model::pages::IdentifierSpan>::new(); numbers.len()];
     if let Some(identifiers) = view.identifiers.known() {
-        let mut cursor = 0;
+        let visible_start = source_starts.first().copied().unwrap_or(usize::MAX);
+        let mut cursor = identifiers.partition_point(|identifier| {
+            usize::try_from(identifier.span.end).unwrap_or(usize::MAX) <= visible_start
+        });
         for (source_index, line_start) in source_starts.iter().copied().enumerate() {
             let line_end = line_start.saturating_add(raw_lines[source_index].len());
             while cursor < identifiers.len()
