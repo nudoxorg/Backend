@@ -629,7 +629,9 @@ fn in_the_library_for<'a>(
         let matches = candidate
             .verified_registry_release
             .as_ref()
-            .is_some_and(|proof| proof.matches(resolved, authority, generation));
+            .is_some_and(|proof| {
+                proof.matches(&candidate.package, resolved, authority, generation)
+            });
         if !matches {
             continue;
         }

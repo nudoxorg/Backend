@@ -319,7 +319,6 @@ fn only_a_uniquely_admitted_crates_io_tree_gets_an_unqualified_package_identity(
         None,
         "this source cannot invent a qualified URL for an arbitrary custom index"
     );
-    std::fs::remove_dir_all(home).expect("remove temporary registry");
     std::fs::remove_dir_all(custom_home).expect("remove custom registry");
 }
 

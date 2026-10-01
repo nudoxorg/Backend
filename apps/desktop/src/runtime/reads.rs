@@ -1674,9 +1674,11 @@ fn verified_registry_releases(
         if root.verify_registry_manifest().as_ref() != Some(&identity.release) {
             continue;
         }
+        let admitted_source = root.clone();
         admitted.insert(
             root,
             VerifiedRegistryRelease::from_checked_release(
+                admitted_source,
                 identity.package,
                 Arc::clone(&composition.authority),
                 composition.generation.0,
@@ -1813,9 +1815,17 @@ mod tests {
             release.purl()
         ))
         .expect("origin-qualified exact purl");
-        assert!(proof.matches(&purl, "opaque-test-authority", 43));
+        let admitted_root = PackageRef::parse(root.to_str().expect("source path"))
+            .expect("source package");
+        assert!(proof.matches(
+            &admitted_root,
+            &purl,
+            "opaque-test-authority",
+            43,
+        ));
         assert!(
             !proof.matches(
+                &admitted_root,
                 &PackageRef::parse(&release.purl()).expect("unqualified coordinate"),
                 "opaque-test-authority",
                 43,
@@ -1824,6 +1834,7 @@ mod tests {
         );
         assert!(
             !proof.matches(
+                &admitted_root,
                 &PackageRef::parse(&format!(
                     "{}?repository_url=https%3A%2F%2Fother.example%2Findex",
                     release.purl()
@@ -1834,8 +1845,24 @@ mod tests {
             ),
             "equal name and version from another origin cannot reuse this proof"
         );
-        assert!(!proof.matches(&purl, "different-authority", 43));
-        assert!(!proof.matches(&purl, "opaque-test-authority", 44));
+        assert!(!proof.matches(
+            &PackageRef::parse(other.to_str().expect("other path")).expect("other package"),
+            &purl,
+            "opaque-test-authority",
+            43,
+        ));
+        assert!(!proof.matches(
+            &admitted_root,
+            &purl,
+            "different-authority",
+            43,
+        ));
+        assert!(!proof.matches(
+            &admitted_root,
+            &purl,
+            "opaque-test-authority",
+            44,
+        ));
         assert!(
             !indexed.contains_key(
                 &PackageRef::parse(other.to_str().expect("other path")).expect("package")
@@ -1880,7 +1907,9 @@ mod tests {
         assert!(
             app_indexed
                 .get(&app_package)
-                .is_some_and(|proof| proof.matches(&purl, "opaque-test-authority", 44)),
+                .is_some_and(|proof| {
+                    proof.matches(&app_package, &purl, "opaque-test-authority", 44)
+                }),
             "the exact app-owned cache layout can be admitted by its current registry source"
         );
 

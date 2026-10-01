@@ -1356,15 +1356,17 @@ fn a_dependency_links_to_the_release_the_library_holds() {
     let home = std::env::var("HOME").unwrap_or_default();
     let tree = |name: &str| {
         let release = crate::model::release::Release::from_stem(name).expect("release stem");
+        let package = PackageRef::parse(&format!(
+            "{home}/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/{name}"
+        ))
+        .expect("a tree");
         IndexedPackage {
-            package: PackageRef::parse(&format!(
-                "{home}/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/{name}"
-            ))
-            .expect("a tree"),
+            package: package.clone(),
             name: Arc::from(name),
             readiness: Readiness::Ready,
             verified_registry_release: Some(
                 crate::model::pages::VerifiedRegistryRelease::from_checked_release(
+                    package,
                     PackageRef::parse(&release.purl()).expect("exact registry package"),
                     Arc::from("test-authority"),
                     7,
@@ -1460,6 +1462,19 @@ fn a_dependency_links_to_the_release_the_library_holds() {
         None,
         "two exact candidate roots are ambiguous"
     );
+    let mut copied_receipt = tree("toml-0.5.11");
+    copied_receipt.package = PackageRef::parse("/different-owner/cache/toml-0.5.11")
+        .expect("copied local root");
+    assert_eq!(
+        super::in_the_library_for(
+            &wants("toml", "0.5", Some("pkg:cargo/toml@0.5.11")),
+            &[copied_receipt],
+            "test-authority",
+            7,
+        ),
+        None,
+        "a receipt copied onto another local root cannot prove that root"
+    );
 }
 
 /// A test-only owner receipt for one exact registry tree. This keeps the
@@ -1471,10 +1486,11 @@ fn serde_registry_tree() -> crate::model::pages::IndexedPackage {
         .expect("local registry tree");
     let release = PackageRef::parse("pkg:cargo/serde@1.0.229").expect("exact release");
     IndexedPackage {
-        package,
+        package: package.clone(),
         name: Arc::from("serde"),
         readiness: Readiness::Ready,
         verified_registry_release: Some(VerifiedRegistryRelease::from_checked_release(
+            package,
             release,
             Arc::from("test-authority"),
             7,

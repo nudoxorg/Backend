@@ -9,6 +9,8 @@ use std::sync::Arc;
 /// that may survive serialization: a new composition must re-admit it.
 #[derive(Clone, Eq, PartialEq)]
 pub(crate) struct VerifiedRegistryRelease {
+    /// Exact local owner row whose bytes were admitted by the source.
+    source: PackageRef,
     package: PackageRef,
     authority: Arc<str>,
     generation: u64,
@@ -28,27 +30,31 @@ impl VerifiedRegistryRelease {
     /// Records the owner worker's manifest and registry-source checks.
     #[must_use]
     pub(crate) fn from_checked_release(
+        source: PackageRef,
         package: PackageRef,
         authority: Arc<str>,
         generation: u64,
     ) -> Self {
         Self {
+            source,
             package,
             authority,
             generation,
         }
     }
 
-    /// Whether this proof names the resolver's exact purl under the current
-    /// registry composition.
+    /// Whether this receipt still names its exact local owner row and the
+    /// resolver's exact package URL under the current registry composition.
     #[must_use]
     pub(crate) fn matches(
         &self,
+        source: &PackageRef,
         package: &PackageRef,
         authority: &str,
         generation: u64,
     ) -> bool {
-        self.package == *package
+        self.source == *source
+            && self.package == *package
             && self.authority.as_ref() == authority
             && self.generation == generation
     }
