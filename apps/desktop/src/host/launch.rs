@@ -251,6 +251,7 @@ fn restored_snapshot(
             back: restored.back,
             forward: restored.forward,
             selected: restored.selected,
+            pending_selection: restored.pending_selection,
             hand: restored.hand,
             whispered: restored.whispered,
             whisper: None,
