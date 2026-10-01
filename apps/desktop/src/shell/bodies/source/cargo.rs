@@ -27,7 +27,7 @@ pub(super) fn body(
     let Ok(package) = PackageRef::parse(route.package.as_str()) else {
         return vec![Leaf::new(quiet("This Cargo source address is invalid.", &ctx.measure, ctx.palette))];
     };
-    let key = CargoSourceKey { package, file: route.file.clone() };
+    let key = CargoSourceKey { project: route.project.clone(), package, file: route.file.clone() };
     let page_key = PageKey::CargoSource(key.clone());
     // Transition plates may retain a captured Pages snapshot. Source bytes
     // must always come from the live store after its owner revocation fence.

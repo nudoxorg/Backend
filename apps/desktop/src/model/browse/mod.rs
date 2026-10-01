@@ -10,6 +10,7 @@ use crate::model::pages::{
 };
 use crate::navigation::BrowseRoute;
 use crate::navigation::CompareSet;
+use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::Arc;
 
@@ -146,6 +147,10 @@ pub struct TreeModel {
     /// Exact release destinations prepared by the read worker, aligned with
     /// `reading.roles`; source gaps remain explicit per release.
     pub links: Arc<[TreeRoleLinks]>,
+    /// Exact source-qualified packages admitted by this owner tree, including
+    /// transitive/unknown-role rows that have no direct dependency button.
+    /// Prepared on the read worker for bounded package-page lookups.
+    pub source_packages: Arc<BTreeSet<PackageRef>>,
     /// UI-ready words and stable action keys prepared once on the read lane.
     /// Drawing the page only borrows this model; it never rescans the tree.
     pub prepared: Arc<facet::browse::LibraryModel>,
