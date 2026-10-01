@@ -10,7 +10,7 @@
 //! files and the environment, then what it says about `unsafe`. A package
 //! with nothing to flag says so, in mint.
 
-use super::state::{Build, DisclosureFlow, Library, Nominal, Pose, Unsafe};
+use super::state::{Build, DisclosureCopy, DisclosureFlow, InkPhase, Library, Nominal, Pose, Unsafe};
 use super::text::{ellipsis, key, natural_width, one, wrap};
 use crate::controls::button::wire;
 use crate::controls::state::{Touch, hover_zone};
@@ -293,8 +293,8 @@ impl RenderOnce for HeadsUp {
         if let Some((_, target)) = touch.claim.as_mut() {
             target.focused = touch.focused;
         }
-        let disclosure = DisclosureFlow::read(&self.id, &touch, self.held, window, cx);
-        let open = disclosure.progress;
+        let disclosure = DisclosureCopy::read(&self.id, &touch, self.held, window, cx);
+        let open = disclosure.geometry;
         let findings = self.findings.clone();
         let warns = findings.iter().filter(|f| f.tone == Tone::Warn).count();
         let chip = CHIP * scale;
@@ -367,7 +367,8 @@ impl RenderOnce for HeadsUp {
             let width = chip + (target_width - chip) * shown;
             let ink = ink_of(item.tone, palette);
             let icon_inset = (chip - 14.0 * scale) * 0.5;
-            let right_inset = if shown > 0.03 { 10.0 * scale } else { 0.0 };
+            let copy_visible = lone || disclosure.ink == InkPhase::Retained;
+            let right_inset = if copy_visible { 10.0 * scale } else { 0.0 };
             let row_text_room = width - icon_inset - 14.0 * scale - gap - right_inset;
             let stacked_text_room = width - icon_inset - right_inset;
             // Keep at least four ems for the identifier before spending that
@@ -376,14 +377,14 @@ impl RenderOnce for HeadsUp {
             // full tile width. Both choices follow the measured tile width;
             // neither clips nor truncates the finding.
             let readable_word_room = word_role.size * 4.0;
-            let stack_icon = shown > 0.03
+            let stack_icon = copy_visible
                 && row_text_room < readable_word_room
                 && stacked_text_room > row_text_room;
             let label_room = if stack_icon { stacked_text_room } else { row_text_room };
             let count_width = item.count.map_or(0.0, |count| {
                 f32::from(natural_width(&SharedString::from(count.to_string()), count_role, window))
             });
-            let show_copy = shown > 0.03 && label_room >= word_role.size;
+            let show_copy = copy_visible && label_room >= word_role.size;
             let count_inline = show_copy
                 && !stack_icon
                 && item.count.is_some()
