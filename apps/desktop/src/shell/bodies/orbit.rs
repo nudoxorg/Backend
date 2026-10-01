@@ -239,14 +239,24 @@ pub(super) fn body(
             files_indexed: health.ingest.files_indexed,
             files_discovered: health.ingest.files_discovered,
         };
-        let mut lines = div().flex().flex_col().items_center().gap(measure.space(Space::Snug));
+        let mut lines = div()
+            .w_full()
+            .min_w(px(0.0))
+            .flex()
+            .flex_col()
+            .gap(measure.space(Space::Snug));
         for line in arrival.says() {
             let words = ctx.say(line);
-            // `min_w(0)`: a text in a flex row is as wide as its one line unless it may shrink,
-            // and then wraps to the column (200 % text on a phone cut it on both sides).
-            lines = lines.child(quiet(words, &measure, palette).min_w(px(0.0)).text_center());
+            // Constrain the column and its text together: centering a column
+            // with an intrinsic width can push a large caption past both edges.
+            lines = lines.child(
+                quiet(words, &measure, palette)
+                    .w_full()
+                    .min_w(px(0.0))
+                    .text_center(),
+            );
         }
-        leaves.push(Leaf::new(div().flex().justify_center().child(lines)));
+        leaves.push(Leaf::new(div().w_full().min_w(px(0.0)).child(lines)));
     }
     leaves
 }
