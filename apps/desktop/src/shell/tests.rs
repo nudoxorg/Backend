@@ -217,7 +217,7 @@ impl PageReader for Fixture {
                         137,
                         SourceOrigin::LocalFile,
                         true,
-                    )),
+                    ).expect("valid fixture source lines")),
                     declaration: Known::Known(LineSpan { first: 138, last: 140 }),
                     identifiers: Known::Known(Arc::from([])),
                     uses: Known::Known(Arc::from([])),

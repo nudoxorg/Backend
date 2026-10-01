@@ -229,9 +229,17 @@ fn code(
     let measure = ctx.measure;
     let palette = ctx.palette;
     let declaration = view.declaration.known().copied();
-    let first_line = source.first_line;
-    let total = u32::try_from(source.line_count()).unwrap_or(u32::MAX);
-    let last_line = first_line.saturating_add(total.saturating_sub(1));
+    let Some(range) = source.line_range() else {
+        let words = if source.line_count() == 0 {
+            "No source lines were recorded".to_owned()
+        } else {
+            "Source line numbers are invalid; this text cannot be navigated safely".to_owned()
+        };
+        return quiet(ctx.say(words), &measure, palette).into_any_element();
+    };
+    let first_line = range.first;
+    let last_line = range.last;
+    let total = last_line - first_line + 1;
     let requested_line = route
         .line
         .filter(|line| *line >= first_line && *line <= last_line);
@@ -765,9 +773,7 @@ fn pager_controls(
     let palette = ctx.palette;
     let first = page.lines.first().map_or(cursor.line, |line| line.number);
     let last = page.lines.last().map_or(cursor.line, |line| line.number);
-    let total_last = source
-        .first_line
-        .saturating_add(source.line_count().saturating_sub(1) as u32);
+    let total_last = source.line_range().map_or(cursor.line, |range| range.last);
     let range = if source.line_count() == 0 {
         "No source lines were recorded".to_owned()
     } else if first == last
@@ -998,6 +1004,7 @@ mod tests {
 
     fn text(words: String) -> SourceText {
         SourceText::new(words.into(), 1, SourceOrigin::LocalFile, true)
+            .expect("valid test source lines")
     }
 
     #[test]
@@ -1115,6 +1122,21 @@ mod tests {
             span,
             visible
         ));
+    }
+
+    #[test]
+    fn mutated_invalid_line_range_never_publishes_duplicate_row_ids() {
+        let mut source = text("one\ntwo".to_owned());
+        for invalid_first in [0, u32::MAX] {
+            source.first_line = invalid_first;
+            assert!(source.line_range().is_none());
+            let cursor = SourceCursor {
+                line: invalid_first,
+                byte: 0,
+            };
+            assert!(SourcePage::at(&source, cursor).lines.is_empty());
+            assert!(previous_cursor(&source, cursor).is_none());
+        }
     }
 
     struct LongSource;

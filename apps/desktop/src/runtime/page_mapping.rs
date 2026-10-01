@@ -1555,23 +1555,24 @@ pub fn source_view(
         ),
     };
     let text = match (verified, &excerpt, &location) {
-        (Some((file_text, verified_bytes)), Some(excerpt), _) => {
-            Known::Known(
-                SourceText::new(
-                    Arc::from(file_text),
-                    1,
-                    SourceOrigin::LocalFile,
-                    excerpt.complete,
-                )
-                .with_verified_local_excerpt(verified_bytes),
-            )
-        }
-        (None, Some(excerpt), location) => Known::Known(SourceText::new(
+        (Some((file_text, verified_bytes)), Some(excerpt), _) => SourceText::new(
+            Arc::from(file_text),
+            1,
+            SourceOrigin::LocalFile,
+            excerpt.complete,
+        ).map_or_else(
+            |error| Known::unknown(GapReason::Unavailable, error.to_string()),
+            |source| Known::Known(source.with_verified_local_excerpt(verified_bytes)),
+        ),
+        (None, Some(excerpt), location) => SourceText::new(
             Arc::clone(&excerpt.text),
             location.as_ref().map_or(1, |location| location.line),
             SourceOrigin::Excerpt,
             excerpt.complete,
-        )),
+        ).map_or_else(
+            |error| Known::unknown(GapReason::Unavailable, error.to_string()),
+            Known::Known,
+        ),
         (_, None, _) => Known::Unknown(
             site.excerpt
                 .gap()
@@ -3283,6 +3284,23 @@ mod tests {
         assert!(view.editor_path.known().is_none());
         assert_eq!(text.first_line, 3);
         assert_eq!(view.uses.gap().map(|gap| gap.reason), Some(GapReason::NotServed));
+    }
+
+    #[test]
+    fn malformed_producer_source_line_is_an_explicit_gap() {
+        let label = present("page.rs:0::render");
+        let document = present_document(
+            &label,
+            "pub fn render() {}",
+            "Renders.",
+            ("page.rs", 0),
+            "pub fn render() {}",
+        );
+        let coordinate = SymbolRef::new(&label).expect("coordinate");
+        let view = source_view(&coordinate, &document, None, None, &Known::Known(Arc::from([])), None);
+        let gap = view.text.gap().expect("line zero has no unique source-row identity");
+        assert_eq!(gap.reason, GapReason::Unavailable);
+        assert!(gap.detail.contains("first line"));
     }
 
     #[test]

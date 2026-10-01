@@ -30,6 +30,18 @@ pub(super) struct SourcePage {
 
 impl SourcePage {
     pub(super) fn at(source: &SourceText, cursor: SourceCursor) -> Self {
+        let Some(range) = source.line_range() else {
+            return Self {
+                lines: Vec::new(),
+                next: None,
+            };
+        };
+        if !(range.first..=range.last).contains(&cursor.line) {
+            return Self {
+                lines: Vec::new(),
+                next: None,
+            };
+        }
         let Some(first_index) = cursor
             .line
             .checked_sub(source.first_line)
@@ -45,9 +57,12 @@ impl SourcePage {
         let mut used = 0_usize;
         let mut next = None;
         for (index, full_span) in spans.into_iter().enumerate() {
-            let number = cursor
-                .line
-                .saturating_add(u32::try_from(index).unwrap_or(u32::MAX));
+            let Some(number) = u32::try_from(index)
+                .ok()
+                .and_then(|index| cursor.line.checked_add(index))
+            else {
+                break;
+            };
             let Some(full) = source.text().get(full_span.range()) else {
                 break;
             };
@@ -94,10 +109,7 @@ impl SourcePage {
                 break;
             }
             if used >= MAX_SOURCE_BYTES || lines.len() >= MAX_SOURCE_LINES {
-                let next_line = number.saturating_add(1);
-                if usize::try_from(next_line.saturating_sub(source.first_line))
-                    .is_ok_and(|index| index < source.line_count())
-                {
+                if let Some(next_line) = number.checked_add(1).filter(|line| *line <= range.last) {
                     next = Some(SourceCursor {
                         line: next_line,
                         byte: 0,
@@ -107,11 +119,8 @@ impl SourcePage {
             }
         }
         if next.is_none() {
-            let following = lines.last().map(|line| line.number.saturating_add(1));
-            if let Some(line) = following.filter(|line| {
-                usize::try_from(line.saturating_sub(source.first_line))
-                    .is_ok_and(|index| index < source.line_count())
-            }) {
+            let following = lines.last().and_then(|line| line.number.checked_add(1));
+            if let Some(line) = following.filter(|line| *line <= range.last) {
                 next = Some(SourceCursor { line, byte: 0 });
             }
         }
@@ -120,6 +129,10 @@ impl SourcePage {
 }
 
 pub(super) fn previous_cursor(source: &SourceText, cursor: SourceCursor) -> Option<SourceCursor> {
+    let range = source.line_range()?;
+    if !(range.first..=range.last).contains(&cursor.line) {
+        return None;
+    }
     if cursor.byte > 0 {
         let span = source.line_span(cursor.line)?;
         let line = source.text().get(span.range())?;
@@ -153,7 +166,7 @@ pub(super) fn previous_cursor(source: &SourceText, cursor: SourceCursor) -> Opti
                 }
                 let number = source
                     .first_line
-                    .saturating_add(u32::try_from(first_index + index).ok()?);
+                    .checked_add(u32::try_from(first_index + index).ok()?)?;
                 return Some(SourceCursor { line: number, byte });
             }
             break;
@@ -164,7 +177,7 @@ pub(super) fn previous_cursor(source: &SourceText, cursor: SourceCursor) -> Opti
         used = used.saturating_add(line.len()).saturating_add(1);
         let number = source
             .first_line
-            .saturating_add(u32::try_from(first_index + index).ok()?);
+            .checked_add(u32::try_from(first_index + index).ok()?)?;
         start = Some(SourceCursor {
             line: number,
             byte: 0,
@@ -196,9 +209,13 @@ pub(super) fn initial_cursor(source: &SourceText, line: u32, context: u32) -> So
             break;
         }
         bytes += line.len() + 1;
-        start = source
-            .first_line
-            .saturating_add(u32::try_from(first_index + index).unwrap_or(u32::MAX));
+        let Some(number) = u32::try_from(first_index + index)
+            .ok()
+            .and_then(|index| source.first_line.checked_add(index))
+        else {
+            break;
+        };
+        start = number;
     }
     SourceCursor {
         line: start,

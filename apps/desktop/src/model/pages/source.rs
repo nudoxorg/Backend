@@ -2,6 +2,7 @@
 
 use super::common::{ByteSpan, DeclRef, Known, LineSpan};
 use super::symbol::{FileSpan, SymbolLink};
+use std::fmt;
 use std::sync::Arc;
 
 /// Where the source text in a [`SourceView`] came from.
@@ -36,6 +37,29 @@ pub enum SourceCoverage {
         bytes: ByteSpan,
     },
 }
+
+/// Why a source byte buffer cannot be assigned unique one-based line IDs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SourceTextError {
+    /// A source line starts at one, never zero.
+    FirstLineZero,
+    /// The buffer's byte offsets exceed the source-span representation.
+    ByteRangeOverflow,
+    /// The final line cannot be represented as a `u32`.
+    LineRangeOverflow,
+}
+
+impl fmt::Display for SourceTextError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::FirstLineZero => "source first line must be one or greater",
+            Self::ByteRangeOverflow => "source byte offsets exceed the supported range",
+            Self::LineRangeOverflow => "source line numbers exceed the supported range",
+        })
+    }
+}
+
+impl std::error::Error for SourceTextError {}
 
 /// Source text with the line its first byte sits on.
 #[derive(Clone, Debug, serde::Serialize)]
@@ -90,10 +114,20 @@ struct SourceLineCheckpoint {
 
 impl SourceText {
     /// Builds source text and its reusable line-offset index.
-    #[must_use]
-    pub fn new(text: Arc<str>, first_line: u32, origin: SourceOrigin, complete: bool) -> Self {
+    ///
+    /// # Errors
+    /// Rejects zero-based or overflowing line numbers and byte offsets before
+    /// the text can enter a page's sparse line index.
+    pub fn new(
+        text: Arc<str>,
+        first_line: u32,
+        origin: SourceOrigin,
+        complete: bool,
+    ) -> Result<Self, SourceTextError> {
+        u32::try_from(text.len()).map_err(|_| SourceTextError::ByteRangeOverflow)?;
         let line_index = SourceLineIndex::build(&text);
-        Self {
+        checked_line_range(first_line, line_index.line_count)?;
+        Ok(Self {
             text,
             line_index,
             coverage: match origin {
@@ -103,7 +137,7 @@ impl SourceText {
             first_line,
             origin,
             complete,
-        }
+        })
     }
 
     /// Records the exact excerpt range independently verified in this live
@@ -148,6 +182,35 @@ impl SourceText {
     pub fn line_count(&self) -> usize {
         self.line_index.line_count as usize
     }
+
+    /// The checked one-based range represented by this text, if nonempty.
+    /// A caller that mutates the public `first_line` can invalidate it; the
+    /// reader must check again before publishing line IDs.
+    #[must_use]
+    pub fn line_range(&self) -> Option<LineSpan> {
+        checked_line_range(self.first_line, self.line_index.line_count)
+            .ok()
+            .flatten()
+    }
+}
+
+fn checked_line_range(
+    first_line: u32,
+    line_count: u32,
+) -> Result<Option<LineSpan>, SourceTextError> {
+    if first_line == 0 {
+        return Err(SourceTextError::FirstLineZero);
+    }
+    if line_count == 0 {
+        return Ok(None);
+    }
+    let last = first_line
+        .checked_add(line_count - 1)
+        .ok_or(SourceTextError::LineRangeOverflow)?;
+    Ok(Some(LineSpan {
+        first: first_line,
+        last,
+    }))
 }
 
 #[derive(serde::Deserialize)]
@@ -169,15 +232,10 @@ impl<'de> serde::Deserialize<'de> for SourceText {
                 "saved source exceeds the bounded local-source limit",
             ));
         }
-        let line_index = SourceLineIndex::build(&wire.text);
-        Ok(Self {
-            text: wire.text,
-            line_index,
-            coverage: SourceCoverage::Unverified,
-            first_line: wire.first_line,
-            origin: wire.origin,
-            complete: wire.complete,
-        })
+        let mut source = Self::new(wire.text, wire.first_line, wire.origin, wire.complete)
+            .map_err(<D::Error as serde::de::Error>::custom)?;
+        source.coverage = SourceCoverage::Unverified;
+        Ok(source)
     }
 }
 
@@ -293,7 +351,7 @@ fn editor_path_unavailable() -> Known<Arc<str>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SourceCoverage, SourceOrigin, SourceText};
+    use super::{SourceCoverage, SourceOrigin, SourceText, SourceTextError};
     use crate::model::pages::ByteSpan;
     use std::sync::Arc;
 
@@ -303,7 +361,8 @@ mod tests {
             .map(|line| format!("line-{line:03}\n"))
             .collect::<String>()
             .into();
-        let source = SourceText::new(Arc::clone(&text), 1, SourceOrigin::LocalFile, true);
+        let source = SourceText::new(Arc::clone(&text), 1, SourceOrigin::LocalFile, true)
+            .expect("valid line range");
         assert_eq!(source.line_count(), 200);
 
         for line_index in [0, 63, 64, 65, 127, 128, 199] {
@@ -330,7 +389,8 @@ mod tests {
             10,
             SourceOrigin::Excerpt,
             true,
-        );
+        )
+        .expect("valid line range");
         assert_eq!(source.line_count(), 2);
         assert_eq!(
             source
@@ -348,14 +408,41 @@ mod tests {
     }
 
     #[test]
+    fn constructor_and_saved_source_reject_non_unique_line_numbers() {
+        let zero = SourceText::new(Arc::from("one"), 0, SourceOrigin::Excerpt, true);
+        assert_eq!(zero.unwrap_err(), SourceTextError::FirstLineZero);
+        let overflow =
+            SourceText::new(Arc::from("one\ntwo"), u32::MAX, SourceOrigin::Excerpt, true);
+        assert_eq!(overflow.unwrap_err(), SourceTextError::LineRangeOverflow);
+        let last = SourceText::new(Arc::from("last"), u32::MAX, SourceOrigin::Excerpt, true)
+            .expect("one final line is representable");
+        assert_eq!(
+            last.line_range(),
+            Some(crate::model::pages::LineSpan {
+                first: u32::MAX,
+                last: u32::MAX
+            })
+        );
+
+        for first_line in [0, u32::MAX] {
+            let saved = serde_json::json!({
+                "text": "one\ntwo",
+                "first_line": first_line,
+                "origin": "Excerpt",
+                "complete": true,
+            });
+            assert!(
+                serde_json::from_value::<SourceText>(saved).is_err(),
+                "saved range {first_line} was admitted"
+            );
+        }
+    }
+
+    #[test]
     fn deserialization_rebuilds_offsets_and_does_not_restore_coverage_proof() {
-        let source = SourceText::new(
-            Arc::from("one\ntwo\n"),
-            1,
-            SourceOrigin::LocalFile,
-            true,
-        )
-        .with_verified_local_excerpt(ByteSpan::new(0, 3).expect("excerpt range"));
+        let source = SourceText::new(Arc::from("one\ntwo\n"), 1, SourceOrigin::LocalFile, true)
+            .expect("valid line range")
+            .with_verified_local_excerpt(ByteSpan::new(0, 3).expect("excerpt range"));
         assert!(matches!(
             source.coverage(),
             SourceCoverage::LiveFileExcerptVerified { .. }
@@ -373,7 +460,10 @@ mod tests {
             serde_json::to_value(&source).expect("serialize original source"),
             "the persisted source projection round-trips without runtime proof"
         );
-        assert_ne!(restored, source, "runtime coverage is part of semantic equality");
+        assert_ne!(
+            restored, source,
+            "runtime coverage is part of semantic equality"
+        );
         assert_eq!(
             restored
                 .line_span(2)
