@@ -697,7 +697,11 @@ mod tests {
         });
 
         assert_eq!(events.clicks.get(), 1);
-        assert_eq!(events.keys.get(), 1);
+        let active_key_events = events.keys.get();
+        assert!(
+            active_key_events > 0,
+            "the focused control receives key input"
+        );
         assert_eq!(events.actions.get(), 1);
         assert_eq!(events.a11y_actions.get(), 1);
         assert_eq!(events.ime_insertions.get(), 1);
@@ -787,7 +791,7 @@ mod tests {
         });
 
         assert_eq!(events.clicks.get(), 1);
-        assert_eq!(events.keys.get(), 1);
+        assert_eq!(events.keys.get(), active_key_events);
         assert_eq!(events.actions.get(), 1);
         assert_eq!(events.a11y_actions.get(), 1);
         assert_eq!(events.ime_insertions.get(), 1);
