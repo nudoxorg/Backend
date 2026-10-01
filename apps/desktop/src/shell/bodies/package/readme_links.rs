@@ -394,6 +394,9 @@ fn candidate(destination: &str, indexed: Option<&ReadmeLink>, package: &PackageR
         return Candidate::Unavailable(UNAVAILABLE);
     };
     let (name, kind) = rustdoc_item_name(stem);
+    if kind.is_none() || name.is_empty() {
+        return Candidate::Unavailable("This Rustdoc page is not an exact declaration link.");
+    }
     Candidate::Rustdoc(RustdocKey {
         modules: components[..components.len() - 1]
             .iter()
@@ -620,6 +623,7 @@ mod tests {
             link("outline/struct.Outline.html", None, None),
             link("outline/struct.Outline.html#method", None, None),
             link("missing/struct.Outline.html", None, None),
+            link("outline/index.html", None, None),
         ]
         .into();
         let complete = Plan::build(
@@ -632,6 +636,7 @@ mod tests {
         assert!(matches!(complete.row(0), Outcome::Route(Route::Symbol(_))));
         assert!(matches!(complete.row(1), Outcome::Unavailable(_)));
         assert!(matches!(complete.row(2), Outcome::Unavailable(_)));
+        assert!(matches!(complete.row(3), Outcome::Unavailable(_)));
         let mut partial = dossier.outline.known().expect("fixture outline").clone();
         partial.complete = false;
         let partial = Plan::build(
