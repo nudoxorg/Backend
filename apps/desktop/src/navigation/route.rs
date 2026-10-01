@@ -6,7 +6,9 @@
 
 use crate::core::{DocumentId, PackageId, ProjectId};
 use crate::model::ObjectId;
+use std::cmp::Ordering;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 /// A validated source coordinate.
@@ -83,18 +85,38 @@ pub enum OrbitRoute {
 
 /// One immutable release of a package. Ecosystem-specific admission happens
 /// at the package read boundary, where the producer's identity is available.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum ReleaseId {
-    /// The producer confirmed this exact version for its package.
-    Admitted(Arc<str>),
-    /// Safe saved or requested text awaiting package-specific validation.
-    Unresolved(Arc<str>),
-    /// The saved spelling is unsafe; keep it for recovery but never read it.
-    InvalidSaved(Arc<str>),
+#[derive(Clone, Debug)]
+pub struct ReleaseId {
+    spelling: Arc<str>,
+    admission: ReleaseAdmission,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReleaseAdmission {
+    /// Safe text awaiting package-specific validation on its read worker.
+    Unresolved,
+    /// Unsafe saved text retained for recovery but never read.
+    InvalidSaved,
+}
+
+// Release admission is state, not address identity. A future producer-verified
+// phase must not split history/page keys for the same exact release spelling.
+impl PartialEq for ReleaseId {
+    fn eq(&self, other: &Self) -> bool { self.spelling == other.spelling }
+}
+impl Eq for ReleaseId {}
+impl Hash for ReleaseId {
+    fn hash<H: Hasher>(&self, state: &mut H) { self.spelling.hash(state); }
+}
+impl PartialOrd for ReleaseId {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+}
+impl Ord for ReleaseId {
+    fn cmp(&self, other: &Self) -> Ordering { self.spelling.cmp(&other.spelling) }
 }
 
 impl ReleaseId {
-    /// Admits one version spelling.
+    /// Admits one safe version spelling as an unresolved address.
     pub fn new(value: &str) -> Result<Self, CoordinateError> {
         if value.trim().is_empty() {
             return Err(CoordinateError::Empty);
@@ -108,23 +130,23 @@ impl ReleaseId {
         {
             return Err(CoordinateError::InvalidRelease);
         }
-        Ok(Self::Unresolved(Arc::from(value)))
+        Ok(Self { spelling: Arc::from(value), admission: ReleaseAdmission::Unresolved })
     }
 
     /// Retains an invalid saved address as unread instead of treating it as the working copy.
     #[must_use]
     pub(crate) fn from_persisted(value: &str) -> Self {
-        Self::new(value).unwrap_or_else(|_| Self::InvalidSaved(Arc::from(value)))
+        Self::new(value).unwrap_or_else(|_| Self { spelling: Arc::from(value), admission: ReleaseAdmission::InvalidSaved })
     }
 
     /// Whether this release can be used as an index address.
     #[must_use]
-    pub const fn is_valid(&self) -> bool { !matches!(self, Self::InvalidSaved(_)) }
+    pub const fn is_valid(&self) -> bool { matches!(self.admission, ReleaseAdmission::Unresolved) }
 
     /// Exact saved spelling, including an invalid one for recovery.
     #[must_use]
     pub(crate) fn persisted_wire(&self) -> &str {
-        match self { Self::Admitted(value) | Self::Unresolved(value) | Self::InvalidSaved(value) => value }
+        &self.spelling
     }
 
     /// Returns the version spelling.
