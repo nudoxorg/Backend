@@ -425,6 +425,12 @@ pub(crate) struct Reader {
     /// page change leaves. A place no frame drew (a route another one
     /// superseded in the same instant) was never on screen.
     painted: Option<u64>,
+    /// The owner revision of the last painted place, for exact overlay returns.
+    painted_root: Option<crate::core::VersionedRoot>,
+    /// Reader focus when Settings covered a painted place.
+    settings_departure: Option<SettingsDeparture>,
+    /// One return focus attempt after the uncovered page actually registers targets.
+    pending_settings_focus: Option<SettingsReturn>,
     /// A place change seen, waiting for the next render to start it.
     arrival: Option<Arrival>,
     /// The place change in flight.
@@ -474,6 +480,9 @@ impl Reader {
             descents: 0,
             last_way: None,
             painted: None,
+            painted_root: None,
+            settings_departure: None,
+            pending_settings_focus: None,
             // The ring re-wraps as the library grows: a name that moves to
             // another line lands there, never flying across the others.
             ring_flow: facet::motion::Flow::new("orbit-ring").wrapped(),
@@ -1357,6 +1366,18 @@ struct Place {
     hop: bool,
 }
 
+struct SettingsDeparture {
+    route: Route,
+    root: crate::core::VersionedRoot,
+    target: Option<SharedString>,
+}
+
+struct SettingsReturn {
+    place: u64,
+    root: crate::core::VersionedRoot,
+    target: Option<SharedString>,
+}
+
 const MAX_ROUTE_SCROLL_MEMORY: usize = 64;
 const MAX_SOURCE_PAGING_MEMORY: usize = 32;
 const MAX_LIBRARY_STATE_MEMORY: usize = 8;
@@ -1580,7 +1601,31 @@ impl Region for Reader {
                 }
                 // (A release change or a view switch replaces the entry; it
                 // still arrives as a new page.)
+                let opening_settings = !matches!(self.overlay, Some(Overlay::Settings(_)))
+                    && matches!(overlay, Some(Overlay::Settings(_)));
+                let closing_settings = matches!(self.overlay, Some(Overlay::Settings(_)))
+                    && !matches!(overlay, Some(Overlay::Settings(_)));
+                if opening_settings {
+                    self.settings_departure = self.painted_root
+                        .filter(|_| self.places.last().is_some_and(|place| Some(place.key) == self.painted))
+                        .map(|root| SettingsDeparture {
+                            route: self.route.clone(),
+                            root,
+                            target: self.targets.is_active().then(|| self.targets.focused()).flatten(),
+                        });
+                }
+                let departure = if closing_settings { self.settings_departure.take() } else { None };
                 self.arrive(snapshot.route(), overlay);
+                self.pending_settings_focus = if closing_settings && overlay.is_none() {
+                    Some(SettingsReturn {
+                        place: self.descents,
+                        root: snapshot.key(),
+                        target: departure.filter(|departure| departure.route == *snapshot.route() && departure.root == snapshot.key())
+                            .and_then(|departure| departure.target),
+                    })
+                } else {
+                    None
+                };
             }
         }
     }
@@ -1749,6 +1794,7 @@ impl Render for Reader {
                 }
             }
             self.painted = Some(current.key);
+            self.painted_root = Some(snapshot.key());
         } else if self
             .pending_scroll_restore
             .as_ref()
@@ -1886,6 +1932,30 @@ impl Render for Reader {
             self.ring_flow.forget(cx);
         }
         let body = self.body(&current, true, &snapshot, &layout, &facet, current_edge, window, cx);
+        if let Some(mut pending) = self.pending_settings_focus.take()
+            && pending.place == current.key
+        {
+            if self.painted == Some(current.key) {
+                if snapshot.key() != pending.root { pending.target = None; }
+                if self.targets.is_active() {
+                    if let Some(target) = pending.target {
+                        self.targets.focus(target);
+                        if self.targets.current().is_none() {
+                            self.targets.clear_focus();
+                            self.targets.walk(1);
+                        }
+                    } else {
+                        self.targets.walk(1);
+                    }
+                    if self.targets.focused().is_some() {
+                        self.reveal.set(true);
+                        cx.notify();
+                    }
+                }
+            } else {
+                self.pending_settings_focus = Some(pending);
+            }
+        }
         if let Some(reader) = reader {
             self.follow(reader, cx);
         }

@@ -72,6 +72,8 @@ mod orbit_tests;
 #[cfg(test)]
 mod shelf_tests;
 #[cfg(test)]
+mod settings_focus_tests;
+#[cfg(test)]
 pub(crate) mod tests;
 
 pub use frame::{Frame, FrameInput, ShelfMode};
