@@ -86,7 +86,7 @@ impl ProjectCommand {
     pub(crate) fn for_phase(phase: ProjectPhase, active: bool) -> Vec<Self> {
         match phase {
             ProjectPhase::Ready => [(!active).then_some(Self::Activate), Some(Self::Reveal), Some(Self::Remove)].into_iter().flatten().collect(),
-            ProjectPhase::Indexing => vec![Self::Reveal, Self::Remove],
+            ProjectPhase::Indexing => vec![Self::Reveal],
             ProjectPhase::Cancelling => vec![Self::Reveal],
             ProjectPhase::Cancelled => vec![Self::Resume, Self::Reveal, Self::Remove],
             ProjectPhase::Failed => vec![Self::Retry, Self::Reveal, Self::Remove],
@@ -107,6 +107,7 @@ mod tests {
         let offered = |phase, active| ProjectCommand::for_phase(phase, active).into_iter().map(ProjectCommand::label).collect::<Vec<_>>();
         assert_eq!(offered(ProjectPhase::Failed, true), ["Try again", "Reveal", "Remove from shelf"]);
         assert_eq!(offered(ProjectPhase::Unconfirmed, true), ["Reveal"], "an ambiguous mutation offers no second submission");
+        assert_eq!(offered(ProjectPhase::Indexing, false), ["Reveal"], "an active mutation cannot be removed from the shelf");
         assert_eq!(offered(ProjectPhase::Cancelled, false), ["Resume", "Reveal", "Remove from shelf"]);
         assert_eq!(offered(ProjectPhase::Missing, false), ["Add it again", "Remove from shelf"], "a folder that is gone cannot be revealed");
         assert_eq!(offered(ProjectPhase::Ready, false), ["Make active", "Reveal", "Remove from shelf"]);
