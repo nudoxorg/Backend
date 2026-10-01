@@ -159,6 +159,10 @@ pub enum CommandId {
     CargoPackageSourceFile,
     /// Read bounded source-file addresses under an owner-revalidated Cargo package authority.
     CargoPackageSourceInventory,
+    /// Read the README selected by one exact Cargo package manifest.
+    CargoPackageReadme,
+    /// Follow one relative link from an owner-admitted package README.
+    CargoPackageReadmeLink,
     /// Refresh the configured advisory sources.
     AdvisoryRefresh,
     /// Begin one owner-managed local package index job.

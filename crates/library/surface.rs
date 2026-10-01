@@ -1013,6 +1013,18 @@ pub enum SurfaceCommand {
         /// Exact source-qualified package reference from a current tree row.
         package: PackageReference,
     },
+    /// Read the bounded README selected by the exact Cargo package manifest
+    /// and source authority. The request cannot supply a path or project root.
+    CargoPackageReadme {
+        /// Exact package and requested-project binding from a current tree.
+        request: crate::CargoPackageReadmeRequestV1,
+    },
+    /// Follow one relative Markdown link from an exact owner-returned README
+    /// origin. The caller supplies no root path.
+    CargoPackageReadmeLink {
+        /// Owner-issued README origin and bounded relative href.
+        request: crate::CargoPackageReadmeLinkRequestV1,
+    },
     /// Start indexing one local project without waiting for compilation.
     IndexStart {
         /// Local project directory or pinned package coordinate.
@@ -1079,6 +1091,8 @@ impl SurfaceCommand {
             Self::ProjectTree { .. } => CommandId::ProjectTree,
             Self::CargoPackageSourceFile { .. } => CommandId::CargoPackageSourceFile,
             Self::CargoPackageSourceInventory { .. } => CommandId::CargoPackageSourceInventory,
+            Self::CargoPackageReadme { .. } => CommandId::CargoPackageReadme,
+            Self::CargoPackageReadmeLink { .. } => CommandId::CargoPackageReadmeLink,
             Self::IndexStart { .. } => CommandId::IndexStart,
             Self::IndexAwait { .. } => CommandId::IndexAwait,
             Self::IndexProgress { .. } => CommandId::IndexProgress,
@@ -1123,6 +1137,12 @@ impl SurfaceCommand {
                 if crate::CargoPackageSourceAuthorityV1::digest_from_package_reference(package)
                     .is_none() =>
             {
+                Err(ProductAdmissionError::CargoSourceShape)
+            }
+            Self::CargoPackageReadme { request } if !request.has_admissible_shape() => {
+                Err(ProductAdmissionError::CargoSourceShape)
+            }
+            Self::CargoPackageReadmeLink { request } if !request.has_admissible_shape() => {
                 Err(ProductAdmissionError::CargoSourceShape)
             }
             _ => Ok(()),
@@ -2400,6 +2420,10 @@ pub enum SurfaceReply {
     CargoPackageSourceFile(crate::CargoPackageSourceFileResultV1),
     /// Bounded source-file addresses under exact Cargo source authority.
     CargoPackageSourceInventory(crate::CargoPackageSourceInventoryResultV1),
+    /// README selected by an exact Cargo package manifest and authority.
+    CargoPackageReadme(crate::CargoPackageReadmeResultV1),
+    /// Text or an anchor followed from an exact package README origin.
+    CargoPackageReadmeLink(crate::CargoPackageReadmeLinkResultV1),
     /// Each advisory source after a refresh.
     AdvisoryRefreshed(Box<[crate::browse::AdvisorySourceState]>),
 }
@@ -2449,6 +2473,8 @@ impl SurfaceReply {
             Self::ProjectTree(_) => CommandId::ProjectTree,
             Self::CargoPackageSourceFile(_) => CommandId::CargoPackageSourceFile,
             Self::CargoPackageSourceInventory(_) => CommandId::CargoPackageSourceInventory,
+            Self::CargoPackageReadme(_) => CommandId::CargoPackageReadme,
+            Self::CargoPackageReadmeLink(_) => CommandId::CargoPackageReadmeLink,
             Self::AdvisoryRefreshed(_) => CommandId::AdvisoryRefresh,
         }
     }
@@ -2539,6 +2565,12 @@ impl SurfaceReply {
                 return Err(ProductAdmissionError::CargoSourceShape);
             }
             Self::CargoPackageSourceInventory(result) if !result.has_admissible_shape() => {
+                return Err(ProductAdmissionError::CargoSourceShape);
+            }
+            Self::CargoPackageReadme(result) if !result.has_admissible_shape() => {
+                return Err(ProductAdmissionError::CargoSourceShape);
+            }
+            Self::CargoPackageReadmeLink(result) if !result.has_admissible_shape() => {
                 return Err(ProductAdmissionError::CargoSourceShape);
             }
             Self::ProjectTree(tree)
@@ -2761,6 +2793,12 @@ impl SurfaceReply {
                 serde_json::to_vec(result).map_or(0, |bytes| bytes.len())
             }
             Self::CargoPackageSourceInventory(result) => {
+                serde_json::to_vec(result).map_or(0, |bytes| bytes.len())
+            }
+            Self::CargoPackageReadme(result) => {
+                serde_json::to_vec(result).map_or(0, |bytes| bytes.len())
+            }
+            Self::CargoPackageReadmeLink(result) => {
                 serde_json::to_vec(result).map_or(0, |bytes| bytes.len())
             }
             Self::AdvisoryRefreshed(states) => {

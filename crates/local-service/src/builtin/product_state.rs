@@ -550,6 +550,8 @@ impl ProductState {
             SurfaceCommand::ProjectTree { .. }
             | SurfaceCommand::CargoPackageSourceFile { .. }
             | SurfaceCommand::CargoPackageSourceInventory { .. }
+            | SurfaceCommand::CargoPackageReadme { .. }
+            | SurfaceCommand::CargoPackageReadmeLink { .. }
             | SurfaceCommand::AdvisoryRefresh
             | SurfaceCommand::IndexStart { .. }
             | SurfaceCommand::IndexAwait { .. }
