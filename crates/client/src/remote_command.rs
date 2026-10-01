@@ -1019,17 +1019,25 @@ mod tests {
                 QueryLimit::new(10).expect("valid query limit"),
             ))
         };
+        let query_request = |request_id| {
+            CommandDto::new(request_id, query()).with_certificate(
+                revision
+                    .certificate()
+                    .expect("admitted revision retained its canonical request certificate")
+                    .clone(),
+            )
+        };
         assert!(matches!(
             transport
-                .request(CommandDto::new(2, query()))
+                .request(query_request(2))
                 .expect("admit source-pinned search reply")
                 .reply,
             CommandReply::Search(_)
         ));
-        assert!(transport.request(CommandDto::new(3, query())).is_err());
+        assert!(transport.request(query_request(3)).is_err());
 
         transport.reconnect().expect("open a fresh accepted session");
-        assert!(transport.request(CommandDto::new(4, query())).is_err());
+        assert!(transport.request(query_request(4)).is_err());
         assert!(matches!(
             transport
                 .request(CommandDto::new(4, Command::Revision))
@@ -1039,7 +1047,7 @@ mod tests {
         ));
         assert!(matches!(
             transport
-                .request(CommandDto::new(5, query()))
+                .request(query_request(5))
                 .expect("admit query after fresh revision")
                 .reply,
             CommandReply::Search(_)
