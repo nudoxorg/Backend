@@ -382,6 +382,7 @@ fn library(inputs: &Inputs<'_>) -> Listing {
                     "Dependency tree",
                     Do::ProjectTree(project.id.clone()),
                 );
+                tree.accessible_name = Some(format!("{} dependency tree", project.label).into());
                 tree.current = matches!(inputs.route, Route::Orbit(OrbitRoute::Browse(BrowseRoute::Tree(id))) if *id == project.id);
                 rows.push(Row::Item(tree));
             }

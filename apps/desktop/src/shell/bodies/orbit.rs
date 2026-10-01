@@ -71,6 +71,12 @@ pub(super) fn body(
         // fail for a path the engine would refuse; then the tile still
         // activates the project, it just has nowhere further to go.
         let project_route = PackageRef::parse(&project.path).ok().and_then(|package| package_route(&package));
+        let tile_role = if project_route.is_some() { gpui::Role::Link } else { gpui::Role::Button };
+        let tile_label: SharedString = if project_route.is_some() {
+            format!("Open {}", project.label).into()
+        } else {
+            format!("Select {}", project.label).into()
+        };
         let tree_route = Route::Orbit(OrbitRoute::Browse(BrowseRoute::Tree(project.id.clone())));
         let tree_id: SharedString = format!("orbit-tree-{}", project.id.as_str()).into();
         let tree_links = ctx.links.clone();
@@ -125,35 +131,47 @@ pub(super) fn body(
             crate::model::ProjectPhase::Missing => ctx.say("folder missing"),
             _ => SharedString::default(),
         };
-        let tile = ctx.targets.track(
-                id.clone(),
-                div()
-                    .id(id)
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(measure.space(Space::Base))
-                    .child(crate::shell::onboard::library::tile_gem(project, f32::from(PROJECT_GEM.at(ctx.wide.fluid_room())), active, ctx))
-                    .child(text(ty::HEAD, &measure, if active { palette.ink0 } else { palette.ink1 }).child(name))
-                    .children((!state.is_empty()).then(|| text(ty::SMALL, &measure, palette.ink3).child(state)))
-                    .on_click(move |_: &ClickEvent, window, cx| act(window, cx)),
-            );
+        let tile_focused = ctx.targets.is_focused(&id);
+        let mut tile_face = div()
+            .id(id.clone())
+            .role(tile_role)
+            .aria_label(tile_label)
+            .aria_description(project.path.to_string())
+            .focusable()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(measure.space(Space::Base))
+            .child(crate::shell::onboard::library::tile_gem(project, f32::from(PROJECT_GEM.at(ctx.wide.fluid_room())), active, ctx))
+            .child(text(ty::HEAD, &measure, if active { palette.ink0 } else { palette.ink1 }).child(name))
+            .children((!state.is_empty()).then(|| text(ty::SMALL, &measure, palette.ink3).child(state)))
+            .on_click(move |_: &ClickEvent, window, cx| act(window, cx));
+        if tile_focused {
+            tile_face = tile_face.aria_active_descendant();
+        }
+        let tile = ctx.targets.track(id.clone(), tile_face);
         let mut project_block = div().flex().flex_col().items_center().gap(measure.space(Space::Snug)).child(tile);
         if project.phase != crate::model::ProjectPhase::Missing {
             let label = ctx.say("Dependency tree ›");
-            project_block = project_block.child(ctx.targets.track(
-                tree_id.clone(),
-                div()
-                    .id(tree_id)
-                    .cursor_pointer()
-                    .min_h(measure.row())
-                    .flex()
-                    .items_center()
-                    .px(measure.space(Space::Base))
-                    .hover(|style| style.bg(palette.tint))
-                    .child(text(ty::SMALL, &measure, palette.ink2).child(label))
-                    .on_click(move |_: &ClickEvent, window, cx| tree_act(window, cx)),
-            ));
+            let tree_focused = ctx.targets.is_focused(&tree_id);
+            let mut tree_face = div()
+                .id(tree_id.clone())
+                .role(gpui::Role::Link)
+                .aria_label(format!("{} dependency tree", project.label))
+                .aria_description(project.path.to_string())
+                .focusable()
+                .cursor_pointer()
+                .min_h(measure.row())
+                .flex()
+                .items_center()
+                .px(measure.space(Space::Base))
+                .hover(|style| style.bg(palette.tint))
+                .child(text(ty::SMALL, &measure, palette.ink2).child(label))
+                .on_click(move |_: &ClickEvent, window, cx| tree_act(window, cx));
+            if tree_focused {
+                tree_face = tree_face.aria_active_descendant();
+            }
+            project_block = project_block.child(ctx.targets.track(tree_id.clone(), tree_face));
         }
         centre = centre.child(project_block);
     }
@@ -333,42 +351,56 @@ fn package_name(package: &IndexedPackage, apart: Option<SharedString>, ctx: &mut
     let apart = package.package.release_version().map(ToOwned::to_owned).or_else(|| apart.map(|apart| apart.to_string())).map(|apart| ctx.say(apart));
     let id: SharedString = format!("orbit-package-{}", package.package).into();
     let route = package_route(&package.package);
+    let available = route.is_some();
     let links = ctx.links.clone();
     let act: Act = Rc::new(move |_, cx| {
         if let Some(route) = route.clone() {
             links.dispatch(Intent::Navigate(route), cx);
         }
     });
-    ctx.targets.push(Target {
-        id: id.clone(),
-        label: name.clone(),
-        act: Rc::clone(&act),
-        peek: Some(PageKey::Package(package.package.clone())),
-        source: None,
-    });
+    if available {
+        ctx.targets.push(Target {
+            id: id.clone(),
+            label: name.clone(),
+            act: Rc::clone(&act),
+            peek: Some(PageKey::Package(package.package.clone())),
+            source: None,
+        });
+    }
     let warm = PageKey::Package(package.package.clone());
     let ink = match package.readiness {
         Readiness::Ready => palette.ink1,
         Readiness::Indexing => palette.ink3,
         Readiness::Failed => palette.coral.base,
     };
-    ctx.targets
-        .track(
-            id.clone(),
-            div()
-                .id(id)
-                .flex()
-                .items_center()
-                .gap(measure.space(Space::Snug))
-                .px(measure.space(Space::Base))
-                .h(measure.row())
-                .max_w_full()
-                .hover(|style| style.bg(palette.tint))
-                .child(crate::shell::kit::kind_mark(Kind::Package, KindSize::Sm, &measure, palette))
-                .child(text(ty::MONO_ROW, &measure, ink).min_w(px(0.0)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(name))
-                .children(apart.map(|apart| text(ty::MONO_SMALL, &measure, palette.ink3).keyed(SharedString::from(format!("orbit-apart:{}", package.package))).flex_none().whitespace_nowrap().child(apart)))
-                .on_click(move |_: &ClickEvent, window, cx| act(window, cx))
-                .on_hover(cx.listener(move |reader, hovered: &bool, _, cx| reader.hover_link(warm.clone(), *hovered, cx))),
-        )
-        .into_any_element()
+    let mut element = div()
+        .id(id.clone())
+        .role(if available { gpui::Role::Link } else { gpui::Role::Label })
+        .aria_label(if available {
+            format!("Open {} ({})", name, package.package)
+        } else {
+            format!("{} ({})", name, package.package)
+        })
+        .flex()
+        .items_center()
+        .gap(measure.space(Space::Snug))
+        .px(measure.space(Space::Base))
+        .h(measure.row())
+        .max_w_full()
+        .hover(|style| style.bg(palette.tint))
+        .child(crate::shell::kit::kind_mark(Kind::Package, KindSize::Sm, &measure, palette))
+        .child(text(ty::MONO_ROW, &measure, ink).min_w(px(0.0)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(name))
+        .children(apart.map(|apart| text(ty::MONO_SMALL, &measure, palette.ink3).keyed(SharedString::from(format!("orbit-apart:{}", package.package))).flex_none().whitespace_nowrap().child(apart)));
+    if available {
+        element = element
+            .focusable()
+            .on_click(move |_: &ClickEvent, window, cx| act(window, cx))
+            .on_hover(cx.listener(move |reader, hovered: &bool, _, cx| reader.hover_link(warm.clone(), *hovered, cx)));
+        if ctx.targets.is_focused(&id) {
+            element = element.aria_active_descendant();
+        }
+        ctx.targets.track(id, element).into_any_element()
+    } else {
+        element.into_any_element()
+    }
 }

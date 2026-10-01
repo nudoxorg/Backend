@@ -35,7 +35,7 @@
 use super::bodies::{self, Ctx, Lens, Pages};
 use super::focus::Targets;
 use super::kit::HoverIntent;
-use super::region::{Links, Region, RegionCore};
+use super::region::{Links, Region, RegionCore, a11y_inert};
 use super::jump::{route_package, route_symbol};
 use crate::model::AppSnapshot;
 use crate::model::pages::PageKey;
@@ -1140,7 +1140,7 @@ impl Reader {
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         let body = self.body(place, false, snapshot, layout, facet, edge, window, cx);
-        div().absolute().top_0().left_0().right_0().bottom_0().child(masked(
+        div().absolute().top_0().left_0().right_0().bottom_0().child(a11y_inert(masked(
             mask,
             offset(
                 div()
@@ -1153,7 +1153,7 @@ impl Reader {
                     .child(div().relative().w_full().flex().justify_center().child(body)),
             )
             .x(drift),
-        ))
+        )))
     }
 
     /// This frame of the change in flight, in window space (and the change
@@ -2128,7 +2128,7 @@ impl Render for Reader {
                     } else {
                         staged.outside[0]
                     };
-                    root = root.child(div().id("unfolding-map").absolute().top_0().left_0().size_full().child(masked(map_mask, div().size_full().child(map.clone()))));
+                    root = root.child(div().id("unfolding-map").absolute().top_0().left_0().size_full().child(a11y_inert(masked(map_mask, div().size_full().child(map.clone())))));
                 }
                 root = root.child(plate_ground(&staged)).child(masked(staged.plate, scroller)).children(gem(&staged));
             }

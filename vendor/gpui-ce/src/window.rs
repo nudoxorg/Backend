@@ -6436,6 +6436,13 @@ impl Window {
         self.a11y.is_active()
     }
 
+    /// Paint a visual copy without exposing its descendants to assistive
+    /// technology. The live sibling remains the sole accessible owner.
+    pub fn with_a11y_suppressed<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let _guard = self.a11y.suppress();
+        f(self)
+    }
+
     /// Build this window's accessibility tree every frame, even if no
     /// assistive technology is connected. Forces a redraw because the tree is
     /// built during prepaint. `Application::new_inaccessible` still wins.

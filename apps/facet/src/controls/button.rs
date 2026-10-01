@@ -60,6 +60,7 @@ pub(crate) type Handler = Rc<dyn Fn(&mut Window, &mut App)>;
 pub struct Button {
     id: ElementId,
     label: Option<SharedString>,
+    accessibility_label: SharedString,
     intent: Intent,
     size: Control,
     icon: Option<Icon>,
@@ -77,9 +78,11 @@ pub struct Button {
 /// A default-intent, medium button reading `label`, sized for `measure`.
 #[must_use]
 pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, measure: &Measure) -> Button {
+    let label = label.into();
     Button {
         id: id.into(),
-        label: Some(label.into()),
+        accessibility_label: label.clone(),
+        label: Some(label),
         intent: Intent::Default,
         size: Control::Medium,
         icon: None,
@@ -562,6 +565,9 @@ impl RenderOnce for Button {
 
         let plate = plate
             .id(id)
+            .role(gpui::Role::Button)
+            .aria_label(self.accessibility_label)
+            .aria_disabled(self.disabled || self.busy)
             .opacity(if self.disabled { 0.42 } else { 1.0 });
         let plate = if active {
             wire(plate, &touch, self.on_click).into_any_element()

@@ -106,7 +106,9 @@ use crate::{App, Bounds, FocusId, Pixels, SharedString, Window};
 use accesskit::{Action, NodeId, TreeUpdate};
 use collections::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
+use std::cell::Cell;
 use std::hash::{Hash, Hasher};
+use std::rc::Rc;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -148,6 +150,9 @@ pub(crate) struct A11y {
     /// At the end of the frame, we re-call [`Self::sync_active_flag`] to
     /// determine whether we should actually send the finished [`TreeUpdate`].
     active_this_frame: bool,
+    /// Scoped visual copies (for example, a departing page) still paint but
+    /// must not contribute nodes or action listeners to this frame's tree.
+    suppressed: Rc<Cell<usize>>,
     pub(crate) nodes: A11yNodeBuilder,
     pub(crate) focus_ids: FxHashMap<NodeId, FocusId>,
     pub(crate) node_bounds: FxHashMap<NodeId, Bounds<Pixels>>,
@@ -178,6 +183,7 @@ impl A11y {
             forced,
             active_flag,
             active_this_frame: false,
+            suppressed: Rc::new(Cell::new(0)),
             nodes: A11yNodeBuilder::new(),
             focus_ids: FxHashMap::default(),
             node_bounds: FxHashMap::default(),
@@ -225,7 +231,13 @@ impl A11y {
     }
 
     pub(crate) fn is_active(&self) -> bool {
-        self.active_this_frame
+        self.active_this_frame && self.suppressed.get() == 0
+    }
+
+    pub(crate) fn suppress(&self) -> A11ySuppression {
+        let depth = Rc::clone(&self.suppressed);
+        depth.set(depth.get().checked_add(1).expect("accessibility suppression depth overflow"));
+        A11ySuppression { depth }
     }
 
     pub(crate) fn set_focusable(&mut self, node_id: NodeId, focus_id: FocusId) {
@@ -653,6 +665,17 @@ impl A11yNodeBuilder {
     }
 }
 
+/// Releases a visual-only subtree even when its draw unwinds.
+pub(crate) struct A11ySuppression {
+    depth: Rc<Cell<usize>>,
+}
+
+impl Drop for A11ySuppression {
+    fn drop(&mut self) {
+        self.depth.set(self.depth.get().checked_sub(1).expect("unbalanced accessibility suppression"));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // Import specific items rather than glob-importing `super`, which would pull
@@ -694,6 +717,23 @@ mod tests {
         let mut a11y = A11y::new(Arc::new(AtomicBool::new(true)), true, true, None);
         a11y.sync_active_flag();
         assert!(!a11y.is_active());
+    }
+
+    #[test]
+    fn nested_visual_only_scope_recovers_after_unwind() {
+        let a11y = new_a11y();
+        assert!(a11y.is_active());
+        let outer = a11y.suppress();
+        assert!(!a11y.is_active());
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _inner = a11y.suppress();
+            assert!(!a11y.is_active());
+            panic!("interrupted visual copy");
+        }));
+        assert!(failed.is_err());
+        assert!(!a11y.is_active());
+        drop(outer);
+        assert!(a11y.is_active());
     }
 
     #[test]

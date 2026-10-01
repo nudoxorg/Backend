@@ -214,6 +214,9 @@ impl Shelf {
             row = row.child(
                 div()
                     .id(SharedString::from(format!("shelf-held-{card}")))
+                    .role(gpui::Role::Button)
+                    .aria_label(format!("Show {}", chip.name))
+                    .focusable()
                     .flex()
                     .items_center()
                     .gap(measure.space(Space::Snug))
@@ -268,6 +271,9 @@ impl Shelf {
             places = places.child(
                 div()
                     .id(SharedString::from(format!("shelf-trail-{index}")))
+                    .role(gpui::Role::Link)
+                    .aria_label(step.label.clone())
+                    .focusable()
                     .cursor_pointer()
                     .child(text(ty::MONO_SMALL, measure, palette.ink3).child(step.label.clone()))
                     .on_click(cx.listener(move |shelf, _: &ClickEvent, _, cx| {
@@ -300,6 +306,9 @@ impl Shelf {
         let does = step.does.clone();
         div()
             .id("shelf-crumb")
+            .role(gpui::Role::Button)
+            .aria_label(step.label.clone())
+            .focusable()
             .flex()
             .items_center()
             .gap(measure.space(Space::Snug))
@@ -403,6 +412,9 @@ impl Shelf {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let mut bar = div()
+            .id("shelf-lenses")
+            .role(gpui::Role::TabList)
+            .aria_label("Library views")
             .flex()
             .items_center()
             .justify_between()
@@ -421,6 +433,10 @@ impl Shelf {
             };
             let mut tab = div()
                 .id(SharedString::from(format!("shelf-lens-{}", lens.key())))
+                .role(gpui::Role::Tab)
+                .aria_label(lens.label())
+                .aria_selected(on)
+                .focusable()
                 .relative()
                 .flex()
                 .items_center()
@@ -542,13 +558,14 @@ impl Shelf {
         let palette = cx.facet().palette();
         let rows = Rc::clone(&self.rows);
         range
-            .filter_map(|index| rows.get(index))
-            .map(|row| self.line(row, measure, palette, cx))
+            .filter_map(|index| rows.get(index).map(|row| (index, row)))
+            .map(|(index, row)| self.line(index, row, measure, palette, cx))
             .collect()
     }
 
     fn line(
         &mut self,
+        index: usize,
         row: &Row,
         measure: &Measure,
         palette: &Palette,
@@ -558,6 +575,13 @@ impl Shelf {
         match row {
             Row::Item(item) => self.item(item, height, measure, palette, cx),
             Row::Heading(Heading { words, count }) => div()
+                .id(SharedString::from(format!("shelf-heading-{index}")))
+                .role(gpui::Role::Heading)
+                .aria_level(2)
+                .aria_label(match count {
+                    Some(count) => format!("{words}, {count}").into(),
+                    None => words.clone(),
+                })
                 .h(height)
                 .w_full()
                 .flex()
@@ -576,6 +600,9 @@ impl Shelf {
                 }))
                 .into_any_element(),
             Row::Note(words) => div()
+                .id(SharedString::from(format!("shelf-note-{index}")))
+                .role(gpui::Role::Label)
+                .aria_label(words.clone())
                 .h(height)
                 .w_full()
                 .flex()
@@ -610,6 +637,12 @@ impl Shelf {
         };
         let mut element = div()
             .id(item.key.clone())
+            .role(if item.does == Do::Nothing { gpui::Role::Label } else { gpui::Role::Button })
+            .aria_label(item.accessible_name.clone().unwrap_or_else(|| match &item.sub {
+                Some(sub) => format!("{}, {}", item.name, sub).into(),
+                None => item.name.clone(),
+            }))
+            .aria_selected(item.current)
             .relative()
             .h(height)
             .w_full()
@@ -622,6 +655,12 @@ impl Shelf {
             .child(self.chevron(item, measure, palette, cx))
             .child(mark(item.mark, measure, palette))
             .child(self.name(item, ink, measure, palette));
+        if self.targets.is_focused(&item.key) {
+            element = element.aria_active_descendant();
+        }
+        if item.does != Do::Nothing {
+            element = element.focusable();
+        }
         if let Some(sub) = item
             .sub
             .as_ref()
@@ -728,6 +767,10 @@ impl Shelf {
         let id = item.id.clone();
         div()
             .id(SharedString::from(format!("{}#fold", item.key)))
+            .role(gpui::Role::Button)
+            .aria_label(format!("{} {}", if fold == Fold::Open { "Collapse" } else { "Expand" }, item.name))
+            .aria_expanded(fold == Fold::Open)
+            .focusable()
             .flex_none()
             .w(slot)
             .h_full()
@@ -799,6 +842,8 @@ impl Shelf {
         {
             let mut cell = div()
                 .id(SharedString::from(format!("spine-{}", item.key)))
+                .role(if item.does == Do::Nothing { gpui::Role::Label } else { gpui::Role::Button })
+                .aria_label(item.accessible_name.clone().unwrap_or_else(|| item.name.clone()))
                 .relative()
                 .flex_none()
                 .size(side)
@@ -808,6 +853,9 @@ impl Shelf {
                 .opacity(if item.current { 1.0 } else { 0.62 })
                 .hover(|style| style.opacity(1.0))
                 .child(mark(item.mark, measure, palette));
+            if self.targets.is_focused(&item.key) {
+                cell = cell.aria_active_descendant();
+            }
             if item.current {
                 cell = cell.child(
                     div()
@@ -820,6 +868,7 @@ impl Shelf {
                 );
             }
             if item.does != Do::Nothing {
+                cell = cell.focusable();
                 let does = item.does.clone();
                 let shelf = cx.weak_entity();
                 cell = cell.on_click(move |_: &ClickEvent, _, cx| {
@@ -858,6 +907,10 @@ fn title_block(title: &Title, measure: &Measure, palette: &Palette) -> AnyElemen
         Title::Node { kind, name, detail } => (*kind, name.clone(), detail.clone(), KindSize::Md),
     };
     div()
+        .id("shelf-title")
+        .role(gpui::Role::Heading)
+        .aria_level(1)
+        .aria_label(format!("{name}, {detail}"))
         .flex()
         .items_center()
         .gap(measure.space(Space::Roomy))

@@ -17,7 +17,7 @@ use super::hints::{HintMode, Step};
 use super::keys::{self, CONTEXT};
 use super::pins::Pins;
 use super::reader::{Reader, Way};
-use super::region::{Links, measured, new_region};
+use super::region::{Links, a11y_inert, measured, new_region};
 use super::reveal::{HOLD, RevealHold};
 use super::shelf::Shelf;
 use super::status::Status;
@@ -1380,10 +1380,15 @@ impl Render for Shell {
             .min_h(px(0.0))
             .flex()
             .children((shelf_width > 0.5).then(|| {
-                measured(
+                let shelf = measured(
                     &self.shelf,
                     StyleRefinement::default().w(px(shelf_width)).h_full().flex_none(),
-                )
+                );
+                if over {
+                    a11y_inert(shelf).into_any_element()
+                } else {
+                    shelf.into_any_element()
+                }
             }))
             .child(measured(
                 &self.reader,
@@ -1395,9 +1400,22 @@ impl Render for Shell {
                     StyleRefinement::default().w(px(pins_width)).h_full().flex_none(),
                 )
             }));
+        // Ask owns the interactive surface while its modal plate is open.
+        // Keep the page pixels beneath the veil without a second accessible
+        // set of search, shelf, or page controls.
+        let body: AnyElement = if self.ask_open {
+            a11y_inert(body).into_any_element()
+        } else {
+            body.into_any_element()
+        };
 
         let mut root = div()
             .id("shell")
+            // This is the actual keyboard-focus owner for the four custom
+            // navigation zones. Their active target is reported as this
+            // application's descendant rather than falling back to Window.
+            .role(gpui::Role::Application)
+            .aria_label("Nudox")
             .debug_selector(|| "shell-root".to_owned())
             .relative()
             .size_full()
@@ -1494,6 +1512,12 @@ impl Render for Shell {
             // tiles paints deferred too, and must not cover the drawer) and
             // below the float layer's cards (`float::PRIORITY`).
             let opened = ((over_x + drawer) / drawer.max(1.0)).clamp(0.0, 1.0);
+            let shelf_body = measured(&self.shelf_over, StyleRefinement::default().size_full());
+            let shelf_body: AnyElement = if over {
+                shelf_body.into_any_element()
+            } else {
+                a11y_inert(shelf_body).into_any_element()
+            };
             root = root.child(
                 gpui::deferred(
                     div()
@@ -1523,7 +1547,7 @@ impl Render for Shell {
                                 .left(px(over_x))
                                 .w(frame.drawer)
                                 .bg(palette.g2)
-                                .child(measured(&self.shelf_over, StyleRefinement::default().size_full())),
+                                .child(shelf_body),
                         ),
                 )
                 .with_priority(DRAWER_PRIORITY),

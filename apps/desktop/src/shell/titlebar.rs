@@ -557,6 +557,7 @@ impl Titlebar {
                     .child(icons::ui(Icon::Search, IconSize::S14, palette.ink2).size(measure.icon(14.0)))
                     .child(
                         Input::new(input)
+                            .aria_label("Ask anything, or find a package")
                             .appearance(false)
                             .bordered(false)
                             .focus_bordered(false)
@@ -587,6 +588,9 @@ impl Titlebar {
                 "ask",
                 div()
                     .id("ask")
+                    .role(gpui::Role::Button)
+                    .aria_label("Ask anything, or find a package")
+                    .focusable()
                     .relative()
                     .min_w(px(0.0))
                     .flex_1()

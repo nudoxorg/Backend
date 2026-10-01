@@ -252,6 +252,8 @@ pub(crate) struct Item {
     pub mark: Mark,
     /// Its name.
     pub name: SharedString,
+    /// A complete spoken name when the visible name needs its parent to distinguish it.
+    pub accessible_name: Option<SharedString>,
     /// Which characters of the name the narrowing query matched.
     pub hit: Option<Range<usize>>,
     /// Quiet words after the name: the module of an item listed away from
@@ -288,6 +290,7 @@ impl Item {
             depth,
             mark,
             name: name.into(),
+            accessible_name: None,
             hit: None,
             sub: None,
             current: false,

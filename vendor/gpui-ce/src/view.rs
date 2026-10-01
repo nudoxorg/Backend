@@ -396,6 +396,10 @@ impl<V: View> Element for ViewElement<V> {
                             && element_state.cache_key.opacity == opacity
                             && !window.dirty_views.contains(&entity_id)
                             && !window.refreshing
+                            // Replayed prepaint/paint ranges do not contain AccessKit nodes or
+                            // action listeners. Rebuild the mounted subtree while accessibility
+                            // is active so every frame reports the actual visible controls.
+                            && !window.is_a11y_active()
                         {
                             let prepaint_start = window.prepaint_index();
                             window.reuse_prepaint(element_state.prepaint_range.clone());

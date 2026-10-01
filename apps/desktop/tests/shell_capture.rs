@@ -124,6 +124,10 @@ enum Script {
     Walk,
     /// The window narrows through 900: the shelf becomes a spine.
     Narrow,
+    /// Ask covers the live Library; the page beneath its veil is inert.
+    Ask,
+    /// Move the real shell's keyboard zone to a mounted project row.
+    ShelfFocus,
 }
 
 struct Places {
@@ -370,6 +374,27 @@ fn capture(
                 (Script::Walk, index) if index > 0 => {
                     shell.update(cx, |shell, cx| shell.walk(1, window, cx));
                 }
+                (Script::Ask, 1) => {
+                    root.update(cx, |root, cx| root.dispatch(Intent::OpenCommandPalette, cx));
+                    land(&store, cx);
+                }
+                (Script::ShelfFocus, 1) => {
+                    shell.update(cx, |shell, cx| {
+                        shell.cycle_zone(true, cx);
+                        shell.cycle_zone(true, cx);
+                        for _ in 0..32 {
+                            if shell.focus_state(cx).1.as_deref().is_some_and(|id| {
+                                id.starts_with("project-") && !id.starts_with("project-tree-")
+                            }) {
+                                break;
+                            }
+                            shell.walk(1, window, cx);
+                        }
+                        assert!(shell.focus_state(cx).1.as_deref().is_some_and(|id| {
+                            id.starts_with("project-") && !id.starts_with("project-tree-")
+                        }), "the live shelf has a reachable project row");
+                    });
+                }
                 _ => {}
             }
             land(&store, cx);
@@ -448,6 +473,74 @@ fn capture(
         },
     )
     .expect("capture");
+    if shot.name == "orbit-two-real-projects" {
+        // This is the mounted production shell over two projects the embedded
+        // owner actually indexed. Both frames must expose the same controls;
+        // the second one exercises cached region layouts after the first draw.
+        for frame in &set.frames {
+            let native = frame.native_accessibility.as_ref().expect("paired native tree");
+            let nodes = native.tree["nodes"].as_object().expect("AccessKit nodes");
+            let named = |role: &str, label: &str| {
+                nodes.values().filter(|node| {
+                    node["aria"]["role"].as_str() == Some(role)
+                        && node["aria"]["label"].as_str() == Some(label)
+                }).collect::<Vec<_>>()
+            };
+            let clickable = |role: &str, label: &str| {
+                let matches = named(role, label);
+                assert_eq!(matches.len(), 1, "{role} {label:?} is missing or duplicated in {}", frame.label);
+                let actions = matches[0]["aria"]["on_action"].as_array().expect("native actions");
+                let bounds = &matches[0]["bounds"];
+                assert!(bounds["width"].as_f64().is_some_and(|size| size > 0.0));
+                assert!(bounds["height"].as_f64().is_some_and(|size| size > 0.0));
+                for action in ["Click", "Focus"] {
+                    assert!(
+                        actions.iter().any(|value| value.as_str() == Some(action)),
+                        "{role} {label:?} has no {action} action in {}",
+                        frame.label,
+                    );
+                }
+            };
+            clickable("Button", "Ask anything, or find a package");
+            clickable("Button", "Toggle the shelf");
+            for project in ["present", "runtime"] {
+                clickable("Link", &format!("Open {project}"));
+                clickable("Link", &format!("{project} dependency tree"));
+                clickable("Button", project);
+            }
+            for lens in ["Contents", "Versions", "Rests on", "Used by"] {
+                clickable("Tab", lens);
+            }
+            assert_eq!(named("TabList", "Library views").len(), 1);
+            assert_eq!(named("Tab", "Contents")[0]["aria"]["selected"].as_bool(), Some(true));
+            assert!(nodes.len() > 1, "the live shell cannot be a Window-only tree");
+            let focused = native.tree["gpui_focus"].as_str().expect("real focused AccessKit node");
+            let focused_node = nodes.get(focused).expect("focus belongs to this tree");
+            assert_eq!(focused_node["aria"]["role"].as_str(), Some("Application"));
+            assert_eq!(focused_node["aria"]["label"].as_str(), Some("Nudox"));
+            if frame.time_ms > 0 {
+                let descendant = native.tree["active_descendant_focus"].as_str().expect("shelf's selected project focus");
+                assert_eq!(native.tree["accesskit_focus"].as_str(), Some(descendant));
+                let node = nodes.get(descendant).expect("selected project belongs to this tree");
+                assert_eq!(node["aria"]["role"].as_str(), Some("Button"));
+                assert!(matches!(node["aria"]["label"].as_str(), Some("present" | "runtime")));
+            }
+        }
+    }
+    if shot.name == "orbit-ask-modal" {
+        let before = set.frames.first().and_then(|frame| frame.native_accessibility.as_ref()).expect("Orbit tree");
+        let after = set.frames.last().and_then(|frame| frame.native_accessibility.as_ref()).expect("Ask tree");
+        assert!(before.has_label("Open present"), "the real project was present before Ask");
+        assert!(!after.has_label("Open present"), "the veiled project must not remain accessible");
+        assert!(!after.has_label("Library views"), "the veiled shelf must not remain accessible");
+        let nodes = after.tree["nodes"].as_object().expect("Ask AccessKit nodes");
+        let fields = nodes.iter().filter(|(_, node)| {
+            node["aria"]["role"].as_str() == Some("TextInput")
+                && node["aria"]["label"].as_str() == Some("Ask anything, or find a package")
+        }).collect::<Vec<_>>();
+        assert_eq!(fields.len(), 1, "the live Ask input needs one named TextInput node");
+        assert_eq!(after.tree["accesskit_focus"].as_str(), Some(fields[0].0.as_str()));
+    }
     let mut config = CaptureConfig::deterministic(viewport);
     config.theme = match shot.appearance {
         AppearancePreference::Abyss => ThemeState::Abyss,
@@ -470,6 +563,8 @@ fn capture(
         Script::HoldOption => "option-hold",
         Script::Walk => "keyboard-walk",
         Script::Narrow => "resize-narrow",
+        Script::Ask => "ask-modal",
+        Script::ShelfFocus => "shelf-focus",
     };
     let script_id = format!(
         "real-locald-shell|shot={}|route={route_name}|text-scale={}|density={:?}|actions={script_name}",
@@ -526,7 +621,28 @@ fn capture_the_shell_over_a_real_index() {
     use AppearancePreference::{Abyss, Glacier};
     use DensityPreference::{Comfortable, Compact, Dense};
     let mut shots = vec![
-        still("orbit-two-real-projects", 1440, 900, 100, Comfortable, Abyss, &Route::Orbit(OrbitRoute::Home)),
+        Shot {
+            name: "orbit-two-real-projects".to_owned(),
+            width: 1440,
+            height: 900,
+            percent: 100,
+            density: Comfortable,
+            appearance: Abyss,
+            route: Route::Orbit(OrbitRoute::Home),
+            frames: vec![0, 700, 900],
+            script: Script::ShelfFocus,
+        },
+        Shot {
+            name: "orbit-ask-modal".to_owned(),
+            width: 1440,
+            height: 900,
+            percent: 100,
+            density: Comfortable,
+            appearance: Abyss,
+            route: Route::Orbit(OrbitRoute::Home),
+            frames: vec![0, 700],
+            script: Script::Ask,
+        },
         still("flow-2560", 2560, 1440, 100, Comfortable, Abyss, &places.page),
         still("flow-1440", 1440, 900, 100, Comfortable, Abyss, &places.page),
         still("flow-1100", 1100, 900, 100, Comfortable, Abyss, &places.page),

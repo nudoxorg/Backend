@@ -1383,6 +1383,12 @@ pub trait StatefulInteractiveElement: InteractiveElement {
         self
     }
 
+    /// Report that a named control is present but cannot be activated.
+    fn aria_disabled(mut self, disabled: bool) -> Self {
+        self.interactivity().aria.disabled = Some(disabled);
+        self
+    }
+
     /// Set the toggled state for this element.
     fn aria_toggled(mut self, toggled: accesskit::Toggled) -> Self {
         self.interactivity().aria.toggled = Some(toggled);
@@ -2041,6 +2047,7 @@ pub(crate) struct AriaProperties {
     pub(crate) keyshortcuts: Option<SharedString>,
     pub(crate) selected: Option<bool>,
     pub(crate) expanded: Option<bool>,
+    pub(crate) disabled: Option<bool>,
     pub(crate) toggled: Option<accesskit::Toggled>,
     pub(crate) numeric_value: Option<f64>,
     pub(crate) min_numeric_value: Option<f64>,
@@ -3461,6 +3468,9 @@ impl Interactivity {
         }
         if let Some(expanded) = self.aria.expanded {
             node.set_expanded(expanded);
+        }
+        if self.aria.disabled == Some(true) {
+            node.set_disabled();
         }
         if let Some(toggled) = self.aria.toggled {
             node.set_toggled(toggled);
