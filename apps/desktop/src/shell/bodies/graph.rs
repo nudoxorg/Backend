@@ -323,6 +323,10 @@ impl Map {
                     Arc::clone(&projection.identities),
                     projection.coverage.clone(),
                 ));
+                // This request can run at the end of a cached map render.
+                // Schedule the next draw so it mounts the completed scene;
+                // the ready_scene guard above makes this a single wake.
+                cx.notify();
             }
         }
     }
