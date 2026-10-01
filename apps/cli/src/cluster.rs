@@ -969,6 +969,9 @@ fn client_query(rest: &[String], options: &Options) -> Result<String, Fault> {
     );
     let value = required(&flags, "value")?;
     let rendered = if operation == RemoteIndexQueryOperation::IndexSearch {
+        // IndexSearch has no view basis in its typed command, so establish the
+        // signed product revision before the first query on this connection.
+        session.revision().map_err(client_fault)?;
         let cursor = flags
             .get("cursor")
             .map(|value| {

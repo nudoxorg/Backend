@@ -418,6 +418,7 @@ pub struct RemoteIndexSession {
     send: SendStream,
     receive: RecvStream,
     hello: RemoteIndexSessionHello,
+    local_identity: EndpointId,
     last_request_id: u64,
     last_responded_request_id: u64,
     last_sent_request_id: u64,
@@ -451,6 +452,28 @@ impl RemoteIndexSession {
     #[must_use]
     pub const fn capability(&self) -> &RemoteIndexCapability {
         &self.hello.capability
+    }
+
+    /// Returns an opaque owner-grant proof for a client-side product session.
+    ///
+    /// Both values are minted only after the accepted Iroh session is bound to
+    /// the exact owner-signed capability. The server side cannot obtain this
+    /// pair because its authenticated peer is the client, not the capability
+    /// issuer.
+    #[must_use]
+    pub fn product_coverage_authentication(
+        &self,
+    ) -> Option<(
+        RemoteIndexAuthenticatedPeer,
+        RemoteIndexProductCapabilityReceipt,
+    )> {
+        authenticated_product_coverage(
+            self.peer(),
+            self.local_identity,
+            self.channel(),
+            &self.hello.capability,
+            remote_index_now().ok()?,
+        )
     }
 
     /// Receives one bounded request whose ID increases within this session.
@@ -596,6 +619,7 @@ pub async fn connect_remote_index(
                 send,
                 receive,
                 hello,
+                local_identity: endpoint.id(),
                 last_request_id: 0,
                 last_responded_request_id: 0,
                 last_sent_request_id: 0,
@@ -675,10 +699,82 @@ pub async fn accept_remote_index(
         send,
         receive,
         hello,
+        local_identity: local,
         last_request_id: 0,
         last_responded_request_id: 0,
         last_sent_request_id: 0,
     })
+}
+
+/// Opaque authenticated peer identity for one accepted remote-index session.
+///
+/// Its fields are private so callers cannot turn a claimed endpoint ID into
+/// producer authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RemoteIndexAuthenticatedPeer {
+    peer: EndpointId,
+    client: EndpointId,
+    channel: RemoteIndexChannel,
+    grant_id: [u8; 16],
+}
+
+impl RemoteIndexAuthenticatedPeer {
+    /// Iroh identity authenticated by the accepted session.
+    #[must_use]
+    pub const fn peer(&self) -> EndpointId {
+        self.peer
+    }
+
+    /// Local Iroh identity used by the authenticated client session.
+    #[must_use]
+    pub const fn client(&self) -> EndpointId {
+        self.client
+    }
+
+    /// Session channel authenticated by the accepted handshake.
+    #[must_use]
+    pub const fn channel(&self) -> RemoteIndexChannel {
+        self.channel
+    }
+
+    /// Grant identity accepted by the session handshake.
+    #[must_use]
+    pub const fn grant_id(&self) -> [u8; 16] {
+        self.grant_id
+    }
+}
+
+/// Opaque copy of the owner-signed ProductQuery grant accepted by a session.
+#[derive(Clone, Debug)]
+pub struct RemoteIndexProductCapabilityReceipt {
+    capability: RemoteIndexCapability,
+    view_root: [u8; 32],
+}
+
+impl RemoteIndexProductCapabilityReceipt {
+    /// Iroh identity whose signature appears on the accepted grant.
+    #[must_use]
+    pub const fn server(&self) -> EndpointId {
+        self.capability.claims.server
+    }
+
+    /// Iroh client identity named by the accepted grant.
+    #[must_use]
+    pub const fn client(&self) -> EndpointId {
+        self.capability.claims.client
+    }
+
+    /// Grant identity signed by the owner.
+    #[must_use]
+    pub const fn grant_id(&self) -> [u8; 16] {
+        self.capability.claims.grant_id
+    }
+
+    /// Exact product view root signed into the accepted grant.
+    #[must_use]
+    pub const fn view_root(&self) -> [u8; 32] {
+        self.view_root
+    }
 }
 
 /// Errors while loading or admitting remote index capabilities.
@@ -787,6 +883,38 @@ fn system_now_unix_ms() -> Result<u64, TransportError> {
     crate::now_unix_ms().map_err(TransportError::Io)
 }
 
+fn authenticated_product_coverage(
+    peer: EndpointId,
+    client: EndpointId,
+    channel: RemoteIndexChannel,
+    capability: &RemoteIndexCapability,
+    now_ms: u64,
+) -> Option<(
+    RemoteIndexAuthenticatedPeer,
+    RemoteIndexProductCapabilityReceipt,
+)> {
+    let product = capability.claims.product.as_ref()?;
+    if channel != RemoteIndexChannel::ProductQuery
+        || peer != capability.claims.server
+        || client != capability.claims.client
+        || capability.verify(peer, client, now_ms).is_err()
+    {
+        return None;
+    }
+    Some((
+        RemoteIndexAuthenticatedPeer {
+            peer,
+            client,
+            channel,
+            grant_id: capability.grant_id(),
+        },
+        RemoteIndexProductCapabilityReceipt {
+            capability: capability.clone(),
+            view_root: product.view_root,
+        },
+    ))
+}
+
 /// Maximum duration a single remote-index connection may remain active.
 pub const REMOTE_INDEX_SESSION_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -804,6 +932,35 @@ fn remote_response_can_be_sent(
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    fn product_capability(
+        owner: &SecretKey,
+        client: EndpointId,
+        now_ms: u64,
+    ) -> RemoteIndexCapability {
+        RemoteIndexCapabilityIssuer::new(owner.clone())
+            .issue(
+                RemoteIndexCapabilityClaims {
+                    version: 2,
+                    server: owner.public(),
+                    client,
+                    grant_id: [9; 16],
+                    issued_at_unix_ms: now_ms,
+                    expires_at_unix_ms: now_ms + 60_000,
+                    request_budget: 10,
+                    byte_budget: 10_000,
+                    permissions: vec![RemoteIndexPermission::ProductRead],
+                    product: Some(RemoteIndexProductScope {
+                        view_root: [7; 32],
+                        operations: vec![RemoteIndexQueryOperation::Search],
+                        index_search_snapshot: None,
+                    }),
+                    semantic: None,
+                },
+                now_ms,
+            )
+            .expect("signed product capability")
+    }
 
     #[test]
     fn prepared_response_reports_the_exact_canonical_wire_frame_size() {
@@ -836,6 +993,52 @@ mod tests {
         let prepared = prepare_remote_index_response(response).expect("prepared response");
         assert_eq!(prepared.encoded.as_ref(), canonical.as_slice());
         assert_eq!(prepared.wire_bytes(), canonical.len() + 4);
+    }
+
+    #[test]
+    fn product_coverage_proof_binds_the_authenticated_owner_and_exact_grant() {
+        let now_ms = 10_000;
+        let owner = SecretKey::generate();
+        let client = SecretKey::generate();
+        let capability = product_capability(&owner, client.public(), now_ms);
+        let (peer, receipt) = authenticated_product_coverage(
+            owner.public(),
+            client.public(),
+            RemoteIndexChannel::ProductQuery,
+            &capability,
+            now_ms + 1,
+        )
+        .expect("authenticated owner session and signed grant");
+
+        assert_eq!(peer.peer(), owner.public());
+        assert_eq!(peer.client(), client.public());
+        assert_eq!(peer.grant_id(), receipt.grant_id());
+        assert_eq!(receipt.server(), owner.public());
+        assert_eq!(receipt.view_root(), [7; 32]);
+        assert!(authenticated_product_coverage(
+            SecretKey::generate().public(),
+            client.public(),
+            RemoteIndexChannel::ProductQuery,
+            &capability,
+            now_ms + 1,
+        )
+        .is_none());
+        assert!(authenticated_product_coverage(
+            owner.public(),
+            SecretKey::generate().public(),
+            RemoteIndexChannel::ProductQuery,
+            &capability,
+            now_ms + 1,
+        )
+        .is_none());
+        assert!(authenticated_product_coverage(
+            owner.public(),
+            client.public(),
+            RemoteIndexChannel::SemanticHydration,
+            &capability,
+            now_ms + 1,
+        )
+        .is_none());
     }
 
     #[test]

@@ -111,9 +111,10 @@ pub use remote_index::{
     MAX_REMOTE_INDEX_TARGET_BYTES, REMOTE_INDEX_ALPN, REMOTE_INDEX_SESSION_TIMEOUT,
     RemoteIndexCapability, RemoteIndexCapabilityClaims, RemoteIndexCapabilityError,
     RemoteIndexCapabilityIssuer, RemoteIndexChannel, RemoteIndexOutcome, RemoteIndexPermission,
-    RemoteIndexPreparedResponse, RemoteIndexProductScope, RemoteIndexQueryOperation,
-    RemoteIndexReject, RemoteIndexRequest, RemoteIndexResponse, RemoteIndexSemanticSelection,
-    RemoteIndexSession, RemoteIndexSessionHello, accept_remote_index, connect_remote_index,
+    RemoteIndexPreparedResponse, RemoteIndexProductCapabilityReceipt, RemoteIndexProductScope,
+    RemoteIndexQueryOperation, RemoteIndexReject, RemoteIndexRequest, RemoteIndexResponse,
+    RemoteIndexSemanticSelection, RemoteIndexSession, RemoteIndexSessionHello,
+    RemoteIndexAuthenticatedPeer, accept_remote_index, connect_remote_index,
     prepare_remote_index_response, remote_index_now, remote_index_owner_address,
 };
 
