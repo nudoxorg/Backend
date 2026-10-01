@@ -337,10 +337,12 @@ fn capture(
         })
         .collect::<Vec<_>>();
     // The window narrows through 900 (the shelf becomes a spine) at 100 ms.
-    let actions = if shot.script == Script::Narrow {
-        vec![InputStep::Wait { milliseconds: 100 }, InputStep::Resize { width: 880, height: shot.height }]
-    } else {
-        Vec::new()
+    let actions = match shot.script {
+        Script::Narrow => vec![InputStep::Wait { milliseconds: 100 }, InputStep::Resize { width: 880, height: shot.height }],
+        // Ask opens at 700 ms. Type through the real keyboard path after that
+        // paint so the next paired tree proves the editor consumed the text.
+        Script::Ask => vec![InputStep::Wait { milliseconds: 760 }, InputStep::Text { value: "RelationLabel".to_owned() }],
+        _ => Vec::new(),
     };
     let mut set = capture_gpui_state_with_adapters_result_and_semantics(
         viewport,
@@ -580,10 +582,18 @@ fn capture(
     }
     if shot.name == "orbit-ask-modal" {
         let before = set.frames.first().and_then(|frame| frame.native_accessibility.as_ref()).expect("Orbit tree");
-        let after = set.frames.last().and_then(|frame| frame.native_accessibility.as_ref()).expect("Ask tree");
+        let opened = set.frames.get(1).and_then(|frame| frame.native_accessibility.as_ref()).expect("opened Ask tree");
+        let after = set.frames.last().and_then(|frame| frame.native_accessibility.as_ref()).expect("typed Ask tree");
         assert!(before.has_label("Open present"), "the real project was present before Ask");
         assert!(!after.has_label("Open present"), "the veiled project must not remain accessible");
         assert!(!after.has_label("Library views"), "the veiled shelf must not remain accessible");
+        let opened_nodes = opened.tree["nodes"].as_object().expect("opened Ask AccessKit nodes");
+        let opened_fields = opened_nodes.values().filter(|node| {
+            node["aria"]["role"].as_str() == Some("TextInput")
+                && node["aria"]["label"].as_str() == Some("Ask anything, or find a package")
+        }).collect::<Vec<_>>();
+        assert_eq!(opened_fields.len(), 1, "the freshly opened Ask has one named editor");
+        assert_eq!(opened_fields[0]["aria"]["value"].as_str(), Some(""));
         let nodes = after.tree["nodes"].as_object().expect("Ask AccessKit nodes");
         let fields = nodes.iter().filter(|(_, node)| {
             node["aria"]["role"].as_str() == Some("TextInput")
@@ -591,6 +601,7 @@ fn capture(
         }).collect::<Vec<_>>();
         assert_eq!(fields.len(), 1, "the live Ask input needs one named TextInput node");
         assert_eq!(after.tree["accesskit_focus"].as_str(), Some(fields[0].0.as_str()));
+        assert_eq!(fields[0].1["aria"]["value"].as_str(), Some("RelationLabel"), "real keyboard typing must reach the focused Ask editor");
     }
     assert!(built.get(), "the mounted shell graph survived through the final frame");
     eprintln!("captured {} ({} frames)", shot.name, set.frames.len());
@@ -658,7 +669,7 @@ fn capture_the_shell_over_a_real_index() {
             density: Comfortable,
             appearance: Abyss,
             route: Route::Orbit(OrbitRoute::Home),
-            frames: vec![0, 700],
+            frames: vec![0, 700, 900],
             script: Script::Ask,
         },
         still("flow-2560", 2560, 1440, 100, Comfortable, Abyss, &places.page),
