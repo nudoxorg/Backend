@@ -578,6 +578,10 @@ fn read_source_file_under(
 
 struct InputObservation {
     digest: [u8; 32],
+    /// Path commitments for candidates absent at the sampling instant.
+    /// Required metadata-listed manifests are checked against this set;
+    /// optional configs remain valid absences in the witness.
+    missing_path_keys: BTreeSet<[u8; 32]>,
     lockfile: Option<String>,
     manifest: Option<Vec<u8>>,
 }
@@ -633,6 +637,7 @@ fn observation_witness_with_context(
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"backend.cargo-source-input-witness.v1\0");
     let mut total = 0_usize;
+    let mut missing_path_keys = BTreeSet::new();
     let mut lockfile = None;
     let mut manifest = None;
     for file in ordered {
@@ -659,13 +664,17 @@ fn observation_witness_with_context(
                     manifest = Some(bytes);
                 }
             }
-            None => hasher.update(&[0]),
+            None => {
+                hasher.update(&[0]);
+                missing_path_keys.insert(observation_path_key(&file));
+            }
         }
     }
     hasher.update(&environment);
     hasher.update(&tool);
     Ok(InputObservation {
         digest: *hasher.finalize().as_bytes(),
+        missing_path_keys,
         lockfile,
         manifest,
     })
@@ -860,7 +869,9 @@ fn coherent_metadata_with(
 ) -> Result<CoherentMetadata, String> {
     let (discovery_metadata, discovery_host, discovery_tool) = run_metadata(workspace)?;
     let discovery_paths = metadata_observation_paths(workspace, &discovery_metadata)?;
+    let required_manifests = metadata_required_manifests(&discovery_metadata)?;
     let before = observe(workspace, &discovery_paths)?;
+    require_required_manifests_present(&before, &required_manifests)?;
 
     let (metadata, host, tool_witness) = run_metadata(workspace)?;
     if metadata != discovery_metadata || host != discovery_host || tool_witness != discovery_tool {
@@ -871,6 +882,7 @@ fn coherent_metadata_with(
         return Err("Cargo metadata input set changed during observation".to_owned());
     }
     let after = observe(workspace, &watched)?;
+    require_required_manifests_present(&after, &required_manifests)?;
     if before.digest != after.digest {
         return Err(
             "Cargo manifests, lockfile, configuration, or tools changed during metadata".to_owned(),
@@ -934,6 +946,58 @@ fn metadata_observation_paths(workspace: &Path, metadata: &[u8]) -> Result<Vec<P
         return Err("Cargo metadata input set exceeds the observation limit".to_owned());
     }
     Ok(paths)
+}
+
+fn metadata_required_manifests(metadata: &[u8]) -> Result<Vec<PathBuf>, String> {
+    let value: serde_json::Value = serde_json::from_slice(metadata)
+        .map_err(|error| format!("Cargo metadata JSON is malformed: {error}"))?;
+    let packages = value
+        .get("packages")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "Cargo metadata has no package array".to_owned())?;
+    if packages.len() > 20_000 {
+        return Err("Cargo metadata package set exceeds the observation limit".to_owned());
+    }
+    let mut required = BTreeSet::new();
+    let mut total_path_bytes = 0_usize;
+    for package in packages {
+        let manifest = package
+            .get("manifest_path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "Cargo metadata package omitted manifest_path".to_owned())?;
+        if manifest.len() > 4 * 1024 {
+            return Err("Cargo metadata manifest path exceeds the observation limit".to_owned());
+        }
+        total_path_bytes = total_path_bytes.saturating_add(manifest.len());
+        if total_path_bytes > 16 * 1024 * 1024 {
+            return Err("Cargo metadata manifest paths exceed their byte budget".to_owned());
+        }
+        required.insert(PathBuf::from(manifest));
+    }
+    Ok(required.into_iter().collect())
+}
+
+fn require_required_manifests_present(
+    observation: &InputObservation,
+    required_manifests: &[PathBuf],
+) -> Result<(), String> {
+    if required_manifests.iter().any(|path| {
+        observation
+            .missing_path_keys
+            .contains(&observation_path_key(path))
+    }) {
+        return Err(
+            "a Cargo metadata-listed package manifest was absent during observation".to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn observation_path_key(path: &Path) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.cargo-observation-path.v1\0");
+    hasher.update(path.as_os_str().as_encoded_bytes());
+    *hasher.finalize().as_bytes()
 }
 
 fn basic_input_paths(workspace: &Path) -> Result<Vec<PathBuf>, String> {
@@ -1680,6 +1744,106 @@ mod tests {
             runs, 2,
             "no retry may turn this race into a success receipt"
         );
+    }
+
+    #[test]
+    fn metadata_authority_rejects_a_required_manifest_absent_across_an_absent_present_absent_aba() {
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let scratch = Scratch(std::env::temp_dir().join(format!(
+            "backend-cargo-manifest-aba-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        )));
+        let workspace = scratch.0.join("workspace");
+        let app = workspace.join("app");
+        let dependency = scratch.0.join("path-dependency");
+        std::fs::create_dir_all(&app).expect("app directory");
+        std::fs::create_dir_all(&dependency).expect("dependency directory");
+        std::fs::write(workspace.join("Cargo.toml"), "[workspace]\n").expect("workspace manifest");
+        std::fs::write(workspace.join("Cargo.lock"), "version = 4\n").expect("lockfile");
+        let app_manifest = app.join("Cargo.toml");
+        let dependency_manifest = dependency.join("Cargo.toml");
+        std::fs::write(&app_manifest, "[package]\nname=\"app\"\n").expect("app manifest");
+        std::fs::write(&dependency_manifest, "[package]\nname=\"dep\"\n")
+            .expect("dependency manifest");
+        let workspace = workspace.canonicalize().expect("canonical workspace");
+        let app_manifest = app_manifest.canonicalize().expect("canonical app manifest");
+        let dependency_manifest = dependency_manifest
+            .canonicalize()
+            .expect("canonical dependency manifest");
+        let metadata = serde_json::to_vec(&serde_json::json!({
+            "packages": [
+                {"manifest_path": app_manifest},
+                {"manifest_path": dependency_manifest}
+            ]
+        }))
+        .expect("metadata fixture");
+        let required = metadata_required_manifests(&metadata).expect("required manifest set");
+        let watched = vec![
+            workspace.join("Cargo.lock"),
+            workspace.join("Cargo.toml"),
+            app_manifest.clone(),
+            dependency_manifest.clone(),
+        ];
+
+        // This is the exact digest-only ABA that used to compare equal:
+        // sampling sees the required path absent, Cargo could see it present,
+        // and the final sample sees it absent again.
+        std::fs::remove_file(&dependency_manifest).expect("begin absent interval");
+        let before = observation_witness_with_context(&workspace, &watched, [1; 32], [2; 32])
+            .expect("pre-pass observation");
+        std::fs::write(&dependency_manifest, "[package]\nname=\"dep\"\n")
+            .expect("transiently restore manifest");
+        std::fs::remove_file(&dependency_manifest).expect("end absent interval");
+        let after = observation_witness_with_context(&workspace, &watched, [1; 32], [2; 32])
+            .expect("post-pass observation");
+        assert_eq!(
+            before.digest, after.digest,
+            "the absent/present/absent ABA preserves the old byte witness"
+        );
+        assert!(require_required_manifests_present(&before, &required).is_err());
+        assert!(require_required_manifests_present(&after, &required).is_err());
+
+        // The production two-pass gate refuses before starting another Cargo
+        // pass when its required manifest is already missing.
+        std::fs::write(&dependency_manifest, "[package]\nname=\"dep\"\n")
+            .expect("restore manifest before gate");
+        let mut cargo_runs = 0;
+        let mut observations = 0;
+        let result = coherent_metadata_with(
+            &workspace,
+            |_| {
+                cargo_runs += 1;
+                Ok((metadata.clone(), "host".to_owned(), [3; 32]))
+            },
+            |workspace, paths| {
+                observations += 1;
+                if observations == 1 {
+                    std::fs::remove_file(&dependency_manifest)
+                        .expect("manifest disappears before second Cargo pass");
+                }
+                observation_witness_with_context(workspace, paths, [1; 32], [2; 32])
+            },
+        );
+        assert!(
+            result
+                .expect_err("required absent manifest must refuse authority")
+                .contains("metadata-listed package manifest was absent"),
+            "the refusal must identify the required-input condition without exposing a path"
+        );
+        assert_eq!(
+            cargo_runs, 1,
+            "the second Cargo pass must not run on an incomplete input set"
+        );
+        assert_eq!(observations, 1);
     }
 
     #[test]
