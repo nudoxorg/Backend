@@ -702,18 +702,18 @@ mod tests {
             active_key_events > 0,
             "the focused control receives key input"
         );
-        let active_action_events = events.actions.get();
-        assert!(
-            active_action_events > 0,
-            "the active control receives its registered action"
-        );
+        assert_eq!(events.actions.get(), 1, "one explicit action is dispatched");
         assert_eq!(events.a11y_actions.get(), 1);
         let active_ime_insertions = events.ime_insertions.get();
         assert!(
             active_ime_insertions > 0,
             "the active input handler receives text input"
         );
-        assert_eq!(events.animation_frames.get(), 1);
+        let active_animation_frames = events.animation_frames.get();
+        assert!(
+            active_animation_frames > 0,
+            "active frame callbacks are delivered"
+        );
 
         cx.simulate_click(point(px(10.), px(40.)), Default::default());
         assert_eq!(events.nested_clicks.get(), 0);
@@ -800,10 +800,10 @@ mod tests {
 
         assert_eq!(events.clicks.get(), 1);
         assert_eq!(events.keys.get(), active_key_events);
-        assert_eq!(events.actions.get(), active_action_events);
+        assert_eq!(events.actions.get(), 1);
         assert_eq!(events.a11y_actions.get(), 1);
         assert_eq!(events.ime_insertions.get(), active_ime_insertions);
-        assert_eq!(events.animation_frames.get(), 1);
+        assert_eq!(events.animation_frames.get(), active_animation_frames);
         assert_eq!(events.nested_clicks.get(), 0);
 
         cx.update(|window, cx| {
