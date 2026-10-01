@@ -615,7 +615,12 @@ fn code(
         });
         ctx.targets.push(Target {
             id: id.clone(),
-            label: format!("Copy source line {number}").into(),
+            label: if page.lines[source_index].continued || page.lines[source_index].more_in_line {
+                format!("Copy visible part of source line {number}")
+            } else {
+                format!("Copy source line {number}")
+            }
+            .into(),
             act: copy_line.clone(),
             peek: None,
             source: None,
@@ -927,7 +932,7 @@ fn code(
     });
     ctx.targets.push(Target {
         id: copy_id.clone(),
-        label: "Copy visible source excerpt".into(),
+        label: "Copy visible source page".into(),
         act: copy.clone(),
         peek: None,
         source: None,
@@ -936,7 +941,7 @@ fn code(
         .id(copy_id.clone())
         .cursor_pointer()
         .text_color(palette.peri.base.hsla())
-        .child(text(ty::SMALL, &measure, palette.peri.base).child("Copy excerpt"))
+        .child(text(ty::SMALL, &measure, palette.peri.base).child("Copy visible page"))
         .on_click(move |_: &ClickEvent, window, app| copy(window, app));
     column = column.child(ctx.targets.track(copy_id, copy_button));
     column.into_any_element()
