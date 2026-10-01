@@ -95,7 +95,7 @@ in
     ];
     environment = {
       BACKEND_CONFIG_MODE = "immutable";
-      BACKEND_CONFIG_SNAPSHOT = toString ../.;
+      BACKEND_CONFIG_SNAPSHOT = "${../.}";
       BACKEND_GUI_CONFIG = "${gui.configFile}/share/nudox/gui-control-plane.json";
       BACKEND_GUI_FONTCONFIG = gui.fontConfig;
     };
@@ -158,7 +158,7 @@ in
       pkgs.zlib
     ];
     environment = {
-      BACKEND_DYLINT_ROOT = toString ../dylint;
+      BACKEND_DYLINT_ROOT = "${../dylint}";
       BACKEND_DYLINT_TOOLCHAIN = toolchains.dylintToolchain;
       BACKEND_DYLINT_DECLARATIONS = builtins.toJSON (
         map (rule: rule.id) (builtins.filter (rule: rule.engine == "dylint") control.lint.rules)
@@ -217,7 +217,7 @@ in
     environment = {
       BACKEND_AST_GREP = "${astGrepSuite}/sgconfig.yml";
       BACKEND_CONFIG_MODE = "immutable";
-      BACKEND_CONFIG_SNAPSHOT = toString ../.;
+      BACKEND_CONFIG_SNAPSHOT = "${../.}";
       BACKEND_CONTROL_PLANE = "${controlFile}/share/backend/control-plane.json";
     };
     build = ''
@@ -244,7 +244,7 @@ in
     ];
     environment = {
       BACKEND_CONFIG_MODE = "immutable";
-      BACKEND_CONFIG_SNAPSHOT = toString ../.;
+      BACKEND_CONFIG_SNAPSHOT = "${../.}";
       BACKEND_CONTROL_PLANE = "${controlFile}/share/backend/control-plane.json";
       BACKEND_LUNA_TOOLS = commands.roleBundles."luna-pair";
       BACKEND_TERRA_TOOLS = commands.roleBundles."terra-academic";
