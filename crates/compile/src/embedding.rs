@@ -1245,7 +1245,13 @@ impl EmbeddingExecutable {
         Some(coordinates)
     }
 
-    fn store_durable_coordinates(&self, values: &[(EmbeddingInputIdentity, EmbeddingCoordinates)]) {
+    fn store_durable_coordinates(
+        &self,
+        values: &[(EmbeddingInputIdentity, &EmbeddingCoordinates)],
+    ) {
+        if values.is_empty() {
+            return;
+        }
         if let Some(cache) = self.durable_cache_handle() {
             let entries = values
                 .iter()
@@ -1746,22 +1752,24 @@ impl EmbeddingExecutable {
             let mut cursor = 0;
             while cursor < misses.len() {
                 check_cancelled(cancelled)?;
-                let first_index = misses[cursor];
-                let first = unique_inputs[first_index];
-                if !self.batch_request_fits(&[first]) {
-                    return Err(EmbeddingExecutableError::BatchRequestExtent);
-                }
-                let mut end = cursor + 1;
+                let mut end = cursor;
+                let mut request_bytes = REQUEST_HEADER_BYTES;
                 while end < misses.len() && end - cursor < MAX_EMBEDDING_BATCH_ITEMS {
-                    let candidate_end = end + 1;
-                    let candidate = misses[cursor..candidate_end]
-                        .iter()
-                        .map(|index| unique_inputs[*index])
-                        .collect::<Vec<_>>();
-                    if !self.batch_request_fits(&candidate) {
+                    check_cancelled(cancelled)?;
+                    let (_, text) = unique_inputs[misses[end]];
+                    let Some(candidate_bytes) = self.next_batch_request_extent(request_bytes, text)
+                    else {
+                        break;
+                    };
+                    let candidate_count = end - cursor + 1;
+                    if !self.batch_response_fits(candidate_count) {
                         break;
                     }
-                    end = candidate_end;
+                    request_bytes = candidate_bytes;
+                    end += 1;
+                }
+                if end == cursor {
+                    return Err(EmbeddingExecutableError::BatchRequestExtent);
                 }
                 let batch = misses[cursor..end]
                     .iter()
@@ -1795,25 +1803,31 @@ impl EmbeddingExecutable {
             );
         }
         check_cancelled(cancelled)?;
+        if inferred_indices.is_empty() {
+            // Every unique input was already warm in the in-memory or durable
+            // cache. No new state needs transactional publication or disk IO.
+            return Ok(output);
+        }
         // Treat the whole API call transactionally. If a later microbatch fails, no earlier
         // result from this call becomes a warm-cache hit on retry.
         let mut cache = self
             .inference_cache
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for ((identity, _), coordinates) in unique_inputs.iter().zip(&unique_results) {
-            if let Some(coordinates) = coordinates {
-                cache.insert(*identity, coordinates);
+        for &index in &inferred_indices {
+            if let Some(coordinates) = unique_results[index].as_ref() {
+                let identity = unique_inputs[index].0;
+                cache.insert(identity, coordinates);
             }
         }
         drop(cache);
         let durable_values = inferred_indices
-            .into_iter()
+            .iter()
             .filter_map(|index| {
-                let identity = unique_inputs[index].0;
-                unique_results[index]
+                let identity = unique_inputs[*index].0;
+                unique_results[*index]
                     .as_ref()
-                    .map(|value| (identity, value.clone()))
+                    .map(|value| (identity, value))
             })
             .collect::<Vec<_>>();
         self.store_durable_coordinates(&durable_values);
@@ -1903,7 +1917,7 @@ impl EmbeddingExecutable {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .insert(input_identity, &coordinates);
-            self.store_durable_coordinates(&[(input_identity, coordinates.clone())]);
+            self.store_durable_coordinates(&[(input_identity, &coordinates)]);
         }
         Ok(coordinates)
     }
@@ -1954,36 +1968,44 @@ impl EmbeddingExecutable {
         if batch.is_empty() || batch.len() > MAX_EMBEDDING_BATCH_ITEMS {
             return false;
         }
-        let Some(request_bytes) =
-            batch
-                .iter()
-                .try_fold(REQUEST_HEADER_BYTES, |total, (_, text)| {
-                    if text.len() > self.maximum_text_bytes || u32::try_from(text.len()).is_err() {
-                        None
-                    } else {
-                        total
-                            .checked_add(BATCH_ITEM_HEADER_BYTES)?
-                            .checked_add(text.len())
-                    }
-                })
+        let Some(request_bytes) = batch
+            .iter()
+            .try_fold(REQUEST_HEADER_BYTES, |total, (_, text)| {
+                self.next_batch_request_extent(total, text)
+            })
         else {
             return false;
         };
+        request_bytes <= self.process_limits.input_bytes() && self.batch_response_fits(batch.len())
+    }
+
+    fn next_batch_request_extent(&self, current: usize, text: &str) -> Option<usize> {
+        if text.len() > self.maximum_text_bytes || u32::try_from(text.len()).is_err() {
+            return None;
+        }
+        current
+            .checked_add(BATCH_ITEM_HEADER_BYTES)?
+            .checked_add(text.len())
+            .filter(|bytes| *bytes <= self.process_limits.input_bytes())
+    }
+
+    fn batch_response_fits(&self, item_count: usize) -> bool {
+        if item_count == 0 || item_count > MAX_EMBEDDING_BATCH_ITEMS {
+            return false;
+        }
         let Some(vector_bytes) = usize::from(self.dimensions.get())
             .checked_mul(size_of::<f32>())
             .and_then(|bytes| bytes.checked_add(BATCH_RESPONSE_ITEM_HEADER_BYTES))
         else {
             return false;
         };
-        let Some(response_bytes) = batch
-            .len()
+        let Some(response_bytes) = item_count
             .checked_mul(vector_bytes)
             .and_then(|bytes| bytes.checked_add(BATCH_RESPONSE_HEADER_BYTES))
         else {
             return false;
         };
-        request_bytes <= self.process_limits.input_bytes()
-            && response_bytes <= self.process_limits.stdout()
+        response_bytes <= self.process_limits.stdout()
             && response_bytes <= self.process_limits.output_bytes()
     }
 

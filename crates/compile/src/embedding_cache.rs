@@ -11,13 +11,14 @@
 //! `Engine::open`, whose `OwnerLease` holds the kernel-backed `OWNER.lock` for
 //! the daemon lifetime. That exclusive workspace lease serializes inventory,
 //! eviction, and atomic entry replacement across processes; this cache does
-//! not create per-item lock files. `open_in_directory` is the isolated test
-//! seam and must not be used by an independent production writer.
+//! not create per-item lock files. Direct directory construction remains
+//! private to this crate so independent writers cannot bypass the owner path.
 
 use crate::EmbeddingInputIdentity;
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,6 +31,8 @@ const CACHE_PARENT: &str = "embedding";
 const CACHE_DOMAIN: &str = "backend.compile.embedding-input-cache.v1";
 const MAX_CACHE_BYTES: u64 = 520 * 1024 * 1024;
 const MAX_CACHE_ENTRIES: usize = 65_536;
+const COORDINATE_IO_CHUNK_BYTES: usize = 16 * 1024;
+const COORDINATES_PER_IO_CHUNK: usize = COORDINATE_IO_CHUNK_BYTES / size_of::<f32>();
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -37,8 +40,7 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 ///
 /// The caller must hold the workspace's exclusive owner lease while this
 /// cache is open. The engine attaches one instance to the shared embedding
-/// runtime; standalone callers should use [`Self::open_in_directory`] only
-/// for isolated test fixtures.
+/// runtime. Direct cache construction remains private to this crate.
 pub struct EmbeddingCacheFile {
     directory: PathBuf,
     recipe: [u8; 32],
@@ -59,7 +61,7 @@ impl EmbeddingCacheFile {
     ///
     /// A missing/invalid directory disables persistence while leaving the
     /// caller's bounded process-local cache available.
-    pub fn open(data_root: &Path, recipe: [u8; 32], dimensions: u32) -> Option<Self> {
+    pub(crate) fn open(data_root: &Path, recipe: [u8; 32], dimensions: u32) -> Option<Self> {
         if !data_root.is_absolute() || dimensions == 0 {
             return None;
         }
@@ -83,7 +85,7 @@ impl EmbeddingCacheFile {
     ///
     /// This is intended for isolated fixtures. Production callers should use
     /// [`Self::open`] after acquiring the workspace owner lease.
-    pub fn open_in_directory(directory: &Path, recipe: [u8; 32], dimensions: u32) -> Option<Self> {
+    fn open_in_directory(directory: &Path, recipe: [u8; 32], dimensions: u32) -> Option<Self> {
         if !directory.is_absolute() || dimensions == 0 {
             return None;
         }
@@ -180,29 +182,31 @@ impl EmbeddingCacheFile {
             return Ok(());
         }
 
-        let mut eviction = self
-            .entries
-            .iter()
-            .filter(|(identity, _)| !unique.contains_key(*identity))
-            .map(|(identity, entry)| (*identity, entry.last_used))
-            .collect::<Vec<_>>();
-        eviction.sort_by_key(|(_, last_used)| *last_used);
-        for (identity, _) in eviction {
-            if projected_bytes <= MAX_CACHE_BYTES && projected_entries <= MAX_CACHE_ENTRIES {
-                break;
+        if projected_bytes > MAX_CACHE_BYTES || projected_entries > MAX_CACHE_ENTRIES {
+            let mut eviction = self
+                .entries
+                .iter()
+                .filter(|(identity, _)| !unique.contains_key(*identity))
+                .map(|(identity, entry)| (*identity, entry.last_used))
+                .collect::<Vec<_>>();
+            eviction.sort_by_key(|(_, last_used)| *last_used);
+            for (identity, _) in eviction {
+                if projected_bytes <= MAX_CACHE_BYTES && projected_entries <= MAX_CACHE_ENTRIES {
+                    break;
+                }
+                let Some(entry) = self.entries.remove(&identity) else {
+                    continue;
+                };
+                let path = self.entry_path(&identity);
+                if fs::remove_file(path).is_ok() {
+                    self.bytes_used = self.bytes_used.saturating_sub(entry.bytes);
+                } else {
+                    self.entries.insert(identity, entry);
+                    continue;
+                }
+                projected_bytes = projected_bytes.saturating_sub(entry.bytes);
+                projected_entries = projected_entries.saturating_sub(1);
             }
-            let Some(entry) = self.entries.remove(&identity) else {
-                continue;
-            };
-            let path = self.entry_path(&identity);
-            if fs::remove_file(path).is_ok() {
-                self.bytes_used = self.bytes_used.saturating_sub(entry.bytes);
-            } else {
-                self.entries.insert(identity, entry);
-                continue;
-            }
-            projected_bytes = projected_bytes.saturating_sub(entry.bytes);
-            projected_entries = projected_entries.saturating_sub(1);
         }
         if projected_bytes > MAX_CACHE_BYTES || projected_entries > MAX_CACHE_ENTRIES {
             return Ok(());
@@ -236,8 +240,16 @@ impl EmbeddingCacheFile {
             header[41..73].copy_from_slice(&identity);
             header[73..77].copy_from_slice(&self.dimensions.to_be_bytes());
             write_hashed(&mut file, &mut hasher, &header)?;
-            for value in values {
-                write_hashed(&mut file, &mut hasher, &value.to_le_bytes())?;
+            let mut encoded = [0_u8; COORDINATE_IO_CHUNK_BYTES];
+            for chunk in values.chunks(COORDINATES_PER_IO_CHUNK) {
+                let encoded_len = chunk.len() * size_of::<f32>();
+                for (value, bytes) in chunk
+                    .iter()
+                    .zip(encoded[..encoded_len].chunks_exact_mut(size_of::<f32>()))
+                {
+                    bytes.copy_from_slice(&value.to_le_bytes());
+                }
+                write_hashed(&mut file, &mut hasher, &encoded[..encoded_len])?;
             }
             file.write_all(hasher.finalize().as_bytes())?;
             file.sync_all()?;
@@ -311,16 +323,26 @@ impl EmbeddingCacheFile {
         values
             .try_reserve_exact(dimensions)
             .map_err(|_| io::Error::other("embedding cache allocation failed"))?;
-        let mut coordinate = [0_u8; 4];
+        let mut encoded = [0_u8; COORDINATE_IO_CHUNK_BYTES];
         let mut norm_squared = 0.0_f64;
-        for _ in 0..dimensions {
-            read_hashed(&mut file, &mut hasher, &mut coordinate)?;
-            let value = f32::from_le_bytes(coordinate);
-            if !value.is_finite() {
-                return Err(cache_data_error());
+        let mut remaining = dimensions;
+        while remaining > 0 {
+            let coordinate_count = remaining.min(COORDINATES_PER_IO_CHUNK);
+            let encoded_len = coordinate_count
+                .checked_mul(size_of::<f32>())
+                .ok_or_else(cache_data_error)?;
+            let encoded_chunk = &mut encoded[..encoded_len];
+            read_hashed(&mut file, &mut hasher, encoded_chunk)?;
+            for coordinate in encoded_chunk.chunks_exact(size_of::<f32>()) {
+                let value =
+                    f32::from_le_bytes(coordinate.try_into().map_err(|_| cache_data_error())?);
+                if !value.is_finite() {
+                    return Err(cache_data_error());
+                }
+                norm_squared += f64::from(value) * f64::from(value);
+                values.push(value);
             }
-            norm_squared += f64::from(value) * f64::from(value);
-            values.push(value);
+            remaining -= coordinate_count;
         }
         if (norm_squared - 1.0).abs() > 0.001 {
             return Err(cache_data_error());
@@ -446,14 +468,22 @@ fn timestamp(time: std::time::SystemTime) -> u128 {
         .as_nanos()
 }
 
-fn write_hashed(file: &mut File, hasher: &mut blake3::Hasher, bytes: &[u8]) -> io::Result<()> {
-    file.write_all(bytes)?;
+fn write_hashed(
+    writer: &mut impl Write,
+    hasher: &mut blake3::Hasher,
+    bytes: &[u8],
+) -> io::Result<()> {
+    writer.write_all(bytes)?;
     hasher.update(bytes);
     Ok(())
 }
 
-fn read_hashed(file: &mut File, hasher: &mut blake3::Hasher, bytes: &mut [u8]) -> io::Result<()> {
-    file.read_exact(bytes)?;
+fn read_hashed(
+    reader: &mut impl Read,
+    hasher: &mut blake3::Hasher,
+    bytes: &mut [u8],
+) -> io::Result<()> {
+    reader.read_exact(bytes)?;
     hasher.update(bytes);
     Ok(())
 }
@@ -547,10 +577,14 @@ mod tests {
         }
 
         fn cache(&self) -> EmbeddingCacheFile {
+            self.cache_with_dimensions(2)
+        }
+
+        fn cache_with_dimensions(&self, dimensions: u32) -> EmbeddingCacheFile {
             EmbeddingCacheFile {
                 directory: self.directory.clone(),
                 recipe: [7; 32],
-                dimensions: 2,
+                dimensions,
                 bytes_used: 0,
                 entries: BTreeMap::new(),
                 recency: 0,
@@ -601,6 +635,65 @@ mod tests {
             Some(&later_vector[..])
         );
         assert!(reopened.load(input_identity(3)).is_none());
+    }
+
+    #[test]
+    fn chunked_coordinate_io_preserves_the_canonical_file_and_checksum() {
+        let fixture = Fixture::new();
+        let dimensions = u32::try_from(COORDINATES_PER_IO_CHUNK + 17).expect("dimension");
+        let identity = input_identity(0x27);
+        let mut vector = vec![0.0_f32; dimensions as usize];
+        vector[0] = 1.0;
+        let mut cache = fixture.cache_with_dimensions(dimensions);
+        cache
+            .store_batch(&[(identity, &vector)])
+            .expect("store vector across chunk boundaries");
+
+        let path = cache.entry_path(&identity.as_bytes());
+        let observed = fs::read(path).expect("read canonical entry");
+        let mut expected =
+            Vec::with_capacity(HEADER_BYTES + vector.len() * size_of::<f32>() + CHECKSUM_BYTES);
+        expected.extend_from_slice(MAGIC);
+        expected.push(VERSION);
+        expected.extend_from_slice(&[7; 32]);
+        expected.extend_from_slice(&identity.as_bytes());
+        expected.extend_from_slice(&dimensions.to_be_bytes());
+        for value in &vector {
+            expected.extend_from_slice(&value.to_le_bytes());
+        }
+        let mut hasher = blake3::Hasher::new_derive_key(CACHE_DOMAIN);
+        hasher.update(&expected);
+        expected.extend_from_slice(hasher.finalize().as_bytes());
+        assert_eq!(observed, expected);
+        assert_eq!(cache.load(identity).as_deref(), Some(vector.as_slice()));
+    }
+
+    #[test]
+    fn repeated_small_batches_keep_existing_entries_when_caps_allow() {
+        let fixture = Fixture::new();
+        let first_identity = input_identity(0x51);
+        let second_identity = input_identity(0x52);
+        let mut cache = fixture.cache();
+        cache
+            .store_batch(&[(first_identity, &[0.6, 0.8])])
+            .expect("store first small batch");
+        cache
+            .store_batch(&[(second_identity, &[0.8, 0.6])])
+            .expect("store second small batch");
+        let first_before = fs::read(cache.entry_path(&first_identity.as_bytes()))
+            .expect("first entry after second batch");
+        for _ in 0..8 {
+            cache
+                .store_batch(&[(input_identity(0x53), &[1.0, 0.0])])
+                .expect("store repeated small batch");
+        }
+        assert_eq!(
+            fs::read(cache.entry_path(&first_identity.as_bytes())).expect("first entry remains"),
+            first_before
+        );
+        assert!(cache.entry_path(&second_identity.as_bytes()).exists());
+        assert!(cache.entry_path(&input_identity(0x53).as_bytes()).exists());
+        assert_eq!(cache.entries.len(), 3);
     }
 
     #[test]
