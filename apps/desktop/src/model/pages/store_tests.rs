@@ -63,6 +63,37 @@ fn cargo_file_slots_keep_exact_authority_and_drop_stale_landings() {
     assert!(store.begin(&second_key, root()).is_some(), "the same indexed root must still recheck Cargo file bytes");
 }
 
+#[test]
+fn cargo_inventory_is_revoked_separately_from_file_bytes() {
+    use crate::model::browse::{BrowseKey, BrowseValue, CargoSourceInventoryKey, CargoSourceInventoryModel};
+    let project = crate::core::LocalProjectId::new("/tmp/nudox-cargo-inventory-store").expect("tree");
+    let package = PackageRef::parse(&format!(
+        "pkg:cargo/demo@1.0.0?cargo-authority={}", "a".repeat(64)
+    )).expect("qualified package");
+    let key = BrowseKey::CargoSourceInventory(CargoSourceInventoryKey {
+        project,
+        package: package.clone(),
+    });
+    let page_key = PageKey::Browse(key.clone());
+    let mut store = PageStore::default();
+    let generation = store.begin(&page_key, root()).expect("inventory read");
+    let model = CargoSourceInventoryModel {
+        package,
+        paths: Arc::from([crate::navigation::CargoSourcePath::new("Cargo.toml").expect("path")]),
+        coverage: backend_library::CargoPackageSourceInventoryCoverageV1::Complete,
+        source_revision: [7; 32],
+    };
+    let value = PageValue::Browse(BrowseValue::CargoSourceInventory(Arc::new(model)));
+    assert_eq!(store.land(&page_key, generation, Ok(value)), Landing::Applied);
+    assert!(store.browse(&key).loaded_value().is_some());
+    let BrowseKey::CargoSourceInventory(inventory) = &key else { panic!("inventory key") };
+    store.revoke_cargo_source_inventory(inventory);
+    assert!(store.browse(&key).loaded_value().is_none());
+    assert!(store.begin(&page_key, root()).is_some(), "reentry must schedule another owner observation");
+    store.revoke_all_cargo_source_inventories();
+    assert!(store.browse(&key).loaded_value().is_none());
+}
+
 /// What the fixture owner answers for `request`.
 fn read(request: &ReadRequest) -> PageValue {
     let cancel = crate::runtime::CancellationToken::new();
