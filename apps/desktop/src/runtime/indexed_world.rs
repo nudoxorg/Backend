@@ -249,6 +249,8 @@ struct Reads(Memo<Key, Result<Arc<Projection>, Arc<str>>>);
 impl Global for Reads {}
 
 #[cfg(test)]
+/// Holds an already-started projection future while navigation supersedes it.
+/// Releasing it still returns a successful value to test Memo's discard path.
 pub(crate) struct TestProjectionGate {
     state: Mutex<(bool, bool)>, // entered, released
     release_sender: async_channel::Sender<()>,
@@ -269,7 +271,7 @@ impl Default for TestProjectionGate {
 
 #[cfg(test)]
 impl TestProjectionGate {
-    pub(crate) async fn wait_for_read(&self, cancellation: &Cancellation) -> Result<(), Arc<str>> {
+    pub(crate) async fn wait_for_read(&self) -> Result<(), Arc<str>> {
         let mut state = self.state.lock().expect("projection gate");
         state.0 = true;
         let already_released = state.1;
@@ -280,7 +282,7 @@ impl TestProjectionGate {
                 .await
                 .map_err(|_| Arc::<str>::from("the synthetic graph read gate closed"))?;
         }
-        ensure_active(cancellation)
+        Ok(())
     }
 
     pub(crate) fn entered(&self) -> bool {
@@ -408,8 +410,7 @@ async fn read(key: &Key, cancellation: &Cancellation) -> Result<Arc<Projection>,
         let id = *id;
         let root = key.root.clone();
         let synthetic = key.synthetic.clone();
-        let cancellation = cancellation.clone();
-        return read_synthetic(synthetic, id, root, cancellation).await;
+        return read_synthetic(synthetic, id, root).await;
     }
     let endpoint = match &key.owner {
         OwnerIdentity::Indexed(endpoint) => endpoint,
@@ -793,15 +794,15 @@ async fn read_synthetic(
     synthetic: Option<Arc<TestProjection>>,
     id: u64,
     root: VersionedRoot,
-    cancellation: Cancellation,
 ) -> Result<Arc<Projection>, Arc<str>> {
     let synthetic = synthetic
         .filter(|projection| projection.id == id && projection.root == root)
         .ok_or_else(|| Arc::<str>::from("the synthetic graph owner changed before its read"))?;
     if let Some(gate) = &synthetic.gate {
-        gate.wait_for_read(&cancellation).await?;
+        // Deliberately finish despite a forgotten memo flight so the anatomy
+        // regression proves late successful values cannot resurrect stale state.
+        gate.wait_for_read().await?;
     }
-    ensure_active(&cancellation)?;
     let world = Arc::clone(&synthetic.world);
     let layout = facet::graph::layout::layout_of(&world);
     let scene = Arc::new(facet::graph::scene::Scene::new(Arc::clone(&world), layout));
