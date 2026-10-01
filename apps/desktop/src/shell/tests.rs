@@ -815,6 +815,38 @@ fn every_setting_applies_live(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn appearance_text_size_control_updates_the_current_displays_saved_zoom(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    rig.go(Intent::OpenSettings(
+        crate::navigation::SettingsPage::Appearance,
+    ));
+    rig.cx.update(|_, cx| cx.set_global(gpui::TextTrace));
+    rig.repaint();
+    let choice = rig
+        .cx
+        .update(|window, _| {
+            window
+                .painted_texts()
+                .iter()
+                .find(|text| text.text.as_ref() == "200%")
+                .map(|text| text.bounds.center())
+        })
+        .expect("Appearance paints the 200% text-size choice");
+    rig.cx.simulate_click(choice, Modifiers::default());
+    rig.settle();
+    let zoom = rig
+        .graph
+        .store
+        .read_with(rig.cx, |store, _| store.snapshot().settings().zoom.clone());
+    assert_eq!(zoom.percent(&display), 200, "the control uses the existing per-display preference");
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| matches!(
+        store.snapshot().overlay(),
+        Some(crate::navigation::Overlay::Settings(crate::navigation::SettingsPage::Appearance))
+    )), "changing text size keeps Settings open");
+}
+
+#[gpui::test]
 fn escape_closes_the_topmost_transient_first(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     // Stand on a member row and peek it.
@@ -856,6 +888,141 @@ fn settings_keys_lists_the_sidebars_keys_beside_the_shells_and_the_graphs(cx: &m
     }
     let at = |words: &str| said.iter().position(|line| line == words).unwrap_or(usize::MAX);
     assert!(at("In the sidebar") < at("In the graph"), "the sidebar's keys come before the graph's");
+}
+
+#[gpui::test]
+fn settings_legend_explains_declaration_and_sidebar_marks(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    rig.go(Intent::OpenSettings(crate::navigation::SettingsPage::Legend));
+    let said = rig.said();
+    for words in [
+        "Legend",
+        "Declaration mark shape names its kind; its hue groups the kind by family.",
+        "Declaration kinds",
+        "function",
+        "Callable",
+        "Sidebar state marks",
+        "Mint notch and use count",
+        "Focus and motion colors",
+    ] {
+        assert!(said.iter().any(|line| line == words), "Settings › Legend says {words:?}: {said:#?}");
+    }
+    assert!(!said.iter().any(|line| line == "In the sidebar"), "Legend no longer aliases the Keys page");
+}
+
+#[gpui::test]
+fn keyboard_reaches_and_opens_every_settings_page(cx: &mut TestAppContext) {
+    use crate::navigation::{Overlay, SettingsPage};
+
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    let pages = [
+        (SettingsPage::Appearance, "Appearance"),
+        (SettingsPage::Editor, "Editor"),
+        (SettingsPage::Agents, "Agents & MCP"),
+        (SettingsPage::Connections, "Connections"),
+        (SettingsPage::Privacy, "Privacy & local data"),
+        (SettingsPage::Diagnostics, "Diagnostics"),
+        (SettingsPage::Index, "Index & registries"),
+        (SettingsPage::Registry, "Registry sources"),
+        (SettingsPage::Legend, "Legend"),
+        (SettingsPage::Help, "Keys"),
+    ];
+
+    rig.keys("cmd-,");
+    for _ in 0..4 {
+        let zone = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx).0);
+        if zone == super::focus::Zone::Shelf {
+            break;
+        }
+        rig.keys("tab");
+    }
+    assert_eq!(
+        rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx).0),
+        super::focus::Zone::Shelf,
+        "Tab gives the Settings page list the keyboard"
+    );
+
+    for (index, (page, title)) in pages.into_iter().enumerate() {
+        if index > 0 {
+            rig.keys("j");
+        }
+        rig.keys("enter");
+        assert_eq!(
+            rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+            Some(Overlay::Settings(page)),
+            "the {title} row opens its typed page"
+        );
+        assert!(
+            rig.said().iter().any(|line| line == title),
+            "the {title} page paints its own body"
+        );
+    }
+}
+
+#[gpui::test]
+fn appearance_zoom_choices_stay_in_the_visible_control_when_resized_at_200_percent(
+    cx: &mut TestAppContext,
+) {
+    use crate::navigation::SettingsPage;
+
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    rig.go(Intent::ZoomTo {
+        display,
+        percent: 200,
+    });
+    rig.go(Intent::OpenSettings(SettingsPage::Appearance));
+    rig.cx.update(|_, cx| cx.set_global(gpui::TextTrace));
+
+    let labels = crate::model::ZoomPreference::LADDER.map(|percent| format!("{percent}%"));
+    for width in [320.0, 360.0, 390.0, 640.0, 1440.0] {
+        super::fit_tests::resize(&mut rig, width, 568.0);
+        let viewport = rig.cx.update(|window, _| window.bounds());
+        let (left, right, top, bottom) = (
+            f32::from(viewport.origin.x),
+            f32::from(viewport.origin.x + viewport.size.width),
+            f32::from(viewport.origin.y),
+            f32::from(viewport.origin.y + viewport.size.height),
+        );
+        let mut seen = std::collections::BTreeSet::new();
+        for offset in [0.0, -350.0, -700.0, -1050.0, -1400.0, -1750.0, -2100.0] {
+            rig.shell.read_with(rig.cx, |shell, cx| {
+                shell.set_source_reader_scroll_offset(point(px(0.0), px(offset)), cx)
+            });
+            rig.repaint();
+            let visible = rig.cx.update(|window, _| {
+                window
+                    .painted_texts()
+                    .iter()
+                    .filter(|text| labels.iter().any(|label| label == text.text.as_ref()))
+                    .map(|text| {
+                        (
+                            text.text.to_string(),
+                            f32::from(text.bounds.origin.x),
+                            f32::from(text.bounds.origin.y),
+                            f32::from(text.bounds.size.width),
+                            f32::from(text.bounds.size.height),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            });
+            for (label, x, y, text_width, text_height) in visible {
+                if y >= top - 0.5 && y + text_height <= bottom + 0.5 {
+                    assert!(
+                        x >= left - 0.5 && x + text_width <= right + 0.5,
+                        "the visible {label} choice at {width:.0}px and 200% lies within the actual reader bounds {left:.1}..{right:.1}, got {x:.1}..{:.1}",
+                        x + text_width
+                    );
+                    seen.insert(label);
+                }
+            }
+        }
+        assert_eq!(
+            seen,
+            labels.iter().cloned().collect(),
+            "every zoom option is actually visible and reachable at {width:.0}px and 200%"
+        );
+    }
 }
 
 /// GAPS D5: Esc closes Settings, whether the keyboard is still where ⌘,

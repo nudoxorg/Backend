@@ -320,6 +320,24 @@ impl SettingsPage {
         Self::Help,
     ];
 
+    /// The stable label used wherever the settings page is named in the
+    /// sidebar or address capsule.
+    #[must_use]
+    pub const fn menu_label(self) -> &'static str {
+        match self {
+            Self::Appearance => "Appearance",
+            Self::Editor => "Editor",
+            Self::Agents => "Agents",
+            Self::Connections => "Connections",
+            Self::Privacy => "Privacy",
+            Self::Diagnostics => "Diagnostics",
+            Self::Index => "Index & registries",
+            Self::Registry => "Registries",
+            Self::Legend => "Legend",
+            Self::Help => "Keys",
+        }
+    }
+
     /// Returns a stable persistence spelling.
     #[must_use]
     pub const fn as_str(self) -> &'static str {

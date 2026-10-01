@@ -8,7 +8,7 @@
 use super::kit::kind_of;
 use crate::model::pages::{OutlineNode, PackageRef, SymbolRef};
 use crate::model::AppSnapshot;
-use crate::navigation::{OrbitRoute, Overlay, Route, SettingsPage};
+use crate::navigation::{OrbitRoute, Overlay, Route};
 use crate::runtime::store::DataStore;
 use facet::icons::Kind;
 use gpui::SharedString;
@@ -44,7 +44,7 @@ pub(crate) fn here(snapshot: &AppSnapshot, store: &DataStore) -> Here {
         Some(Overlay::Settings(page)) => Here {
             mark: Mark::Place,
             name: "Settings".into(),
-            path: settings_name(page).into(),
+            path: page.menu_label().into(),
         },
         Some(Overlay::Inbox) => Here {
             mark: Mark::Place,
@@ -215,22 +215,6 @@ pub(crate) fn siblings(route: &Route, index: usize, store: &DataStore) -> Siblin
     Siblings {
         real: real.into_iter().map(segment).collect(),
         tests: tests.into_iter().map(segment).collect(),
-    }
-}
-
-/// A settings page's name.
-pub(crate) const fn settings_name(page: SettingsPage) -> &'static str {
-    match page {
-        SettingsPage::Appearance => "Appearance",
-        SettingsPage::Editor => "Editor",
-        SettingsPage::Agents => "Agents",
-        SettingsPage::Connections => "Connections",
-        SettingsPage::Privacy => "Privacy",
-        SettingsPage::Diagnostics => "Diagnostics",
-        SettingsPage::Index => "Index & registries",
-        SettingsPage::Registry => "Registries",
-        SettingsPage::Legend => "Legend",
-        SettingsPage::Help => "Keys",
     }
 }
 

@@ -4,17 +4,19 @@
 //! say what the index holds, which keys do what, and which build this is.
 
 use super::{Ctx, Leaf};
+use crate::core::{Activity, Resource, ResourceTerminal, UnavailableReason};
 use crate::model::{
     AppSnapshot, AppearancePreference, ConnectionStatus, ContrastPreference, DensityPreference,
-    MotionPreference, PrivacyPreference,
+    MotionPreference, ZoomPreference,
 };
 use crate::navigation::{Intent, SettingsPage};
 use crate::shell::kit::{quiet, text};
 use crate::shell::reader::Reader;
 use facet::controls::Swatch;
+use facet::icons::{Kind, KindSize, kind_mark};
 use facet::tokens::ty;
 use facet::{Measure, Palette, Space};
-use gpui::{AnyElement, Context, IntoElement, ParentElement, Styled, div, px};
+use gpui::{AnyElement, Context, IntoElement, ParentElement, Styled, Window, div, px};
 use std::path::{Path, PathBuf};
 
 pub(super) fn body(
@@ -22,18 +24,20 @@ pub(super) fn body(
     snapshot: &AppSnapshot,
     store: &super::Pages,
     ctx: &mut Ctx<'_>,
-    _cx: &mut Context<Reader>,
+    window: &mut Window,
+    cx: &mut Context<Reader>,
 ) -> Vec<Leaf> {
     match page {
         SettingsPage::Index => index(store, ctx),
         SettingsPage::Registry => registry(ctx),
-        SettingsPage::Help | SettingsPage::Legend => keys(ctx),
+        SettingsPage::Help => keys(ctx),
+        SettingsPage::Legend => legend(ctx),
         SettingsPage::Diagnostics => diagnostics(snapshot, ctx),
         SettingsPage::Connections => connections(snapshot, ctx),
         SettingsPage::Agents => agents(snapshot, ctx),
-        SettingsPage::Privacy => privacy(snapshot, ctx),
+        SettingsPage::Privacy => privacy(ctx),
         SettingsPage::Editor => editor(ctx),
-        SettingsPage::Appearance => appearance(snapshot, ctx),
+        SettingsPage::Appearance => appearance(snapshot, ctx, window, cx),
     }
 }
 
@@ -46,9 +50,13 @@ fn title(words: &str, ctx: &mut Ctx<'_>) -> Leaf {
     )
 }
 
-fn appearance(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
-    // One calm list, one control per row; the window is the preview. Text
-    // size is not a setting: the system sets it, ⌘+ / ⌘− / ⌘0 adjust it.
+fn appearance(
+    snapshot: &AppSnapshot,
+    ctx: &mut Ctx<'_>,
+    window: &mut Window,
+    cx: &mut Context<Reader>,
+) -> Vec<Leaf> {
+    // One calm list, one control per row; the window is the preview.
     let settings = snapshot.settings();
     let measure = ctx.measure;
     let mut leaves = vec![title("Appearance", ctx)];
@@ -112,6 +120,33 @@ fn appearance(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
         links.dispatch(Intent::SetDensity(density), cx);
     });
     leaves.push(setting("Density", density.into_any_element(), ctx));
+    let display = crate::shell::system::display_key(window, cx);
+    let current_percent = settings.zoom.percent(&display);
+    let selected = ZoomPreference::LADDER
+        .iter()
+        .position(|percent| *percent == current_percent)
+        .unwrap_or(2);
+    let links = ctx.links.clone();
+    let mut text_size = facet::controls::seg("set-text-size", &measure);
+    for percent in ZoomPreference::LADDER {
+        text_size = text_size.label(format!("{percent}%"));
+    }
+    let text_size = text_size.selected(selected).on_select(move |index, window, cx| {
+        let Some(percent) = ZoomPreference::LADDER.get(index).copied() else {
+            return;
+        };
+        links.dispatch(
+            Intent::ZoomTo {
+                display: crate::shell::system::display_key(window, cx),
+                percent,
+            },
+            cx,
+        );
+    });
+    leaves.push(setting("Text size", text_size.into_any_element(), ctx));
+    let palette = ctx.palette;
+    let text_note = ctx.say("Relative to the operating system’s text scale; remembered per display.");
+    leaves.push(Leaf::new(quiet(text_note, &measure, palette)));
     let links = ctx.links.clone();
     let motion = facet::controls::seg("set-motion", &measure)
         .label("System")
@@ -177,7 +212,8 @@ fn index(store: &super::Pages, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
             ctx,
         ));
     }
-    match store.health().loaded_value() {
+    let health = store.health();
+    match health.loaded_value() {
         Some(health) => {
             let facts = [
                 ("Declarations", health.rows.to_string()),
@@ -218,12 +254,75 @@ fn index(store: &super::Pages, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
                 ));
             }
         }
-        None => {
-            let words = ctx.say("The index report is on its way.");
-            leaves.push(Leaf::new(quiet(words, &measure, palette)));
-        }
+        None => {}
+    }
+    if let Some((message, problem)) = health_notice(&health) {
+        let words = ctx.say(message);
+        let ink = if problem { palette.coral.base } else { palette.ink3 };
+        leaves.push(Leaf::new(text(ty::SMALL, &measure, ink).child(words)));
     }
     leaves
+}
+
+/// What the health resource actually says when there is no complete current
+/// value (or when a previous value is being retained through a failed refresh).
+fn health_notice(resource: &Resource<crate::model::pages::HealthModel>) -> Option<(String, bool)> {
+    let present = resource.loaded_value().is_some();
+    match (present, resource.terminal(), resource.activity()) {
+        (true, ResourceTerminal::Complete, Activity::Working | Activity::Waiting) => Some((
+            "Updating the index report; the last complete report is shown.".to_owned(),
+            false,
+        )),
+        (true, ResourceTerminal::Complete, Activity::Stopped) => Some((
+            "The index refresh stopped; the last complete report is shown.".to_owned(),
+            false,
+        )),
+        (true, ResourceTerminal::Complete, Activity::Rest | Activity::NotYet) => None,
+        (true, ResourceTerminal::Partial, _) => Some((
+            "This index report is incomplete while the service is still building it.".to_owned(),
+            false,
+        )),
+        (true, ResourceTerminal::Unavailable(reason), _) => {
+            Some((unavailable_health_words(reason).to_owned(), true))
+        }
+        (true, ResourceTerminal::Fault(error), _) => Some((
+            format!("The index refresh failed; the last report is shown: {}", error.message()),
+            true,
+        )),
+        (false, ResourceTerminal::Complete, Activity::NotYet) => Some((
+            "The index health report has not been requested yet.".to_owned(),
+            false,
+        )),
+        (false, ResourceTerminal::Complete, Activity::Waiting) => Some((
+            "Waiting for the local index health report.".to_owned(),
+            false,
+        )),
+        (false, ResourceTerminal::Complete, Activity::Working) => Some((
+            "Loading the local index health report.".to_owned(),
+            false,
+        )),
+        (false, ResourceTerminal::Complete, Activity::Rest | Activity::Stopped) => {
+            Some(("No index health report is available.".to_owned(), false))
+        }
+        (false, ResourceTerminal::Partial, _) => Some((
+            "The local service is still building the index health report.".to_owned(),
+            false,
+        )),
+        (false, ResourceTerminal::Unavailable(reason), _) => {
+            Some((unavailable_health_words(reason).to_owned(), true))
+        }
+        (false, ResourceTerminal::Fault(error), _) => Some((
+            format!("The index health check failed: {}", error.message()),
+            true,
+        )),
+    }
+}
+
+fn unavailable_health_words(reason: &UnavailableReason) -> &'static str {
+    match reason {
+        UnavailableReason::Unsupported => "The connected service does not provide index health.",
+        UnavailableReason::OutOfScope => "Index health is unavailable outside the selected project scope.",
+    }
 }
 
 fn registry(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
@@ -355,6 +454,101 @@ fn keys(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
         }
     }
     leaves
+}
+
+fn legend(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
+    let mut leaves = vec![title("Legend", ctx)];
+    let measure = ctx.measure;
+    let palette = ctx.palette;
+    let intro = ctx.say("Declaration mark shape names its kind; its hue groups the kind by family.");
+    leaves.push(Leaf::new(quiet(intro, &measure, palette)));
+    let heading = ctx.say("Declaration kinds");
+    leaves.push(Leaf::new(
+        text(ty::HEAD, &measure, palette.ink0)
+            .pt(measure.space(Space::Roomy))
+            .pb(measure.space(Space::Base))
+            .child(heading),
+    ));
+    for kind in Kind::ALL {
+        let mark = kind_mark(kind, KindSize::Sm, palette);
+        let name = ctx.say(kind.name());
+        let family = ctx.say(family_name(kind.family()));
+        let row = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(measure.space(Space::Roomy))
+            .py(measure.space(Space::Base))
+            .border_b_1()
+            .border_color(palette.line1.hsla())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(measure.space(Space::Base))
+                    .child(mark)
+                    .child(text(ty::ROW, &measure, palette.ink1).child(name)),
+            )
+            .child(text(ty::MONO_SMALL, &measure, palette.ink2).child(family));
+        leaves.push(Leaf::new(row));
+    }
+
+    let heading = ctx.say("Sidebar state marks");
+    leaves.push(Leaf::new(
+        text(ty::HEAD, &measure, palette.ink0)
+            .pt(measure.space(Space::Roomy))
+            .pb(measure.space(Space::Base))
+            .child(heading),
+    ));
+    for (label, meaning, color) in [
+        ("Your uses", "Mint notch and use count", palette.mint.base),
+        ("Changed", "Amber diamond and change count", palette.amber.base),
+        ("Gone", "Coral status words", palette.coral.base),
+        ("Members", "Quiet count when no other state mark is shown", palette.ink3),
+    ] {
+        let meaning = ctx.say(meaning);
+        leaves.push(setting(
+            label,
+            text(ty::ROW, &measure, color)
+                .child(meaning)
+                .into_any_element(),
+            ctx,
+        ));
+    }
+
+    let heading = ctx.say("Focus and motion colors");
+    leaves.push(Leaf::new(
+        text(ty::HEAD, &measure, palette.ink0)
+            .pt(measure.space(Space::Roomy))
+            .pb(measure.space(Space::Base))
+            .child(heading),
+    ));
+    for (label, meaning, color) in [
+        ("Mint", "Actions, yours, or done", palette.mint.base),
+        ("Periwinkle", "Keyboard focus", palette.peri.base),
+        ("Amber", "Waiting", palette.amber.base),
+        ("Coral", "Stopped or unavailable", palette.coral.base),
+    ] {
+        let meaning = ctx.say(meaning);
+        leaves.push(setting(
+            label,
+            text(ty::ROW, &measure, color)
+                .child(meaning)
+                .into_any_element(),
+            ctx,
+        ));
+    }
+    leaves
+}
+
+const fn family_name(family: facet::tokens::Family) -> &'static str {
+    match family {
+        facet::tokens::Family::Namespace => "Namespace",
+        facet::tokens::Family::Type => "Type",
+        facet::tokens::Family::Contract => "Contract",
+        facet::tokens::Family::Callable => "Callable",
+        facet::tokens::Family::Value => "Value",
+    }
 }
 
 fn diagnostics(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
@@ -537,79 +731,50 @@ fn editor(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     let mut leaves = vec![title("Editor", ctx)];
     let measure = ctx.measure;
     let palette = ctx.palette;
-    let words = ctx.say("Open code uses the operating system’s registered editor or the editor configured for this desktop process. Source paths and lines come from the current index.");
+    let command = ctx.say("code -g path:line → zed path:line → the operating system’s registered file opener");
+    leaves.push(setting(
+        "Open in editor",
+        text(ty::MONO_SMALL, &measure, palette.ink1)
+            .min_w(px(0.0))
+            .child(command)
+            .into_any_element(),
+        ctx,
+    ));
+    let words = ctx.say("This desktop build has no editor preference field. The first available command wins; the operating-system fallback opens the file without a line target.");
     leaves.push(Leaf::new(quiet(words, &measure, palette)));
     leaves
 }
 
-fn privacy(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
+fn privacy(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     let mut leaves = vec![title("Privacy & local data", ctx)];
     let measure = ctx.measure;
     let palette = ctx.palette;
-    let settings = snapshot.settings();
-    let links = ctx.links.clone();
-    let privacy = facet::controls::button(
-        "settings-registry-metadata",
-        match settings.privacy {
-            PrivacyPreference::LocalOnly => "Local only",
-            PrivacyPreference::RegistryMetadata => "Registry metadata allowed",
-        },
-        &measure,
-    )
-    .ghost()
-    .on_click(move |_, cx| links.dispatch(Intent::TogglePrivacy, cx));
-    leaves.push(setting("Network policy", privacy.into_any_element(), ctx));
-    let links = ctx.links.clone();
-    let advisories = facet::controls::button(
-        "settings-advisories",
-        if settings.advisories { "On" } else { "Off" },
-        &measure,
-    )
-    .ghost()
-    .on_click(move |_, cx| links.dispatch(Intent::ToggleAdvisories, cx));
-    leaves.push(setting(
-        "Registry advisories",
-        advisories.into_any_element(),
-        ctx,
-    ));
-    let links = ctx.links.clone();
-    let cache = facet::controls::button(
-        "settings-cache",
-        if settings.cache_enabled { "On" } else { "Off" },
-        &measure,
-    )
-    .ghost()
-    .on_click(move |_, cx| links.dispatch(Intent::ToggleCache, cx));
-    leaves.push(setting(
-        "Reuse local metadata cache",
-        cache.into_any_element(),
-        ctx,
-    ));
-    let links = ctx.links.clone();
-    let days = div()
-        .flex()
-        .items_center()
-        .gap(measure.space(Space::Base))
-        .child(
-            facet::controls::button("settings-cache-shorter", "−", &measure)
-                .ghost()
-                .on_click({
-                    let links = links.clone();
-                    move |_, cx| links.dispatch(Intent::SetCacheDays { up: false }, cx)
-                }),
-        )
-        .child(
-            text(ty::MONO_ROW, &measure, palette.ink1)
-                .child(ctx.say(format!("{} days", settings.cache_days))),
-        )
-        .child(
-            facet::controls::button("settings-cache-longer", "+", &measure)
-                .ghost()
-                .on_click(move |_, cx| links.dispatch(Intent::SetCacheDays { up: true }, cx)),
-        );
-    leaves.push(setting("Cache retention", days.into_any_element(), ctx));
-    let detail = ctx.say("Project source and index data stay on this machine. Registry metadata requests follow the network policy above.");
+    let detail = ctx.say("Project source and the local index stay on this machine. Registry metadata can be fetched by the local service unless it was started with --registry-offline.");
     leaves.push(Leaf::new(quiet(detail, &measure, palette)));
+    for (label, message) in [
+        (
+            "Network policy",
+            "This desktop build cannot change the local service’s network policy here. See Registry sources for the service-level offline option.",
+        ),
+        (
+            "Advisories",
+            "The saved desktop advisory toggle is not connected to the local service; it has no effect in this build.",
+        ),
+        (
+            "Metadata cache",
+            "Cache enablement and retention are not controlled by this desktop build.",
+        ),
+    ] {
+        let message = ctx.say(message);
+        leaves.push(setting(
+            label,
+            text(ty::SMALL, &measure, palette.ink3)
+                .min_w(px(0.0))
+                .child(message)
+                .into_any_element(),
+            ctx,
+        ));
+    }
     leaves
 }
 
@@ -763,10 +928,40 @@ fn _palette(_: &Palette, _: &Measure) {}
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
-    use super::{find_mcp_binary, locald_companion, mcp_config};
+    use super::{find_mcp_binary, health_notice, locald_companion, mcp_config};
+    use crate::core::{FaultCode, Resource, ResourceTerminal, UnavailableReason};
+    use crate::model::pages::HealthModel;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn index_health_notice_reflects_waiting_and_terminal_failures() {
+        let not_requested: Resource<HealthModel> = Resource::not_yet();
+        assert_eq!(
+            health_notice(&not_requested).as_ref().map(|(message, _)| message.as_str()),
+            Some("The index health report has not been requested yet.")
+        );
+
+        let waiting = not_requested.clone().waiting();
+        assert_eq!(
+            health_notice(&waiting).as_ref().map(|(message, _)| message.as_str()),
+            Some("Waiting for the local index health report.")
+        );
+
+        let unsupported = Resource::unavailable(UnavailableReason::Unsupported);
+        assert_eq!(
+            health_notice(&unsupported),
+            Some(("The connected service does not provide index health.".to_owned(), true))
+        );
+
+        let failed = Resource::error(FaultCode::Transport, "service offline");
+        assert!(matches!(failed.terminal(), ResourceTerminal::Fault(_)));
+        assert_eq!(
+            health_notice(&failed),
+            Some(("The index health check failed: service offline".to_owned(), true))
+        );
+    }
 
     #[test]
     fn mcp_discovery_finds_a_user_install_outside_a_finder_path() {

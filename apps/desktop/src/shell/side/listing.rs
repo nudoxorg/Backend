@@ -27,7 +27,6 @@ use crate::model::pages::{
     PageKey, RecordSource, SearchQuery, Standing, SymbolRef,
 };
 use crate::navigation::{BrowseRoute, OrbitRoute, ReleaseId, Route, SettingsPage};
-use crate::shell::jump::settings_name;
 use crate::shell::kit::{gap_words, package_route};
 use facet::data::release::Crate;
 use facet::icons::{Icon, Kind};
@@ -223,25 +222,12 @@ fn narrowed_by_name(mut listing: Listing, query: &str) -> Listing {
 // ---------------------------------------------------------------- settings
 
 fn settings(inputs: &Inputs<'_>, current: SettingsPage) -> Listing {
-    let rows = [
-        (SettingsPage::Appearance, Icon::Eye),
-        (SettingsPage::Editor, Icon::File),
-        (SettingsPage::Agents, Icon::Users),
-        (SettingsPage::Connections, Icon::Link),
-        (SettingsPage::Privacy, Icon::Lock),
-        (SettingsPage::Diagnostics, Icon::Info),
-        (SettingsPage::Index, Icon::Server),
-        (SettingsPage::Registry, Icon::Globe),
-        (SettingsPage::Legend, Icon::Diamond),
-        (SettingsPage::Help, Icon::Key),
-    ]
-    .into_iter()
-    .map(|(page, icon)| {
+    let rows = SettingsPage::ALL.into_iter().map(|page| {
         let mut item = Item::new(
             RowId::Setting(page),
             0,
-            Mark::Icon(icon),
-            settings_name(page),
+            Mark::Icon(settings_icon(page)),
+            page.menu_label(),
             Do::Settings(page),
         );
         item.current = page == current;
@@ -261,6 +247,23 @@ fn settings(inputs: &Inputs<'_>, current: SettingsPage) -> Listing {
         },
         rows,
         matched: None,
+    }
+}
+
+/// The icon belongs to the view; page identity and order come from the
+/// closed `SettingsPage` vocabulary.
+fn settings_icon(page: SettingsPage) -> Icon {
+    match page {
+        SettingsPage::Appearance => Icon::Eye,
+        SettingsPage::Editor => Icon::File,
+        SettingsPage::Agents => Icon::Users,
+        SettingsPage::Connections => Icon::Link,
+        SettingsPage::Privacy => Icon::Lock,
+        SettingsPage::Diagnostics => Icon::Info,
+        SettingsPage::Index => Icon::Server,
+        SettingsPage::Registry => Icon::Globe,
+        SettingsPage::Legend => Icon::Diamond,
+        SettingsPage::Help => Icon::Key,
     }
 }
 

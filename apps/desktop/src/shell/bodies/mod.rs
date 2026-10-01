@@ -263,7 +263,7 @@ pub(crate) fn build(
     cx: &mut Context<Reader>,
 ) -> Vec<Leaf> {
     match overlay {
-        Some(Overlay::Settings(page)) => return settings::body(page, snapshot, store, ctx, cx),
+        Some(Overlay::Settings(page)) => return settings::body(page, snapshot, store, ctx, window, cx),
         Some(Overlay::Inbox) => return inbox::body(ctx),
         Some(Overlay::AddProject | Overlay::CommandPalette) | None => {}
     }
