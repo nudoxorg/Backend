@@ -119,6 +119,7 @@ pub(super) fn body(
         let state = match project.phase {
             crate::model::ProjectPhase::Indexing => ctx.say("indexing"),
             crate::model::ProjectPhase::Failed => ctx.say("stopped"),
+            crate::model::ProjectPhase::Unconfirmed => ctx.say("outcome unconfirmed"),
             crate::model::ProjectPhase::Cancelling => ctx.say("stopping"),
             crate::model::ProjectPhase::Cancelled => ctx.say("paused"),
             crate::model::ProjectPhase::Missing => ctx.say("folder missing"),

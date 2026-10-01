@@ -61,11 +61,11 @@ pub fn map_event(current: &AppSnapshot, event: EngineEvent) -> Result<AppSnapsho
             return Ok(mark_index_cancelled(current, event_request, &project));
         }
         Err(EngineFault::IndexUnconfirmed { project }) => {
-            return Ok(mark_index_failed(
+            return Ok(mark_index_unconfirmed(
                 current,
                 event_request,
                 &project,
-                "The index reply was interrupted. Its outcome is unconfirmed; refresh the index before retrying.",
+                "The owner's index reply was interrupted. This request may still be running or may have completed; its exact operation must be checked before another index starts.",
             ));
         }
         Err(error) => return Err(MappingError::Engine(error)),
@@ -328,6 +328,25 @@ fn mark_index_failed(
         })
         .collect::<Vec<_>>()
         .into();
+    snapshot.with_workspace(workspace)
+}
+
+fn mark_index_unconfirmed(
+    snapshot: &AppSnapshot,
+    request: RequestId,
+    project: &crate::core::LocalProjectId,
+    message: &str,
+) -> AppSnapshot {
+    let mut workspace = snapshot.workspace().clone();
+    workspace.projects = workspace.projects.iter().cloned().map(|mut item| {
+        if item.id == *project && item.request == Some(request) {
+            item.phase = ProjectPhase::Unconfirmed;
+            item.progress = None;
+            item.request = None;
+            item.error = Some(Arc::from(message));
+        }
+        item
+    }).collect::<Vec<_>>().into();
     snapshot.with_workspace(workspace)
 }
 

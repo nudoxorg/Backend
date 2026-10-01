@@ -90,6 +90,7 @@ impl ProjectCommand {
             ProjectPhase::Cancelling => vec![Self::Reveal],
             ProjectPhase::Cancelled => vec![Self::Resume, Self::Reveal, Self::Remove],
             ProjectPhase::Failed => vec![Self::Retry, Self::Reveal, Self::Remove],
+            ProjectPhase::Unconfirmed => vec![Self::Reveal],
             ProjectPhase::Missing => vec![Self::Locate, Self::Remove],
         }
     }
@@ -105,6 +106,7 @@ mod tests {
         let project = LocalProjectId::new("/tmp/nudox-commands-project").expect("identity");
         let offered = |phase, active| ProjectCommand::for_phase(phase, active).into_iter().map(ProjectCommand::label).collect::<Vec<_>>();
         assert_eq!(offered(ProjectPhase::Failed, true), ["Try again", "Reveal", "Remove from shelf"]);
+        assert_eq!(offered(ProjectPhase::Unconfirmed, true), ["Reveal"], "an ambiguous mutation offers no second submission");
         assert_eq!(offered(ProjectPhase::Cancelled, false), ["Resume", "Reveal", "Remove from shelf"]);
         assert_eq!(offered(ProjectPhase::Missing, false), ["Add it again", "Remove from shelf"], "a folder that is gone cannot be revealed");
         assert_eq!(offered(ProjectPhase::Ready, false), ["Make active", "Reveal", "Remove from shelf"]);

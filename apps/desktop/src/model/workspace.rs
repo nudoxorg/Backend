@@ -24,6 +24,9 @@ pub enum ProjectPhase {
     Cancelled,
     /// The last index attempt failed and can be retried.
     Failed,
+    /// The owner may have accepted the request, but its terminal receipt was lost.
+    /// A new mutation is forbidden until the exact operation is reconciled.
+    Unconfirmed,
     /// The persisted folder no longer exists or is not a directory.
     Missing,
 }
@@ -38,6 +41,7 @@ impl ProjectPhase {
             Self::Cancelling => "Cancelling…",
             Self::Cancelled => "Paused",
             Self::Failed => "Needs attention",
+            Self::Unconfirmed => "Outcome unconfirmed",
             Self::Missing => "Folder missing",
         }
     }

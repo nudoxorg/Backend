@@ -81,6 +81,8 @@ pub enum PersistedProjectPhase {
     Cancelled,
     /// Indexing failed.
     Failed,
+    /// An index request may have committed; its receipt must be reconciled.
+    Unconfirmed,
     /// Folder is no longer available.
     Missing,
 }
@@ -93,6 +95,7 @@ impl From<ProjectPhase> for PersistedProjectPhase {
             ProjectPhase::Cancelling => Self::Cancelling,
             ProjectPhase::Cancelled => Self::Cancelled,
             ProjectPhase::Failed => Self::Failed,
+            ProjectPhase::Unconfirmed => Self::Unconfirmed,
             ProjectPhase::Missing => Self::Missing,
         }
     }
@@ -106,8 +109,23 @@ impl From<PersistedProjectPhase> for ProjectPhase {
             PersistedProjectPhase::Cancelling => Self::Cancelling,
             PersistedProjectPhase::Cancelled => Self::Cancelled,
             PersistedProjectPhase::Failed => Self::Failed,
+            PersistedProjectPhase::Unconfirmed => Self::Unconfirmed,
             PersistedProjectPhase::Missing => Self::Missing,
         }
+    }
+}
+
+#[cfg(test)]
+mod unconfirmed_phase_tests {
+    use super::{PersistedProjectPhase, ProjectPhase};
+
+    #[test]
+    fn uncertain_mutation_survives_the_persisted_phase_boundary() {
+        let saved: PersistedProjectPhase = ProjectPhase::Unconfirmed.into();
+        assert_eq!(saved, PersistedProjectPhase::Unconfirmed);
+        let bytes = serde_json::to_vec(&saved).expect("phase wire");
+        let restored: PersistedProjectPhase = serde_json::from_slice(&bytes).expect("phase wire");
+        assert_eq!(ProjectPhase::from(restored), ProjectPhase::Unconfirmed);
     }
 }
 

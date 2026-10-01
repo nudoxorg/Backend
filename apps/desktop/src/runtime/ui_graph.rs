@@ -385,7 +385,9 @@ impl UiRootEntity {
     }
 
     fn schedule_index(&mut self, project: crate::core::LocalProjectId, cx: &mut Context<Self>) {
-        if self.index_intent_pending(&project) {
+        if self.index_intent_pending(&project)
+            || !self.snapshot().workspace().projects.iter().any(|item| item.id == project && item.phase == crate::model::ProjectPhase::Indexing)
+        {
             return;
         }
         let basis = self.snapshot().key();

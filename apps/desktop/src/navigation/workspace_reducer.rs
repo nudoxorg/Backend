@@ -149,7 +149,7 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
                 .workspace()
                 .projects
                 .iter()
-                .any(|item| item.id == *project)
+                .any(|item| item.id == *project && item.phase == ProjectPhase::Indexing)
             {
                 next =
                     set_project_phase(&next, project, ProjectPhase::Indexing, None, Some(*request));
@@ -167,7 +167,7 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
             } else {
                 let mut workspace = next.workspace().clone();
                 workspace.path_error = Some(Arc::from(
-                    "That project is no longer on the shelf. Choose it again to reopen it.",
+                    "This project is not ready for a new index request. Check its current outcome first.",
                 ));
                 next = next.with_workspace(workspace);
                 effects.push(Effect::Persist);
@@ -256,6 +256,12 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
         }
         Intent::RevealProject(_) | Intent::OpenSource { .. } => {}
         Intent::RetryIndex(project) => {
+            if next.workspace().projects.iter().any(|item| item.id == *project && item.phase == ProjectPhase::Unconfirmed) {
+                let mut workspace = next.workspace().clone();
+                workspace.path_error = Some(Arc::from("The previous index may have committed. Check its exact owner operation before starting another."));
+                next = next.with_workspace(workspace);
+                return Some(Reduction { snapshot: next, effects });
+            }
             let previous_request = next
                 .workspace()
                 .projects
@@ -326,7 +332,7 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
                 .iter()
                 .cloned()
                 .map(|mut project| {
-                    if project.phase != ProjectPhase::Missing {
+                    if !matches!(project.phase, ProjectPhase::Missing | ProjectPhase::Unconfirmed) {
                         project.phase = ProjectPhase::Indexing;
                         project.progress = None;
                         project.files_indexed = None;
@@ -396,11 +402,13 @@ fn admit_project_identity(
     workspace.active = Some(project.clone());
     let mut projects = workspace.projects.to_vec();
     if let Some(existing) = projects.iter_mut().find(|item| item.id == project) {
-        existing.phase = ProjectPhase::Indexing;
-        existing.progress = None;
-        existing.files_indexed = None;
-        existing.error = None;
-        existing.request = None;
+        if existing.phase != ProjectPhase::Unconfirmed {
+            existing.phase = ProjectPhase::Indexing;
+            existing.progress = None;
+            existing.files_indexed = None;
+            existing.error = None;
+            existing.request = None;
+        }
         existing.recent = true;
     } else {
         projects.push(WorkspaceProject::indexing_with_display(
@@ -669,6 +677,22 @@ mod tests {
         let retried = reduce(&activated.snapshot, &Intent::RetryIndex(first)).expect("workspace");
         let row = &retried.snapshot.workspace().projects[0];
         assert_eq!((row.phase, row.error.as_deref()), (ProjectPhase::Indexing, None), "Try again starts it again and forgets the old reason");
+    }
+
+    #[test]
+    fn an_unconfirmed_index_cannot_be_resubmitted_by_retry_add_or_direct_request() {
+        let (snapshot, project, _) = two_ready_projects();
+        let uncertain = set_project_phase(&snapshot, &project, ProjectPhase::Unconfirmed, Some(Arc::from("reply lost")), None);
+        let retry = reduce(&uncertain, &Intent::RetryIndex(project.clone())).expect("retry");
+        assert_eq!(retry.snapshot.workspace().projects[0].phase, ProjectPhase::Unconfirmed);
+        assert!(!retry.effects.iter().any(|effect| matches!(effect, Effect::Engine(_))));
+        let added = reduce(&uncertain, &Intent::AddProject { project: project.clone() }).expect("add");
+        assert_eq!(added.snapshot.workspace().projects[0].phase, ProjectPhase::Unconfirmed);
+        let direct = reduce(&uncertain, &Intent::IndexProject {
+            project, basis: uncertain.key(), request: RequestId::new(53),
+        }).expect("direct index");
+        assert!(!direct.effects.iter().any(|effect| matches!(effect, Effect::Engine(_))));
+        assert_eq!(direct.snapshot.workspace().projects[0].phase, ProjectPhase::Unconfirmed);
     }
 
     #[test]

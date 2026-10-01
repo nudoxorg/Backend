@@ -43,7 +43,7 @@ const TICK: Duration = Duration::from_secs(60);
 pub(crate) fn stages(phase: ProjectPhase) -> Option<[Stage; 3]> {
     let middle = match phase {
         ProjectPhase::Indexing => StageState::Now,
-        ProjectPhase::Cancelling | ProjectPhase::Cancelled => StageState::Stall,
+        ProjectPhase::Cancelling | ProjectPhase::Cancelled | ProjectPhase::Unconfirmed => StageState::Stall,
         ProjectPhase::Failed => StageState::Bad,
         ProjectPhase::Ready | ProjectPhase::Missing => return None,
     };
@@ -60,6 +60,7 @@ fn tip(phase: ProjectPhase, step: usize) -> TipText {
         (0, _) => ("Folder added", "It is on your shelf."),
         (1, ProjectPhase::Failed) => ("Stopped", "Why is written below."),
         (1, ProjectPhase::Cancelling | ProjectPhase::Cancelled) => ("Paused", "Resume it from the project."),
+        (1, ProjectPhase::Unconfirmed) => ("Awaiting the owner", "Its index outcome must be checked."),
         (1, _) => ("Compiling", "One pass; no finer step is reported."),
         _ => ("Ready to browse", "Pages open when the pass ends."),
     };
@@ -589,6 +590,7 @@ mod tests {
         assert_eq!(middle(ProjectPhase::Indexing), Some((StageState::Done, StageState::Now, StageState::Todo)), "asked, no answer yet: running, no fraction");
         assert_eq!(middle(ProjectPhase::Failed), Some((StageState::Done, StageState::Bad, StageState::Todo)), "the owner refused: the step it stopped on is bad");
         assert_eq!(middle(ProjectPhase::Cancelled), Some((StageState::Done, StageState::Stall, StageState::Todo)), "stopped by the person: waiting, not failed");
+        assert_eq!(middle(ProjectPhase::Unconfirmed), Some((StageState::Done, StageState::Stall, StageState::Todo)), "lost receipt never claims a failed or completed job");
         assert_eq!(middle(ProjectPhase::Ready), None, "an answered index has no steps left to show");
         assert!(
             stages(ProjectPhase::Indexing).is_some_and(|steps| steps.iter().all(|step| step.done <= 1.0 && (step.state == StageState::Done || step.done == 0.0))),

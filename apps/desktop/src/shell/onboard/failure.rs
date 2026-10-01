@@ -106,7 +106,7 @@ impl Global for Disclosed {}
 pub(crate) fn stopped(projects: &[WorkspaceProject], ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Option<Leaf> {
     let cards: Vec<_> = projects
         .iter()
-        .filter(|project| matches!(project.phase, ProjectPhase::Failed | ProjectPhase::Cancelled | ProjectPhase::Missing))
+        .filter(|project| matches!(project.phase, ProjectPhase::Failed | ProjectPhase::Cancelled | ProjectPhase::Missing | ProjectPhase::Unconfirmed))
         .collect();
     if cards.is_empty() {
         return None;
@@ -127,6 +127,11 @@ fn card(project: &WorkspaceProject, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>)
             (format!("{} stopped.", project.label), Cause::of(owner).says(), (!owner.is_empty()).then(|| owner.to_owned()))
         }
         ProjectPhase::Cancelled => (format!("{} is paused.", project.label), vec!["Its index was stopped before it finished.".to_owned()], None),
+        ProjectPhase::Unconfirmed => (
+            format!("{} may still be indexing.", project.label),
+            vec![project.error.as_deref().unwrap_or("The owner's answer was lost. A new index request is held until this attempt can be checked.").to_owned()],
+            None,
+        ),
         _ => (
             format!("{} is not where it was.", project.label),
             vec![format!("Nudox looked for it at {}.", project.path)],
