@@ -9,6 +9,7 @@ members = [
     "apps/*",
     "tests/*",
     "tools/*",
+    "vendor/gpui-ce",
 ]
 exclude = [
     ".config/dylint",
