@@ -69,7 +69,9 @@ impl Door {
 
     /// Parts open a tooltip.
     #[must_use]
-    pub fn tip(build: impl Fn(usize, &Measure, &mut Window, &mut App) -> AnyElement + 'static) -> Self {
+    pub fn tip(
+        build: impl Fn(usize, &Measure, &mut Window, &mut App) -> AnyElement + 'static,
+    ) -> Self {
         Self::new(Opens::Tip, build)
     }
 
@@ -90,7 +92,10 @@ impl Door {
 
     /// What Enter or a click on part `index` does.
     #[must_use]
-    pub fn on_activate(mut self, activate: impl Fn(usize, &mut Window, &mut App) + 'static) -> Self {
+    pub fn on_activate(
+        mut self,
+        activate: impl Fn(usize, &mut Window, &mut App) + 'static,
+    ) -> Self {
         self.activate = Some(Rc::new(activate));
         self
     }
@@ -102,7 +107,13 @@ impl Door {
     }
 
     /// Builds part `index`'s content (the scenes place lenses with this).
-    pub fn build(&self, index: usize, measure: &Measure, window: &mut Window, cx: &mut App) -> AnyElement {
+    pub fn build(
+        &self,
+        index: usize,
+        measure: &Measure,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> AnyElement {
         (self.build)(index, measure, window, cx)
     }
 
@@ -114,7 +125,10 @@ impl Door {
 /// The float key of one part: `<mark>/part-<index>`.
 #[must_use]
 pub fn part_key(mark: &ElementId, index: usize) -> ElementId {
-    ElementId::NamedChild(Arc::new(mark.clone()), SharedString::from(format!("part-{index}")))
+    ElementId::NamedChild(
+        Arc::new(mark.clone()),
+        SharedString::from(format!("part-{index}")),
+    )
 }
 
 /// One part currently reported as rested on.
@@ -148,7 +162,13 @@ impl Global for Ledger {}
 pub fn rested(cx: &App) -> Vec<(ElementId, Rested)> {
     let mut all: Vec<(ElementId, Rested)> = cx
         .try_global::<Ledger>()
-        .map(|ledger| ledger.rested.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        .map(|ledger| {
+            ledger
+                .rested
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        })
         .unwrap_or_default();
     all.sort_by_key(|(key, _)| key.to_string());
     all
@@ -171,11 +191,20 @@ impl Opens {
     }
 }
 
-fn request(mark: &ElementId, part: usize, anchor: Bounds<Pixels>, side: Side, door: &Door) -> FloatRequest {
+fn request(
+    mark: &ElementId,
+    part: usize,
+    anchor: Bounds<Pixels>,
+    side: Side,
+    door: &Door,
+) -> FloatRequest {
     let build = door.build.clone();
-    FloatRequest::new(part_key(mark, part), anchor, door.opens.kind(), move |measure, window, cx| {
-        build(part, measure, window, cx)
-    })
+    FloatRequest::new(
+        part_key(mark, part),
+        anchor,
+        door.opens.kind(),
+        move |measure, window, cx| build(part, measure, window, cx),
+    )
     .side(side)
 }
 
@@ -281,7 +310,13 @@ pub(crate) fn close(mark: &ElementId, window: &mut Window, cx: &mut App) -> bool
 }
 
 /// Every frame: the rested part's rect, so its card follows the mark.
-pub(crate) fn anchor(mark: &ElementId, part: usize, rect: Bounds<Pixels>, window: &Window, cx: &mut App) {
+pub(crate) fn anchor(
+    mark: &ElementId,
+    part: usize,
+    rect: Bounds<Pixels>,
+    window: &Window,
+    cx: &mut App,
+) {
     if let Some(rested) = cx.default_global::<Ledger>().rested.get_mut(mark)
         && rested.part == part
     {

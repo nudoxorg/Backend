@@ -15,8 +15,8 @@
 #![allow(clippy::too_many_lines)]
 
 use super::{
-    Book, Bead, Here, Lights, RowTone, ShelfData, ShelfRow, TitleButton, TitlebarData, shelf, spine,
-    status_bar, titlebar,
+    Bead, Book, Here, Lights, RowTone, ShelfData, ShelfRow, TitleButton, TitlebarData, shelf,
+    spine, status_bar, titlebar,
 };
 use crate::Set;
 use crate::fluid::Modes;
@@ -192,8 +192,12 @@ fn flow_rows() -> Vec<ShelfRow> {
         ShelfRow::new("RelationDirection", Kind::Enum, "RelationDirection")
             .depth(1)
             .note("4 uses"),
-        ShelfRow::new("KindGlyph", Kind::Struct, "KindGlyph").depth(1).note("2 uses"),
-        ShelfRow::new("GlyphSet", Kind::Trait, "GlyphSet").depth(1).tone(RowTone::Dim),
+        ShelfRow::new("KindGlyph", Kind::Struct, "KindGlyph")
+            .depth(1)
+            .note("2 uses"),
+        ShelfRow::new("GlyphSet", Kind::Trait, "GlyphSet")
+            .depth(1)
+            .tone(RowTone::Dim),
         ShelfRow::new("relation_label", Kind::Function, "relation_label").depth(1),
         ShelfRow::new("MAX_GLYPHS", Kind::Constant, "MAX_GLYPHS")
             .depth(1)
@@ -270,7 +274,14 @@ fn reader(measure: &Measure, cx: &App) -> AnyElement {
 }
 
 /// The whole frame for a window `width` × `height` under `facet`.
-fn window_frame(facet: &Facet, width: f32, height: f32, filter: &Entity<InputState>, window: &mut Window, cx: &mut App) -> AnyElement {
+fn window_frame(
+    facet: &Facet,
+    width: f32,
+    height: f32,
+    filter: &Entity<InputState>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
     let palette = cx.palette();
     let win = facet.measure(px(width));
     let s = win.scale();
@@ -281,10 +292,9 @@ fn window_frame(facet: &Facet, width: f32, height: f32, filter: &Entity<InputSta
     let dock = modes.settle(&DOCK, room).mode;
     let shelf_w = f32::from(MOCK_SHELF.at(room));
     let side: Option<AnyElement> = match dock {
-        Dock::Shelf => Some(
-            shelf("shelf", shelf_data(filter), &facet.measure(px(shelf_w)))
-                .into_any_element(),
-        ),
+        Dock::Shelf => {
+            Some(shelf("shelf", shelf_data(filter), &facet.measure(px(shelf_w))).into_any_element())
+        }
         Dock::Spine => Some(
             spine(
                 "spine",
@@ -304,7 +314,13 @@ fn window_frame(facet: &Facet, width: f32, height: f32, filter: &Entity<InputSta
     let pins = (modes.settle(&PINS, room).mode == Pins::Column)
         .then(|| super::pins_frame(&facet.measure(px(pins_w)), window, cx));
     let reader_w = width
-        - side.as_ref().map_or(0.0, |_| if dock == Dock::Shelf { shelf_w } else { f32::from(geo::KSPINE) * s })
+        - side.as_ref().map_or(0.0, |_| {
+            if dock == Dock::Shelf {
+                shelf_w
+            } else {
+                f32::from(geo::KSPINE) * s
+            }
+        })
         - pins.as_ref().map_or(0.0, |_| pins_w);
     div()
         .size_full()
@@ -404,13 +420,11 @@ impl Render for Chrome {
                                 .flex()
                                 .flex_1()
                                 .min_h(px(0.0))
-                                .child(
-                                    shelf(
-                                        ElementId::from(SharedString::from(format!("shelf-{label}"))),
-                                        shelf_data(&self.filter),
-                                        &facet.measure(px(264.0)),
-                                    ),
-                                )
+                                .child(shelf(
+                                    ElementId::from(SharedString::from(format!("shelf-{label}"))),
+                                    shelf_data(&self.filter),
+                                    &facet.measure(px(264.0)),
+                                ))
                                 .child(
                                     div().flex_1().p(px(16.0)).child(
                                         div()
@@ -447,7 +461,11 @@ impl Render for Chrome {
                     .relative()
                     .bg(palette.g1)
                     .child(ground())
-                    .child(titlebar("thread", trail_at(step), &facet.measure(px(width))))
+                    .child(titlebar(
+                        "thread",
+                        trail_at(step),
+                        &facet.measure(px(width)),
+                    ))
                     .into_any_element()
             }
         };

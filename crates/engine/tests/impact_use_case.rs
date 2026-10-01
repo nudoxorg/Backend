@@ -11,8 +11,7 @@
 mod use_case_support;
 
 use std::{
-    fs,
-    io,
+    fs, io,
     path::{Path, PathBuf},
     process::Command,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
@@ -125,10 +124,16 @@ fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() {
         return false;
     }
-    haystack.windows(needle.len()).any(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
 }
 
-fn entity_id(ir: &Ir, name: &[u8], kind: EntityKind) -> Result<backend_semantic::ir::EntityId, TestError> {
+fn entity_id(
+    ir: &Ir,
+    name: &[u8],
+    kind: EntityKind,
+) -> Result<backend_semantic::ir::EntityId, TestError> {
     ir.items()
         .find(|item| item.name() == name && item.kind() == kind)
         .map(|item| item.id())
@@ -162,10 +167,7 @@ fn caller_links_to_local_callee(
     ))
 }
 
-fn impact_owner_names(
-    ir: &Ir,
-    callee: backend_semantic::ir::EntityId,
-) -> Vec<&[u8]> {
+fn impact_owner_names(ir: &Ir, callee: backend_semantic::ir::EntityId) -> Vec<&[u8]> {
     let mut owners = Vec::new();
     for (_, link) in ir.links_to(callee) {
         if !matches!(link.kind, LinkKind::Calls | LinkKind::MethodCall) {
@@ -199,7 +201,10 @@ fn declaration_matches_where_is(
     entity: backend_semantic::ir::EntityId,
     name: &[u8],
 ) -> bool {
-    if WHERE_IS_NEEDLES.iter().any(|needle| contains_bytes(name, needle)) {
+    if WHERE_IS_NEEDLES
+        .iter()
+        .any(|needle| contains_bytes(name, needle))
+    {
         return true;
     }
     if let Some(docs) = ir.display_docs(entity) {
@@ -218,7 +223,10 @@ fn declaration_matches_where_is(
             DocFragment::SoftBreak | DocFragment::HardBreak => None,
         };
         if let Some(text) = bytes {
-            if WHERE_IS_NEEDLES.iter().any(|needle| contains_bytes(text.as_bytes(), needle)) {
+            if WHERE_IS_NEEDLES
+                .iter()
+                .any(|needle| contains_bytes(text.as_bytes(), needle))
+            {
                 return true;
             }
         }
@@ -260,11 +268,9 @@ fn assert_bench_report(
         operation: "read bench report",
         source,
     })?;
-    let stored: StoredBenchReport = serde_json::from_str(&body).map_err(|error| {
-        TestError::Io {
-            operation: "decode bench report",
-            source: io::Error::new(io::ErrorKind::InvalidData, error),
-        }
+    let stored: StoredBenchReport = serde_json::from_str(&body).map_err(|error| TestError::Io {
+        operation: "decode bench report",
+        source: io::Error::new(io::ErrorKind::InvalidData, error),
     })?;
     if stored.use_case != USE_CASE {
         return Err(TestError::Falsified("bench report use_case mismatch"));

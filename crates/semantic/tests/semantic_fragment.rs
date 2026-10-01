@@ -12,7 +12,9 @@ use backend_semantic::ir::{
     FragmentError, FragmentView, PrepareError, PreparedFragment, PrimitiveType, SourceIdentity,
     TypeNode, WriteError, canonicalize_data_with_budget,
 };
-use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
+use backend_semantic::vocabulary::{
+    CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage,
+};
 use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 
@@ -37,13 +39,14 @@ enum TestFailure {
 const SOURCE_BYTES: &[u8] = b"semantic-fragment-source";
 const TEST_MAX_REFINEMENT_ROUNDS: u32 = 4;
 const TEST_MAX_SEMANTIC_WORK: u64 = 128;
-const TEST_SEMANTIC_BUDGET: backend_semantic::ir::DataResourceBudget = backend_semantic::ir::DataResourceBudget {
-    max_refinement_rounds: TEST_MAX_REFINEMENT_ROUNDS,
-    max_sort_comparisons: TEST_MAX_SEMANTIC_WORK,
-    max_hash_evaluations: TEST_MAX_SEMANTIC_WORK,
-    max_intern_probes: TEST_MAX_SEMANTIC_WORK,
-    max_work: TEST_MAX_SEMANTIC_WORK,
-};
+const TEST_SEMANTIC_BUDGET: backend_semantic::ir::DataResourceBudget =
+    backend_semantic::ir::DataResourceBudget {
+        max_refinement_rounds: TEST_MAX_REFINEMENT_ROUNDS,
+        max_sort_comparisons: TEST_MAX_SEMANTIC_WORK,
+        max_hash_evaluations: TEST_MAX_SEMANTIC_WORK,
+        max_intern_probes: TEST_MAX_SEMANTIC_WORK,
+        max_work: TEST_MAX_SEMANTIC_WORK,
+    };
 
 fn source_identity() -> Result<SourceIdentity, TestFailure> {
     let byte_len =

@@ -21,10 +21,10 @@ use crate::measure::{Measure, Set};
 use crate::theme::ActiveFacet;
 use crate::tokens::{Face, Palette, TypeRole};
 use gpui::{
-    AnyElement, App, BorderStyle, Bounds, Element, ElementId, FontStyle, FontWeight, GlobalElementId,
-    Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, MouseMoveEvent,
-    ParentElement, Pixels, SharedString, StyledText, TextLayout, TextRun, Window, div, fill,
-    outline, point, px, size,
+    AnyElement, App, BorderStyle, Bounds, Element, ElementId, FontStyle, FontWeight,
+    GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
+    MouseMoveEvent, ParentElement, Pixels, SharedString, StyledText, TextLayout, TextRun, Window,
+    div, fill, outline, point, px, size,
 };
 use std::ops::Range;
 use std::rc::Rc;
@@ -125,7 +125,10 @@ pub fn range_rects(layout: &TextLayout, range: &Range<usize>) -> Vec<Bounds<Pixe
         return Vec::new();
     };
     if range.start >= range.end {
-        return vec![Bounds::from_corners(seg_start, point(seg_start.x, seg_start.y + layout.line_height()))];
+        return vec![Bounds::from_corners(
+            seg_start,
+            point(seg_start.x, seg_start.y + layout.line_height()),
+        )];
     }
     let line = layout.line_height();
     let text = layout.text();
@@ -141,12 +144,18 @@ pub fn range_rects(layout: &TextLayout, range: &Range<usize>) -> Vec<Bounds<Pixe
             continue;
         };
         if (pos.y - seg_start.y).abs() >= px(0.5) {
-            rects.push(Bounds::from_corners(seg_start, point(layout.bounds().right(), seg_start.y + line)));
+            rects.push(Bounds::from_corners(
+                seg_start,
+                point(layout.bounds().right(), seg_start.y + line),
+            ));
             seg_start = pos;
         }
         last = pos;
     }
-    rects.push(Bounds::from_corners(seg_start, point(last.x, seg_start.y + line)));
+    rects.push(Bounds::from_corners(
+        seg_start,
+        point(last.x, seg_start.y + line),
+    ));
     rects
 }
 
@@ -195,7 +204,8 @@ impl Element for Words {
         window: &mut Window,
         cx: &mut App,
     ) -> WordsPrepaint {
-        self.text.prepaint(None, inspector_id, bounds, state, window, cx);
+        self.text
+            .prepaint(None, inspector_id, bounds, state, window, cx);
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         let layout = self.text.layout().clone();
         let rects: Vec<Option<Bounds<Pixels>>> = self
@@ -206,7 +216,12 @@ impl Element for Words {
                 if let Some(rect) = rect {
                     float::anchor(&link.key, rect, window, cx);
                     let request = link.request.clone();
-                    super::hint::target(rect, move |window, cx| float::open(request(rect), window, cx), window, cx);
+                    super::hint::target(
+                        rect,
+                        move |window, cx| float::open(request(rect), window, cx),
+                        window,
+                        cx,
+                    );
                 }
                 rect
             })
@@ -243,7 +258,13 @@ impl Element for Words {
                         let mut x = rect.left();
                         while x < rect.right() {
                             let width = px(2.0).min(rect.right() - x);
-                            window.paint_quad(fill(Bounds::new(point(x, rect.bottom() - px(1.0)), size(width, px(1.0))), line3));
+                            window.paint_quad(fill(
+                                Bounds::new(
+                                    point(x, rect.bottom() - px(1.0)),
+                                    size(width, px(1.0)),
+                                ),
+                                line3,
+                            ));
                             x += px(4.0);
                         }
                     }
@@ -375,7 +396,9 @@ impl Piece {
     #[must_use]
     pub fn text(&self) -> &str {
         match self {
-            Self::Plain(text) | Self::Code(text) | Self::Emphasis(text) | Self::Strong(text) => text,
+            Self::Plain(text) | Self::Code(text) | Self::Emphasis(text) | Self::Strong(text) => {
+                text
+            }
             Self::Reference { label, .. } | Self::Shortcut { label, .. } => label,
         }
     }
@@ -391,11 +414,20 @@ pub fn parse(markup: &str) -> Vec<Piece> {
         plain.push_str(&rest[..at]);
         let marked = &rest[at..];
         let parsed = if let Some(after) = marked.strip_prefix("**") {
-            after.find("**").filter(|end| *end > 0).map(|end| (Piece::Strong(after[..end].to_owned()), end + 4))
+            after
+                .find("**")
+                .filter(|end| *end > 0)
+                .map(|end| (Piece::Strong(after[..end].to_owned()), end + 4))
         } else if let Some(after) = marked.strip_prefix('*') {
-            after.find('*').filter(|end| *end > 0).map(|end| (Piece::Emphasis(after[..end].to_owned()), end + 2))
+            after
+                .find('*')
+                .filter(|end| *end > 0)
+                .map(|end| (Piece::Emphasis(after[..end].to_owned()), end + 2))
         } else if let Some(after) = marked.strip_prefix('`') {
-            after.find('`').filter(|end| *end > 0).map(|end| (Piece::Code(after[..end].to_owned()), end + 2))
+            after
+                .find('`')
+                .filter(|end| *end > 0)
+                .map(|end| (Piece::Code(after[..end].to_owned()), end + 2))
         } else if let Some(after) = marked.strip_prefix('[') {
             after.find(']').and_then(|end| {
                 let label = &after[..end];
@@ -408,14 +440,38 @@ pub fn parse(markup: &str) -> Vec<Piece> {
                     (&target[..close], end + close + 4)
                 } else if label.chars().any(char::is_whitespace) || label.starts_with('`') {
                     let code = label.len() > 2 && label.starts_with('`') && label.ends_with('`');
-                    let label = if code { &label[1..label.len() - 1] } else { label };
-                    return Some((Piece::Shortcut { label: label.to_owned(), code }, end + 2));
-                } else { return None };
-                (!label.is_empty() && !target.is_empty()).then(|| (Piece::Reference { label: label.to_owned(), target: target.to_owned() }, consumed))
+                    let label = if code {
+                        &label[1..label.len() - 1]
+                    } else {
+                        label
+                    };
+                    return Some((
+                        Piece::Shortcut {
+                            label: label.to_owned(),
+                            code,
+                        },
+                        end + 2,
+                    ));
+                } else {
+                    return None;
+                };
+                (!label.is_empty() && !target.is_empty()).then(|| {
+                    (
+                        Piece::Reference {
+                            label: label.to_owned(),
+                            target: target.to_owned(),
+                        },
+                        consumed,
+                    )
+                })
             })
-        } else { None };
+        } else {
+            None
+        };
         if let Some((piece, consumed)) = parsed {
-            if !plain.is_empty() { pieces.push(Piece::Plain(std::mem::take(&mut plain))); }
+            if !plain.is_empty() {
+                pieces.push(Piece::Plain(std::mem::take(&mut plain)));
+            }
             pieces.push(piece);
             rest = &marked[consumed..];
         } else {
@@ -490,7 +546,10 @@ impl Prose {
 
     /// The styled text and its links, for embedding.
     #[must_use]
-    pub fn build(&self, palette: &Palette) -> (StyledText, Vec<(Range<usize>, Link)>, Vec<Range<usize>>) {
+    pub fn build(
+        &self,
+        palette: &Palette,
+    ) -> (StyledText, Vec<(Range<usize>, Link)>, Vec<Range<usize>>) {
         let base = self.role;
         let code = TypeRole {
             face: Face::Mono,
@@ -503,7 +562,11 @@ impl Prose {
             italic: false,
             ..base
         };
-        let strong = TypeRole { weight: 700.0, italic: false, ..base };
+        let strong = TypeRole {
+            weight: 700.0,
+            italic: false,
+            ..base
+        };
         let ink = self.color.unwrap_or_else(|| palette.ink1.into());
         let bright: Hsla = palette.ink0.into();
         let quiet_code = self.code_color.unwrap_or(bright);
@@ -518,7 +581,9 @@ impl Prose {
                 Piece::Emphasis(text) => {
                     runs.push(&text, emphasis, bright);
                 }
-                Piece::Strong(text) => { runs.push(&text, strong, bright); }
+                Piece::Strong(text) => {
+                    runs.push(&text, strong, bright);
+                }
                 Piece::Code(text) => {
                     let link = self
                         .resolver
@@ -536,12 +601,25 @@ impl Prose {
                     }
                 }
                 Piece::Reference { label, target } => {
-                    let link = self.resolver.as_ref().and_then(|resolve| resolve(&target, occurrence));
+                    let link = self
+                        .resolver
+                        .as_ref()
+                        .and_then(|resolve| resolve(&target, occurrence));
                     let range = runs.push(&label, base, if link.is_some() { bright } else { ink });
-                    if let Some(link) = link { linked.push(range.clone()); links.push((range, link)); }
+                    if let Some(link) = link {
+                        linked.push(range.clone());
+                        links.push((range, link));
+                    }
                 }
-                Piece::Shortcut { label, code: is_code } => {
-                    runs.push(&label, if is_code { code } else { base }, if is_code { quiet_code } else { ink });
+                Piece::Shortcut {
+                    label,
+                    code: is_code,
+                } => {
+                    runs.push(
+                        &label,
+                        if is_code { code } else { base },
+                        if is_code { quiet_code } else { ink },
+                    );
                 }
             }
         }
@@ -738,7 +816,11 @@ impl Sig {
         &self,
         role: TypeRole,
         palette: &Palette,
-    ) -> (StyledText, Vec<(Range<usize>, Link)>, Vec<(Range<usize>, Decor)>) {
+    ) -> (
+        StyledText,
+        Vec<(Range<usize>, Link)>,
+        Vec<(Range<usize>, Decor)>,
+    ) {
         let mut runs = Runs::default();
         let mut links = Vec::new();
         let mut decor = Vec::new();
@@ -796,14 +878,22 @@ mod tests {
                 Piece::Plain(" by the compiler.".into()),
             ]
         );
-        assert_eq!(parse("2 * 3 and a `lone tick"), [Piece::Plain("2 * 3 and a `lone tick".into())]);
+        assert_eq!(
+            parse("2 * 3 and a `lone tick"),
+            [Piece::Plain("2 * 3 and a `lone tick".into())]
+        );
         assert_eq!(
             parse("A **data structure** using `T`; see [the manual][crate::ser]."),
             [
-                Piece::Plain("A ".into()), Piece::Strong("data structure".into()),
-                Piece::Plain(" using ".into()), Piece::Code("T".into()),
+                Piece::Plain("A ".into()),
+                Piece::Strong("data structure".into()),
+                Piece::Plain(" using ".into()),
+                Piece::Code("T".into()),
                 Piece::Plain("; see ".into()),
-                Piece::Reference { label: "the manual".into(), target: "crate::ser".into() },
+                Piece::Reference {
+                    label: "the manual".into(),
+                    target: "crate::ser".into()
+                },
                 Piece::Plain(".".into()),
             ],
         );
@@ -811,9 +901,15 @@ mod tests {
             parse("Use [`serde_derive`] or [derive section of the manual]; keep [T] literal."),
             [
                 Piece::Plain("Use ".into()),
-                Piece::Shortcut { label: "serde_derive".into(), code: true },
+                Piece::Shortcut {
+                    label: "serde_derive".into(),
+                    code: true
+                },
                 Piece::Plain(" or ".into()),
-                Piece::Shortcut { label: "derive section of the manual".into(), code: false },
+                Piece::Shortcut {
+                    label: "derive section of the manual".into(),
+                    code: false
+                },
                 Piece::Plain("; keep [T] literal.".into()),
             ],
         );

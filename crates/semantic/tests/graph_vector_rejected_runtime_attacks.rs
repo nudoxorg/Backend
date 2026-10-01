@@ -1,6 +1,11 @@
 //! Exercises the `backend-semantic::graph_vector` tests rejected-runtime-attacks contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
+use backend_semantic::graph_vector::{
+    Cancellation, GraphAuthority, GraphDegradation, GraphEdge, GraphLease, GraphStreamEvent,
+    GraphTerminal, LeaseCapacity, PartitionId, ProjectionId, StreamCapacityError, TraceProbe,
+};
+use backend_semantic::index_vocabulary::IndexSnapshotId;
 use backend_semantic::ir::EntityId;
 use core::{
     mem::size_of,
@@ -8,11 +13,6 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
     task::{Context, Poll, Waker},
 };
-use backend_semantic::graph_vector::{
-    Cancellation, GraphAuthority, GraphDegradation, GraphEdge, GraphLease, GraphStreamEvent,
-    GraphTerminal, LeaseCapacity, PartitionId, ProjectionId, StreamCapacityError, TraceProbe,
-};
-use backend_semantic::index_vocabulary::IndexSnapshotId;
 use std::{sync::Arc, task::Wake, thread};
 
 fn authority(byte: u8) -> GraphAuthority {

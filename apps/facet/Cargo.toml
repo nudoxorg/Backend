@@ -29,13 +29,23 @@ smallvec.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 backend-gui-harness = { path = "../../tools/gui-harness", optional = true }
-image = { version = "0.25.10", default-features = false, features = ["png"], optional = true }
+image = { version = "0.25.10", default-features = false, features = [
+  "png",
+], optional = true }
 
 [features]
 default = ["highlight"]
 # Tree-sitter highlighting (`facet::code`) for the seven ecosystems' languages,
 # on the grammar versions the engine's frontends already pin.
-highlight = ["gpui_component/tree-sitter-rust", "gpui_component/tree-sitter-typescript", "gpui_component/tree-sitter-python", "gpui_component/tree-sitter-go", "gpui_component/tree-sitter-java", "gpui_component/tree-sitter-csharp", "gpui_component/tree-sitter-cpp"]
+highlight = [
+  "gpui_component/tree-sitter-rust",
+  "gpui_component/tree-sitter-typescript",
+  "gpui_component/tree-sitter-python",
+  "gpui_component/tree-sitter-go",
+  "gpui_component/tree-sitter-java",
+  "gpui_component/tree-sitter-csharp",
+  "gpui_component/tree-sitter-cpp",
+]
 # Lane W-Float bring-up gate for new overlay modules (removed at the end).
 overlay-wip = []
 # The release fixture (toml, smallvec; ~395 KB embedded) outside the gallery:
@@ -45,13 +55,24 @@ release-fixture = []
 graph-wip = []
 # The gallery binary: every component state as a scene, captured headless
 # through the shared harness at a fixed virtual time.
-gallery = ["dep:backend-gui-harness", "dep:image", "dep:gpui_platform", "gpui_component/headless"]
+gallery = [
+  "dep:backend-gui-harness",
+  "dep:image",
+  "dep:gpui_platform",
+  "gpui_component/headless",
+]
 
 [target.'cfg(target_os = "macos")'.dependencies]
-gpui_platform = { workspace = true, features = ["font-kit", "runtime_shaders"], optional = true }
+gpui_platform = { workspace = true, features = [
+  "font-kit",
+  "runtime_shaders",
+], optional = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
-gpui_platform = { workspace = true, features = ["x11", "wayland"], optional = true }
+gpui_platform = { workspace = true, features = [
+  "x11",
+  "wayland",
+], optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 gpui_platform = { workspace = true, features = ["wgpu"], optional = true }

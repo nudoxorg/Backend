@@ -1578,7 +1578,10 @@ pub(crate) fn structural_reference_facts(
             BuiltinModelError("structural references target has no declaration name".to_owned())
         })?;
     let target_identity = structural_symbol_identity(target_symbol);
-    let root = sources.projects.get(&package.to_bytes()).map(|project| std::path::PathBuf::from(&project.label));
+    let root = sources
+        .projects
+        .get(&package.to_bytes())
+        .map(|project| std::path::PathBuf::from(&project.label));
     let mut files = BTreeMap::new();
     let mut facts = Vec::new();
     for relation in relations {
@@ -1597,19 +1600,31 @@ pub(crate) fn structural_reference_facts(
         // The place is where the call is in the file; a call the text
         // does not show (only in a comment, or the file changed since) has
         // no place rather than a made-up one.
-        let source = match (site_row.source.captured(), site_row.excerpt.text(), root.as_deref()) {
-            (Some(location), Some(excerpt), Some(root)) => structural_call_span(excerpt, target_name)
-                .and_then(|span| structural_file_span(root, location, excerpt, span, &mut files))
-                .map(|(start, end)| {
-                    Ok::<_, BuiltinModelError>(backend_engine::SemanticSourceSpan {
-                        file: backend_engine::ProductText::new(location.path()).map_err(|error| {
-                            BuiltinModelError(format!("structural references path: {error:?}"))
-                        })?,
-                        start,
-                        end,
+        let source = match (
+            site_row.source.captured(),
+            site_row.excerpt.text(),
+            root.as_deref(),
+        ) {
+            (Some(location), Some(excerpt), Some(root)) => {
+                structural_call_span(excerpt, target_name)
+                    .and_then(|span| {
+                        structural_file_span(root, location, excerpt, span, &mut files)
                     })
-                })
-                .transpose()?,
+                    .map(|(start, end)| {
+                        Ok::<_, BuiltinModelError>(backend_engine::SemanticSourceSpan {
+                            file: backend_engine::ProductText::new(location.path()).map_err(
+                                |error| {
+                                    BuiltinModelError(format!(
+                                        "structural references path: {error:?}"
+                                    ))
+                                },
+                            )?,
+                            start,
+                            end,
+                        })
+                    })
+                    .transpose()?
+            }
             _ => None,
         };
         facts.push(backend_engine::ReferenceFact {
@@ -1666,7 +1681,8 @@ pub(crate) fn structural_call_span(excerpt: &str, callee: &str) -> Option<(usize
             }
             b'/' if bytes.get(index + 1) == Some(&b'*') => {
                 index += 2;
-                while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/') {
+                while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
+                {
                     index += 1;
                 }
                 index = index.saturating_add(2).min(bytes.len());
@@ -1686,8 +1702,16 @@ pub(crate) fn structural_call_span(excerpt: &str, callee: &str) -> Option<(usize
             }
             // A character literal (`'a'`, `'\n'`); a lifetime (`'a`) has no
             // closing quote within two bytes and is read as code.
-            b'\'' if bytes.get(index + 2) == Some(&b'\'') || (bytes.get(index + 1) == Some(&b'\\') && bytes.get(index + 3) == Some(&b'\'')) => {
-                index += if bytes.get(index + 1) == Some(&b'\\') { 4 } else { 3 };
+            b'\''
+                if bytes.get(index + 2) == Some(&b'\'')
+                    || (bytes.get(index + 1) == Some(&b'\\')
+                        && bytes.get(index + 3) == Some(&b'\'')) =>
+            {
+                index += if bytes.get(index + 1) == Some(&b'\\') {
+                    4
+                } else {
+                    3
+                };
             }
             _ if bytes[index..].starts_with(needle)
                 && bytes.get(index + needle.len()) == Some(&b'(')
@@ -1717,20 +1741,30 @@ pub(crate) fn structural_file_span(
         .entry(location.path().to_owned())
         .or_insert_with(|| std::fs::read_to_string(root.join(location.path())).ok())
         .as_deref()?;
-    let line = usize::try_from(location.start_line()).ok()?.checked_sub(1)?;
+    let line = usize::try_from(location.start_line())
+        .ok()?
+        .checked_sub(1)?;
     let line_start = if line == 0 {
         0
     } else {
-        text.match_indices('\n').nth(line - 1).map(|(at, _)| at + 1)?
+        text.match_indices('\n')
+            .nth(line - 1)
+            .map(|(at, _)| at + 1)?
     };
-    let line_text = &text[line_start..text[line_start..].find('\n').map_or(text.len(), |end| line_start + end)];
+    let line_text = &text[line_start
+        ..text[line_start..]
+            .find('\n')
+            .map_or(text.len(), |end| line_start + end)];
     let first_line = excerpt.split('\n').next()?;
     let declaration = line_start + line_text.find(first_line)?;
     let covered = excerpt.get(..span.1)?;
     if text.get(declaration..declaration + covered.len())? != covered {
         return None;
     }
-    Some((u32::try_from(declaration + span.0).ok()?, u32::try_from(declaration + span.1).ok()?))
+    Some((
+        u32::try_from(declaration + span.0).ok()?,
+        u32::try_from(declaration + span.1).ok()?,
+    ))
 }
 
 #[cfg(test)]
@@ -1743,8 +1777,16 @@ mod call_span_tests {
         let excerpt = "fn retain(&mut self) {\n    // as_str(key) was here\n    /* as_str( */\n    let s = \"as_str(\";\n    let c = '(';\n    has_str(x);\n    self.map.retain(|key, value| keep(key.as_str(), value));\n}";
         let (start, end) = structural_call_span(excerpt, "as_str").expect("the call in code");
         assert_eq!(&excerpt[start..end], "as_str");
-        assert!(excerpt[..start].ends_with("key."), "the call, not a comment, a string or has_str: {}", &excerpt[start.saturating_sub(10)..end]);
-        assert_eq!(structural_call_span("fn f() {\n    /// as_str(x)\n    // as_str(y)\n}", "as_str"), None, "only comments: no use");
+        assert!(
+            excerpt[..start].ends_with("key."),
+            "the call, not a comment, a string or has_str: {}",
+            &excerpt[start.saturating_sub(10)..end]
+        );
+        assert_eq!(
+            structural_call_span("fn f() {\n    /// as_str(x)\n    // as_str(y)\n}", "as_str"),
+            None,
+            "only comments: no use"
+        );
     }
 
     #[test]
@@ -1756,12 +1798,26 @@ mod call_span_tests {
         let excerpt = "pub fn retain(&mut self) {\n        self.map.retain(|key, value| keep(key.as_str(), value));\n    }";
         let location = backend_compile::SourceLocation::new("src/map.rs", 5).expect("location");
         let span = structural_call_span(excerpt, "as_str").expect("the call");
-        let (start, end) = structural_file_span(&root, &location, excerpt, span, &mut BTreeMap::new()).expect("placed");
+        let (start, end) =
+            structural_file_span(&root, &location, excerpt, span, &mut BTreeMap::new())
+                .expect("placed");
         let (start, end) = (start as usize, end as usize);
         assert_eq!(&file[start..end], "as_str", "the file's own bytes");
-        assert_eq!(file[..start].matches('\n').count() + 1, 6, "on the call's line, not in the license header");
-        std::fs::write(root.join("src/map.rs"), file.replace("key.as_str()", "key.to_str()")).expect("edit");
-        assert_eq!(structural_file_span(&root, &location, excerpt, span, &mut BTreeMap::new()), None, "a file that no longer holds the indexed text places nothing");
+        assert_eq!(
+            file[..start].matches('\n').count() + 1,
+            6,
+            "on the call's line, not in the license header"
+        );
+        std::fs::write(
+            root.join("src/map.rs"),
+            file.replace("key.as_str()", "key.to_str()"),
+        )
+        .expect("edit");
+        assert_eq!(
+            structural_file_span(&root, &location, excerpt, span, &mut BTreeMap::new()),
+            None,
+            "a file that no longer holds the indexed text places nothing"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

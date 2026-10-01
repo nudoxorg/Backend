@@ -19,8 +19,9 @@ use crate::paint::{Chamfer, cut};
 use crate::theme::ActiveFacet;
 use crate::tokens::ty;
 use gpui::{
-    AnyElement, App, FocusHandle, Global, InteractiveElement, IntoElement, StatefulInteractiveElement,
-    KeyDownEvent, MouseButton, ParentElement, SharedString, Styled, Window, WindowId, div, px,
+    AnyElement, App, FocusHandle, Global, InteractiveElement, IntoElement, KeyDownEvent,
+    MouseButton, ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, WindowId,
+    div, px,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -50,7 +51,10 @@ pub struct DialogButton {
 
 impl DialogButton {
     /// A button reading `label`.
-    pub fn new(label: impl Into<SharedString>, on_press: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+    pub fn new(
+        label: impl Into<SharedString>,
+        on_press: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
         Self {
             label: label.into(),
             primary: false,
@@ -105,11 +109,19 @@ impl Global for PerWindow {}
 
 fn slot(window: &Window, cx: &mut App) -> Rc<RefCell<Option<Open>>> {
     let id = window.window_handle().window_id();
-    cx.default_global::<PerWindow>().0.entry(id).or_default().clone()
+    cx.default_global::<PerWindow>()
+        .0
+        .entry(id)
+        .or_default()
+        .clone()
 }
 
 fn duration(full: Duration, cx: &App) -> Duration {
-    if motion::reduced(cx) { Duration::ZERO } else { full }
+    if motion::reduced(cx) {
+        Duration::ZERO
+    } else {
+        full
+    }
 }
 
 /// Opens `dialog` (replacing any open one); focus moves into it.
@@ -201,7 +213,8 @@ pub fn element(measure: &Measure, window: &mut Window, cx: &mut App) -> Option<A
     }
     let palette = cx.facet().palette();
     let scale = measure.scale();
-    let width = px(if dialog.sheet.is_some() { 700.0 } else { 440.0 } * scale).min(measure.width() - px(32.0));
+    let width = px(if dialog.sheet.is_some() { 700.0 } else { 440.0 } * scale)
+        .min(measure.width() - px(32.0));
     let inner = measure.within(width - px(48.0 * scale));
     let count = dialog.buttons.len();
     let mut buttons = div().flex().justify_end().gap(px(8.0 * scale));
@@ -337,12 +350,7 @@ mod tests {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             div()
                 .size_full()
-                .child(
-                    div()
-                        .id("trigger")
-                        .track_focus(&self.trigger)
-                        .child("Open"),
-                )
+                .child(div().id("trigger").track_focus(&self.trigger).child("Open"))
                 .child(float::layer(window, cx))
         }
     }
@@ -371,7 +379,10 @@ mod tests {
         Dialog {
             title: "Remove serde from the shelf?".into(),
             body: "Its pages stay in the index.".into(),
-            buttons: vec![DialogButton::new("Keep", |_, _| {}), DialogButton::new("Remove", |_, _| {}).primary()],
+            buttons: vec![
+                DialogButton::new("Keep", |_, _| {}),
+                DialogButton::new("Remove", |_, _| {}).primary(),
+            ],
             dismissible,
             sheet: None,
         }
@@ -416,7 +427,12 @@ mod tests {
             window.draw(cx).clear(cx);
         });
         let ledger = cx.update(|_, cx| crate::probe::take(cx));
-        assert_eq!(ledger.veils.len(), 1, "one scrim, one veil: {:?}", ledger.veils);
+        assert_eq!(
+            ledger.veils.len(),
+            1,
+            "one scrim, one veil: {:?}",
+            ledger.veils
+        );
         let veil = &ledger.veils[0];
         let (index, page) = ledger
             .texts
@@ -424,10 +440,23 @@ mod tests {
             .enumerate()
             .find(|(_, text)| text.key == "page-text")
             .expect("the page text is published");
-        assert!(veil.covers_text(index, &page.bounds), "the page text is under the veil: {veil:?} vs {:?}", page.bounds);
-        assert!(veil.bounds.width >= 899.0 && veil.bounds.height >= 699.0, "the scrim fills the window: {:?}", veil.bounds);
         assert!(
-            ledger.texts.iter().enumerate().filter(|(i, _)| *i >= veil.texts).all(|(i, t)| !veil.covers_text(i, &t.bounds)),
+            veil.covers_text(index, &page.bounds),
+            "the page text is under the veil: {veil:?} vs {:?}",
+            page.bounds
+        );
+        assert!(
+            veil.bounds.width >= 899.0 && veil.bounds.height >= 699.0,
+            "the scrim fills the window: {:?}",
+            veil.bounds
+        );
+        assert!(
+            ledger
+                .texts
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i >= veil.texts)
+                .all(|(i, t)| !veil.covers_text(i, &t.bounds)),
             "what the dialog paints above the veil is not covered by it"
         );
     }
@@ -446,7 +475,10 @@ mod tests {
             cx.update(|window, cx| window.focused(cx)) != Some(trigger.clone()),
             "focus should have moved off the trigger into the dialog"
         );
-        assert!(cx.update(|window, cx| is_open(window, cx)), "the dialog should report open");
+        assert!(
+            cx.update(|window, cx| is_open(window, cx)),
+            "the dialog should report open"
+        );
 
         cx.update(|window, cx| close(window, cx));
         frame(cx);
@@ -455,7 +487,10 @@ mod tests {
             Some(trigger),
             "focus must return to the trigger once the dialog closes"
         );
-        assert!(!cx.update(|window, cx| is_open(window, cx)), "closing must flip is_open to false at once");
+        assert!(
+            !cx.update(|window, cx| is_open(window, cx)),
+            "closing must flip is_open to false at once"
+        );
     }
 
     #[gpui::test]
@@ -465,7 +500,10 @@ mod tests {
         frame(cx);
         cx.update(|window, cx| close(window, cx));
         frame(cx);
-        assert_eq!(cx.update(|window, cx| window.focused(cx)), Some(trigger.clone()));
+        assert_eq!(
+            cx.update(|window, cx| window.focused(cx)),
+            Some(trigger.clone())
+        );
         // The user moved focus elsewhere (simulated by blurring); a second,
         // stray close() must not touch it.
         cx.update(|window, _| window.blur());
@@ -504,7 +542,10 @@ mod tests {
         frame(cx);
         cx.simulate_keystrokes("escape");
         frame(cx);
-        assert!(!cx.update(|window, cx| is_open(window, cx)), "Esc must close a dismissible dialog");
+        assert!(
+            !cx.update(|window, cx| is_open(window, cx)),
+            "Esc must close a dismissible dialog"
+        );
         assert_eq!(
             cx.update(|window, cx| window.focused(cx)),
             Some(trigger),
@@ -519,6 +560,9 @@ mod tests {
         frame(cx);
         cx.simulate_keystrokes("escape");
         frame(cx);
-        assert!(cx.update(|window, cx| is_open(window, cx)), "a non-dismissible dialog must ignore Esc");
+        assert!(
+            cx.update(|window, cx| is_open(window, cx)),
+            "a non-dismissible dialog must ignore Esc"
+        );
     }
 }

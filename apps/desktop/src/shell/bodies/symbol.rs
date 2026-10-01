@@ -21,14 +21,17 @@ use crate::shell::kit::{HoverIntent, shared_id};
 use crate::shell::reader::Reader;
 use facet::anatomy::symbol::{Chrome, View};
 use facet::tokens::scale;
-use gpui::{AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, div, px};
+use gpui::{
+    AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, div,
+    px,
+};
 
 mod companions;
 mod facts;
 mod history;
-mod host;
 #[cfg(test)]
 mod hop_tests;
+mod host;
 #[cfg(test)]
 mod page_tests;
 mod place;
@@ -58,7 +61,10 @@ pub(super) fn body(
     let facts = facts::facts(&page, &package, &companions, &history);
     let view = facet::anatomy::symbol::compile(&facts);
     // What your packages do with it: the lines the page carries, read.
-    let workspace = facet::anatomy::symbol::derive::uses::read_all(&uses::sites(&page), &facet::anatomy::symbol::derive::uses::Reader::of(&view));
+    let workspace = facet::anatomy::symbol::derive::uses::read_all(
+        &uses::sites(&page),
+        &facet::anatomy::symbol::derive::uses::Reader::of(&view),
+    );
     let view = facet::anatomy::symbol::with_uses(view, &workspace);
 
     let disclosure = ctx.symbol_disclosure.clone();
@@ -75,9 +81,24 @@ pub(super) fn body(
         said: std::cell::RefCell::new(Vec::new()),
     };
     let lay = facet::anatomy::symbol::layout::Layout::of(&ctx.measure, &ctx.modes);
-    let title = title(&page, &facts.name, facts.owner.as_deref(), lay.main, ctx, cx);
+    let title = title(
+        &page,
+        &facts.name,
+        facts.owner.as_deref(),
+        lay.main,
+        ctx,
+        cx,
+    );
     let gem = gem(&page, &view, ctx);
-    let element = facet::anatomy::symbol::page(&view, &workspace, Chrome { gem, title }, &ctx.measure, ctx.palette, &host, &ctx.modes);
+    let element = facet::anatomy::symbol::page(
+        &view,
+        &workspace,
+        Chrome { gem, title },
+        &ctx.measure,
+        ctx.palette,
+        &host,
+        &ctx.modes,
+    );
     for said in host.take_said() {
         ctx.say(said);
     }
@@ -98,7 +119,10 @@ fn gem(page: &SymbolPage, view: &View, ctx: &Ctx<'_>) -> AnyElement {
         .debug_selector(move || key)
         .child(if ctx.active {
             facet::motion::shared::shared(shared_id(&page.identity.coordinate), mark)
-                .timing(std::time::Duration::from_millis(460), facet::tokens::motion::GLIDE)
+                .timing(
+                    std::time::Duration::from_millis(460),
+                    facet::tokens::motion::GLIDE,
+                )
                 .into_any_element()
         } else {
             mark
@@ -107,9 +131,17 @@ fn gem(page: &SymbolPage, view: &View, ctx: &Ctx<'_>) -> AnyElement {
 }
 
 /// Its history across the releases the release data has read.
-fn history_of(package: &str, page: &SymbolPage, cx: &mut gpui::App) -> facet::anatomy::history::History {
-    let Ok(pinned) = crate::model::pages::PackageRef::parse(package) else { return facet::anatomy::history::History::default() };
-    let Some(krate) = crate::runtime::fixture_releases::release_data(&pinned, cx) else { return facet::anatomy::history::History::default() };
+fn history_of(
+    package: &str,
+    page: &SymbolPage,
+    cx: &mut gpui::App,
+) -> facet::anatomy::history::History {
+    let Ok(pinned) = crate::model::pages::PackageRef::parse(package) else {
+        return facet::anatomy::history::History::default();
+    };
+    let Some(krate) = crate::runtime::fixture_releases::release_data(&pinned, cx) else {
+        return facet::anatomy::history::History::default();
+    };
     let path = crate_path(&krate.name, page.identity.coordinate.as_str());
     history::of(&pinned, page, &path, cx)
 }
@@ -124,19 +156,36 @@ fn history_of(package: &str, page: &SymbolPage, cx: &mut gpui::App) -> facet::an
 /// at the size it is seen at each frame (from the row's size on frame one),
 /// never a scaled bitmap: its box hugs the name, and the text inside is laid
 /// out at the painted size and counter-scaled.
-fn title(page: &SymbolPage, name: &str, owner: Option<&str>, room: gpui::Pixels, ctx: &mut Ctx<'_>, cx: &gpui::App) -> AnyElement {
+fn title(
+    page: &SymbolPage,
+    name: &str,
+    owner: Option<&str>,
+    room: gpui::Pixels,
+    ctx: &mut Ctx<'_>,
+    cx: &gpui::App,
+) -> AnyElement {
     let measure = ctx.measure;
     let name = ctx.say(name.to_owned());
     let owner = owner.map(|owner| format!("{owner}."));
-    let owner_w = owner.as_ref().map_or(px(0.0), |owner| facet::anatomy::page::words_w(owner.chars().count(), scale::DISPLAY, measure.scale()));
+    let owner_w = owner.as_ref().map_or(px(0.0), |owner| {
+        facet::anatomy::page::words_w(owner.chars().count(), scale::DISPLAY, measure.scale())
+    });
     let room = (room - owner_w).max(px(120.0));
     let (lines, role) = crate::shell::text_fit::fit_name(&name, scale::DISPLAY, &measure, room, cx);
-    ctx.hero.extend(lines.iter().map(|line| SharedString::from(line.clone())));
+    ctx.hero
+        .extend(lines.iter().map(|line| SharedString::from(line.clone())));
     if let Some(owner) = &owner {
         ctx.say(owner.clone());
     }
-    let owner_w = owner.as_ref().map_or(px(0.0), |owner| crate::shell::text_fit::text_width(owner, &role, cx));
-    let own_w = owner_w + lines.iter().map(|line| crate::shell::text_fit::text_width(line, &role, cx)).fold(px(0.0), gpui::Pixels::max) + px(2.0);
+    let owner_w = owner.as_ref().map_or(px(0.0), |owner| {
+        crate::shell::text_fit::text_width(owner, &role, cx)
+    });
+    let own_w = owner_w
+        + lines
+            .iter()
+            .map(|line| crate::shell::text_fit::text_width(line, &role, cx))
+            .fold(px(0.0), gpui::Pixels::max)
+        + px(2.0);
     let own_h: f32 = role.line * lines.len().max(1) as f32;
     let (ink0, ink3) = (ctx.palette.ink0.hsla(), ctx.palette.ink3.hsla());
     let set = move |role: facet::tokens::TypeRole| {
@@ -148,26 +197,52 @@ fn title(page: &SymbolPage, name: &str, owner: Option<&str>, room: gpui::Pixels,
                 role,
                 1.0,
                 facet::probe::TextOverflow::Clip,
-                facet::fonts::Typeset::typeset_at(div().whitespace_nowrap().text_color(ink3), role, 1.0).child(owner),
+                facet::fonts::Typeset::typeset_at(
+                    div().whitespace_nowrap().text_color(ink3),
+                    role,
+                    1.0,
+                )
+                .child(owner),
             ));
         }
         row.child(crate::shell::text_fit::name_lines(&lines, role, ink0))
     };
     let key = crate::shell::kit::shared_key(&page.identity.coordinate);
     let content = if ctx.active {
-        facet::motion::shared::shared_with(facet::anatomy::page::title_key(page.identity.coordinate.as_str()), move |morph| {
-            let own = own_h;
-            let painted = morph.painted(own).max(1.0);
-            let k = painted / own;
-            let seen = facet::tokens::TypeRole { size: role.size * k, line: role.line * k, ..role };
-            div().w(own_w).h(px(own_h)).child(gpui::layer(set(seen)).scale(own / painted).origin(0.0, 0.0))
-        })
-        .timing(std::time::Duration::from_millis(460), facet::tokens::motion::GLIDE)
+        facet::motion::shared::shared_with(
+            facet::anatomy::page::title_key(page.identity.coordinate.as_str()),
+            move |morph| {
+                let own = own_h;
+                let painted = morph.painted(own).max(1.0);
+                let k = painted / own;
+                let seen = facet::tokens::TypeRole {
+                    size: role.size * k,
+                    line: role.line * k,
+                    ..role
+                };
+                div()
+                    .w(own_w)
+                    .h(px(own_h))
+                    .child(gpui::layer(set(seen)).scale(own / painted).origin(0.0, 0.0))
+            },
+        )
+        .timing(
+            std::time::Duration::from_millis(460),
+            facet::tokens::motion::GLIDE,
+        )
         .into_any_element()
     } else {
-        div().w(own_w).h(px(own_h)).child(set(role)).into_any_element()
+        div()
+            .w(own_w)
+            .h(px(own_h))
+            .child(set(role))
+            .into_any_element()
     };
-    div().id("page-title").debug_selector(move || format!("page-title:{key}")).child(content).into_any_element()
+    div()
+        .id("page-title")
+        .debug_selector(move || format!("page-title:{key}"))
+        .child(content)
+        .into_any_element()
 }
 
 /// Away from the pin: the upgrade lens's section above the page (what
@@ -178,12 +253,23 @@ fn upgrade(route: &SymbolRoute, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> 
     let pinned = crate::model::pages::PackageRef::parse(route.package.as_str()).ok()?;
     let diffs = crate::runtime::fixture_releases::release_data(&pinned, cx)?;
     let path = crate_path(&diffs.name, route.id.as_str());
-    let to = crate::runtime::fixture_releases::spelled(diffs, at.as_str()).unwrap_or_else(|| at.as_str().to_owned().into());
+    let to = crate::runtime::fixture_releases::spelled(diffs, at.as_str())
+        .unwrap_or_else(|| at.as_str().to_owned().into());
     let lens = facet::data::release::lens(diffs, &path, &to, &facet::semantics::types::Nowhere);
-    let pin = pinned.version().map_or_else(|| diffs.pinned.to_string(), ToOwned::to_owned);
+    let pin = pinned
+        .version()
+        .map_or_else(|| diffs.pinned.to_string(), ToOwned::to_owned);
     Some(
-        facet::data::release::view::section("upgrade", lens, path, pin, &ctx.measure, &facet::anatomy::Links::plain(), ctx.reveal.xray)
-            .into_any_element(),
+        facet::data::release::view::section(
+            "upgrade",
+            lens,
+            path,
+            pin,
+            &ctx.measure,
+            &facet::anatomy::Links::plain(),
+            ctx.reveal.xray,
+        )
+        .into_any_element(),
     )
 }
 
@@ -199,6 +285,12 @@ fn crate_path(krate: &str, coordinate: &str) -> String {
             parts.push(stem.to_owned());
         }
     }
-    parts.extend(identity.trail().segments().iter().map(|segment| segment.as_str().to_owned()));
+    parts.extend(
+        identity
+            .trail()
+            .segments()
+            .iter()
+            .map(|segment| segment.as_str().to_owned()),
+    );
     parts.join("::")
 }

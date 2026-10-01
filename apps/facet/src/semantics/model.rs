@@ -110,7 +110,12 @@ impl Entry {
     /// An entry for a symbol.
     #[must_use]
     pub const fn node(node: NodeId) -> Self {
-        Self { node: Some(node), text: None, note: None, caps: Vec::new() }
+        Self {
+            node: Some(node),
+            text: None,
+            note: None,
+            caps: Vec::new(),
+        }
     }
 }
 
@@ -206,7 +211,11 @@ impl Fork {
     /// The heading.
     #[must_use]
     pub const fn heading(&self) -> &'static str {
-        if self.open { "one of, and more may come" } else { "one of" }
+        if self.open {
+            "one of, and more may come"
+        } else {
+            "one of"
+        }
     }
 }
 
@@ -422,7 +431,6 @@ pub struct Use {
     /// The statement.
     pub excerpt: Excerpt,
 }
-
 
 /// Getting one / Calling it, ready to draw (built by
 /// `recipes::Section::view`).

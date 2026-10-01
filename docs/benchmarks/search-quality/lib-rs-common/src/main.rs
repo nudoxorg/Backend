@@ -2,7 +2,7 @@ include!(concat!(env!("OUT_DIR"), "/upstream_search_index.rs"));
 
 use rich_crate::Origin;
 use semver::Version;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;

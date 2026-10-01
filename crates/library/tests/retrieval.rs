@@ -3,8 +3,6 @@
 //! The adapter is intentionally local to this integration test: production `backend-library`
 //! owns only the capability contract, not a fixture catalogue or a server-index dependency.
 
-use backend_semantic::ir::EntityId;
-use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 use backend_library::interface::{
     ApplicationInput, ApplicationOutcome, ApplicationService, Capability, CorrelationId,
     DiagnosticCode, DiagnosticDetail, DocSection, InputText, RetrievalCapability, RetrievalCause,
@@ -15,6 +13,8 @@ use backend_semantic::index_core::{
     EntityArtifactIdentity, EntityDocumentId, ExactOperation, ExactRow, ExactSegment, LexicalHit,
     LexicalOperation, LexicalRow, LexicalScore, LexicalSegment, LexicalTopK,
 };
+use backend_semantic::ir::EntityId;
+use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 
 fn text(value: &str) -> InputText {
     match InputText::try_from_str(value) {
@@ -194,9 +194,11 @@ fn unavailable_default_never_fabricates_index_facts() {
     });
     assert!(matches!(
         reply.outcome,
-        ApplicationOutcome::Resolved(backend_library::interface::ReplyBody::DependencyUnavailable {
-            capability: Capability::Index
-        })
+        ApplicationOutcome::Resolved(
+            backend_library::interface::ReplyBody::DependencyUnavailable {
+                capability: Capability::Index
+            }
+        )
     ));
 }
 

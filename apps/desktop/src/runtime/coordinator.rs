@@ -315,7 +315,8 @@ impl DesktopRuntime {
                     // An index that finished, failed or was stopped changes what
                     // the shelf says about a project; a relaunch must find it as
                     // it was left, not wait for the next intent to write it.
-                    let shelf_moved = snapshot.workspace().projects != self.snapshot.workspace().projects;
+                    let shelf_moved =
+                        snapshot.workspace().projects != self.snapshot.workspace().projects;
                     self.snapshot = Arc::new(snapshot);
                     events.push(RuntimeEvent::SnapshotChanged(Arc::clone(&self.snapshot)));
                     if shelf_moved {
@@ -365,7 +366,10 @@ impl DesktopRuntime {
     /// else a frame shows and awaits indexing as its own step.
     #[must_use]
     pub fn has_pending_work_besides_indexing(&self) -> bool {
-        self.inflight.values().any(|request| request.index_project.is_none()) || self.actor.queued_events() != 0
+        self.inflight
+            .values()
+            .any(|request| request.index_project.is_none())
+            || self.actor.queued_events() != 0
     }
 
     /// Takes the wake signal the actor raises after delivering each result.

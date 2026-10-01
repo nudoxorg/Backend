@@ -3,9 +3,11 @@
 //! frame, so a peek opened before its page lands fills in when it does.
 
 use super::kit::kind_of;
-use crate::model::pages::{DocFragment, PackageRecord, PageKey, RecordSource, SignatureText, SymbolRef, TokenClass};
+use crate::model::pages::{
+    DocFragment, PackageRecord, PageKey, RecordSource, SignatureText, SymbolRef, TokenClass,
+};
 use crate::runtime::store::DataStore;
-use facet::overlay::peek::{Peek, PackagePeek, SymbolPeek};
+use facet::overlay::peek::{PackagePeek, Peek, SymbolPeek};
 use facet::overlay::text::{Role, Sig};
 use facet::overlay::{FloatKind, FloatRequest};
 use gpui::{App, Bounds, ElementId, Entity, Pixels, SharedString, Window};
@@ -17,12 +19,22 @@ pub(crate) fn float_key(key: &PageKey) -> ElementId {
 
 /// A float request for the page `key`, anchored at `anchor`, drawn from
 /// whatever the store holds for it at each frame.
-pub(crate) fn request(key: PageKey, label: SharedString, anchor: Bounds<Pixels>, store: Entity<DataStore>) -> FloatRequest {
+pub(crate) fn request(
+    key: PageKey,
+    label: SharedString,
+    anchor: Bounds<Pixels>,
+    store: Entity<DataStore>,
+) -> FloatRequest {
     let float = float_key(&key);
-    FloatRequest::new(float, anchor, FloatKind::Peek, move |measure, window, cx| {
-        let peek = peek_of(&key, &label, store.read(cx));
-        facet::overlay::peek::content(peek)(measure, window, cx)
-    })
+    FloatRequest::new(
+        float,
+        anchor,
+        FloatKind::Peek,
+        move |measure, window, cx| {
+            let peek = peek_of(&key, &label, store.read(cx));
+            facet::overlay::peek::content(peek)(measure, window, cx)
+        },
+    )
 }
 
 /// The card for `key` as the store has it now.
@@ -32,7 +44,9 @@ fn peek_of(key: &PageKey, label: &SharedString, store: &DataStore) -> Peek {
         // Dead end #16: the dossier is loaded (the shelf and the package
         // page already read it); the peek now shows it too, instead of
         // falling to an empty card with only the row's own label.
-        PageKey::Package(package) => return package_peek(label, store.package(package).loaded_value()),
+        PageKey::Package(package) => {
+            return package_peek(label, store.package(package).loaded_value());
+        }
         _ => {
             return Peek::Symbol(SymbolPeek {
                 name: label.clone(),
@@ -69,17 +83,32 @@ fn peek_of(key: &PageKey, label: &SharedString, store: &DataStore) -> Peek {
 /// A package peek from its dossier: name, version, one sentence, and how
 /// much of it your code reaches (dead end #16). A dossier not yet loaded
 /// still shows the row's own label, same as a cold symbol peek.
-fn package_peek(label: &SharedString, dossier: Option<&crate::model::pages::PackageDossier>) -> Peek {
+fn package_peek(
+    label: &SharedString,
+    dossier: Option<&crate::model::pages::PackageDossier>,
+) -> Peek {
     let Some(record) = dossier.and_then(|dossier| dossier.record.known()) else {
-        return Peek::Package(PackagePeek { name: label.clone(), ..PackagePeek::default() });
+        return Peek::Package(PackagePeek {
+            name: label.clone(),
+            ..PackagePeek::default()
+        });
     };
     let dossier = dossier.expect("a known record's dossier");
     Peek::Package(PackagePeek {
         name: record.name.to_string().into(),
-        version: record.version.known().map_or_else(SharedString::default, |version| version.to_string().into()),
+        version: record
+            .version
+            .known()
+            .map_or_else(SharedString::default, |version| version.to_string().into()),
         registry: registry_of(record),
-        sentence: record.description.known().map(|description| SharedString::from(description.to_string())),
-        reach: dossier.dependents.known().map(|dependents| dependents.len()),
+        sentence: record
+            .description
+            .known()
+            .map(|description| SharedString::from(description.to_string())),
+        reach: dossier
+            .dependents
+            .known()
+            .map(|dependents| dependents.len()),
         ..PackagePeek::default()
     })
 }
@@ -89,7 +118,12 @@ fn package_peek(label: &SharedString, dossier: Option<&crate::model::pages::Pack
 fn registry_of(record: &PackageRecord) -> SharedString {
     match record.source {
         RecordSource::LocalManifest => "your project".into(),
-        RecordSource::Registry => record.ecosystem.known().map_or_else(SharedString::default, |ecosystem| ecosystem.to_string().into()),
+        RecordSource::Registry => record
+            .ecosystem
+            .known()
+            .map_or_else(SharedString::default, |ecosystem| {
+                ecosystem.to_string().into()
+            }),
     }
 }
 
@@ -149,13 +183,24 @@ mod tests {
         let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0);
         let package = PackageRef::parse(PACKAGE).expect("package");
         let key = PageKey::Package(package.clone());
-        rig.graph.store.update(rig.cx, |store, cx| store.ensure(key.clone(), cx));
+        rig.graph
+            .store
+            .update(rig.cx, |store, cx| store.ensure(key.clone(), cx));
         rig.settle();
-        let peek = rig.graph.store.read_with(rig.cx, |store, _| peek_of(&key, &"present".into(), store));
-        let Peek::Package(card) = peek else { panic!("expected a package peek") };
+        let peek = rig
+            .graph
+            .store
+            .read_with(rig.cx, |store, _| peek_of(&key, &"present".into(), store));
+        let Peek::Package(card) = peek else {
+            panic!("expected a package peek")
+        };
         assert_eq!(card.name.as_ref(), "present");
         assert_eq!(card.version.as_ref(), "0.4.2");
-        assert_eq!(card.registry.as_ref(), "your project", "a local manifest, not a registry release");
+        assert_eq!(
+            card.registry.as_ref(),
+            "your project",
+            "a local manifest, not a registry release"
+        );
         assert_eq!(card.sentence.as_deref(), Some("How one symbol page reads."));
         assert_eq!(card.reach, None, "the fixture's dependents are unread");
     }
@@ -167,8 +212,13 @@ mod tests {
         let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0);
         let package = PackageRef::parse(PACKAGE).expect("package");
         let key = PageKey::Package(package);
-        let peek = rig.graph.store.read_with(rig.cx, |store, _| peek_of(&key, &"present".into(), store));
-        let Peek::Package(card) = peek else { panic!("expected a package peek") };
+        let peek = rig
+            .graph
+            .store
+            .read_with(rig.cx, |store, _| peek_of(&key, &"present".into(), store));
+        let Peek::Package(card) = peek else {
+            panic!("expected a package peek")
+        };
         assert_eq!(card.name.as_ref(), "present");
         assert_eq!(card.sentence, None);
     }

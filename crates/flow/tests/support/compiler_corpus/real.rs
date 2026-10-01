@@ -460,13 +460,12 @@ fn drive_row_in_worker_with_env(
     let outcome_path = artifacts.child(&format!("row-{}.outcome", case.ordinal));
     let log_path = artifacts.child(&format!("row-{}.log", case.ordinal));
     let _ = fs::remove_file(&outcome_path);
-    let status =
-        spawn_row_worker(case, &outcome_path, &log_path, extra_env).map_err(|source| {
-            CorpusAuditError::Io {
-                phase: AuditIoPhase::Fixture,
-                source,
-            }
-        })?;
+    let status = spawn_row_worker(case, &outcome_path, &log_path, extra_env).map_err(|source| {
+        CorpusAuditError::Io {
+            phase: AuditIoPhase::Fixture,
+            source,
+        }
+    })?;
     let outcome = fs::read_to_string(&outcome_path)
         .ok()
         .and_then(|text| parse_row_outcome(&text, case, unavailable_sink, mismatch_sink));

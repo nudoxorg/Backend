@@ -86,7 +86,16 @@ pub fn place_with_gap(
     viewport: Size<Pixels>,
     gap: f32,
 ) -> Placement {
-    place_aligned(anchor, natural, side, hang, viewport, gap, Align::Centre, 0.0)
+    place_aligned(
+        anchor,
+        natural,
+        side,
+        hang,
+        viewport,
+        gap,
+        Align::Centre,
+        0.0,
+    )
 }
 
 /// [`place_with_gap`] with an alignment: [`Align::Start`] hangs the card's
@@ -130,7 +139,11 @@ pub fn place_aligned(
 fn clamp_axis(start: f32, length: f32, limit: f32) -> f32 {
     let low = MARGIN;
     let high = limit - MARGIN - length;
-    if high < low { low } else { start.clamp(low, high) }
+    if high < low {
+        low
+    } else {
+        start.clamp(low, high)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -171,7 +184,11 @@ fn beside_anchor(
     } else {
         vh - 2.0 * MARGIN
     };
-    let (height, capped) = if h > space { (space, Some(px(space))) } else { (h, None) };
+    let (height, capped) = if h > space {
+        (space, Some(px(space)))
+    } else {
+        (h, None)
+    };
     // Above and below: centred on the anchor's midpoint, or hanging from
     // its start (from its end when the start has no room on the right).
     let along = match align {
@@ -222,7 +239,11 @@ fn beside_parent(
     };
     let x = clamp_axis(x, w, vw);
     let space = vh - 2.0 * MARGIN;
-    let (height, capped) = if h > space { (space, Some(px(space))) } else { (h, None) };
+    let (height, capped) = if h > space {
+        (space, Some(px(space)))
+    } else {
+        (h, None)
+    };
     let y = clamp_axis(f(anchor.origin.y), height, vh);
     let bounds = Bounds::new(point(px(x), px(y)), size(px(w), px(height)));
     Placement {
@@ -247,7 +268,13 @@ pub fn connector(
     let (cx1, cy1) = (cx0 + f(card.size.width), cy0 + f(card.size.height));
     let (ax0, ay0) = (f(anchor.origin.x), f(anchor.origin.y));
     let (ax1, ay1) = (ax0 + f(anchor.size.width), ay0 + f(anchor.size.height));
-    let clamp = |v: f32, lo: f32, hi: f32| if hi < lo { (lo + hi) / 2.0 } else { v.clamp(lo, hi) };
+    let clamp = |v: f32, lo: f32, hi: f32| {
+        if hi < lo {
+            (lo + hi) / 2.0
+        } else {
+            v.clamp(lo, hi)
+        }
+    };
     let (from, to) = match side {
         Side::Below => {
             let x = clamp((ax0 + ax1) / 2.0, cx0 + inset, cx1 - inset);
@@ -291,7 +318,10 @@ mod tests {
     fn inside(bounds: Bounds<Pixels>, vw: f32, vh: f32) -> bool {
         let (x, y) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
         let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
-        x >= MARGIN - 0.01 && y >= MARGIN - 0.01 && x + w <= vw - MARGIN + 0.01 && y + h <= vh - MARGIN + 0.01
+        x >= MARGIN - 0.01
+            && y >= MARGIN - 0.01
+            && x + w <= vw - MARGIN + 0.01
+            && y + h <= vh - MARGIN + 0.01
     }
 
     #[test]
@@ -300,15 +330,43 @@ mod tests {
         let vp = size(px(1000.0), px(700.0));
         let card = size(px(356.0), px(120.0));
         // Room on the right: the plate starts 12 px left of the anchor.
-        let left = place_aligned(b(300.0, 100.0, 90.0, 18.0), card, Side::Below, Hang::Anchor, vp, 12.0, Align::Start, 12.0);
-        assert!((f32::from(left.bounds.origin.x) - 288.0).abs() < 0.01, "{:?}", left.bounds);
+        let left = place_aligned(
+            b(300.0, 100.0, 90.0, 18.0),
+            card,
+            Side::Below,
+            Hang::Anchor,
+            vp,
+            12.0,
+            Align::Start,
+            12.0,
+        );
+        assert!(
+            (f32::from(left.bounds.origin.x) - 288.0).abs() < 0.01,
+            "{:?}",
+            left.bounds
+        );
         // No room: its right edge sits 12 px past the anchor's right edge.
-        let right = place_aligned(b(820.0, 100.0, 90.0, 18.0), card, Side::Below, Hang::Anchor, vp, 12.0, Align::Start, 12.0);
+        let right = place_aligned(
+            b(820.0, 100.0, 90.0, 18.0),
+            card,
+            Side::Below,
+            Hang::Anchor,
+            vp,
+            12.0,
+            Align::Start,
+            12.0,
+        );
         let end = f32::from(right.bounds.origin.x + right.bounds.size.width);
         assert!((end - 922.0).abs() < 0.01, "{:?}", right.bounds);
         assert!(inside(right.bounds, 1000.0, 700.0));
         // Centred stays the default for every other card.
-        let centred = place(b(300.0, 100.0, 90.0, 18.0), card, Side::Below, Hang::Anchor, vp);
+        let centred = place(
+            b(300.0, 100.0, 90.0, 18.0),
+            card,
+            Side::Below,
+            Hang::Anchor,
+            vp,
+        );
         assert!((f32::from(centred.bounds.origin.x) - (345.0 - 178.0)).abs() < 0.01);
     }
 
@@ -316,10 +374,22 @@ mod tests {
     fn below_by_default_and_flips_above_at_the_bottom_edge() {
         let vp = size(px(1000.0), px(700.0));
         let card = size(px(300.0), px(200.0));
-        let top = place(b(100.0, 100.0, 80.0, 18.0), card, Side::Below, Hang::Anchor, vp);
+        let top = place(
+            b(100.0, 100.0, 80.0, 18.0),
+            card,
+            Side::Below,
+            Hang::Anchor,
+            vp,
+        );
         assert_eq!(top.side, Side::Below);
         assert!(f32::from(top.bounds.origin.y) > 118.0);
-        let low = place(b(100.0, 620.0, 80.0, 18.0), card, Side::Below, Hang::Anchor, vp);
+        let low = place(
+            b(100.0, 620.0, 80.0, 18.0),
+            card,
+            Side::Below,
+            Hang::Anchor,
+            vp,
+        );
         assert_eq!(low.side, Side::Above, "no room below: flips");
         assert!(f32::from(low.bounds.origin.y) + 200.0 <= 620.0);
         assert!(inside(low.bounds, 1000.0, 700.0));
@@ -329,9 +399,21 @@ mod tests {
     fn shifts_along_the_edge_to_stay_eight_px_inside() {
         let vp = size(px(800.0), px(600.0));
         let card = size(px(392.0), px(240.0));
-        let right = place(b(760.0, 100.0, 30.0, 18.0), card, Side::Below, Hang::Anchor, vp);
+        let right = place(
+            b(760.0, 100.0, 30.0, 18.0),
+            card,
+            Side::Below,
+            Hang::Anchor,
+            vp,
+        );
         assert!((f32::from(right.bounds.origin.x) + 392.0 - (800.0 - MARGIN)).abs() < 0.01);
-        let left = place(b(2.0, 100.0, 30.0, 18.0), card, Side::Below, Hang::Anchor, vp);
+        let left = place(
+            b(2.0, 100.0, 30.0, 18.0),
+            card,
+            Side::Below,
+            Hang::Anchor,
+            vp,
+        );
         assert!((f32::from(left.bounds.origin.x) - MARGIN).abs() < 0.01);
     }
 
@@ -343,7 +425,11 @@ mod tests {
             for side in [Side::Below, Side::Above, Side::Left, Side::Right] {
                 let placed = place(b(250.0, y, 60.0, 16.0), tall, side, Hang::Anchor, vp);
                 assert!(placed.capped.is_some(), "900 px never fits 400");
-                assert!(inside(placed.bounds, 600.0, 400.0), "{side:?} at {y}: {:?}", placed.bounds);
+                assert!(
+                    inside(placed.bounds, 600.0, 400.0),
+                    "{side:?} at {y}: {:?}",
+                    placed.bounds
+                );
             }
         }
     }
@@ -352,14 +438,46 @@ mod tests {
     fn above_and_below_centre_on_the_anchor_and_beside_aligns_tops() {
         let vp = size(px(1200.0), px(800.0));
         let anchor = b(500.0, 300.0, 40.0, 18.0);
-        let below = place(anchor, size(px(300.0), px(120.0)), Side::Below, Hang::Anchor, vp);
+        let below = place(
+            anchor,
+            size(px(300.0), px(120.0)),
+            Side::Below,
+            Hang::Anchor,
+            vp,
+        );
         let centre = f32::from(below.bounds.origin.x) + 150.0;
-        assert!((centre - 520.0).abs() < 0.01, "centred on 520, got {centre}");
-        let above = place(anchor, size(px(300.0), px(120.0)), Side::Above, Hang::Anchor, vp);
+        assert!(
+            (centre - 520.0).abs() < 0.01,
+            "centred on 520, got {centre}"
+        );
+        let above = place(
+            anchor,
+            size(px(300.0), px(120.0)),
+            Side::Above,
+            Hang::Anchor,
+            vp,
+        );
         assert!((f32::from(above.bounds.origin.x) + 150.0 - 520.0).abs() < 0.01);
-        let right = place(anchor, size(px(300.0), px(120.0)), Side::Right, Hang::Anchor, vp);
-        assert_eq!(right.bounds.origin.y, px(300.0), "top level with the anchor's top");
-        let gap = super::place_with_gap(anchor, size(px(300.0), px(120.0)), Side::Below, Hang::Anchor, vp, 14.0);
+        let right = place(
+            anchor,
+            size(px(300.0), px(120.0)),
+            Side::Right,
+            Hang::Anchor,
+            vp,
+        );
+        assert_eq!(
+            right.bounds.origin.y,
+            px(300.0),
+            "top level with the anchor's top"
+        );
+        let gap = super::place_with_gap(
+            anchor,
+            size(px(300.0), px(120.0)),
+            Side::Below,
+            Hang::Anchor,
+            vp,
+            14.0,
+        );
         let (from, to) = gap.connector.expect("a 14 px gap has a connector");
         assert_eq!(to.y - from.y, px(14.0));
     }
@@ -382,14 +500,32 @@ mod tests {
         let vp = size(px(1400.0), px(900.0));
         let parent = b(200.0, 100.0, 392.0, 300.0);
         let word = b(420.0, 220.0, 80.0, 18.0);
-        let child = place(word, size(px(330.0), px(200.0)), Side::Right, Hang::Parent(parent), vp);
+        let child = place(
+            word,
+            size(px(330.0), px(200.0)),
+            Side::Right,
+            Hang::Parent(parent),
+            vp,
+        );
         assert_eq!(child.side, Side::Right);
         assert!(f32::from(child.bounds.origin.x) >= 592.0 + 15.9);
-        assert!((f32::from(child.bounds.origin.y) - 220.0).abs() < 0.01, "top level with the word");
+        assert!(
+            (f32::from(child.bounds.origin.y) - 220.0).abs() < 0.01,
+            "top level with the word"
+        );
         let connector = child.connector.expect("a gap to bridge");
-        assert!((f32::from(connector.0.x) - 500.0).abs() < 0.01, "starts at the word's right edge");
+        assert!(
+            (f32::from(connector.0.x) - 500.0).abs() < 0.01,
+            "starts at the word's right edge"
+        );
         let crowded = b(900.0, 100.0, 392.0, 300.0);
-        let child = place(word, size(px(330.0), px(200.0)), Side::Right, Hang::Parent(crowded), vp);
+        let child = place(
+            word,
+            size(px(330.0), px(200.0)),
+            Side::Right,
+            Hang::Parent(crowded),
+            vp,
+        );
         assert_eq!(child.side, Side::Left);
         assert!(f32::from(child.bounds.origin.x) + 330.0 <= 900.0 - 15.9);
     }
@@ -397,7 +533,13 @@ mod tests {
     #[test]
     fn narrow_sheet_is_full_width_on_the_bottom_edge() {
         let vp = size(px(420.0), px(800.0));
-        let sheet = place(b(50.0, 100.0, 60.0, 16.0), size(px(392.0), px(300.0)), Side::Below, Hang::Sheet, vp);
+        let sheet = place(
+            b(50.0, 100.0, 60.0, 16.0),
+            size(px(392.0), px(300.0)),
+            Side::Below,
+            Hang::Sheet,
+            vp,
+        );
         assert_eq!(sheet.bounds.size.width, px(420.0));
         assert_eq!(sheet.bounds.origin.y + sheet.bounds.size.height, px(800.0));
         assert!(sheet.connector.is_none());
@@ -407,7 +549,13 @@ mod tests {
     fn connector_touches_the_anchor_and_the_card() {
         let vp = size(px(1000.0), px(800.0));
         let anchor = b(300.0, 200.0, 120.0, 18.0);
-        let placed = place(anchor, size(px(392.0), px(260.0)), Side::Below, Hang::Anchor, vp);
+        let placed = place(
+            anchor,
+            size(px(392.0), px(260.0)),
+            Side::Below,
+            Hang::Anchor,
+            vp,
+        );
         let (from, to) = placed.connector.expect("below with a gap");
         assert_eq!(from.y, px(218.0));
         assert_eq!(to.y, placed.bounds.origin.y);

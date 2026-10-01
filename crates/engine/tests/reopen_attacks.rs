@@ -7,13 +7,13 @@ mod build_support;
 
 use std::fs;
 
+use backend_engine::publication::{
+    OpenPublicationScratch, OpenPublishedError, immutable::ImmutableArtifactStore, open_published,
+};
 use backend_semantic::ir::{AtomId, TypeId};
 use backend_semantic::ir::{
     AtomInput, EntityKind, EntityRecord, FragmentRangeManifest, FragmentView, PrimitiveType,
     TypeNode,
-};
-use backend_engine::publication::{
-    OpenPublicationScratch, OpenPublishedError, immutable::ImmutableArtifactStore, open_published,
 };
 use build_support::{
     BuildProofError, Fixture, OpenBuffers, TestError, compiled, publish, write_fragment, written,

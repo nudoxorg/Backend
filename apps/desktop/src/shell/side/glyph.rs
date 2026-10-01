@@ -9,8 +9,8 @@ use crate::shell::kit::{SaidChild, text};
 use facet::tokens::ty;
 use facet::{Measure, Palette, Space};
 use gpui::{
-    AnyElement, App, Bounds, Hsla, HighlightStyle, IntoElement, ParentElement, PathBuilder, Pixels, RenderOnce, SharedString, Styled, StyledText,
-    UnderlineStyle, Window, canvas, div, point, px,
+    AnyElement, App, Bounds, HighlightStyle, Hsla, IntoElement, ParentElement, PathBuilder, Pixels,
+    RenderOnce, SharedString, Styled, StyledText, UnderlineStyle, Window, canvas, div, point, px,
 };
 use std::ops::Range;
 
@@ -24,7 +24,12 @@ const TICK: f32 = 8.0;
 /// The state glyphs of `state`, in the order they are drawn, as one run
 /// pushed to the row's right edge.
 pub(super) fn trailing(state: &RowState, measure: &Measure, palette: &Palette) -> AnyElement {
-    let mut run = div().ml_auto().flex_none().flex().items_center().gap(measure.space(Space::Base));
+    let mut run = div()
+        .ml_auto()
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(measure.space(Space::Base));
     for glyph in state.glyphs() {
         run = run.child(one(glyph, measure, palette));
     }
@@ -39,17 +44,39 @@ fn one(glyph: Glyph, measure: &Measure, palette: &Palette) -> AnyElement {
             .items_center()
             .gap(gap)
             .child(notch(palette.mint.base.into(), measure))
-            .child(text(ty::MONO_SMALL, measure, palette.mint.base).flex_none().whitespace_nowrap().child(uses.to_string()))
+            .child(
+                text(ty::MONO_SMALL, measure, palette.mint.base)
+                    .flex_none()
+                    .whitespace_nowrap()
+                    .child(uses.to_string()),
+            )
             .into_any_element(),
         Glyph::Changed(count) => {
-            let mut run = div().flex().items_center().gap(gap).child(diamond(palette.amber.base.into(), measure));
+            let mut run = div()
+                .flex()
+                .items_center()
+                .gap(gap)
+                .child(diamond(palette.amber.base.into(), measure));
             if count > 1 {
-                run = run.child(text(ty::MONO_SMALL, measure, palette.amber.base).flex_none().whitespace_nowrap().child(count.to_string()));
+                run = run.child(
+                    text(ty::MONO_SMALL, measure, palette.amber.base)
+                        .flex_none()
+                        .whitespace_nowrap()
+                        .child(count.to_string()),
+                );
             }
             run.into_any_element()
         }
-        Glyph::Gone(gone) => text(ty::SMALL, measure, palette.coral.base).flex_none().whitespace_nowrap().child(gone.word()).into_any_element(),
-        Glyph::Members(members) => text(ty::MONO_SMALL, measure, palette.ink3).flex_none().whitespace_nowrap().child(members.to_string()).into_any_element(),
+        Glyph::Gone(gone) => text(ty::SMALL, measure, palette.coral.base)
+            .flex_none()
+            .whitespace_nowrap()
+            .child(gone.word())
+            .into_any_element(),
+        Glyph::Members(members) => text(ty::MONO_SMALL, measure, palette.ink3)
+            .flex_none()
+            .whitespace_nowrap()
+            .child(members.to_string())
+            .into_any_element(),
     }
 }
 
@@ -124,7 +151,12 @@ pub(super) struct Marked {
 impl Marked {
     /// `name` with `hit` (bytes) underlined.
     pub(super) fn new(name: SharedString, hit: Range<usize>, ink: Hsla, underline: Hsla) -> Self {
-        Self { name, hit, ink, underline }
+        Self {
+            name,
+            hit,
+            ink,
+            underline,
+        }
     }
 }
 
@@ -138,7 +170,11 @@ impl RenderOnce for Marked {
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
         let style = HighlightStyle {
             color: Some(self.ink),
-            underline: Some(UnderlineStyle { thickness: px(1.5), color: Some(self.underline), wavy: false }),
+            underline: Some(UnderlineStyle {
+                thickness: px(1.5),
+                color: Some(self.underline),
+                wavy: false,
+            }),
             ..HighlightStyle::default()
         };
         StyledText::new(self.name).with_highlights([(self.hit, style)])

@@ -1,13 +1,13 @@
 //! Public borrowed-query bridge checks for the thin local client wrappers.
 
-use backend_semantic::ir::EntityId;
-use backend_version::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
 use backend_library::interface::{query_local_exact, query_local_lexical};
 use backend_semantic::index_core::{
     EntityArtifactIdentity, EntityDocumentId, ExactResolution, ExactRow, ExactSegment,
     ExactTerminal, IndexSnapshot, LexicalRow, LexicalScore, LexicalSegment, LexicalSnapshotHit,
     LexicalTerminal, LexicalTopK,
 };
+use backend_semantic::ir::EntityId;
+use backend_version::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
 
 type TestResult<T = ()> = Result<T, String>;
 
@@ -55,7 +55,8 @@ fn local_lexical_wrapper_preserves_hit_and_missing_segment_terminal() -> TestRes
         LexicalScore::from(9),
     )];
     let segment = LexicalSegment::new(&rows).map_err(|_| "fixed lexical test rows are invalid")?;
-    let missing = backend_semantic::index_core::LexicalSegmentId::from_canonical_bytes(b"missing-local");
+    let missing =
+        backend_semantic::index_core::LexicalSegmentId::from_canonical_bytes(b"missing-local");
     let selected = [segment.id, missing];
     let snapshot = IndexSnapshot::new(generation(), &[], &selected)
         .map_err(|_| "fixed lexical snapshot is not representable")?;

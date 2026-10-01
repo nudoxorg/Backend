@@ -67,7 +67,10 @@ fn ms(sink: &Sink, at: Instant) -> f64 {
 }
 
 fn write(sink: &Sink, line: &str) {
-    let mut out = sink.out.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut out = sink
+        .out
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _ = out.write_all(line.as_bytes());
     let _ = out.write_all(b"\n");
     let _ = out.flush();
@@ -128,9 +131,10 @@ fn frame_line(sink: &Sink, frame: &gpui::profiler::FrameTiming) -> String {
         ms(sink, frame.draw_end),
         ms(sink, frame.draw_start),
         frame.draw_duration().as_secs_f64() * 1e3,
-        frame
-            .dirty_at
-            .map_or_else(|| "null".to_owned(), |dirty| format!("{:.3}", ms(sink, dirty))),
+        frame.dirty_at.map_or_else(
+            || "null".to_owned(),
+            |dirty| format!("{:.3}", ms(sink, dirty))
+        ),
         frame.invalidations,
     )
 }

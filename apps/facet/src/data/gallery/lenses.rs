@@ -5,8 +5,8 @@
 
 use super::super::{Tick, TickTone, comb};
 use crate::icons::{Kind, Lang};
-use crate::overlay::lens::{self, Lens, LensItem, Sigil, lens_card};
 use crate::overlay::float::{self, FloatKind};
+use crate::overlay::lens::{self, Lens, LensItem, Sigil, lens_card};
 use crate::theme::ActiveFacet;
 use crate::tokens::{Face, TypeRole, ty};
 use crate::{Set, Typeset};
@@ -42,9 +42,15 @@ pub(crate) fn release_lens(i: usize) -> Lens {
             (" places".into(), false),
         ],
         vec![
-            LensItem::new("SerializeMap::serialize_key").kind(Kind::Method).sigil(Sigil::Added),
-            LensItem::new("IgnoredAny").kind(Kind::Struct).sigil(Sigil::Added),
-            LensItem::new("de::from_str").kind(Kind::Function).sigil(Sigil::Changed),
+            LensItem::new("SerializeMap::serialize_key")
+                .kind(Kind::Method)
+                .sigil(Sigil::Added),
+            LensItem::new("IgnoredAny")
+                .kind(Kind::Struct)
+                .sigil(Sigil::Added),
+            LensItem::new("de::from_str")
+                .kind(Kind::Function)
+                .sigil(Sigil::Changed),
             LensItem::new("1"),
             LensItem::new("2"),
             LensItem::new("3"),
@@ -85,13 +91,26 @@ pub(crate) fn board(_width: f32, _window: &mut Window, cx: &mut App) -> AnyEleme
         LensItem::new("Visitor").kind(Kind::Trait),
         LensItem::new("from_str").kind(Kind::Function),
     ];
-    let module = plate(lens_card(&Lens::module("de", 214, 17, most), &card_m, None, cx));
+    let module = plate(lens_card(
+        &Lens::module("de", 214, 17, most),
+        &card_m,
+        None,
+        cx,
+    ));
     let language = plate(lens_card(
         &Lens::language(
             Lang::Python,
             "python",
             7,
-            &[("numpy", 22), ("requests", 12), ("pydantic", 9), ("rich", 7), ("httpx", 5), ("attrs", 3), ("bytes-py", 2)],
+            &[
+                ("numpy", 22),
+                ("requests", 12),
+                ("pydantic", 9),
+                ("rich", 7),
+                ("httpx", 5),
+                ("attrs", 3),
+                ("bytes-py", 2),
+            ],
         ),
         &card_m,
         None,
@@ -105,20 +124,45 @@ pub(crate) fn board(_width: f32, _window: &mut Window, cx: &mut App) -> AnyEleme
         .px(px(56.0))
         .pt(px(44.0))
         .gap(px(34.0))
-        .child(div().set(H1, &facet.measure(px(1440.0))).text_color(palette.ink0.hsla()).child("Lenses"))
+        .child(
+            div()
+                .set(H1, &facet.measure(px(1440.0)))
+                .text_color(palette.ink0.hsla())
+                .child("Lenses"),
+        )
         .child(
             div()
                 .flex()
                 .flex_col()
                 .child(label("Resting on a release tick"))
-                .child(div().w(px(640.0 * s)).h(px(262.0 * s)).flex().flex_col().justify_end().child(strip)),
+                .child(
+                    div()
+                        .w(px(640.0 * s))
+                        .h(px(262.0 * s))
+                        .flex()
+                        .flex_col()
+                        .justify_end()
+                        .child(strip),
+                ),
         )
         .child(
             div()
                 .flex()
                 .gap(px(28.0))
-                .child(div().flex().flex_col().child(label("Resting on a module region")).child(module))
-                .child(div().flex().flex_col().child(label("Resting on a language")).child(language)),
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(label("Resting on a module region"))
+                        .child(module),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(label("Resting on a language"))
+                        .child(language),
+                ),
         )
         .into_any_element()
 }

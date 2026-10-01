@@ -5,7 +5,9 @@ edition = "2024"
 publish = false
 
 [dependencies]
-backend-local-service = { path = "../../../../crates/local-service", features = ["search-bench"] }
+backend-local-service = { path = "../../../../crates/local-service", features = [
+  "search-bench",
+] }
 serde_json = "=1.0.151"
 
 [workspace]

@@ -1,13 +1,13 @@
 //! Exercises the `backend-library` tests unified-terminal contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
-use backend_semantic::vocabulary::{FrontendError, Language, LanguageProfile, RustEdition, Stage};
 use backend_library::interface::{
     ApplicationDisposition, ApplicationEvent, ApplicationInput, ApplicationObservation,
     ApplicationOutcome, ApplicationReply, ApplicationService, Capability, CapabilityHealth,
     CorrelationId, DiagnosticCode, DiagnosticDetail, GenerateRequest, GenerateTarget,
     RejectedSourceText, ReplyBody, SourceText,
 };
+use backend_semantic::vocabulary::{FrontendError, Language, LanguageProfile, RustEdition, Stage};
 
 fn generate(
     correlation: u64,

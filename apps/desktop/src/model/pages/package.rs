@@ -24,7 +24,9 @@ pub struct PackageDossier {
 }
 
 /// Where a record's facts came from.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub enum RecordSource {
     /// A committed local registry publication.
     Registry,
@@ -33,7 +35,9 @@ pub enum RecordSource {
 }
 
 /// Registry release standing (the bevel voice of a release tick).
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub enum Standing {
     /// Offered to new resolutions.
     Available,
@@ -65,7 +69,9 @@ impl Standing {
 }
 
 /// Download telemetry that never turns "not recorded" into zero.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub enum Downloads {
     /// Exact cumulative count.
     Exact(u64),
@@ -129,7 +135,9 @@ pub struct VersionEntry {
 }
 
 /// Dependency resolver scope.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub enum DependencyScope {
     /// Normal runtime dependency.
     Runtime,

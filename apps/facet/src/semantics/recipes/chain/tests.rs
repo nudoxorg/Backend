@@ -14,7 +14,8 @@ use std::sync::OnceLock;
 fn world() -> (&'static World, Recipes) {
     static WORLD: OnceLock<(World, PreparedRecipes)> = OnceLock::new();
     let (world, prepared) = WORLD.get_or_init(|| {
-        let world = World::from_json(include_bytes!("../../tests/fixtures/recipes.json")).expect("the pinned world");
+        let world = World::from_json(include_bytes!("../../tests/fixtures/recipes.json"))
+            .expect("the pinned world");
         let prepared = Recipes::new(&world).into_prepared();
         (world, prepared)
     });
@@ -30,7 +31,9 @@ fn find(world: &World, package: &str, owner: Option<&str>, name: &str, kind: Kin
                 && n.kind == kind
                 && world.packages[n.pkg as usize].name.as_ref() == package
                 && match owner {
-                    Some(owner) => n.parent.is_some_and(|p| world.node(p).name.as_ref() == owner),
+                    Some(owner) => n
+                        .parent
+                        .is_some_and(|p| world.node(p).name.as_ref() == owner),
                     None => n.parent.is_none(),
                 }
         })
@@ -62,11 +65,21 @@ fn traits_world() -> World {
     owned_trait.sig = Some("trait DeserializeOwned:for<'de> Deserialize<'de>".into());
     let owned_trait = push(owned_trait);
     let mut value = public(Node::new(Kind::Enum, "Value", 0, 0));
-    value.impls = vec![Impl { trait_: Some(deserialize), line: 1, members: vec!["deserialize".into()], generic: true }];
+    value.impls = vec![Impl {
+        trait_: Some(deserialize),
+        line: 1,
+        members: vec!["deserialize".into()],
+        generic: true,
+    }];
     let value = push(value);
     let table = push(public(Node::new(Kind::Struct, "Table", 0, 0)));
     let mut owned = public(Node::new(Kind::Struct, "Owned", 0, 0));
-    owned.impls = vec![Impl { trait_: Some(owned_trait), line: 1, members: Vec::new(), generic: false }];
+    owned.impls = vec![Impl {
+        trait_: Some(owned_trait),
+        line: 1,
+        members: Vec::new(),
+        generic: false,
+    }];
     push(owned);
     let mut as_table = public(Node::new(Kind::Method, "as_table", 0, 0));
     as_table.parent = Some(value);
@@ -81,8 +94,18 @@ fn traits_world() -> World {
     push(parse);
     let _ = table;
     World::new(
-        vec![Package { name: "doc".into(), version: "1.0.0".into(), yours: true, external: false, deps: vec![] }],
-        vec![Module { pkg: 0, path: "".into(), file: "lib.rs".into() }],
+        vec![Package {
+            name: "doc".into(),
+            version: "1.0.0".into(),
+            yours: true,
+            external: false,
+            deps: vec![],
+        }],
+        vec![Module {
+            pkg: 0,
+            path: "".into(),
+            file: "lib.rs".into(),
+        }],
         nodes,
         vec![],
     )
@@ -99,7 +122,9 @@ fn a_map_becomes_a_value_in_one_step_from() {
     let map = find(world, "serde_json", None, "Map", Kind::Struct);
     let chain = c.convert(map, value).expect("a road from Map to Value");
     assert_eq!(chain.steps(), 1);
-    let join = c.join(&c.piece(map), &c.piece(value)).expect("Map feeds Value");
+    let join = c
+        .join(&c.piece(map), &c.piece(value))
+        .expect("Map feeds Value");
     assert_eq!(c.verbs(&join), ["from"]);
     assert!(matches!(join.how, JoinHow::Steps(_)));
 }
@@ -114,10 +139,20 @@ fn from_str_feeds_the_value_it_makes_directly() {
     let hand = c.arrange(&[value, from_str]);
     assert_eq!(hand.roads.len(), 1, "{hand:#?}");
     let road = &hand.roads[0];
-    let names: Vec<&str> = road.links.iter().map(|l| world.node(l.piece.node).name.as_ref()).collect();
+    let names: Vec<&str> = road
+        .links
+        .iter()
+        .map(|l| world.node(l.piece.node).name.as_ref())
+        .collect();
     assert_eq!(names, ["from_str", "Value"]);
-    assert!(matches!(road.links[1].join.as_ref().map(|j| &j.how), Some(JoinHow::Direct)));
-    assert_eq!(c.sentence(road, &HashSet::new()).text(), "from text to Value, in one step");
+    assert!(matches!(
+        road.links[1].join.as_ref().map(|j| &j.how),
+        Some(JoinHow::Direct)
+    ));
+    assert_eq!(
+        c.sentence(road, &HashSet::new()).text(),
+        "from text to Value, in one step"
+    );
 }
 
 #[test]
@@ -130,9 +165,16 @@ fn text_to_table_in_two_steps_through_value() {
     let hand = c.arrange(&[value, table, parse]);
     assert_eq!(hand.roads.len(), 1, "{hand:#?}");
     let road = &hand.roads[0];
-    let names: Vec<&str> = road.links.iter().map(|l| world.node(l.piece.node).name.as_ref()).collect();
+    let names: Vec<&str> = road
+        .links
+        .iter()
+        .map(|l| world.node(l.piece.node).name.as_ref())
+        .collect();
     assert_eq!(names, ["parse", "Value", "Table"]);
-    assert_eq!(c.sentence(road, &HashSet::new()).text(), "from text to Table, in two steps");
+    assert_eq!(
+        c.sentence(road, &HashSet::new()).text(),
+        "from text to Table, in two steps"
+    );
 }
 
 #[test]
@@ -157,7 +199,9 @@ fn any_deserialize_owned_needs_a_blanket_impl_the_world_does_not_record() {
     assert!(c.traits_of(value).contains("Deserialize"));
     assert!(!c.traits_of(value).contains("DeserializeOwned"));
     assert_eq!(c.join(&generic, &c.piece(value)), None);
-    let join = c.join(&generic, &c.piece(owned)).expect("Owned is a DeserializeOwned");
+    let join = c
+        .join(&generic, &c.piece(owned))
+        .expect("Owned is a DeserializeOwned");
     assert!(matches!(join.how, JoinHow::As));
     // Implementing a trait is being its supertraits too.
     assert!(c.traits_of(owned).contains("Deserialize"));
@@ -172,7 +216,10 @@ fn a_held_trait_filters_the_road_it_goes_through() {
     let hand = c.arrange(&[value, deserialize, table]);
     assert_eq!(hand.roads.len(), 1, "{hand:#?}");
     assert_eq!(hand.roads[0].through, [deserialize]);
-    assert_eq!(c.sentence(&hand.roads[0], &HashSet::new()).text(), "from Value to Table through Deserialize, in one step");
+    assert_eq!(
+        c.sentence(&hand.roads[0], &HashSet::new()).text(),
+        "from Value to Table through Deserialize, in one step"
+    );
     assert!(hand.apart.is_empty());
 }
 

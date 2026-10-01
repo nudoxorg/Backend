@@ -135,7 +135,10 @@ impl RowState {
             Change::Gone(gone) => Some(Glyph::Gone(gone)),
         };
         let used = self.uses.filter(|uses| *uses > 0).map(Glyph::Used);
-        let members = self.members.filter(|_| change.is_none() && used.is_none()).map(Glyph::Members);
+        let members = self
+            .members
+            .filter(|_| change.is_none() && used.is_none())
+            .map(Glyph::Members);
         [change, used, members].into_iter().flatten()
     }
 
@@ -167,7 +170,11 @@ impl Rollup {
     pub(crate) fn finish(self, members: usize) -> RowState {
         RowState {
             uses: (self.uses > 0).then_some(self.uses),
-            change: if self.changed > 0 { Change::Changes(self.changed) } else { Change::Still },
+            change: if self.changed > 0 {
+                Change::Changes(self.changed)
+            } else {
+                Change::Still
+            },
             members: u32::try_from(members).ok().filter(|members| *members > 0),
         }
     }
@@ -269,11 +276,22 @@ impl StateBook {
     /// also holds what moved between the two.
     pub(crate) fn from_release(krate: &Crate, root: &str, from: &str, to: Option<&str>) -> Self {
         let read = to.unwrap_or(from);
-        let mut book = Self { root: root.replace('-', "_").into(), spellings: Spellings::of(krate, &[from, read]), ..Self::default() };
+        let mut book = Self {
+            root: root.replace('-', "_").into(),
+            spellings: Spellings::of(krate, &[from, read]),
+            ..Self::default()
+        };
         for site in &krate.uses {
             let path: SharedString = book.spellings.root(&site.path).to_owned().into();
-            let Some(workspace_crate) = site.file.split('/').nth(1) else { continue };
-            let count = book.uses.entry(path).or_default().entry(WorkspaceCrate::new(workspace_crate.to_owned())).or_insert(0);
+            let Some(workspace_crate) = site.file.split('/').nth(1) else {
+                continue;
+            };
+            let count = book
+                .uses
+                .entry(path)
+                .or_default()
+                .entry(WorkspaceCrate::new(workspace_crate.to_owned()))
+                .or_insert(0);
             *count += 1;
         }
         if let Some(to) = to.filter(|to| *to != from) {
@@ -285,12 +303,25 @@ impl StateBook {
                     What::Removed => Move::Gone(Gone::Removed),
                     What::Deprecated => Move::Gone(Gone::Deprecated),
                     What::Added => continue,
-                    What::Changed | What::Renamed | What::FieldAdded | What::FieldRemoved | What::VariantAdded | What::VariantRemoved => Move::Changed,
+                    What::Changed
+                    | What::Renamed
+                    | What::FieldAdded
+                    | What::FieldRemoved
+                    | What::VariantAdded
+                    | What::VariantRemoved => Move::Changed,
                 };
                 let path: SharedString = book.spellings.root(&change.path).to_owned().into();
-                book.moved.entry(path).or_insert(Movement { kind: moved, before: change.before.clone(), after: change.after.clone() });
+                book.moved.entry(path).or_insert(Movement {
+                    kind: moved,
+                    before: change.before.clone(),
+                    after: change.after.clone(),
+                });
             }
-            book.compared = Some(Compared { from: from.to_owned().into(), to: to.to_owned().into(), changed: book.moved.len() });
+            book.compared = Some(Compared {
+                from: from.to_owned().into(),
+                to: to.to_owned().into(),
+                changed: book.moved.len(),
+            });
         }
         book
     }
@@ -319,13 +350,21 @@ impl StateBook {
     /// release being read does to it.
     pub(crate) fn state_of(&self, path: &str) -> RowState {
         let path = self.spellings.root(path);
-        let uses = self.uses.get(path).map(|by| by.values().sum::<u32>()).filter(|uses| *uses > 0);
+        let uses = self
+            .uses
+            .get(path)
+            .map(|by| by.values().sum::<u32>())
+            .filter(|uses| *uses > 0);
         let change = match self.moved.get(path).map(|movement| movement.kind) {
             None => Change::Still,
             Some(Move::Changed) => Change::Changes(1),
             Some(Move::Gone(gone)) => Change::Gone(gone),
         };
-        RowState { uses, change, members: None }
+        RowState {
+            uses,
+            change,
+            members: None,
+        }
     }
 
     /// What became of the item at `path` in the release being read.
@@ -335,13 +374,26 @@ impl StateBook {
 
     /// How many places `by` uses the item at `path`.
     pub(crate) fn uses_of(&self, path: &str, by: &WorkspaceCrate) -> u32 {
-        self.uses.get(self.spellings.root(path)).and_then(|crates| crates.get(by)).copied().unwrap_or(0)
+        self.uses
+            .get(self.spellings.root(path))
+            .and_then(|crates| crates.get(by))
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Every crate of yours that uses the item at `path`, with how often,
     /// the busiest first.
     pub(crate) fn users_of(&self, path: &str) -> Vec<Usage> {
-        let mut users: Vec<Usage> = self.uses.get(self.spellings.root(path)).into_iter().flatten().map(|(by, uses)| Usage { by: by.clone(), uses: *uses }).collect();
+        let mut users: Vec<Usage> = self
+            .uses
+            .get(self.spellings.root(path))
+            .into_iter()
+            .flatten()
+            .map(|(by, uses)| Usage {
+                by: by.clone(),
+                uses: *uses,
+            })
+            .collect();
         users.sort_by(|a, b| b.uses.cmp(&a.uses).then_with(|| a.by.cmp(&b.by)));
         users
     }
@@ -356,7 +408,14 @@ impl StateBook {
                 entry.1 += 1;
             }
         }
-        let mut list: Vec<Reach> = by.into_iter().map(|(by, (uses, items))| Reach { by: by.clone(), uses, items }).collect();
+        let mut list: Vec<Reach> = by
+            .into_iter()
+            .map(|(by, (uses, items))| Reach {
+                by: by.clone(),
+                uses,
+                items,
+            })
+            .collect();
         list.sort_by(|a, b| b.uses.cmp(&a.uses).then_with(|| a.by.cmp(&b.by)));
         list
     }
@@ -368,7 +427,12 @@ mod tests {
     use facet::data::release::{Change as Diff, ReleaseDiff, Severity, UseSite};
 
     fn site(path: &str, file: &str, line: u32) -> UseSite {
-        UseSite { path: path.into(), file: file.into(), line, text: "x".into() }
+        UseSite {
+            path: path.into(),
+            file: file.into(),
+            line,
+            text: "x".into(),
+        }
     }
 
     fn diff(path: &str, what: What, before: &str, after: &str) -> Diff {
@@ -396,12 +460,37 @@ mod tests {
                 from: "0.8.23".into(),
                 to: "1.1.6".into(),
                 changes: vec![
-                    diff("toml::de::from_str", What::Changed, "pub fn from_str<T>(s: &str) -> Result<T, Error>", "pub fn from_str<T>(s: &str, extra: bool) -> Result<T, Error>"),
+                    diff(
+                        "toml::de::from_str",
+                        What::Changed,
+                        "pub fn from_str<T>(s: &str) -> Result<T, Error>",
+                        "pub fn from_str<T>(s: &str, extra: bool) -> Result<T, Error>",
+                    ),
                     // Only the spelling of a lifetime moved: it never alarms you.
-                    diff("toml::value::Value::as_str", What::Changed, "pub fn as_str(&self) -> Option<&str>", "pub fn as_str<'a>(&'a self) -> Option<&'a str>"),
-                    diff("toml::map::Entry", What::Removed, "pub enum Entry", "pub enum Entry"),
-                    diff("toml::ser::Serializer", What::Deprecated, "pub struct Serializer", "pub struct Serializer"),
-                    diff("toml::de::Fresh", What::Added, "pub struct Fresh", "pub struct Fresh"),
+                    diff(
+                        "toml::value::Value::as_str",
+                        What::Changed,
+                        "pub fn as_str(&self) -> Option<&str>",
+                        "pub fn as_str<'a>(&'a self) -> Option<&'a str>",
+                    ),
+                    diff(
+                        "toml::map::Entry",
+                        What::Removed,
+                        "pub enum Entry",
+                        "pub enum Entry",
+                    ),
+                    diff(
+                        "toml::ser::Serializer",
+                        What::Deprecated,
+                        "pub struct Serializer",
+                        "pub struct Serializer",
+                    ),
+                    diff(
+                        "toml::de::Fresh",
+                        What::Added,
+                        "pub struct Fresh",
+                        "pub struct Fresh",
+                    ),
                 ],
                 semver_slip: false,
             }],
@@ -413,54 +502,158 @@ mod tests {
     fn uses_are_counted_per_crate_of_yours_and_rolled_into_the_item() {
         let book = StateBook::from_release(&toml(), "toml", "0.8.23", None);
         assert_eq!(book.state_of("toml::value::Value").uses, Some(3));
-        let by = |name: &str, uses: u32| Usage { by: WorkspaceCrate::new(name.to_owned()), uses };
-        assert_eq!(book.users_of("toml::value::Value"), [by("desktop", 2), by("engine", 1)], "the busiest crate first");
-        assert_eq!(book.uses_of("toml::value::Value", &WorkspaceCrate::new("engine")), 1);
-        assert_eq!(book.uses_of("toml::value::Value", &WorkspaceCrate::new("advisory")), 0);
-        assert_eq!(book.state_of("toml::value::Nothing"), RowState::default(), "an item nobody uses carries no state");
-        let reach = |name: &str, uses: u32, items: usize| Reach { by: WorkspaceCrate::new(name.to_owned()), uses, items };
-        assert_eq!(book.crates(), [reach("desktop", 3, 2), reach("engine", 1, 1)]);
+        let by = |name: &str, uses: u32| Usage {
+            by: WorkspaceCrate::new(name.to_owned()),
+            uses,
+        };
+        assert_eq!(
+            book.users_of("toml::value::Value"),
+            [by("desktop", 2), by("engine", 1)],
+            "the busiest crate first"
+        );
+        assert_eq!(
+            book.uses_of("toml::value::Value", &WorkspaceCrate::new("engine")),
+            1
+        );
+        assert_eq!(
+            book.uses_of("toml::value::Value", &WorkspaceCrate::new("advisory")),
+            0
+        );
+        assert_eq!(
+            book.state_of("toml::value::Nothing"),
+            RowState::default(),
+            "an item nobody uses carries no state"
+        );
+        let reach = |name: &str, uses: u32, items: usize| Reach {
+            by: WorkspaceCrate::new(name.to_owned()),
+            uses,
+            items,
+        };
+        assert_eq!(
+            book.crates(),
+            [reach("desktop", 3, 2), reach("engine", 1, 1)]
+        );
         assert_eq!(book.compared(), None, "at the pin nothing is compared");
     }
 
     #[test]
     fn reading_another_release_marks_what_changes_and_what_is_gone_and_leaves_a_respelling_alone() {
         let book = StateBook::from_release(&toml(), "toml", "0.8.23", Some("1.1.6"));
-        assert_eq!(book.state_of("toml::de::from_str").change, Change::Changes(1), "amber");
-        assert_eq!(book.state_of("toml::map::Entry").change, Change::Gone(Gone::Removed), "coral");
-        assert_eq!(book.state_of("toml::ser::Serializer").change, Change::Gone(Gone::Deprecated));
-        assert_eq!(book.state_of("toml::value::Value::as_str").change, Change::Still, "a lifetime spelled out is not a change");
-        assert_eq!(book.state_of("toml::de::Fresh").change, Change::Still, "what is new is not in the pin's outline");
-        assert_eq!(book.compared(), Some(&Compared { from: "0.8.23".into(), to: "1.1.6".into(), changed: 3 }));
+        assert_eq!(
+            book.state_of("toml::de::from_str").change,
+            Change::Changes(1),
+            "amber"
+        );
+        assert_eq!(
+            book.state_of("toml::map::Entry").change,
+            Change::Gone(Gone::Removed),
+            "coral"
+        );
+        assert_eq!(
+            book.state_of("toml::ser::Serializer").change,
+            Change::Gone(Gone::Deprecated)
+        );
+        assert_eq!(
+            book.state_of("toml::value::Value::as_str").change,
+            Change::Still,
+            "a lifetime spelled out is not a change"
+        );
+        assert_eq!(
+            book.state_of("toml::de::Fresh").change,
+            Change::Still,
+            "what is new is not in the pin's outline"
+        );
+        assert_eq!(
+            book.compared(),
+            Some(&Compared {
+                from: "0.8.23".into(),
+                to: "1.1.6".into(),
+                changed: 3
+            })
+        );
     }
 
     #[test]
-    fn the_glyphs_read_left_to_right_as_change_then_uses_and_members_only_when_nothing_else_speaks() {
-        let both = RowState { uses: Some(20), change: Change::Changes(4), members: Some(9) };
-        assert_eq!(both.glyphs().collect::<Vec<_>>(), [Glyph::Changed(4), Glyph::Used(20)]);
-        let gone = RowState { uses: Some(2), change: Change::Gone(Gone::Removed), members: None };
-        assert_eq!(gone.glyphs().collect::<Vec<_>>(), [Glyph::Gone(Gone::Removed), Glyph::Used(2)]);
-        let quiet = RowState { uses: None, change: Change::Still, members: Some(34) };
+    fn the_glyphs_read_left_to_right_as_change_then_uses_and_members_only_when_nothing_else_speaks()
+    {
+        let both = RowState {
+            uses: Some(20),
+            change: Change::Changes(4),
+            members: Some(9),
+        };
+        assert_eq!(
+            both.glyphs().collect::<Vec<_>>(),
+            [Glyph::Changed(4), Glyph::Used(20)]
+        );
+        let gone = RowState {
+            uses: Some(2),
+            change: Change::Gone(Gone::Removed),
+            members: None,
+        };
+        assert_eq!(
+            gone.glyphs().collect::<Vec<_>>(),
+            [Glyph::Gone(Gone::Removed), Glyph::Used(2)]
+        );
+        let quiet = RowState {
+            uses: None,
+            change: Change::Still,
+            members: Some(34),
+        };
         assert_eq!(quiet.glyphs().collect::<Vec<_>>(), [Glyph::Members(34)]);
-        assert!(RowState::default().is_quiet(), "an unread count is not drawn as zero");
-        assert!(RowState { uses: Some(0), ..RowState::default() }.is_quiet(), "and zero uses says nothing either");
+        assert!(
+            RowState::default().is_quiet(),
+            "an unread count is not drawn as zero"
+        );
+        assert!(
+            RowState {
+                uses: Some(0),
+                ..RowState::default()
+            }
+            .is_quiet(),
+            "and zero uses says nothing either"
+        );
     }
 
     #[test]
     fn an_item_moved_between_releases_is_one_item_under_either_of_its_paths() {
         use std::collections::HashMap as Map;
         let mut krate = toml();
-        krate.uses.push(site("toml::de::Deserializer::new", "apps/desktop/src/d.rs", 7));
-        krate.diffs[0].changes.push(diff("toml::Deserializer::new", What::Deprecated, "pub fn new()", "pub fn new()"));
+        krate.uses.push(site(
+            "toml::de::Deserializer::new",
+            "apps/desktop/src/d.rs",
+            7,
+        ));
+        krate.diffs[0].changes.push(diff(
+            "toml::Deserializer::new",
+            What::Deprecated,
+            "pub fn new()",
+            "pub fn new()",
+        ));
         krate.aliases = Map::from([
-            ("0.8.23".into(), Map::from([("toml::Deserializer::new".into(), "toml::de::Deserializer::new".into())])),
-            ("1.1.6".into(), Map::from([("toml::de::Deserializer::new".into(), "toml::Deserializer::new".into())])),
+            (
+                "0.8.23".into(),
+                Map::from([(
+                    "toml::Deserializer::new".into(),
+                    "toml::de::Deserializer::new".into(),
+                )]),
+            ),
+            (
+                "1.1.6".into(),
+                Map::from([(
+                    "toml::de::Deserializer::new".into(),
+                    "toml::Deserializer::new".into(),
+                )]),
+            ),
         ]);
         let book = StateBook::from_release(&krate, "toml", "0.8.23", Some("1.1.6"));
         for spelling in ["toml::de::Deserializer::new", "toml::Deserializer::new"] {
             let state = book.state_of(spelling);
             assert_eq!(state.uses, Some(1), "your use is found under {spelling}");
-            assert_eq!(state.change, Change::Gone(Gone::Deprecated), "and so is the release's word about it: {spelling}");
+            assert_eq!(
+                state.change,
+                Change::Gone(Gone::Deprecated),
+                "and so is the release's word about it: {spelling}"
+            );
         }
         assert_eq!(book.users_of("toml::Deserializer::new").len(), 1);
     }
@@ -468,16 +661,38 @@ mod tests {
     #[test]
     fn a_module_rolls_its_items_up() {
         let mut rollup = Rollup::default();
-        rollup.add(&RowState { uses: Some(20), change: Change::Changes(1), members: None });
-        rollup.add(&RowState { uses: Some(5), change: Change::Gone(Gone::Removed), members: None });
+        rollup.add(&RowState {
+            uses: Some(20),
+            change: Change::Changes(1),
+            members: None,
+        });
+        rollup.add(&RowState {
+            uses: Some(5),
+            change: Change::Gone(Gone::Removed),
+            members: None,
+        });
         rollup.add(&RowState::default());
-        assert_eq!(rollup.finish(3), RowState { uses: Some(25), change: Change::Changes(2), members: Some(3) });
-        assert_eq!(Rollup::default().finish(0), RowState::default(), "an empty module is quiet");
+        assert_eq!(
+            rollup.finish(3),
+            RowState {
+                uses: Some(25),
+                change: Change::Changes(2),
+                members: Some(3)
+            }
+        );
+        assert_eq!(
+            Rollup::default().finish(0),
+            RowState::default(),
+            "an empty module is quiet"
+        );
     }
 
     #[test]
     fn an_item_path_starts_at_the_crate_root_with_dashes_as_underscores() {
         let book = StateBook::from_release(&Crate::default(), "serde-json", "1.0.0", None);
-        assert_eq!(book.path_of(["value", "Value", "as_str"]).as_ref(), "serde_json::value::Value::as_str");
+        assert_eq!(
+            book.path_of(["value", "Value", "as_str"]).as_ref(),
+            "serde_json::value::Value::as_str"
+        );
     }
 }

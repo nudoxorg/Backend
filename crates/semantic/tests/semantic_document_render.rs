@@ -296,8 +296,8 @@ fn assert_reopened_payload(profile: LanguageProfile, image: &Ir, expected: &[&st
 }
 
 #[test]
-fn every_named_extension_payload_is_owned_reopen_byte_exact() -> Result<(), backend_semantic::ir::BuildError>
-{
+fn every_named_extension_payload_is_owned_reopen_byte_exact()
+-> Result<(), backend_semantic::ir::BuildError> {
     let profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
     let image = rich_typescript()?;
     assert_reopened_payload(
@@ -672,8 +672,8 @@ fn semantic_document_is_reopen_stable_and_never_becomes_source_syntax()
 }
 
 #[test]
-fn captured_empty_is_distinct_and_short_output_is_untouched() -> Result<(), backend_semantic::ir::BuildError>
-{
+fn captured_empty_is_distinct_and_short_output_is_untouched()
+-> Result<(), backend_semantic::ir::BuildError> {
     let mut builder = IrBuilder::new();
     let profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
     builder.set_language_profile(profile)?;

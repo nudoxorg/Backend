@@ -23,8 +23,9 @@ use crate::probe::{self, TextOverflow, TextSample};
 use crate::theme::ActiveFacet;
 use crate::tokens::{Palette, TypeRole, ty};
 use gpui::{
-    App, Bounds, DispatchPhase, Element, ElementId, Entity, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement,
-    LayoutId, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, Pixels, SharedString, Style, Window, px,
+    App, Bounds, DispatchPhase, Element, ElementId, Entity, GlobalElementId, Hitbox,
+    HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent,
+    MouseExitEvent, MouseMoveEvent, MouseUpEvent, Pixels, SharedString, Style, Window, px,
 };
 use std::rc::Rc;
 use std::sync::Arc;
@@ -96,9 +97,16 @@ impl TickerFacts {
                 day: r.date.as_deref().and_then(semver::days),
             })
             .collect();
-        let pin = pin.and_then(|pin| ticks.iter().position(|t| t.version == pin || semver::short(&t.version) == semver::short(pin)));
+        let pin = pin.and_then(|pin| {
+            ticks
+                .iter()
+                .position(|t| t.version == pin || semver::short(&t.version) == semver::short(pin))
+        });
         // The newest is the highest release that is not yanked.
-        let latest = ticks.iter().rposition(|t| t.standing == Standing::Available && t.kind != Kind::Pre).or_else(|| ticks.len().checked_sub(1));
+        let latest = ticks
+            .iter()
+            .rposition(|t| t.standing == Standing::Available && t.kind != Kind::Pre)
+            .or_else(|| ticks.len().checked_sub(1));
         Self {
             ticks,
             pin,
@@ -112,7 +120,11 @@ impl TickerFacts {
     /// The release being read (`None`: the pin).
     #[must_use]
     pub fn reading(mut self, version: Option<&str>) -> Self {
-        self.reading = version.and_then(|v| self.ticks.iter().position(|t| t.version == v || semver::short(&t.version) == semver::short(v)));
+        self.reading = version.and_then(|v| {
+            self.ticks
+                .iter()
+                .position(|t| t.version == v || semver::short(&t.version) == semver::short(v))
+        });
         self
     }
 
@@ -132,11 +144,23 @@ impl TickerFacts {
         let span = (width - 2.0 * pad).max(1.0);
         if !self.dated() {
             #[allow(clippy::cast_precision_loss)]
-            return (0..n).map(|i| pad + if n == 1 { span * 0.5 } else { span * i as f32 / (n - 1) as f32 }).collect();
+            return (0..n)
+                .map(|i| {
+                    pad + if n == 1 {
+                        span * 0.5
+                    } else {
+                        span * i as f32 / (n - 1) as f32
+                    }
+                })
+                .collect();
         }
         let dated: Vec<f64> = self.ticks.iter().filter_map(|t| t.day).collect();
         let t0 = dated.iter().copied().fold(f64::INFINITY, f64::min);
-        let t1 = dated.iter().copied().fold(self.today_day, f64::max).max(t0 + 1.0);
+        let t1 = dated
+            .iter()
+            .copied()
+            .fold(self.today_day, f64::max)
+            .max(t0 + 1.0);
         #[allow(clippy::cast_possible_truncation)]
         let at = |d: f64| pad + ((d - t0) / (t1 - t0)) as f32 * span;
         let mut xs: Vec<Option<f32>> = self.ticks.iter().map(|t| t.day.map(at)).collect();
@@ -175,7 +199,11 @@ impl TickerFacts {
         let span = (width - 2.0 * pad).max(1.0);
         let dated: Vec<f64> = self.ticks.iter().filter_map(|t| t.day).collect();
         let t0 = dated.iter().copied().fold(f64::INFINITY, f64::min);
-        let t1 = dated.iter().copied().fold(self.today_day, f64::max).max(t0 + 1.0);
+        let t1 = dated
+            .iter()
+            .copied()
+            .fold(self.today_day, f64::max)
+            .max(t0 + 1.0);
         let year_of = |day: f64| civil_year(day);
         let (first, last) = (year_of(t0), year_of(t1));
         let step = if last - first > 9 { 2 } else { 1 };
@@ -227,8 +255,16 @@ const PAD: f32 = 8.0;
 const TOP: f32 = 24.0;
 const BARS: f32 = 44.0;
 const AXIS: f32 = 20.0;
-const TEXT: TypeRole = TypeRole { size: 11.0, line: 15.0, ..ty::MONO_SMALL };
-const LABEL: TypeRole = TypeRole { size: 12.0, line: 16.0, ..ty::MONO_SMALL };
+const TEXT: TypeRole = TypeRole {
+    size: 11.0,
+    line: 15.0,
+    ..ty::MONO_SMALL
+};
+const LABEL: TypeRole = TypeRole {
+    size: 12.0,
+    line: 16.0,
+    ..ty::MONO_SMALL
+};
 
 struct State {
     pointer: Option<f32>,
@@ -268,7 +304,10 @@ pub fn door(facts: &TickerFacts, measure: &Measure, tick: usize) -> Bounds<Pixel
     let x = xs.get(tick).copied().unwrap_or(0.0);
     // At least 24 px wide, centred on its bar: a target the pointer can hit
     // (the bar itself is 10 px).
-    Bounds::new(gpui::point(px(x - 12.0 * s), px(TOP * s)), gpui::size(px(24.0 * s), px(BARS * s)))
+    Bounds::new(
+        gpui::point(px(x - 12.0 * s), px(TOP * s)),
+        gpui::size(px(24.0 * s), px(BARS * s)),
+    )
 }
 
 impl Ticker {
@@ -331,7 +370,11 @@ impl Element for Ticker {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, TickerLayout) {
-        let state = window.use_keyed_state("ticker", cx, |_, _| State { pointer: None, dragging: false, motion: Motion::new() });
+        let state = window.use_keyed_state("ticker", cx, |_, _| State {
+            pointer: None,
+            dragging: false,
+            motion: Motion::new(),
+        });
         let mut style = Style::default();
         style.size.width = px(f32::from(self.measure.width())).into();
         style.size.height = px(self.height()).into();
@@ -377,7 +420,13 @@ impl Element for Ticker {
             (state.pointer, state.motion.clone())
         };
         let pointer = pointer.or(self.rest);
-        let magnify = motion.animate(ElementId::NamedChild(Arc::new(self.id.clone()), "magnify".into()), if pointer.is_some() { 1.0 } else { 0.0 }, spec::REVEAL, window, cx);
+        let magnify = motion.animate(
+            ElementId::NamedChild(Arc::new(self.id.clone()), "magnify".into()),
+            if pointer.is_some() { 1.0 } else { 0.0 },
+            spec::REVEAL,
+            window,
+            cx,
+        );
         let anchor = pointer.unwrap_or(0.0);
         let shown = |x: f32| x + (fisheye(x, anchor, radius, distortion) - x) * magnify;
         let sx: Vec<f32> = xs.iter().map(|x| shown(*x)).collect();
@@ -416,7 +465,11 @@ impl Element for Ticker {
             for (i, x) in [(0, xs[0]), (facts.ticks.len() - 1, xs[xs.len() - 1])] {
                 let words = facts.ticks[i].version.clone();
                 let t = shape(words.clone(), text_role, palette.ink3.into(), window);
-                let at = if i == 0 { ox + x - 2.0 } else { ox + x - t.width() + 2.0 };
+                let at = if i == 0 {
+                    ox + x - 2.0
+                } else {
+                    ox + x - t.width() + 2.0
+                };
                 texts.push((t, at, base_y + 5.0 * s + text_role.size, words, text_role));
             }
         }
@@ -424,7 +477,8 @@ impl Element for Ticker {
         // The bars, batched by colour.
         let mut batches: Vec<(Hsla, Fill)> = Vec::new();
         for (i, tick) in facts.ticks.iter().enumerate() {
-            let near = pointer.map_or(0.0, |p| (1.0 - (xs[i] - p).abs() / radius).clamp(0.0, 1.0)) * magnify;
+            let near = pointer.map_or(0.0, |p| (1.0 - (xs[i] - p).abs() / radius).clamp(0.0, 1.0))
+                * magnify;
             let w = (1.5 + 4.5 * near * near) * s;
             let h0 = match tick.kind {
                 Kind::Breaking => 34.0,
@@ -434,10 +488,13 @@ impl Element for Ticker {
             let h = h0 * s * if hot == Some(i) { 1.18 } else { 1.0 };
             let colour = bar_ink(&facts, i, hot == Some(i), palette);
             let poly = Poly::rect(ox + sx[i] - w * 0.5, base_y - h, w, h);
-            let at = batches.iter().position(|(c, _)| *c == colour).unwrap_or_else(|| {
-                batches.push((colour, Fill::new()));
-                batches.len() - 1
-            });
+            let at = batches
+                .iter()
+                .position(|(c, _)| *c == colour)
+                .unwrap_or_else(|| {
+                    batches.push((colour, Fill::new()));
+                    batches.len() - 1
+                });
             batches[at].1.poly(&poly);
         }
         for (colour, fill) in batches {
@@ -448,7 +505,11 @@ impl Element for Ticker {
         if let Some(i) = facts.reading {
             let x = ox + sx[i];
             let mut caret = Fill::new();
-            caret.triangle(pt(x - 5.0 * s, base_y + 1.0), pt(x, base_y - 5.0 * s), pt(x + 5.0 * s, base_y + 1.0));
+            caret.triangle(
+                pt(x - 5.0 * s, base_y + 1.0),
+                pt(x, base_y - 5.0 * s),
+                pt(x + 5.0 * s, base_y + 1.0),
+            );
             caret.paint(window, Hsla::from(palette.peri_hi));
         }
 
@@ -458,8 +519,22 @@ impl Element for Ticker {
         let flag_y = base_y - (BARS - 1.0) * s - 2.0 * s;
         let mut spans: Vec<(f32, f32)> = Vec::new();
         for (index, full, short, ink) in [
-            facts.pin.map(|i| (i, format!("your pin {}", facts.ticks[i].version), "pin".to_owned(), palette.mint.base)),
-            facts.latest.filter(|l| Some(*l) != facts.pin).map(|i| (i, format!("newest {}", facts.ticks[i].version), "newest".to_owned(), palette.amber.base)),
+            facts.pin.map(|i| {
+                (
+                    i,
+                    format!("your pin {}", facts.ticks[i].version),
+                    "pin".to_owned(),
+                    palette.mint.base,
+                )
+            }),
+            facts.latest.filter(|l| Some(*l) != facts.pin).map(|i| {
+                (
+                    i,
+                    format!("newest {}", facts.ticks[i].version),
+                    "newest".to_owned(),
+                    palette.amber.base,
+                )
+            }),
         ]
         .into_iter()
         .flatten()
@@ -471,11 +546,19 @@ impl Element for Ticker {
             let place = |words: String, window: &Window| {
                 let words: SharedString = words.into();
                 let t = shape(words.clone(), text_role, ink.into(), window);
-                let at = if x + 3.0 * s - t.width() < ox { x - 3.0 * s } else { x + 3.0 * s - t.width() };
+                let at = if x + 3.0 * s - t.width() < ox {
+                    x - 3.0 * s
+                } else {
+                    x + 3.0 * s - t.width()
+                };
                 (t, at, words)
             };
             let (mut t, mut at, mut words) = place(full, window);
-            let touches = |at: f32, w: f32, spans: &[(f32, f32)]| spans.iter().any(|(a, b)| at < *b + 6.0 * s && at + w > *a - 6.0 * s);
+            let touches = |at: f32, w: f32, spans: &[(f32, f32)]| {
+                spans
+                    .iter()
+                    .any(|(a, b)| at < *b + 6.0 * s && at + w > *a - 6.0 * s)
+            };
             if touches(at, t.width(), &spans) {
                 (t, at, words) = place(short, window);
             }
@@ -493,7 +576,8 @@ impl Element for Ticker {
         let mut plate: Option<(Poly, Vec<(Shaped, SharedString)>, f32, f32)> = None;
         if let Some(i) = hot {
             let tick = &facts.ticks[i];
-            let mut parts: Vec<(SharedString, Hsla)> = vec![(tick.version.clone(), palette.ink0.into())];
+            let mut parts: Vec<(SharedString, Hsla)> =
+                vec![(tick.version.clone(), palette.ink0.into())];
             if let Some(date) = &tick.date {
                 parts.push((date.clone(), palette.ink2.into()));
             }
@@ -515,7 +599,11 @@ impl Element for Ticker {
                 parts.push(("your pin".into(), palette.mint.base.into()));
             } else if facts.latest == Some(i) {
                 parts.push(("newest".into(), palette.amber.base.into()));
-            } else if let Some(ago) = tick.date.as_deref().and_then(|d| semver::ago(d, &facts.today)) {
+            } else if let Some(ago) = tick
+                .date
+                .as_deref()
+                .and_then(|d| semver::ago(d, &facts.today))
+            {
                 parts.push((format!("{ago} ago").into(), palette.ink2.into()));
             }
             parts.push(if tick.names == Names::Read {
@@ -524,13 +612,22 @@ impl Element for Ticker {
                 ("not read yet".into(), palette.ink2.into())
             });
             let label_role = self.measure.role(LABEL);
-            let shaped: Vec<(Shaped, SharedString)> = parts.into_iter().map(|(w, ink)| (shape(w.clone(), label_role, ink, window), w)).collect();
+            let shaped: Vec<(Shaped, SharedString)> = parts
+                .into_iter()
+                .map(|(w, ink)| (shape(w.clone(), label_role, ink, window), w))
+                .collect();
             let sep = 12.0 * s;
-            let total: f32 = shaped.iter().map(|(t, _)| t.width()).sum::<f32>() + sep * (shaped.len() as f32 - 1.0);
+            let total: f32 = shaped.iter().map(|(t, _)| t.width()).sum::<f32>()
+                + sep * (shaped.len() as f32 - 1.0);
             let (pw, ph) = (total + 18.0 * s, label_role.line + 6.0 * s);
             let x = (ox + sx[i] - pw * 0.5).clamp(ox, (ox + width - pw).max(ox));
             let y = oy + 1.0;
-            plate = Some((Poly::chamfer(x, y, pw, ph, 3.0 * s), shaped, x + 9.0 * s, y + 3.0 * s + label_role.size));
+            plate = Some((
+                Poly::chamfer(x, y, pw, ph, 3.0 * s),
+                shaped,
+                x + 9.0 * s,
+                y + 3.0 * s + label_role.size,
+            ));
         }
         if let Some((poly, _, _, _)) = &plate {
             let mut back = Fill::new();
@@ -560,7 +657,10 @@ impl Element for Ticker {
             }
             let label_role = self.measure.role(LABEL);
             published.push((
-                Bounds::new(gpui::point(px(start), px(baseline - label_role.size)), gpui::size(px(x - start), px(label_role.line))),
+                Bounds::new(
+                    gpui::point(px(start), px(baseline - label_role.size)),
+                    gpui::size(px(x - start), px(label_role.line)),
+                ),
                 joined.join(" · "),
                 label_role,
                 x - start,
@@ -570,7 +670,10 @@ impl Element for Ticker {
         for (t, x, baseline, words, role) in &texts {
             t.paint(*x, *baseline, window, cx);
             published.push((
-                Bounds::new(gpui::point(px(*x), px(baseline - role.size)), gpui::size(px(t.width()), px(role.line))),
+                Bounds::new(
+                    gpui::point(px(*x), px(baseline - role.size)),
+                    gpui::size(px(t.width()), px(role.line)),
+                ),
                 words.to_string(),
                 *role,
                 t.width(),
@@ -579,14 +682,23 @@ impl Element for Ticker {
         }
         if probe::enabled(cx) {
             for (n, (at, content, role, natural, kind)) in published.into_iter().enumerate() {
-                let key = ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::from(format!("{kind}-{n}")));
+                let key = ElementId::NamedChild(
+                    Arc::new(self.id.clone()),
+                    SharedString::from(format!("{kind}-{n}")),
+                );
                 probe::record_text(
                     cx,
                     &key,
                     at,
                     TextSample {
                         key: String::new(),
-                        bounds: probe::BoundsSample { key: String::new(), x: 0.0, y: 0.0, width: 0.0, height: 0.0 },
+                        bounds: probe::BoundsSample {
+                            key: String::new(),
+                            x: 0.0,
+                            y: 0.0,
+                            width: 0.0,
+                            height: 0.0,
+                        },
                         paint_clip: None,
                         natural_width: natural,
                         overflow: TextOverflow::Clip,
@@ -602,8 +714,18 @@ impl Element for Ticker {
             }
             // Where each bar stands, for tests that click one.
             for (i, x) in sx.iter().enumerate() {
-                let key = ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::from(format!("bar-{}", facts.ticks[i].version)));
-                probe::record_bounds(cx, &key, Bounds::new(gpui::point(px(ox + x - 1.0), px(oy)), gpui::size(px(2.0), px(self.height()))));
+                let key = ElementId::NamedChild(
+                    Arc::new(self.id.clone()),
+                    SharedString::from(format!("bar-{}", facts.ticks[i].version)),
+                );
+                probe::record_bounds(
+                    cx,
+                    &key,
+                    Bounds::new(
+                        gpui::point(px(ox + x - 1.0), px(oy)),
+                        gpui::size(px(2.0), px(self.height())),
+                    ),
+                );
             }
         }
 
@@ -619,7 +741,8 @@ impl Element for Ticker {
                 let next = inside.then(|| f32::from(event.position.x) - ox);
                 let changed = {
                     let current = state.read(cx);
-                    current.pointer != next && (next.is_some() || current.dragging || current.pointer.is_some())
+                    current.pointer != next
+                        && (next.is_some() || current.dragging || current.pointer.is_some())
                 };
                 if changed {
                     state.update(cx, |state, cx| {
@@ -644,18 +767,36 @@ impl Element for Ticker {
             let facts = facts.clone();
             let travelling = Rc::new(std::cell::Cell::new(None::<usize>));
             {
-                let (state, hitbox, travel, travelling, facts) = (state.clone(), hitbox.clone(), travel.clone(), travelling.clone(), facts.clone());
+                let (state, hitbox, travel, travelling, facts) = (
+                    state.clone(),
+                    hitbox.clone(),
+                    travel.clone(),
+                    travelling.clone(),
+                    facts.clone(),
+                );
                 let xs = xs.clone();
                 window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
-                    if phase != DispatchPhase::Bubble || event.button != MouseButton::Left || !hitbox.is_hovered(window) {
+                    if phase != DispatchPhase::Bubble
+                        || event.button != MouseButton::Left
+                        || !hitbox.is_hovered(window)
+                    {
                         return;
                     }
                     let p = f32::from(event.position.x) - ox;
-                    let magnify = if state.read(cx).pointer.is_some() { 1.0 } else { 0.0 };
+                    let magnify = if state.read(cx).pointer.is_some() {
+                        1.0
+                    } else {
+                        0.0
+                    };
                     let hit = xs
                         .iter()
                         .enumerate()
-                        .map(|(i, x)| (i, (x + (fisheye(*x, p, radius, distortion) - x) * magnify - p).abs()))
+                        .map(|(i, x)| {
+                            (
+                                i,
+                                (x + (fisheye(*x, p, radius, distortion) - x) * magnify - p).abs(),
+                            )
+                        })
                         .min_by(|a, b| a.1.total_cmp(&b.1))
                         .filter(|(_, d)| *d < 24.0 * s)
                         .map(|(i, _)| i);
@@ -672,10 +813,14 @@ impl Element for Ticker {
                 });
             }
             {
-                let (state, hitbox, travel, travelling) = (state.clone(), hitbox.clone(), travel, travelling.clone());
+                let (state, hitbox, travel, travelling) =
+                    (state.clone(), hitbox.clone(), travel, travelling.clone());
                 let xs = xs.clone();
                 window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-                    if phase != DispatchPhase::Bubble || !state.read(cx).dragging || !event.dragging() {
+                    if phase != DispatchPhase::Bubble
+                        || !state.read(cx).dragging
+                        || !event.dragging()
+                    {
                         return;
                     }
                     let p = f32::from(event.position.x) - ox;
@@ -698,7 +843,10 @@ impl Element for Ticker {
             {
                 let state = state.clone();
                 window.on_mouse_event(move |event: &MouseUpEvent, phase, _window, cx| {
-                    if phase == DispatchPhase::Capture && event.button == MouseButton::Left && state.read(cx).dragging {
+                    if phase == DispatchPhase::Capture
+                        && event.button == MouseButton::Left
+                        && state.read(cx).dragging
+                    {
                         state.update(cx, |state, cx| {
                             state.dragging = false;
                             cx.notify();
@@ -747,13 +895,29 @@ mod tests {
     use crate::folio::state::{Names, Standing};
 
     fn facts(releases: &[(&str, Option<&str>)], pin: &str) -> TickerFacts {
-        let releases: Vec<Release> = releases.iter().map(|(v, d)| Release { version: (*v).to_owned(), date: d.map(str::to_owned), standing: Standing::Available, names: Names::Read }).collect();
+        let releases: Vec<Release> = releases
+            .iter()
+            .map(|(v, d)| Release {
+                version: (*v).to_owned(),
+                date: d.map(str::to_owned),
+                standing: Standing::Available,
+                names: Names::Read,
+            })
+            .collect();
         TickerFacts::new(&releases, Some(pin), "2026-09-28")
     }
 
     #[test]
     fn releases_sort_oldest_first_and_the_pin_and_newest_are_found() {
-        let f = facts(&[("1.0.0", None), ("0.8.23", None), ("1.1.6", None), ("0.5.11", None)], "0.8.23");
+        let f = facts(
+            &[
+                ("1.0.0", None),
+                ("0.8.23", None),
+                ("1.1.6", None),
+                ("0.5.11", None),
+            ],
+            "0.8.23",
+        );
         let order: Vec<&str> = f.ticks.iter().map(|t| t.version.as_ref()).collect();
         assert_eq!(order, ["0.5.11", "0.8.23", "1.0.0", "1.1.6"]);
         assert_eq!(f.pin, Some(1));
@@ -764,19 +928,37 @@ mod tests {
     /// way, centred on its 10 px bar (J1 linted every door 10 x 44 px).
     #[test]
     fn a_release_door_is_at_least_24_px_and_centred_on_its_bar() {
-        let f = facts(&[("0.5.11", None), ("0.8.23", None), ("1.0.0", None)], "0.8.23");
+        let f = facts(
+            &[("0.5.11", None), ("0.8.23", None), ("1.0.0", None)],
+            "0.8.23",
+        );
         let measure = crate::Measure::new(gpui::px(600.0), &crate::theme::Facet::default());
         let xs = f.positions(f32::from(measure.width()), super::PAD * measure.scale());
         for (tick, x) in xs.iter().enumerate() {
             let door = super::door(&f, &measure, tick);
-            assert!(f32::from(door.size.width) >= 24.0 && f32::from(door.size.height) >= 24.0, "{tick}: {door:?}");
-            assert!((f32::from(door.center().x) - x).abs() < 0.01, "{tick}: centred on its bar at {x}: {door:?}");
+            assert!(
+                f32::from(door.size.width) >= 24.0 && f32::from(door.size.height) >= 24.0,
+                "{tick}: {door:?}"
+            );
+            assert!(
+                (f32::from(door.center().x) - x).abs() < 0.01,
+                "{tick}: centred on its bar at {x}: {door:?}"
+            );
         }
     }
 
     #[test]
     fn undated_releases_are_spaced_evenly() {
-        let f = facts(&[("0.1.0", None), ("0.2.0", None), ("0.3.0", None), ("0.4.0", None), ("0.5.0", None)], "0.3.0");
+        let f = facts(
+            &[
+                ("0.1.0", None),
+                ("0.2.0", None),
+                ("0.3.0", None),
+                ("0.4.0", None),
+                ("0.5.0", None),
+            ],
+            "0.3.0",
+        );
         assert!(!f.dated());
         let xs = f.positions(408.0, 4.0);
         let gaps: Vec<f32> = xs.windows(2).map(|w| w[1] - w[0]).collect();
@@ -787,7 +969,15 @@ mod tests {
 
     #[test]
     fn dated_releases_sit_on_a_time_axis_and_undated_ones_between_their_neighbours() {
-        let f = facts(&[("0.1.0", Some("2020-01-01")), ("0.2.0", None), ("0.3.0", Some("2024-01-01")), ("0.4.0", Some("2026-01-01"))], "0.3.0");
+        let f = facts(
+            &[
+                ("0.1.0", Some("2020-01-01")),
+                ("0.2.0", None),
+                ("0.3.0", Some("2024-01-01")),
+                ("0.4.0", Some("2026-01-01")),
+            ],
+            "0.3.0",
+        );
         assert!(f.dated());
         let xs = f.positions(1008.0, 8.0);
         assert!(xs[0] < xs[1] && xs[1] < xs[2] && xs[2] < xs[3]);
@@ -815,7 +1005,13 @@ mod tests {
     #[test]
     fn years_come_from_the_day_count() {
         assert_eq!(civil_year(0.0), 1970);
-        assert_eq!(civil_year(crate::marks::semver::days("2026-09-28").unwrap_or(0.0)), 2026);
-        assert_eq!(civil_year(crate::marks::semver::days("2015-12-31").unwrap_or(0.0)), 2015);
+        assert_eq!(
+            civil_year(crate::marks::semver::days("2026-09-28").unwrap_or(0.0)),
+            2026
+        );
+        assert_eq!(
+            civil_year(crate::marks::semver::days("2015-12-31").unwrap_or(0.0)),
+            2015
+        );
     }
 }

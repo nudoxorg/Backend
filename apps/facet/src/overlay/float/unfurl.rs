@@ -39,14 +39,26 @@ pub struct Bands {
 
 impl Bands {
     /// Nothing drawn.
-    pub const CLOSED: Self = Self { line: 0.0, edge: 0.0, body: 0.0 };
+    pub const CLOSED: Self = Self {
+        line: 0.0,
+        edge: 0.0,
+        body: 0.0,
+    };
     /// At rest, open.
-    pub const OPEN: Self = Self { line: 1.0, edge: 1.0, body: 1.0 };
+    pub const OPEN: Self = Self {
+        line: 1.0,
+        edge: 1.0,
+        body: 1.0,
+    };
 
     /// Every band at `value` (a card that does not unfurl).
     #[must_use]
     pub const fn all(value: f32) -> Self {
-        Self { line: value, edge: value, body: value }
+        Self {
+            line: value,
+            edge: value,
+            body: value,
+        }
     }
 
     const fn get(self) -> [f32; 3] {
@@ -120,7 +132,11 @@ impl Run {
     /// The way a presence that goes from `from` to `to` runs.
     #[must_use]
     pub fn toward(from: f32, to: f32) -> Self {
-        if to >= from { Self::Entering } else { Self::Leaving }
+        if to >= from {
+            Self::Entering
+        } else {
+            Self::Leaving
+        }
     }
 
     /// The schedule's length, ms.
@@ -194,9 +210,15 @@ mod tests {
     #[test]
     fn the_entrance_lands_each_band_on_its_storyboard_time() {
         let at60 = entering(60.0);
-        assert!((at60.line - 1.0).abs() < 1e-6 && at60.edge == 0.0 && at60.body == 0.0, "{at60:?}");
+        assert!(
+            (at60.line - 1.0).abs() < 1e-6 && at60.edge == 0.0 && at60.body == 0.0,
+            "{at60:?}"
+        );
         let at140 = entering(140.0);
-        assert!((at140.edge - 1.0).abs() < 1e-6 && at140.body > 0.0 && at140.body < 1.0, "{at140:?}");
+        assert!(
+            (at140.edge - 1.0).abs() < 1e-6 && at140.body > 0.0 && at140.body < 1.0,
+            "{at140:?}"
+        );
         assert_eq!(entering(ENTER_MS), Bands::OPEN);
         assert_eq!(entering(99.0).body, 0.0, "the body waits for the edge");
     }
@@ -204,16 +226,25 @@ mod tests {
     #[test]
     fn the_leave_rolls_the_body_up_before_the_edge_moves() {
         let at120 = leaving(120.0);
-        assert!(at120.body == 0.0 && (at120.edge - 1.0).abs() < 1e-6 && (at120.line - 1.0).abs() < 1e-6, "{at120:?}");
+        assert!(
+            at120.body == 0.0 && (at120.edge - 1.0).abs() < 1e-6 && (at120.line - 1.0).abs() < 1e-6,
+            "{at120:?}"
+        );
         let at210 = leaving(210.0);
-        assert!(at210.edge == 0.0 && (at210.line - 1.0).abs() < 1e-6, "{at210:?}");
+        assert!(
+            at210.edge == 0.0 && (at210.line - 1.0).abs() < 1e-6,
+            "{at210:?}"
+        );
         assert_eq!(leaving(EXIT_MS), Bands::CLOSED);
     }
 
     /// Two poses agree to the precision the bisection in `inverse` has (a
     /// reversal resumes from where the bands are, to within a hair).
     fn near(a: Bands, b: Bands) -> bool {
-        a.get().iter().zip(b.get()).all(|(a, b)| (a - b).abs() < 1e-5)
+        a.get()
+            .iter()
+            .zip(b.get())
+            .all(|(a, b)| (a - b).abs() < 1e-5)
     }
 
     #[test]
@@ -222,18 +253,30 @@ mod tests {
             let pose = entering(stop);
             let offset = resume(pose, Run::Leaving);
             let first = at(pose, Run::Leaving, offset);
-            assert!(near(first, pose), "leaving at +{stop} jumped: {first:?} vs {pose:?}");
+            assert!(
+                near(first, pose),
+                "leaving at +{stop} jumped: {first:?} vs {pose:?}"
+            );
             // Something moves at once, nothing ever rises while leaving.
             let next = at(pose, Run::Leaving, offset + 4.0);
-            assert!(next.mean() < pose.mean(), "leaving at +{stop} stalled: {pose:?} -> {next:?}");
+            assert!(
+                next.mean() < pose.mean(),
+                "leaving at +{stop} stalled: {pose:?} -> {next:?}"
+            );
         }
         for stop in [20.0, 100.0, 150.0, 250.0, 290.0] {
             let pose = leaving(stop);
             let offset = resume(pose, Run::Entering);
             let first = at(pose, Run::Entering, offset);
-            assert!(near(first, pose), "re-entering at +{stop} jumped: {first:?} vs {pose:?}");
+            assert!(
+                near(first, pose),
+                "re-entering at +{stop} jumped: {first:?} vs {pose:?}"
+            );
             let next = at(pose, Run::Entering, offset + 4.0);
-            assert!(next.mean() > pose.mean(), "re-entering at +{stop} stalled: {pose:?} -> {next:?}");
+            assert!(
+                next.mean() > pose.mean(),
+                "re-entering at +{stop} stalled: {pose:?} -> {next:?}"
+            );
         }
     }
 }

@@ -2,7 +2,10 @@
 //! answers this frame's hover target (the reach bar's scrub, the history's
 //! label) needs the window, which a page's builders do not have.
 
-use gpui::{AnyElement, App, Bounds, Element, ElementId, Global, GlobalElementId, InspectorElementId, IntoElement, LayoutId, MouseMoveEvent, Pixels, SharedString, Window};
+use gpui::{
+    AnyElement, App, Bounds, Element, ElementId, Global, GlobalElementId, InspectorElementId,
+    IntoElement, LayoutId, MouseMoveEvent, Pixels, SharedString, Window,
+};
 use std::collections::HashSet;
 
 /// An element built inside layout, with the window at hand.
@@ -12,7 +15,10 @@ pub(super) struct Lazy {
 }
 
 pub(super) fn lazy(build: impl FnOnce(&mut Window, &mut App) -> AnyElement + 'static) -> Lazy {
-    Lazy { build: Some(Box::new(build)), child: None }
+    Lazy {
+        build: Some(Box::new(build)),
+        child: None,
+    }
 }
 
 impl IntoElement for Lazy {
@@ -34,26 +40,51 @@ impl Element for Lazy {
         None
     }
 
-    fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, ()) {
-        let mut child = self.build.take().map_or_else(|| gpui::Empty.into_any_element(), |build| build(window, cx));
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let mut child = self
+            .build
+            .take()
+            .map_or_else(|| gpui::Empty.into_any_element(), |build| build(window, cx));
         let layout = child.request_layout(window, cx);
         self.child = Some(child);
         (layout, ())
     }
 
-    fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, (): &mut (), window: &mut Window, cx: &mut App) {
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        (): &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         if let Some(child) = self.child.as_mut() {
             child.prepaint(window, cx);
         }
     }
 
-    fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, (): &mut (), (): &mut (), window: &mut Window, cx: &mut App) {
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        (): &mut (),
+        (): &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         if let Some(child) = self.child.as_mut() {
             child.paint(window, cx);
         }
     }
 }
-
 
 // ------------------------------------------------------------------ spreads
 
@@ -77,8 +108,15 @@ pub(super) struct Spreads {
 }
 
 /// See [`Spreads`].
-pub(super) fn spreads(key: impl Into<SharedString>, build: impl FnOnce(bool) -> AnyElement + 'static) -> Spreads {
-    Spreads { key: key.into(), build: Some(Box::new(build)), child: None }
+pub(super) fn spreads(
+    key: impl Into<SharedString>,
+    build: impl FnOnce(bool) -> AnyElement + 'static,
+) -> Spreads {
+    Spreads {
+        key: key.into(),
+        build: Some(Box::new(build)),
+        child: None,
+    }
 }
 
 impl IntoElement for Spreads {
@@ -100,21 +138,49 @@ impl Element for Spreads {
         None
     }
 
-    fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, ()) {
-        let open = cx.try_global::<Over>().is_some_and(|over| over.0.contains(&self.key));
-        let mut child = self.build.take().map_or_else(|| gpui::Empty.into_any_element(), |build| build(open));
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let open = cx
+            .try_global::<Over>()
+            .is_some_and(|over| over.0.contains(&self.key));
+        let mut child = self
+            .build
+            .take()
+            .map_or_else(|| gpui::Empty.into_any_element(), |build| build(open));
         let layout = child.request_layout(window, cx);
         self.child = Some(child);
         (layout, ())
     }
 
-    fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, (): &mut (), window: &mut Window, cx: &mut App) {
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        (): &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         if let Some(child) = self.child.as_mut() {
             child.prepaint(window, cx);
         }
     }
 
-    fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, (): &mut (), (): &mut (), window: &mut Window, cx: &mut App) {
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        (): &mut (),
+        (): &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         if let Some(child) = self.child.as_mut() {
             child.paint(window, cx);
         }

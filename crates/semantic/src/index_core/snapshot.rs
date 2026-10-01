@@ -5,9 +5,9 @@
 
 use core::ops::Deref;
 
+use crate::index_vocabulary::{ExactSegmentId, IndexSnapshotId, LexicalSegmentId};
 use arrayvec::ArrayVec;
 use backend_version::{GenerationId, IndexSnapshotIdentityError, derive_index_snapshot};
-use crate::index_vocabulary::{ExactSegmentId, IndexSnapshotId, LexicalSegmentId};
 
 use crate::index_core::MAX_SELECTED_SEGMENTS;
 

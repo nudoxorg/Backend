@@ -3,10 +3,15 @@
 //! rest, purely.
 
 use super::place;
-use crate::model::pages::{DeclRef, DocFragment, DocSection, Member, PackageRef, Receiver, SectionKind, SymbolPage};
+use crate::model::pages::{
+    DeclRef, DocFragment, DocSection, Member, PackageRef, Receiver, SectionKind, SymbolPage,
+};
 use backend_library::{DeclarationKind, Obligation};
 use facet::anatomy::history::{History, Was};
-use facet::anatomy::symbol::facts::{Beside, Facts, Implementors, Member as FactMember, Owes, Receives, Section, SectionKind as FactSection, Site};
+use facet::anatomy::symbol::facts::{
+    Beside, Facts, Implementors, Member as FactMember, Owes, Receives, Section,
+    SectionKind as FactSection, Site,
+};
 use facet::anatomy::symbol::view::{Block, Kind, Lang};
 
 /// The page's kind for an index kind.
@@ -15,7 +20,9 @@ pub(super) const fn kind_of(kind: Option<DeclarationKind>) -> Kind {
         Some(DeclarationKind::Function) => Kind::Function,
         Some(DeclarationKind::Method | DeclarationKind::Constructor) => Kind::Method,
         Some(DeclarationKind::Enum) => Kind::Enum,
-        Some(DeclarationKind::Struct | DeclarationKind::Class | DeclarationKind::Union) => Kind::Struct,
+        Some(DeclarationKind::Struct | DeclarationKind::Class | DeclarationKind::Union) => {
+            Kind::Struct
+        }
         Some(DeclarationKind::Trait | DeclarationKind::Interface) => Kind::Trait,
         Some(DeclarationKind::Type) => Kind::Alias,
         Some(DeclarationKind::Constant | DeclarationKind::Variable) => Kind::Constant,
@@ -60,12 +67,23 @@ const fn section_kind(kind: SectionKind) -> FactSection {
 /// Rust method whose trail has one), and its own name.
 fn owner(page: &SymbolPage) -> (String, Option<String>) {
     let name = page.identity.name.to_string();
-    if let Some((owner, leaf)) = name.rsplit_once('.').filter(|(owner, leaf)| !owner.is_empty() && !leaf.is_empty()) {
+    if let Some((owner, leaf)) = name
+        .rsplit_once('.')
+        .filter(|(owner, leaf)| !owner.is_empty() && !leaf.is_empty())
+    {
         return (leaf.to_owned(), Some(owner.to_owned()));
     }
-    if matches!(page.identity.kind, Some(DeclarationKind::Method | DeclarationKind::Constructor)) {
+    if matches!(
+        page.identity.kind,
+        Some(DeclarationKind::Method | DeclarationKind::Constructor)
+    ) {
         let identity = page.identity.coordinate.identity();
-        let segments = identity.trail().segments().iter().map(|segment| segment.as_str().to_owned()).collect::<Vec<_>>();
+        let segments = identity
+            .trail()
+            .segments()
+            .iter()
+            .map(|segment| segment.as_str().to_owned())
+            .collect::<Vec<_>>();
         if segments.len() >= 2 {
             return (name, segments.get(segments.len() - 2).cloned());
         }
@@ -91,8 +109,16 @@ pub(super) fn blocks(fragments: &[DocFragment]) -> Vec<Block> {
             return;
         }
         match text.strip_prefix('#') {
-            Some(rest) if text.starts_with("# ") || text.starts_with("## ") || text.starts_with("### ") => out.push(Block::Head(rest.trim_start_matches('#').trim().to_owned())),
-            _ if text.starts_with("- ") || text.starts_with("* ") => out.push(Block::Item(text[2..].trim().to_owned())),
+            Some(rest)
+                if text.starts_with("# ")
+                    || text.starts_with("## ")
+                    || text.starts_with("### ") =>
+            {
+                out.push(Block::Head(rest.trim_start_matches('#').trim().to_owned()))
+            }
+            _ if text.starts_with("- ") || text.starts_with("* ") => {
+                out.push(Block::Item(text[2..].trim().to_owned()))
+            }
             _ => out.push(Block::Para(text)),
         }
     };
@@ -138,7 +164,9 @@ pub(super) fn blocks(fragments: &[DocFragment]) -> Vec<Block> {
                 para.push_str(code);
                 para.push('`');
             }
-            DocFragment::Link { label, coordinate, .. } => match coordinate {
+            DocFragment::Link {
+                label, coordinate, ..
+            } => match coordinate {
                 Some(target) => para.push_str(&format!("[{label}]({})", target.as_str())),
                 None => para.push_str(label),
             },
@@ -150,16 +178,24 @@ pub(super) fn blocks(fragments: &[DocFragment]) -> Vec<Block> {
 }
 
 fn markup(fragments: &[DocFragment]) -> String {
-    blocks(fragments).into_iter().map(|block| match block {
-        Block::Para(text) | Block::Item(text) | Block::Head(text) | Block::Code(text) => text,
-    }).collect::<Vec<_>>().join(" ")
+    blocks(fragments)
+        .into_iter()
+        .map(|block| match block {
+            Block::Para(text) | Block::Item(text) | Block::Head(text) | Block::Code(text) => text,
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn section(section: &DocSection) -> Section {
     Section {
         kind: section_kind(section.kind),
         body: markup(&section.body),
-        entries: section.entries.iter().map(|entry| (entry.subject.to_string(), markup(&entry.body))).collect(),
+        entries: section
+            .entries
+            .iter()
+            .map(|entry| (entry.subject.to_string(), markup(&entry.body)))
+            .collect(),
     }
 }
 
@@ -172,13 +208,21 @@ fn member(member: &Member, effect: Receives) -> FactMember {
     let first = paragraphs.next();
     FactMember {
         name: member.decl.name.to_string(),
-        signature: member.signature.known().map(|signature| signature.text.to_string()),
+        signature: member
+            .signature
+            .known()
+            .map(|signature| signature.text.to_string()),
         summary: member.summary.as_deref().map(ToOwned::to_owned).or(first),
         more: paragraphs.next(),
         receives: effect,
         owes: owes(&member.decl),
         link: Some(member.decl.coordinate.as_str().to_owned()),
-        errors: member.sections.sections.iter().find(|s| s.kind == SectionKind::Errors).map(|s| markup(&s.body)),
+        errors: member
+            .sections
+            .sections
+            .iter()
+            .find(|s| s.kind == SectionKind::Errors)
+            .map(|s| markup(&s.body)),
     }
 }
 
@@ -212,15 +256,28 @@ fn links(page: &SymbolPage) -> Vec<(String, String)> {
 /// TypeScript is told apart by the file's extension.
 fn lang(page: &SymbolPage) -> Lang {
     let lang = Lang::from_name(page.identity.language.name());
-    let javascript = page.identity.path.as_deref().is_some_and(|path| [".js", ".mjs", ".cjs", ".jsx"].iter().any(|ext| path.ends_with(ext)));
-    if lang == Lang::TypeScript && javascript { Lang::JavaScript } else { lang }
+    let javascript = page.identity.path.as_deref().is_some_and(|path| {
+        [".js", ".mjs", ".cjs", ".jsx"]
+            .iter()
+            .any(|ext| path.ends_with(ext))
+    });
+    if lang == Lang::TypeScript && javascript {
+        Lang::JavaScript
+    } else {
+        lang
+    }
 }
 
 /// `serde_json`, `value`, `Value`: the package, the file's stem unless it is
 /// `lib`, `mod` or `main`, the owner of a method.
 fn path(package: &PackageRef, page: &SymbolPage, owner: Option<&str>) -> Vec<String> {
     let mut parts = vec![package.display_name().replace('-', "_")];
-    if let Some(stem) = page.identity.coordinate.identity().path().map(|path| path.stem().to_owned())
+    if let Some(stem) = page
+        .identity
+        .coordinate
+        .identity()
+        .path()
+        .map(|path| path.stem().to_owned())
         && !stem.is_empty()
         && !matches!(stem.as_str(), "lib" | "mod" | "main")
     {
@@ -236,50 +293,114 @@ fn path(package: &PackageRef, page: &SymbolPage, owner: Option<&str>) -> Vec<Str
 /// What the page reads of the declaration: everything the index says, and the
 /// companions (a Go named type's constants), history and siblings the shell
 /// gathered.
-pub(super) fn facts(page: &SymbolPage, package: &str, companions: &[(DeclRef, Option<SymbolPage>)], history: &History) -> Facts {
+pub(super) fn facts(
+    page: &SymbolPage,
+    package: &str,
+    companions: &[(DeclRef, Option<SymbolPage>)],
+    history: &History,
+) -> Facts {
     let (name, owner) = owner(page);
     let pinned = PackageRef::parse(package).ok();
-    let display = pinned.as_ref().map_or_else(|| package.to_owned(), |package| package.display_name().to_owned());
+    let display = pinned.as_ref().map_or_else(
+        || package.to_owned(),
+        |package| package.display_name().to_owned(),
+    );
     let mut facts = Facts::new(&name, kind_of(page.identity.kind), lang(page), &display);
-    facts.path = pinned.as_ref().map_or_else(|| vec![display.clone()], |package| path(package, page, owner.as_deref()));
-    facts.version = pinned.as_ref().and_then(PackageRef::release_version).map(ToOwned::to_owned);
+    facts.path = pinned.as_ref().map_or_else(
+        || vec![display.clone()],
+        |package| path(package, page, owner.as_deref()),
+    );
+    facts.version = pinned
+        .as_ref()
+        .and_then(PackageRef::release_version)
+        .map(ToOwned::to_owned);
     facts.owner = owner;
-    facts.signature = page.signature.known().map(|signature| signature.text.to_string());
+    facts.signature = page
+        .signature
+        .known()
+        .map(|signature| signature.text.to_string());
     facts.links = links(page);
     // Docs: the prose before any section, then each section the conventions
     // named; with no sections, the docs whole.
-    let lead: Vec<DocFragment> = if page.sections.sections.is_empty() { page.docs.to_vec() } else { page.sections.lead.to_vec() };
+    let lead: Vec<DocFragment> = if page.sections.sections.is_empty() {
+        page.docs.to_vec()
+    } else {
+        page.sections.lead.to_vec()
+    };
     facts.docs = blocks(&lead);
     facts.sections = page.sections.sections.iter().map(section).collect();
     if let Some(location) = page.site.location.known() {
         facts.site = Some(Site {
             file: location.path.to_string(),
             line: location.line,
-            open: pinned.as_ref().and_then(|package| place::absolute(package, &location.path)),
+            open: pinned
+                .as_ref()
+                .and_then(|package| place::absolute(package, &location.path)),
         });
     }
     if let Some(members) = page.members.known() {
-        facts.made_of = members.made_of.iter().map(|m| member(m, Receives::Unknown)).collect();
+        facts.made_of = members
+            .made_of
+            .iter()
+            .map(|m| member(m, Receives::Unknown))
+            .collect();
         for group in members.does.iter() {
-            facts.does.extend(group.members.iter().map(|m| member(m, receives(group.receiver))));
+            facts.does.extend(
+                group
+                    .members
+                    .iter()
+                    .map(|m| member(m, receives(group.receiver))),
+            );
         }
     }
     // A Go named type's constants, as the index records each one.
     for (decl, companion) in companions {
         facts.made_of.push(FactMember {
             name: decl.name.to_string(),
-            signature: companion.as_ref().and_then(|page| page.signature.known()).map(|signature| signature.text.to_string()),
-            summary: companion.as_ref().and_then(|page| blocks(&page.docs).into_iter().find_map(|b| match b { Block::Para(text) => Some(text), _ => None })),
+            signature: companion
+                .as_ref()
+                .and_then(|page| page.signature.known())
+                .map(|signature| signature.text.to_string()),
+            summary: companion.as_ref().and_then(|page| {
+                blocks(&page.docs).into_iter().find_map(|b| match b {
+                    Block::Para(text) => Some(text),
+                    _ => None,
+                })
+            }),
             link: Some(decl.coordinate.as_str().to_owned()),
             ..FactMember::default()
         });
     }
     if let Some(up) = page.rose.up.known() {
-        facts.implements = up.iter().filter(|relation| relation.decl.kind == Some(DeclarationKind::Trait) || matches!(relation.kind, crate::model::pages::RelationKind::Semantic(backend_library::SemanticLinkKind::Implements))).map(|relation| (relation.decl.name.to_string(), matches!(relation.arrival, crate::model::pages::Arrival::Auto))).collect();
+        facts.implements = up
+            .iter()
+            .filter(|relation| {
+                relation.decl.kind == Some(DeclarationKind::Trait)
+                    || matches!(
+                        relation.kind,
+                        crate::model::pages::RelationKind::Semantic(
+                            backend_library::SemanticLinkKind::Implements
+                        )
+                    )
+            })
+            .map(|relation| {
+                (
+                    relation.decl.name.to_string(),
+                    matches!(relation.arrival, crate::model::pages::Arrival::Auto),
+                )
+            })
+            .collect();
     }
     facts.implementors = page.rose.implemented_by.known().and_then(|doers| {
-        let crates: std::collections::BTreeSet<_> = doers.iter().filter_map(|relation| relation.decl.coordinate.package()).collect();
-        Some(Implementors { total: u32::try_from(doers.len()).ok().filter(|n| *n > 0)?, crates: u32::try_from(crates.len().max(1)).ok()?, derived: None })
+        let crates: std::collections::BTreeSet<_> = doers
+            .iter()
+            .filter_map(|relation| relation.decl.coordinate.package())
+            .collect();
+        Some(Implementors {
+            total: u32::try_from(doers.len()).ok().filter(|n| *n > 0)?,
+            crates: u32::try_from(crates.len().max(1)).ok()?,
+            derived: None,
+        })
     });
     if let Some(outline) = page.outline.known() {
         facts.beside = outline
@@ -288,13 +409,29 @@ pub(super) fn facts(page: &SymbolPage, package: &str, companions: &[(DeclRef, Op
             // What the package declares beside it (not `&str`, not `crate`).
             .filter(|decl| crate::shell::kit::names_a_declaration(&decl.name))
             .take(96)
-            .map(|decl| Beside { name: decl.name.to_string(), kind: kind_of(decl.kind), signature: None, link: Some(decl.coordinate.as_str().to_owned()) })
+            .map(|decl| Beside {
+                name: decl.name.to_string(),
+                kind: kind_of(decl.kind),
+                signature: None,
+                link: Some(decl.coordinate.as_str().to_owned()),
+            })
             .collect();
     }
     let read: Vec<_> = history.read().collect();
     if read.len() > 1 {
-        facts.releases = read.iter().map(|release| (release.version.clone(), matches!(release.was, Was::Differs(_) | Was::NotYet | Was::Gone))).collect();
-        facts.across = Some(history.caption()).filter(|_| read.iter().any(|release| matches!(release.was, Was::Differs(_) | Was::NotYet | Was::Gone)));
+        facts.releases = read
+            .iter()
+            .map(|release| {
+                (
+                    release.version.clone(),
+                    matches!(release.was, Was::Differs(_) | Was::NotYet | Was::Gone),
+                )
+            })
+            .collect();
+        facts.across = Some(history.caption()).filter(|_| {
+            read.iter()
+                .any(|release| matches!(release.was, Was::Differs(_) | Was::NotYet | Was::Gone))
+        });
     }
     facts
 }

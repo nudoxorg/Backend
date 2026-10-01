@@ -21,8 +21,8 @@ pub mod manifest;
 pub mod registry;
 pub mod scan;
 
-pub use facet::folio::berg::Basis;
 use crate::model::pages::PackageRef;
+pub use facet::folio::berg::Basis;
 use gpui::{App, Global, SharedString};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -139,8 +139,13 @@ fn root_of(package: &PackageRef) -> Option<PathBuf> {
 
 /// Whether `root` is a crate unpacked in a cargo registry.
 fn in_registry(root: &Path) -> bool {
-    let parts: Vec<_> = root.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
-    parts.windows(2).any(|w| w[0] == "registry" && w[1] == "src")
+    let parts: Vec<_> = root
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    parts
+        .windows(2)
+        .any(|w| w[0] == "registry" && w[1] == "src")
 }
 
 /// The lock file above a project (within four levels), when it has one.
@@ -174,12 +179,36 @@ type Lock = HashMap<String, Vec<LockPackage>>;
 
 fn lock_table(lock: &toml::Table) -> Lock {
     let mut out: Lock = HashMap::new();
-    for package in lock.get("package").and_then(toml::Value::as_array).into_iter().flatten().filter_map(toml::Value::as_table) {
-        let (Some(name), Some(version)) = (package.get("name").and_then(toml::Value::as_str), package.get("version").and_then(toml::Value::as_str)) else {
+    for package in lock
+        .get("package")
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(toml::Value::as_table)
+    {
+        let (Some(name), Some(version)) = (
+            package.get("name").and_then(toml::Value::as_str),
+            package.get("version").and_then(toml::Value::as_str),
+        ) else {
             continue;
         };
-        let deps = package.get("dependencies").and_then(toml::Value::as_array).into_iter().flatten().filter_map(toml::Value::as_str).map(str::to_owned).collect();
-        out.entry(name.to_owned()).or_default().push(LockPackage { version: version.to_owned(), deps, origin: if package.get("source").is_none() { manifest::Origin::Path } else { manifest::Origin::Registry } });
+        let deps = package
+            .get("dependencies")
+            .and_then(toml::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(toml::Value::as_str)
+            .map(str::to_owned)
+            .collect();
+        out.entry(name.to_owned()).or_default().push(LockPackage {
+            version: version.to_owned(),
+            deps,
+            origin: if package.get("source").is_none() {
+                manifest::Origin::Path
+            } else {
+                manifest::Origin::Registry
+            },
+        });
     }
     out
 }
@@ -211,7 +240,11 @@ fn locked_wants(lock: &Lock, name: &str, version: &str) -> Option<Vec<Want>> {
                     Some(v) => candidates.iter().find(|p| p.version == v)?,
                     None => candidates.first()?,
                 };
-                (chosen.origin == manifest::Origin::Registry).then(|| Want { package: dep_name.to_owned(), requirement: format!("={}", chosen.version), defaults: manifest::DefaultFeatures::On })
+                (chosen.origin == manifest::Origin::Registry).then(|| Want {
+                    package: dep_name.to_owned(),
+                    requirement: format!("={}", chosen.version),
+                    defaults: manifest::DefaultFeatures::On,
+                })
             })
             .collect(),
     )
@@ -219,7 +252,16 @@ fn locked_wants(lock: &Lock, name: &str, version: &str) -> Option<Vec<Want>> {
 
 /// What a manifest compiles on this machine (see [`manifest::Manifest::compiled`]).
 fn manifest_wants(manifest: &manifest::Manifest, defaults: manifest::DefaultFeatures) -> Vec<Want> {
-    manifest.compiled(defaults).into_iter().filter(|d| d.origin == manifest::Origin::Registry).map(|d| Want { package: d.package.clone(), requirement: d.req.clone(), defaults: d.default_features }).collect()
+    manifest
+        .compiled(defaults)
+        .into_iter()
+        .filter(|d| d.origin == manifest::Origin::Registry)
+        .map(|d| Want {
+            package: d.package.clone(),
+            requirement: d.req.clone(),
+            defaults: d.default_features,
+        })
+        .collect()
 }
 
 /// The weight iceberg of the crate `name` at `version` whose direct needs
@@ -228,7 +270,15 @@ fn manifest_wants(manifest: &manifest::Manifest, defaults: manifest::DefaultFeat
 /// what its own manifest compiles here with default features (never
 /// test-only or other-target dependencies). Which release of each: a
 /// resolver's choice in `hints`, else the lock, else the newest unpacked.
-fn berg(name: &str, version: &str, own: usize, direct: &[Want], hints: &HashMap<String, String>, lock: Option<&Lock>, basis: Basis) -> Berg {
+fn berg(
+    name: &str,
+    version: &str,
+    own: usize,
+    direct: &[Want],
+    hints: &HashMap<String, String>,
+    lock: Option<&Lock>,
+    basis: Basis,
+) -> Berg {
     const LAYERS: usize = 7;
     const LIMIT: usize = 600;
     let mut blocks: Vec<Block> = Vec::new();
@@ -239,7 +289,11 @@ fn berg(name: &str, version: &str, own: usize, direct: &[Want], hints: &HashMap<
     let mut layer = 0;
     let resolve = |dep: &str, requirement: &str, hint: Option<&str>| -> Option<String> {
         if let Some(packages) = lock.and_then(|lock| lock.get(dep)) {
-            let mut fits: Vec<&str> = packages.iter().map(|p| p.version.as_str()).filter(|v| registry::satisfies(requirement, v)).collect();
+            let mut fits: Vec<&str> = packages
+                .iter()
+                .map(|p| p.version.as_str())
+                .filter(|v| registry::satisfies(requirement, v))
+                .collect();
             fits.sort_by(|a, b| facet::marks::semver::cmp(a, b));
             if let Some(best) = fits.last() {
                 return Some((*best).to_owned());
@@ -251,8 +305,16 @@ fn berg(name: &str, version: &str, own: usize, direct: &[Want], hints: &HashMap<
     while !frontier.is_empty() && layer < LAYERS && blocks.len() < LIMIT {
         let mut next: Vec<(Option<usize>, Vec<Want>)> = Vec::new();
         for (parent, deps) in std::mem::take(&mut frontier) {
-            for Want { package: dep_name, requirement, defaults } in deps {
-                let hint = hints.get(&dep_name).map(String::as_str).filter(|_| parent.is_none());
+            for Want {
+                package: dep_name,
+                requirement,
+                defaults,
+            } in deps
+            {
+                let hint = hints
+                    .get(&dep_name)
+                    .map(String::as_str)
+                    .filter(|_| parent.is_none());
                 let Some(dep_version) = resolve(&dep_name, &requirement, hint) else {
                     missing += 1;
                     continue;
@@ -269,12 +331,24 @@ fn berg(name: &str, version: &str, own: usize, direct: &[Want], hints: &HashMap<
                         continue;
                     };
                     let at = blocks.len();
-                    blocks.push(Block { name: dep_name.clone(), version: dep_version.clone(), sloc, layer, parent, deps: Vec::new() });
+                    blocks.push(Block {
+                        name: dep_name.clone(),
+                        version: dep_version.clone(),
+                        sloc,
+                        layer,
+                        parent,
+                        deps: Vec::new(),
+                    });
                     index.insert(key, at);
                     // What it depends on, for the next layer.
-                    let below = lock.and_then(|lock| locked_wants(lock, &dep_name, &dep_version)).unwrap_or_else(|| {
-                        registry::source_of(&dep_name, &dep_version).and_then(|dir| manifest::read(&dir)).map(|m| manifest_wants(&m, defaults)).unwrap_or_default()
-                    });
+                    let below = lock
+                        .and_then(|lock| locked_wants(lock, &dep_name, &dep_version))
+                        .unwrap_or_else(|| {
+                            registry::source_of(&dep_name, &dep_version)
+                                .and_then(|dir| manifest::read(&dir))
+                                .map(|m| manifest_wants(&m, defaults))
+                                .unwrap_or_default()
+                        });
                     next.push((Some(at), below));
                     at
                 };
@@ -290,13 +364,23 @@ fn berg(name: &str, version: &str, own: usize, direct: &[Want], hints: &HashMap<
         layer += 1;
     }
     let below = blocks.iter().map(|b| b.sloc).sum();
-    Berg { own, blocks, below, missing, basis }
+    Berg {
+        own,
+        blocks,
+        below,
+        missing,
+        basis,
+    }
 }
 
 /// Reads the package at `root` (its name and version are the manifest's).
 /// `hints` are versions a resolver already chose for its direct dependencies.
 #[must_use]
-pub fn read(root: &Path, hints: &HashMap<String, String>, project: Option<&Path>) -> Option<SourceFacts> {
+pub fn read(
+    root: &Path,
+    hints: &HashMap<String, String>,
+    project: Option<&Path>,
+) -> Option<SourceFacts> {
     let manifest = manifest::read(root)?;
     let scan = scan::scan(root, &manifest.lib);
     let releases = registry::releases(&manifest.name);
@@ -305,34 +389,81 @@ pub fn read(root: &Path, hints: &HashMap<String, String>, project: Option<&Path>
     // what a consumer builds, so a crate is read against the active
     // project's lock instead.
     let registry_crate = in_registry(root);
-    let lock = if registry_crate { project.and_then(lock_above) } else { lock_above(root).or_else(|| project.and_then(lock_above)) }.map(|lock| lock_table(&lock));
-    let locked = lock.as_ref().filter(|_| registry_crate).and_then(|lock| locked_wants(lock, &manifest.name, &manifest.version));
-    let basis = if lock.is_some() && (locked.is_some() || !registry_crate) { Basis::Lock } else { Basis::Defaults };
-    let direct: Vec<Want> = locked.unwrap_or_else(|| manifest_wants(&manifest, manifest::DefaultFeatures::On));
-    let berg = berg(&manifest.name, &manifest.version, scan.sloc, &direct, hints, lock.as_ref(), basis);
+    let lock = if registry_crate {
+        project.and_then(lock_above)
+    } else {
+        lock_above(root).or_else(|| project.and_then(lock_above))
+    }
+    .map(|lock| lock_table(&lock));
+    let locked = lock
+        .as_ref()
+        .filter(|_| registry_crate)
+        .and_then(|lock| locked_wants(lock, &manifest.name, &manifest.version));
+    let basis = if lock.is_some() && (locked.is_some() || !registry_crate) {
+        Basis::Lock
+    } else {
+        Basis::Defaults
+    };
+    let direct: Vec<Want> =
+        locked.unwrap_or_else(|| manifest_wants(&manifest, manifest::DefaultFeatures::On));
+    let berg = berg(
+        &manifest.name,
+        &manifest.version,
+        scan.sloc,
+        &direct,
+        hints,
+        lock.as_ref(),
+        basis,
+    );
     let dependency_lines = manifest
         .dependencies
         .iter()
-                .filter(|d| d.need == manifest::Need::Optional)
+        .filter(|d| d.need == manifest::Need::Optional)
         .map(|d| {
-            let version = registry::pick(&d.package, &d.req, hints.get(&d.package).map(String::as_str));
-            (d.key.clone(), version.and_then(|v| registry::sloc_of(&d.package, &v)))
+            let version = registry::pick(
+                &d.package,
+                &d.req,
+                hints.get(&d.package).map(String::as_str),
+            );
+            (
+                d.key.clone(),
+                version.and_then(|v| registry::sloc_of(&d.package, &v)),
+            )
         })
         .collect();
     let lib_root = {
-        let dir = root.join(&manifest.lib).parent().map(Path::to_path_buf).unwrap_or_else(|| root.join("src"));
+        let dir = root
+            .join(&manifest.lib)
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| root.join("src"));
         if dir.is_dir() { dir } else { root.join("src") }
     };
     let modules = docs::items(&lib_root, root);
     let root_file = {
         let lib = root.join(&manifest.lib);
-        if lib.is_file() { lib } else { root.join("src").join("main.rs") }
+        if lib.is_file() {
+            lib
+        } else {
+            root.join("src").join("main.rs")
+        }
     };
     let docs = modules
         .iter()
-        .filter_map(|m| docs::module_doc(&lib_root, &root_file, &m.path).map(|doc| (m.path.clone(), doc)))
+        .filter_map(|m| {
+            docs::module_doc(&lib_root, &root_file, &m.path).map(|doc| (m.path.clone(), doc))
+        })
         .collect();
-    Some(SourceFacts { root: root.to_path_buf(), manifest, scan, releases, berg, dependency_lines, modules, docs })
+    Some(SourceFacts {
+        root: root.to_path_buf(),
+        manifest,
+        scan,
+        releases,
+        berg,
+        dependency_lines,
+        modules,
+        docs,
+    })
 }
 
 enum Entry {
@@ -358,7 +489,12 @@ impl Global for Service {}
 /// lock file (the reader's active project). The first ask starts the read
 /// (off the UI thread) and returns [`Reading::Reading`]; the windows redraw
 /// when it lands. Asking again with another project reads again.
-pub fn reading(package: &PackageRef, hints: &HashMap<String, String>, project: Option<&Path>, cx: &mut App) -> Reading {
+pub fn reading(
+    package: &PackageRef,
+    hints: &HashMap<String, String>,
+    project: Option<&Path>,
+    cx: &mut App,
+) -> Reading {
     let wanted = project.map(Path::to_path_buf);
     if let Some(slot) = cx.default_global::<Service>().entries.get(package)
         && slot.project.as_ref().is_none_or(|read| *read == wanted)
@@ -369,16 +505,29 @@ pub fn reading(package: &PackageRef, hints: &HashMap<String, String>, project: O
         };
     }
     let Some(root) = root_of(package) else {
-        let why: SharedString = if package.is_local() || package.as_str().starts_with("pkg:cargo/") {
+        let why: SharedString = if package.is_local() || package.as_str().starts_with("pkg:cargo/")
+        {
             "Its source is not on this machine.".into()
         } else {
             "Source facts are read for Cargo packages.".into()
         };
         let done = Reading::Absent(why);
-        cx.default_global::<Service>().entries.insert(package.clone(), Slot { project: Some(wanted), entry: Entry::Done(done.clone()) });
+        cx.default_global::<Service>().entries.insert(
+            package.clone(),
+            Slot {
+                project: Some(wanted),
+                entry: Entry::Done(done.clone()),
+            },
+        );
         return done;
     };
-    cx.default_global::<Service>().entries.insert(package.clone(), Slot { project: Some(wanted.clone()), entry: Entry::Reading });
+    cx.default_global::<Service>().entries.insert(
+        package.clone(),
+        Slot {
+            project: Some(wanted.clone()),
+            entry: Entry::Reading,
+        },
+    );
     #[cfg(test)]
     {
         let _ = &root;
@@ -388,12 +537,23 @@ pub fn reading(package: &PackageRef, hints: &HashMap<String, String>, project: O
     {
         let (key, hints) = (package.clone(), hints.clone());
         let read_for = wanted.clone();
-        let work = cx.background_executor().spawn(async move { read(&root, &hints, read_for.as_deref()) });
+        let work = cx
+            .background_executor()
+            .spawn(async move { read(&root, &hints, read_for.as_deref()) });
         cx.spawn(async move |cx| {
             let facts = work.await;
             let _ = cx.update(|cx| {
-                let done = facts.map_or_else(|| Reading::Absent("Its manifest could not be read.".into()), |facts| Reading::Ready(Arc::new(facts)));
-                cx.default_global::<Service>().entries.insert(key, Slot { project: Some(wanted), entry: Entry::Done(done) });
+                let done = facts.map_or_else(
+                    || Reading::Absent("Its manifest could not be read.".into()),
+                    |facts| Reading::Ready(Arc::new(facts)),
+                );
+                cx.default_global::<Service>().entries.insert(
+                    key,
+                    Slot {
+                        project: Some(wanted),
+                        entry: Entry::Done(done),
+                    },
+                );
                 cx.refresh_windows();
             });
         })
@@ -406,7 +566,13 @@ pub fn reading(package: &PackageRef, hints: &HashMap<String, String>, project: O
 /// package, so the page draws it without starting a read.
 #[doc(hidden)]
 pub fn install(package: &PackageRef, reading: Reading, cx: &mut App) {
-    cx.default_global::<Service>().entries.insert(package.clone(), Slot { project: None, entry: Entry::Done(reading) });
+    cx.default_global::<Service>().entries.insert(
+        package.clone(),
+        Slot {
+            project: None,
+            entry: Entry::Done(reading),
+        },
+    );
 }
 
 #[cfg(test)]

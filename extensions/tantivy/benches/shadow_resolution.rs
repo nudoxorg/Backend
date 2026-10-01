@@ -8,12 +8,12 @@
 
 use std::{error::Error, fmt, hint::black_box, time::Instant};
 
-use backend_semantic::ir::EntityId;
-use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 use backend_semantic::index_core::{
     EntityArtifactIdentity, EntityDocumentId, LexicalOrderKey, LexicalRow, LexicalScore,
     LexicalSegment,
 };
+use backend_semantic::ir::EntityId;
+use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 
 const SEGMENTS: usize = 8;
 const WARMUPS: usize = 5;

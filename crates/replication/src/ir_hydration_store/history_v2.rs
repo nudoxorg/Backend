@@ -1,14 +1,14 @@
 //! FileStore-backed cold replay for typed V2 history commits.
 
-use super::{display_error, display_io, FileSemanticRangeStore, IO_BUFFER_BYTES};
+use super::{FileSemanticRangeStore, IO_BUFFER_BYTES, display_error, display_io};
 
 use crate::{HistoryTypedV2JumboObject, HistoryTypedV2SegmentObject};
 use backend_semantic::ir::{
-    verify_typed_plane_content_v2_with_jumbo_segment_source, JumboRopeLimits, JumboRopeObjectId,
-    JumboRopeObjectKind, JumboRopeObjectSource, SemanticTypedPlaneManifestV2,
-    SemanticTypedPlaneSegmentClaimV2, SemanticTypedPlaneVerificationTierV2,
-    TypedPlaneSegmentSourceV2, VerifiedTypedPlaneContentV2, JUMBO_ROPE_MAX_LEAF_BYTES,
-    MAX_SEMANTIC_SEGMENT_BYTES, ROPE_NODE_WIRE_BYTES,
+    JUMBO_ROPE_MAX_LEAF_BYTES, JumboRopeLimits, JumboRopeObjectId, JumboRopeObjectKind,
+    JumboRopeObjectSource, MAX_SEMANTIC_SEGMENT_BYTES, ROPE_NODE_WIRE_BYTES,
+    SemanticTypedPlaneManifestV2, SemanticTypedPlaneSegmentClaimV2,
+    SemanticTypedPlaneVerificationTierV2, TypedPlaneSegmentSourceV2, VerifiedTypedPlaneContentV2,
+    verify_typed_plane_content_v2_with_jumbo_segment_source,
 };
 use backend_store::{
     ArtifactClosureClaim, DurableManifest, FileStore, GcPinGuard, ObjectId, UntrustedObjectId,
@@ -461,14 +461,7 @@ impl FileSemanticRangeStore {
             .map_err(|error| format!("pin typed V2 resident history replay: {error:?}"))?;
         let (commit, claim) = {
             let _state_lock = self.acquire_state_lock()?;
-            validate_resident_ref_tip(
-                &self.generations,
-                target,
-                kind,
-                name,
-                commit_id,
-                ancestry,
-            )?;
+            validate_resident_ref_tip(&self.generations, target, kind, name, commit_id, ancestry)?;
             let commit = self
                 .generations
                 .history_commit_for_typed_v2_residency(target, commit_id)?;
@@ -511,9 +504,10 @@ impl FileSemanticRangeStore {
                 .exact_entry_index(target, commit_id, claim, tier, jumbo_limits)
                 .ok_or_else(|| "typed V2 resident entry disappeared during access".to_owned())?;
             let entry = &cache.entries[index];
-            let payload_len = entry.members.iter().fold(0_u64, |sum, member| {
-                sum.saturating_add(member.byte_length)
-            });
+            let payload_len = entry
+                .members
+                .iter()
+                .fold(0_u64, |sum, member| sum.saturating_add(member.byte_length));
             cache.payload_bytes_served = cache.payload_bytes_served.saturating_add(payload_len);
             return Ok(TypedV2HistoryResidencyReplay::Resident(
                 TypedV2HistoryResidentReplay {
@@ -572,14 +566,7 @@ impl FileSemanticRangeStore {
         }
         {
             let _state_lock = self.acquire_state_lock()?;
-            validate_resident_ref_tip(
-                &self.generations,
-                target,
-                kind,
-                name,
-                commit_id,
-                ancestry,
-            )?;
+            validate_resident_ref_tip(&self.generations, target, kind, name, commit_id, ancestry)?;
         }
         let cold_miss_count = cache.record_cold_miss(&key);
         let manifest_bytes = locator.manifest.as_slice();
@@ -601,15 +588,16 @@ impl FileSemanticRangeStore {
             TypedV2Admission::Rejected(verified) => {
                 return Ok(TypedV2HistoryResidencyReplay::Cold(
                     crate::TypedV2HistoryReplay::new(commit, manifest, verified)
-                    .with_lineage_edge_set(locator.lineage_edge_set)
-                    .with_gc_pin(std::sync::Arc::new(gc_pin)),
+                        .with_lineage_edge_set(locator.lineage_edge_set)
+                        .with_gc_pin(std::sync::Arc::new(gc_pin)),
                 ));
             }
         };
         let entry = &cache.entries[index];
-        let payload_len = entry.members.iter().fold(0_u64, |sum, member| {
-            sum.saturating_add(member.byte_length)
-        });
+        let payload_len = entry
+            .members
+            .iter()
+            .fold(0_u64, |sum, member| sum.saturating_add(member.byte_length));
         cache.payload_bytes_served = cache.payload_bytes_served.saturating_add(payload_len);
         Ok(TypedV2HistoryResidencyReplay::Resident(
             TypedV2HistoryResidentReplay {
@@ -625,7 +613,6 @@ impl FileSemanticRangeStore {
             },
         ))
     }
-
 }
 
 fn spool_typed_v2_history_closure(
@@ -734,15 +721,19 @@ fn spool_typed_v2_history_closure_with_resident_objects(
         .try_reserve_exact(unique_members.len())
         .map_err(|_| "typed V2 history spool index allocation failed".to_owned())?;
     let mut transient_high_water = locator_working_bytes(locator, manifest)
-        .saturating_add(typed_v2_capacity_bytes::<(UntrustedObjectId, u64, SchemaIdentity)>(
-            mapped_members_capacity,
-        ))
+        .saturating_add(typed_v2_capacity_bytes::<(
+            UntrustedObjectId,
+            u64,
+            SchemaIdentity,
+        )>(mapped_members_capacity))
         .saturating_add(u64::try_from(IO_BUFFER_BYTES).unwrap_or(u64::MAX));
     transient_high_water = transient_high_water.max(
         locator_working_bytes(locator, manifest)
-            .saturating_add(typed_v2_capacity_bytes::<(UntrustedObjectId, u64, SchemaIdentity)>(
-                mapped_members_capacity,
-            ))
+            .saturating_add(typed_v2_capacity_bytes::<(
+                UntrustedObjectId,
+                u64,
+                SchemaIdentity,
+            )>(mapped_members_capacity))
             .saturating_add(typed_v2_capacity_bytes::<(
                 UntrustedObjectId,
                 u64,
@@ -752,9 +743,11 @@ fn spool_typed_v2_history_closure_with_resident_objects(
     );
     transient_high_water = transient_high_water.max(
         locator_working_bytes(locator, manifest)
-            .saturating_add(typed_v2_capacity_bytes::<(UntrustedObjectId, u64, SchemaIdentity)>(
-                mapped_members_capacity,
-            ))
+            .saturating_add(typed_v2_capacity_bytes::<(
+                UntrustedObjectId,
+                u64,
+                SchemaIdentity,
+            )>(mapped_members_capacity))
             .saturating_add(typed_v2_capacity_bytes::<(
                 UntrustedObjectId,
                 u64,
@@ -862,12 +855,9 @@ fn locator_working_bytes(
         .saturating_add(typed_v2_capacity_bytes::<HistoryTypedV2JumboObject>(
             locator.jumbo.capacity(),
         ))
-        .saturating_add(
-            locator
-                .lineage_edge_set
-                .as_ref()
-                .map_or(0, |bytes| u64::try_from(bytes.capacity()).unwrap_or(u64::MAX)),
-        );
+        .saturating_add(locator.lineage_edge_set.as_ref().map_or(0, |bytes| {
+            u64::try_from(bytes.capacity()).unwrap_or(u64::MAX)
+        }));
     let manifest_descriptors = manifest
         .families()
         .iter()
@@ -990,7 +980,8 @@ impl TypedV2HistorySpool {
                     .map_err(|error| backend_store::StoreError::Io(error.to_string()))?;
                 if let Some(counter) = payload_byte_counter.as_deref_mut() {
                     *counter = counter.saturating_add(
-                        u64::try_from(chunk.len()).map_err(|_| backend_store::StoreError::Bounds)?,
+                        u64::try_from(chunk.len())
+                            .map_err(|_| backend_store::StoreError::Bounds)?,
                     );
                 }
                 let advance =
@@ -1269,20 +1260,27 @@ pub(super) fn verify_typed_v2_history_payload_closure(
     manifest: &SemanticTypedPlaneManifestV2,
     tier: SemanticTypedPlaneVerificationTierV2,
     jumbo_limits: JumboRopeLimits,
-) -> Result<(VerifiedTypedPlaneContentV2, backend_store::ClosureId, usize, u64), String> {
+) -> Result<
+    (
+        VerifiedTypedPlaneContentV2,
+        backend_store::ClosureId,
+        usize,
+        u64,
+    ),
+    String,
+> {
     let closure = store
         .open_closure_claim(closure_claim)
         .map_err(|error| format!("open typed history payload closure: {error:?}"))?;
-    let spool = spool_typed_v2_history_closure(
-        store,
-        closure_claim,
-        &closure,
-        locator,
-        manifest,
-        tier,
-    )?;
+    let spool =
+        spool_typed_v2_history_closure(store, closure_claim, &closure, locator, manifest, tier)?;
     let verified = verify_typed_v2_history_content(&spool, locator, manifest, tier, jumbo_limits)?;
-    Ok((verified, closure.id(), spool.members.len(), spool.bytes_written))
+    Ok((
+        verified,
+        closure.id(),
+        spool.members.len(),
+        spool.bytes_written,
+    ))
 }
 
 struct HistoryJumboSource<'a> {
@@ -1454,14 +1452,14 @@ fn jumbo_map_order_parts(kind: JumboRopeObjectKind, id: [u8; 32]) -> (u8, [u8; 3
 mod tests {
     use super::*;
     use backend_semantic::ir::{
-        write_jumbo_value, ImageProvenance, JumboRopeLimits, JumboRopeNode, JumboRopeObjectId,
-        JumboRopeObjectKind, JumboRopeObjectSink, JumboRopeWriteReceipt, JumboValueContext,
-        JumboValueEncoding, JumboValueFamily, LanguageProfile, RustEdition, SemanticBuildIdentity,
+        ImageProvenance, JumboRopeLimits, JumboRopeNode, JumboRopeObjectId, JumboRopeObjectKind,
+        JumboRopeObjectSink, JumboRopeWriteReceipt, JumboValueContext, JumboValueEncoding,
+        JumboValueFamily, LanguageProfile, RustEdition, SemanticBuildIdentity,
         SemanticImageAuthority, SemanticImageFacts, SemanticInputClaimV2, SemanticIrPlane,
         SemanticPlaneKind, SemanticPlaneSegment, SemanticPlaneSegmentBoundaryPolicy,
         SemanticTypedPlaneFamilyDescriptorV2, SemanticTypedPlaneManifestV2,
         SemanticTypedPlaneSegmentClaimV2, UntrustedSemanticContentRootV2,
-        UntrustedSemanticGenerationRootV2, UntrustedSemanticSegmentId,
+        UntrustedSemanticGenerationRootV2, UntrustedSemanticSegmentId, write_jumbo_value,
     };
     use backend_semantic::vocabulary::Stage;
     use backend_store::{
@@ -1602,14 +1600,16 @@ mod tests {
 
     fn typed_manifest(one_segment: bool) -> SemanticTypedPlaneManifestV2 {
         let segments = if one_segment {
-            vec![SemanticTypedPlaneSegmentClaimV2::from_untrusted_claims(
-                [1; 32],
-                [1; 32],
-                1,
-                1,
-                UntrustedSemanticSegmentId::from_raw([2; 32]),
-            )
-            .expect("one canonical segment claim")]
+            vec![
+                SemanticTypedPlaneSegmentClaimV2::from_untrusted_claims(
+                    [1; 32],
+                    [1; 32],
+                    1,
+                    1,
+                    UntrustedSemanticSegmentId::from_raw([2; 32]),
+                )
+                .expect("one canonical segment claim"),
+            ]
         } else {
             Vec::new()
         };

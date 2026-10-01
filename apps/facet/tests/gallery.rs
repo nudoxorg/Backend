@@ -9,7 +9,9 @@
 )]
 
 use facet::gallery::{self, Frame, Scene, Shot};
-use gpui::{AnyView, App, AppContext as _, Context, IntoElement, ParentElement, Render, Styled, Window, div};
+use gpui::{
+    AnyView, App, AppContext as _, Context, IntoElement, ParentElement, Render, Styled, Window, div,
+};
 use image::RgbaImage;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -255,9 +257,8 @@ fn bench(times: &[u64], script: Option<&str>) -> Vec<Frame> {
     capture("harness-bench", times, |shot| {
         shot.probe = true;
         shot.scale = 1;
-        shot.script = script.map(|source| {
-            backend_gui_harness::Script::parse(source).expect("script parses")
-        });
+        shot.script =
+            script.map(|source| backend_gui_harness::Script::parse(source).expect("script parses"));
     })
 }
 
@@ -273,12 +274,17 @@ fn target<'a>(frame: &'a Frame, key: &str) -> &'a facet::probe::TargetSample {
 #[test]
 fn scripted_input_is_deterministic_and_reaches_the_scene() {
     let _platform = platform();
-    let script = "move 270,114 @0; down 270,114 @100; up 270,114 @140; key cmd-k @200; hold alt @300";
+    let script =
+        "move 270,114 @0; down 270,114 @100; up 270,114 @140; key cmd-k @200; hold alt @300";
     let times = [0, 120, 180, 260, 320];
     let first = bench(&times, Some(script));
     let second = bench(&times, Some(script));
     for (a, b) in first.iter().zip(&second) {
-        assert!(same(&a.image, &b.image), "t={} differs between runs", a.time_ms);
+        assert!(
+            same(&a.image, &b.image),
+            "t={} differs between runs",
+            a.time_ms
+        );
     }
     // The pointer over beta is a hover the scene believes and paints.
     assert!(target(&first[0], "bench.plate-1").state.hovered);
@@ -288,7 +294,13 @@ fn scripted_input_is_deterministic_and_reaches_the_scene() {
     let released = target(&first[2], "bench.plate-1").state;
     assert!(!released.pressed && released.focused, "{released:?}");
     // ⌘K opened a popup: the stack says so and the pixels changed.
-    let stack = |frame: &Frame| frame.ledger.stacks.last().map_or(0, |stack| stack.entries.len());
+    let stack = |frame: &Frame| {
+        frame
+            .ledger
+            .stacks
+            .last()
+            .map_or(0, |stack| stack.entries.len())
+    };
     assert_eq!(stack(&first[2]), 0);
     assert_eq!(stack(&first[3]), 1);
     // ⌥ raised x-ray captions, published as text.
@@ -451,9 +463,16 @@ fn a_declared_script_resolves_the_same_without_playing_the_scene() {
         probe.frame_ms = 0;
         let played = gallery::run(&scene, &probe, &mut |_, _, _| Ok(())).expect("full run");
         assert!(!declared.is_empty(), "{id} declares a script");
-        assert_eq!(declared.to_string(), played.to_string(), "{id}: declared vs played");
+        assert_eq!(
+            declared.to_string(),
+            played.to_string(),
+            "{id}: declared vs played"
+        );
     }
     let scene = scene("flow-list");
     let declared = gallery::declared(&scene, &Shot::new(&scene)).expect("declared script");
-    assert!(declared.is_empty(), "flow-list declares no script: {declared}");
+    assert!(
+        declared.is_empty(),
+        "flow-list declares no script: {declared}"
+    );
 }

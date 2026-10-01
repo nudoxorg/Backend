@@ -76,7 +76,11 @@ impl ChildGuard {
 impl Drop for ChildGuard {
     fn drop(&mut self) {
         if let Some(child) = self.child.as_mut() {
-            if child.try_wait().expect("poll locald during cleanup").is_none() {
+            if child
+                .try_wait()
+                .expect("poll locald during cleanup")
+                .is_none()
+            {
                 let _ = child.kill();
             }
             let _ = child.wait();
@@ -132,8 +136,7 @@ fn launch(
     authority: &Path,
     registry_endpoint: &str,
 ) -> ChildGuard {
-    let mut args =
-        surface_matrix::locald_args(endpoint, workspace, authority, Some(0), false);
+    let mut args = surface_matrix::locald_args(endpoint, workspace, authority, Some(0), false);
     args.extend([
         OsString::from("--registry-endpoint"),
         OsString::from(registry_endpoint),
@@ -182,12 +185,7 @@ fn cli_json(endpoint: &Path, workspace: &Path, project: &Path, words: &[String])
 fn wait_for_index(endpoint: &Path, workspace: &Path, project: &Path) {
     let end = Instant::now() + INDEX_DEADLINE;
     loop {
-        let health = cli_json(
-            endpoint,
-            workspace,
-            project,
-            &["health".to_owned()],
-        );
+        let health = cli_json(endpoint, workspace, project, &["health".to_owned()]);
         if health["rows"].as_u64().unwrap_or(0) > 1 {
             return;
         }
@@ -286,7 +284,9 @@ fn indexed_app_operand(
 fn subscription_names_package(value: &Value, purl: &str, manifest_name: &str) -> bool {
     let titles = product_titles(value);
     let operands = product_operands(value);
-    titles.iter().any(|title| title == manifest_name || title == purl)
+    titles
+        .iter()
+        .any(|title| title == manifest_name || title == purl)
         || operands.iter().any(|operand| operand == purl)
 }
 
@@ -311,7 +311,10 @@ fn write_lockfile(path: &Path, name: &str, version: &str) {
 }
 
 #[test]
-#[allow(clippy::too_many_lines, reason = "one conversation exercises follow/close surfaces")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one conversation exercises follow/close surfaces"
+)]
 fn new_user_follow_covers_subscriptions_project_folders_sync_and_tree_close() {
     let root = unique_root("follow");
     let project = fixture_app();
@@ -399,11 +402,7 @@ fn new_user_follow_covers_subscriptions_project_folders_sync_and_tree_close() {
         &["subscriptions".to_owned()],
     );
     assert!(
-        !subscription_names_package(
-            &after_first_unsubscribe,
-            &helper_v1,
-            helper_manifest_name,
-        ),
+        !subscription_names_package(&after_first_unsubscribe, &helper_v1, helper_manifest_name,),
         "subscriptions still listed the helper after unsubscribe: {after_first_unsubscribe}"
     );
 
@@ -445,12 +444,7 @@ fn new_user_follow_covers_subscriptions_project_folders_sync_and_tree_close() {
         ],
     );
 
-    let after_add = cli_json(
-        &endpoint,
-        &workspace,
-        &project,
-        &["projects".to_owned()],
-    );
+    let after_add = cli_json(&endpoint, &workspace, &project, &["projects".to_owned()]);
     assert_eq!(after_add["answer"], "product");
     let add_tags = all_product_tags(&after_add);
     assert!(
@@ -469,12 +463,7 @@ fn new_user_follow_covers_subscriptions_project_folders_sync_and_tree_close() {
         ],
     );
 
-    let after_remove = cli_json(
-        &endpoint,
-        &workspace,
-        &project,
-        &["projects".to_owned()],
-    );
+    let after_remove = cli_json(&endpoint, &workspace, &project, &["projects".to_owned()]);
     assert_eq!(after_remove["answer"], "product");
     let remove_tags = all_product_tags(&after_remove);
     let removed_record = project_record_by_name(&after_remove, project_folder);
@@ -513,12 +502,7 @@ fn new_user_follow_covers_subscriptions_project_folders_sync_and_tree_close() {
         "project-delete did not name the deleted folder id: {deleted}"
     );
 
-    let projects_after_delete = cli_json(
-        &endpoint,
-        &workspace,
-        &project,
-        &["projects".to_owned()],
-    );
+    let projects_after_delete = cli_json(&endpoint, &workspace, &project, &["projects".to_owned()]);
     assert_eq!(projects_after_delete["answer"], "product");
     assert!(
         projects_after_delete["records"]
@@ -603,12 +587,7 @@ fn new_user_follow_covers_subscriptions_project_folders_sync_and_tree_close() {
         "tree-close did not report one closed node: {tree_close}"
     );
 
-    let tree_after_close = cli_json(
-        &endpoint,
-        &workspace,
-        &project,
-        &["tree".to_owned()],
-    );
+    let tree_after_close = cli_json(&endpoint, &workspace, &project, &["tree".to_owned()]);
     assert_eq!(tree_after_close["answer"], "product");
     assert!(
         !all_product_tags(&tree_after_close)
@@ -700,25 +679,22 @@ fn new_user_follow_covers_subscriptions_project_folders_sync_and_tree_close() {
     );
     let missing_sync: Value =
         serde_json::from_slice(&missing_sync_output.stdout).unwrap_or_else(|error| {
-        panic!(
-            "project-sync failure printed no JSON ({error}): {}",
-            String::from_utf8_lossy(&missing_sync_output.stdout)
-        )
-    });
+            panic!(
+                "project-sync failure printed no JSON ({error}): {}",
+                String::from_utf8_lossy(&missing_sync_output.stdout)
+            )
+        });
     assert_eq!(
-        missing_sync["answer"],
-        "fault",
+        missing_sync["answer"], "fault",
         "project-sync must fail for an unindexed lockfile package: {missing_sync}"
     );
     let not_indexed_purl = "pkg:cargo/not-indexed@9.9.9";
-    let not_indexed_sync_error =
-        format!("project member {not_indexed_purl} is not indexed");
+    let not_indexed_sync_error = format!("project member {not_indexed_purl} is not indexed");
     let detail = missing_sync["detail"]
         .as_str()
         .expect("project-sync fault omitted detail");
     assert_eq!(
-        detail,
-        not_indexed_sync_error,
+        detail, not_indexed_sync_error,
         "project-sync must report the indexed-manifest lookup miss, not another fault: {missing_sync}"
     );
     assert!(

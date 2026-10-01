@@ -85,8 +85,7 @@ fn assert_session_record_and_reset(ir: &Ir) {
         })
         .count();
     assert_eq!(
-        reset_methods,
-        1,
+        reset_methods, 1,
         "the reset method must lower as a member of Session"
     );
 }
@@ -99,15 +98,12 @@ fn header_and_source_lowers_session_record_and_reset_method() {
         return;
     }
 
-    let (package_root, header, source) = stage_flow_package().expect("the header/cpp fixture stages");
+    let (package_root, header, source) =
+        stage_flow_package().expect("the header/cpp fixture stages");
     let project = ClangProject::open(&package_root, &header).expect("the C++ package opens");
     let arguments = project.arguments();
     assert!(
-        arguments.ends_with(&[
-            "-std=c++17".to_owned(),
-            "-x".to_owned(),
-            "c++".to_owned(),
-        ]),
+        arguments.ends_with(&["-std=c++17".to_owned(), "-x".to_owned(), "c++".to_owned(),]),
         "a .h entry in a C++ package must default to explicit C++ arguments: {arguments:?}"
     );
 

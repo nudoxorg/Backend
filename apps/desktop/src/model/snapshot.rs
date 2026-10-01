@@ -7,8 +7,8 @@
 
 pub use super::workspace::{
     AppearancePreference, ConnectionStatus, ContrastPreference, DensityPreference,
-    MotionPreference, PrivacyPreference, ProjectPhase, ServiceMode, SettingsState, ZoomPreference, ZoomStep,
-    WorkspaceProject, WorkspaceState,
+    MotionPreference, PrivacyPreference, ProjectPhase, ServiceMode, SettingsState,
+    WorkspaceProject, WorkspaceState, ZoomPreference, ZoomStep,
 };
 use crate::core::ids::{DocumentId, LocalProjectId, PackageId, ResourceIdentity, VersionedRoot};
 use crate::core::state::Resource;
@@ -342,7 +342,11 @@ impl AppSnapshot {
     /// another, else the current one. Persistence and Back read this.
     #[must_use]
     pub fn committed_route(&self) -> &Route {
-        self.data.session.preview.as_ref().unwrap_or(&self.data.session.route)
+        self.data
+            .session
+            .preview
+            .as_ref()
+            .unwrap_or(&self.data.session.route)
     }
 
     /// Returns the transient shell overlay without changing content route.

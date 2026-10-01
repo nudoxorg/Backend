@@ -403,7 +403,17 @@ fn first_embedded_resize_switches_columns_and_rail_without_changing_selected_rel
             assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
         }
         for text_scale in [1.0, 2.0] {
-            cx.update(|_, cx| set_facet(Facet { appearance: Appearance::Glacier, text_scale, reduced_motion: reduced, ..Facet::default() }, cx));
+            cx.update(|_, cx| {
+                set_facet(
+                    Facet {
+                        appearance: Appearance::Glacier,
+                        text_scale,
+                        reduced_motion: reduced,
+                        ..Facet::default()
+                    },
+                    cx,
+                )
+            });
             draw(cx);
             graph.read_with(cx, |graph, _| {
                 assert_eq!(graph.state.selected, Some(selected));

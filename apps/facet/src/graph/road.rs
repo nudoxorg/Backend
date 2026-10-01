@@ -60,7 +60,9 @@ impl RoadProgress {
     /// Selection and commit share one clock while the semantic path matches.
     #[must_use]
     pub fn for_selection(previous: Option<Self>, chain: &Chain, now: Duration) -> Self {
-        previous.filter(|road| road.matches(chain)).unwrap_or_else(|| Self::new(chain, now))
+        previous
+            .filter(|road| road.matches(chain))
+            .unwrap_or_else(|| Self::new(chain, now))
     }
 
     /// The finite start/budget pair used by the native animation probe.
@@ -73,7 +75,9 @@ impl RoadProgress {
     /// Settled, reduced-motion and zero-arc roads have no active velocity.
     #[must_use]
     pub fn velocity(&self) -> f32 {
-        if self.settled { return 0.0; }
+        if self.settled {
+            return 0.0;
+        }
         // p=(1-cos(theta))/2, hence sin(theta)=2*sqrt(p*(1-p)).
         std::f32::consts::PI * (self.progress * (1.0 - self.progress)).max(0.0).sqrt()
             / self.duration.as_secs_f32()
@@ -201,7 +205,10 @@ mod tests {
         let velocity = road.velocity();
         let after = road.sample(ms(551), false).progress;
         let measured = (after - before) / 0.002;
-        assert!((velocity - measured).abs() < 0.001, "analytic velocity must match independently sampled progress: {velocity} vs {measured}");
+        assert!(
+            (velocity - measured).abs() < 0.001,
+            "analytic velocity must match independently sampled progress: {velocity} vs {measured}"
+        );
         assert!((velocity - std::f32::consts::PI / 1.8).abs() < 1e-6);
         let _ = road.sample(ms(1000), false);
         assert_eq!(road.velocity(), 0.0);

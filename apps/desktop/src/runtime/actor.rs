@@ -408,7 +408,12 @@ impl EngineActor {
         let join = thread::Builder::new()
             .name("nudox-engine-actor".to_owned())
             .spawn(move || {
-                run_actor(Box::new(client), &worker_mailbox, &worker_events, &worker_wake);
+                run_actor(
+                    Box::new(client),
+                    &worker_mailbox,
+                    &worker_events,
+                    &worker_wake,
+                );
             })
             .map_err(|error| ActorStartError::from_spawn(&error))?;
         let local_mailbox = local.clone();

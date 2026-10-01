@@ -49,17 +49,19 @@ impl Lang {
     /// From a file extension or a language name (`rs`, `rust`, `tsx`, `c++`…).
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
-        Some(match name.trim_start_matches('.').to_ascii_lowercase().as_str() {
-            "rs" | "rust" => Self::Rust,
-            "ts" | "tsx" | "mts" | "cts" | "typescript" => Self::TypeScript,
-            "js" | "jsx" | "mjs" | "cjs" | "javascript" => Self::JavaScript,
-            "py" | "pyi" | "python" => Self::Python,
-            "go" | "golang" => Self::Go,
-            "java" => Self::Java,
-            "cs" | "csharp" | "c#" => Self::CSharp,
-            "cc" | "cpp" | "cxx" | "hpp" | "hh" | "hxx" | "h" | "c++" => Self::Cpp,
-            _ => return None,
-        })
+        Some(
+            match name.trim_start_matches('.').to_ascii_lowercase().as_str() {
+                "rs" | "rust" => Self::Rust,
+                "ts" | "tsx" | "mts" | "cts" | "typescript" => Self::TypeScript,
+                "js" | "jsx" | "mjs" | "cjs" | "javascript" => Self::JavaScript,
+                "py" | "pyi" | "python" => Self::Python,
+                "go" | "golang" => Self::Go,
+                "java" => Self::Java,
+                "cs" | "csharp" | "c#" => Self::CSharp,
+                "cc" | "cpp" | "cxx" | "hpp" | "hh" | "hxx" | "h" | "c++" => Self::Cpp,
+                _ => return None,
+            },
+        )
     }
 
     /// The highlighter's language name.
@@ -132,8 +134,11 @@ impl Role {
                 Some(Self::Macro)
             }
             ("function" | "method", _) => Some(Self::Function),
-            ("keyword" | "include" | "conditional" | "repeat" | "exception" | "storageclass"
-            | "modifier", _) => Some(Self::Keyword),
+            (
+                "keyword" | "include" | "conditional" | "repeat" | "exception" | "storageclass"
+                | "modifier",
+                _,
+            ) => Some(Self::Keyword),
             ("punctuation" | "operator" | "delimiter", _) => Some(Self::Punctuation),
             ("attribute" | "decorator" | "annotation", _) => Some(Self::Attribute),
             _ => return None,
@@ -380,42 +385,82 @@ mod tests {
             (
                 Lang::Rust,
                 "// note\npub fn parse(input: &str) -> u32 { let s = \"hi\"; 42 }",
-                [("pub", Some(Role::Keyword)), ("\"hi\"", Some(Role::String)), ("// note", Some(Role::Comment)), ("parse", Some(Role::Function))],
+                [
+                    ("pub", Some(Role::Keyword)),
+                    ("\"hi\"", Some(Role::String)),
+                    ("// note", Some(Role::Comment)),
+                    ("parse", Some(Role::Function)),
+                ],
             ),
             (
                 Lang::TypeScript,
                 "// note\nexport function parse(input: string): number { const s = \"hi\"; return 42; }",
-                [("export", Some(Role::Keyword)), ("\"hi\"", Some(Role::String)), ("// note", Some(Role::Comment)), ("parse", Some(Role::Function))],
+                [
+                    ("export", Some(Role::Keyword)),
+                    ("\"hi\"", Some(Role::String)),
+                    ("// note", Some(Role::Comment)),
+                    ("parse", Some(Role::Function)),
+                ],
             ),
             (
                 Lang::JavaScript,
                 "// note\nfunction parse(input) { const s = 'hi'; return 42; }",
-                [("function", Some(Role::Keyword)), ("'hi'", Some(Role::String)), ("// note", Some(Role::Comment)), ("parse", Some(Role::Function))],
+                [
+                    ("function", Some(Role::Keyword)),
+                    ("'hi'", Some(Role::String)),
+                    ("// note", Some(Role::Comment)),
+                    ("parse", Some(Role::Function)),
+                ],
             ),
             (
                 Lang::Python,
                 "# note\ndef parse(value):\n    s = \"hi\"\n    return 42\n",
-                [("def", Some(Role::Keyword)), ("\"hi\"", Some(Role::String)), ("# note", Some(Role::Comment)), ("parse", Some(Role::Function))],
+                [
+                    ("def", Some(Role::Keyword)),
+                    ("\"hi\"", Some(Role::String)),
+                    ("# note", Some(Role::Comment)),
+                    ("parse", Some(Role::Function)),
+                ],
             ),
             (
                 Lang::Go,
                 "// note\nfunc Parse(input string) int { s := \"hi\"; return 42 }",
-                [("func", Some(Role::Keyword)), ("\"hi\"", Some(Role::String)), ("// note", Some(Role::Comment)), ("Parse", Some(Role::Function))],
+                [
+                    ("func", Some(Role::Keyword)),
+                    ("\"hi\"", Some(Role::String)),
+                    ("// note", Some(Role::Comment)),
+                    ("Parse", Some(Role::Function)),
+                ],
             ),
             (
                 Lang::Java,
                 "// note\nclass A { int parse(String input) { String s = \"hi\"; return 42; } }",
-                [("class", Some(Role::Keyword)), ("\"hi\"", Some(Role::String)), ("// note", Some(Role::Comment)), ("parse", Some(Role::Function))],
+                [
+                    ("class", Some(Role::Keyword)),
+                    ("\"hi\"", Some(Role::String)),
+                    ("// note", Some(Role::Comment)),
+                    ("parse", Some(Role::Function)),
+                ],
             ),
             (
                 Lang::CSharp,
                 "// note\nclass A { int Parse(string input) { var s = \"hi\"; return 42; } }",
-                [("class", Some(Role::Keyword)), ("\"hi\"", Some(Role::String)), ("// note", Some(Role::Comment)), ("Parse", Some(Role::Function))],
+                [
+                    ("class", Some(Role::Keyword)),
+                    ("\"hi\"", Some(Role::String)),
+                    ("// note", Some(Role::Comment)),
+                    ("Parse", Some(Role::Function)),
+                ],
             ),
             (
                 Lang::Cpp,
                 "// note\nint parse(const char* input) { auto s = \"hi\"; return 42; }",
-                [("return", Some(Role::Keyword)), ("\"hi\"", Some(Role::String)), ("// note", Some(Role::Comment)), ("parse", Some(Role::Function))],
+                [
+                    ("return", Some(Role::Keyword)),
+                    ("\"hi\"", Some(Role::String)),
+                    ("// note", Some(Role::Comment)),
+                    ("parse", Some(Role::Function)),
+                ],
             ),
         ];
         let mut misses = Vec::new();
@@ -423,7 +468,9 @@ mod tests {
             for (needle, expected) in expectations {
                 let got = role(lang, source, needle);
                 if got != expected {
-                    misses.push(format!("{lang:?} `{needle}`: {got:?}, expected {expected:?}"));
+                    misses.push(format!(
+                        "{lang:?} `{needle}`: {got:?}, expected {expected:?}"
+                    ));
                 }
             }
         }
@@ -441,7 +488,10 @@ mod tests {
         for (range, _) in &highlighted.runs {
             assert!(source.is_char_boundary(range.start) && source.is_char_boundary(range.end));
         }
-        assert_eq!(highlighted.role_at(source.find("'static").expect("lifetime")), Some(Role::Macro));
+        assert_eq!(
+            highlighted.role_at(source.find("'static").expect("lifetime")),
+            Some(Role::Macro)
+        );
     }
 
     mod async_cache {
@@ -481,9 +531,21 @@ mod tests {
                 window.draw(cx).clear(cx);
             });
             let history = history.borrow().clone();
-            assert_eq!(history.first(), Some(&false), "the first frame is plain: {history:?}");
-            assert_eq!(history.last(), Some(&true), "woken and highlighted: {history:?}");
-            assert_eq!(cx.update(|_, cx| parses(cx)), 1, "identical requests share one parse");
+            assert_eq!(
+                history.first(),
+                Some(&false),
+                "the first frame is plain: {history:?}"
+            );
+            assert_eq!(
+                history.last(),
+                Some(&true),
+                "woken and highlighted: {history:?}"
+            );
+            assert_eq!(
+                cx.update(|_, cx| parses(cx)),
+                1,
+                "identical requests share one parse"
+            );
         }
     }
 }

@@ -15,13 +15,13 @@ use backend_engine::driver::{
     CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch,
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile,
 };
+use backend_frontend_rust::legacy::{
+    RustAuthorityError, RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
+};
 use backend_semantic::ir::LanguageExtensionWireFact as _;
 use backend_semantic::ir::{
     DecodedDocFact, DecodedOccurrence, DecodedTypeFact, EntityKind, FragmentView, RustOwnership,
     SemanticTypeTag,
-};
-use backend_frontend_rust::legacy::{
-    RustAuthorityError, RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
 };
 use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 use thiserror::Error;
@@ -214,7 +214,9 @@ fn failure_label(failure: &CompileFailure<'_>) -> &'static str {
         CompileFailure::AuthorityInputRequired { .. } => "authority-input-required",
         CompileFailure::AuthorityInputProfileMismatch { .. } => "authority-profile-mismatch",
         CompileFailure::LoweringUnsupported { cause, .. } => match cause {
-            backend_semantic::vocabulary::LoweringUnsupported::FactRejected { .. } => "fact-rejected",
+            backend_semantic::vocabulary::LoweringUnsupported::FactRejected { .. } => {
+                "fact-rejected"
+            }
             backend_semantic::vocabulary::LoweringUnsupported::CSharpProjection { .. } => {
                 "csharp-projection"
             }
@@ -355,7 +357,10 @@ fn word(payload: &[u8], at: usize) -> Result<u32, TestError> {
 /// Decodes the raw Rust extension row of one entity ordinal: a 16-byte
 /// header, seven 20-byte directory entries (Rust is the fourth), then the
 /// row table and the fixed-width fact pool.
-fn rust_extension(lane: &Lane<'_>, ordinal: usize) -> Result<backend_semantic::ir::RustFacts, TestError> {
+fn rust_extension(
+    lane: &Lane<'_>,
+    ordinal: usize,
+) -> Result<backend_semantic::ir::RustFacts, TestError> {
     let payload = lane
         .view
         .language_extension_payload()
@@ -374,7 +379,8 @@ fn rust_extension(lane: &Lane<'_>, ordinal: usize) -> Result<backend_semantic::i
     }
     let at =
         offset + rows * 4 + usize::try_from(fact_ordinal).map_err(|_| TestError::Coordinate)? * 24;
-    backend_semantic::ir::RustFacts::decode(payload, at).ok_or(TestError::Falsified("rust row decode"))
+    backend_semantic::ir::RustFacts::decode(payload, at)
+        .ok_or(TestError::Falsified("rust row decode"))
 }
 
 /// Decodes the child coordinates of one type-fact row from the raw payload.
@@ -403,8 +409,16 @@ fn type_children(lane: &Lane<'_>, row: usize) -> Result<Vec<u32>, TestError> {
             // + 32-byte fragment + u32 ordinal; stable = tag + fragment + two
             // 16-byte compact declaration halves.
             Some(1) => cursor = cursor.checked_add(5).ok_or(TestError::Coordinate)?,
-            Some(2) => cursor = cursor.checked_add(1 + 32 + 4).ok_or(TestError::Coordinate)?,
-            Some(3) => cursor = cursor.checked_add(1 + 32 + 16 * 2).ok_or(TestError::Coordinate)?,
+            Some(2) => {
+                cursor = cursor
+                    .checked_add(1 + 32 + 4)
+                    .ok_or(TestError::Coordinate)?
+            }
+            Some(3) => {
+                cursor = cursor
+                    .checked_add(1 + 32 + 16 * 2)
+                    .ok_or(TestError::Coordinate)?
+            }
             _ => return Err(TestError::Falsified("truncated nominal cell")),
         }
         cursor = cursor.checked_add(8).ok_or(TestError::Coordinate)?;
@@ -667,7 +681,9 @@ fn method_call_resolves_locally_and_u8_width_is_exact() -> Result<(), TestError>
     let call = lane
         .occurrences
         .iter()
-        .find(|occurrence| occurrence.occurrence.kind == backend_semantic::ir::ReferenceKind::MethodCall)
+        .find(|occurrence| {
+            occurrence.occurrence.kind == backend_semantic::ir::ReferenceKind::MethodCall
+        })
         .ok_or(TestError::Falsified("no method-call occurrence"))?;
     if call.occurrence.confidence != backend_semantic::ir::OccurrenceConfidence::Oracle {
         return Err(TestError::Falsified("method call is not oracle tier"));

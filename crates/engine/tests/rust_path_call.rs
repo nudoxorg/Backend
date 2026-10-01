@@ -11,10 +11,11 @@ use backend_engine::driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile,
 };
-use backend_frontend_rust::legacy::{RustFeatureControl, RustProject, RustToolchain, SourceByteLimit};
+use backend_frontend_rust::legacy::{
+    RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
+};
 use backend_semantic::ir::{
-    DecodedOccurrence, FragmentView, OccurrenceConfidence, OccurrenceTarget,
-    ReferenceKind,
+    DecodedOccurrence, FragmentView, OccurrenceConfidence, OccurrenceTarget, ReferenceKind,
 };
 use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 
@@ -85,8 +86,9 @@ fn compile_source(root: &PathBuf, relative: &str, source: &str) -> Result<Vec<u8
     let tool = rustc()?;
     let toolchain =
         RustToolchain::discover(&tool).map_err(|error| format!("toolchain: {error:?}"))?;
-    let project = RustProject::open_with_source(root, &source_path, &toolchain, RustEdition::Rust2024)
-        .map_err(|error| format!("project: {error:?}"))?;
+    let project =
+        RustProject::open_with_source(root, &source_path, &toolchain, RustEdition::Rust2024)
+            .map_err(|error| format!("project: {error:?}"))?;
     let resolved = ResolvedToolchain::from_version(
         backend_engine::driver::NativeTool::Rustc,
         &tool,
@@ -156,9 +158,7 @@ fn function_calls<'a>(
         .filter(|occurrence| occurrence.kind == ReferenceKind::FunctionCall)
 }
 
-fn package_function_calls<'a>(
-    lane: &'a Lane<'a>,
-) -> Vec<&'a backend_semantic::ir::Occurrence<'a>> {
+fn package_function_calls<'a>(lane: &'a Lane<'a>) -> Vec<&'a backend_semantic::ir::Occurrence<'a>> {
     function_calls(lane)
         .filter(|occurrence| {
             occurrence.confidence == OccurrenceConfidence::Oracle
@@ -210,7 +210,8 @@ fn cross_file_path_call_retargets_to_defining_module_path() -> Result<(), String
             matches!(
                 key.origin,
                 backend_semantic::ir::ForeignOrigin::Universe { ecosystem: "cargo" }
-            ) && key.path == "vanish" && key.display == "vanish"
+            ) && key.path == "vanish"
+                && key.display == "vanish"
         })
         .ok_or("vanish call absent")?;
     if vanish.confidence != OccurrenceConfidence::Syntactic {
@@ -260,7 +261,8 @@ fn cross_file_path_call_retargets_to_defining_module_path() -> Result<(), String
             matches!(
                 key.origin,
                 backend_semantic::ir::ForeignOrigin::Universe { ecosystem: "cargo" }
-            ) && key.path == "std::mem::drop" && key.display == "std::mem::drop"
+            ) && key.path == "std::mem::drop"
+                && key.display == "std::mem::drop"
         })
         .ok_or("std::mem::drop call absent")?;
     if std_drop.confidence != OccurrenceConfidence::Oracle {

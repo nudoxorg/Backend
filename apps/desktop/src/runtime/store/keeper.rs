@@ -26,7 +26,11 @@ impl PendingSave {
     fn write(&self, when: &str) -> std::io::Result<usize> {
         let saving = std::time::Instant::now();
         let written = self.file.write(self.root, &self.pages)?;
-        crate::runtime::trace::span("snapshot.write", saving, format_args!("{} pages, {written} bytes, {when}", self.pages.len()));
+        crate::runtime::trace::span(
+            "snapshot.write",
+            saving,
+            format_args!("{} pages, {written} bytes, {when}", self.pages.len()),
+        );
         Ok(written)
     }
 }
@@ -75,8 +79,15 @@ impl SnapshotKeeper {
             return;
         };
         if seed.serves(root) {
-            let confirmed = pages.keys().into_iter().filter(|key| pages.confirm(key, root)).count();
-            crate::runtime::trace::mark("snapshot.confirm", format_args!("{confirmed} pages at the served root"));
+            let confirmed = pages
+                .keys()
+                .into_iter()
+                .filter(|key| pages.confirm(key, root))
+                .count();
+            crate::runtime::trace::mark(
+                "snapshot.confirm",
+                format_args!("{confirmed} pages at the served root"),
+            );
         } else {
             crate::runtime::trace::mark("snapshot.revalidate", "the owner serves a newer root");
         }
@@ -86,9 +97,12 @@ impl SnapshotKeeper {
     /// root: what the next launch paints first.
     fn to_save(&self, pages: &PageStore, snapshot: &AppSnapshot) -> Option<PendingSave> {
         fn at<T>(resource: &Resource<T>, root: VersionedRoot) -> Option<Arc<T>> {
-            (resource.is_loaded() && resource.value_root().is_some_and(|at| at.same_authority(root)))
-                .then(|| resource.loaded_arc().cloned())
-                .flatten()
+            (resource.is_loaded()
+                && resource
+                    .value_root()
+                    .is_some_and(|at| at.same_authority(root)))
+            .then(|| resource.loaded_arc().cloned())
+            .flatten()
         }
         let file = self.file.clone()?;
         let root = snapshot.key();
@@ -100,23 +114,38 @@ impl SnapshotKeeper {
                 return None;
             }
             match key {
-                PageKey::Symbol(symbol) => at(&pages.symbol(symbol), root).map(|page| SeedEntry::Symbol(symbol.clone(), page)),
-                PageKey::Source(symbol) => at(&pages.source(symbol), root).map(|view| SeedEntry::Source(symbol.clone(), view)),
-                PageKey::Package(package) => at(&pages.package(package), root).map(|dossier| SeedEntry::Package(package.clone(), dossier)),
+                PageKey::Symbol(symbol) => at(&pages.symbol(symbol), root)
+                    .map(|page| SeedEntry::Symbol(symbol.clone(), page)),
+                PageKey::Source(symbol) => at(&pages.source(symbol), root)
+                    .map(|view| SeedEntry::Source(symbol.clone(), view)),
+                PageKey::Package(package) => at(&pages.package(package), root)
+                    .map(|dossier| SeedEntry::Package(package.clone(), dossier)),
                 PageKey::Orbit => at(&pages.orbit(), root).map(SeedEntry::Orbit),
                 PageKey::Search(_) | PageKey::Health | PageKey::Browse(_) => None,
             }
         };
-        let kept = kept_keys(snapshot.route()).iter().filter_map(current).collect::<Vec<_>>();
-        (!kept.is_empty()).then_some(PendingSave { file, root, pages: kept })
+        let kept = kept_keys(snapshot.route())
+            .iter()
+            .filter_map(current)
+            .collect::<Vec<_>>();
+        (!kept.is_empty()).then_some(PendingSave {
+            file,
+            root,
+            pages: kept,
+        })
     }
 
     /// Saves the launch snapshot now, on this thread (quit).
     ///
     /// # Errors
     /// The snapshot file's I/O error; nothing to save is `Ok(0)`.
-    pub(super) fn save_now(&self, pages: &PageStore, snapshot: &AppSnapshot) -> std::io::Result<usize> {
-        self.to_save(pages, snapshot).map_or(Ok(0), |save| save.write("on quit"))
+    pub(super) fn save_now(
+        &self,
+        pages: &PageStore,
+        snapshot: &AppSnapshot,
+    ) -> std::io::Result<usize> {
+        self.to_save(pages, snapshot)
+            .map_or(Ok(0), |save| save.write("on quit"))
     }
 
     /// Saves the launch snapshot once the pages have rested (a newer landing
@@ -127,12 +156,17 @@ impl SnapshotKeeper {
         }
         self.saving = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SAVE_IDLE).await;
-            let Ok(Some(save)) = this.update(cx, |store, _| store.keeper.to_save(&store.pages, &store.snapshot)) else {
+            let Ok(Some(save)) = this.update(cx, |store, _| {
+                store.keeper.to_save(&store.pages, &store.snapshot)
+            }) else {
                 return;
             };
             cx.background_spawn(async move {
                 if let Err(error) = save.write("at rest") {
-                    eprintln!("backend-desktop: save {}: {error}", save.file.path().display());
+                    eprintln!(
+                        "backend-desktop: save {}: {error}",
+                        save.file.path().display()
+                    );
                 }
             })
             .await;

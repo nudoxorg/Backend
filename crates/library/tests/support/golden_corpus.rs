@@ -8,7 +8,6 @@
 //! service reply, a CLI line, and an MCP `structuredContent` value all have to agree on the same
 //! closed vocabulary.
 
-use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 use backend_library::interface::{
     ApplicationDisposition, ApplicationInput, ApplicationOutcome, ApplicationReply,
     ApplicationService, BatteryState, ByteCount, Capability, CapabilityDomain, CapabilityHealth,
@@ -18,6 +17,7 @@ use backend_library::interface::{
     OperationKey, Pin, Pressure, RejectedSourceText, ReplyBody, ResourceBudget, RetryBudget,
     SourceText,
 };
+use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 use serde::Deserialize;
 
 mod compiler;

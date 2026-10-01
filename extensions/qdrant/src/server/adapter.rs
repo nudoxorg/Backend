@@ -3,8 +3,8 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Qdrant connection, collection lifecycle, and adapter-level orchestration.
 
-use serde::Serialize;
 use backend_semantic::graph_vector::VectorAuthority;
+use serde::Serialize;
 
 use super::{
     config,

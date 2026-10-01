@@ -278,12 +278,8 @@ const METHOD_REF_CONSTRUCTOR_USES: [ConstructorUseExpectation; 5] = [
     },
 ];
 
-const METHOD_REF_INVOCATION_SPANS: [(u32, u32); 4] = [
-    (491, 496),
-    (608, 614),
-    (733, 744),
-    (920, 925),
-];
+const METHOD_REF_INVOCATION_SPANS: [(u32, u32); 4] =
+    [(491, 496), (608, 614), (733, 744), (920, 925)];
 
 #[test]
 fn javac_image_records_method_and_constructor_references() -> Result<(), JavacTestError> {

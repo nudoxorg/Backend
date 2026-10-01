@@ -1502,9 +1502,7 @@ pub(crate) fn compose_owner(
         &mut image_rows,
         &mut generations,
     )
-    .map_err(|error| {
-        embedded_host::view_refusal(&daemon, &error, "repair product view: ")
-    })?;
+    .map_err(|error| embedded_host::view_refusal(&daemon, &error, "repair product view: "))?;
     #[cfg(feature = "cluster-process-journey-hooks")]
     if std::env::var_os("BACKEND_JOURNEY_REMOTE_SEGMENT_GC")
         .is_some_and(|value| value.to_str() == Some("1"))

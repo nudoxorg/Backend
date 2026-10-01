@@ -29,8 +29,8 @@ pub use types::{
     AttemptInvalidatedByObservationProof, AuthorityHash, AuthorityNamespace, AuthorityPlane,
     CandidateAttempt, CandidateAttemptRecoveryClaim, CandidateGeneration, ClosureClaim,
     ClosureReceipt, ExistingGenerationSelection, NoResultRetirementBarrier, ProjectionKind,
-    ProjectionWatermark, SelectedFrontier, SelectedGeneration, SelectionOrigin,
-    SourceObservation, SourceObservationReceipt, SourceObservationValue, SupersededAttemptProof,
+    ProjectionWatermark, SelectedFrontier, SelectedGeneration, SelectionOrigin, SourceObservation,
+    SourceObservationReceipt, SourceObservationValue, SupersededAttemptProof,
 };
 pub use versioned::{
     VERSIONED_PLANE_MANIFEST_SCHEMA, VERSIONED_PLANE_SEGMENT_SCHEMA,
@@ -292,13 +292,8 @@ impl TursoAuthority {
                 1 if !profile.is_empty() => AuthorityPlane::semantic_profile(profile)?,
                 _ => return Err(AuthorityError::CorruptRecord("namespace_plane")),
             };
-            let namespace = AuthorityNamespace::with_plane(
-                package,
-                source,
-                branch,
-                environment,
-                plane,
-            )?;
+            let namespace =
+                AuthorityNamespace::with_plane(package, source, branch, environment, plane)?;
             if namespace.namespace_id() == namespace_id {
                 if found.replace(namespace).is_some() {
                     return Err(AuthorityError::CorruptRecord("namespace_id_collision"));

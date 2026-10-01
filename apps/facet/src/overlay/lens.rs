@@ -147,7 +147,12 @@ impl Lens {
     /// A module region: `de · 214 public items`, how many you use, the ones
     /// you use most.
     #[must_use]
-    pub fn module(name: impl Into<SharedString>, items: usize, used: usize, most: Vec<LensItem>) -> Self {
+    pub fn module(
+        name: impl Into<SharedString>,
+        items: usize,
+        used: usize,
+        most: Vec<LensItem>,
+    ) -> Self {
         let yours = if used > 0 {
             vec![
                 ("your code uses ".into(), false),
@@ -164,18 +169,27 @@ impl Lens {
             yours,
             most,
         );
-        lens.more = used.saturating_sub(lens.items.len().min(SHOWN)).max(lens.more);
+        lens.more = used
+            .saturating_sub(lens.items.len().min(SHOWN))
+            .max(lens.more);
         lens
     }
 
     /// A language on Orbit's comb: `python · 7 packages`, the most opened.
     #[must_use]
-    pub fn language(lang: Lang, name: impl Into<SharedString>, packages: usize, opened: &[(&str, usize)]) -> Self {
+    pub fn language(
+        lang: Lang,
+        name: impl Into<SharedString>,
+        packages: usize,
+        opened: &[(&str, usize)],
+    ) -> Self {
         let top = opened.iter().map(|(_, n)| *n).max().unwrap_or(1).max(1);
         #[allow(clippy::cast_precision_loss)]
         let items = opened
             .iter()
-            .map(|(name, n)| LensItem::new((*name).to_owned()).share(*n as f32 / top as f32, n.to_string()))
+            .map(|(name, n)| {
+                LensItem::new((*name).to_owned()).share(*n as f32 / top as f32, n.to_string())
+            })
             .collect();
         Self::of(
             Some(LensMark::Lang(lang)),
@@ -188,9 +202,20 @@ impl Lens {
 
     /// A rose direction or a compass arm: `to · 3 calls`, its members.
     #[must_use]
-    pub fn direction(dir: Dir, unit: &str, members: Vec<LensItem>, yours: Vec<(SharedString, bool)>) -> Self {
+    pub fn direction(
+        dir: Dir,
+        unit: &str,
+        members: Vec<LensItem>,
+        yours: Vec<(SharedString, bool)>,
+    ) -> Self {
         let count = members.len();
-        Self::of(None, dir.word().into(), Some(format!("{count} {unit}").into()), yours, members)
+        Self::of(
+            None,
+            dir.word().into(),
+            Some(format!("{count} {unit}").into()),
+            yours,
+            members,
+        )
     }
 
     fn of(
@@ -216,8 +241,26 @@ impl Lens {
 #[must_use]
 pub fn count_words(n: usize) -> SharedString {
     const WORDS: [&str; 21] = [
-        "no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven",
-        "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen",
+        "no",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
+        "eighteen",
+        "nineteen",
         "twenty",
     ];
     WORDS
@@ -405,9 +448,11 @@ pub fn lens_card(
         list = list.child(row);
     }
     if lens.more > 0 {
-        list = list.child(
-            spell(&inner).text(format!("and {} more", count_words(lens.more)), MORE, palette.ink3),
-        );
+        list = list.child(spell(&inner).text(
+            format!("and {} more", count_words(lens.more)),
+            MORE,
+            palette.ink3,
+        ));
     }
     if !lens.items.is_empty() {
         card = card.child(list);
@@ -417,10 +462,12 @@ pub fn lens_card(
 
 /// A [`Door`] whose parts open `lens(part)` as a lens card.
 pub fn door(lens: impl Fn(usize) -> Option<Lens> + 'static) -> Door {
-    Door::lens(move |part, measure, _window: &mut Window, cx| match lens(part) {
-        Some(data) => lens_card(&data, measure, None, cx),
-        None => div().into_any_element(),
-    })
+    Door::lens(
+        move |part, measure, _window: &mut Window, cx| match lens(part) {
+            Some(data) => lens_card(&data, measure, None, cx),
+            None => div().into_any_element(),
+        },
+    )
 }
 
 #[cfg(test)]
@@ -431,7 +478,11 @@ mod tests {
     #[test]
     fn a_release_lens_shows_three_and_counts_the_rest() {
         let items: Vec<LensItem> = (0..8)
-            .map(|i| LensItem::new(format!("item{i}")).kind(Kind::Function).sigil(Sigil::Changed))
+            .map(|i| {
+                LensItem::new(format!("item{i}"))
+                    .kind(Kind::Function)
+                    .sigil(Sigil::Changed)
+            })
             .collect();
         let lens = Lens::release("1.0.200", "3 weeks ago", Vec::new(), items);
         assert_eq!(lens.more, 8 - SHOWN);
@@ -457,8 +508,17 @@ mod tests {
 
     #[test]
     fn language_shares_are_relative_to_the_most_opened() {
-        let lens = Lens::language(crate::icons::Lang::Python, "python", 7, &[("numpy", 22), ("requests", 11)]);
-        let shares: Vec<f32> = lens.items.iter().filter_map(|i| i.share.as_ref().map(|s| s.0)).collect();
+        let lens = Lens::language(
+            crate::icons::Lang::Python,
+            "python",
+            7,
+            &[("numpy", 22), ("requests", 11)],
+        );
+        let shares: Vec<f32> = lens
+            .items
+            .iter()
+            .filter_map(|i| i.share.as_ref().map(|s| s.0))
+            .collect();
         assert!((shares[0] - 1.0).abs() < 1e-6 && (shares[1] - 0.5).abs() < 1e-6);
         assert_eq!(count_words(213), "213");
     }

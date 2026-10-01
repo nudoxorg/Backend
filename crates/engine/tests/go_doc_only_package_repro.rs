@@ -25,7 +25,8 @@ use backend_semantic::vocabulary::{GoVersion, LanguageProfile, Stage};
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// The audited shape: a package clause plus a doc comment, nothing else.
-const DOC_ONLY_SOURCE: &[u8] = b"// Package doconly exists only to carry its package clause.\npackage doconly\n";
+const DOC_ONLY_SOURCE: &[u8] =
+    b"// Package doconly exists only to carry its package clause.\npackage doconly\n";
 
 fn toolchain() -> ResolvedToolchain<'static> {
     ResolvedToolchain::from_version(
@@ -48,8 +49,11 @@ fn stage_doc_only_module() -> Result<(PathBuf, PathBuf), String> {
         std::process::id()
     ));
     fs::create_dir_all(&root).map_err(|error| error.to_string())?;
-    fs::write(root.join("go.mod"), b"module doconly.example/fixture\n\ngo 1.24\n")
-        .map_err(|error| error.to_string())?;
+    fs::write(
+        root.join("go.mod"),
+        b"module doconly.example/fixture\n\ngo 1.24\n",
+    )
+    .map_err(|error| error.to_string())?;
     let source_path = root.join("doc.go");
     fs::write(&source_path, DOC_ONLY_SOURCE).map_err(|error| error.to_string())?;
     Ok((root, source_path))

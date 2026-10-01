@@ -7,16 +7,16 @@
     clippy::expect_used,
     reason = "adversarial test fixtures fail fast when their construction is invalid"
 )]
-use backend_semantic::ir::EntityId;
-use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
+use backend_extension_tantivy::server::{
+    MAX_TANTIVY_DOCUMENTS, MAX_TANTIVY_QUERY_BYTES, TantivyAdapterError, TantivyHit, TantivyLexical,
+};
 use backend_semantic::index_core::{
     EntityArtifactIdentity, EntityDocumentId, GenerationId, IndexSnapshot, IndexSnapshotId,
     LexicalHit, LexicalManifest, LexicalManifestError, LexicalOperation, LexicalRow, LexicalScore,
     LexicalSegment, LexicalTopK,
 };
-use backend_extension_tantivy::server::{
-    MAX_TANTIVY_DOCUMENTS, MAX_TANTIVY_QUERY_BYTES, TantivyAdapterError, TantivyHit, TantivyLexical,
-};
+use backend_semantic::ir::EntityId;
+use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 
 fn document(entity: u32) -> EntityDocumentId {
     EntityDocumentId {

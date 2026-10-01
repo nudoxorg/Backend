@@ -58,7 +58,9 @@ impl SignatureText {
 }
 
 /// What one signature token reads as.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub enum TokenClass {
     /// Reserved word.
     Keyword,
@@ -180,7 +182,9 @@ pub struct SourceSite {
 }
 
 /// Package-relative file plus one-based start line.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub struct SourceLocation {
     /// Package-relative path.
     pub path: Arc<str>,
@@ -200,7 +204,9 @@ pub struct Excerpt {
 }
 
 /// How a method receives its value: the modifier mark on its ledger row.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub enum Receiver {
     /// Borrows `self` mutably: changes it.
     Changes,
@@ -286,7 +292,9 @@ impl Members {
 }
 
 /// What connects the page's declaration to a related one.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub enum RelationKind {
     /// A compiler relation kind.
     Semantic(SemanticLinkKind),
@@ -295,7 +303,9 @@ pub enum RelationKind {
 }
 
 /// How an implementation arrives, when the producer states it.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub enum Arrival {
     /// Written for this type.
     Direct,
@@ -342,7 +352,9 @@ pub struct Rose {
 }
 
 /// Where the use points, as the producer resolved it.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub enum ReferenceScope {
     /// Same package image.
     Local,
@@ -355,7 +367,9 @@ pub enum ReferenceScope {
 }
 
 /// A byte span inside one package-relative file.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub struct FileSpan {
     /// Package-relative path.
     pub file: Arc<str>,

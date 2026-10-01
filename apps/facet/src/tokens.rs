@@ -780,7 +780,11 @@ pub mod fluid {
     /// Shelf beside the page from 900, a spine from 640, a drawer below.
     pub const DOCK: Ladder<Dock> = Ladder::new(
         ModeId::Dock,
-        &[rung(Dock::Drawer, 0.0), rung(Dock::Spine, 640.0), rung(Dock::Shelf, 900.0)],
+        &[
+            rung(Dock::Drawer, 0.0),
+            rung(Dock::Spine, 640.0),
+            rung(Dock::Shelf, 900.0),
+        ],
     );
 
     /// Whether pinned peeks have a column of their own.
@@ -793,7 +797,10 @@ pub mod fluid {
     }
 
     /// The page keeps its full measure beside a third column from 1900.
-    pub const PINS: Ladder<Pins> = Ladder::new(ModeId::Pins, &[rung(Pins::Over, 0.0), rung(Pins::Column, 1900.0)]);
+    pub const PINS: Ladder<Pins> = Ladder::new(
+        ModeId::Pins,
+        &[rung(Pins::Over, 0.0), rung(Pins::Column, 1900.0)],
+    );
 
     /// The most of the window the shelf and the pins column may take while they
     /// move, as a share of it: on a fast shrink the columns are still on their
@@ -818,16 +825,25 @@ pub mod fluid {
     }
 
     /// The titlebar's controls arrive from 560 and 760.
-    pub const BAR: Ladder<Bar> = Ladder::new(ModeId::Bar, &[rung(Bar::Bare, 0.0), rung(Bar::Snug, 560.0), rung(Bar::Full, 760.0)]);
+    pub const BAR: Ladder<Bar> = Ladder::new(
+        ModeId::Bar,
+        &[
+            rung(Bar::Bare, 0.0),
+            rung(Bar::Snug, 560.0),
+            rung(Bar::Full, 760.0),
+        ],
+    );
 
     // ---- The reader ----
 
     /// The reader's side gutter: 16 px on a phone, the design's 22 at 480,
     /// 40 at 1600.
-    pub const READER_PAD: Length = Length::new(&[stop(320.0, 16.0), stop(480.0, 22.0), stop(1600.0, 40.0)]).smooth();
+    pub const READER_PAD: Length =
+        Length::new(&[stop(320.0, 16.0), stop(480.0, 22.0), stop(1600.0, 40.0)]).smooth();
 
     /// The space above a page.
-    pub const READER_TOP: Length = Length::new(&[stop(320.0, 16.0), stop(480.0, 22.0), stop(1600.0, 56.0)]).smooth();
+    pub const READER_TOP: Length =
+        Length::new(&[stop(320.0, 16.0), stop(480.0, 22.0), stop(1600.0, 56.0)]).smooth();
 
     /// The measure wide content (tables, rails, comparisons) may take:
     /// the reading column until 1440, then growing to fill a big window.
@@ -844,16 +860,31 @@ pub mod fluid {
     }
 
     /// Notes sit in a margin from 1100.
-    pub const NOTES: Ladder<Notes> = Ladder::new(ModeId::Notes, &[rung(Notes::Under, 0.0), rung(Notes::Beside, 1100.0)]);
+    pub const NOTES: Ladder<Notes> = Ladder::new(
+        ModeId::Notes,
+        &[rung(Notes::Under, 0.0), rung(Notes::Beside, 1100.0)],
+    );
 
     // ---- Rhythm and type, everywhere ----
 
     /// How much gaps breathe: tight on a phone, roomy in a big window.
-    pub const BREATHE: Blend = Blend::new(&[stop(320.0, 0.66), stop(480.0, 0.78), stop(1600.0, 1.12), stop(2560.0, 1.3)]).smooth();
+    pub const BREATHE: Blend = Blend::new(&[
+        stop(320.0, 0.66),
+        stop(480.0, 0.78),
+        stop(1600.0, 1.12),
+        stop(2560.0, 1.3),
+    ])
+    .smooth();
 
     /// Display type's share of its size: a page title shrinks on a phone and
     /// grows in a big window; body text never does.
-    pub const DISPLAY: Blend = Blend::new(&[stop(320.0, 0.70), stop(480.0, 0.78), stop(1600.0, 1.0), stop(2560.0, 1.2)]).smooth();
+    pub const DISPLAY: Blend = Blend::new(&[
+        stop(320.0, 0.70),
+        stop(480.0, 0.78),
+        stop(1600.0, 1.0),
+        stop(2560.0, 1.2),
+    ])
+    .smooth();
 
     /// What the gallery titlebar draws: the flow targets' container queries.
     #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -871,7 +902,12 @@ pub mod fluid {
     /// Buttons from 520, beads from 760, the oldest bead from 1100.
     pub const BEADS: Ladder<Beads> = Ladder::new(
         ModeId::Beads,
-        &[rung(Beads::Bare, 0.0), rung(Beads::Buttons, 520.0), rung(Beads::Some, 760.0), rung(Beads::All, 1100.0)],
+        &[
+            rung(Beads::Bare, 0.0),
+            rung(Beads::Buttons, 520.0),
+            rung(Beads::Some, 760.0),
+            rung(Beads::All, 1100.0),
+        ],
     );
 
     /// The mock window's shelf in the chrome gallery: 18 % of the window,
@@ -895,10 +931,16 @@ pub mod fluid {
 
     /// The sidebar is Full from 232 design px (its floor is 200, its
     /// default 264).
-    pub const SIDE: Ladder<SideForm> = Ladder::new(ModeId::Side, &[rung(SideForm::Tight, 0.0), rung(SideForm::Full, 232.0)]);
+    pub const SIDE: Ladder<SideForm> = Ladder::new(
+        ModeId::Side,
+        &[rung(SideForm::Tight, 0.0), rung(SideForm::Full, 232.0)],
+    );
 
     /// The marks gallery's dependency line sits beside the marks from 760.
-    pub const HERO_DEPS: Ladder<Split> = Ladder::new(ModeId::Lab, &[rung(Split::Stacked, 0.0), rung(Split::Beside, 760.0)]);
+    pub const HERO_DEPS: Ladder<Split> = Ladder::new(
+        ModeId::Lab,
+        &[rung(Split::Stacked, 0.0), rung(Split::Beside, 760.0)],
+    );
 
     /// Where the graph's focus card sits.
     #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -910,7 +952,10 @@ pub mod fluid {
     }
 
     /// The focus card sits beside the map from 640.
-    pub const CARD: Ladder<Card> = Ladder::new(ModeId::Card, &[rung(Card::Below, 0.0), rung(Card::Beside, 640.0)]);
+    pub const CARD: Ladder<Card> = Ladder::new(
+        ModeId::Card,
+        &[rung(Card::Below, 0.0), rung(Card::Beside, 640.0)],
+    );
 
     /// What the focus card takes from the map beside it, for the camera: its
     /// 340 px and the gutters around it.
@@ -926,8 +971,10 @@ pub mod fluid {
     }
 
     /// The relations sit in two columns when the free room is 900 wide.
-    pub const READING: Ladder<Reading> =
-        Ladder::new(ModeId::Reading, &[rung(Reading::Merged, 0.0), rung(Reading::Columns, 900.0)]);
+    pub const READING: Ladder<Reading> = Ladder::new(
+        ModeId::Reading,
+        &[rung(Reading::Merged, 0.0), rung(Reading::Columns, 900.0)],
+    );
 
     /// How far a chain is framed back from its ends: a step further on a
     /// phone, where the map is small.
@@ -949,8 +996,11 @@ pub mod fluid {
 
     /// The rail sits beside the page from 1100, held 40 px through the edge
     /// (`anatomy/symbol/layout.rs` `ENTER` 1120 / `LEAVE` 1080).
-    pub const SYMBOL_RAIL: Ladder<Rail> =
-        Ladder::new(ModeId::SymbolRail, &[rung(Rail::Below, 0.0), rung(Rail::Beside, 1100.0)]).banded(40.0);
+    pub const SYMBOL_RAIL: Ladder<Rail> = Ladder::new(
+        ModeId::SymbolRail,
+        &[rung(Rail::Below, 0.0), rung(Rail::Beside, 1100.0)],
+    )
+    .banded(40.0);
 
     /// How a page sets a case's or a field's name, type and doc.
     #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -962,8 +1012,10 @@ pub mod fluid {
     }
 
     /// Rows are in columns from 760 (`anatomy/symbol/body.rs` `stacked`).
-    pub const SYMBOL_ROWS: Ladder<Rows> =
-        Ladder::new(ModeId::SymbolRows, &[rung(Rows::Stacked, 0.0), rung(Rows::Columns, 760.0)]);
+    pub const SYMBOL_ROWS: Ladder<Rows> = Ladder::new(
+        ModeId::SymbolRows,
+        &[rung(Rows::Stacked, 0.0), rung(Rows::Columns, 760.0)],
+    );
 
     /// How many columns of cells a page has.
     #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -975,8 +1027,10 @@ pub mod fluid {
     }
 
     /// Cells are in two columns from 900 (`anatomy/symbol/body.rs` `two`).
-    pub const SYMBOL_CELLS: Ladder<Cells> =
-        Ladder::new(ModeId::SymbolCells, &[rung(Cells::One, 0.0), rung(Cells::Two, 900.0)]);
+    pub const SYMBOL_CELLS: Ladder<Cells> = Ladder::new(
+        ModeId::SymbolCells,
+        &[rung(Cells::One, 0.0), rung(Cells::Two, 900.0)],
+    );
 
     /// Whether the page is set for a phone.
     #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -988,13 +1042,17 @@ pub mod fluid {
     }
 
     /// A phone below 480 (`anatomy/symbol/layout.rs` `phone`).
-    pub const SYMBOL_PHONE: Ladder<Screen> =
-        Ladder::new(ModeId::SymbolPhone, &[rung(Screen::Phone, 0.0), rung(Screen::Window, 480.0)]);
+    pub const SYMBOL_PHONE: Ladder<Screen> = Ladder::new(
+        ModeId::SymbolPhone,
+        &[rung(Screen::Phone, 0.0), rung(Screen::Window, 480.0)],
+    );
 
     /// The relations prism is one column on a rail below 620, columns above
     /// (`anatomy/prism.rs` `ONE_COLUMN_BELOW`).
-    pub const SYMBOL_PRISM: Ladder<Cells> =
-        Ladder::new(ModeId::SymbolPrism, &[rung(Cells::One, 0.0), rung(Cells::Two, 620.0)]);
+    pub const SYMBOL_PRISM: Ladder<Cells> = Ladder::new(
+        ModeId::SymbolPrism,
+        &[rung(Cells::One, 0.0), rung(Cells::Two, 620.0)],
+    );
 
     /// How far the page's spine sits left of its column (`rhythm::SPINE_NARROW`
     /// 36 below 720, `rhythm::SPINE` 44 above, as a glide).
@@ -1004,13 +1062,15 @@ pub mod fluid {
     pub const PAGE_GEM: Length = Length::new(&[stop(560.0, 40.0), stop(760.0, 56.0)]);
 
     /// The gap between the symbol page's sections: 24 at 480, 34 from 1600.
-    pub const SYMBOL_SECTION: Length = Length::new(&[stop(480.0, 24.0), stop(1600.0, 34.0)]).smooth();
+    pub const SYMBOL_SECTION: Length =
+        Length::new(&[stop(480.0, 24.0), stop(1600.0, 34.0)]).smooth();
 
     /// The width of the symbol page's label column (`GIVES`, a port's name).
     pub const SYMBOL_LABEL: Length = Length::new(&[stop(480.0, 58.0), stop(1600.0, 84.0)]).smooth();
 
     /// The width of a place's file column in "In your workspace".
-    pub const SYMBOL_PLACE: Length = Length::new(&[stop(480.0, 132.0), stop(1600.0, 210.0)]).smooth();
+    pub const SYMBOL_PLACE: Length =
+        Length::new(&[stop(480.0, 132.0), stop(1600.0, 210.0)]).smooth();
 
     /// How the rose is drawn.
     #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -1024,7 +1084,10 @@ pub mod fluid {
     /// The rose is four quiet lines below 560 and a field above; `Rose` reads
     /// it through a `Modes` of its own (`data/rose.rs`), and `Rose::list(..)`
     /// still forces one.
-    pub const ROSE: Ladder<Form> = Ladder::new(ModeId::Rose, &[rung(Form::List, 0.0), rung(Form::Field, 560.0)]);
+    pub const ROSE: Ladder<Form> = Ladder::new(
+        ModeId::Rose,
+        &[rung(Form::List, 0.0), rung(Form::Field, 560.0)],
+    );
 
     /// How a version comb is drawn.
     #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -1037,7 +1100,10 @@ pub mod fluid {
 
     /// A comb is a band below 240 and the style it was asked for above
     /// (`marks/version.rs`), held 32 px through the edge.
-    pub const COMB: Ladder<Comb> = Ladder::new(ModeId::Comb, &[rung(Comb::Band, 0.0), rung(Comb::Asked, 240.0)]);
+    pub const COMB: Ladder<Comb> = Ladder::new(
+        ModeId::Comb,
+        &[rung(Comb::Band, 0.0), rung(Comb::Asked, 240.0)],
+    );
 
     /// How many cells of the package page's crest share a row.
     #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -1052,15 +1118,26 @@ pub mod fluid {
 
     /// Two by two from 420, four in a row from 980, held 48 px through each
     /// edge (`bodies/package/fluid.rs` `TWO_FROM`, `FOUR_FROM`, `STICKY` 24).
-    pub const CREST: Ladder<Crest> =
-        Ladder::new(ModeId::Crest, &[rung(Crest::One, 0.0), rung(Crest::Two, 420.0), rung(Crest::Four, 980.0)]).banded(48.0);
+    pub const CREST: Ladder<Crest> = Ladder::new(
+        ModeId::Crest,
+        &[
+            rung(Crest::One, 0.0),
+            rung(Crest::Two, 420.0),
+            rung(Crest::Four, 980.0),
+        ],
+    )
+    .banded(48.0);
 
     /// The package hero's gem (`bodies/package.rs` `fluid(48.0, 64.0)`).
     pub const PACKAGE_GEM: Length = Length::new(&[stop(480.0, 48.0), stop(1600.0, 64.0)]).smooth();
 
     /// The package page's symbol cards: as many columns as fit, each at least
     /// 262 px at 100 % text (240 on a phone, so one column fills a 320 window).
-    pub const FOLIO_CARDS: Grid = Grid::new(ModeId::Folio, Length::new(&[stop(320.0, 240.0), stop(480.0, 262.0)]), 6);
+    pub const FOLIO_CARDS: Grid = Grid::new(
+        ModeId::Folio,
+        Length::new(&[stop(320.0, 240.0), stop(480.0, 262.0)]),
+        6,
+    );
 
     /// How Ask's results sit over the page.
     #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -1072,7 +1149,10 @@ pub mod fluid {
     }
 
     /// Ask is a floating panel from 640 and a sheet across the window below.
-    pub const ASK: Ladder<Float> = Ladder::new(ModeId::Ask, &[rung(Float::Sheet, 0.0), rung(Float::Panel, 640.0)]);
+    pub const ASK: Ladder<Float> = Ladder::new(
+        ModeId::Ask,
+        &[rung(Float::Sheet, 0.0), rung(Float::Panel, 640.0)],
+    );
 
     /// The results plate over the shelf's column: a panel from 320 to 440 px
     /// as the window grows (a sheet across the window below 640).
@@ -1088,10 +1168,16 @@ pub mod fluid {
     }
 
     /// Find's inspector sits beside its results from 760.
-    pub const FIND: Ladder<Split> = Ladder::new(ModeId::Find, &[rung(Split::Stacked, 0.0), rung(Split::Beside, 760.0)]);
+    pub const FIND: Ladder<Split> = Ladder::new(
+        ModeId::Find,
+        &[rung(Split::Stacked, 0.0), rung(Split::Beside, 760.0)],
+    );
 
     /// Compare's row detail sits beside its rows from 760.
-    pub const COMPARE: Ladder<Split> = Ladder::new(ModeId::Compare, &[rung(Split::Stacked, 0.0), rung(Split::Beside, 760.0)]);
+    pub const COMPARE: Ladder<Split> = Ladder::new(
+        ModeId::Compare,
+        &[rung(Split::Stacked, 0.0), rung(Split::Beside, 760.0)],
+    );
 
     /// Find's inspector column: 38 % of the room, between 280 and 390.
     pub const FIND_INSPECTOR: Length = Length::new(&[stop(736.84, 280.0), stop(1026.32, 390.0)]);
@@ -1100,21 +1186,33 @@ pub mod fluid {
     pub const COMPARE_DETAIL: Length = Length::new(&[stop(673.08, 350.0), stop(1000.0, 520.0)]);
 
     /// Compare's release columns sit side by side from 850.
-    pub const COMPARE_COLUMNS: Ladder<Split> =
-        Ladder::new(ModeId::CompareColumns, &[rung(Split::Stacked, 0.0), rung(Split::Beside, 850.0)]);
+    pub const COMPARE_COLUMNS: Ladder<Split> = Ladder::new(
+        ModeId::CompareColumns,
+        &[rung(Split::Stacked, 0.0), rung(Split::Beside, 850.0)],
+    );
 
     /// The motion lab's cards: as many columns of 220 as fit, up to four.
-    pub const LAB_CARDS: Grid = Grid::new(ModeId::Lab, Length::new(&[stop(320.0, 220.0), stop(1440.0, 220.0)]), 4);
+    pub const LAB_CARDS: Grid = Grid::new(
+        ModeId::Lab,
+        Length::new(&[stop(320.0, 220.0), stop(1440.0, 220.0)]),
+        4,
+    );
 
     /// The gem of a project in the Library, read at the wide measure: 44 in the
     /// reading column, growing as the wide measure does.
-    pub const PROJECT_GEM: Length = Length::new(&[stop(320.0, 34.0), stop(784.0, 44.0), stop(1120.0, 60.0)]);
+    pub const PROJECT_GEM: Length =
+        Length::new(&[stop(320.0, 34.0), stop(784.0, 44.0), stop(1120.0, 60.0)]);
 
     /// The gem of an empty Library.
-    pub const EMPTY_GEM: Length = Length::new(&[stop(320.0, 40.0), stop(784.0, 56.0), stop(1120.0, 76.0)]);
+    pub const EMPTY_GEM: Length =
+        Length::new(&[stop(320.0, 40.0), stop(784.0, 56.0), stop(1120.0, 76.0)]);
 
     /// The Library's roles: two columns from 714 (two of 340 and the gap).
-    pub const ROLES: Grid = Grid::new(ModeId::Library, Length::new(&[stop(320.0, 340.0), stop(1440.0, 340.0)]), 2);
+    pub const ROLES: Grid = Grid::new(
+        ModeId::Library,
+        Length::new(&[stop(320.0, 340.0), stop(1440.0, 340.0)]),
+        2,
+    );
 }
 
 /// Motion durations and curves.
@@ -1146,15 +1244,40 @@ pub mod motion {
     }
 
     /// Decelerate: things arriving and settling.
-    pub const GLIDE: Bezier = Bezier { x1: 0.22, y1: 1.0, x2: 0.36, y2: 1.0 };
+    pub const GLIDE: Bezier = Bezier {
+        x1: 0.22,
+        y1: 1.0,
+        x2: 0.36,
+        y2: 1.0,
+    };
     /// A crisp snap.
-    pub const SNAP: Bezier = Bezier { x1: 0.3, y1: 0.0, x2: 0.0, y2: 1.0 };
+    pub const SNAP: Bezier = Bezier {
+        x1: 0.3,
+        y1: 0.0,
+        x2: 0.0,
+        y2: 1.0,
+    };
     /// A light overshoot.
-    pub const SPRING: Bezier = Bezier { x1: 0.2, y1: 0.9, x2: 0.25, y2: 1.18 };
+    pub const SPRING: Bezier = Bezier {
+        x1: 0.2,
+        y1: 0.9,
+        x2: 0.25,
+        y2: 1.18,
+    };
     /// The v3 default for plates and buttons: a stronger overshoot.
-    pub const BOUNCE: Bezier = Bezier { x1: 0.34, y1: 1.56, x2: 0.64, y2: 1.0 };
+    pub const BOUNCE: Bezier = Bezier {
+        x1: 0.34,
+        y1: 1.56,
+        x2: 0.64,
+        y2: 1.0,
+    };
     /// Accelerate: things leaving.
-    pub const DROP: Bezier = Bezier { x1: 0.5, y1: 0.0, x2: 0.9, y2: 0.6 };
+    pub const DROP: Bezier = Bezier {
+        x1: 0.5,
+        y1: 0.0,
+        x2: 0.9,
+        y2: 0.6,
+    };
 }
 
 /// Converts a token size to pixels at a text scale (1.0 = 100 %).
@@ -1168,7 +1291,11 @@ mod tests {
     use super::{ABYSS, GLACIER, Palette, Tone};
 
     fn linear(channel: f32) -> f32 {
-        if channel <= 0.04045 { channel / 12.92 } else { ((channel + 0.055) / 1.055).powf(2.4) }
+        if channel <= 0.04045 {
+            channel / 12.92
+        } else {
+            ((channel + 0.055) / 1.055).powf(2.4)
+        }
     }
 
     fn luminance(tone: Tone) -> f32 {
@@ -1183,17 +1310,45 @@ mod tests {
 
     /// The grounds reading text sits on (tracks, g5, carry no text).
     fn grounds(p: &Palette) -> [(&'static str, Tone); 10] {
-        [("g0", p.g0), ("g1", p.g1), ("g2", p.g2), ("g3", p.g3), ("g4", p.g4), ("plate", p.plate), ("plate2", p.plate2), ("plate3", p.plate3), ("table", p.table), ("glass", p.glass)]
+        [
+            ("g0", p.g0),
+            ("g1", p.g1),
+            ("g2", p.g2),
+            ("g3", p.g3),
+            ("g4", p.g4),
+            ("plate", p.plate),
+            ("plate2", p.plate2),
+            ("plate3", p.plate3),
+            ("table", p.table),
+            ("glass", p.glass),
+        ]
     }
 
     /// Every colour a page draws text in.
     fn text_roles(p: &Palette) -> [(&'static str, Tone); 8] {
-        [("ink0", p.ink0), ("ink1", p.ink1), ("ink2", p.ink2), ("ink3", p.ink3), ("mint", p.mint.base), ("coral", p.coral.base), ("peri", p.peri.base), ("amber", p.amber.base)]
+        [
+            ("ink0", p.ink0),
+            ("ink1", p.ink1),
+            ("ink2", p.ink2),
+            ("ink3", p.ink3),
+            ("mint", p.mint.base),
+            ("coral", p.coral.base),
+            ("peri", p.peri.base),
+            ("amber", p.amber.base),
+        ]
     }
 
     /// Every colour a page draws a meaningful mark or stroke in.
     fn mark_roles(p: &Palette) -> [(&'static str, Tone); 7] {
-        [("type", p.f_type.hue), ("callable", p.f_call.hue), ("contract", p.f_con.hue), ("value", p.f_val.hue), ("namespace", p.f_ns.hue), ("mint", p.mint.base), ("coral", p.coral.base)]
+        [
+            ("type", p.f_type.hue),
+            ("callable", p.f_call.hue),
+            ("contract", p.f_con.hue),
+            ("value", p.f_val.hue),
+            ("namespace", p.f_ns.hue),
+            ("mint", p.mint.base),
+            ("coral", p.coral.base),
+        ]
     }
 
     /// Each failing pair, spelled out, so a regression names what broke.
@@ -1202,11 +1357,19 @@ mod tests {
         for (ground, g) in grounds(p) {
             for (role, tone) in text_roles(p) {
                 let c = contrast(tone, g);
-                if c < 4.5 { out.push(format!("{theme}: text {role} on {ground} is {c:.2}:1, below 4.5")); }
+                if c < 4.5 {
+                    out.push(format!(
+                        "{theme}: text {role} on {ground} is {c:.2}:1, below 4.5"
+                    ));
+                }
             }
             for (role, tone) in mark_roles(p) {
                 let c = contrast(tone, g);
-                if c < 3.0 { out.push(format!("{theme}: mark {role} on {ground} is {c:.2}:1, below 3.0")); }
+                if c < 3.0 {
+                    out.push(format!(
+                        "{theme}: mark {role} on {ground} is {c:.2}:1, below 3.0"
+                    ));
+                }
             }
         }
         out
@@ -1224,11 +1387,20 @@ mod tests {
         for (theme, p) in [("Abyss", &ABYSS), ("Glacier", &GLACIER)] {
             let steps = [p.ink0, p.ink1, p.ink2, p.ink3].map(|ink| contrast(ink, p.g1));
             for pair in steps.windows(2) {
-                assert!(pair[0] - pair[1] >= 1.2, "{theme}: ink steps {steps:?} collapse on g1");
+                assert!(
+                    pair[0] - pair[1] >= 1.2,
+                    "{theme}: ink steps {steps:?} collapse on g1"
+                );
             }
             // ink4 draws rules and inactive ticks; reading it would fail.
-            assert!(contrast(p.ink4, p.g1) < 4.5, "{theme}: ink4 reads as text; rules must not");
-            assert!(text_roles(p).iter().all(|(_, tone)| *tone != p.ink4), "{theme}: a text role is ink4");
+            assert!(
+                contrast(p.ink4, p.g1) < 4.5,
+                "{theme}: ink4 reads as text; rules must not"
+            );
+            assert!(
+                text_roles(p).iter().all(|(_, tone)| *tone != p.ink4),
+                "{theme}: a text role is ink4"
+            );
         }
     }
 
@@ -1243,9 +1415,21 @@ mod tests {
     // ---- colour vision: Machado, Oliveira and Fernandes (2009), severity 1.0,
     // applied in linear sRGB; distance is CIE76 in L*a*b* (D65).
     const NORMAL: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-    const DEUTAN: [[f32; 3]; 3] = [[0.367_322, 0.860_646, -0.227_968], [0.280_085, 0.672_501, 0.047_413], [-0.011_820, 0.042_940, 0.968_881]];
-    const PROTAN: [[f32; 3]; 3] = [[0.152_286, 1.052_583, -0.204_868], [0.114_503, 0.786_281, 0.099_216], [-0.003_882, -0.048_116, 1.051_998]];
-    const TRITAN: [[f32; 3]; 3] = [[1.255_528, -0.076_749, -0.178_779], [-0.078_411, 0.930_809, 0.147_602], [0.004_733, 0.691_367, 0.303_900]];
+    const DEUTAN: [[f32; 3]; 3] = [
+        [0.367_322, 0.860_646, -0.227_968],
+        [0.280_085, 0.672_501, 0.047_413],
+        [-0.011_820, 0.042_940, 0.968_881],
+    ];
+    const PROTAN: [[f32; 3]; 3] = [
+        [0.152_286, 1.052_583, -0.204_868],
+        [0.114_503, 0.786_281, 0.099_216],
+        [-0.003_882, -0.048_116, 1.051_998],
+    ];
+    const TRITAN: [[f32; 3]; 3] = [
+        [1.255_528, -0.076_749, -0.178_779],
+        [-0.078_411, 0.930_809, 0.147_602],
+        [0.004_733, 0.691_367, 0.303_900],
+    ];
 
     fn lab(tone: Tone, m: &[[f32; 3]; 3]) -> [f32; 3] {
         let c = tone.rgba();
@@ -1254,8 +1438,18 @@ mod tests {
         let x = 0.4124 * s[0] + 0.3576 * s[1] + 0.1805 * s[2];
         let y = 0.2126 * s[0] + 0.7152 * s[1] + 0.0722 * s[2];
         let z = 0.0193 * s[0] + 0.1192 * s[1] + 0.9505 * s[2];
-        let f = |t: f32| if t > 0.008_856 { t.cbrt() } else { 7.787 * t + 16.0 / 116.0 };
-        [116.0 * f(y) - 16.0, 500.0 * (f(x / 0.950_47) - f(y)), 200.0 * (f(y) - f(z / 1.088_83))]
+        let f = |t: f32| {
+            if t > 0.008_856 {
+                t.cbrt()
+            } else {
+                7.787 * t + 16.0 / 116.0
+            }
+        };
+        [
+            116.0 * f(y) - 16.0,
+            500.0 * (f(x / 0.950_47) - f(y)),
+            200.0 * (f(y) - f(z / 1.088_83)),
+        ]
     }
 
     fn distance(a: Tone, b: Tone, m: &[[f32; 3]; 3]) -> f32 {
@@ -1267,15 +1461,29 @@ mod tests {
     fn types_mint_and_callables_stay_apart_for_every_colour_vision() {
         for (theme, p) in [("Abyss", &ABYSS), ("Glacier", &GLACIER)] {
             let (teal, mint, peri) = (p.f_type.hue, p.mint.base, p.f_call.hue);
-            for (vision, m, floor) in [("normal", &NORMAL, 25.0), ("deuteranopia", &DEUTAN, 25.0), ("protanopia", &PROTAN, 25.0), ("tritanopia", &TRITAN, 10.0)] {
+            for (vision, m, floor) in [
+                ("normal", &NORMAL, 25.0),
+                ("deuteranopia", &DEUTAN, 25.0),
+                ("protanopia", &PROTAN, 25.0),
+                ("tritanopia", &TRITAN, 10.0),
+            ] {
                 let tm = distance(teal, mint, m);
                 let tp = distance(teal, peri, m);
-                assert!(tm >= floor, "{theme} {vision}: type and yours are {tm:.1} apart, below {floor}");
-                assert!(tp >= 14.0, "{theme} {vision}: type and callable are {tp:.1} apart, below 14");
+                assert!(
+                    tm >= floor,
+                    "{theme} {vision}: type and yours are {tm:.1} apart, below {floor}"
+                );
+                assert!(
+                    tp >= 14.0,
+                    "{theme} {vision}: type and callable are {tp:.1} apart, below 14"
+                );
             }
             // Apart by lightness as well as hue: a hue loss never merges them.
             let (lt, lm) = (lab(teal, &NORMAL)[0], lab(mint, &NORMAL)[0]);
-            assert!((lt - lm).abs() >= 10.0, "{theme}: type L* {lt:.0} and yours L* {lm:.0} differ by under 10");
+            assert!(
+                (lt - lm).abs() >= 10.0,
+                "{theme}: type L* {lt:.0} and yours L* {lm:.0} differ by under 10"
+            );
         }
     }
 }

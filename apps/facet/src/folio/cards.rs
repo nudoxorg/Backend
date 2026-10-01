@@ -22,7 +22,8 @@ use crate::theme::ActiveFacet;
 use crate::tokens::{TypeRole, ty};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, RenderOnce, SharedString, Styled, Window, div, px,
+    App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, RenderOnce,
+    SharedString, Styled, Window, div, px,
 };
 use std::rc::Rc;
 
@@ -81,7 +82,13 @@ impl CardFacts {
 
     /// A card from a reading already made.
     #[must_use]
-    pub fn from_reading(name: &str, kind: Option<Kind>, lang: Lang, reading: &Reading, doc: Option<&str>) -> Self {
+    pub fn from_reading(
+        name: &str,
+        kind: Option<Kind>,
+        lang: Lang,
+        reading: &Reading,
+        doc: Option<&str>,
+    ) -> Self {
         let kind = kind.unwrap_or(match reading.shape {
             Shape::Function => Kind::Function,
             Shape::Macro => Kind::Macro,
@@ -98,7 +105,10 @@ impl CardFacts {
             name: name.to_owned().into(),
             kind,
             word: reading.shape.word(lang).into(),
-            doc: doc.map(str::trim).filter(|doc| !doc.is_empty()).map(|doc| SharedString::from(doc.to_owned())),
+            doc: doc
+                .map(str::trim)
+                .filter(|doc| !doc.is_empty())
+                .map(|doc| SharedString::from(doc.to_owned())),
             badges: reading.badges.clone(),
             yours: Use::Elsewhere,
             change: None,
@@ -121,13 +131,31 @@ impl CardFacts {
 }
 
 /// The card's name.
-const NAME: TypeRole = TypeRole { weight: 520.0, size: 14.0, line: 20.0, ..ty::MONO_ROW };
+const NAME: TypeRole = TypeRole {
+    weight: 520.0,
+    size: 14.0,
+    line: 20.0,
+    ..ty::MONO_ROW
+};
 /// The kind word.
-const KIND: TypeRole = TypeRole { size: 11.5, line: 16.0, ..ty::SMALL };
+const KIND: TypeRole = TypeRole {
+    size: 11.5,
+    line: 16.0,
+    ..ty::SMALL
+};
 /// The author's sentence.
-const DOC: TypeRole = TypeRole { size: 13.5, line: 18.5, ..ty::CAPTION };
+const DOC: TypeRole = TypeRole {
+    size: 13.5,
+    line: 18.5,
+    ..ty::CAPTION
+};
 /// The chip that says yours.
-const YOURS: TypeRole = TypeRole { weight: 560.0, size: 11.0, line: 14.0, ..ty::SMALL };
+const YOURS: TypeRole = TypeRole {
+    weight: 560.0,
+    size: 11.0,
+    line: 14.0,
+    ..ty::SMALL
+};
 
 /// One symbol card (see [`symbol_card`]).
 #[derive(IntoElement)]
@@ -145,7 +173,11 @@ pub struct SymbolCard {
 
 /// A card for `facts` in a column of `measure`, remembering its hover under `id`.
 #[must_use]
-pub fn symbol_card(id: impl Into<ElementId>, facts: Rc<CardFacts>, measure: &Measure) -> SymbolCard {
+pub fn symbol_card(
+    id: impl Into<ElementId>,
+    facts: Rc<CardFacts>,
+    measure: &Measure,
+) -> SymbolCard {
     SymbolCard {
         id: id.into(),
         facts,
@@ -214,8 +246,24 @@ impl RenderOnce for SymbolCard {
         let facts = self.facts;
         let touch = Touch::read(&self.id, crate::controls::Look::LIVE, true, window, cx);
         let motion = touch.motion.clone();
-        let hover = motion.animate(track(&self.id, "hover"), if touch.hovered || self.lit == Pick::Lit { 1.0 } else { 0.0 }, spec::LIFT, window, cx);
-        let focus = motion.animate(track(&self.id, "focus"), if touch.focused { 1.0 } else { 0.0 }, spec::HOVER, window, cx);
+        let hover = motion.animate(
+            track(&self.id, "hover"),
+            if touch.hovered || self.lit == Pick::Lit {
+                1.0
+            } else {
+                0.0
+            },
+            spec::LIFT,
+            window,
+            cx,
+        );
+        let focus = motion.animate(
+            track(&self.id, "focus"),
+            if touch.focused { 1.0 } else { 0.0 },
+            spec::HOVER,
+            window,
+            cx,
+        );
 
         let rest = match facts.change {
             Some(Change::Gone) => Edge::of(Bevel::Coral, palette),
@@ -228,7 +276,9 @@ impl RenderOnce for SymbolCard {
                 edge
             }
         };
-        let edge = rest.mix(Edge::of(Bevel::Peri, palette), hover * 0.8).mix(Edge::of(Bevel::Focus, palette), focus);
+        let edge = rest
+            .mix(Edge::of(Bevel::Peri, palette), hover * 0.8)
+            .mix(Edge::of(Bevel::Focus, palette), focus);
         let fill = mix(palette.plate.into(), palette.plate2.into(), hover);
         let name_ink: Hsla = match facts.change {
             Some(Change::Gone) => palette.coral.base.into(),
@@ -236,7 +286,13 @@ impl RenderOnce for SymbolCard {
             _ => palette.ink0.into(),
         };
 
-        let name = ellipsis(key(&self.id, "name"), facts.name.clone(), NAME, name_ink, &measure);
+        let name = ellipsis(
+            key(&self.id, "name"),
+            facts.name.clone(),
+            NAME,
+            name_ink,
+            &measure,
+        );
         let mut head = div()
             .flex()
             .items_center()
@@ -244,7 +300,10 @@ impl RenderOnce for SymbolCard {
             .min_w_0()
             .child({
                 let arrived = arrival(self.carried);
-                let mark = div().opacity(arrived).child(kind_mark(facts.kind, KindSize::Sm, palette));
+                let mark =
+                    div()
+                        .opacity(arrived)
+                        .child(kind_mark(facts.kind, KindSize::Sm, palette));
                 match &self.mark {
                     Some((marks, index)) => flight_mark(marks, *index, mark).into_any_element(),
                     None => mark.into_any_element(),
@@ -252,24 +311,62 @@ impl RenderOnce for SymbolCard {
             })
             .child(div().flex_1().min_w_0().flex().child(name));
         if facts.yours.is_yours() {
-            head = head.child(one(key(&self.id, "yours"), "you use it", YOURS, palette.mint.base, &measure));
+            head = head.child(one(
+                key(&self.id, "yours"),
+                "you use it",
+                YOURS,
+                palette.mint.base,
+                &measure,
+            ));
         }
-        head = head.child(one(key(&self.id, "kind"), facts.word.clone(), KIND, palette.ink3, &measure));
+        head = head.child(one(
+            key(&self.id, "kind"),
+            facts.word.clone(),
+            KIND,
+            palette.ink3,
+            &measure,
+        ));
 
         let doc = match &facts.doc {
-            Some(doc) => wrap(key(&self.id, "doc"), doc.clone(), DOC, palette.ink2, &measure, Some(2)).into_any_element(),
+            Some(doc) => wrap(
+                key(&self.id, "doc"),
+                doc.clone(),
+                DOC,
+                palette.ink2,
+                &measure,
+                Some(2),
+            )
+            .into_any_element(),
             None => div()
                 .flex()
                 .items_center()
                 .gap(measure.space(Space::Snug))
-                .child(crate::marks::badges::glyph(Glyph::Undoc, 12.0 * scale, palette.ink3))
-                .child(one(key(&self.id, "doc"), "undocumented", DOC, palette.ink3, &measure))
+                .child(crate::marks::badges::glyph(
+                    Glyph::Undoc,
+                    12.0 * scale,
+                    palette.ink3,
+                ))
+                .child(one(
+                    key(&self.id, "doc"),
+                    "undocumented",
+                    DOC,
+                    palette.ink3,
+                    &measure,
+                ))
                 .into_any_element(),
         };
 
-        let mut badges = div().mt_auto().flex().flex_wrap().gap(measure.space(Space::Tight));
+        let mut badges = div()
+            .mt_auto()
+            .flex()
+            .flex_wrap()
+            .gap(measure.space(Space::Tight));
         for (index, facts_badge) in facts.badges.iter().enumerate() {
-            badges = badges.child(badge(key(&self.id, format!("badge-{index}")), facts_badge, &measure));
+            badges = badges.child(badge(
+                key(&self.id, format!("badge-{index}")),
+                facts_badge,
+                &measure,
+            ));
         }
         if let Some(change) = facts.change.filter(|_| !self.at.is_empty()) {
             let (glyph, ink) = match change {
@@ -285,7 +382,16 @@ impl RenderOnce for SymbolCard {
                 Change::New => "It is not in your pin: this release added it.",
                 Change::Absent => "The release you are reading came before it.",
             };
-            badges = badges.child(badge(key(&self.id, "change"), &BadgeFacts { glyph, word: word.into(), tip: tip.into(), ink }, &measure));
+            badges = badges.child(badge(
+                key(&self.id, "change"),
+                &BadgeFacts {
+                    glyph,
+                    word: word.into(),
+                    tip: tip.into(),
+                    ink,
+                },
+                &measure,
+            ));
         }
 
         let body = cut()
@@ -307,7 +413,16 @@ impl RenderOnce for SymbolCard {
             .child(badges)
             .id(self.id.clone());
         let body = wire(body, &touch, self.on_open);
-        let shown = if facts.change == Some(Change::Absent) { 0.55 } else { 1.0 };
-        hover_zone(body.opacity(shown * arrival(self.carried).max(0.0001)), &touch, 9.0 * scale, true)
+        let shown = if facts.change == Some(Change::Absent) {
+            0.55
+        } else {
+            1.0
+        };
+        hover_zone(
+            body.opacity(shown * arrival(self.carried).max(0.0001)),
+            &touch,
+            9.0 * scale,
+            true,
+        )
     }
 }

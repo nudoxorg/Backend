@@ -5,7 +5,7 @@
 use crate::fonts;
 use crate::tokens::TypeRole;
 use gpui::{
-    App, Font, FontStyle, FontWeight, Hsla, SharedString, ShapedLine, TextAlign, TextRun, Window,
+    App, Font, FontStyle, FontWeight, Hsla, ShapedLine, SharedString, TextAlign, TextRun, Window,
     point, px,
 };
 
@@ -88,7 +88,12 @@ pub fn font(role: TypeRole) -> Font {
 
 /// Shapes `text` (one line) in `role` (already resolved by a `Measure`).
 #[must_use]
-pub fn shape(text: impl Into<SharedString>, role: TypeRole, color: Hsla, window: &Window) -> Shaped {
+pub fn shape(
+    text: impl Into<SharedString>,
+    role: TypeRole,
+    color: Hsla,
+    window: &Window,
+) -> Shaped {
     let text: SharedString = text.into();
     let text = if text.contains('\n') {
         SharedString::from(text.replace('\n', " "))
@@ -113,13 +118,7 @@ pub fn shape(text: impl Into<SharedString>, role: TypeRole, color: Hsla, window:
 
 /// Shapes `text`, cutting it with an ellipsis so it fits `max` px.
 #[must_use]
-pub fn shape_fit(
-    text: &str,
-    role: TypeRole,
-    color: Hsla,
-    max: f32,
-    window: &Window,
-) -> Shaped {
+pub fn shape_fit(text: &str, role: TypeRole, color: Hsla, max: f32, window: &Window) -> Shaped {
     let full = shape(text.to_owned(), role, color, window);
     if full.width() <= max || text.is_empty() {
         return full;

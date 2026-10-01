@@ -19,8 +19,7 @@ const AUTHORITY_SOURCE: &str = include_str!("doclet/AuthorityImage.java");
 const EXTRACTOR_SOURCE: &str = include_str!("doclet/CompilerExtractor.java");
 
 /// Versioned identity of the isolated JDK child-process environment.
-pub const JAVA_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1: &str =
-    "java-package-child-environment.v1";
+pub const JAVA_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1: &str = "java-package-child-environment.v1";
 
 static DIRECTORY_SERIAL: AtomicUsize = AtomicUsize::new(0);
 
@@ -828,10 +827,7 @@ App.java:1: error: package com.google.common.base does not exist
 
 #[cfg(test)]
 mod toolchain_tests {
-    use std::{
-        path::PathBuf,
-        process::Command,
-    };
+    use std::{path::PathBuf, process::Command};
 
     use super::{HarnessError, JdkToolchain};
 

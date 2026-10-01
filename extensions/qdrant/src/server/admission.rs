@@ -4,7 +4,9 @@
 //! Bounded point/query admission and prepared request identities.
 
 use arrayvec::ArrayVec;
-use backend_semantic::graph_vector::{ValidatedVectorSegment, VectorAuthority, VectorSegmentDescriptor};
+use backend_semantic::graph_vector::{
+    ValidatedVectorSegment, VectorAuthority, VectorSegmentDescriptor,
+};
 
 use super::{
     contract::{PhysicalPointId, QdrantAdmissionError, QdrantDataKey, QdrantError},

@@ -162,10 +162,7 @@ fn owner_name(lane: &Lane<'_>, owner: backend_semantic::ir::EntityId) -> Result<
         .ok_or_else(|| format!("entity {} name atom absent", owner.raw))
 }
 
-fn target_entity_name(
-    lane: &Lane<'_>,
-    target: EntityId,
-) -> Result<Vec<u8>, String> {
+fn target_entity_name(lane: &Lane<'_>, target: EntityId) -> Result<Vec<u8>, String> {
     let atom = lane
         .view
         .entities()
@@ -234,9 +231,7 @@ fn local_set_note_method_calls<'a>(
         .collect()
 }
 
-fn local_method_calls<'a>(
-    lane: &'a Lane<'a>,
-) -> Vec<&'a backend_semantic::ir::Occurrence<'a>> {
+fn local_method_calls<'a>(lane: &'a Lane<'a>) -> Vec<&'a backend_semantic::ir::Occurrence<'a>> {
     lane.occurrences
         .iter()
         .map(|row| &row.occurrence)
@@ -256,8 +251,7 @@ fn type_in_lib_method_in_service_call_is_namespace() -> Result<(), String> {
     }
 
     let root = project_root()?;
-    fs::write(root.join("service.go"), SERVICE_METHOD_ONLY)
-        .map_err(|error| error.to_string())?;
+    fs::write(root.join("service.go"), SERVICE_METHOD_ONLY).map_err(|error| error.to_string())?;
     fs::write(root.join("lib.go"), LIB_TYPE_AND_CALL).map_err(|error| error.to_string())?;
     let bytes = compile_source(&root, "lib.go", LIB_TYPE_AND_CALL)?;
     let _ = fs::remove_dir_all(&root);

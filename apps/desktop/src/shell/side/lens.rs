@@ -93,10 +93,18 @@ mod tests {
     #[test]
     fn every_lens_has_its_own_chord_letter_and_element_id() {
         let letters: Vec<char> = Lens::ALL.iter().map(|lens| lens.chord()).collect();
-        assert_eq!(letters, ['c', 'v', 'r', 'u'], "G C / G V / G R / G U, in strip order");
+        assert_eq!(
+            letters,
+            ['c', 'v', 'r', 'u'],
+            "G C / G V / G R / G U, in strip order"
+        );
         for lens in Lens::ALL {
             assert_eq!(Lens::from_chord(lens.chord()), Some(lens));
-            assert_eq!(Lens::from_chord(lens.chord().to_ascii_uppercase()), Some(lens), "shifted letters chord too");
+            assert_eq!(
+                Lens::from_chord(lens.chord().to_ascii_uppercase()),
+                Some(lens),
+                "shifted letters chord too"
+            );
         }
         assert_eq!(Lens::from_chord('x'), None);
         let keys: std::collections::HashSet<_> = Lens::ALL.iter().map(|lens| lens.key()).collect();
@@ -105,7 +113,15 @@ mod tests {
 
     #[test]
     fn counts_are_read_by_lens() {
-        let counts = Counts { contents: Some(29), versions: Some(128), rests_on: None, used_by: Some(4) };
-        assert_eq!(Lens::ALL.map(|lens| counts.of(lens)), [Some(29), Some(128), None, Some(4)]);
+        let counts = Counts {
+            contents: Some(29),
+            versions: Some(128),
+            rests_on: None,
+            used_by: Some(4),
+        };
+        assert_eq!(
+            Lens::ALL.map(|lens| counts.of(lens)),
+            [Some(29), Some(128), None, Some(4)]
+        );
     }
 }

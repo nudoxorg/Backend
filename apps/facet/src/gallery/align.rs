@@ -540,13 +540,19 @@ pub fn analyze(frames: &[Observed], tolerance: Tolerance) -> Alignment {
                 .iter()
                 .position(|at| !at.sample.live)
                 .map(|offset| index + offset)
-                .or_else(|| sequence.get(end).filter(|next| at_rest(next.sample)).map(|_| end));
+                .or_else(|| {
+                    sequence
+                        .get(end)
+                        .filter(|next| at_rest(next.sample))
+                        .map(|_| end)
+                });
             let settled = settled_at.map(|at| &sequence[at]);
             // A track publishes a sample every frame it is drawn. Frames
             // between its last live sample and its rest in which it published
             // nothing are frames it was not on screen (its page was away):
             // when it settled then, nobody saw it, so it cannot be late.
-            let unseen = settled_at.is_some_and(|at| at > index && sequence[at].frame > sequence[at - 1].frame + 1);
+            let unseen = settled_at
+                .is_some_and(|at| at > index && sequence[at].frame > sequence[at - 1].frame + 1);
             let frame_gap = |at: &At<'_>| {
                 at.frame
                     .checked_sub(1)
@@ -1317,7 +1323,13 @@ mod settle_canaries {
                     vec![TrackSample {
                         key: "card-hover".into(),
                         kind: TrackKind::Spring,
-                        value: if !started { 0.0 } else if live { (at_ms - 16) as f32 / span } else { 1.0 },
+                        value: if !started {
+                            0.0
+                        } else if live {
+                            (at_ms - 16) as f32 / span
+                        } else {
+                            1.0
+                        },
                         target: if started { 1.0 } else { 0.0 },
                         velocity: if live { 1000.0 / span } else { 0.0 },
                         started_ms: if started { 16.0 } else { at_ms as f64 },
@@ -1340,10 +1352,17 @@ mod settle_canaries {
                         input_cpu: Duration::ZERO,
                         input_events: 0,
                         input_max: Duration::ZERO,
-                        viewport: Viewport { width: 1440, height: 900, scale: 1 },
+                        viewport: Viewport {
+                            width: 1440,
+                            height: 900,
+                            scale: 1,
+                        },
                         captured: false,
                     },
-                    ledger: Ledger { tracks, ..Ledger::default() },
+                    ledger: Ledger {
+                        tracks,
+                        ..Ledger::default()
+                    },
                     events: usize::from(at_ms == 16),
                     state: None,
                 }
@@ -1356,12 +1375,25 @@ mod settle_canaries {
     /// glow on screen and live the whole time is late, and is named.
     #[test]
     fn a_track_that_settled_off_screen_is_not_late_and_one_on_screen_is() {
-        let away = analyze(&frames(|at| at <= 32 || at >= 288, 288), Tolerance::default());
-        assert_eq!(away.of(Check::Settle).count(), 0, "settled while its page was away: {:?}", away.findings);
-        assert!(away.stats[&Check::Settle].skipped >= 1, "and it is counted as not judged");
+        let away = analyze(
+            &frames(|at| at <= 32 || at >= 288, 288),
+            Tolerance::default(),
+        );
+        assert_eq!(
+            away.of(Check::Settle).count(),
+            0,
+            "settled while its page was away: {:?}",
+            away.findings
+        );
+        assert!(
+            away.stats[&Check::Settle].skipped >= 1,
+            "and it is counted as not judged"
+        );
         let seen = analyze(&frames(|_| true, 288), Tolerance::default());
         assert!(
-            seen.of(Check::Settle).any(|finding| finding.detail.starts_with("settled 272 ms after it started")),
+            seen.of(Check::Settle).any(|finding| finding
+                .detail
+                .starts_with("settled 272 ms after it started")),
             "on screen and live for 272 ms of a 64 ms budget is late: {:?}",
             seen.findings
         );

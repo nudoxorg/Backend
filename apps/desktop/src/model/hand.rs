@@ -62,7 +62,9 @@ impl Hand {
     /// A hand of `held` (the first [`Self::MAX`]).
     #[must_use]
     pub fn of(held: impl IntoIterator<Item = Held>) -> Self {
-        Self { held: held.into_iter().take(Self::MAX).collect() }
+        Self {
+            held: held.into_iter().take(Self::MAX).collect(),
+        }
     }
 
     /// What it holds, in the order it was held.
@@ -93,7 +95,11 @@ impl Hand {
             return Self { held: held.into() };
         }
         if held.len() >= Self::MAX
-            && let Some(oldest) = held.iter().enumerate().min_by_key(|(_, card)| card.touched_at).map(|(n, _)| n)
+            && let Some(oldest) = held
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, card)| card.touched_at)
+                .map(|(n, _)| n)
         {
             held.remove(oldest);
         }
@@ -104,7 +110,14 @@ impl Hand {
     /// Lets go of what matches `item`.
     #[must_use]
     pub fn let_go(&self, item: &Held) -> Self {
-        Self { held: self.held.iter().filter(|card| !card.same(item)).cloned().collect() }
+        Self {
+            held: self
+                .held
+                .iter()
+                .filter(|card| !card.same(item))
+                .cloned()
+                .collect(),
+        }
     }
 
     /// Marks `item` touched at `at`.
@@ -139,7 +152,10 @@ mod tests {
     fn card(name: &str, at: u64) -> Held {
         Held {
             package: PackageId::new("/fixture/present").expect("package"),
-            id: Some(Coordinate::new(&format!("/fixture/present::glyph.rs:138::{name}")).expect("coordinate")),
+            id: Some(
+                Coordinate::new(&format!("/fixture/present::glyph.rs:138::{name}"))
+                    .expect("coordinate"),
+            ),
             why: HeldWhy::Pin,
             held_at: at,
             touched_at: at,
@@ -155,17 +171,32 @@ mod tests {
         // Touch the oldest: "b" is now the least recently touched.
         hand = hand.touch(&card("a", 0), 100);
         hand = hand.hold(card("f", 200));
-        let names: Vec<&str> = hand.held().iter().map(|c| c.id.as_ref().map_or("", |id| id.as_str().rsplit("::").next().unwrap_or(""))).collect();
+        let names: Vec<&str> = hand
+            .held()
+            .iter()
+            .map(|c| {
+                c.id.as_ref()
+                    .map_or("", |id| id.as_str().rsplit("::").next().unwrap_or(""))
+            })
+            .collect();
         assert_eq!(names, ["a", "c", "d", "e", "f"]);
     }
 
     #[test]
     fn holding_what_it_holds_touches_it_in_place() {
-        let hand = Hand::default().hold(card("a", 0)).hold(card("b", 5)).hold(card("a", 50));
+        let hand = Hand::default()
+            .hold(card("a", 0))
+            .hold(card("b", 5))
+            .hold(card("a", 50));
         assert_eq!(hand.held().len(), 2);
         assert_eq!(hand.held()[0].touched_at, 50);
         assert!(!hollow(&hand.held()[0], 50 + HOLLOW_MS));
         assert!(hollow(&hand.held()[1], 50 + HOLLOW_MS));
-        assert!(hand.let_go(&card("a", 0)).held().iter().all(|c| !c.same(&card("a", 0))));
+        assert!(
+            hand.let_go(&card("a", 0))
+                .held()
+                .iter()
+                .all(|c| !c.same(&card("a", 0)))
+        );
     }
 }

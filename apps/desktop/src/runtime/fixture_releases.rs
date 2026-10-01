@@ -31,7 +31,9 @@ impl Global for Releases {}
 
 impl Releases {
     fn parsing() -> Self {
-        Self(Memo::new(NonZeroUsize::MIN, |Fixture::Releases| facet::data::release::fixture::crates()))
+        Self(Memo::new(NonZeroUsize::MIN, |Fixture::Releases| {
+            facet::data::release::fixture::crates()
+        }))
     }
 }
 
@@ -45,18 +47,33 @@ pub(crate) fn release_data(package: &PackageRef, cx: &mut App) -> Option<&'stati
 
 /// [`release_data`] for the view `cx` belongs to: only it redraws when the
 /// fixture lands.
-#[cfg_attr(not(test), allow(dead_code, reason = "the shell's lens callers move to it (MIGRATE.md, R-Open3); delete this allow with that move"))]
-pub(crate) fn release_data_for<T: 'static>(package: &PackageRef, cx: &mut Context<T>) -> Option<&'static Crate> {
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "the shell's lens callers move to it (MIGRATE.md, R-Open3); delete this allow with that move"
+    )
+)]
+pub(crate) fn release_data_for<T: 'static>(
+    package: &PackageRef,
+    cx: &mut Context<T>,
+) -> Option<&'static Crate> {
     let asker = Asker::View(cx.entity_id());
     release_data_asked_by(package, asker, cx)
 }
 
-fn release_data_asked_by(package: &PackageRef, asker: Asker, cx: &mut App) -> Option<&'static Crate> {
+fn release_data_asked_by(
+    package: &PackageRef,
+    asker: Asker,
+    cx: &mut App,
+) -> Option<&'static Crate> {
     if cx.try_global::<Releases>().is_none() {
         cx.set_global(Releases::parsing());
     }
     let memo = cx.global::<Releases>().0.clone();
-    let Answer::Ready(crates) = memo.ask(&Fixture::Releases, asker, cx) else { return None };
+    let Answer::Ready(crates) = memo.ask(&Fixture::Releases, asker, cx) else {
+        return None;
+    };
     if package.is_local() {
         return None;
     }
@@ -71,7 +88,9 @@ pub(crate) fn spelled(release: &Crate, version: &str) -> Option<gpui::SharedStri
     release
         .versions
         .iter()
-        .find(|known| known.v.as_ref() == version || facet::data::release::short(&known.v) == version)
+        .find(|known| {
+            known.v.as_ref() == version || facet::data::release::short(&known.v) == version
+        })
         .map(|known| known.v.clone())
 }
 
@@ -79,7 +98,9 @@ pub(crate) fn spelled(release: &Crate, version: &str) -> Option<gpui::SharedStri
 #[cfg(test)]
 pub(crate) fn install(cx: &mut App) {
     let releases = Releases::parsing();
-    releases.0.seed(Fixture::Releases, facet::data::release::fixture::crates());
+    releases
+        .0
+        .seed(Fixture::Releases, facet::data::release::fixture::crates());
     cx.set_global(releases);
 }
 
@@ -87,7 +108,10 @@ pub(crate) fn install(cx: &mut App) {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
-    use gpui::{AppContext as _, Entity, IntoElement, ParentElement, Render, StyleRefinement, TestAppContext, VisualTestContext, Window, div};
+    use gpui::{
+        AppContext as _, Entity, IntoElement, ParentElement, Render, StyleRefinement,
+        TestAppContext, VisualTestContext, Window, div,
+    };
     use std::cell::Cell;
     use std::rc::Rc;
 
@@ -118,12 +142,17 @@ mod tests {
     }
 
     #[gpui::test]
-    fn the_fixture_lands_in_the_lens_that_asked_and_the_package_it_knows_has_its_releases(cx: &mut TestAppContext) {
+    fn the_fixture_lands_in_the_lens_that_asked_and_the_package_it_knows_has_its_releases(
+        cx: &mut TestAppContext,
+    ) {
         let (renders, knows) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(false)));
         let (counted, seen) = (Rc::clone(&renders), Rc::clone(&knows));
         let window = cx.update(|cx| {
             cx.open_window(gpui::WindowOptions::default(), move |_, cx| {
-                let child = cx.new(|_| Lens { renders: counted, knows: seen });
+                let child = cx.new(|_| Lens {
+                    renders: counted,
+                    knows: seen,
+                });
                 cx.new(|_| Frame { child })
             })
             .expect("window")
@@ -135,7 +164,18 @@ mod tests {
             visual.update(|window, cx| window.draw(cx).clear(cx));
         }
         assert!(knows.get(), "the fixture landed, and toml is in it");
-        assert_eq!(renders.get(), 2, "the lens drew twice: once before the fixture, once with it");
-        assert!(cx.update(|cx| release_data(&PackageRef::parse("pkg:cargo/not-in-the-fixture@1.0.0").expect("a package"), cx)).is_none(), "a package outside the fixture has no releases");
+        assert_eq!(
+            renders.get(),
+            2,
+            "the lens drew twice: once before the fixture, once with it"
+        );
+        assert!(
+            cx.update(|cx| release_data(
+                &PackageRef::parse("pkg:cargo/not-in-the-fixture@1.0.0").expect("a package"),
+                cx
+            ))
+            .is_none(),
+            "a package outside the fixture has no releases"
+        );
     }
 }

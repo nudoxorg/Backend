@@ -20,10 +20,12 @@ use backend_semantic::ir::{
 use backend_semantic::vocabulary::{LanguageProfile, PythonVersion, Stage};
 use thiserror::Error;
 
-const TYPE_ALIAS_SOURCE: &[u8] = b"class Plain:\n    pass\n\ntype Box = Plain\n\ndef f(x: Box) -> Box:\n    pass\n";
+const TYPE_ALIAS_SOURCE: &[u8] =
+    b"class Plain:\n    pass\n\ntype Box = Plain\n\ndef f(x: Box) -> Box:\n    pass\n";
 const AMBIGUOUS_IMPORT_SOURCE: &[u8] =
     b"from a import Foo\nfrom b import Foo\n\ndef f(x: Foo) -> Foo:\n    pass\n";
-const EXTERNAL_IMPORT_SOURCE: &[u8] = b"from pathlib import Path\n\ndef f(x: Path) -> Path:\n    pass\n";
+const EXTERNAL_IMPORT_SOURCE: &[u8] =
+    b"from pathlib import Path\n\ndef f(x: Path) -> Path:\n    pass\n";
 
 #[derive(Debug, Error)]
 enum TestError {
@@ -142,7 +144,10 @@ fn owned_row(lane: &Lane<'_>, owner: usize) -> Result<usize, TestError> {
         .ok_or(TestError::Falsified("entity type row absent"))
 }
 
-fn parameter_type<'a>(lane: &'a Lane<'a>, name: &[u8]) -> Result<&'a DecodedTypeFact<'a>, TestError> {
+fn parameter_type<'a>(
+    lane: &'a Lane<'a>,
+    name: &[u8],
+) -> Result<&'a DecodedTypeFact<'a>, TestError> {
     let owner = entity_ordinal(lane, name, EntityKind::Parameter)?;
     let row = owned_row(lane, owner)?;
     Ok(&lane.types[row])
@@ -190,7 +195,9 @@ fn ambiguous_import_stays_unresolved() -> Result<(), TestError> {
     let lane = lane_of(&bytes)?;
     let param = parameter_type(&lane, b"x")?;
     if nominal_target(param)?.is_some() {
-        return Err(TestError::Falsified("ambiguous Foo must not become nominal"));
+        return Err(TestError::Falsified(
+            "ambiguous Foo must not become nominal",
+        ));
     }
     let reason = unknown_reason(param).ok_or(TestError::Falsified("Foo is not unknown"))?;
     if reason == TypeReason::UnresolvedExternal {

@@ -25,8 +25,9 @@ use std::sync::LazyLock;
 const JSON: &str = include_str!("fixture.json");
 
 /// The fixture, parsed once.
-pub static FIXTURE: LazyLock<Fixture> =
-    LazyLock::new(|| serde_json::from_str(JSON).unwrap_or_else(|error| panic!("marks fixture.json: {error}")));
+pub static FIXTURE: LazyLock<Fixture> = LazyLock::new(|| {
+    serde_json::from_str(JSON).unwrap_or_else(|error| panic!("marks fixture.json: {error}"))
+});
 
 /// The whole fixture.
 #[derive(Debug, Deserialize)]
@@ -167,7 +168,10 @@ struct InTreeJson {
 /// The package `name` (panics on a fixture typo: a scene bug).
 #[must_use]
 pub fn package(name: &str) -> &'static Package {
-    FIXTURE.packages.get(name).unwrap_or_else(|| panic!("no package {name} in the marks fixture"))
+    FIXTURE
+        .packages
+        .get(name)
+        .unwrap_or_else(|| panic!("no package {name} in the marks fixture"))
 }
 
 /// The ecosystem facts of `name`.
@@ -180,7 +184,9 @@ pub fn eco(name: &str) -> EcoFacts {
         facts.local = Some(p.path.clone().unwrap_or_default().into());
     }
     if eco == Eco::Cpp {
-        facts.say = Some("No registry to install from: it is header-only, so the include is the install.".into());
+        facts.say = Some(
+            "No registry to install from: it is header-only, so the include is the install.".into(),
+        );
     }
     facts
 }
@@ -221,7 +227,10 @@ pub fn named_license(name: &str) -> LicenseFacts {
         Some(serde_json::Value::String(spdx)) => license(Some(spdx), Some(name)),
         Some(serde_json::Value::Object(file)) => {
             let mut facts = license(None, Some(name));
-            facts.file = file.get("file").and_then(serde_json::Value::as_str).map(|f| f.to_owned().into());
+            facts.file = file
+                .get("file")
+                .and_then(serde_json::Value::as_str)
+                .map(|f| f.to_owned().into());
             facts
         }
         _ => panic!("no license {name} in the marks fixture"),
@@ -234,9 +243,25 @@ pub fn version(name: &str) -> VersionFacts {
     let p = package(name);
     VersionFacts {
         name: p.name.clone().into(),
-        releases: p.releases.iter().map(|(v, at, yanked)| ReleaseFact::new(v.clone(), at.as_deref(), *yanked)).collect(),
-        pin: if p.local { p.version.clone() } else { p.pin.clone() },
-        also: p.also.iter().map(|a| Also { v: a.v.clone(), via: a.via.clone(), yours: a.yours.clone() }).collect(),
+        releases: p
+            .releases
+            .iter()
+            .map(|(v, at, yanked)| ReleaseFact::new(v.clone(), at.as_deref(), *yanked))
+            .collect(),
+        pin: if p.local {
+            p.version.clone()
+        } else {
+            p.pin.clone()
+        },
+        also: p
+            .also
+            .iter()
+            .map(|a| Also {
+                v: a.v.clone(),
+                via: a.via.clone(),
+                yours: a.yours.clone(),
+            })
+            .collect(),
         yours: p.your_users.clone(),
         pin_via: p.pin_via.clone(),
         measured: p.measured.as_ref().map(|m| Measured {
@@ -246,14 +271,17 @@ pub fn version(name: &str) -> VersionFacts {
                 .diffs
                 .iter()
                 .map(|(v, d)| {
-                    (v.clone(), Diff {
-                        added: d.added.unwrap_or(0),
-                        removed: d.removed.unwrap_or(0),
-                        changed: d.changed.unwrap_or(0),
-                        your_sites_changed: d.your_sites_changed.unwrap_or(0),
-                        your_sites_touched: d.your_sites_touched.unwrap_or(0),
-                        respelled: d.your_items_respelled.clone().unwrap_or_default(),
-                    })
+                    (
+                        v.clone(),
+                        Diff {
+                            added: d.added.unwrap_or(0),
+                            removed: d.removed.unwrap_or(0),
+                            changed: d.changed.unwrap_or(0),
+                            your_sites_changed: d.your_sites_changed.unwrap_or(0),
+                            your_sites_touched: d.your_sites_touched.unwrap_or(0),
+                            respelled: d.your_items_respelled.clone().unwrap_or_default(),
+                        },
+                    )
                 })
                 .collect(),
         }),

@@ -11,8 +11,10 @@ use backend_engine::driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile,
 };
+use backend_frontend_rust::legacy::{
+    RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
+};
 use backend_semantic::ir::{EntityKind, FragmentView};
-use backend_frontend_rust::legacy::{RustFeatureControl, RustProject, RustToolchain, SourceByteLimit};
 use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 use thiserror::Error;
 

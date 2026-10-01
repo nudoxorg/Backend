@@ -96,8 +96,8 @@ macro_rules! crate_root {
 
             #[cfg(all(feature = "std", no_target_has_atomic, not(no_std_atomic)))]
             pub use std::sync::atomic::{
-                AtomicBool, AtomicI16, AtomicI32, AtomicI8, AtomicIsize, AtomicU16, AtomicU32,
-                AtomicU8, AtomicUsize, Ordering,
+                AtomicBool, AtomicI8, AtomicI16, AtomicI32, AtomicIsize, AtomicU8, AtomicU16,
+                AtomicU32, AtomicUsize, Ordering,
             };
             #[cfg(all(feature = "std", no_target_has_atomic, not(no_std_atomic64)))]
             pub use std::sync::atomic::{AtomicI64, AtomicU64};

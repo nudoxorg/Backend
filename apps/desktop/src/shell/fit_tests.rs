@@ -14,7 +14,9 @@
 use super::root::Shell;
 use super::tests::{Rig, page_route, rig};
 use crate::core::LocalProjectId;
-use crate::navigation::{BrowseRoute, Intent, OrbitRoute, PackageLane, PackageRoute, Route, SettingsPage};
+use crate::navigation::{
+    BrowseRoute, Intent, OrbitRoute, PackageLane, PackageRoute, Route, SettingsPage,
+};
 use facet::probe::rules::{overlap, stranded, visible_bounds};
 use facet::probe::{BoundsSample, Ledger};
 use gpui::{Modifiers, TestAppContext, point, px, size};
@@ -57,7 +59,11 @@ pub(crate) fn findings(ledger: &Ledger, width: f32, height: f32) -> Vec<Finding>
     // `graph-test-*` records are the jump bar's test-only second publication of
     // a name the `text:` record already carries (`titlebar.rs`): the same
     // words at the same box, not a second text on screen.
-    let texts = ledger.texts.iter().filter(|text| !text.key.starts_with("graph-test-")).collect::<Vec<_>>();
+    let texts = ledger
+        .texts
+        .iter()
+        .filter(|text| !text.key.starts_with("graph-test-"))
+        .collect::<Vec<_>>();
     for text in &texts {
         if text.content.trim().is_empty() {
             continue;
@@ -67,7 +73,12 @@ pub(crate) fn findings(ledger: &Ledger, width: f32, height: f32) -> Vec<Finding>
                 rule: "clip",
                 what: format!(
                     "`{}` needs {:.0} px ({:?}, widest word {:.0}) in a {:.0} px box [{}]",
-                    text.content, text.natural_width, text.overflow, text.min_width, text.bounds.width, text.key
+                    text.content,
+                    text.natural_width,
+                    text.overflow,
+                    text.min_width,
+                    text.bounds.width,
+                    text.key
                 ),
             });
         }
@@ -101,14 +112,20 @@ pub(crate) fn findings(ledger: &Ledger, width: f32, height: f32) -> Vec<Finding>
             if a.region != b.region || a.key == b.key {
                 continue;
             }
-            let (Some(a_seen), Some(b_seen)) = (visible_bounds(a, width, height), visible_bounds(b, width, height)) else {
+            let (Some(a_seen), Some(b_seen)) = (
+                visible_bounds(a, width, height),
+                visible_bounds(b, width, height),
+            ) else {
                 continue;
             };
             let (w, h) = overlap(&a_seen, &b_seen);
             if w > 1.0 && h > 1.0 {
                 out.push(Finding {
                     rule: "overlap",
-                    what: format!("`{}` and `{}` overlap by {w:.0}x{h:.0} [{} + {}]", a.content, b.content, a.key, b.key),
+                    what: format!(
+                        "`{}` and `{}` overlap by {w:.0}x{h:.0} [{} + {}]",
+                        a.content, b.content, a.key, b.key
+                    ),
                 });
             }
         }
@@ -172,7 +189,11 @@ fn scenes() -> Vec<(&'static str, Route, Option<SettingsPage>)> {
         ("symbol", page_route("RelationLabel"), None),
         ("graph", Route::World, None),
         ("find", find_route("RelationLabel"), None),
-        ("settings", Route::Orbit(OrbitRoute::Home), Some(SettingsPage::Appearance)),
+        (
+            "settings",
+            Route::Orbit(OrbitRoute::Home),
+            Some(SettingsPage::Appearance),
+        ),
     ]
 }
 
@@ -180,10 +201,21 @@ fn scenes() -> Vec<(&'static str, Route, Option<SettingsPage>)> {
 /// the frame it painted, with the shell's own frame decision for the message.
 fn findings_at(rig: &mut Rig, width: f32, height: f32) -> (String, Vec<Finding>) {
     resize(rig, width, height);
-    let frame = rig.shell.read_with(rig.cx, |shell: &Shell, _| shell.frame()).expect("frame");
+    let frame = rig
+        .shell
+        .read_with(rig.cx, |shell: &Shell, _| shell.frame())
+        .expect("frame");
     let ledger = painted(rig);
     let found = findings(&ledger, width, height);
-    (format!("shelf {:?}, reader {:.0} px, {} texts", frame.shelf, f32::from(frame.reader_width(px(width))), ledger.texts.len()), found)
+    (
+        format!(
+            "shelf {:?}, reader {:.0} px, {} texts",
+            frame.shelf,
+            f32::from(frame.reader_width(px(width))),
+            ledger.texts.len()
+        ),
+        found,
+    )
 }
 
 /// Every screen, at the six sizes the review sweeps, paints nothing wrong:
@@ -191,7 +223,12 @@ fn findings_at(rig: &mut Rig, width: f32, height: f32) -> (String, Vec<Finding>)
 /// nothing shows it, none over other text, no focusable past the window.
 #[gpui::test]
 fn every_screen_paints_clean_at_the_review_sizes(cx: &mut TestAppContext) {
-    let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Home)), SIZES[3].0, SIZES[3].1);
+    let mut rig = rig(
+        cx,
+        Some(Route::Orbit(OrbitRoute::Home)),
+        SIZES[3].0,
+        SIZES[3].1,
+    );
     let mut wrong = Vec::new();
     for (name, route, settings) in scenes() {
         rig.go(Intent::Navigate(route));
@@ -200,10 +237,19 @@ fn every_screen_paints_clean_at_the_review_sizes(cx: &mut TestAppContext) {
         }
         for (width, height) in SIZES {
             let (frame, found) = findings_at(&mut rig, width, height);
-            wrong.extend(found.iter().map(|finding| format!("{name} {width:.0}x{height:.0} ({frame}): {finding}")));
+            wrong.extend(
+                found
+                    .iter()
+                    .map(|finding| format!("{name} {width:.0}x{height:.0} ({frame}): {finding}")),
+            );
         }
     }
-    assert!(wrong.is_empty(), "{} findings:\n{}", wrong.len(), wrong.join("\n"));
+    assert!(
+        wrong.is_empty(),
+        "{} findings:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
 }
 
 /// The screens the shell lays out itself (Library, Settings, the graph's
@@ -212,19 +258,36 @@ fn every_screen_paints_clean_at_the_review_sizes(cx: &mut TestAppContext) {
 /// 200 px beyond it); they are gated by their own lanes' tests, not this one.
 #[gpui::test]
 fn the_shells_own_screens_fit_a_phone(cx: &mut TestAppContext) {
-    let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Home)), SIZES[3].0, SIZES[3].1);
+    let mut rig = rig(
+        cx,
+        Some(Route::Orbit(OrbitRoute::Home)),
+        SIZES[3].0,
+        SIZES[3].1,
+    );
     let mut wrong = Vec::new();
-    for (name, route, settings) in scenes().into_iter().filter(|(name, _, _)| matches!(*name, "library" | "settings")) {
+    for (name, route, settings) in scenes()
+        .into_iter()
+        .filter(|(name, _, _)| matches!(*name, "library" | "settings"))
+    {
         rig.go(Intent::Navigate(route));
         if let Some(page) = settings {
             rig.go(Intent::OpenSettings(page));
         }
         for (width, height) in PHONES {
             let (frame, found) = findings_at(&mut rig, width, height);
-            wrong.extend(found.iter().map(|finding| format!("{name} {width:.0}x{height:.0} ({frame}): {finding}")));
+            wrong.extend(
+                found
+                    .iter()
+                    .map(|finding| format!("{name} {width:.0}x{height:.0} ({frame}): {finding}")),
+            );
         }
     }
-    assert!(wrong.is_empty(), "{} findings:\n{}", wrong.len(), wrong.join("\n"));
+    assert!(
+        wrong.is_empty(),
+        "{} findings:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
 }
 
 /// The gate above is only worth something if `findings` can fail: it reads a
@@ -234,7 +297,13 @@ fn findings_name_what_is_wrong_with_a_pinned_frame() {
     use facet::probe::{TextOverflow, TextSample};
     let sample = |key: &str, x: f32, y: f32, width: f32, natural: f32| TextSample {
         key: key.to_owned(),
-        bounds: BoundsSample { key: key.to_owned(), x, y, width, height: 16.0 },
+        bounds: BoundsSample {
+            key: key.to_owned(),
+            x,
+            y,
+            width,
+            height: 16.0,
+        },
         paint_clip: None,
         natural_width: natural,
         overflow: TextOverflow::Clip,
@@ -257,12 +326,41 @@ fn findings_name_what_is_wrong_with_a_pinned_frame() {
         ..Ledger::default()
     };
     let found = findings(&ledger, 360.0, 640.0);
-    let rules = found.iter().map(|finding| (finding.rule, finding.what.split('[').next_back().unwrap_or_default().trim_end_matches(']').to_owned())).collect::<Vec<_>>();
-    for wanted in [("clip", "needs-room"), ("edge", "cut-by-edge"), ("stranded", "past-edge"), ("overlap", "fits + on-top")] {
-        assert!(rules.iter().any(|(rule, key)| (*rule, key.as_str()) == wanted), "no `{}` finding for `{}`: {found:#?}", wanted.0, wanted.1);
+    let rules = found
+        .iter()
+        .map(|finding| {
+            (
+                finding.rule,
+                finding
+                    .what
+                    .split('[')
+                    .next_back()
+                    .unwrap_or_default()
+                    .trim_end_matches(']')
+                    .to_owned(),
+            )
+        })
+        .collect::<Vec<_>>();
+    for wanted in [
+        ("clip", "needs-room"),
+        ("edge", "cut-by-edge"),
+        ("stranded", "past-edge"),
+        ("overlap", "fits + on-top"),
+    ] {
+        assert!(
+            rules
+                .iter()
+                .any(|(rule, key)| (*rule, key.as_str()) == wanted),
+            "no `{}` finding for `{}`: {found:#?}",
+            wanted.0,
+            wanted.1
+        );
     }
     for fine in ["[fits]", "[straddles-the-fold]"] {
-        assert!(!found.iter().any(|finding| finding.what.contains(fine)), "{fine} is not a finding (a fit, a page that scrolls): {found:#?}");
+        assert!(
+            !found.iter().any(|finding| finding.what.contains(fine)),
+            "{fine} is not a finding (a fit, a page that scrolls): {found:#?}"
+        );
     }
 }
 
@@ -284,12 +382,23 @@ fn the_librarys_project_tile_does_not_keep_its_own_target_list_alive(cx: &mut Te
     rig.go(Intent::Navigate(Route::Orbit(OrbitRoute::Home)));
     rig.repaint();
     let said = rig.said();
-    let tile = folder.file_name().and_then(|name| name.to_str()).expect("folder name").to_owned();
-    assert!(said.iter().any(|line| *line == tile), "the Library draws the project's tile {tile:?}: {said:#?}");
-    let probe = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx).list_probe());
+    let tile = folder
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("folder name")
+        .to_owned();
+    assert!(
+        said.iter().any(|line| *line == tile),
+        "the Library draws the project's tile {tile:?}: {said:#?}"
+    );
+    let probe = rig
+        .shell
+        .read_with(rig.cx, |shell, cx| shell.reader_targets(cx).list_probe());
     assert!(probe.upgrade().is_some(), "the probe sees the live list");
     // Close the window and let go of every strong handle the rig keeps.
-    let Rig { shell, graph, cx, .. } = rig;
+    let Rig {
+        shell, graph, cx, ..
+    } = rig;
     cx.update(|window, _| window.remove_window());
     drop(shell);
     drop(graph);
@@ -313,19 +422,47 @@ fn the_librarys_project_tile_does_not_keep_its_own_target_list_alive(cx: &mut Te
 #[gpui::test]
 fn the_shelf_can_be_opened_with_the_pointer_at_every_width(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
-    for (width, height) in [(1440.0, 900.0), (900.0, 700.0), (700.0, 600.0), (600.0, 600.0), (520.0, 640.0), (480.0, 640.0), (360.0, 640.0)] {
+    for (width, height) in [
+        (1440.0, 900.0),
+        (900.0, 700.0),
+        (700.0, 600.0),
+        (600.0, 600.0),
+        (520.0, 640.0),
+        (480.0, 640.0),
+        (360.0, 640.0),
+    ] {
         resize(&mut rig, width, height);
-        let frame = rig.shell.read_with(rig.cx, |shell: &Shell, _| shell.frame()).expect("frame");
+        let frame = rig
+            .shell
+            .read_with(rig.cx, |shell: &Shell, _| shell.frame())
+            .expect("frame");
         let ledger = painted(&mut rig);
         let toggle = ledger
             .targets
             .iter()
             .find(|target| target.key == "tb-shelf")
-            .unwrap_or_else(|| panic!("no shelf toggle at {width} px: {:?}", ledger.targets.iter().map(|t| &t.key).collect::<Vec<_>>()));
+            .unwrap_or_else(|| {
+                panic!(
+                    "no shelf toggle at {width} px: {:?}",
+                    ledger.targets.iter().map(|t| &t.key).collect::<Vec<_>>()
+                )
+            });
         let at = &toggle.bounds;
-        assert!(at.within(width, height), "the toggle at {width} px is {at:?}, outside the window");
-        assert!(at.width >= 24.0 && at.height >= 24.0, "the toggle at {width} px is {:.0}x{:.0}", at.width, at.height);
-        if let Some(back) = ledger.targets.iter().find(|target| target.key == "jump-back") {
+        assert!(
+            at.within(width, height),
+            "the toggle at {width} px is {at:?}, outside the window"
+        );
+        assert!(
+            at.width >= 24.0 && at.height >= 24.0,
+            "the toggle at {width} px is {:.0}x{:.0}",
+            at.width,
+            at.height
+        );
+        if let Some(back) = ledger
+            .targets
+            .iter()
+            .find(|target| target.key == "jump-back")
+        {
             assert!(
                 back.bounds.x >= at.x + at.width - 0.5,
                 "at {width} px the back chevron ({:.0}) starts under the toggle ({:.0}..{:.0})",
@@ -338,9 +475,17 @@ fn the_shelf_can_be_opened_with_the_pointer_at_every_width(cx: &mut TestAppConte
             continue;
         }
         // Not inline: a shelf row's words are not on screen until the toggle opens it.
-        let words = |ledger: &Ledger| ledger.texts.iter().any(|text| text.content == "glyph" && text.key.starts_with("shelf-row:"));
+        let words = |ledger: &Ledger| {
+            ledger
+                .texts
+                .iter()
+                .any(|text| text.content == "glyph" && text.key.starts_with("shelf-row:"))
+        };
         assert!(!words(&ledger), "at {width} px the shelf is already open");
-        rig.cx.simulate_click(point(px(at.x + at.width / 2.0), px(at.y + at.height / 2.0)), Modifiers::default());
+        rig.cx.simulate_click(
+            point(px(at.x + at.width / 2.0), px(at.y + at.height / 2.0)),
+            Modifiers::default(),
+        );
         rig.settle();
         let opened = painted(&mut rig);
         let row = opened
@@ -349,12 +494,17 @@ fn the_shelf_can_be_opened_with_the_pointer_at_every_width(cx: &mut TestAppConte
             .find(|text| text.content == "glyph" && text.key.starts_with("shelf-row:"))
             .unwrap_or_else(|| panic!("clicking the toggle at {width} px opened no shelf"));
         assert!(
-            row.bounds.x >= 0.0 && row.bounds.x + row.bounds.width <= width && row.bounds.x < f32::from(frame.shelf_body),
+            row.bounds.x >= 0.0
+                && row.bounds.x + row.bounds.width <= width
+                && row.bounds.x < f32::from(frame.shelf_body),
             "the opened shelf's row is at {:?} in a {width} px window",
             row.bounds
         );
         // Put it away again for the next width.
-        rig.cx.simulate_click(point(px(at.x + at.width / 2.0), px(at.y + at.height / 2.0)), Modifiers::default());
+        rig.cx.simulate_click(
+            point(px(at.x + at.width / 2.0), px(at.y + at.height / 2.0)),
+            Modifiers::default(),
+        );
         rig.settle();
     }
 }
@@ -363,20 +513,48 @@ fn the_shelf_can_be_opened_with_the_pointer_at_every_width(cx: &mut TestAppConte
 /// asked for at that width. Widening the window to hold the shelf inline
 /// answers it; narrowing again must not bring the overlay back on its own.
 #[gpui::test]
-fn a_shelf_opened_over_a_narrow_window_does_not_reopen_when_the_window_narrows_again(cx: &mut TestAppContext) {
+fn a_shelf_opened_over_a_narrow_window_does_not_reopen_when_the_window_narrows_again(
+    cx: &mut TestAppContext,
+) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
-    let row = |ledger: &Ledger| ledger.texts.iter().any(|text| text.content == "glyph" && text.key.starts_with("shelf-row:"));
+    let row = |ledger: &Ledger| {
+        ledger
+            .texts
+            .iter()
+            .any(|text| text.content == "glyph" && text.key.starts_with("shelf-row:"))
+    };
     resize(&mut rig, 480.0, 640.0);
     let ledger = painted(&mut rig);
-    assert!(!row(&ledger), "at 480 px the shelf is closed until it is asked for");
-    let toggle = ledger.targets.iter().find(|target| target.key == "tb-shelf").expect("the toggle").bounds.clone();
-    rig.cx.simulate_click(point(px(toggle.x + toggle.width / 2.0), px(toggle.y + toggle.height / 2.0)), Modifiers::default());
+    assert!(
+        !row(&ledger),
+        "at 480 px the shelf is closed until it is asked for"
+    );
+    let toggle = ledger
+        .targets
+        .iter()
+        .find(|target| target.key == "tb-shelf")
+        .expect("the toggle")
+        .bounds
+        .clone();
+    rig.cx.simulate_click(
+        point(
+            px(toggle.x + toggle.width / 2.0),
+            px(toggle.y + toggle.height / 2.0),
+        ),
+        Modifiers::default(),
+    );
     rig.settle();
-    assert!(row(&painted(&mut rig)), "the toggle opened the shelf over the reader");
+    assert!(
+        row(&painted(&mut rig)),
+        "the toggle opened the shelf over the reader"
+    );
     resize(&mut rig, 1440.0, 900.0);
     assert!(row(&painted(&mut rig)), "at 1440 px the shelf is inline");
     resize(&mut rig, 480.0, 640.0);
-    assert!(!row(&painted(&mut rig)), "narrowing again did not ask for the shelf");
+    assert!(
+        !row(&painted(&mut rig)),
+        "narrowing again did not ask for the shelf"
+    );
 }
 
 /// `ink4` draws rules and inactive ticks, never words: it fails 4.5:1 on
@@ -386,7 +564,10 @@ fn a_shelf_opened_over_a_narrow_window_does_not_reopen_when_the_window_narrows_a
 #[test]
 fn no_words_in_the_shell_are_set_in_ink4() {
     fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-        for entry in std::fs::read_dir(dir).expect("the shell's sources").flatten() {
+        for entry in std::fs::read_dir(dir)
+            .expect("the shell's sources")
+            .flatten()
+        {
             let path = entry.path();
             if path.is_dir() {
                 sources(&path, out);
@@ -405,12 +586,22 @@ fn no_words_in_the_shell_are_set_in_ink4() {
     for file in &files {
         let text = std::fs::read_to_string(file).expect("a source file");
         for (index, line) in text.lines().enumerate() {
-            let set_as_text = (line.contains("text(") && line.contains(&argument)) || line.contains(&color);
+            let set_as_text =
+                (line.contains("text(") && line.contains(&argument)) || line.contains(&color);
             if set_as_text && !line.trim_start().starts_with("//") {
-                words.push(format!("{}:{}: {}", file.strip_prefix(&shell).unwrap_or(file).display(), index + 1, line.trim()));
+                words.push(format!(
+                    "{}:{}: {}",
+                    file.strip_prefix(&shell).unwrap_or(file).display(),
+                    index + 1,
+                    line.trim()
+                ));
             }
         }
     }
-    assert!(files.len() > 40, "the scan read the shell ({} files)", files.len());
+    assert!(
+        files.len() > 40,
+        "the scan read the shell ({} files)",
+        files.len()
+    );
     assert!(words.is_empty(), "words set in ink4:\n{}", words.join("\n"));
 }

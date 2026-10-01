@@ -12,8 +12,8 @@ use crate::semantics::model::{Fork, Payload};
 use crate::theme::ActiveFacet;
 use crate::tokens::Palette;
 use gpui::{
-    InteractiveElement,
-    AnyElement, App, ElementId, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, div, px,
+    AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce,
+    SharedString, Styled, Window, div, px,
 };
 use std::sync::Arc;
 
@@ -29,7 +29,12 @@ pub struct ForkView {
 /// The fork for `fork` at `measure`.
 #[must_use]
 pub fn fork(id: impl Into<ElementId>, fork: Fork, measure: &Measure, links: &Links) -> ForkView {
-    ForkView { id: id.into(), fork, measure: *measure, links: links.clone() }
+    ForkView {
+        id: id.into(),
+        fork,
+        measure: *measure,
+        links: links.clone(),
+    }
 }
 
 /// The left gutter every bracketed or railed part leaves for its mark.
@@ -46,13 +51,26 @@ pub(crate) fn part_row(
     palette: &Palette,
 ) -> gpui::Div {
     let say = say.map(|s| {
-        let d = div().set(roles::SAY, measure).text_color(palette.ink3.hsla()).min_w_0();
-        if stacked(measure) { d.child(s) } else { d.flex_1().truncate().child(s) }
+        let d = div()
+            .set(roles::SAY, measure)
+            .text_color(palette.ink3.hsla())
+            .min_w_0();
+        if stacked(measure) {
+            d.child(s)
+        } else {
+            d.flex_1().truncate().child(s)
+        }
     });
     let pad = row_pad(measure, 7.0);
     let mut row = div().relative().py(pad).min_h(row_pad(measure, 32.0));
     if stacked(measure) {
-        row = row.flex().flex_col().gap(px(2.0 * measure.scale())).child(name).children(ty).children(say);
+        row = row
+            .flex()
+            .flex_col()
+            .gap(px(2.0 * measure.scale()))
+            .child(name)
+            .children(ty)
+            .children(say);
     } else {
         row = row
             .flex()
@@ -96,14 +114,22 @@ impl RenderOnce for ForkView {
         let rows_measure = m.within(m.width() - gutter);
         let tick = px(9.0 * m.scale());
         let rows = self.fork.branches.iter().enumerate().map(|(n, branch)| {
-            let id = |part: &str| ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::from(format!("{n}-{part}")));
+            let id = |part: &str| {
+                ElementId::NamedChild(
+                    Arc::new(self.id.clone()),
+                    SharedString::from(format!("{n}-{part}")),
+                )
+            };
             let name = crate::probe::text(
                 id("name"),
                 branch.name.clone(),
                 rows_measure.role(roles::NAME),
                 1.0,
                 crate::probe::TextOverflow::Wrap,
-                div().set(roles::NAME, &rows_measure).text_color(palette.ink0.hsla()).child(branch.name.clone()),
+                div()
+                    .set(roles::NAME, &rows_measure)
+                    .text_color(palette.ink0.hsla())
+                    .child(branch.name.clone()),
             )
             .into_any_element();
             let ty = match &branch.payload {
@@ -151,7 +177,10 @@ impl RenderOnce for ForkView {
             .flex()
             .flex_col()
             .child(heading(
-                ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::new_static("heading")),
+                ElementId::NamedChild(
+                    Arc::new(self.id.clone()),
+                    SharedString::new_static("heading"),
+                ),
                 self.fork.heading(),
                 &m,
                 palette,

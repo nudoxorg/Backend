@@ -14,10 +14,9 @@
 use super::door::{self, Door, Side};
 use crate::motion::Motion;
 use gpui::{
-    AnyElement, App, Bounds, InteractiveElement, IntoElement, LayoutId, Styled,
-    div, DispatchPhase, ElementId, Entity, FocusHandle, Hitbox,
-    HitboxBehavior, KeyDownEvent, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, Pixels, Point,
-    Window,
+    AnyElement, App, Bounds, DispatchPhase, ElementId, Entity, FocusHandle, Hitbox, HitboxBehavior,
+    InteractiveElement, IntoElement, KeyDownEvent, LayoutId, MouseButton, MouseDownEvent,
+    MouseExitEvent, MouseMoveEvent, Pixels, Point, Styled, Window, div,
 };
 use std::rc::Rc;
 
@@ -92,12 +91,18 @@ pub(crate) fn live(window: &mut Window, cx: &mut App) -> Entity<Live> {
 
 /// A motion key scoped to one mark (probe keys must not collide).
 pub(crate) fn key(mark: &ElementId, name: &'static str) -> ElementId {
-    ElementId::NamedChild(std::sync::Arc::new(mark.clone()), gpui::SharedString::new_static(name))
+    ElementId::NamedChild(
+        std::sync::Arc::new(mark.clone()),
+        gpui::SharedString::new_static(name),
+    )
 }
 
 /// A motion key scoped to one mark and a number.
 pub(crate) fn key_n(mark: &ElementId, name: &'static str, n: u64) -> ElementId {
-    ElementId::NamedChild(std::sync::Arc::new(mark.clone()), gpui::SharedString::from(format!("{name}-{n}")))
+    ElementId::NamedChild(
+        std::sync::Arc::new(mark.clone()),
+        gpui::SharedString::from(format!("{name}-{n}")),
+    )
 }
 
 /// The wave's centre for a mark, in px within the mark: while something is
@@ -125,7 +130,9 @@ pub(crate) fn wave(
         if let Some(at) = active {
             let far = (state.wave_at.0 - at.0).abs() + (state.wave_at.1 - at.1).abs() > 0.5;
             if strength < 0.02 && far {
-                state.waves_settling.push((state.wave_gen, state.wave_at, crate::motion::now(cx)));
+                state
+                    .waves_settling
+                    .push((state.wave_gen, state.wave_at, crate::motion::now(cx)));
                 state.wave_gen += 1;
             }
             state.wave_at = at;
@@ -136,8 +143,20 @@ pub(crate) fn wave(
     // from where it is, and lands exactly on its part (a spring's last
     // sub-pixel step to rest reads as a jump to the alignment checks).
     let follow = crate::motion::spec::REVEAL;
-    let x = motion.animate(key_n(mark, "wave-x", generation), target.0, follow, window, cx);
-    let y = motion.animate(key_n(mark, "wave-y", generation), target.1, follow, window, cx);
+    let x = motion.animate(
+        key_n(mark, "wave-x", generation),
+        target.0,
+        follow,
+        window,
+        cx,
+    );
+    let y = motion.animate(
+        key_n(mark, "wave-y", generation),
+        target.1,
+        follow,
+        window,
+        cx,
+    );
     // An earlier wave keeps being sampled until its glide has surely
     // ended (its whole budget, plus a frame's slack): its last sample is
     // then an at-rest one, and the track can go.
@@ -157,7 +176,9 @@ pub(crate) fn wave(
             .flat_map(|g| [key_n(mark, "wave-x", *g), key_n(mark, "wave-y", *g)])
             .collect();
         motion.retain(|k| !keys.contains(k));
-        live.update(cx, |state, _| state.waves_settling.retain(|(g, _, _)| !rested.contains(g)));
+        live.update(cx, |state, _| {
+            state.waves_settling.retain(|(g, _, _)| !rested.contains(g))
+        });
     }
     (x, y, strength)
 }
@@ -215,7 +236,11 @@ pub(crate) struct Hooks {
 /// stop and owns the key handler (GPUI registers tab stops for divs only).
 /// Call from `request_layout`; lay the child out as one of the mark's
 /// children, prepaint and paint it with the mark.
-pub(crate) fn keys(live: &Entity<Live>, window: &mut Window, cx: &mut App) -> (AnyElement, LayoutId) {
+pub(crate) fn keys(
+    live: &Entity<Live>,
+    window: &mut Window,
+    cx: &mut App,
+) -> (AnyElement, LayoutId) {
     let handle = live.read(cx).handle.clone();
     let state = live.clone();
     let mut child = div()
@@ -261,9 +286,23 @@ pub(crate) fn prepaint(
 fn on_key(live: &Entity<Live>, event: &KeyDownEvent, window: &mut Window, cx: &mut App) {
     let (current, count, anchor, wiring) = {
         let state = live.read(cx);
-        (state.walk, state.count, state.anchor.clone(), state.wiring.clone())
+        (
+            state.walk,
+            state.count,
+            state.anchor.clone(),
+            state.wiring.clone(),
+        )
     };
-    let (Some(anchor), Some(Wiring { mark, door, side, step })) = (anchor, wiring) else {
+    let (
+        Some(anchor),
+        Some(Wiring {
+            mark,
+            door,
+            side,
+            step,
+        }),
+    ) = (anchor, wiring)
+    else {
         return;
     };
     let key = event.keystroke.key.as_str();
@@ -378,7 +417,9 @@ pub(crate) fn paint(
             if phase != DispatchPhase::Capture {
                 return;
             }
-            let Some(prev) = live.read(cx).hover else { return };
+            let Some(prev) = live.read(cx).hover else {
+                return;
+            };
             live.update(cx, |state, cx| {
                 state.hover = None;
                 cx.notify();
@@ -386,7 +427,16 @@ pub(crate) fn paint(
             if let Some(door) = &door
                 && let Some(rect) = anchor(prev)
             {
-                door::report(&mark, prev, rect, door.preferred(side), door, false, window, cx);
+                door::report(
+                    &mark,
+                    prev,
+                    rect,
+                    door.preferred(side),
+                    door,
+                    false,
+                    window,
+                    cx,
+                );
             }
         });
     }

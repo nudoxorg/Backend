@@ -26,9 +26,7 @@ use backend_engine::driver::{
     CompileControl, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile_semantic,
 };
-use backend_frontend_typescript::legacy::{
-    Checker, Declaration, Origin, Report, TypeTree,
-};
+use backend_frontend_typescript::legacy::{Checker, Declaration, Origin, Report, TypeTree};
 use backend_semantic::vocabulary::{LanguageProfile, Stage, TypeScriptSource};
 
 static CANCELLED: AtomicBool = AtomicBool::new(false);
@@ -174,7 +172,8 @@ fn typescript_react_dom_test_utils_lowers() {
         panic!("corpus pinned entry must exist at {}", entry.display());
     };
     assert!(
-        bytes.windows(b"typeof ReactTestUtils".len())
+        bytes
+            .windows(b"typeof ReactTestUtils".len())
             .any(|window| window == b"typeof ReactTestUtils"),
         "the pinned corpus entry must still carry the namespace-import type"
     );

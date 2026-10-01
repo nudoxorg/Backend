@@ -19,8 +19,8 @@ use std::{
     time::Duration,
 };
 
-use authority::NativeExecutables;
 use arrayvec::ArrayVec;
+use authority::NativeExecutables;
 use backend_compile::EmbeddingExecutable;
 use backend_semantic::vocabulary::NativeTool;
 use backend_store::journal::PublicationLimits;

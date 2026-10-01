@@ -15,14 +15,14 @@
 //! - [`peek`]: a symbol as the float layer's peek card.
 
 pub mod camera;
-pub mod draw;
+pub(crate) mod cold_tour;
 pub mod discovery;
+pub mod draw;
 pub(crate) mod highlight;
 pub mod interaction;
 pub mod keys;
 pub mod layout;
 pub mod model;
-pub(crate) mod cold_tour;
 pub(crate) mod navigation;
 pub mod peek;
 pub mod prism;

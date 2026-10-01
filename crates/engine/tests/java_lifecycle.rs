@@ -9,7 +9,16 @@ use backend_engine::driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
-use backend_semantic::ir::{EntityKind, ForeignOrigin, FragmentView, ItemKind, OccurrenceTarget};
+use backend_engine::index_build::{IndexBuildScratch, build};
+use backend_engine::index_publish::{
+    CompilationIndexScratch, encode_index_pack, plan_index_pack, seal_compilation_index,
+};
+use backend_engine::publication::immutable::ImmutableArtifactStore;
+use backend_engine::publication::manifest::StoredFragmentFacts;
+use backend_engine::publication::manifest_store::ImmutableManifestStore;
+use backend_engine::publication::{
+    OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
+};
 use backend_frontend_java::legacy::{
     JavaRelease as HarnessRelease,
     central::{Central, FetchError},
@@ -18,17 +27,8 @@ use backend_frontend_java::legacy::{
     purl::MavenCoordinates,
     repo::Repository,
 };
-use backend_engine::publication::immutable::ImmutableArtifactStore;
-use backend_engine::publication::manifest::StoredFragmentFacts;
-use backend_engine::publication::manifest_store::ImmutableManifestStore;
-use backend_engine::publication::{
-    OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
-};
+use backend_semantic::ir::{EntityKind, ForeignOrigin, FragmentView, ItemKind, OccurrenceTarget};
 use backend_semantic::vocabulary::{JavaRelease, LanguageProfile, NativeTool, Stage};
-use backend_engine::index_build::{IndexBuildScratch, build};
-use backend_engine::index_publish::{
-    CompilationIndexScratch, encode_index_pack, plan_index_pack, seal_compilation_index,
-};
 use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use sha2::{Digest, Sha256};
 use std::{

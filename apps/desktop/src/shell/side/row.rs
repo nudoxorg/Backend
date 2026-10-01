@@ -36,7 +36,13 @@ pub(crate) enum KindGroup {
 
 impl KindGroup {
     /// Every group, in the order the list shows them.
-    pub(crate) const ALL: [Self; 5] = [Self::Types, Self::Contracts, Self::Functions, Self::Macros, Self::Values];
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Types,
+        Self::Contracts,
+        Self::Functions,
+        Self::Macros,
+        Self::Values,
+    ];
 
     /// The group's words.
     pub(crate) const fn label(self) -> &'static str {
@@ -69,7 +75,9 @@ impl KindGroup {
             Some(K::Trait | K::Interface) => Some(Self::Contracts),
             Some(K::Function | K::Method | K::Constructor) => Some(Self::Functions),
             Some(K::Macro) => Some(Self::Macros),
-            Some(K::Constant | K::Variable | K::Field | K::Property | K::Variant) => Some(Self::Values),
+            Some(K::Constant | K::Variable | K::Field | K::Property | K::Variant) => {
+                Some(Self::Values)
+            }
             Some(K::Module | K::Import | K::Unknown) | None => None,
         }
     }
@@ -142,7 +150,9 @@ impl RowId {
     pub(crate) fn key(&self) -> SharedString {
         match self {
             Self::Node(symbol) => symbol.as_str().to_owned().into(),
-            Self::Listed(section, symbol) => format!("shelf-{}:{}", section.key(), symbol.as_str()).into(),
+            Self::Listed(section, symbol) => {
+                format!("shelf-{}:{}", section.key(), symbol.as_str()).into()
+            }
             Self::Group(group) => format!("shelf-kind-{}", group.key()).into(),
             Self::Tests => TESTS_ROW.into(),
             Self::Project(path) => format!("project-{path}").into(),
@@ -273,7 +283,13 @@ pub(crate) struct Item {
 
 impl Item {
     /// A row with nothing but a mark and a name, doing `does`.
-    pub(crate) fn new(id: RowId, depth: u8, mark: Mark, name: impl Into<SharedString>, does: Do) -> Self {
+    pub(crate) fn new(
+        id: RowId,
+        depth: u8,
+        mark: Mark,
+        name: impl Into<SharedString>,
+        does: Do,
+    ) -> Self {
         Self {
             key: id.key(),
             id,
@@ -323,7 +339,10 @@ pub(crate) enum Row {
 impl Row {
     /// A heading with a count.
     pub(crate) fn heading(words: impl Into<SharedString>, count: usize) -> Self {
-        Self::Heading(Heading { words: words.into(), count: Some(count) })
+        Self::Heading(Heading {
+            words: words.into(),
+            count: Some(count),
+        })
     }
 
     /// The item, when this line is one.
@@ -368,11 +387,18 @@ mod tests {
     fn a_declaration_kind_belongs_to_one_family_or_none() {
         use backend_library::DeclarationKind as K;
         assert_eq!(KindGroup::of(Some(K::Struct)), Some(KindGroup::Types));
-        assert_eq!(KindGroup::of(Some(K::Interface)), Some(KindGroup::Contracts));
+        assert_eq!(
+            KindGroup::of(Some(K::Interface)),
+            Some(KindGroup::Contracts)
+        );
         assert_eq!(KindGroup::of(Some(K::Method)), Some(KindGroup::Functions));
         assert_eq!(KindGroup::of(Some(K::Macro)), Some(KindGroup::Macros));
         assert_eq!(KindGroup::of(Some(K::Constant)), Some(KindGroup::Values));
-        assert_eq!(KindGroup::of(Some(K::Module)), None, "modules are the page's own regions, not a family");
+        assert_eq!(
+            KindGroup::of(Some(K::Module)),
+            None,
+            "modules are the page's own regions, not a family"
+        );
         assert_eq!(KindGroup::of(None), None);
     }
 
@@ -392,7 +418,11 @@ mod tests {
         ];
         let keys: HashSet<_> = ids.iter().map(RowId::key).collect();
         assert_eq!(keys.len(), ids.len(), "one key per row: {keys:?}");
-        assert_eq!(RowId::Node(symbol.clone()).key().as_ref(), symbol.as_str(), "a probe reads the address of an outline row from its key");
+        assert_eq!(
+            RowId::Node(symbol.clone()).key().as_ref(),
+            symbol.as_str(),
+            "a probe reads the address of an outline row from its key"
+        );
         assert_eq!(RowId::Tests.key().as_ref(), TESTS_ROW);
     }
 }

@@ -31,9 +31,9 @@ use crate::paint::geom::{Poly, fill_poly};
 use crate::theme::ActiveFacet;
 use crate::tokens::{Palette, Tone};
 use gpui::{
-    AnyElement, App, Bounds, ColorExt, ElementId, Global, GlobalElementId, Hitbox, HitboxBehavior, Hsla,
-    InspectorElementId, IntoElement, LayoutId, MouseExitEvent, MouseMoveEvent, Pixels, SharedString, Window,
-    WindowId, fill, point, px, size,
+    AnyElement, App, Bounds, ColorExt, ElementId, Global, GlobalElementId, Hitbox, HitboxBehavior,
+    Hsla, InspectorElementId, IntoElement, LayoutId, MouseExitEvent, MouseMoveEvent, Pixels,
+    SharedString, Window, WindowId, fill, point, px, size,
 };
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -113,8 +113,12 @@ struct Field {
 impl Global for Field {}
 
 fn held(window: &Window, cx: &App) -> Option<Held> {
-    cx.try_global::<Field>()
-        .and_then(|field| field.windows.get(&window.window_handle().window_id()).cloned())
+    cx.try_global::<Field>().and_then(|field| {
+        field
+            .windows
+            .get(&window.window_handle().window_id())
+            .cloned()
+    })
 }
 
 fn target(window: &Window, cx: &App) -> Option<(ElementId, Subject)> {
@@ -179,7 +183,11 @@ pub fn lit(subject: &Subject, window: &Window, cx: &App) -> Lit {
 /// `None` clears it (only if `id` holds it).
 pub fn focus(target: Option<(ElementId, Subject)>, window: &mut Window, cx: &mut App) {
     set_target(
-        target.map(|(id, subject)| Held { id, subject, source: Source::Keyboard }),
+        target.map(|(id, subject)| Held {
+            id,
+            subject,
+            source: Source::Keyboard,
+        }),
         window,
         cx,
     );
@@ -192,7 +200,13 @@ pub fn ink(rest: Tone, lit: Lit, palette: &Palette) -> Hsla {
     if !lit.is_lit() {
         return rest.hsla();
     }
-    let ramp = [palette.ink4, palette.ink3, palette.ink2, palette.ink1, palette.ink0];
+    let ramp = [
+        palette.ink4,
+        palette.ink3,
+        palette.ink2,
+        palette.ink1,
+        palette.ink0,
+    ];
     let step = ramp
         .iter()
         .position(|tone| *tone == rest)
@@ -293,11 +307,15 @@ impl gpui::Element for Hoverable {
         cx: &mut App,
     ) -> (LayoutId, ()) {
         self.lit = lit_as(&self.id, &self.subject, window, cx);
-        let built = self.build.take().map_or_else(|| gpui::Empty.into_any_element(), |build| build(self.lit));
+        let built = self
+            .build
+            .take()
+            .map_or_else(|| gpui::Empty.into_any_element(), |build| build(self.lit));
         let mut child = match &self.peek {
             Some(request) => {
                 let request = Rc::clone(request);
-                float::trigger(self.id.clone(), move |bounds| request(bounds), built).into_any_element()
+                float::trigger(self.id.clone(), move |bounds| request(bounds), built)
+                    .into_any_element()
             }
             None => built,
         };
@@ -365,7 +383,11 @@ impl gpui::Element for Hoverable {
                 let hovered = hitbox.is_hovered(window);
                 let holds = target(window, cx).is_some_and(|(held, _)| held == id);
                 if hovered && !holds {
-                    let held = Held { id: id.clone(), subject: subject.clone(), source: Source::Pointer };
+                    let held = Held {
+                        id: id.clone(),
+                        subject: subject.clone(),
+                        source: Source::Pointer,
+                    };
                     set_target(Some(held), window, cx);
                 } else if !hovered && holds {
                     set_target(None, window, cx);
@@ -377,7 +399,8 @@ impl gpui::Element for Hoverable {
         // pointer held stays lit for ever otherwise.
         window.on_mouse_event(move |_: &MouseExitEvent, phase, window, cx| {
             if phase == gpui::DispatchPhase::Bubble
-                && held(window, cx).is_some_and(|held| held.id == id && held.source == Source::Pointer)
+                && held(window, cx)
+                    .is_some_and(|held| held.id == id && held.source == Source::Pointer)
             {
                 set_target(None, window, cx);
             }

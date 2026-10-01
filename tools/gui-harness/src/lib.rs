@@ -74,17 +74,17 @@ pub use input::{
 };
 pub use journey::{VisibleJourney, VisibleJourneyStep};
 pub use script::{Act, Button, Event, Mods, Script, ScriptError};
-pub use session::{Drawn, PlayedFrame, Quiet, Session, SessionOptions, Timeline, play};
-pub use storm::{Rng, Vocabulary};
 pub use semantics::{
     SEMANTIC_SCHEMA, SemanticAnnouncement, SemanticBounds, SemanticError, SemanticNode,
     SemanticProbe, SemanticRelations, SemanticRole, SemanticSource, SemanticState, changed_pixels,
     contrast_ratio, crop_focus_ring, hash_png_pixels, meets_wcag_aa, relative_luminance,
 };
+pub use session::{Drawn, PlayedFrame, Quiet, Session, SessionOptions, Timeline, play};
 pub use state::{
     FocusState, GuiState, OverlayState, PageState, StateError, ThemeState, parse_state,
     validate_catalog,
 };
+pub use storm::{Rng, Vocabulary};
 
 /// The responsive viewport matrix required by the Nudox GUI gate.
 pub const REQUIRED_VIEWPORTS: &[(u32, u32)] = &[

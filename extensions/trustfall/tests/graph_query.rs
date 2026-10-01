@@ -1,19 +1,19 @@
 //! Exercises the `backend-extension-trustfall` tests graph-query contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
+use backend_extension_trustfall::server::{TrustfallGraph, TrustfallGraphError, TrustfallHit};
+use backend_semantic::graph_vector::{
+    AdmissionError, Cancellation, GraphAuthority, GraphEdge, GraphLease, GraphRow,
+    GraphStreamEvent, GraphTerminal, LeaseCapacity, PartitionId, ProjectionId, StreamCapacityError,
+    TraceProbe, ValidatedGraphView,
+};
+use backend_semantic::index_vocabulary::IndexSnapshotId;
 use backend_semantic::ir::EntityId;
 use core::{
     mem::size_of,
     pin::Pin,
     task::{Context, Poll, Waker},
 };
-use backend_semantic::graph_vector::{
-    AdmissionError, Cancellation, GraphAuthority, GraphEdge, GraphLease, GraphRow,
-    GraphStreamEvent, GraphTerminal, LeaseCapacity, PartitionId, ProjectionId, StreamCapacityError,
-    TraceProbe, ValidatedGraphView,
-};
-use backend_extension_trustfall::server::{TrustfallGraph, TrustfallGraphError, TrustfallHit};
-use backend_semantic::index_vocabulary::IndexSnapshotId;
 
 fn graph_authority() -> GraphAuthority {
     GraphAuthority::new(

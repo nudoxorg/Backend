@@ -36,14 +36,8 @@ pub(crate) fn canonical() -> Result<Vec<u8>, String> {
     let generation = GenerationId::from_canonical_bytes(b"backend.fuzz.index-pack.v1");
     let exact: [Option<ExactSegmentId>; 0] = [];
     let lexical: [Option<LexicalSegmentId>; 0] = [];
-    let snapshot = IndexSnapshot::canonical_identity_from_slots(
-        generation,
-        &exact,
-        0,
-        &lexical,
-        0,
-    )
-    .map_err(|error| error.to_string())?;
+    let snapshot = IndexSnapshot::canonical_identity_from_slots(generation, &exact, 0, &lexical, 0)
+        .map_err(|error| error.to_string())?;
     let bytes = header(&generation, &snapshot);
     let id = IndexPackId::from_encoded_bytes(&bytes);
     if IndexPack::open(bytes.as_slice(), id).is_err() {
@@ -111,9 +105,7 @@ fn header(generation: &GenerationId, snapshot: &impl AsRef<[u8; 32]>) -> Vec<u8>
     out
 }
 
-fn facts(
-    pack: &IndexPack<&[u8]>,
-) -> (IndexPackId, GenerationId, IndexSnapshotId, usize, usize) {
+fn facts(pack: &IndexPack<&[u8]>) -> (IndexPackId, GenerationId, IndexSnapshotId, usize, usize) {
     (
         pack.id,
         pack.generation,
@@ -163,9 +155,7 @@ fn probe(pack: &IndexPack<&[u8]>) -> Result<(), OracleFailure> {
                     OracleFailure::new(format!("lexical row on an opened pack: {error}"))
                 })?;
                 if !inside(owner, row.term) {
-                    return Err(OracleFailure::new(
-                        "lexical term escapes the opened pack",
-                    ));
+                    return Err(OracleFailure::new("lexical term escapes the opened pack"));
                 }
             }
         }

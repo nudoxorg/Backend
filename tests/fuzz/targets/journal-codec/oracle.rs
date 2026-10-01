@@ -109,9 +109,7 @@ fn effect_round_trip(bytes: &[u8]) -> Result<bool, OracleFailure> {
             Ok(true)
         }
         (Err(_), Err(_)) => Ok(false),
-        _ => Err(OracleFailure::new(
-            "effect decode and validate disagree",
-        )),
+        _ => Err(OracleFailure::new("effect decode and validate disagree")),
     }
 }
 
@@ -126,13 +124,16 @@ fn dispatch_round_trip(bytes: &[u8]) -> Result<bool, OracleFailure> {
             if again != record {
                 return Err(OracleFailure::new("dispatch decode is not deterministic"));
             }
-            stable_encode(&record, DispatchLog::decode, DispatchLog::encode, "dispatch")?;
+            stable_encode(
+                &record,
+                DispatchLog::decode,
+                DispatchLog::encode,
+                "dispatch",
+            )?;
             Ok(true)
         }
         (Err(_), Err(_)) => Ok(false),
-        _ => Err(OracleFailure::new(
-            "dispatch decode and validate disagree",
-        )),
+        _ => Err(OracleFailure::new("dispatch decode and validate disagree")),
     }
 }
 
@@ -147,9 +148,8 @@ where
 {
     let mut encoded = Vec::new();
     encode(record, &mut encoded);
-    let recoded = decode(&encoded).map_err(|_| {
-        OracleFailure::new(format!("{name} canonical bytes did not decode"))
-    })?;
+    let recoded = decode(&encoded)
+        .map_err(|_| OracleFailure::new(format!("{name} canonical bytes did not decode")))?;
     if &recoded != record {
         return Err(OracleFailure::new(format!(
             "{name} encode changed the decoded record"
@@ -218,7 +218,9 @@ mod dispatch_seed {
         let mut twice = Vec::new();
         DispatchLog::encode(&again, &mut twice);
         if twice != once {
-            return Err("dispatch canonical encode of the minimized terminal was not stable".to_string());
+            return Err(
+                "dispatch canonical encode of the minimized terminal was not stable".to_string(),
+            );
         }
         Ok(())
     }

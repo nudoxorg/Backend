@@ -7,19 +7,19 @@ use backend_engine::driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
-use backend_semantic::ir::{FragmentView, ImageProvenance};
-use backend_frontend_go::legacy::{GoImage, GoOracle};
-use backend_engine::publication::immutable::ImmutableArtifactStore;
-use backend_engine::publication::{
-    OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
-};
-use backend_semantic::vocabulary::{GoVersion, LanguageProfile, NativeTool, Stage};
-use backend_version::{ContentId, SourceFactDomain};
 use backend_engine::index_build::{IndexBuildScratch, build};
 use backend_engine::index_publish::{
     CompilationIndexScratch, encode_index_pack, plan_index_pack, seal_compilation_index,
 };
+use backend_engine::publication::immutable::ImmutableArtifactStore;
+use backend_engine::publication::{
+    OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
+};
+use backend_frontend_go::legacy::{GoImage, GoOracle};
+use backend_semantic::ir::{FragmentView, ImageProvenance};
+use backend_semantic::vocabulary::{GoVersion, LanguageProfile, NativeTool, Stage};
 use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
+use backend_version::{ContentId, SourceFactDomain};
 use sha2::{Digest, Sha256};
 use std::{
     fs,

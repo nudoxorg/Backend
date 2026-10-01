@@ -215,8 +215,7 @@ int measure(struct Buffer *buffer) {
             .position(|window| window == b"buffer->content")
             .expect("member expression present");
         assert!(
-            usize::try_from(member.span.start)
-                .is_ok_and(|start| start > expression_start),
+            usize::try_from(member.span.start).is_ok_and(|start| start > expression_start),
             "member site must start at the member token, not the expression"
         );
         // Every local-target site's bytes equal its target's declared name bytes.

@@ -50,7 +50,10 @@ pub(crate) fn in_flight() -> usize {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Asker {
     /// The one view that asked: only it is notified.
-    #[allow(dead_code, reason = "built by `Memo::get` and `hand_view_for`, which the shell callers move to (MIGRATE.md, R-Open3); delete this allow with that move")]
+    #[allow(
+        dead_code,
+        reason = "built by `Memo::get` and `hand_view_for`, which the shell callers move to (MIGRATE.md, R-Open3); delete this allow with that move"
+    )]
     View(EntityId),
     /// A caller that cannot name its view (a `&mut App` signature): every
     /// window redraws once. Migrate the caller to [`Memo::get`].
@@ -128,7 +131,9 @@ pub(crate) struct Memo<K, V> {
 
 impl<K, V> Clone for Memo<K, V> {
     fn clone(&self) -> Self {
-        Self { shared: Rc::clone(&self.shared) }
+        Self {
+            shared: Rc::clone(&self.shared),
+        }
     }
 }
 
@@ -138,10 +143,16 @@ where
     V: Send + Sync + 'static,
 {
     /// A memo that keeps `capacity` values, each computed by `work`.
-    pub(crate) fn new(capacity: NonZeroUsize, work: impl Fn(&K) -> V + Send + Sync + 'static) -> Self {
+    pub(crate) fn new(
+        capacity: NonZeroUsize,
+        work: impl Fn(&K) -> V + Send + Sync + 'static,
+    ) -> Self {
         Self {
             shared: Rc::new(Shared {
-                inner: RefCell::new(Inner { entries: HashMap::new(), clock: Tick::default() }),
+                inner: RefCell::new(Inner {
+                    entries: HashMap::new(),
+                    clock: Tick::default(),
+                }),
                 work: Arc::new(work),
                 capacity,
             }),
@@ -149,7 +160,10 @@ where
     }
 
     /// The value for `key`, asked for by the view `cx` belongs to.
-    #[allow(dead_code, reason = "the shell callers move to it (MIGRATE.md, R-Open3); delete this allow with that move")]
+    #[allow(
+        dead_code,
+        reason = "the shell callers move to it (MIGRATE.md, R-Open3); delete this allow with that move"
+    )]
     pub(crate) fn get<T: 'static>(&self, key: &K, cx: &mut Context<T>) -> Answer<V> {
         self.ask(key, Asker::View(cx.entity_id()), cx)
     }
@@ -174,7 +188,14 @@ where
                 };
             }
             inner.make_room(self.shared.capacity);
-            inner.entries.insert(key.clone(), Entry { state: State::Reading, used: now, askers: vec![asker] });
+            inner.entries.insert(
+                key.clone(),
+                Entry {
+                    state: State::Reading,
+                    used: now,
+                    askers: vec![asker],
+                },
+            );
         }
         self.start(key.clone(), cx);
         Answer::Reading
@@ -193,7 +214,11 @@ where
     #[cfg(test)]
     pub(crate) fn forget(&self, key: &K) {
         let mut inner = self.shared.inner.borrow_mut();
-        if inner.entries.get(key).is_some_and(|entry| !matches!(entry.state, State::Reading)) {
+        if inner
+            .entries
+            .get(key)
+            .is_some_and(|entry| !matches!(entry.state, State::Reading))
+        {
             inner.entries.remove(key);
         }
     }
@@ -207,13 +232,26 @@ where
         if !inner.entries.contains_key(&key) {
             inner.make_room(self.shared.capacity);
         }
-        inner.entries.insert(key, Entry { state: State::Ready(Arc::new(value)), used: now, askers: Vec::new() });
+        inner.entries.insert(
+            key,
+            Entry {
+                state: State::Ready(Arc::new(value)),
+                used: now,
+                askers: Vec::new(),
+            },
+        );
     }
 
     /// How many values are being computed by this memo.
     #[cfg(any(test, feature = "visual-harness"))]
     pub(crate) fn reading(&self) -> usize {
-        self.shared.inner.borrow().entries.values().filter(|entry| matches!(entry.state, State::Reading)).count()
+        self.shared
+            .inner
+            .borrow()
+            .entries
+            .values()
+            .filter(|entry| matches!(entry.state, State::Reading))
+            .count()
     }
 
     /// How many keys are kept.
@@ -227,7 +265,8 @@ where
         let work = Arc::clone(&self.shared.work);
         let owned = key.clone();
         let task = cx.background_executor().spawn(async move {
-            std::panic::catch_unwind(AssertUnwindSafe(|| work(&owned))).map_err(|panic| Fault::Panicked(describe(panic.as_ref())))
+            std::panic::catch_unwind(AssertUnwindSafe(|| work(&owned)))
+                .map_err(|panic| Fault::Panicked(describe(panic.as_ref())))
         });
         let shared = Rc::downgrade(&self.shared);
         cx.spawn(async move |cx| {
@@ -266,10 +305,14 @@ where
     K: Eq + Hash,
     V: Send + Sync + 'static,
 {
-    let Some(shared) = shared.upgrade() else { return };
+    let Some(shared) = shared.upgrade() else {
+        return;
+    };
     let askers = {
         let mut inner = shared.inner.borrow_mut();
-        let Some(entry) = inner.entries.get_mut(key) else { return };
+        let Some(entry) = inner.entries.get_mut(key) else {
+            return;
+        };
         entry.state = match outcome {
             Ok(value) => State::Ready(Arc::new(value)),
             Err(fault) => State::Failed(fault),

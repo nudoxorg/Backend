@@ -41,7 +41,10 @@
     commits = 5;
     method = "measured";
     ranking_factor = false;
-    paths = [ "crates/engine/src/index_publish/pack" "crates/engine/src/index_publish/pack.rs" ];
+    paths = [
+      "crates/engine/src/index_publish/pack"
+      "crates/engine/src/index_publish/pack.rs"
+    ];
   };
   entrypoints = [
     "crates/engine/src/index_publish/pack/view.rs"

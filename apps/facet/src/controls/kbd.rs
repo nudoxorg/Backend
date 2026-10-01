@@ -161,7 +161,15 @@ fn tones(voice: KbdVoice, cx: &App) -> (Hsla, Hsla, Edge) {
         KbdVoice::Hint => (palette.peri_hi.into(), palette.table.into(), rest),
         KbdVoice::Quiet => {
             let line: Hsla = palette.line2.into();
-            (super::clear(palette.plate.into()), palette.ink3.into(), Edge { hi: line, lo: line, ..rest })
+            (
+                super::clear(palette.plate.into()),
+                palette.ink3.into(),
+                Edge {
+                    hi: line,
+                    lo: line,
+                    ..rest
+                },
+            )
         }
     }
 }
@@ -176,7 +184,8 @@ impl RenderOnce for Kbd {
             self.label
         };
         // The stone's chamfer grows with the cap: 3 px at 18, 5 px at 26.
-        let chamfer = (f32::from(side) * 0.19).max(f32::from(geo::CUT_STONE) * self.measure.scale());
+        let chamfer =
+            (f32::from(side) * 0.19).max(f32::from(geo::CUT_STONE) * self.measure.scale());
         cut()
             .chamfer(Chamfer::Px(chamfer))
             .edge(edge)
@@ -290,7 +299,8 @@ impl Element for KeyRise {
         cx: &mut App,
     ) {
         let spec = if self.shown {
-            let x = (f32::from(bounds.origin.x) / cx.facet().text_scale / WAVE_SPAN).clamp(0.0, 1.0);
+            let x =
+                (f32::from(bounds.origin.x) / cx.facet().text_scale / WAVE_SPAN).clamp(0.0, 1.0);
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let hold = Duration::from_millis((x * WAVE_DELAY) as u64);
             Spec::tween(QUICK, BOUNCE).delayed(hold)
@@ -309,7 +319,8 @@ impl Element for KeyRise {
         }
         let (child, t, travel) = (&mut self.child, self.t, self.travel);
         window.with_element_offset(point(px(0.0), px(travel * (1.0 - t))), |window| {
-            window.with_element_opacity(Some(t.clamp(0.0, 1.0)), |window| child.prepaint(window, cx));
+            window
+                .with_element_opacity(Some(t.clamp(0.0, 1.0)), |window| child.prepaint(window, cx));
         });
     }
 

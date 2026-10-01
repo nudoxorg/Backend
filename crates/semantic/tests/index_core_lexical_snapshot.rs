@@ -1,13 +1,13 @@
 //! Exercises the `backend-semantic::index_core` tests lexical-snapshot contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
-use backend_semantic::ir::EntityId;
-use backend_version::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
 use backend_semantic::index_core::{
     EntityArtifactIdentity, EntityDocumentId, IndexSnapshot, LexicalManifest, LexicalOperation,
     LexicalOutputError, LexicalQueryError, LexicalRow, LexicalScore, LexicalSegment,
     LexicalSnapshotHit, LexicalTerminal, LexicalTopK,
 };
+use backend_semantic::ir::EntityId;
+use backend_version::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
 
 fn document(entity: u32) -> EntityDocumentId {
     EntityDocumentId {
@@ -24,7 +24,9 @@ fn generation() -> GenerationId {
     GenerationId::from_canonical_bytes(b"published-ir-generation")
 }
 
-fn placeholder(segment: backend_semantic::index_core::LexicalSegmentId) -> LexicalSnapshotHit<'static> {
+fn placeholder(
+    segment: backend_semantic::index_core::LexicalSegmentId,
+) -> LexicalSnapshotHit<'static> {
     LexicalSnapshotHit::new(segment, b"placeholder", document(0), LexicalScore::from(0))
 }
 

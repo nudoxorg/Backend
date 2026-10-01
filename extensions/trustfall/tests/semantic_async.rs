@@ -7,6 +7,8 @@ use core::{
     task::{Context, Poll, Waker},
 };
 
+use backend_extension_trustfall::server::{SemanticTrustfallGraph, TrustfallGraphError};
+use backend_semantic::graph_vector::Cancellation;
 use backend_semantic::ir::{
     AtomId, BorrowedTree, Confidence, CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts,
     EntityId, EntityVersion, FactAvailability, IrBuilder, ItemKind, LinkKind,
@@ -15,8 +17,6 @@ use backend_semantic::ir::{
     encode_full_semantic_image, full_semantic_image_len,
 };
 use futures_core::Stream;
-use backend_semantic::graph_vector::Cancellation;
-use backend_extension_trustfall::server::{SemanticTrustfallGraph, TrustfallGraphError};
 
 fn version(seed: u8) -> EntityVersion {
     EntityVersion {

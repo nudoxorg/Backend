@@ -164,7 +164,8 @@ fn local_answer_is_complete_and_ranked_before_optional_work() {
 fn rows_and_evidence_that_do_not_pair_are_left_out_and_said_not_fatal() {
     let (workspace, view) = selected_view();
     let full = semantic_evidence(workspace, &view);
-    let missing = backend_engine::RowId::Symbol(backend_engine::symbol_key("alpha::prefix")).stable_key();
+    let missing =
+        backend_engine::RowId::Symbol(backend_engine::symbol_key("alpha::prefix")).stable_key();
     let mut facts = full
         .facts()
         .iter()
@@ -177,9 +178,14 @@ fn rows_and_evidence_that_do_not_pair_are_left_out_and_said_not_fatal() {
         .find(|fact| fact.presentation().id == missing)
         .expect("the fact to move");
     let mut presentation = moved.presentation().clone();
-    presentation.id = backend_engine::RowId::Symbol(backend_engine::symbol_key("nowhere::stray")).stable_key();
-    facts.push(backend_extension_trustfall::SemanticQueryFact::new(moved.evidence().clone(), presentation));
-    let evidence = backend_extension_trustfall::SemanticQueryCorpus::admit(workspace, facts).expect("typed semantic evidence");
+    presentation.id =
+        backend_engine::RowId::Symbol(backend_engine::symbol_key("nowhere::stray")).stable_key();
+    facts.push(backend_extension_trustfall::SemanticQueryFact::new(
+        moved.evidence().clone(),
+        presentation,
+    ));
+    let evidence = backend_extension_trustfall::SemanticQueryCorpus::admit(workspace, facts)
+        .expect("typed semantic evidence");
     let coordinator = QueryCoordinator::new(
         workspace,
         view,
@@ -190,12 +196,23 @@ fn rows_and_evidence_that_do_not_pair_are_left_out_and_said_not_fatal() {
     let answer = coordinator
         .search_local(LocalQuery::prefix("alpha", 5).expect("query"))
         .expect("local search");
-    assert_eq!(answer.rows.iter().map(|ranked| ranked.row.label.as_str()).collect::<Vec<_>>(), ["alpha exact"], "every row that pairs is searched; the one without evidence is not");
+    assert_eq!(
+        answer
+            .rows
+            .iter()
+            .map(|ranked| ranked.row.label.as_str())
+            .collect::<Vec<_>>(),
+        ["alpha exact"],
+        "every row that pairs is searched; the one without evidence is not"
+    );
     assert_eq!(
         answer.lanes[1].coverage,
         CoverageBasis::PartialView {
             selected_rows: 3,
-            left_out: LeftOut { rows_without_evidence: 1, evidence_without_row: 1 },
+            left_out: LeftOut {
+                rows_without_evidence: 1,
+                evidence_without_row: 1
+            },
         },
         "and the lane says what it left out"
     );
@@ -957,9 +974,18 @@ fn one_renamed_symbol_rewrites_only_that_lexical_document() {
 #[test]
 fn a_package_is_named_by_its_folder_less_the_version_a_registry_tree_carries() {
     use super::local::package_name;
-    assert_eq!(package_name("/cache/index.crates.io-1949cf8c6b5b557f/toml-0.8.23"), "toml");
-    assert_eq!(package_name("/cache/index.crates.io-1949cf8c6b5b557f/proc-macro2-1.0.107"), "proc-macro2");
-    assert_eq!(package_name("/cache/index.crates.io-1949cf8c6b5b557f/toml_edit-0.22.27"), "toml_edit");
+    assert_eq!(
+        package_name("/cache/index.crates.io-1949cf8c6b5b557f/toml-0.8.23"),
+        "toml"
+    );
+    assert_eq!(
+        package_name("/cache/index.crates.io-1949cf8c6b5b557f/proc-macro2-1.0.107"),
+        "proc-macro2"
+    );
+    assert_eq!(
+        package_name("/cache/index.crates.io-1949cf8c6b5b557f/toml_edit-0.22.27"),
+        "toml_edit"
+    );
     assert_eq!(package_name("pkg:cargo/toml@0.8.23"), "toml");
     assert_eq!(package_name("/Users/someone/code/toml_pin"), "toml_pin");
 }
@@ -972,26 +998,45 @@ fn a_package_is_named_by_its_folder_less_the_version_a_registry_tree_carries() {
 fn the_words_place_the_declaration_they_name_in_the_package_they_name_first() {
     use super::local::Placement;
     let words = ["toml".to_owned(), "Value".to_owned()];
-    let place = |name: &str, package: &str, kind: &str, external: bool| Placement::for_test(name, package, kind, external).key(&words);
+    let place = |name: &str, package: &str, kind: &str, external: bool| {
+        Placement::for_test(name, package, kind, external).key(&words)
+    };
     let toml_value = place("Value", "toml", "enum", false);
     let toml_use = place("Value", "toml", "import", false);
     let edit_value = place("Value", "toml_edit", "enum", false);
     let macro_row = place("toml_internal", "toml", "macro", false);
     let method = place("value", "toml", "method", false);
     let external = place("Value", "toml", "external", true);
-    assert!(toml_value > toml_use, "the enum before a `use` that brings the name in");
-    assert!(toml_use > edit_value, "the package the words name: {toml_use:?} vs {edit_value:?}");
-    assert!(edit_value > method, "the name as typed before the name in another case");
-    assert!(method > macro_row, "a whole name before words that only start one");
-    assert!(macro_row > external, "a declaration before a link to one elsewhere");
+    assert!(
+        toml_value > toml_use,
+        "the enum before a `use` that brings the name in"
+    );
+    assert!(
+        toml_use > edit_value,
+        "the package the words name: {toml_use:?} vs {edit_value:?}"
+    );
+    assert!(
+        edit_value > method,
+        "the name as typed before the name in another case"
+    );
+    assert!(
+        method > macro_row,
+        "a whole name before words that only start one"
+    );
+    assert!(
+        macro_row > external,
+        "a declaration before a link to one elsewhere"
+    );
     let one = ["Datetime".to_owned()];
     assert!(
-        Placement::for_test("Datetime", "toml_datetime", "struct", false).key(&one) > Placement::for_test("Datetime", "toml", "import", false).key(&one),
+        Placement::for_test("Datetime", "toml_datetime", "struct", false).key(&one)
+            > Placement::for_test("Datetime", "toml", "import", false).key(&one),
         "one word: the struct it names before a re-export of it"
     );
     let package = ["toml".to_owned()];
     assert!(
-        Placement::for_test("toml", "toml", "project", false).key(&package) > Placement::for_test("toml_internal", "toml", "macro", false).key(&package),
+        Placement::for_test("toml", "toml", "project", false).key(&package)
+            > Placement::for_test("toml_internal", "toml", "macro", false).key(&package),
         "one word: the row it names (the package itself) first"
     );
 }

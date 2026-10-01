@@ -17,12 +17,12 @@
 pub mod align;
 pub mod bench;
 pub mod cli;
-pub(crate) mod native_trace;
 pub mod compose;
 pub mod json;
 pub mod legible;
 pub mod lint;
 pub mod matrix;
+pub(crate) mod native_trace;
 pub mod perf;
 pub mod soak;
 pub mod storm;
@@ -611,16 +611,33 @@ pub fn capture(scene: &Scene, shot: &Shot) -> Result<Vec<Frame>, GalleryError> {
     Ok(frames)
 }
 
-
 // Validate the application's actual source, so a native launch cannot silently
 // omit icons while the headless renderer remains correct.
-fn verify_assets(source: &std::sync::Arc<dyn gpui::AssetSource>, renderer: &gpui::SvgRenderer) -> Result<(), GalleryError> {
-    for path in [crate::icons::Icon::Search.path(), crate::icons::Kind::Struct.path(), "brand/logo.svg"] {
-        let bytes = source.load(path).map_err(GalleryError::from_display)?
-            .ok_or_else(|| GalleryError::from_display(format!("gallery asset source missing {path}")))?;
-        let image = renderer.render_single_frame(&bytes,1.0).map_err(GalleryError::from_display)?;
-        if !image.as_bytes(0).is_some_and(|pixels| pixels.chunks_exact(4).any(|pixel| pixel[3] != 0)) {
-            return Err(GalleryError::from_display(format!("gallery asset {path} rendered no visible pixels")));
+fn verify_assets(
+    source: &std::sync::Arc<dyn gpui::AssetSource>,
+    renderer: &gpui::SvgRenderer,
+) -> Result<(), GalleryError> {
+    for path in [
+        crate::icons::Icon::Search.path(),
+        crate::icons::Kind::Struct.path(),
+        "brand/logo.svg",
+    ] {
+        let bytes = source
+            .load(path)
+            .map_err(GalleryError::from_display)?
+            .ok_or_else(|| {
+                GalleryError::from_display(format!("gallery asset source missing {path}"))
+            })?;
+        let image = renderer
+            .render_single_frame(&bytes, 1.0)
+            .map_err(GalleryError::from_display)?;
+        if !image
+            .as_bytes(0)
+            .is_some_and(|pixels| pixels.chunks_exact(4).any(|pixel| pixel[3] != 0))
+        {
+            return Err(GalleryError::from_display(format!(
+                "gallery asset {path} rendered no visible pixels"
+            )));
         }
     }
     Ok(())
@@ -635,14 +652,15 @@ mod bootstrap_assets {
     fn real_gallery_assets_render_search_kind_and_brand() {
         let source: Arc<dyn gpui::AssetSource> = Arc::new(crate::icons::Assets);
         let renderer = gpui::SvgRenderer::new(Arc::clone(&source));
-        verify_assets(&source,&renderer).unwrap_or_else(|error| panic!("{error}"));
+        verify_assets(&source, &renderer).unwrap_or_else(|error| panic!("{error}"));
     }
 
     #[test]
     fn omitted_application_assets_are_rejected_before_native_window_opens() {
         let source: Arc<dyn gpui::AssetSource> = Arc::new(());
         let renderer = gpui::SvgRenderer::new(Arc::clone(&source));
-        let error = verify_assets(&source,&renderer).expect_err("empty native asset source must not appear visually healthy");
+        let error = verify_assets(&source, &renderer)
+            .expect_err("empty native asset source must not appear visually healthy");
         assert!(error.to_string().contains("icons/ui/search.svg"));
     }
 }

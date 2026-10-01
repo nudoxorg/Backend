@@ -1,8 +1,8 @@
 //! Exercises the `backend-semantic::index_core` tests published-authority contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
-use backend_version::GenerationId;
 use backend_semantic::index_core::IndexSnapshot;
+use backend_version::GenerationId;
 
 #[test]
 fn identical_projection_bytes_cannot_cross_generation_authority() {

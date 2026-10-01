@@ -32,8 +32,12 @@ use crate::model::{
     ProjectPhase, WorkspaceProject, WorkspaceState,
 };
 use crate::navigation::Intent;
-use crate::runtime::reads::{OutlineCache, PageReader, ReadContext, ReadPool, ReadRequest, SessionReader};
-use crate::runtime::{CancellationToken, DesktopRuntime, EngineActor, LocalEngineClient, UiEntityGraph};
+use crate::runtime::reads::{
+    OutlineCache, PageReader, ReadContext, ReadPool, ReadRequest, SessionReader,
+};
+use crate::runtime::{
+    CancellationToken, DesktopRuntime, EngineActor, LocalEngineClient, UiEntityGraph,
+};
 use backend_client::{LocalSubscriptionTransport, Session};
 use backend_gui_harness::Act;
 use facet::ActiveFacet;
@@ -43,8 +47,8 @@ use refusals::{Fate, Listing, Refusals, Reply, Row, Standing, fate, settled, sta
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-pub mod journey;
 mod install;
+pub mod journey;
 mod refusals;
 mod startup;
 
@@ -134,12 +138,18 @@ impl Fixture {
 /// `total` roots, of which `preserved` serve a prior generation and `failed`
 /// serve nothing; the rest are fresh.
 fn provenance(total: usize, preserved: usize, failed: usize) -> Provenance {
-    Provenance { fresh: total.saturating_sub(preserved + failed), preserved, failed }
+    Provenance {
+        fresh: total.saturating_sub(preserved + failed),
+        preserved,
+        failed,
+    }
 }
 
-static FIXTURE: std::sync::OnceLock<std::sync::Mutex<Option<&'static Fixture>>> = std::sync::OnceLock::new();
+static FIXTURE: std::sync::OnceLock<std::sync::Mutex<Option<&'static Fixture>>> =
+    std::sync::OnceLock::new();
 static STATE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-static RESPONSIVE_STARTUP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static RESPONSIVE_STARTUP: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// Native review windows paint immediately while fixture preparation runs.
 /// Headless capture retains a failing process result when boot cannot finish.
@@ -192,7 +202,8 @@ fn orbit_workspace(fixture: &Fixture) -> Result<WorkspaceState, String> {
         .iter()
         .find(|project| project.ends_with("toml_pin"))
         .ok_or_else(|| "toml_pin is not among the fixture's indexed projects".to_owned())?;
-    let project = LocalProjectId::from_path(root).map_err(|error| format!("toml_pin project identity: {error:?}"))?;
+    let project = LocalProjectId::from_path(root)
+        .map_err(|error| format!("toml_pin project identity: {error:?}"))?;
     Ok(tree_workspace(&project))
 }
 
@@ -214,8 +225,16 @@ fn registry_source(release: &str) -> Result<PathBuf, String> {
         .collect::<Vec<_>>();
     found.sort();
     found.pop().map_or_else(
-        || Err(format!("{release} is not in the cargo registry cache under {}; fetch it once with cargo", src.display())),
-        |path| path.canonicalize().map_err(|error| format!("{}: {error}", path.display())),
+        || {
+            Err(format!(
+                "{release} is not in the cargo registry cache under {}; fetch it once with cargo",
+                src.display()
+            ))
+        },
+        |path| {
+            path.canonicalize()
+                .map_err(|error| format!("{}: {error}", path.display()))
+        },
     )
 }
 
@@ -231,7 +250,11 @@ fn endpoint_for(data: &Path) -> Result<PathBuf, String> {
         .canonicalize()
         .map_err(|error| format!("{}: {error}", data.display()))?;
     let digest = sha2::Sha256::digest(data.as_os_str().as_encoded_bytes());
-    let hex = digest.iter().take(6).map(|byte| format!("{byte:02x}")).collect::<String>();
+    let hex = digest
+        .iter()
+        .take(6)
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     Ok(PathBuf::from(format!("/tmp/nx-harness-{hex}.sock")))
 }
 
@@ -264,7 +287,9 @@ fn fixture_with_progress(progress: impl Fn(&str)) -> Result<&'static Fixture, St
     // opened owner alive at process scope and serialize concurrent attempts;
     // errors leave the cache empty so retry can try again.
     let fixture_cache = FIXTURE.get_or_init(|| std::sync::Mutex::new(None));
-    let mut cached = fixture_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut cached = fixture_cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(fixture) = *cached {
         return Ok(fixture);
     }
@@ -319,7 +344,10 @@ fn fixture_with_progress(progress: impl Fn(&str)) -> Result<&'static Fixture, St
         Err(Opening::Refused(reason)) => {
             let fresh = fallback_state(&repo, &configured);
             if fresh == configured {
-                return Err(format!("fixture owner: {} refused: {reason}", configured.display()));
+                return Err(format!(
+                    "fixture owner: {} refused: {reason}",
+                    configured.display()
+                ));
             }
             report_once(format!(
                 "state dir {} refused by the owner ({reason}); using the clean state dir {}",
@@ -346,11 +374,20 @@ fn fixture_with_progress(progress: impl Fn(&str)) -> Result<&'static Fixture, St
     // (`refusals`).
     let refusals = Refusals::load(&state, &projects);
     let mut roots = index_roots(&mut session, &endpoint, &projects, &refusals, &progress)?;
-    refusals.save(&roots.iter().filter_map(|root| match &root.reply {
-        Reply::Refused(words) => Some((root.path.clone(), words.clone())),
-        Reply::Accepted => None,
-    }).collect());
-    crate::runtime::trace::span("boot.index_requests", indexing, format_args!("{} roots", roots.len()));
+    refusals.save(
+        &roots
+            .iter()
+            .filter_map(|root| match &root.reply {
+                Reply::Refused(words) => Some((root.path.clone(), words.clone())),
+                Reply::Accepted => None,
+            })
+            .collect(),
+    );
+    crate::runtime::trace::span(
+        "boot.index_requests",
+        indexing,
+        format_args!("{} roots", roots.len()),
+    );
     progress("Waiting for indexed sources");
     let started = Instant::now();
     let rows = await_settled(&mut session, &mut roots)?;
@@ -358,14 +395,25 @@ fn fixture_with_progress(progress: impl Fn(&str)) -> Result<&'static Fixture, St
     let (mut preserved, mut failed) = (Vec::new(), Vec::new());
     for root in &roots {
         match &root.standing {
-            Standing::Preserved(reason) => preserved.push(Refusal { root: root.path.clone(), reason: reason.clone() }),
-            Standing::Failed(reason) => failed.push(Refusal { root: root.path.clone(), reason: reason.clone() }),
+            Standing::Preserved(reason) => preserved.push(Refusal {
+                root: root.path.clone(),
+                reason: reason.clone(),
+            }),
+            Standing::Failed(reason) => failed.push(Refusal {
+                root: root.path.clone(),
+                reason: reason.clone(),
+            }),
             Standing::Ready | Standing::Pending => {}
         }
     }
     report_provenance(projects.len(), &preserved, &failed);
     refuse_empty_index(projects.len(), &failed, EmptyIndex::from_env())?;
-    let fixture: &'static Fixture = Box::leak(Box::new(Fixture { host, projects, preserved, failed }));
+    let fixture: &'static Fixture = Box::leak(Box::new(Fixture {
+        host,
+        projects,
+        preserved,
+        failed,
+    }));
     *cached = Some(fixture);
     Ok(fixture)
 }
@@ -393,7 +441,9 @@ const LISTING_POLLS: u32 = 10;
 fn ask_index(session: &mut Session, endpoint: &Path, root: &Path) -> Result<Reply, String> {
     let coordinate = utf8(root)?;
     for attempt in 1..=INDEX_ATTEMPTS {
-        let Err(error) = session.index(coordinate) else { return Ok(Reply::Accepted) };
+        let Err(error) = session.index(coordinate) else {
+            return Ok(Reply::Accepted);
+        };
         match fate(&error) {
             Fate::Refused(words) => return Ok(Reply::Refused(words)),
             Fate::Retry if attempt < INDEX_ATTEMPTS => {
@@ -405,7 +455,10 @@ fn ask_index(session: &mut Session, endpoint: &Path, root: &Path) -> Result<Repl
             Fate::Retry | Fate::Fatal => return Err(format!("index {}: {error}", root.display())),
         }
     }
-    Err(format!("index {}: the owner never answered", root.display()))
+    Err(format!(
+        "index {}: the owner never answered",
+        root.display()
+    ))
 }
 
 /// Puts every root to the owner (or reads its refusal back from `refusals`).
@@ -421,10 +474,22 @@ fn index_roots(
     let total = projects.len();
     let mut roots = Vec::with_capacity(total);
     for (index, project) in projects.iter().enumerate() {
-        progress(&format!("Indexing {} ({}/{total})", project.file_name().and_then(|name| name.to_str()).unwrap_or("fixture"), index + 1));
+        progress(&format!(
+            "Indexing {} ({}/{total})",
+            project
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("fixture"),
+            index + 1
+        ));
         let reply = match refusals.recorded(project) {
             Some(reason) => {
-                report_root_refused(project, &format!("{reason} (refused earlier by this same owner, toolchain and root; not asked again)"));
+                report_root_refused(
+                    project,
+                    &format!(
+                        "{reason} (refused earlier by this same owner, toolchain and root; not asked again)"
+                    ),
+                );
                 Reply::Refused(reason.to_owned())
             }
             None => {
@@ -435,7 +500,11 @@ fn index_roots(
                 reply
             }
         };
-        roots.push(Indexed { path: project.clone(), reply, standing: Standing::Pending });
+        roots.push(Indexed {
+            path: project.clone(),
+            reply,
+            standing: Standing::Pending,
+        });
     }
     Ok(roots)
 }
@@ -447,15 +516,24 @@ fn await_settled(session: &mut Session, roots: &mut [Indexed]) -> Result<u64, St
     let (mut last_rows, mut stable, mut polls) = (0, 0, 0_u32);
     loop {
         polls += 1;
-        if let Ok(backend_library::CommandReply::Packages(snapshot)) = session.packages().map(|reply| reply.reply) {
-            let listing = if snapshot.root.rows().is_empty() && polls < LISTING_POLLS { Listing::Awaited } else { Listing::Settled };
+        if let Ok(backend_library::CommandReply::Packages(snapshot)) =
+            session.packages().map(|reply| reply.reply)
+        {
+            let listing = if snapshot.root.rows().is_empty() && polls < LISTING_POLLS {
+                Listing::Awaited
+            } else {
+                Listing::Settled
+            };
             for root in roots.iter_mut() {
                 let row = snapshot
                     .root
                     .rows()
                     .iter()
                     .find(|row| Some(row.label.as_str()) == root.path.to_str())
-                    .map(|row| Row { state: row.state, words: row_words(row) });
+                    .map(|row| Row {
+                        state: row.state,
+                        words: row_words(row),
+                    });
                 root.standing = standing(&root.reply, row.as_ref(), listing);
                 if let Standing::Failed(reason) = &root.standing {
                     report_root_failed(&root.path, reason);
@@ -465,23 +543,43 @@ fn await_settled(session: &mut Session, roots: &mut [Indexed]) -> Result<u64, St
             // ready, and how, every ~10 s of waiting.
             if polls.is_multiple_of(33) {
                 for root in roots.iter().filter(|root| root.standing != Standing::Ready) {
-                    review_diag(&format!("waiting on {}: {:?}", root.path.display(), root.standing));
+                    review_diag(&format!(
+                        "waiting on {}: {:?}",
+                        root.path.display(),
+                        root.standing
+                    ));
                 }
             }
         }
         let rows = session.health().map_or(0, |health| health.row_count());
         // With every root failed there are no rows to wait for: the pages
         // are the app's fault plates and the wait is over once it is quiet.
-        let all_failed = roots.iter().all(|root| matches!(root.standing, Standing::Failed(_)));
-        let standings = roots.iter().map(|root| root.standing.clone()).collect::<Vec<_>>();
-        stable = if settled(&standings) && (rows > 0 || all_failed) && rows == last_rows { stable + 1 } else { 0 };
+        let all_failed = roots
+            .iter()
+            .all(|root| matches!(root.standing, Standing::Failed(_)));
+        let standings = roots
+            .iter()
+            .map(|root| root.standing.clone())
+            .collect::<Vec<_>>();
+        stable = if settled(&standings) && (rows > 0 || all_failed) && rows == last_rows {
+            stable + 1
+        } else {
+            0
+        };
         last_rows = rows;
         if stable >= 3 {
             return Ok(rows);
         }
         if started.elapsed() > INDEX_DEADLINE {
-            let pending = roots.iter().filter(|root| root.standing == Standing::Pending).map(|root| root.path.display().to_string()).collect::<Vec<_>>();
-            return Err(format!("the fixture index never settled; still pending: {}", pending.join(", ")));
+            let pending = roots
+                .iter()
+                .filter(|root| root.standing == Standing::Pending)
+                .map(|root| root.path.display().to_string())
+                .collect::<Vec<_>>();
+            return Err(format!(
+                "the fixture index never settled; still pending: {}",
+                pending.join(", ")
+            ));
         }
         std::thread::sleep(Duration::from_millis(300));
     }
@@ -501,7 +599,11 @@ enum EmptyIndex {
 
 impl EmptyIndex {
     fn from_env() -> Self {
-        if std::env::var_os(ALLOW_EMPTY_INDEX).is_some() { Self::Allow } else { Self::Refuse }
+        if std::env::var_os(ALLOW_EMPTY_INDEX).is_some() {
+            Self::Allow
+        } else {
+            Self::Refuse
+        }
     }
 }
 
@@ -517,7 +619,13 @@ fn refuse_empty_index(total: usize, failed: &[Refusal], empty: EmptyIndex) -> Re
     }
     let first = failed
         .first()
-        .map(|refusal| format!("{}: {}", refusal.root.display(), refusal.reason.chars().take(160).collect::<String>()))
+        .map(|refusal| {
+            format!(
+                "{}: {}",
+                refusal.root.display(),
+                refusal.reason.chars().take(160).collect::<String>()
+            )
+        })
         .unwrap_or_default();
     Err(format!(
         "the fixture index is empty: all {total} roots have nothing to serve, so every package and symbol page is the app's fault plate and the Library lists no package (first: {first}). Fix the index, or set {ALLOW_EMPTY_INDEX}=1 to capture the fault plates on purpose"
@@ -529,9 +637,14 @@ fn refuse_empty_index(total: usize, failed: &[Refusal], empty: EmptyIndex) -> Re
 /// prior generation) must not look like one that captured fresh data.
 fn report_provenance(total: usize, preserved: &[Refusal], failed: &[Refusal]) {
     if failed.len() == total {
-        report_once(format!("no fixture root is indexed ({total} of {total} failed): every package and symbol page shows the app's fault plate"));
+        report_once(format!(
+            "no fixture root is indexed ({total} of {total} failed): every package and symbol page shows the app's fault plate"
+        ));
     } else if !failed.is_empty() {
-        report_once(format!("{} of {total} fixture roots have nothing to serve: their pages show the app's fault plate", failed.len()));
+        report_once(format!(
+            "{} of {total} fixture roots have nothing to serve: their pages show the app's fault plate",
+            failed.len()
+        ));
     }
     if let Some(first) = preserved.first() {
         report_once(format!(
@@ -548,7 +661,9 @@ fn row_words(row: &backend_library::Row) -> String {
     row.document
         .iter()
         .filter_map(|fragment| match fragment {
-            backend_library::Fragment::Text(text) | backend_library::Fragment::Code(text) => Some(text.as_str()),
+            backend_library::Fragment::Text(text) | backend_library::Fragment::Code(text) => {
+                Some(text.as_str())
+            }
             backend_library::Fragment::Link { label, .. } => Some(label.as_str()),
             backend_library::Fragment::Break => None,
         })
@@ -562,7 +677,9 @@ fn row_words(row: &backend_library::Row) -> String {
 /// boot, or polls a failed root every 300 ms, names it once.
 fn report_once(message: String) {
     static SAID: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-    let mut said = SAID.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut said = SAID
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if !said.contains(&message) {
         eprintln!("[harness] {message}");
         said.push(message);
@@ -570,11 +687,17 @@ fn report_once(message: String) {
 }
 
 fn report_root_refused(project: &Path, reason: &str) {
-    report_once(format!("root {} was refused by the owner, capturing the rest: {reason}", project.display()));
+    report_once(format!(
+        "root {} was refused by the owner, capturing the rest: {reason}",
+        project.display()
+    ));
 }
 
 fn report_root_failed(project: &Path, reason: &str) {
-    report_once(format!("root {} has nothing to serve: {reason}", project.display()));
+    report_once(format!(
+        "root {} has nothing to serve: {reason}",
+        project.display()
+    ));
 }
 
 /// How the engine's `WorkspaceError::AlreadyOwned` reads inside a composition
@@ -653,7 +776,13 @@ fn fallback_state(repo: &Path, configured: &Path) -> PathBuf {
         .and_then(|name| name.to_str())
         .unwrap_or("state")
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect::<String>();
     repo.join(".local/harness").join(format!("fallback-{name}"))
 }
@@ -664,8 +793,12 @@ fn fallback_state(repo: &Path, configured: &Path) -> PathBuf {
 /// waits 2 s for its endpoint; a debug owner can take longer): keep asking
 /// until it answers or the lock frees, for up to a minute. A directory the
 /// owner refuses is reported at once instead.
-fn open_owner(state: &Path, project: &Path) -> Result<(crate::DesktopHost, PathBuf, PathBuf), Opening> {
-    private_dir(&state.join("data")).map_err(|error| Opening::Refused(format!("{}: {error}", state.display())))?;
+fn open_owner(
+    state: &Path,
+    project: &Path,
+) -> Result<(crate::DesktopHost, PathBuf, PathBuf), Opening> {
+    private_dir(&state.join("data"))
+        .map_err(|error| Opening::Refused(format!("{}: {error}", state.display())))?;
     let endpoint = endpoint_for(&state.join("data")).map_err(Opening::Failed)?;
     let paths = backend_runtime::WorkspacePaths::discover(
         Some(project.to_path_buf()),
@@ -677,7 +810,11 @@ fn open_owner(state: &Path, project: &Path) -> Result<(crate::DesktopHost, PathB
     loop {
         match crate::DesktopHost::start_with_paths(paths.clone()) {
             Ok(host) => {
-                crate::runtime::trace::span("boot.owner_start", attaching, format_args!("{:?}", host.mode()));
+                crate::runtime::trace::span(
+                    "boot.owner_start",
+                    attaching,
+                    format_args!("{:?}", host.mode()),
+                );
                 crate::host::registry::publish(host.endpoint(), host.data());
                 return Ok((host, endpoint, state.to_path_buf()));
             }
@@ -697,13 +834,15 @@ fn preflight_fixture_manifests(projects: &[PathBuf]) -> Result<(), String> {
     for project in projects {
         let manifest = project.join("Cargo.toml");
         // A TypeScript or Go root has no Rust edition to check.
-        if !manifest.exists() && (project.join("package.json").exists() || project.join("go.mod").exists()) {
+        if !manifest.exists()
+            && (project.join("package.json").exists() || project.join("go.mod").exists())
+        {
             continue;
         }
         let bytes = std::fs::read_to_string(&manifest)
             .map_err(|error| format!("{}: {error}", manifest.display()))?;
-        let parsed: toml::Value = toml::from_str(&bytes)
-            .map_err(|error| format!("{}: {error}", manifest.display()))?;
+        let parsed: toml::Value =
+            toml::from_str(&bytes).map_err(|error| format!("{}: {error}", manifest.display()))?;
         if parsed.get("package").is_some() {
             preflight_package_edition(project, &manifest, &parsed)?;
             continue;
@@ -713,9 +852,16 @@ fn preflight_fixture_manifests(projects: &[PathBuf]) -> Result<(), String> {
             .and_then(toml::Value::as_table)
             .and_then(|workspace| workspace.get("members"))
             .and_then(toml::Value::as_array)
-            .ok_or_else(|| format!("{} has no [package] or [workspace.members]", manifest.display()))?;
+            .ok_or_else(|| {
+                format!(
+                    "{} has no [package] or [workspace.members]",
+                    manifest.display()
+                )
+            })?;
         for member in members {
-            let member = member.as_str().ok_or_else(|| format!("{} has a non-string workspace member", manifest.display()))?;
+            let member = member.as_str().ok_or_else(|| {
+                format!("{} has a non-string workspace member", manifest.display())
+            })?;
             let member_root = project.join(member);
             let member_manifest = member_root.join("Cargo.toml");
             let bytes = std::fs::read_to_string(&member_manifest)
@@ -728,34 +874,62 @@ fn preflight_fixture_manifests(projects: &[PathBuf]) -> Result<(), String> {
     Ok(())
 }
 
-fn preflight_package_edition(project: &Path, manifest: &Path, parsed: &toml::Value) -> Result<(), String> {
+fn preflight_package_edition(
+    project: &Path,
+    manifest: &Path,
+    parsed: &toml::Value,
+) -> Result<(), String> {
     let package = parsed
         .get("package")
         .and_then(toml::Value::as_table)
         .ok_or_else(|| format!("{} has no [package] table", manifest.display()))?;
-    let declared = package.get("edition").ok_or_else(|| format!("{} has no package.edition", manifest.display()))?;
+    let declared = package
+        .get("edition")
+        .ok_or_else(|| format!("{} has no package.edition", manifest.display()))?;
     let edition = if let Some(edition) = declared.as_str() {
         edition.to_owned()
-    } else if declared.as_table().and_then(|inherit| inherit.get("workspace")).and_then(toml::Value::as_bool) == Some(true) {
+    } else if declared
+        .as_table()
+        .and_then(|inherit| inherit.get("workspace"))
+        .and_then(toml::Value::as_bool)
+        == Some(true)
+    {
         let mut ancestor = project.parent();
         let mut inherited = None;
         while let Some(path) = ancestor {
             let workspace_manifest = path.join("Cargo.toml");
             if let Ok(bytes) = std::fs::read_to_string(&workspace_manifest) {
                 if let Ok(value) = toml::from_str::<toml::Value>(&bytes) {
-                    inherited = value.get("workspace").and_then(|w| w.get("package"))
-                        .and_then(|p| p.get("edition")).and_then(toml::Value::as_str).map(str::to_owned);
-                    if inherited.is_some() { break; }
+                    inherited = value
+                        .get("workspace")
+                        .and_then(|w| w.get("package"))
+                        .and_then(|p| p.get("edition"))
+                        .and_then(toml::Value::as_str)
+                        .map(str::to_owned);
+                    if inherited.is_some() {
+                        break;
+                    }
                 }
             }
             ancestor = path.parent();
         }
-        inherited.ok_or_else(|| format!("{} inherits edition but no workspace.package.edition was found", manifest.display()))?
+        inherited.ok_or_else(|| {
+            format!(
+                "{} inherits edition but no workspace.package.edition was found",
+                manifest.display()
+            )
+        })?
     } else {
-        return Err(format!("{} has an unsupported package.edition declaration", manifest.display()));
+        return Err(format!(
+            "{} has an unsupported package.edition declaration",
+            manifest.display()
+        ));
     };
     if !matches!(edition.as_str(), "2015" | "2018" | "2021" | "2024") {
-        return Err(format!("{} declares unsupported rust edition {edition}", manifest.display()));
+        return Err(format!(
+            "{} declares unsupported rust edition {edition}",
+            manifest.display()
+        ));
     }
     Ok(())
 }
@@ -765,10 +939,10 @@ fn preflight_package_edition(project: &Path, manifest: &Path, parsed: &toml::Val
 pub mod route {
     use super::{Fixture, resolve_package, resolve_symbol_kind};
     use crate::core::PackageId;
+    pub use crate::navigation::View;
     use crate::navigation::{
         Coordinate, OrbitRoute, PackageLane, PackageRoute, ReleaseId, Route, SymbolRoute,
     };
-    pub use crate::navigation::View;
 
     /// A route, as a script names it.
     #[derive(Clone, Debug, Eq, PartialEq)]
@@ -807,7 +981,11 @@ pub mod route {
         },
     }
 
-    fn options(kind: &str, words: &[&str], view: &mut Option<View>) -> Result<Option<String>, String> {
+    fn options(
+        kind: &str,
+        words: &[&str],
+        view: &mut Option<View>,
+    ) -> Result<Option<String>, String> {
         let mut at = None;
         for option in words {
             match option.split_once('=') {
@@ -834,7 +1012,12 @@ pub mod route {
             ["tree"] => Ok(Target::Tree),
             ["find"] => Ok(Target::Find(String::new())),
             ["find", words @ ..] if !words.is_empty() => Ok(Target::Find(words.join(" "))),
-            ["compare", packages @ ..] if (2..=4).contains(&packages.len()) => Ok(Target::Compare(packages.iter().map(|package| (*package).to_owned()).collect())),
+            ["compare", packages @ ..] if (2..=4).contains(&packages.len()) => Ok(Target::Compare(
+                packages
+                    .iter()
+                    .map(|package| (*package).to_owned())
+                    .collect(),
+            )),
             ["package", id, rest @ ..] => Ok(Target::Package {
                 id: (*id).to_owned(),
                 at: options("package", rest, &mut None)?,
@@ -846,7 +1029,9 @@ pub mod route {
                 let mut options_without_kind = Vec::with_capacity(rest.len());
                 for option in rest {
                     if let Some(("kind", name)) = option.split_once('=') {
-                        if kind.is_some() { return Err("route symbol: duplicate kind option".to_owned()); }
+                        if kind.is_some() {
+                            return Err("route symbol: duplicate kind option".to_owned());
+                        }
                         kind = Some(match name {
                             "class" => backend_library::DeclarationKind::Class,
                             "enum" => backend_library::DeclarationKind::Enum,
@@ -857,10 +1042,16 @@ pub mod route {
                             "trait" => backend_library::DeclarationKind::Trait,
                             "type" => backend_library::DeclarationKind::Type,
                             "union" => backend_library::DeclarationKind::Union,
-                            _ => return Err(format!("route symbol: unknown declaration kind `{name}`")),
+                            _ => {
+                                return Err(format!(
+                                    "route symbol: unknown declaration kind `{name}`"
+                                ));
+                            }
                         });
                     } else if let Some(("path", source)) = option.split_once('=') {
-                        if source.is_empty() || path.is_some() { return Err("route symbol: invalid or duplicate path option".to_owned()); }
+                        if source.is_empty() || path.is_some() {
+                            return Err("route symbol: invalid or duplicate path option".to_owned());
+                        }
                         path = Some(source.to_owned());
                     } else {
                         options_without_kind.push(*option);
@@ -898,19 +1089,37 @@ pub mod route {
             Target::Orbit => Ok(Route::Orbit(OrbitRoute::Home)),
             Target::World => Ok(Route::World),
             Target::Tree => {
-                let root = super::browse_tree_root().canonicalize().map_err(|error| format!("route tree: {error}"))?;
+                let root = super::browse_tree_root()
+                    .canonicalize()
+                    .map_err(|error| format!("route tree: {error}"))?;
                 crate::core::LocalProjectId::from_path(&root)
-                    .map(|project| Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::Tree(project))))
+                    .map(|project| {
+                        Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::Tree(
+                            project,
+                        )))
+                    })
                     .map_err(|error| format!("route tree: {error:?}"))
             }
-            Target::Find(text) if text.is_empty() => Ok(Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::FindHome))),
+            Target::Find(text) if text.is_empty() => Ok(Route::Orbit(OrbitRoute::Browse(
+                crate::navigation::BrowseRoute::FindHome,
+            ))),
             Target::Find(text) => crate::model::pages::SearchQuery::new(text, 200)
-                .map(|query| Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::Find(query))))
+                .map(|query| {
+                    Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::Find(
+                        query,
+                    )))
+                })
                 .map_err(|error| format!("route find: {error:?}")),
             Target::Compare(names) => {
-                let packages = names.iter().map(|name| resolve_package(name, fixture)).collect::<Result<Vec<_>, _>>()?;
-                let selection = crate::navigation::CompareSet::new(packages).map_err(|error| format!("route compare: {error:?}"))?;
-                Ok(Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::Compare(selection))))
+                let packages = names
+                    .iter()
+                    .map(|name| resolve_package(name, fixture))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let selection = crate::navigation::CompareSet::new(packages)
+                    .map_err(|error| format!("route compare: {error:?}"))?;
+                Ok(Route::Orbit(OrbitRoute::Browse(
+                    crate::navigation::BrowseRoute::Compare(selection),
+                )))
             }
             Target::Package { id, at } => {
                 let package = resolve_package(id, fixture)?;
@@ -923,7 +1132,13 @@ pub mod route {
                     at: release(at.as_ref())?,
                 }))
             }
-            Target::Symbol { id, at, view, kind, path } => {
+            Target::Symbol {
+                id,
+                at,
+                view,
+                kind,
+                path,
+            } => {
                 let (symbol, _line) = resolve_symbol_kind(id, fixture, *kind, path.as_deref())?;
                 let package = symbol
                     .package()
@@ -945,7 +1160,10 @@ pub mod route {
     }
 }
 
-fn read(fixture: &Fixture, request: &ReadRequest) -> Result<crate::model::pages::PageValue, String> {
+fn read(
+    fixture: &Fixture,
+    request: &ReadRequest,
+) -> Result<crate::model::pages::PageValue, String> {
     let mut reader = SessionReader::connect(fixture.endpoint());
     let cancel = CancellationToken::new();
     let outlines = OutlineCache::default();
@@ -966,10 +1184,14 @@ fn read(fixture: &Fixture, request: &ReadRequest) -> Result<crate::model::pages:
 pub fn resolve_package(id: &str, fixture: &Fixture) -> Result<PackageRef, String> {
     // A registry release (`anyhow-1.0.104`) that is not a fixture root reads
     // at the tree the product's own source resolves it to (W-Acquire).
-    if !fixture.projects().iter().any(|project| project.ends_with(id))
+    if !fixture
+        .projects()
+        .iter()
+        .any(|project| project.ends_with(id))
         && let Some(release) = crate::model::release::Release::from_stem(id)
         && let Some(composed) = crate::host::registry::composed()
-        && let crate::model::release::Availability::Unpacked(tree) = composed.source.availability(&release)
+        && let crate::model::release::Availability::Unpacked(tree) =
+            composed.source.availability(&release)
     {
         return PackageRef::parse(utf8(&tree)?).map_err(|error| format!("package {id}: {error:?}"));
     }
@@ -1015,7 +1237,11 @@ fn resolve_symbol_kind(
     // A package whose root failed to index has no outline to resolve against:
     // open the page for the coordinate the scene names, at line 1, so the
     // capture shows the app's own fault plate instead of dying at boot.
-    if let Some(Refusal { reason, .. }) = fixture.failed().iter().find(|refusal| refusal.root.to_str() == Some(package.as_str())) {
+    if let Some(Refusal { reason, .. }) = fixture
+        .failed()
+        .iter()
+        .find(|refusal| refusal.root.to_str() == Some(package.as_str()))
+    {
         let file = expected_path.unwrap_or("lib.rs");
         report_once(format!(
             "symbol `{id}`: its package failed to index ({}); opening it unresolved at {file}:1 for the fault plate",
@@ -1029,15 +1255,24 @@ fn resolve_symbol_kind(
     let mut reader = SessionReader::connect(fixture.endpoint());
     let cancel = CancellationToken::new();
     let outlines = OutlineCache::default();
-    let context = ReadContext { worker: 0, cancel: &cancel, outlines: &outlines };
+    let context = ReadContext {
+        worker: 0,
+        cancel: &cancel,
+        outlines: &outlines,
+    };
     let value = reader
         .read(&ReadRequest::Package(package_ref), &context)
         .map_err(|error| format!("read package outline for {package}: {error:?}"))?;
     let crate::model::pages::PageValue::Package(dossier) = value else {
-        return Err(format!("package outline for {package} returned a non-package page"));
+        return Err(format!(
+            "package outline for {package} returned a non-package page"
+        ));
     };
     let outline = dossier.outline.known().ok_or_else(|| {
-        format!("package outline for {package} is unavailable: {}", dossier.outline.gap().expect("unknown has a gap"))
+        format!(
+            "package outline for {package} is unavailable: {}",
+            dossier.outline.gap().expect("unknown has a gap")
+        )
     })?;
     if !outline.complete {
         return Err(format!(
@@ -1046,8 +1281,21 @@ fn resolve_symbol_kind(
         ));
     }
     let middle = &segments[1..segments.len().saturating_sub(1)];
-    let matches = outline_symbol_candidates(outline, name, package.as_str(), middle, expected_kind, expected_path);
-    choose_outline_symbol_candidate(&matches, id, package.as_str(), outline.complete, outline.count())
+    let matches = outline_symbol_candidates(
+        outline,
+        name,
+        package.as_str(),
+        middle,
+        expected_kind,
+        expected_path,
+    );
+    choose_outline_symbol_candidate(
+        &matches,
+        id,
+        package.as_str(),
+        outline.complete,
+        outline.count(),
+    )
 }
 
 fn outline_symbol_candidates<'a>(
@@ -1061,7 +1309,11 @@ fn outline_symbol_candidates<'a>(
     // Each declaration with the names of the declarations it is nested
     // under: a method's type (`Value` in `toml::value::Value::as_str`) is
     // its parent in the outline, not a part of its path or coordinate.
-    fn nested<'a>(nodes: &'a [crate::model::pages::OutlineNode], above: &mut Vec<&'a str>, out: &mut Vec<(Vec<&'a str>, &'a crate::model::pages::DeclRef)>) {
+    fn nested<'a>(
+        nodes: &'a [crate::model::pages::OutlineNode],
+        above: &mut Vec<&'a str>,
+        out: &mut Vec<(Vec<&'a str>, &'a crate::model::pages::DeclRef)>,
+    ) {
         for node in nodes {
             out.push((above.clone(), &node.decl));
             above.push(node.decl.name.as_ref());
@@ -1076,9 +1328,14 @@ fn outline_symbol_candidates<'a>(
             decl.name.as_ref() == name
                 && expected_kind.is_none_or(|kind| decl.kind == Some(kind))
                 && expected_path.is_none_or(|path| decl.path.as_deref() == Some(path))
-                && decl.coordinate.package().is_some_and(|owner| owner.as_str() == package)
+                && decl
+                    .coordinate
+                    .package()
+                    .is_some_and(|owner| owner.as_str() == package)
                 && middle.iter().all(|segment| {
-                    decl.path.as_deref().is_some_and(|path| path.contains(segment))
+                    decl.path
+                        .as_deref()
+                        .is_some_and(|path| path.contains(segment))
                         || decl.coordinate.as_str().contains(segment)
                         || above.contains(segment)
                 })
@@ -1210,7 +1467,13 @@ pub(super) fn prepare_with_progress(
         .map_err(|error| format!("read pool: {error}"))?;
     report("Opening page");
     review_diag("prepare worker completed successfully");
-    Ok(PreparedBoot { fixture, snapshot, actor, reads, route })
+    Ok(PreparedBoot {
+        fixture,
+        snapshot,
+        actor,
+        reads,
+        route,
+    })
 }
 
 pub(super) fn mount(
@@ -1220,7 +1483,13 @@ pub(super) fn mount(
 ) -> Result<AnyView, String> {
     review_diag("UI mount starting");
     let mounting = Instant::now();
-    let PreparedBoot { fixture, snapshot, actor, reads, route } = prepared;
+    let PreparedBoot {
+        fixture,
+        snapshot,
+        actor,
+        reads,
+        route,
+    } = prepared;
     let runtime = DesktopRuntime::new(snapshot, actor);
     let graph = UiEntityGraph::install_with_reads(cx, runtime, None, Some(reads));
     // The shot's facet becomes the product's settings.
@@ -1243,9 +1512,9 @@ pub(super) fn mount(
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let percent = (facet.text_scale * 100.0).round() as u16;
     let display = shell.read(cx).display_key();
-    graph
-        .root
-        .update(cx, |root, cx| root.dispatch(Intent::ZoomTo { display, percent }, cx));
+    graph.root.update(cx, |root, cx| {
+        root.dispatch(Intent::ZoomTo { display, percent }, cx)
+    });
     cx.set_global(Booted {
         graph,
         fixture: Some(fixture),
@@ -1302,8 +1571,8 @@ fn annotate_regions(cx: &mut App) -> String {
 }
 
 fn browse_route_state(route: &crate::navigation::BrowseRoute) -> gallery::json::Json {
-    use facet::gallery::json::Json;
     use crate::navigation::BrowseRoute;
+    use facet::gallery::json::Json;
     match route {
         BrowseRoute::Tree(project) => Json::obj([
             ("kind", Json::str("tree")),
@@ -1340,23 +1609,52 @@ fn sample_state(cx: &mut App, _: &facet::probe::Ledger) -> gallery::json::Json {
             Route::World => Json::obj([("kind", Json::str("world"))]),
             Route::Orbit(route) => Json::obj([
                 ("kind", Json::str("orbit")),
-                ("project", match route { OrbitRoute::Home | OrbitRoute::Browse(_) => Json::Null, OrbitRoute::Project(project) => Json::num(project.get().get() as f64) }),
-                ("browse", match route { OrbitRoute::Browse(browse) => browse_route_state(browse), _ => Json::Null }),
+                (
+                    "project",
+                    match route {
+                        OrbitRoute::Home | OrbitRoute::Browse(_) => Json::Null,
+                        OrbitRoute::Project(project) => Json::num(project.get().get() as f64),
+                    },
+                ),
+                (
+                    "browse",
+                    match route {
+                        OrbitRoute::Browse(browse) => browse_route_state(browse),
+                        _ => Json::Null,
+                    },
+                ),
             ]),
             Route::Package(route) => Json::obj([
-                ("kind", Json::str("package")), ("package", Json::str(route.package.as_str())),
+                ("kind", Json::str("package")),
+                ("package", Json::str(route.package.as_str())),
                 ("lane", Json::str(format!("{:?}", route.lane))),
-                ("release", route.at.as_ref().map_or(Json::Null, |at| Json::str(at.as_str()))),
+                (
+                    "release",
+                    route
+                        .at
+                        .as_ref()
+                        .map_or(Json::Null, |at| Json::str(at.as_str())),
+                ),
             ]),
             Route::Symbol(route) => Json::obj([
-                ("kind", Json::str("symbol")), ("package", Json::str(route.package.as_str())),
-                ("symbol", Json::str(route.id.as_str())), ("view", Json::str(route.view.as_str())),
-                ("release", route.at.as_ref().map_or(Json::Null, |at| Json::str(at.as_str()))),
+                ("kind", Json::str("symbol")),
+                ("package", Json::str(route.package.as_str())),
+                ("symbol", Json::str(route.id.as_str())),
+                ("view", Json::str(route.view.as_str())),
+                (
+                    "release",
+                    route
+                        .at
+                        .as_ref()
+                        .map_or(Json::Null, |at| Json::str(at.as_str())),
+                ),
                 ("line", Json::opt(route.line)),
             ]),
         }
     }
-    let Some(booted) = cx.try_global::<Booted>() else { return Json::Null };
+    let Some(booted) = cx.try_global::<Booted>() else {
+        return Json::Null;
+    };
     let snapshot = booted.graph.store.read(cx).snapshot();
     Json::obj([
         ("route", route_state(snapshot.route())),
@@ -1365,8 +1663,19 @@ fn sample_state(cx: &mut App, _: &facet::probe::Ledger) -> gallery::json::Json {
         ("graph", booted.shell.read(cx).graph_state(cx)),
         // What the pages are made of: a capture of preserved data says so.
         ("data", {
-            let data = booted.fixture.map_or(Provenance { fresh: 0, preserved: 0, failed: 0 }, Fixture::provenance);
-            Json::obj([("fresh", Json::num(data.fresh as f64)), ("preserved", Json::num(data.preserved as f64)), ("failed", Json::num(data.failed as f64))])
+            let data = booted.fixture.map_or(
+                Provenance {
+                    fresh: 0,
+                    preserved: 0,
+                    failed: 0,
+                },
+                Fixture::provenance,
+            );
+            Json::obj([
+                ("fresh", Json::num(data.fresh as f64)),
+                ("preserved", Json::num(data.preserved as f64)),
+                ("failed", Json::num(data.failed as f64)),
+            ])
         }),
     ])
 }
@@ -1414,11 +1723,18 @@ fn quiet(cx: &mut App) -> bool {
     let Some(booted) = cx.try_global::<Booted>() else {
         return startup::settled(cx);
     };
-    let (store, root, shell) = (booted.graph.store.clone(), booted.graph.root.clone(), booted.shell.clone());
+    let (store, root, shell) = (
+        booted.graph.store.clone(),
+        booted.graph.root.clone(),
+        booted.shell.clone(),
+    );
     // The production machine (a journey's launch): nothing is quiet while the
     // owner is still starting, and indexing (one owner call that runs for
     // minutes) is awaited as a journey step, not here.
-    let production = booted.gate.as_ref().map(|gate| !matches!(gate.state(), crate::runtime::owner::OwnerState::Starting));
+    let production = booted
+        .gate
+        .as_ref()
+        .map(|gate| !matches!(gate.state(), crate::runtime::owner::OwnerState::Starting));
     if production == Some(false) {
         return false;
     }
@@ -1448,7 +1764,11 @@ fn adapt(act: &Act, _window: &mut Window, cx: &mut App) {
     let Some(booted) = cx.try_global::<Booted>() else {
         return;
     };
-    let (root, fixture, shell) = (booted.graph.root.clone(), booted.fixture, booted.shell.clone());
+    let (root, fixture, shell) = (
+        booted.graph.root.clone(),
+        booted.fixture,
+        booted.shell.clone(),
+    );
     let intent = match act {
         Act::TextScale { percent } => Intent::ZoomTo {
             display: shell.read(cx).display_key(),
@@ -1503,7 +1823,8 @@ fn build(start: &'static str, window: &mut Window, cx: &mut App) -> AnyView {
     if RESPONSIVE_STARTUP.load(std::sync::atomic::Ordering::Relaxed) {
         startup::open(start, window, cx)
     } else {
-        boot(start, window, cx).unwrap_or_else(|error| panic!("desktop capture boot at `{start}`: {error}"))
+        boot(start, window, cx)
+            .unwrap_or_else(|error| panic!("desktop capture boot at `{start}`: {error}"))
     }
 }
 
@@ -1557,7 +1878,13 @@ pub fn scenes() -> Vec<Scene> {
             id: "desktop-graph",
             title: "present::glyph::RelationLabel, its graph",
             size: (1440, 900),
-            build: |window, cx| build("symbol present::glyph::RelationLabel view=graph", window, cx),
+            build: |window, cx| {
+                build(
+                    "symbol present::glyph::RelationLabel view=graph",
+                    window,
+                    cx,
+                )
+            },
         },
         Scene {
             id: "desktop-world",
@@ -1601,43 +1928,85 @@ pub fn scenes() -> Vec<Scene> {
             id: "desktop-compare",
             title: "Compare toml with toml_edit and basic-toml",
             size: (1440, 900),
-            build: |window, cx| build("compare toml-0.8.23 toml_edit-0.22.27 basic-toml-0.1.10", window, cx),
+            build: |window, cx| {
+                build(
+                    "compare toml-0.8.23 toml_edit-0.22.27 basic-toml-0.1.10",
+                    window,
+                    cx,
+                )
+            },
         },
         Scene {
             id: "desktop-value",
             title: "toml::Value, structured symbol page",
             size: (1440, 900),
-            build: |window, cx| build("symbol toml-0.8.23::value::Value kind=enum path=src/value.rs", window, cx),
+            build: |window, cx| {
+                build(
+                    "symbol toml-0.8.23::value::Value kind=enum path=src/value.rs",
+                    window,
+                    cx,
+                )
+            },
         },
         Scene {
             id: "desktop-from-str",
             title: "serde_json::from_str, structured symbol page",
             size: (1440, 900),
-            build: |window, cx| build("symbol serde_json-1.0.151::de::from_str kind=function path=src/de.rs", window, cx),
+            build: |window, cx| {
+                build(
+                    "symbol serde_json-1.0.151::de::from_str kind=function path=src/de.rs",
+                    window,
+                    cx,
+                )
+            },
         },
         Scene {
             id: "desktop-value-as-str",
             title: "toml::Value::as_str: a method that may give nothing, structured symbol page",
             size: (1440, 900),
-            build: |window, cx| build("symbol toml-0.8.23::value::Value::as_str kind=method path=src/value.rs", window, cx),
+            build: |window, cx| {
+                build(
+                    "symbol toml-0.8.23::value::Value::as_str kind=method path=src/value.rs",
+                    window,
+                    cx,
+                )
+            },
         },
         Scene {
             id: "desktop-serialize",
             title: "serde::Serialize, structured symbol page",
             size: (1440, 900),
-            build: |window, cx| build("symbol serde_core-1.0.229::ser::Serialize kind=trait path=src/ser/mod.rs", window, cx),
+            build: |window, cx| {
+                build(
+                    "symbol serde_core-1.0.229::ser::Serialize kind=trait path=src/ser/mod.rs",
+                    window,
+                    cx,
+                )
+            },
         },
         Scene {
             id: "desktop-record-rust",
             title: "toml_datetime::Datetime: the record specimen, Rust",
             size: (1440, 900),
-            build: |window, cx| build("symbol toml_datetime-0.6.11::datetime::Datetime kind=struct path=src/datetime.rs", window, cx),
+            build: |window, cx| {
+                build(
+                    "symbol toml_datetime-0.6.11::datetime::Datetime kind=struct path=src/datetime.rs",
+                    window,
+                    cx,
+                )
+            },
         },
         Scene {
             id: "desktop-record-ts",
             title: "zod's $ZodIssueTooSmall: the record specimen, TypeScript",
             size: (1440, 900),
-            build: |window, cx| build("symbol zod::$ZodIssueTooSmall path=src/errors.ts", window, cx),
+            build: |window, cx| {
+                build(
+                    "symbol zod::$ZodIssueTooSmall path=src/errors.ts",
+                    window,
+                    cx,
+                )
+            },
         },
         Scene {
             id: "desktop-record-go",
@@ -1649,13 +2018,25 @@ pub fn scenes() -> Vec<Scene> {
             id: "desktop-smallvec",
             title: "smallvec::SmallVec, structured symbol page",
             size: (1440, 900),
-            build: |window, cx| build("symbol smallvec-1.16.0::SmallVec kind=struct path=src/lib.rs", window, cx),
+            build: |window, cx| {
+                build(
+                    "symbol smallvec-1.16.0::SmallVec kind=struct path=src/lib.rs",
+                    window,
+                    cx,
+                )
+            },
         },
         Scene {
             id: "desktop-error",
             title: "serde_json::Error, structured symbol page",
             size: (1440, 900),
-            build: |window, cx| build("symbol serde_json-1.0.151::error::Error kind=struct path=src/error.rs", window, cx),
+            build: |window, cx| {
+                build(
+                    "symbol serde_json-1.0.151::error::Error kind=struct path=src/error.rs",
+                    window,
+                    cx,
+                )
+            },
         },
     ];
     scenes.extend(install::scenes());
@@ -1672,8 +2053,14 @@ mod tests {
         assert_eq!(parse("orbit"), Ok(Target::Orbit));
         assert_eq!(parse("world"), Ok(Target::World));
         assert_eq!(parse("tree"), Ok(Target::Tree));
-        assert_eq!(parse("find parse toml"), Ok(Target::Find("parse toml".into())));
-        assert_eq!(parse("compare toml present"), Ok(Target::Compare(vec!["toml".into(), "present".into()])));
+        assert_eq!(
+            parse("find parse toml"),
+            Ok(Target::Find("parse toml".into()))
+        );
+        assert_eq!(
+            parse("compare toml present"),
+            Ok(Target::Compare(vec!["toml".into(), "present".into()]))
+        );
         assert_eq!(
             parse("compare toml-0.8.23 toml_edit-0.22.27 basic-toml-0.1.10"),
             Ok(Target::Compare(vec![
@@ -1763,16 +2150,23 @@ mod tests {
             .filter_map(|rest| rest.split_once('"').map(|(words, _)| words))
             .filter(|words| !words.is_empty())
             .collect::<Vec<_>>();
-        assert!(starts.len() > 20, "the scenes' routes are found in the source: {starts:?}");
+        assert!(
+            starts.len() > 20,
+            "the scenes' routes are found in the source: {starts:?}"
+        );
         for words in starts {
-            assert!(parse(words).is_ok(), "scene route `{words}`: {:?}", parse(words));
+            assert!(
+                parse(words).is_ok(),
+                "scene route `{words}`: {:?}",
+                parse(words)
+            );
         }
     }
 
     #[test]
     fn sampled_browse_route_keeps_query_and_ordered_package_identity() {
-        use crate::navigation::{BrowseRoute, CompareSet};
         use crate::model::pages::{PackageRef, SearchQuery};
+        use crate::navigation::{BrowseRoute, CompareSet};
 
         let find = BrowseRoute::Find(SearchQuery::new("from_str", 200).expect("query"));
         assert_eq!(
@@ -1789,10 +2183,12 @@ mod tests {
             super::browse_route_state(&route).to_string(),
             r#"{"kind":"compare","packages":["pkg:cargo/toml@0.8.23","pkg:cargo/toml_edit@0.22.27"]}"#,
         );
-        let reversed = BrowseRoute::Compare(
-            CompareSet::new([second, first]).expect("two packages"),
+        let reversed =
+            BrowseRoute::Compare(CompareSet::new([second, first]).expect("two packages"));
+        assert_ne!(
+            super::browse_route_state(&route),
+            super::browse_route_state(&reversed)
         );
-        assert_ne!(super::browse_route_state(&route), super::browse_route_state(&reversed));
     }
 
     fn outline_node(
@@ -1807,8 +2203,12 @@ mod tests {
             None,
             Some(kind),
             Some((path, line)),
-        ).expect("synthetic declaration");
-        crate::model::pages::OutlineNode { decl, children: std::sync::Arc::from([]) }
+        )
+        .expect("synthetic declaration");
+        crate::model::pages::OutlineNode {
+            decl,
+            children: std::sync::Arc::from([]),
+        }
     }
 
     #[test]
@@ -1819,17 +2219,45 @@ mod tests {
         let package = "pkg:cargo/toml@0.8.23";
         let outline = OutlineTree {
             roots: vec![
-                outline_node(package, "Value", backend_library::DeclarationKind::Type, "src/value.rs", 1382),
-                outline_node(package, "Value", backend_library::DeclarationKind::Enum, "src/value.rs", 25),
-                outline_node(package, "Value", backend_library::DeclarationKind::Enum, "src/other.rs", 100),
-                outline_node("pkg:cargo/toml_edit@0.22.27", "Value", backend_library::DeclarationKind::Enum, "src/value.rs", 8),
-            ].into(),
+                outline_node(
+                    package,
+                    "Value",
+                    backend_library::DeclarationKind::Type,
+                    "src/value.rs",
+                    1382,
+                ),
+                outline_node(
+                    package,
+                    "Value",
+                    backend_library::DeclarationKind::Enum,
+                    "src/value.rs",
+                    25,
+                ),
+                outline_node(
+                    package,
+                    "Value",
+                    backend_library::DeclarationKind::Enum,
+                    "src/other.rs",
+                    100,
+                ),
+                outline_node(
+                    "pkg:cargo/toml_edit@0.22.27",
+                    "Value",
+                    backend_library::DeclarationKind::Enum,
+                    "src/value.rs",
+                    8,
+                ),
+            ]
+            .into(),
             complete: true,
         };
         let broad = outline_symbol_candidates(&outline, "Value", package, &[], None, None);
         assert_eq!(broad.len(), 3);
-        assert!(choose_outline_symbol_candidate(&broad, "toml::Value", package, true, outline.count())
-            .expect_err("same-name declarations remain ambiguous").contains("ambiguous"));
+        assert!(
+            choose_outline_symbol_candidate(&broad, "toml::Value", package, true, outline.count())
+                .expect_err("same-name declarations remain ambiguous")
+                .contains("ambiguous")
+        );
 
         let exact = outline_symbol_candidates(
             &outline,
@@ -1845,9 +2273,13 @@ mod tests {
             package,
             true,
             outline.count(),
-        ).expect("exact package, path and kind selector");
+        )
+        .expect("exact package, path and kind selector");
         assert_eq!(selected.1, 25);
-        assert_eq!(selected.0.as_str(), "pkg:cargo/toml@0.8.23::src/value.rs:25::Value");
+        assert_eq!(
+            selected.0.as_str(),
+            "pkg:cargo/toml@0.8.23::src/value.rs:25::Value"
+        );
     }
 
     /// `toml::value::Value::as_str kind=method`: the owner's outline nests a
@@ -1859,21 +2291,61 @@ mod tests {
         use crate::model::pages::{OutlineNode, OutlineTree};
 
         let package = "pkg:cargo/toml@0.8.23";
-        let under = |parent: OutlineNode, children: Vec<OutlineNode>| OutlineNode { decl: parent.decl, children: children.into() };
-        let method = |line| outline_node(package, "as_str", backend_library::DeclarationKind::Method, "src/value.rs", line);
+        let under = |parent: OutlineNode, children: Vec<OutlineNode>| OutlineNode {
+            decl: parent.decl,
+            children: children.into(),
+        };
+        let method = |line| {
+            outline_node(
+                package,
+                "as_str",
+                backend_library::DeclarationKind::Method,
+                "src/value.rs",
+                line,
+            )
+        };
         let outline = OutlineTree {
             roots: vec![
-                under(outline_node(package, "Value", backend_library::DeclarationKind::Enum, "src/value.rs", 25), vec![method(135)]),
-                under(outline_node(package, "Key", backend_library::DeclarationKind::Struct, "src/value.rs", 900), vec![method(950)]),
-            ].into(),
+                under(
+                    outline_node(
+                        package,
+                        "Value",
+                        backend_library::DeclarationKind::Enum,
+                        "src/value.rs",
+                        25,
+                    ),
+                    vec![method(135)],
+                ),
+                under(
+                    outline_node(
+                        package,
+                        "Key",
+                        backend_library::DeclarationKind::Struct,
+                        "src/value.rs",
+                        900,
+                    ),
+                    vec![method(950)],
+                ),
+            ]
+            .into(),
             complete: true,
         };
         let found = outline_symbol_candidates(
-            &outline, "as_str", package, &["value", "Value"],
-            Some(backend_library::DeclarationKind::Method), Some("src/value.rs"),
+            &outline,
+            "as_str",
+            package,
+            &["value", "Value"],
+            Some(backend_library::DeclarationKind::Method),
+            Some("src/value.rs"),
         );
-        let selected = choose_outline_symbol_candidate(&found, "toml::value::Value::as_str", package, true, outline.count())
-            .expect("the method under Value, not the one under Key");
+        let selected = choose_outline_symbol_candidate(
+            &found,
+            "toml::value::Value::as_str",
+            package,
+            true,
+            outline.count(),
+        )
+        .expect("the method under Value, not the one under Key");
         assert_eq!(selected.1, 135);
     }
 
@@ -1883,28 +2355,70 @@ mod tests {
         use crate::model::pages::OutlineTree;
 
         let package = "pkg:cargo/serde_json@1.0.151";
-        let node = outline_node(package, "Error", backend_library::DeclarationKind::Struct, "src/error.rs", 17);
-        let partial = OutlineTree { roots: vec![node.clone()].into(), complete: false };
-        let match_on_partial = outline_symbol_candidates(
-            &partial, "Error", package, &["error"],
-            Some(backend_library::DeclarationKind::Struct), Some("src/error.rs"),
+        let node = outline_node(
+            package,
+            "Error",
+            backend_library::DeclarationKind::Struct,
+            "src/error.rs",
+            17,
         );
-        assert!(choose_outline_symbol_candidate(&match_on_partial, "serde_json::error::Error", package, partial.complete, partial.count())
-            .expect_err("one hit in a partial outline cannot prove uniqueness").contains("incomplete"));
+        let partial = OutlineTree {
+            roots: vec![node.clone()].into(),
+            complete: false,
+        };
+        let match_on_partial = outline_symbol_candidates(
+            &partial,
+            "Error",
+            package,
+            &["error"],
+            Some(backend_library::DeclarationKind::Struct),
+            Some("src/error.rs"),
+        );
+        assert!(
+            choose_outline_symbol_candidate(
+                &match_on_partial,
+                "serde_json::error::Error",
+                package,
+                partial.complete,
+                partial.count()
+            )
+            .expect_err("one hit in a partial outline cannot prove uniqueness")
+            .contains("incomplete")
+        );
 
         let complete = OutlineTree {
             roots: vec![
                 node,
-                outline_node(package, "Error", backend_library::DeclarationKind::Struct, "src/error.rs", 18),
-            ].into(),
+                outline_node(
+                    package,
+                    "Error",
+                    backend_library::DeclarationKind::Struct,
+                    "src/error.rs",
+                    18,
+                ),
+            ]
+            .into(),
             complete: true,
         };
         let ambiguous = outline_symbol_candidates(
-            &complete, "Error", package, &["error"],
-            Some(backend_library::DeclarationKind::Struct), Some("src/error.rs"),
+            &complete,
+            "Error",
+            package,
+            &["error"],
+            Some(backend_library::DeclarationKind::Struct),
+            Some("src/error.rs"),
         );
-        assert!(choose_outline_symbol_candidate(&ambiguous, "serde_json::error::Error", package, complete.complete, complete.count())
-            .expect_err("two exact declarations keep the route ambiguous").contains("ambiguous"));
+        assert!(
+            choose_outline_symbol_candidate(
+                &ambiguous,
+                "serde_json::error::Error",
+                package,
+                complete.complete,
+                complete.count()
+            )
+            .expect_err("two exact declarations keep the route ambiguous")
+            .contains("ambiguous")
+        );
     }
 
     #[test]
@@ -1937,18 +2451,31 @@ mod tests {
             refusal: Box::new(refusal),
         };
         // An index another build wrote: no owner will ever answer, so switch at once.
-        assert!(state_refused(&contended(ProcessError::Profile("unsupported view DTO version".to_owned()))));
+        assert!(state_refused(&contended(ProcessError::Profile(
+            "unsupported view DTO version".to_owned()
+        ))));
         // A live owner still opening the same workspace: wait for it instead.
-        assert!(!state_refused(&contended(ProcessError::Profile(format!("workspace error: {}", super::HELD_LOCK_WORDS)))));
-        assert!(!state_refused(&contended(ProcessError::Listener(ListenerError::AlreadyRunning))));
-        assert!(!state_refused(&HostError::UnsupportedPathEncoding { path: "/tmp".into() }));
+        assert!(!state_refused(&contended(ProcessError::Profile(format!(
+            "workspace error: {}",
+            super::HELD_LOCK_WORDS
+        )))));
+        assert!(!state_refused(&contended(ProcessError::Listener(
+            ListenerError::AlreadyRunning
+        ))));
+        assert!(!state_refused(&HostError::UnsupportedPathEncoding {
+            path: "/tmp".into()
+        }));
     }
 
     #[test]
     fn the_engines_held_lock_error_is_still_named_as_the_harness_reads_it() {
-        let source = std::fs::read_to_string(super::repo().join("crates/engine/src/workspace/owner/error.rs")).expect("the engine's workspace error");
+        let source = std::fs::read_to_string(
+            super::repo().join("crates/engine/src/workspace/owner/error.rs"),
+        )
+        .expect("the engine's workspace error");
         assert!(
-            source.contains(&format!("    {},", super::HELD_LOCK_WORDS)) && source.contains("write!(f, \"workspace error: {self:?}\")"),
+            source.contains(&format!("    {},", super::HELD_LOCK_WORDS))
+                && source.contains("write!(f, \"workspace error: {self:?}\")"),
             "`WorkspaceError` no longer has a variant named {} shown through `{{self:?}}`: `state_refused` would take a live lock for a refusal",
             super::HELD_LOCK_WORDS
         );
@@ -1967,12 +2494,19 @@ mod tests {
         let data = root.join("state/data");
         private_dir(&data).expect("create private dirs");
         for dir in [&root, &root.join("state"), &data] {
-            let mode = std::fs::metadata(dir).expect("metadata").permissions().mode() & 0o777;
+            let mode = std::fs::metadata(dir)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777;
             assert_eq!(mode, 0o700, "{} is {mode:o}", dir.display());
         }
         std::fs::remove_dir_all(&root).expect("remove the test's own scratch");
         // The fallback lives beside the shared index, named for the refused one.
-        assert_eq!(fallback_state(&repo(), &repo().join(".local/harness/desktop")), repo().join(".local/harness/fallback-desktop"));
+        assert_eq!(
+            fallback_state(&repo(), &repo().join(".local/harness/desktop")),
+            repo().join(".local/harness/fallback-desktop")
+        );
     }
 
     /// The owner creates its own subdirectories (`compiler/`, `forge/`,
@@ -1998,31 +2532,80 @@ mod tests {
         super::private_umask();
         let dir = std::env::temp_dir().join(format!("nudox-umask-{}", std::process::id()));
         std::fs::create_dir(&dir).expect("a directory made by the process");
-        let mode = std::fs::metadata(&dir).expect("metadata").permissions().mode() & 0o777;
+        let mode = std::fs::metadata(&dir)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
         let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(mode, 0o700, "a directory made after `private_umask` is {mode:o}: the owner refuses it");
+        assert_eq!(
+            mode, 0o700,
+            "a directory made after `private_umask` is {mode:o}: the owner refuses it"
+        );
     }
 
     #[test]
     fn an_index_with_nothing_in_it_fails_the_boot_unless_a_capture_of_it_is_wanted() {
         use super::{ALLOW_EMPTY_INDEX, EmptyIndex, Refusal, refuse_empty_index};
-        let refusal = |root: &str| Refusal { root: root.into(), reason: "Unavailable { language: Rust, stage: LowerIr }".to_owned() };
+        let refusal = |root: &str| Refusal {
+            root: root.into(),
+            reason: "Unavailable { language: Rust, stage: LowerIr }".to_owned(),
+        };
         let all = [refusal("/fixture/present"), refusal("/fixture/runtime")];
-        let error = refuse_empty_index(2, &all, EmptyIndex::Refuse).expect_err("no root serves anything");
-        for said in ["all 2 roots have nothing to serve", "/fixture/present", "Unavailable { language: Rust", ALLOW_EMPTY_INDEX] {
-            assert!(error.contains(said), "the failure does not say `{said}`: {error}");
+        let error =
+            refuse_empty_index(2, &all, EmptyIndex::Refuse).expect_err("no root serves anything");
+        for said in [
+            "all 2 roots have nothing to serve",
+            "/fixture/present",
+            "Unavailable { language: Rust",
+            ALLOW_EMPTY_INDEX,
+        ] {
+            assert!(
+                error.contains(said),
+                "the failure does not say `{said}`: {error}"
+            );
         }
-        assert!(refuse_empty_index(2, &all, EmptyIndex::Allow).is_ok(), "the fault plates are wanted");
-        assert!(refuse_empty_index(3, &all, EmptyIndex::Refuse).is_ok(), "a root that serves (fresh or preserved) makes the index not empty");
-        assert!(refuse_empty_index(0, &[], EmptyIndex::Refuse).is_ok(), "no roots asked, none refused");
+        assert!(
+            refuse_empty_index(2, &all, EmptyIndex::Allow).is_ok(),
+            "the fault plates are wanted"
+        );
+        assert!(
+            refuse_empty_index(3, &all, EmptyIndex::Refuse).is_ok(),
+            "a root that serves (fresh or preserved) makes the index not empty"
+        );
+        assert!(
+            refuse_empty_index(0, &[], EmptyIndex::Refuse).is_ok(),
+            "no roots asked, none refused"
+        );
     }
 
     #[test]
     fn what_the_fixtures_pages_are_made_of_counts_fresh_preserved_and_failed_roots() {
         use super::{Provenance, provenance};
-        assert_eq!(provenance(14, 0, 0), Provenance { fresh: 14, preserved: 0, failed: 0 });
-        assert_eq!(provenance(14, 13, 1), Provenance { fresh: 0, preserved: 13, failed: 1 });
-        assert_eq!(provenance(14, 3, 2), Provenance { fresh: 9, preserved: 3, failed: 2 });
+        assert_eq!(
+            provenance(14, 0, 0),
+            Provenance {
+                fresh: 14,
+                preserved: 0,
+                failed: 0
+            }
+        );
+        assert_eq!(
+            provenance(14, 13, 1),
+            Provenance {
+                fresh: 0,
+                preserved: 13,
+                failed: 1
+            }
+        );
+        assert_eq!(
+            provenance(14, 3, 2),
+            Provenance {
+                fresh: 9,
+                preserved: 3,
+                failed: 2
+            }
+        );
     }
 
     /// An off-thread cache nobody told the harness about is still waited for:
@@ -2033,15 +2616,28 @@ mod tests {
         use super::in_flight;
         use crate::runtime::offload::{Asker, Memo};
 
-        let memo: Memo<u32, u32> = Memo::new(std::num::NonZeroUsize::new(4).expect("a capacity"), |key| key + 1);
+        let memo: Memo<u32, u32> =
+            Memo::new(std::num::NonZeroUsize::new(4).expect("a capacity"), |key| {
+                key + 1
+            });
         cx.update(|cx| {
             let _ = memo.ask(&7, Asker::Everyone, cx);
         });
         let waiting = in_flight();
-        let memos = waiting.iter().find(|(name, _)| *name == "offload memos").map(|(_, count)| *count);
-        assert!(memos.is_some_and(|count| count >= 1), "a memo's flight is not counted: {waiting:?}");
+        let memos = waiting
+            .iter()
+            .find(|(name, _)| *name == "offload memos")
+            .map(|(_, count)| *count);
+        assert!(
+            memos.is_some_and(|count| count >= 1),
+            "a memo's flight is not counted: {waiting:?}"
+        );
         cx.run_until_parked();
-        assert_eq!(memo.peek(&7).as_deref(), Some(&8), "the flight lands when the executor runs");
+        assert_eq!(
+            memo.peek(&7).as_deref(),
+            Some(&8),
+            "the flight lands when the executor runs"
+        );
     }
 
     /// `tree` must resolve to the pinned two-member fixture
@@ -2058,6 +2654,10 @@ mod tests {
             "{}",
             root.display()
         );
-        assert_ne!(root, repo(), "the tree route must never read the live repository directly");
+        assert_ne!(
+            root,
+            repo(),
+            "the tree route must never read the live repository directly"
+        );
     }
 }

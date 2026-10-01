@@ -26,7 +26,10 @@ use std::collections::{HashMap, HashSet};
 pub mod rows;
 
 fn is_type_like(kind: Kind) -> bool {
-    matches!(kind, Kind::Struct | Kind::Enum | Kind::Trait | Kind::Type | Kind::Union)
+    matches!(
+        kind,
+        Kind::Struct | Kind::Enum | Kind::Trait | Kind::Type | Kind::Union
+    )
 }
 
 /// Everything `i` comes from, is, and goes into, grouped (app.js
@@ -35,15 +38,25 @@ fn is_type_like(kind: Kind) -> bool {
 pub fn relations_of(world: &World, i: NodeId) -> Vec<Group> {
     let node = world.node(i);
     let mut groups: Vec<Group> = Vec::new();
-    let mut seen: HashSet<NodeId> = std::iter::once(i).chain(world.kids(i).iter().copied()).collect();
+    let mut seen: HashSet<NodeId> = std::iter::once(i)
+        .chain(world.kids(i).iter().copied())
+        .collect();
     let rank = |a: &Entry, b: &Entry| -> Ordering {
-        let (Some(a), Some(b)) = (a.node, b.node) else { return Ordering::Equal };
-        world
-            .yours(b)
-            .cmp(&world.yours(a))
-            .then_with(|| world.importance(b).partial_cmp(&world.importance(a)).unwrap_or(Ordering::Equal))
+        let (Some(a), Some(b)) = (a.node, b.node) else {
+            return Ordering::Equal;
+        };
+        world.yours(b).cmp(&world.yours(a)).then_with(|| {
+            world
+                .importance(b)
+                .partial_cmp(&world.importance(a))
+                .unwrap_or(Ordering::Equal)
+        })
     };
-    let mut add = |word: Word, side: Side, ids: Vec<NodeId>, extra: Vec<Entry>, seen: &mut HashSet<NodeId>| {
+    let mut add = |word: Word,
+                   side: Side,
+                   ids: Vec<NodeId>,
+                   extra: Vec<Entry>,
+                   seen: &mut HashSet<NodeId>| {
         let mut list: Vec<Entry> = Vec::new();
         for j in ids {
             if seen.insert(j) {
@@ -54,19 +67,34 @@ pub fn relations_of(world: &World, i: NodeId) -> Vec<Group> {
         let mut entries = extra;
         entries.extend(list);
         if !entries.is_empty() {
-            groups.push(Group { word, side, entries });
+            groups.push(Group {
+                word,
+                side,
+                entries,
+            });
         }
     };
     if is_type_like(node.kind) {
         let written: Vec<NodeId> = node.impls.iter().filter_map(|imp| imp.trait_).collect();
-        let mut extra: Vec<Entry> =
-            written.iter().map(|&t| Entry { note: Some(Note::Written), ..Entry::node(t) }).collect();
+        let mut extra: Vec<Entry> = written
+            .iter()
+            .map(|&t| Entry {
+                note: Some(Note::Written),
+                ..Entry::node(t)
+            })
+            .collect();
         seen.extend(written.iter().copied());
         let derives = minimal_derives(&node.derives);
         if !derives.is_empty() {
             extra.push(Entry {
                 node: world.outs(i, Rel::DERIVES).first().copied(),
-                text: Some(SharedString::from(derives.iter().map(AsRef::as_ref).collect::<Vec<&str>>().join(" · "))),
+                text: Some(SharedString::from(
+                    derives
+                        .iter()
+                        .map(AsRef::as_ref)
+                        .collect::<Vec<&str>>()
+                        .join(" · "),
+                )),
                 note: Some(Note::Derived),
                 caps: derives,
             });
@@ -74,12 +102,17 @@ pub fn relations_of(world: &World, i: NodeId) -> Vec<Group> {
         for path in &node.impls_ext {
             extra.push(Entry {
                 node: None,
-                text: Some(SharedString::from(path.rsplit("::").next().unwrap_or(path).to_owned())),
+                text: Some(SharedString::from(
+                    path.rsplit("::").next().unwrap_or(path).to_owned(),
+                )),
                 note: Some(Note::Written),
                 caps: Vec::new(),
             });
         }
-        if written.iter().any(|&t| world.node(t).name.as_ref() == "Display") {
+        if written
+            .iter()
+            .any(|&t| world.node(t).name.as_ref() == "Display")
+        {
             extra.push(Entry {
                 node: None,
                 text: Some(SharedString::new_static("ToString")),
@@ -88,14 +121,48 @@ pub fn relations_of(world: &World, i: NodeId) -> Vec<Group> {
             });
         }
         add(Word::Is, Side::Is, world.outs(i, Rel::IS), extra, &mut seen);
-        add(Word::MadeOf, Side::Left, world.outs(i, Rel::HAS), Vec::new(), &mut seen);
-        add(Word::MadeBy, Side::Left, world.ins(i, Rel::GIVES), Vec::new(), &mut seen);
+        add(
+            Word::MadeOf,
+            Side::Left,
+            world.outs(i, Rel::HAS),
+            Vec::new(),
+            &mut seen,
+        );
+        add(
+            Word::MadeBy,
+            Side::Left,
+            world.ins(i, Rel::GIVES),
+            Vec::new(),
+            &mut seen,
+        );
         if node.kind == Kind::Trait {
-            add(Word::ImplementedBy, Side::Left, world.ins(i, Rel::IMPL | Rel::DERIVES), Vec::new(), &mut seen);
+            add(
+                Word::ImplementedBy,
+                Side::Left,
+                world.ins(i, Rel::IMPL | Rel::DERIVES),
+                Vec::new(),
+                &mut seen,
+            );
         }
-        add(Word::TakenBy, Side::Right, world.ins(i, Rel::TAKES), Vec::new(), &mut seen);
-        add(Word::HeldBy, Side::Right, world.ins(i, Rel::TYPE), Vec::new(), &mut seen);
-        let callers: Vec<NodeId> = world.kids(i).iter().flat_map(|&m| world.ins(m, Rel::CALLS)).collect();
+        add(
+            Word::TakenBy,
+            Side::Right,
+            world.ins(i, Rel::TAKES),
+            Vec::new(),
+            &mut seen,
+        );
+        add(
+            Word::HeldBy,
+            Side::Right,
+            world.ins(i, Rel::TYPE),
+            Vec::new(),
+            &mut seen,
+        );
+        let callers: Vec<NodeId> = world
+            .kids(i)
+            .iter()
+            .flat_map(|&m| world.ins(m, Rel::CALLS))
+            .collect();
         add(Word::CallsIt, Side::Right, callers, Vec::new(), &mut seen);
         let users: Vec<NodeId> = world
             .ins(i, Rel::USES | Rel::CALLS)
@@ -104,13 +171,46 @@ pub fn relations_of(world: &World, i: NodeId) -> Vec<Group> {
             .collect();
         add(Word::UsedBy, Side::Right, users, Vec::new(), &mut seen);
     } else {
-        let own: Vec<NodeId> = std::iter::once(i).chain(world.kids(i).iter().copied()).collect();
-        let from = |rel: Rel| -> Vec<NodeId> { own.iter().flat_map(|&t| world.outs(t, rel)).collect() };
-        add(Word::Takes, Side::Left, from(Rel::TAKES), Vec::new(), &mut seen);
-        add(Word::CalledFrom, Side::Left, world.ins(i, Rel::CALLS), Vec::new(), &mut seen);
-        add(Word::Gives, Side::Right, from(Rel::GIVES), Vec::new(), &mut seen);
-        add(Word::Calls, Side::Right, from(Rel::CALLS), Vec::new(), &mut seen);
-        add(Word::UsedBy, Side::Right, world.ins(i, Rel::USES | Rel::TAKES | Rel::GIVES | Rel::TYPE), Vec::new(), &mut seen);
+        let own: Vec<NodeId> = std::iter::once(i)
+            .chain(world.kids(i).iter().copied())
+            .collect();
+        let from =
+            |rel: Rel| -> Vec<NodeId> { own.iter().flat_map(|&t| world.outs(t, rel)).collect() };
+        add(
+            Word::Takes,
+            Side::Left,
+            from(Rel::TAKES),
+            Vec::new(),
+            &mut seen,
+        );
+        add(
+            Word::CalledFrom,
+            Side::Left,
+            world.ins(i, Rel::CALLS),
+            Vec::new(),
+            &mut seen,
+        );
+        add(
+            Word::Gives,
+            Side::Right,
+            from(Rel::GIVES),
+            Vec::new(),
+            &mut seen,
+        );
+        add(
+            Word::Calls,
+            Side::Right,
+            from(Rel::CALLS),
+            Vec::new(),
+            &mut seen,
+        );
+        add(
+            Word::UsedBy,
+            Side::Right,
+            world.ins(i, Rel::USES | Rel::TAKES | Rel::GIVES | Rel::TYPE),
+            Vec::new(),
+            &mut seen,
+        );
     }
     groups
 }
@@ -156,8 +256,11 @@ pub fn except(groups: Vec<Group>, shown: &[Word]) -> Vec<Group> {
 /// its short name; names shown twice carry their module path.
 #[must_use]
 pub fn prism(world: &World, i: NodeId, groups: &[Group], max: usize) -> (Vec<Column>, Vec<Column>) {
-    let shown: Vec<(&Group, &[Entry])> =
-        groups.iter().filter(|g| g.side != Side::Is).map(|g| (g, &g.entries[..g.entries.len().min(max)])).collect();
+    let shown: Vec<(&Group, &[Entry])> = groups
+        .iter()
+        .filter(|g| g.side != Side::Is)
+        .map(|g| (g, &g.entries[..g.entries.len().min(max)]))
+        .collect();
     let mut counts: HashMap<SharedString, usize> = HashMap::new();
     for (_, entries) in &shown {
         for entry in *entries {
@@ -183,12 +286,25 @@ pub fn prism(world: &World, i: NodeId, groups: &[Group], max: usize) -> (Vec<Col
                         None
                     }
                 });
-                PrismRow { node: entry.node, kind: entry.node.map(|n| world.node(n).kind), text, note }
+                PrismRow {
+                    node: entry.node,
+                    kind: entry.node.map(|n| world.node(n).kind),
+                    text,
+                    note,
+                }
             })
             .collect(),
         more: group.entries.len().saturating_sub(max),
     };
-    let left = shown.iter().filter(|(g, _)| g.side == Side::Left).map(column).collect();
-    let right = shown.iter().filter(|(g, _)| g.side == Side::Right).map(column).collect();
+    let left = shown
+        .iter()
+        .filter(|(g, _)| g.side == Side::Left)
+        .map(column)
+        .collect();
+    let right = shown
+        .iter()
+        .filter(|(g, _)| g.side == Side::Right)
+        .map(column)
+        .collect();
     (left, right)
 }

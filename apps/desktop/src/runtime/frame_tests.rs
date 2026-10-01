@@ -82,7 +82,9 @@ impl EngineClient for HeldIndexClient {
                     files_indexed: Some(3),
                 })
             }
-            EngineRequest::Object { .. } | EngineRequest::Surface { .. } => Err(EngineFault::Cancelled),
+            EngineRequest::Object { .. } | EngineRequest::Surface { .. } => {
+                Err(EngineFault::Cancelled)
+            }
         }
     }
 }
@@ -188,10 +190,18 @@ fn draw(cx: &mut TestAppContext, rig: &Rig) {
 /// Plays vsyncs until one virtual second passes with no frame.
 fn settle(cx: &mut TestAppContext, rig: &Rig) {
     draw(cx, rig);
-    wait::until("the window settled: a virtual second with no frame and an idle read pool", || {
-        let (drawn, _) = vsync(cx, rig, 60);
-        drawn == 0 && rig.graph.store.read_with(cx, |store, _| store.pool_activity()).is_idle()
-    });
+    wait::until(
+        "the window settled: a virtual second with no frame and an idle read pool",
+        || {
+            let (drawn, _) = vsync(cx, rig, 60);
+            drawn == 0
+                && rig
+                    .graph
+                    .store
+                    .read_with(cx, |store, _| store.pool_activity())
+                    .is_idle()
+        },
+    );
 }
 
 fn phase(cx: &mut TestAppContext, rig: &Rig) -> Option<ProjectPhase> {
@@ -234,15 +244,19 @@ fn an_idle_shell_with_a_running_index_requests_no_frames(cx: &mut TestAppContext
     let rig = rig(cx);
     settle(cx, &rig);
     start_index(cx, &rig);
-    rig.graph
-        .root
-        .update(cx, |root, cx| root.queue(Intent::Navigate(page_route("RelationLabel")), cx));
+    rig.graph.root.update(cx, |root, cx| {
+        root.queue(Intent::Navigate(page_route("RelationLabel")), cx)
+    });
     settle(cx, &rig);
     let renders_before = rig.shell.read_with(cx, |shell, cx| shell.render_counts(cx));
 
     // Ten virtual seconds with the index still running.
     let (drawn, requested) = vsync(cx, &rig, 625);
-    assert_eq!(phase(cx, &rig), Some(ProjectPhase::Indexing), "the index is still running");
+    assert_eq!(
+        phase(cx, &rig),
+        Some(ProjectPhase::Indexing),
+        "the index is still running"
+    );
     assert_eq!(requested, 0, "no animation frame was requested while idle");
     assert_eq!(drawn, 0, "no frame was drawn while idle");
     assert_eq!(
@@ -253,10 +267,13 @@ fn an_idle_shell_with_a_running_index_requests_no_frames(cx: &mut TestAppContext
 
     // The result wakes the window by itself: no frame loop carried it here.
     release(&rig);
-    wait::until("the finished index reached the root through the wake task", || {
-        cx.run_until_parked();
-        phase(cx, &rig) == Some(ProjectPhase::Ready)
-    });
+    wait::until(
+        "the finished index reached the root through the wake task",
+        || {
+            cx.run_until_parked();
+            phase(cx, &rig) == Some(ProjectPhase::Ready)
+        },
+    );
     settle(cx, &rig);
     let (drawn, requested) = vsync(cx, &rig, 120);
     assert_eq!((drawn, requested), (0, 0), "then the window is idle again");
@@ -269,13 +286,16 @@ fn an_idle_shell_with_a_running_index_requests_no_frames(cx: &mut TestAppContext
 fn the_measurement_sees_a_descent_and_then_sees_it_stop(cx: &mut TestAppContext) {
     let rig = rig(cx);
     settle(cx, &rig);
-    rig.graph
-        .root
-        .update(cx, |root, cx| root.queue(Intent::Navigate(page_route("KindGlyph")), cx));
+    rig.graph.root.update(cx, |root, cx| {
+        root.queue(Intent::Navigate(page_route("KindGlyph")), cx)
+    });
     cx.run_until_parked();
     draw(cx, &rig);
     let (drawn, requested) = vsync(cx, &rig, 20);
-    assert!(requested >= 10 && drawn >= 10, "the descent asked for frames: {requested} requested, {drawn} drawn");
+    assert!(
+        requested >= 10 && drawn >= 10,
+        "the descent asked for frames: {requested} requested, {drawn} drawn"
+    );
     settle(cx, &rig);
     let (drawn, requested) = vsync(cx, &rig, 120);
     assert_eq!((drawn, requested), (0, 0), "and stopped once it landed");

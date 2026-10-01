@@ -11,7 +11,10 @@
 
 use crate::fluid::{Epoch, Modes, Room};
 use crate::measure::Measure;
-use crate::tokens::fluid::{Cells, READER_PAD, Rail, Rows, SYMBOL_CELLS, SYMBOL_LABEL, SYMBOL_PHONE, SYMBOL_PLACE, SYMBOL_RAIL, SYMBOL_ROWS, SYMBOL_SECTION, Screen};
+use crate::tokens::fluid::{
+    Cells, READER_PAD, Rail, Rows, SYMBOL_CELLS, SYMBOL_LABEL, SYMBOL_PHONE, SYMBOL_PLACE,
+    SYMBOL_RAIL, SYMBOL_ROWS, SYMBOL_SECTION, Screen,
+};
 use gpui::{Pixels, px};
 
 /// The main column's cap at 100 % text.
@@ -32,7 +35,11 @@ fn code_chars(width: f32, place: f32) -> usize {
     const GAPS_AND_FILL: f32 = 60.0 + 150.0;
     const LEAST_BESIDE: f32 = 200.0;
     let beside = width - GLYPH - place - GAPS_AND_FILL;
-    let room = if beside < LEAST_BESIDE { width - GLYPH } else { beside };
+    let room = if beside < LEAST_BESIDE {
+        width - GLYPH
+    } else {
+        beside
+    };
     (room.max(0.0) / CODE_CHAR) as usize
 }
 
@@ -103,11 +110,18 @@ impl Layout {
         let (main, side) = match rail.mode {
             Rail::Beside => {
                 let taken = px((RAIL + GAP) * scale);
-                (px((MAIN * scale).min(f32::from(room.width() - taken))), Side::Beside(px(RAIL * scale)))
+                (
+                    px((MAIN * scale).min(f32::from(room.width() - taken))),
+                    Side::Beside(px(RAIL * scale)),
+                )
             }
             Rail::Below => (room.width(), Side::Below),
         };
-        let (screen, rows, cells) = (modes.settle(&SYMBOL_PHONE, room), modes.settle(&SYMBOL_ROWS, reader), modes.settle(&SYMBOL_CELLS, reader));
+        let (screen, rows, cells) = (
+            modes.settle(&SYMBOL_PHONE, room),
+            modes.settle(&SYMBOL_ROWS, reader),
+            modes.settle(&SYMBOL_CELLS, reader),
+        );
         Self {
             main,
             side,
@@ -119,7 +133,12 @@ impl Layout {
             screen: screen.mode,
             rows: rows.mode,
             cells: cells.mode,
-            epoch: Epochs { rail: rail.epoch, rows: rows.epoch, cells: cells.epoch, screen: screen.epoch },
+            epoch: Epochs {
+                rail: rail.epoch,
+                rows: rows.epoch,
+                cells: cells.epoch,
+                screen: screen.epoch,
+            },
         }
     }
 }
@@ -137,7 +156,10 @@ mod tests {
     fn the_rail_moves_under_below_the_breakpoint_and_never_above() {
         let modes = Modes::new();
         let wide = Layout::of(&at(1096.0), &modes);
-        assert!(matches!(wide.side, Side::Beside(_)), "a 1440 window: the reader is 1176 wide");
+        assert!(
+            matches!(wide.side, Side::Beside(_)),
+            "a 1440 window: the reader is 1176 wide"
+        );
         assert!(f32::from(wide.main) <= MAIN + 0.5);
         let narrow = Layout::of(&at(700.0), &Modes::new());
         assert_eq!(narrow.side, Side::Below);
@@ -149,9 +171,15 @@ mod tests {
         let modes = Modes::new();
         let side = |w: f32| matches!(Layout::of(&at(w), &modes).side, Side::Beside(_));
         // The reader's edge is 1100 (about 1040 of page): a 40 px band holds it.
-        assert!(side(1200.0) && side(1030.0), "from wide, it stays beside through the band");
+        assert!(
+            side(1200.0) && side(1030.0),
+            "from wide, it stays beside through the band"
+        );
         assert!(!side(1000.0));
-        assert!(!side(1030.0) && !side(1050.0), "from narrow, it stays under through the band");
+        assert!(
+            !side(1030.0) && !side(1050.0),
+            "from narrow, it stays under through the band"
+        );
         assert!(side(1070.0));
     }
 
@@ -162,7 +190,12 @@ mod tests {
         let mut last = Layout::of(&at(320.0), &modes);
         for w in 321..2600 {
             let now = Layout::of(&at(w as f32), &modes);
-            assert!((now.section - last.section).abs() < 0.2 && (now.label - last.label).abs() < 0.3 && (now.place - last.place).abs() < 0.6, "a step at {w}");
+            assert!(
+                (now.section - last.section).abs() < 0.2
+                    && (now.label - last.label).abs() < 0.3
+                    && (now.place - last.place).abs() < 0.6,
+                "a step at {w}"
+            );
             last = now;
         }
         assert_eq!(last.screen, Screen::Window);
@@ -174,7 +207,10 @@ mod tests {
         let phone = Layout::of(&at(320.0), &modes).code;
         let tablet = Layout::of(&at(700.0), &modes).code;
         let wide = Layout::of(&at(1096.0), &modes).code;
-        assert!((25..=45).contains(&phone), "a phone holds a line's worth beside nothing: {phone}");
+        assert!(
+            (25..=45).contains(&phone),
+            "a phone holds a line's worth beside nothing: {phone}"
+        );
         assert!(tablet > phone && wide > 45, "{phone} {tablet} {wide}");
     }
 
@@ -182,10 +218,25 @@ mod tests {
     fn a_mode_that_changes_is_an_epoch_so_the_parts_that_move_can_flow() {
         let modes = Modes::new();
         let start = Layout::of(&at(1200.0), &modes).epoch;
-        assert_eq!(Layout::of(&at(1190.0), &modes).epoch, start, "a drag inside a mode is not an epoch");
+        assert_eq!(
+            Layout::of(&at(1190.0), &modes).epoch,
+            start,
+            "a drag inside a mode is not an epoch"
+        );
         let below = Layout::of(&at(900.0), &modes).epoch;
-        assert_ne!(below.rail, start.rail, "the rail moving under the page is one");
-        assert_eq!(Layout::of(&at(880.0), &modes).epoch, below, "and the next width is not");
-        assert_ne!(Layout::of(&at(320.0), &modes).epoch.screen, below.screen, "so is a phone");
+        assert_ne!(
+            below.rail, start.rail,
+            "the rail moving under the page is one"
+        );
+        assert_eq!(
+            Layout::of(&at(880.0), &modes).epoch,
+            below,
+            "and the next width is not"
+        );
+        assert_ne!(
+            Layout::of(&at(320.0), &modes).epoch.screen,
+            below.screen,
+            "so is a phone"
+        );
     }
 }

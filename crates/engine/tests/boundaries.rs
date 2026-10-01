@@ -10,13 +10,13 @@ use core::{
     slice,
 };
 
-use backend_semantic::ir::{Atom, AtomInput, EntityKind, EntityRecord, PrimitiveType, TypeNode};
-use backend_semantic::ir::{AtomId, TypeId};
 use backend_engine::index_build::{
     BuildAdmissionError, BuildRegion, EntityFact, EntityProjection, IndexBuildCapacity,
     IndexBuildScratch, MAX_INDEX_ROWS, build, preflight,
 };
 use backend_semantic::index_core::{ExactOperation, ExactRow, LexicalRow};
+use backend_semantic::ir::{Atom, AtomInput, EntityKind, EntityRecord, PrimitiveType, TypeNode};
+use backend_semantic::ir::{AtomId, TypeId};
 use build_support::{
     BuildProofError, Fixture, OpenBuffers, TestError, compiled, next_fragment, publish,
     write_fragment, written,
@@ -385,7 +385,9 @@ fn assert_maximum_exact_lookups(
     Ok(())
 }
 
-fn assert_overload_rows(index: &backend_engine::index_build::PreparedIndex<'_>) -> Result<(), TestError> {
+fn assert_overload_rows(
+    index: &backend_engine::index_build::PreparedIndex<'_>,
+) -> Result<(), TestError> {
     let (Some(first_exact), Some(second_exact), Some(first_lexical), Some(second_lexical)) = (
         index.exact.rows.first(),
         index.exact.rows.get(1),

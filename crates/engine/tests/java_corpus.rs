@@ -842,7 +842,11 @@ fn journey_row(
         // Exception.class`, and that reference must survive as a type
         // reference.
         if let Some((path, _, kind)) = occurrence_kinds.iter().find(|(_, executable, kind)| {
-            !executable && matches!(kind, ReferenceKind::FunctionCall | ReferenceKind::MethodCall)
+            !executable
+                && matches!(
+                    kind,
+                    ReferenceKind::FunctionCall | ReferenceKind::MethodCall
+                )
         }) {
             return Err(TestError::Law {
                 purl: row.purl,

@@ -6,13 +6,13 @@
 use super::text::{Line, Links, TypeInk};
 use super::{k, roles, stacked};
 use crate::measure::{Measure, Set};
-use crate::semantics::model::Pipe;
 use crate::semantics::members::Receiver;
+use crate::semantics::model::Pipe;
 use crate::semantics::types::Piece;
 use crate::theme::ActiveFacet;
 use gpui::{
-    InteractiveElement,
-    App, ElementId, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, canvas, div, point, px,
+    App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
+    Styled, Window, canvas, div, point, px,
 };
 use std::sync::Arc;
 
@@ -28,7 +28,12 @@ pub struct PipeView {
 /// The pipe for `pipe` at `measure`.
 #[must_use]
 pub fn pipe(id: impl Into<ElementId>, pipe: Pipe, measure: &Measure, links: &Links) -> PipeView {
-    PipeView { id: id.into(), pipe, measure: *measure, links: links.clone() }
+    PipeView {
+        id: id.into(),
+        pipe,
+        measure: *measure,
+        links: links.clone(),
+    }
 }
 
 fn arrow(measure: &Measure, color: gpui::Hsla, head: gpui::Hsla) -> impl IntoElement {
@@ -65,7 +70,9 @@ impl RenderOnce for PipeView {
         let m = self.measure;
         let xray = m.reveal().xray;
         let narrow = stacked(&m);
-        let id = |part: String| ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::from(part));
+        let id = |part: String| {
+            ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::from(part))
+        };
         let ink = TypeInk::new(roles::TYPE, palette);
         // Inputs: the receiver's words, then each parameter's name and type.
         let mut pins = div().flex().flex_col().gap(k(&m, 8.0)).min_w_0();
@@ -76,7 +83,10 @@ impl RenderOnce for PipeView {
                 m.role(roles::INPUT),
                 1.0,
                 crate::probe::TextOverflow::Wrap,
-                div().set(roles::INPUT, &m).text_color(palette.ink3.hsla()).child("No inputs"),
+                div()
+                    .set(roles::INPUT, &m)
+                    .text_color(palette.ink3.hsla())
+                    .child("No inputs"),
             ));
         }
         for (n, input) in self.pipe.inputs.iter().enumerate() {
@@ -96,12 +106,22 @@ impl RenderOnce for PipeView {
                     m.role(roles::INPUT),
                     1.0,
                     crate::probe::TextOverflow::Wrap,
-                    div().flex_none().set(roles::INPUT, &m).text_color(palette.ink1.hsla()).child(label),
+                    div()
+                        .flex_none()
+                        .set(roles::INPUT, &m)
+                        .text_color(palette.ink1.hsla())
+                        .child(label),
                 ));
             if let Some(ty) = &input.ty {
                 let mut line = Line::new();
                 line.spelled(ty, &ink, &self.links, xray);
-                row = row.child(div().min_w_0().child(line.element(id(format!("in-{n}")), roles::TYPE, &m, &self.links, palette)));
+                row = row.child(div().min_w_0().child(line.element(
+                    id(format!("in-{n}")),
+                    roles::TYPE,
+                    &m,
+                    &self.links,
+                    palette,
+                )));
             }
             pins = pins.child(row);
         }
@@ -113,51 +133,94 @@ impl RenderOnce for PipeView {
         match &self.pipe.output {
             Some(ty) => output.spelled(ty, &out_ink, &self.links, xray),
             None => {
-                output.push("No value returned", roles::words(roles::OUTPUT), palette.ink3.hsla());
+                output.push(
+                    "No value returned",
+                    roles::words(roles::OUTPUT),
+                    palette.ink3.hsla(),
+                );
             }
         }
-        let mut outs = div()
-            .flex()
-            .flex_col()
-            .min_w_0()
-            .child(div().flex().items_center().gap(k(&m, 8.0))
-                .child(div().flex_none().w(px(3.0)).h(k(&m, 16.0)).bg(palette.mint.base.hsla()))
-                .child(output.element(id("out".into()), roles::OUTPUT, &m, &self.links, palette)));
+        let mut outs = div().flex().flex_col().min_w_0().child(
+            div()
+                .flex()
+                .items_center()
+                .gap(k(&m, 8.0))
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(3.0))
+                        .h(k(&m, 16.0))
+                        .bg(palette.mint.base.hsla()),
+                )
+                .child(output.element(id("out".into()), roles::OUTPUT, &m, &self.links, palette)),
+        );
         if let Some(fails) = &self.pipe.fails {
             let mut fail_ink = TypeInk::new(roles::TYPE, palette);
             fail_ink.link = palette.ink1.hsla();
             let mut line = Line::new();
-                line.push("Failure · ", roles::words(roles::TYPE), palette.ink1.hsla());
+            line.push("Failure · ", roles::words(roles::TYPE), palette.ink1.hsla());
             match fails {
                 Some(err) => line.spelled(err, &fail_ink, &self.links, xray),
                 None => {
                     line.push("an error", roles::words(roles::TYPE), palette.ink1.hsla());
                 }
             }
-            outs = outs.child(div().mt(k(&m, 10.0)).flex().items_center().gap(k(&m, 8.0))
-                .child(super::operation::connector(&m, palette.coral.base.hsla(), true))
-                .child(line.element(id("fails".into()), roles::TYPE, &m, &self.links, palette)));
+            outs = outs.child(
+                div()
+                    .mt(k(&m, 10.0))
+                    .flex()
+                    .items_center()
+                    .gap(k(&m, 8.0))
+                    .child(super::operation::connector(
+                        &m,
+                        palette.coral.base.hsla(),
+                        true,
+                    ))
+                    .child(line.element(id("fails".into()), roles::TYPE, &m, &self.links, palette)),
+            );
         }
         let body = if narrow {
             div()
                 .flex()
                 .flex_col()
                 .gap(k(&m, 10.0))
-                .child(pins.pb(k(&m, 10.0)).border_b_1().border_color(palette.line3.hsla()))
-                .child(super::operation::connector(&m, palette.peri.base.hsla(), false))
+                .child(
+                    pins.pb(k(&m, 10.0))
+                        .border_b_1()
+                        .border_color(palette.line3.hsla()),
+                )
+                .child(super::operation::connector(
+                    &m,
+                    palette.peri.base.hsla(),
+                    false,
+                ))
                 .child(outs)
         } else {
             div()
                 .flex()
                 .items_center()
                 .gap(k(&m, 10.0))
-                .child(pins.py(k(&m, 6.0)).pr(k(&m, 18.0)).border_r_1().border_color(palette.line3.hsla()))
+                .child(
+                    pins.py(k(&m, 6.0))
+                        .pr(k(&m, 18.0))
+                        .border_r_1()
+                        .border_color(palette.line3.hsla()),
+                )
                 .child(arrow(&m, palette.line3.hsla(), palette.peri.base.hsla()))
                 .child(outs.flex_1())
         };
-        let mut root = div().id(self.id.clone()).flex().flex_col().gap(k(&m, 12.0)).child(body);
+        let mut root = div()
+            .id(self.id.clone())
+            .flex()
+            .flex_col()
+            .gap(k(&m, 12.0))
+            .child(body);
         if !self.pipe.wheres.is_empty() {
-            let mut wheres = div().flex().flex_col().gap(k(&m, 4.0)).pt(px(2.0 * m.scale()));
+            let mut wheres = div()
+                .flex()
+                .flex_col()
+                .gap(k(&m, 4.0))
+                .pt(px(2.0 * m.scale()));
             for (n, w) in self.pipe.wheres.iter().enumerate() {
                 let mut line = Line::new();
                 for piece in &w.sentence {
@@ -169,14 +232,21 @@ impl RenderOnce for PipeView {
                             line.push(" ", roles::TYPE, palette.ink3.hsla());
                         }
                         _ => {
-                            let spelled = crate::semantics::types::Spelled { pieces: vec![piece.clone()], source: SharedString::default() };
+                            let spelled = crate::semantics::types::Spelled {
+                                pieces: vec![piece.clone()],
+                                source: SharedString::default(),
+                            };
                             line.spelled(&spelled, &ink, &self.links, false);
                         }
                     }
                 }
                 if xray && !w.source.is_empty() {
                     line.push("  ", roles::TYPE, palette.ink4.hsla());
-                    line.push(&format!("{}: {}", w.name, w.source), roles::TYPE, palette.ink4.hsla());
+                    line.push(
+                        &format!("{}: {}", w.name, w.source),
+                        roles::TYPE,
+                        palette.ink4.hsla(),
+                    );
                 }
                 wheres = wheres.child(
                     div()
@@ -191,7 +261,13 @@ impl RenderOnce for PipeView {
                                 .text_color(palette.ink1.hsla())
                                 .child(w.name.clone()),
                         )
-                        .child(div().min_w_0().child(line.element(id(format!("where-{n}")), roles::TYPE, &m, &self.links, palette))),
+                        .child(div().min_w_0().child(line.element(
+                            id(format!("where-{n}")),
+                            roles::TYPE,
+                            &m,
+                            &self.links,
+                            palette,
+                        ))),
                 );
             }
             root = root.child(wheres);

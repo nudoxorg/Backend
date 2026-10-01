@@ -7,15 +7,15 @@
 //! unrolls from it ([`FloatRequest::unfurl`]).
 
 use crate::measure::{Measure, Set};
-use crate::theme::ActiveFacet;
 use crate::motion::{Motion, spec};
 use crate::overlay::float::{self, FloatKind, FloatRequest};
 use crate::probe::{self, TextOverflow};
+use crate::theme::ActiveFacet;
 use crate::tokens::{Face, TypeRole};
 use gpui::{
     AnyElement, App, Bounds, Div, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement,
-    KeyDownEvent, ParentElement, Pixels, SharedString, StatefulInteractiveElement, Styled, Window, canvas, div,
-    px,
+    KeyDownEvent, ParentElement, Pixels, SharedString, StatefulInteractiveElement, Styled, Window,
+    canvas, div, px,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -79,7 +79,10 @@ pub(crate) fn text(
         resolved,
         1.0,
         TextOverflow::Wrap,
-        div().set(role, measure).text_color(color.into()).child(content),
+        div()
+            .set(role, measure)
+            .text_color(color.into())
+            .child(content),
     )
     .into_any_element()
 }
@@ -101,9 +104,12 @@ pub(crate) type Content = Rc<dyn Fn(&Measure, &mut Window, &mut App) -> AnyEleme
 /// The float request for a mark's card at `anchor`: a peek that unfurls.
 pub(crate) fn request(key: &ElementId, anchor: Bounds<Pixels>, content: &Content) -> FloatRequest {
     let content = content.clone();
-    FloatRequest::new(key.clone(), anchor, FloatKind::Peek, move |measure, window, cx| {
-        content(measure, window, cx)
-    })
+    FloatRequest::new(
+        key.clone(),
+        anchor,
+        FloatKind::Peek,
+        move |measure, window, cx| content(measure, window, cx),
+    )
     .unfurl()
     .hang_from_start()
 }
@@ -146,7 +152,12 @@ pub(crate) fn live(id: &ElementId, key: &ElementId, window: &mut Window, cx: &mu
         window,
         cx,
     );
-    Live { lit, state, focus, sheet }
+    Live {
+        lit,
+        state,
+        focus,
+        sheet,
+    }
 }
 
 /// What Enter does on a mark that is also a link (it follows the link;
@@ -183,19 +194,21 @@ pub(crate) fn door(
     };
     let key_request = key.clone();
     let key_card = card.clone();
-    outer = outer.track_focus(&live.focus).on_key_down(move |event: &KeyDownEvent, window, cx| {
-        let pressed = event.keystroke.key.as_str();
-        if pressed == "enter"
-            && let Some(activate) = &activate
-        {
-            activate(window, cx);
-            cx.stop_propagation();
-        } else if matches!(pressed, "enter" | "space") {
-            let anchor = float::reported(&key_request, window, cx).unwrap_or_default();
-            float::open(request(&key_request, anchor, &key_card), window, cx);
-            cx.stop_propagation();
-        }
-    });
+    outer = outer
+        .track_focus(&live.focus)
+        .on_key_down(move |event: &KeyDownEvent, window, cx| {
+            let pressed = event.keystroke.key.as_str();
+            if pressed == "enter"
+                && let Some(activate) = &activate
+            {
+                activate(window, cx);
+                cx.stop_propagation();
+            } else if matches!(pressed, "enter" | "space") {
+                let anchor = float::reported(&key_request, window, cx).unwrap_or_default();
+                float::open(request(&key_request, anchor, &key_card), window, cx);
+                cx.stop_propagation();
+            }
+        });
     let trigger_key = key.clone();
     let trigger_card = card.clone();
     let trigger = float::trigger(
@@ -225,7 +238,9 @@ pub(crate) fn door(
                     let card = card.clone();
                     window
                         .spawn(cx, async move |cx| {
-                            cx.background_executor().timer(std::time::Duration::from_millis(after)).await;
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(after))
+                                .await;
                             let _ = cx.update(|window, cx| {
                                 let anchor = float::reported(&key, window, cx).unwrap_or(bounds);
                                 float::rest(request(&key, anchor, &card), window, cx);
@@ -254,14 +269,19 @@ pub(crate) fn in_place(content: &Content, window: &mut Window, cx: &mut App) -> 
         .relative()
         .mt(px(12.0 * facet.text_scale))
         .flex()
-        .child(div().relative().child(float::plate(FloatKind::Peek, false, palette).child(inner)).child(
+        .child(
             div()
-                .absolute()
-                .top_0()
-                .left(px(FloatKind::Peek.chamfer()))
-                .right_0()
-                .h(px(1.0))
-                .bg(crate::controls::with_alpha(palette.peri.base.into(), 0.55)),
-        ))
+                .relative()
+                .child(float::plate(FloatKind::Peek, false, palette).child(inner))
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left(px(FloatKind::Peek.chamfer()))
+                        .right_0()
+                        .h(px(1.0))
+                        .bg(crate::controls::with_alpha(palette.peri.base.into(), 0.55)),
+                ),
+        )
         .into_any_element()
 }

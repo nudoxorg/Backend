@@ -31,7 +31,9 @@ impl Files for OnDisk {
         if std::fs::metadata(path).ok()?.len() > LARGEST_FILE {
             return None;
         }
-        String::from_utf8(std::fs::read(path).ok()?).ok().map(Arc::from)
+        String::from_utf8(std::fs::read(path).ok()?)
+            .ok()
+            .map(Arc::from)
     }
 }
 
@@ -43,15 +45,24 @@ pub(crate) fn read(references: &[ReferenceSite], files: &dyn Files) -> Arc<[UseL
     let mut texts: HashMap<PathBuf, Option<Arc<str>>> = HashMap::new();
     let mut lines = Vec::new();
     for reference in references {
-        let Some(span) = reference.span.known() else { continue };
-        let Some(package) = reference.site.coordinate.package() else { continue };
+        let Some(span) = reference.span.known() else {
+            continue;
+        };
+        let Some(package) = reference.site.coordinate.package() else {
+            continue;
+        };
         if !package.is_local() {
             continue;
         }
         let path = Path::new(package.as_str()).join(span.file.as_ref());
-        let text = texts.entry(path.clone()).or_insert_with(|| files.text(&path)).clone();
+        let text = texts
+            .entry(path.clone())
+            .or_insert_with(|| files.text(&path))
+            .clone();
         let Some(text) = text else { continue };
-        let Some(found) = line_at(&text, span.bytes.start as usize, span.bytes.end as usize) else { continue };
+        let Some(found) = line_at(&text, span.bytes.start as usize, span.bytes.end as usize) else {
+            continue;
+        };
         lines.push(UseLine {
             package: Arc::from(package.display_name()),
             file: Arc::clone(&span.file),
@@ -61,7 +72,9 @@ pub(crate) fn read(references: &[ReferenceSite], files: &dyn Files) -> Arc<[UseL
             mark: found.mark,
             relation: reference.relation,
             resolution: match reference.confidence {
-                SemanticConfidence::Compiler | SemanticConfidence::Imported | SemanticConfidence::Indexed => Resolution::Resolved,
+                SemanticConfidence::Compiler
+                | SemanticConfidence::Imported
+                | SemanticConfidence::Indexed => Resolution::Resolved,
                 SemanticConfidence::Syntactic | SemanticConfidence::Heuristic => Resolution::ByName,
             },
         });
@@ -87,16 +100,26 @@ fn line_at(text: &str, at: usize, end: usize) -> Option<Found> {
     }
     let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
     let stop = text[at..].find('\n').map_or(text.len(), |i| at + i);
-    let number = u32::try_from(text[..start].bytes().filter(|byte| *byte == b'\n').count() + 1).ok()?;
+    let number =
+        u32::try_from(text[..start].bytes().filter(|byte| *byte == b'\n').count() + 1).ok()?;
     let line = &text[start..stop];
     let indent = line.len() - line.trim_start().len();
     let shown: String = line.trim().chars().take(UseLine::MAX_TEXT).collect();
     let mark = at
         .checked_sub(start + indent)
         .zip(end.min(stop).checked_sub(start + indent))
-        .filter(|(from, to)| from < to && *to <= shown.len() && shown.is_char_boundary(*from) && shown.is_char_boundary(*to))
+        .filter(|(from, to)| {
+            from < to
+                && *to <= shown.len()
+                && shown.is_char_boundary(*from)
+                && shown.is_char_boundary(*to)
+        })
         .and_then(|(from, to)| Some(u32::try_from(from).ok()?..u32::try_from(to).ok()?));
-    (!shown.is_empty()).then_some(Found { number, shown, mark })
+    (!shown.is_empty()).then_some(Found {
+        number,
+        shown,
+        mark,
+    })
 }
 
 #[cfg(test)]

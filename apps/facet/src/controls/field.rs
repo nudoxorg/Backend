@@ -152,7 +152,10 @@ impl RenderOnce for Field {
             // The caret blinks (the text engine's own 2 Hz clock): ambient
             // motion, declared as such so the probe tells it from a leak.
             let epoch = crate::motion::epoch(cx);
-            let at_ms = crate::motion::now(cx).saturating_duration_since(epoch).as_secs_f64() * 1000.0;
+            let at_ms = crate::motion::now(cx)
+                .saturating_duration_since(epoch)
+                .as_secs_f64()
+                * 1000.0;
             crate::probe::record_track(cx, || crate::probe::TrackSample {
                 key: format!("{id}-caret"),
                 kind: crate::probe::TrackKind::Pulse,
@@ -183,7 +186,13 @@ impl RenderOnce for Field {
             window,
             cx,
         );
-        let focus = motion.animate(track(&id, "focus"), if focused { 1.0 } else { 0.0 }, spec::HOVER, window, cx);
+        let focus = motion.animate(
+            track(&id, "focus"),
+            if focused { 1.0 } else { 0.0 },
+            spec::HOVER,
+            window,
+            cx,
+        );
         let fault = motion.animate(
             track(&id, "fault"),
             if self.fault.is_some() { 1.0 } else { 0.0 },
@@ -205,7 +214,11 @@ impl RenderOnce for Field {
             .mix(Edge::of(Bevel::Focus, palette), focus)
             .mix(Edge::of(Bevel::Coral, palette), fault);
         let fill = if self.opaque {
-            mix(with_alpha(palette.plate.into(), 1.0), with_alpha(palette.plate2.into(), 1.0), hover)
+            mix(
+                with_alpha(palette.plate.into(), 1.0),
+                with_alpha(palette.plate2.into(), 1.0),
+                hover,
+            )
         } else if self.quiet {
             let tint: Hsla = palette.tint.into();
             mix(with_alpha(tint, 0.3 * tint.alpha), tint, hover)
@@ -287,7 +300,11 @@ pub struct Select {
 
 /// A select trigger reading `value`, sized for `measure`.
 #[must_use]
-pub fn select(id: impl Into<ElementId>, value: impl Into<SharedString>, measure: &Measure) -> Select {
+pub fn select(
+    id: impl Into<ElementId>,
+    value: impl Into<SharedString>,
+    measure: &Measure,
+) -> Select {
     Select {
         id: id.into(),
         value: value.into(),
@@ -362,7 +379,10 @@ impl Select {
         options: impl IntoIterator<Item = S>,
         on_choose: impl Fn(usize, &mut Window, &mut App) + 'static,
     ) -> Self {
-        self.menu(Menu::new(options.into_iter().map(MenuItem::new).collect(), on_choose))
+        self.menu(Menu::new(
+            options.into_iter().map(MenuItem::new).collect(),
+            on_choose,
+        ))
     }
 }
 
@@ -386,7 +406,8 @@ impl RenderOnce for Select {
         // With a menu of its own, the trigger opens it and reads its state
         // from the float layer.
         let menu_key = select_menu_key(&id);
-        let open = self.open || (self.menu.is_some() && crate::overlay::float::is_open(&menu_key, window, cx));
+        let open = self.open
+            || (self.menu.is_some() && crate::overlay::float::is_open(&menu_key, window, cx));
         let open_menu: Option<Handler> = self.menu.clone().map(|menu| {
             let frame = touch.frame.clone();
             let focus = touch.focus.clone();
@@ -395,7 +416,14 @@ impl RenderOnce for Select {
                 // here when it closes (a press opens before the click would
                 // have focused it).
                 window.focus(&focus, cx);
-                menu::open(menu_key.clone(), frame.get(), Side::Below, menu.clone(), window, cx);
+                menu::open(
+                    menu_key.clone(),
+                    frame.get(),
+                    Side::Below,
+                    menu.clone(),
+                    window,
+                    cx,
+                );
             }) as Handler
         });
 
@@ -436,17 +464,26 @@ impl RenderOnce for Select {
         if self.disabled {
             ink = muted(ink);
         }
-        let chevron = icons::chevron(IconSize::S12, mix(palette.ink3.into(), palette.ink1.into(), hover))
-            .size(measure.icon(12.0))
-            .with_transformation(Transformation::rotate(radians(
-                std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * turn,
-            )));
+        let chevron = icons::chevron(
+            IconSize::S12,
+            mix(palette.ink3.into(), palette.ink1.into(), hover),
+        )
+        .size(measure.icon(12.0))
+        .with_transformation(Transformation::rotate(radians(
+            std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * turn,
+        )));
         let mark = self
             .lang
-            .map(|lang| icons::lang_mark(lang, 16.0).size(measure.icon(16.0)).into_any_element())
+            .map(|lang| {
+                icons::lang_mark(lang, 16.0)
+                    .size(measure.icon(16.0))
+                    .into_any_element()
+            })
             .or_else(|| {
                 self.icon.map(|icon| {
-                    ui(icon, IconSize::S14, palette.ink2).size(measure.icon(14.0)).into_any_element()
+                    ui(icon, IconSize::S14, palette.ink2)
+                        .size(measure.icon(14.0))
+                        .into_any_element()
                 })
             });
         let plate = cut()

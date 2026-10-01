@@ -1,12 +1,12 @@
 //! Lazy async Trustfall execution over immutable typed semantic evidence.
 
 use backend_library::PackageKey;
-use backend_version::WorkspaceRoot;
 use backend_semantic::ir::{
     DeclarationIdentity, ExternalTargetIdentity, ImageProvenance, SemanticImageAuthority,
     SemanticImageFacts,
 };
 use backend_semantic::vocabulary::{LanguageProfile, PackageUrl};
+use backend_version::WorkspaceRoot;
 use futures_core::Stream;
 use futures_util::stream;
 use std::collections::BTreeMap;

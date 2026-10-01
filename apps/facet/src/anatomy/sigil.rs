@@ -25,7 +25,10 @@
 use super::page::hue;
 use super::plan::{DeclKind, DropVerb, Fam, PagePlan, Spec};
 use crate::tokens::Palette;
-use gpui::{AnyElement, Bounds, ColorExt, Hsla, IntoElement, PathBuilder, Pixels, Point, Styled, Window, canvas, point, px};
+use gpui::{
+    AnyElement, Bounds, ColorExt, Hsla, IntoElement, PathBuilder, Pixels, Point, Styled, Window,
+    canvas, point, px,
+};
 
 /// What a sigil draws.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -86,7 +89,22 @@ impl Sigil {
     /// A bare mark of `form`.
     #[must_use]
     pub const fn new(form: Form, fam: Fam) -> Self {
-        Self { form, fam, ins: 0, gives: false, fails: false, recv: false, is_async: false, is_unsafe: false, cases: 0, fields: 0, marker: false, write: 0, get: 0, yours: 0 }
+        Self {
+            form,
+            fam,
+            ins: 0,
+            gives: false,
+            fails: false,
+            recv: false,
+            is_async: false,
+            is_unsafe: false,
+            cases: 0,
+            fields: 0,
+            marker: false,
+            write: 0,
+            get: 0,
+            yours: 0,
+        }
     }
 
     /// The mark a page's plan says: the kind, and every fact its drawing
@@ -100,7 +118,10 @@ impl Sigil {
             Spec::Callable(callable) => {
                 sigil.ins = u8::try_from(callable.ports.len()).unwrap_or(u8::MAX);
                 sigil.gives = callable.gives.is_some();
-                sigil.fails = callable.drops.iter().any(|drop| drop.verb != DropVerb::Panics);
+                sigil.fails = callable
+                    .drops
+                    .iter()
+                    .any(|drop| drop.verb != DropVerb::Panics);
                 sigil.recv = callable.receiver.is_some();
                 sigil.is_async = callable.flags.iter().any(|flag| flag.contains("async"));
                 sigil.is_unsafe = callable.flags.iter().any(|flag| flag.contains("unsafe"));
@@ -109,12 +130,21 @@ impl Sigil {
                 }
             }
             Spec::Choice(choice) => {
-                sigil.form = if kind == DeclKind::Alias { Form::Alias } else { Form::Enum };
+                sigil.form = if kind == DeclKind::Alias {
+                    Form::Alias
+                } else {
+                    Form::Enum
+                };
                 sigil.cases = u8::try_from(choice.cases.len()).unwrap_or(u8::MAX);
             }
             Spec::Record(record) => {
-                sigil.form = if kind == DeclKind::Alias { Form::Alias } else { Form::Struct };
-                sigil.fields = u8::try_from(record.rungs.len() + record.private as usize).unwrap_or(u8::MAX);
+                sigil.form = if kind == DeclKind::Alias {
+                    Form::Alias
+                } else {
+                    Form::Struct
+                };
+                sigil.fields =
+                    u8::try_from(record.rungs.len() + record.private as usize).unwrap_or(u8::MAX);
             }
             Spec::Contract(contract) => {
                 sigil.form = Form::Trait;
@@ -153,7 +183,13 @@ const fn form_of(kind: DeclKind) -> Form {
 /// The stroke weight in drawing units at `size` px.
 #[must_use]
 pub fn weight(size: f32) -> f32 {
-    if size >= 48.0 { 2.0 } else if size >= 24.0 { 3.0 } else { 4.6 }
+    if size >= 48.0 {
+        2.0
+    } else if size >= 24.0 {
+        3.0
+    } else {
+        4.6
+    }
 }
 
 /// A sigil `size` px square.
@@ -200,7 +236,13 @@ impl Colors {
 }
 
 /// Paints `facts` in `bounds` (drawn `size` px square from its origin).
-pub fn paint(facts: &Sigil, bounds: Bounds<Pixels>, size: f32, colors: Colors, window: &mut Window) {
+pub fn paint(
+    facts: &Sigil,
+    bounds: Bounds<Pixels>,
+    size: f32,
+    colors: Colors,
+    window: &mut Window,
+) {
     let k = size / 64.0;
     let origin = bounds.origin;
     let p = |x: f32, y: f32| -> Point<Pixels> { point(origin.x + px(x * k), origin.y + px(y * k)) };
@@ -214,7 +256,11 @@ pub fn paint(facts: &Sigil, bounds: Bounds<Pixels>, size: f32, colors: Colors, w
             path.add_polygon(points, true);
         } else {
             for (n, at) in points.iter().enumerate() {
-                if n == 0 { path.move_to(*at); } else { path.line_to(*at); }
+                if n == 0 {
+                    path.move_to(*at);
+                } else {
+                    path.line_to(*at);
+                }
             }
         }
         if let Ok(path) = path.build() {
@@ -242,30 +288,68 @@ pub fn paint(facts: &Sigil, bounds: Bounds<Pixels>, size: f32, colors: Colors, w
 
     match facts.form {
         Form::Fn | Form::Method | Form::Macro => {
-            plate(window, &[p(24.0, 19.0), p(47.0, 19.0), p(47.0, 39.0), p(41.0, 45.0), p(17.0, 45.0), p(17.0, 25.0)], facts.is_async);
+            plate(
+                window,
+                &[
+                    p(24.0, 19.0),
+                    p(47.0, 19.0),
+                    p(47.0, 39.0),
+                    p(41.0, 45.0),
+                    p(17.0, 45.0),
+                    p(17.0, 25.0),
+                ],
+                facts.is_async,
+            );
             if facts.form == Form::Macro {
                 stroke(window, &[p(32.0, 24.0), p(32.0, 35.0)], hue, false);
                 stroke(window, &[p(32.0, 39.0), p(32.0, 40.5)], hue, false);
             }
             let n = usize::from(facts.ins.min(5));
             for i in 0..n {
-                let y = if n == 1 { 32.0 } else { 21.0 + 22.0 * i as f32 / (n - 1) as f32 };
-                stroke(window, &[p(2.0, y), p(8.0, y), p(17.0, 32.0 + (y - 32.0) * 0.3)], hue, false);
+                let y = if n == 1 {
+                    32.0
+                } else {
+                    21.0 + 22.0 * i as f32 / (n - 1) as f32
+                };
+                stroke(
+                    window,
+                    &[p(2.0, y), p(8.0, y), p(17.0, 32.0 + (y - 32.0) * 0.3)],
+                    hue,
+                    false,
+                );
             }
             if facts.gives {
                 stroke(window, &[p(47.0, 32.0), p(60.0, 32.0)], hue, false);
-                stroke(window, &[p(55.0, 27.0), p(60.0, 32.0), p(55.0, 37.0)], hue, false);
+                stroke(
+                    window,
+                    &[p(55.0, 27.0), p(60.0, 32.0), p(55.0, 37.0)],
+                    hue,
+                    false,
+                );
             }
             if facts.fails {
-                stroke(window, &[p(29.0, 45.0), p(29.0, 57.0), p(38.0, 57.0)], coral, false);
-                fill(window, &[p(38.0, 53.0), p(44.0, 53.0), p(44.0, 59.0), p(38.0, 59.0)], coral);
+                stroke(
+                    window,
+                    &[p(29.0, 45.0), p(29.0, 57.0), p(38.0, 57.0)],
+                    coral,
+                    false,
+                );
+                fill(
+                    window,
+                    &[p(38.0, 53.0), p(44.0, 53.0), p(44.0, 59.0), p(38.0, 59.0)],
+                    coral,
+                );
             }
             if facts.recv {
                 stroke(window, &[p(32.0, 2.0), p(32.0, 19.0)], hue, false);
                 stroke(window, &[p(26.0, 2.0), p(38.0, 2.0)], hue, false);
             }
             if facts.is_unsafe {
-                fill(window, &[p(47.0, 19.0), p(47.0, 29.0), p(37.0, 19.0)], amber);
+                fill(
+                    window,
+                    &[p(47.0, 19.0), p(47.0, 29.0), p(37.0, 19.0)],
+                    amber,
+                );
             }
         }
         Form::Trait => {
@@ -273,7 +357,13 @@ pub fn paint(facts: &Sigil, bounds: Bounds<Pixels>, size: f32, colors: Colors, w
             let prov = usize::from(facts.get.min(4));
             // The plate's outline runs up the cut left edge: each notch is a
             // wedge bitten into it.
-            let mut outline = vec![p(18.0, 8.0), p(50.0, 8.0), p(50.0, 50.0), p(44.0, 56.0), p(18.0, 56.0)];
+            let mut outline = vec![
+                p(18.0, 8.0),
+                p(50.0, 8.0),
+                p(50.0, 50.0),
+                p(44.0, 56.0),
+                p(18.0, 56.0),
+            ];
             for i in (0..req).rev() {
                 let y = 16.0 + (40.0 - 8.0) * (i as f32 + 0.5) / req.max(1) as f32;
                 outline.push(p(18.0, y + 5.0));
@@ -283,13 +373,32 @@ pub fn paint(facts: &Sigil, bounds: Bounds<Pixels>, size: f32, colors: Colors, w
             plate(window, &outline, false);
             for i in 0..prov {
                 let y = 16.0 + 32.0 * (i as f32 + 0.5) / prov.max(1) as f32;
-                stroke(window, &[p(50.0, y - 3.0), p(57.0, y - 3.0), p(57.0, y + 3.0), p(50.0, y + 3.0)], hue, false);
+                stroke(
+                    window,
+                    &[
+                        p(50.0, y - 3.0),
+                        p(57.0, y - 3.0),
+                        p(57.0, y + 3.0),
+                        p(50.0, y + 3.0),
+                    ],
+                    hue,
+                    false,
+                );
             }
         }
         Form::Enum | Form::Struct | Form::Alias => {
-            plate(window, &[p(32.0, 3.0), p(61.0, 32.0), p(32.0, 61.0), p(3.0, 32.0)], false);
+            plate(
+                window,
+                &[p(32.0, 3.0), p(61.0, 32.0), p(32.0, 61.0), p(3.0, 32.0)],
+                false,
+            );
             match facts.form {
-                Form::Alias => stroke(window, &[p(32.0, 13.0), p(51.0, 32.0), p(32.0, 51.0), p(13.0, 32.0)], hue, true),
+                Form::Alias => stroke(
+                    window,
+                    &[p(32.0, 13.0), p(51.0, 32.0), p(32.0, 51.0), p(13.0, 32.0)],
+                    hue,
+                    true,
+                ),
                 Form::Enum => {
                     let n = usize::from(facts.cases.min(6));
                     for i in 0..n {
@@ -312,10 +421,14 @@ pub fn paint(facts: &Sigil, bounds: Bounds<Pixels>, size: f32, colors: Colors, w
             }
         }
         Form::Value => {
-            let ring = |r: f32| (0..24).map(|i| {
-                let a = i as f32 / 24.0 * std::f32::consts::TAU;
-                p(32.0 + r * a.cos(), 32.0 + r * a.sin())
-            }).collect::<Vec<_>>();
+            let ring = |r: f32| {
+                (0..24)
+                    .map(|i| {
+                        let a = i as f32 / 24.0 * std::f32::consts::TAU;
+                        p(32.0 + r * a.cos(), 32.0 + r * a.sin())
+                    })
+                    .collect::<Vec<_>>()
+            };
             plate(window, &ring(13.0), false);
             stroke(window, &ring(21.0), hue, true);
         }
@@ -326,10 +439,12 @@ pub fn paint(facts: &Sigil, bounds: Bounds<Pixels>, size: f32, colors: Colors, w
     for i in 0..usize::from(facts.yours.min(6)) {
         let a = (20.0 + i as f32 * 11.0).to_radians();
         let c = p(32.0 + 31.0 * a.cos(), 32.0 + 31.0 * a.sin());
-        let dot = (0..10).map(|n| {
-            let t = n as f32 / 10.0 * std::f32::consts::TAU;
-            point(c.x + px(r * k * t.cos()), c.y + px(r * k * t.sin()))
-        }).collect::<Vec<_>>();
+        let dot = (0..10)
+            .map(|n| {
+                let t = n as f32 / 10.0 * std::f32::consts::TAU;
+                point(c.x + px(r * k * t.cos()), c.y + px(r * k * t.sin()))
+            })
+            .collect::<Vec<_>>();
         fill(window, &dot, mint);
     }
 }

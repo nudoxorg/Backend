@@ -64,7 +64,10 @@ fn publish_oracle(dotnet: &Path) -> Result<PathBuf, Box<dyn Error>> {
         .arg(&intermediate_arg)
         .current_dir(&helper_dir)
         .status()?;
-    assert!(restored.success(), "locked oracle restore failed: {restored}");
+    assert!(
+        restored.success(),
+        "locked oracle restore failed: {restored}"
+    );
     let published = Command::new(dotnet)
         .args([
             "publish",
@@ -190,9 +193,8 @@ fn bare_property_identifiers_emit_field_read_and_write_rows() -> Result<(), Box<
         .ok_or("method Write missing")?;
     let local_method = find_member(&declarations, b"Local", DeclarationKind::Method, "Box")
         .ok_or("method Local missing")?;
-    let qualified_method =
-        find_member(&declarations, b"Qualified", DeclarationKind::Method, "Box")
-            .ok_or("method Qualified missing")?;
+    let qualified_method = find_member(&declarations, b"Qualified", DeclarationKind::Method, "Box")
+        .ok_or("method Qualified missing")?;
 
     let widget_count_row = declaration_index(&declarations, widget_count);
     let box_count_row = declaration_index(&declarations, box_count);
@@ -319,11 +321,7 @@ fn bare_property_identifiers_emit_field_read_and_write_rows() -> Result<(), Box<
         .filter(|reference| reference.kind == ReferenceTag::FieldRead)
         .count();
     if field_reads != 2 {
-        return Err(format!(
-            "expected exactly two FieldRead rows, found {}",
-            field_reads
-        )
-        .into());
+        return Err(format!("expected exactly two FieldRead rows, found {}", field_reads).into());
     }
 
     Ok(())

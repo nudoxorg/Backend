@@ -483,8 +483,7 @@ fn declaration_site_const_parameter_emits() -> Result<(), TestError> {
 /// spelling on the const-defaults suffix list, never silently dropped.
 #[test]
 fn const_parameter_default_keeps_written_spelling() -> Result<(), TestError> {
-    let bytes =
-        compile_fixture("pub struct S<const N: usize = 4096> { pub v: u8 }\n")?;
+    let bytes = compile_fixture("pub struct S<const N: usize = 4096> { pub v: u8 }\n")?;
     let view = FragmentView::validate(&bytes)?;
     let s = entity_ordinal(&view, b"S", EntityKind::Record)?;
     let extension = rust_extension(&view, s)?;
@@ -514,9 +513,8 @@ fn const_parameter_default_keeps_written_spelling() -> Result<(), TestError> {
 /// fragment carries no empty atom at all.
 #[test]
 fn const_defaults_form_a_suffix_without_empty_atoms() -> Result<(), TestError> {
-    let bytes = compile_fixture(
-        "pub struct S<const N: usize, const M: usize = 8> { pub v: [u8; M] }\n",
-    )?;
+    let bytes =
+        compile_fixture("pub struct S<const N: usize, const M: usize = 8> { pub v: [u8; M] }\n")?;
     let view = FragmentView::validate(&bytes)?;
     if view.atoms().any(|atom| atom.bytes.is_empty()) {
         return Err(TestError::Falsified(
@@ -675,11 +673,7 @@ fn where_free_predicate_emits_subject_and_bounds() -> Result<(), TestError> {
     let subject = facts
         .get(usize::try_from(predicate.subject).map_err(|_| TestError::Coordinate)?)
         .ok_or(TestError::Falsified("free subject row absent"))?;
-    assert_unknown(
-        subject,
-        TypeReason::NoIrRepresentation,
-        b"Vec<T>",
-    )?;
+    assert_unknown(subject, TypeReason::NoIrRepresentation, b"Vec<T>")?;
     let bounds = pools
         .free_predicate_bounds(predicate)
         .map_err(|_| TestError::Falsified("free bounds absent"))?;
@@ -724,7 +718,9 @@ fn mixed_const_and_type_parameters_emit_in_written_order() -> Result<(), TestErr
         return Err(TestError::Falsified("mixed generic list changed count"));
     }
     if parameters[0].name != b"N" || parameters[1].name != b"T" {
-        return Err(TestError::Falsified("mixed generic list lost written order"));
+        return Err(TestError::Falsified(
+            "mixed generic list lost written order",
+        ));
     }
     let DecodedTypeParameterSemantics::Exact {
         kind: DecodedTypeParameterKind::ConstValue { .. },

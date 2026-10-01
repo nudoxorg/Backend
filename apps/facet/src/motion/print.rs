@@ -141,7 +141,9 @@ impl Element for Print {
         let edge_y = window
             .layer_transform()
             .inverse()
-            .map_or(edge.y, |inverse| inverse.apply(point(bounds.origin.x, edge.y)).y);
+            .map_or(edge.y, |inverse| {
+                inverse.apply(point(bounds.origin.x, edge.y)).y
+            });
         let mask = ContentMask {
             bounds: above(bounds, edge_y),
         };
@@ -149,7 +151,9 @@ impl Element for Print {
         let drop = Edge { y: edge_y, ..edge }.drop_at(bounds.origin.y);
         let child = &mut self.child;
         window.with_content_mask(Some(mask), |window| {
-            window.with_element_offset(point(Pixels::ZERO, drop), |window| child.prepaint(window, cx));
+            window.with_element_offset(point(Pixels::ZERO, drop), |window| {
+                child.prepaint(window, cx)
+            });
         });
     }
 

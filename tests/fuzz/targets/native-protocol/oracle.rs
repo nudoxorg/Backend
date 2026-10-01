@@ -69,7 +69,9 @@ pub(crate) fn judge(bytes: &[u8]) -> Result<Verdict, OracleFailure> {
                 ));
             }
             let encoded = left.encode().map_err(|error| {
-                OracleFailure::new(format!("accepted native envelope did not re-encode: {error}"))
+                OracleFailure::new(format!(
+                    "accepted native envelope did not re-encode: {error}"
+                ))
             })?;
             if encoded.as_slice() != bytes {
                 return Err(OracleFailure::new(

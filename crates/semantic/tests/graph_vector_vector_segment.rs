@@ -5,12 +5,12 @@ use core::mem::{align_of, size_of};
 use std::hint::black_box;
 
 use allocation_counter::{AllocationInfo, measure};
-use backend_semantic::ir::EntityId;
 use backend_semantic::graph_vector::{
     Metric, ModelId, PartitionId, ValidatedVectorSegment, VectorAuthority, VectorFact, VectorPoint,
     VectorQueryTerminal, VectorSegmentError, compact_vector_facts,
 };
 use backend_semantic::index_vocabulary::IndexSnapshotId;
+use backend_semantic::ir::EntityId;
 
 const MAX_SEGMENT_POINTS: usize = 16;
 

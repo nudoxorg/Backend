@@ -20,7 +20,7 @@ def print-captured-failures []: nothing -> nothing {
         print $"---- ($file) ----"
         # Bounded: a full cargo failure can run to tens of MB and Concourse
         # stores every log line. Keep the verdict summary plus a large tail.
-        let output = (open --raw $file | lines)
+        let output = open --raw $file | lines
         let verdicts = ($output | where {|line|
             ($line | str contains 'FAIL [') or ($line | str contains 'TIMEOUT [') or ($line | str contains 'tests were not run')
         })
@@ -31,11 +31,19 @@ def print-captured-failures []: nothing -> nothing {
         # Each failing test's own output comes long before the tail (nextest
         # prints it as the test fails), so pull every panic with the lines
         # that explain it: the assertion, left/right, and the message.
-        let panics = ($output | enumerate | where {|row| ($row.item | str contains 'panicked at') or ($row.item | str contains 'stderr ───') } | get index)
+        let panics = (
+            $output
+            | enumerate
+            | where {|row| ($row.item | str contains 'panicked at') or ($row.item | str contains 'stderr ───') }
+            | get index
+        )
         if not ($panics | is-empty) {
             print $"== ($panics | length) panics \(first 60, 25 lines each\) =="
             for start in ($panics | first 60) {
-                $output | skip ([($start - 3) 0] | math max) | first 28 | str join (char nl) | print
+                $output | skip ([
+                    ($start - 3)
+                    0
+                ] | math max) | first 28 | str join (char nl) | print
                 print '--'
             }
         }
@@ -47,7 +55,13 @@ def print-captured-failures []: nothing -> nothing {
 def step [name: string, body: closure]: nothing -> bool {
     print $"== linux: ($name) =="
     let started = (date now)
-    let passed = (try { do $body; true } catch {|error| print $error.msg; false })
+    let passed = (try {
+        do $body
+        true
+    } catch {|error|
+        print $error.msg
+        false
+    })
     print $"== linux: ($name) (if $passed { 'passed' } else { 'FAILED' }) in ((date now) - $started) =="
     $passed
 }
@@ -55,6 +69,7 @@ def step [name: string, body: closure]: nothing -> bool {
 def main [
     --skip-flake-check # run only the test step (the flake check is already cached on the host store)
 ]: nothing -> nothing {
+
     # The flake closes over ~1,100 pinned corpus archives; the default 1,024
     # soft descriptor limit is exhausted before any check fails.
     ulimit --file-descriptor-count --soft 65536
@@ -67,11 +82,9 @@ def main [
         # under it that its sandbox cannot see, and nushell builders fail
         # with "$env.PWD points to a non-existent directory". Check with the
         # plain /tmp the flake check always had outside the shell.
-        step "root flake check" {||
-            with-env {TMPDIR: "/tmp", TMP: "/tmp", TEMP: "/tmp", TEMPDIR: "/tmp"} {
+        step "root flake check" {|| with-env {TMPDIR: "/tmp", TMP: "/tmp", TEMP: "/tmp", TEMPDIR: "/tmp"} {
                 run-external "nix" "flake" "check" "-L" "path:."
-            }
-        }
+            } }
     }
 
     # "private-debug" makes the CLI write the child's stdout/stderr beside its

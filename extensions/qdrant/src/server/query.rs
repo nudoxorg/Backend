@@ -63,9 +63,9 @@ impl QdrantBlockingAdapter {
 
 #[cfg(test)]
 mod tests {
-    use backend_semantic::ir::EntityId;
     use backend_semantic::graph_vector::{Metric, ModelId, PartitionId, VectorAuthority};
     use backend_semantic::index_vocabulary::{IndexSnapshotId, VectorSegmentId};
+    use backend_semantic::ir::EntityId;
 
     use super::*;
     use crate::server::{PhysicalPointId, QdrantCandidate};

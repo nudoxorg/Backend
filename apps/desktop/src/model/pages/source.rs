@@ -5,7 +5,9 @@ use super::symbol::{FileSpan, SymbolLink};
 use std::sync::Arc;
 
 /// Where the source text in a [`SourceView`] came from.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub enum SourceOrigin {
     /// The engine's bounded declaration excerpt: the declaration only, at
     /// most 4096 bytes.
@@ -38,7 +40,10 @@ impl SourceText {
             let end = start + segment.len();
             if current == index {
                 let trimmed = segment.trim_end_matches(['\n', '\r']).len();
-                return ByteSpan::new(u32::try_from(start).ok()?, u32::try_from(start + trimmed).ok()?);
+                return ByteSpan::new(
+                    u32::try_from(start).ok()?,
+                    u32::try_from(start + trimmed).ok()?,
+                );
             }
             start = end;
         }

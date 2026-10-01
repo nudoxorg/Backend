@@ -19,8 +19,8 @@
 
 use super::json::Json;
 use crate::probe::Ledger;
-use crate::probe::rules::{overlap, stranded};
 pub use crate::probe::rules::{fully_visible, visible_bounds};
+use crate::probe::rules::{overlap, stranded};
 use backend_gui_harness::{Viewport, contrast_ratio};
 use image::RgbaImage;
 use std::collections::HashMap;
@@ -160,7 +160,12 @@ pub fn lint(image: &RgbaImage, ledger: &Ledger, viewport: Viewport) -> Linted {
         .texts
         .iter()
         .enumerate()
-        .map(|(index, text)| ledger.veils.iter().any(|veil| veil.covers_text(index, &text.bounds)))
+        .map(|(index, text)| {
+            ledger
+                .veils
+                .iter()
+                .any(|veil| veil.covers_text(index, &text.bounds))
+        })
         .collect();
     for (index, text) in ledger.texts.iter().enumerate() {
         if under_veil[index] {
@@ -204,9 +209,22 @@ pub fn lint(image: &RgbaImage, ledger: &Ledger, viewport: Viewport) -> Linted {
         }
         // Contrast from the pixels.
         let visible = visible_bounds(text, width, height);
-        if visible.is_none() { out.coverage.hidden_texts += 1; }
-        let measured = (viewport.scale == 2).then(|| visible.as_ref()).flatten()
-            .and_then(|bounds| ink_contrast(image, viewport.scale, bounds.x, bounds.y, bounds.width, bounds.height));
+        if visible.is_none() {
+            out.coverage.hidden_texts += 1;
+        }
+        let measured = (viewport.scale == 2)
+            .then(|| visible.as_ref())
+            .flatten()
+            .and_then(|bounds| {
+                ink_contrast(
+                    image,
+                    viewport.scale,
+                    bounds.x,
+                    bounds.y,
+                    bounds.width,
+                    bounds.height,
+                )
+            });
         match measured {
             Some((ratio, ink, ground)) => {
                 out.coverage.contrast += 1;
@@ -242,7 +260,12 @@ pub fn lint(image: &RgbaImage, ledger: &Ledger, viewport: Viewport) -> Linted {
             if under_veil[index + 1 + offset] || a.region != b.region || a.key == b.key {
                 continue;
             }
-            let (Some(a_visible), Some(b_visible)) = (visible_bounds(a, width, height), visible_bounds(b, width, height)) else { continue; };
+            let (Some(a_visible), Some(b_visible)) = (
+                visible_bounds(a, width, height),
+                visible_bounds(b, width, height),
+            ) else {
+                continue;
+            };
             let (w, h) = overlap(&a_visible, &b_visible);
             if w > 1.0 && h > 1.0 {
                 out.lints.push(Lint {
@@ -257,7 +280,11 @@ pub fn lint(image: &RgbaImage, ledger: &Ledger, viewport: Viewport) -> Linted {
         }
     }
     for (index, target) in ledger.targets.iter().enumerate() {
-        if ledger.veils.iter().any(|veil| veil.covers_target(index, &target.bounds)) {
+        if ledger
+            .veils
+            .iter()
+            .any(|veil| veil.covers_target(index, &target.bounds))
+        {
             out.coverage.occluded_targets += 1;
             continue;
         }
@@ -298,9 +325,18 @@ pub fn json(linted: &Linted) -> Json {
             "coverage",
             Json::obj([
                 ("texts", Json::num(linted.coverage.texts as f64)),
-                ("hidden_texts", Json::num(linted.coverage.hidden_texts as f64)),
-                ("occluded_texts", Json::num(linted.coverage.occluded_texts as f64)),
-                ("occluded_targets", Json::num(linted.coverage.occluded_targets as f64)),
+                (
+                    "hidden_texts",
+                    Json::num(linted.coverage.hidden_texts as f64),
+                ),
+                (
+                    "occluded_texts",
+                    Json::num(linted.coverage.occluded_texts as f64),
+                ),
+                (
+                    "occluded_targets",
+                    Json::num(linted.coverage.occluded_targets as f64),
+                ),
                 ("targets", Json::num(linted.coverage.targets as f64)),
                 ("contrast", Json::num(linted.coverage.contrast as f64)),
                 (
@@ -380,10 +416,24 @@ mod tests {
         }
     }
 
-    fn text_at(key: &str, rect: BoundsSample, clip: Option<BoundsSample>) -> crate::probe::TextSample {
-        crate::probe::TextSample { key: key.to_owned(), bounds: rect, paint_clip: clip,
-            natural_width: 20.0, overflow: crate::probe::TextOverflow::Clip, content: "label".to_owned(),
-            min_width: 20.0, line_height: 10.0, size: 12.0, weight: 400.0, region: Some("graph".to_owned()) }
+    fn text_at(
+        key: &str,
+        rect: BoundsSample,
+        clip: Option<BoundsSample>,
+    ) -> crate::probe::TextSample {
+        crate::probe::TextSample {
+            key: key.to_owned(),
+            bounds: rect,
+            paint_clip: clip,
+            natural_width: 20.0,
+            overflow: crate::probe::TextOverflow::Clip,
+            content: "label".to_owned(),
+            min_width: 20.0,
+            line_height: 10.0,
+            size: 12.0,
+            weight: 400.0,
+            region: Some("graph".to_owned()),
+        }
     }
 
     /// A dialog over a page: the page beneath is under the scrim and is not judged (its clipped
@@ -399,20 +449,46 @@ mod tests {
         let target = |key: &str, rect: BoundsSample| TargetSample {
             key: key.to_owned(),
             bounds: rect,
-            state: Target { clickable: true, ..Target::default() },
+            state: Target {
+                clickable: true,
+                ..Target::default()
+            },
         };
         let ledger = Ledger {
             texts: vec![under, above],
-            targets: vec![target("page-tiny", bounds(20.0, 60.0, 12.0, 12.0)), target("dialog-tiny", bounds(120.0, 160.0, 12.0, 12.0))],
-            veils: vec![VeilSample { bounds: bounds(0.0, 0.0, 400.0, 300.0), texts: 1, targets: 1 }],
+            targets: vec![
+                target("page-tiny", bounds(20.0, 60.0, 12.0, 12.0)),
+                target("dialog-tiny", bounds(120.0, 160.0, 12.0, 12.0)),
+            ],
+            veils: vec![VeilSample {
+                bounds: bounds(0.0, 0.0, 400.0, 300.0),
+                texts: 1,
+                targets: 1,
+            }],
             ..Ledger::default()
         };
         let result = lint(&blank(400, 300), &ledger, viewport());
-        assert_eq!((result.coverage.occluded_texts, result.coverage.occluded_targets), (1, 1));
-        assert_eq!((result.coverage.texts, result.coverage.targets), (1, 1), "only the dialog is judged");
+        assert_eq!(
+            (
+                result.coverage.occluded_texts,
+                result.coverage.occluded_targets
+            ),
+            (1, 1)
+        );
+        assert_eq!(
+            (result.coverage.texts, result.coverage.targets),
+            (1, 1),
+            "only the dialog is judged"
+        );
         let keys: Vec<&str> = result.lints.iter().map(|lint| lint.key.as_str()).collect();
-        assert!(!keys.iter().any(|key| key.starts_with("page-")), "the page under the scrim is not judged: {keys:?}");
-        assert!(keys.contains(&"dialog-clipped") && keys.contains(&"dialog-tiny"), "the dialog is: {keys:?}");
+        assert!(
+            !keys.iter().any(|key| key.starts_with("page-")),
+            "the page under the scrim is not judged: {keys:?}"
+        );
+        assert!(
+            keys.contains(&"dialog-clipped") && keys.contains(&"dialog-tiny"),
+            "the dialog is: {keys:?}"
+        );
     }
 
     #[test]
@@ -425,44 +501,95 @@ mod tests {
         );
         assert!(fully_visible(&fully_contained, 100.0, 100.0));
 
-        let clipped = text_at(
-            "clipped",
-            intrinsic,
-            Some(bounds(0.1, 0.2, 40.0, 20.0)),
-        );
+        let clipped = text_at("clipped", intrinsic, Some(bounds(0.1, 0.2, 40.0, 20.0)));
         assert!(!fully_visible(&clipped, 100.0, 100.0));
     }
 
     #[test]
     fn native_hidden_text_neither_overlaps_a_card_nor_samples_its_background() {
-        let ledger = Ledger { texts: vec![
-            text_at("hidden",bounds(10.0,100.0,40.0,20.0),Some(bounds(0.0,0.0,80.0,50.0))),
-            text_at("card",bounds(10.0,100.0,40.0,20.0),None),
-        ], ..Ledger::default() };
-        let result = lint(&blank(800,600), &ledger, Viewport { scale: 2, ..viewport() });
-        assert_eq!(result.coverage.texts,2); assert_eq!(result.coverage.hidden_texts,1);
-        assert!(!result.lints.iter().any(|lint| lint.key.contains("hidden")), "{:?}",result.lints);
+        let ledger = Ledger {
+            texts: vec![
+                text_at(
+                    "hidden",
+                    bounds(10.0, 100.0, 40.0, 20.0),
+                    Some(bounds(0.0, 0.0, 80.0, 50.0)),
+                ),
+                text_at("card", bounds(10.0, 100.0, 40.0, 20.0), None),
+            ],
+            ..Ledger::default()
+        };
+        let result = lint(
+            &blank(800, 600),
+            &ledger,
+            Viewport {
+                scale: 2,
+                ..viewport()
+            },
+        );
+        assert_eq!(result.coverage.texts, 2);
+        assert_eq!(result.coverage.hidden_texts, 1);
+        assert!(
+            !result.lints.iter().any(|lint| lint.key.contains("hidden")),
+            "{:?}",
+            result.lints
+        );
     }
 
     #[test]
     fn native_partial_text_still_checks_visible_low_contrast_ink() {
-        let ledger = Ledger { texts: vec![text_at("partial",bounds(10.0,10.0,40.0,20.0),Some(bounds(0.0,0.0,80.0,20.0)))], ..Ledger::default() };
-        let mut image=blank(800,600);
-        image.put_pixel(24,26,Rgba([25,30,40,255]));
-        image.put_pixel(24,50,Rgba([255,255,255,255])); // outside the actual clip
-        let result=lint(&image,&ledger,Viewport { scale: 2, ..viewport() });
-        assert_eq!(result.coverage.hidden_texts,0); assert_eq!(result.coverage.contrast,1);
-        assert!(result.lints.iter().any(|lint| lint.rule==super::Rule::Contrast && lint.key=="partial"),"{:?}",result.lints);
+        let ledger = Ledger {
+            texts: vec![text_at(
+                "partial",
+                bounds(10.0, 10.0, 40.0, 20.0),
+                Some(bounds(0.0, 0.0, 80.0, 20.0)),
+            )],
+            ..Ledger::default()
+        };
+        let mut image = blank(800, 600);
+        image.put_pixel(24, 26, Rgba([25, 30, 40, 255]));
+        image.put_pixel(24, 50, Rgba([255, 255, 255, 255])); // outside the actual clip
+        let result = lint(
+            &image,
+            &ledger,
+            Viewport {
+                scale: 2,
+                ..viewport()
+            },
+        );
+        assert_eq!(result.coverage.hidden_texts, 0);
+        assert_eq!(result.coverage.contrast, 1);
+        assert!(
+            result
+                .lints
+                .iter()
+                .any(|lint| lint.rule == super::Rule::Contrast && lint.key == "partial"),
+            "{:?}",
+            result.lints
+        );
     }
 
     #[test]
     fn native_visible_text_overlap_remains_a_failure() {
-        let ledger=Ledger { texts: vec![
-            text_at("a",bounds(10.0,10.0,40.0,20.0),Some(bounds(0.0,0.0,35.0,25.0))),
-            text_at("b",bounds(20.0,12.0,40.0,20.0),None),
-        ], ..Ledger::default() };
-        let result=lint(&blank(400,300),&ledger,viewport());
-        assert!(result.lints.iter().any(|lint| lint.rule==super::Rule::Overlap && lint.key=="a + b"),"{:?}",result.lints);
+        let ledger = Ledger {
+            texts: vec![
+                text_at(
+                    "a",
+                    bounds(10.0, 10.0, 40.0, 20.0),
+                    Some(bounds(0.0, 0.0, 35.0, 25.0)),
+                ),
+                text_at("b", bounds(20.0, 12.0, 40.0, 20.0), None),
+            ],
+            ..Ledger::default()
+        };
+        let result = lint(&blank(400, 300), &ledger, viewport());
+        assert!(
+            result
+                .lints
+                .iter()
+                .any(|lint| lint.rule == super::Rule::Overlap && lint.key == "a + b"),
+            "{:?}",
+            result.lints
+        );
     }
 
     /// A row 40 px below a 300 px viewport is offscreen when nothing
@@ -586,16 +713,48 @@ mod tests {
             region: None,
         };
         let offscreen = |ledger: &Ledger| {
-            lint(&blank(400, 300), ledger, viewport()).lints.iter().filter(|lint| lint.rule == super::Rule::Offscreen && lint.key == "strip-word").count()
+            lint(&blank(400, 300), ledger, viewport())
+                .lints
+                .iter()
+                .filter(|lint| lint.rule == super::Rule::Offscreen && lint.key == "strip-word")
+                .count()
         };
         // Wholly right of the 400 px viewport: a finding, in words.
-        let stranded = Ledger { texts: vec![strip(420.0)], ..Ledger::default() };
+        let stranded = Ledger {
+            texts: vec![strip(420.0)],
+            ..Ledger::default()
+        };
         let found = lint(&blank(400, 300), &stranded, viewport());
-        let finding = found.lints.iter().find(|lint| lint.key == "strip-word").expect("a stranded text is a finding");
-        assert!(finding.detail.contains("wholly past the right edge"), "{}", finding.detail);
+        let finding = found
+            .lints
+            .iter()
+            .find(|lint| lint.key == "strip-word")
+            .expect("a stranded text is a finding");
+        assert!(
+            finding.detail.contains("wholly past the right edge"),
+            "{}",
+            finding.detail
+        );
         // Inside the window, or reached by a scroller, it is not.
-        assert_eq!(offscreen(&Ledger { texts: vec![strip(100.0)], ..Ledger::default() }), 0);
-        let scroller = ScrollSample { key: "strip".to_owned(), viewport: bounds(0.0, 0.0, 400.0, 60.0), content: bounds(0.0, 0.0, 900.0, 60.0) };
-        assert_eq!(offscreen(&Ledger { texts: vec![strip(420.0)], scrolls: vec![scroller], ..Ledger::default() }), 0);
+        assert_eq!(
+            offscreen(&Ledger {
+                texts: vec![strip(100.0)],
+                ..Ledger::default()
+            }),
+            0
+        );
+        let scroller = ScrollSample {
+            key: "strip".to_owned(),
+            viewport: bounds(0.0, 0.0, 400.0, 60.0),
+            content: bounds(0.0, 0.0, 900.0, 60.0),
+        };
+        assert_eq!(
+            offscreen(&Ledger {
+                texts: vec![strip(420.0)],
+                scrolls: vec![scroller],
+                ..Ledger::default()
+            }),
+            0
+        );
     }
 }

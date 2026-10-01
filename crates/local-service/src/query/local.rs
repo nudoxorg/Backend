@@ -117,7 +117,12 @@ fn kind_weight(kind: &str) -> u8 {
 impl Placement {
     #[cfg(test)]
     pub(crate) fn for_test(name: &str, package: &str, kind: &str, external: bool) -> Self {
-        Self { name: name.to_owned(), package: Some(package.to_owned()), external, kind: kind_weight(kind) }
+        Self {
+            name: name.to_owned(),
+            package: Some(package.to_owned()),
+            external,
+            kind: kind_weight(kind),
+        }
     }
 
     /// The key a match is ordered by (higher first): a declaration before a
@@ -125,15 +130,27 @@ impl Placement {
     /// typed, then in any case); a row whose package another word names; a
     /// kind that is the named thing before one that only mentions it.
     pub(crate) fn key(&self, words: &[String]) -> (bool, u8, bool, u8) {
-        let named = words.iter().position(|word| *word == self.name).map(|at| (2, at)).or_else(|| {
-            words.iter().position(|word| word.eq_ignore_ascii_case(&self.name)).map(|at| (1, at))
-        });
+        let named = words
+            .iter()
+            .position(|word| *word == self.name)
+            .map(|at| (2, at))
+            .or_else(|| {
+                words
+                    .iter()
+                    .position(|word| word.eq_ignore_ascii_case(&self.name))
+                    .map(|at| (1, at))
+            });
         let package_named = self.package.as_deref().is_some_and(|package| {
             words.iter().enumerate().any(|(at, word)| {
                 named.is_none_or(|(_, name_at)| at != name_at) && word.eq_ignore_ascii_case(package)
             })
         });
-        (!self.external, named.map_or(0, |(strength, _)| strength), package_named, self.kind)
+        (
+            !self.external,
+            named.map_or(0, |(strength, _)| strength),
+            package_named,
+            self.kind,
+        )
     }
 }
 
@@ -145,7 +162,11 @@ pub(crate) fn package_name(label: &str) -> &str {
     let last = label.rsplit(['/', '\\']).next().unwrap_or(label);
     let last = last.split_once('@').map_or(last, |(name, _)| name);
     match last.rsplit_once('-') {
-        Some((name, version)) if !name.is_empty() && version.starts_with(|c: char| c.is_ascii_digit()) => name,
+        Some((name, version))
+            if !name.is_empty() && version.starts_with(|c: char| c.is_ascii_digit()) =>
+        {
+            name
+        }
         _ => last,
     }
 }
@@ -732,7 +753,12 @@ impl QueryCoordinator {
         // sort is stable, so equal placements keep the lexical order).
         let words = query.words();
         matches.sort_by_key(|(entity, _)| {
-            std::cmp::Reverse(self.corpus.placements.get(entity).map(|placement| placement.key(words)))
+            std::cmp::Reverse(
+                self.corpus
+                    .placements
+                    .get(entity)
+                    .map(|placement| placement.key(words)),
+            )
         });
         let total_matches = matches.len();
         let rows = matches
@@ -753,7 +779,10 @@ impl QueryCoordinator {
         let considered = if self.corpus.left_out.is_empty() {
             CoverageBasis::CompleteView { selected_rows }
         } else {
-            CoverageBasis::PartialView { selected_rows, left_out: self.corpus.left_out }
+            CoverageBasis::PartialView {
+                selected_rows,
+                left_out: self.corpus.left_out,
+            }
         };
         let canonical = SourceBasis::Canonical {
             workspace: self.corpus.workspace,

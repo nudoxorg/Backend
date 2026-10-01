@@ -33,7 +33,11 @@ pub(crate) fn display_key(window: &Window, cx: &App) -> Arc<str> {
 #[must_use]
 pub(crate) fn text_scale() -> f32 {
     let scale = platform_text_scale().unwrap_or(1.0);
-    if scale.is_finite() { scale.clamp(0.5, 3.0) } else { 1.0 }
+    if scale.is_finite() {
+        scale.clamp(0.5, 3.0)
+    } else {
+        1.0
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -51,7 +55,12 @@ fn platform_text_scale() -> Option<f32> {
 #[cfg(target_os = "windows")]
 fn platform_text_scale() -> Option<f32> {
     let output = std::process::Command::new("reg")
-        .args(["query", r"HKCU\Software\Microsoft\Accessibility", "/v", "TextScaleFactor"])
+        .args([
+            "query",
+            r"HKCU\Software\Microsoft\Accessibility",
+            "/v",
+            "TextScaleFactor",
+        ])
         .output()
         .ok()?;
     if !output.status.success() {

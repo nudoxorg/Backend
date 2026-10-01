@@ -14,8 +14,8 @@ use crate::semantics::types::Target;
 use crate::theme::ActiveFacet;
 use crate::tokens::Palette;
 use gpui::{
-    App, Bounds, ElementId, InteractiveElement, IntoElement, MouseButton, ParentElement, PathBuilder,
-    Pixels, RenderOnce, SharedString, Styled, Window, canvas, div, point, px,
+    App, Bounds, ElementId, InteractiveElement, IntoElement, MouseButton, ParentElement,
+    PathBuilder, Pixels, RenderOnce, SharedString, Styled, Window, canvas, div, point, px,
 };
 use std::sync::Arc;
 
@@ -76,7 +76,14 @@ enum Mark {
 
 fn mark_of(kind: Option<Kind>) -> Mark {
     match kind {
-        Some(Kind::Function | Kind::Method | Kind::Macro | Kind::Constant | Kind::Field | Kind::Variant) => Mark::Square,
+        Some(
+            Kind::Function
+            | Kind::Method
+            | Kind::Macro
+            | Kind::Constant
+            | Kind::Field
+            | Kind::Variant,
+        ) => Mark::Square,
         Some(Kind::Trait) | None => Mark::Open,
         _ => Mark::Solid,
     }
@@ -100,10 +107,17 @@ fn row_mark(kind: Option<Kind>, measure: &Measure, color: gpui::Hsla) -> impl In
             match shape {
                 Mark::Square => {
                     let h = px(3.0 * s);
-                    window.paint_quad(gpui::fill(Bounds::from_corners(point(c.x - h, c.y - h), point(c.x + h, c.y + h)), color));
+                    window.paint_quad(gpui::fill(
+                        Bounds::from_corners(point(c.x - h, c.y - h), point(c.x + h, c.y + h)),
+                        color,
+                    ));
                 }
                 Mark::Solid | Mark::Open => {
-                    let mut b = if shape == Mark::Open { PathBuilder::stroke(px(1.2)) } else { PathBuilder::fill() };
+                    let mut b = if shape == Mark::Open {
+                        PathBuilder::stroke(px(1.2))
+                    } else {
+                        PathBuilder::fill()
+                    };
                     diamond(&mut b, c, px(3.8 * s));
                     if let Ok(path) = b.build() {
                         window.paint_path(path, color);
@@ -171,7 +185,11 @@ impl Ctx<'_> {
         let target = row.node.map(Target::Node);
         let yours = target.as_ref().is_some_and(|t| (self.links.yours)(t));
         let mut line = Line::new();
-        let ink = if yours { palette.mint.base } else { palette.ink1 };
+        let ink = if yours {
+            palette.mint.base
+        } else {
+            palette.ink1
+        };
         match target {
             Some(t) => {
                 line.link(&row.text, roles::PRISM_ROW, ink.hsla(), t);
@@ -180,11 +198,32 @@ impl Ctx<'_> {
                 line.push(&row.text, roles::PRISM_ROW, palette.ink2.hsla());
             }
         }
-        let name = line.element(self.key(format!("row-{n}")), roles::PRISM_ROW, m, self.links, palette);
-        let note = row.note.clone().map(|note| div().flex_none().set(roles::NOTE, m).text_color(palette.ink4.hsla()).child(note));
-        let mark_ink = if yours { palette.mint.base } else { palette.ink2 };
+        let name = line.element(
+            self.key(format!("row-{n}")),
+            roles::PRISM_ROW,
+            m,
+            self.links,
+            palette,
+        );
+        let note = row.note.clone().map(|note| {
+            div()
+                .flex_none()
+                .set(roles::NOTE, m)
+                .text_color(palette.ink4.hsla())
+                .child(note)
+        });
+        let mark_ink = if yours {
+            palette.mint.base
+        } else {
+            palette.ink2
+        };
         let mark = row_mark(row.kind, m, mark_ink.hsla());
-        let base = div().h(px(ROW * m.scale())).flex().items_center().gap(k(m, 9.0)).whitespace_nowrap();
+        let base = div()
+            .h(px(ROW * m.scale()))
+            .flex()
+            .items_center()
+            .gap(k(m, 9.0))
+            .whitespace_nowrap();
         if left {
             base.justify_end().children(note).child(name).child(mark)
         } else {
@@ -254,7 +293,12 @@ impl RenderOnce for PrismView {
         let palette = cx.facet().palette();
         let m = self.measure;
         let s = m.scale();
-        let ctx = Ctx { id: &self.id, measure: &m, links: &self.links, palette };
+        let ctx = Ctx {
+            id: &self.id,
+            measure: &m,
+            links: &self.links,
+            palette,
+        };
         let root = div().id(self.id.clone());
         if self.left.is_empty() && self.right.is_empty() {
             return root;
@@ -266,12 +310,20 @@ impl RenderOnce for PrismView {
             .cursor_pointer()
             .child(gem(&m, palette, m.effective() < ONE_COLUMN_BELOW))
             .on_mouse_up(MouseButton::Left, move |_, window, cx| {
-                window.dispatch_action(Box::new(ToGraph { target: to_graph.clone() }), cx);
+                window.dispatch_action(
+                    Box::new(ToGraph {
+                        target: to_graph.clone(),
+                    }),
+                    cx,
+                );
                 cx.stop_propagation();
             });
         if m.effective() < ONE_COLUMN_BELOW {
             // One column on a rail: comes from, the symbol, goes into.
-            let name = div().set(roles::NAME, &m).text_color(palette.ink0.hsla()).child(self.name.clone());
+            let name = div()
+                .set(roles::NAME, &m)
+                .text_color(palette.ink0.hsla())
+                .child(self.name.clone());
             let here = div()
                 .flex()
                 .items_center()
@@ -303,13 +355,20 @@ impl RenderOnce for PrismView {
         } else {
             width / 2.0
         };
-        let yl: Vec<f32> = row_centres(&self.left).into_iter().map(|y| y + (h - hl) / 2.0).collect();
-        let yr: Vec<f32> = row_centres(&self.right).into_iter().map(|y| y + (h - hr) / 2.0).collect();
+        let yl: Vec<f32> = row_centres(&self.left)
+            .into_iter()
+            .map(|y| y + (h - hl) / 2.0)
+            .collect();
+        let yr: Vec<f32> = row_centres(&self.right)
+            .into_iter()
+            .map(|y| y + (h - hr) / 2.0)
+            .collect();
         let curve = palette.line3.hsla();
         let curves = canvas(
             |_, _, _| {},
             move |bounds, (), window, _| {
-                let at = |x: f32, y: f32| point(bounds.left() + px(x * s), bounds.top() + px(y * s));
+                let at =
+                    |x: f32, y: f32| point(bounds.left() + px(x * s), bounds.top() + px(y * s));
                 let mid = h / 2.0;
                 let mut draw = |x0: f32, y0: f32, x1: f32, y1: f32| {
                     let c = (x1 - x0) * 0.5;

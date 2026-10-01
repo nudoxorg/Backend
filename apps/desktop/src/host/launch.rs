@@ -27,16 +27,23 @@ use crate::runtime::{
 };
 use backend_runtime::WorkspacePaths;
 use gpui::{
-    App, AppContext as _, Bounds, Pixels, Size, TitlebarOptions, WindowBounds, WindowOptions, point, px,
+    App, AppContext as _, Bounds, Pixels, Size, TitlebarOptions, WindowBounds, WindowOptions,
+    point, px,
 };
-use std::path::PathBuf;
 use std::panic::AssertUnwindSafe;
+use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 /// The size a window opens at, and the least it can be resized to.
-const OPENING: Size<Pixels> = Size { width: px(1380.0), height: px(880.0) };
-const LEAST: Size<Pixels> = Size { width: px(320.0), height: px(480.0) };
+const OPENING: Size<Pixels> = Size {
+    width: px(1380.0),
+    height: px(880.0),
+};
+const LEAST: Size<Pixels> = Size {
+    width: px(320.0),
+    height: px(480.0),
+};
 /// Read sessions in the page-data pool; index/admin work has its own lane.
 const READ_SESSIONS: usize = 3;
 
@@ -94,13 +101,18 @@ fn read_snapshot(data: &std::path::Path, route: &crate::navigation::Route) -> Op
 
 /// Runs `read` on the snapshot thread and returns where its answer will
 /// arrive. A reader that panics is a launch with no snapshot, said once.
-fn spawn_reading(read: impl FnOnce() -> Option<Seed> + Send + 'static) -> Option<mpsc::Receiver<Option<Seed>>> {
+fn spawn_reading(
+    read: impl FnOnce() -> Option<Seed> + Send + 'static,
+) -> Option<mpsc::Receiver<Option<Seed>>> {
     let (sent, seed) = mpsc::channel();
     std::thread::Builder::new()
         .name("nudox-snapshot".to_owned())
         .spawn(move || {
             let read = std::panic::catch_unwind(AssertUnwindSafe(read)).unwrap_or_else(|panic| {
-                eprintln!("backend-desktop: the launch snapshot reader panicked: {}", crate::runtime::offload::describe(panic.as_ref()));
+                eprintln!(
+                    "backend-desktop: the launch snapshot reader panicked: {}",
+                    crate::runtime::offload::describe(panic.as_ref())
+                );
                 None
             });
             let _ = sent.send(read);
@@ -118,13 +130,19 @@ impl SnapshotRead {
         let seed = match self.seed.recv_timeout(SNAPSHOT_WAIT) {
             Ok(seed) => seed,
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                eprintln!("backend-desktop: the launch snapshot took over {} ms to read; opening without it", SNAPSHOT_WAIT.as_millis());
+                eprintln!(
+                    "backend-desktop: the launch snapshot took over {} ms to read; opening without it",
+                    SNAPSHOT_WAIT.as_millis()
+                );
                 None
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => None,
         };
         crate::runtime::trace::span("boot.snapshot_join", joining, "wait for nudox-snapshot");
-        Keep { file: self.file, seed }
+        Keep {
+            file: self.file,
+            seed,
+        }
     }
 }
 
@@ -162,7 +180,11 @@ pub(crate) fn prepare(
             );
         }
     };
-    let Restored { state: persisted, persistence, note } = restore(&paths);
+    let Restored {
+        state: persisted,
+        persistence,
+        note,
+    } = restore(&paths);
     let snapshot = restored_snapshot(&paths, &project, &persisted, note);
     let world_need = launch_need(snapshot.route(), &snapshot.session().hand);
     let keep = read_snapshot(paths.data(), snapshot.route());
@@ -198,17 +220,31 @@ fn restore(paths: &WorkspacePaths) -> Restored {
     match persistence.load_recovering() {
         Ok(admitted) => {
             if let PersistenceRecovery::Preserved { backup, reason } = &admitted.recovery {
-                eprintln!("backend-desktop: preserved unadmitted state at {}: {reason}", backup.display());
+                eprintln!(
+                    "backend-desktop: preserved unadmitted state at {}: {reason}",
+                    backup.display()
+                );
             }
-            Restored { note: admitted.recovery.note(), state: admitted.state, persistence: Some(persistence) }
+            Restored {
+                note: admitted.recovery.note(),
+                state: admitted.state,
+                persistence: Some(persistence),
+            }
         }
         Err(error) => {
-            eprintln!("backend-desktop: admit desktop state at {}: {error}", persistence.path().display());
+            eprintln!(
+                "backend-desktop: admit desktop state at {}: {error}",
+                persistence.path().display()
+            );
             let unread = Note::StateUnread {
                 path: Arc::from(persistence.path().display().to_string()),
                 why: Arc::from(error.to_string()),
             };
-            Restored { state: PersistedDesktopState::default(), persistence: None, note: Some(unread) }
+            Restored {
+                state: PersistedDesktopState::default(),
+                persistence: None,
+                note: Some(unread),
+            }
         }
     }
 }
@@ -281,13 +317,31 @@ impl EngineClient for BootClient {
 
 fn run(mut boot: Boot) {
     let reading = boot.keep.take();
-    let Boot { snapshot, persistence, client, endpoint, gate, owner, keep: _, world_need } = boot;
+    let Boot {
+        snapshot,
+        persistence,
+        client,
+        endpoint,
+        gate,
+        owner,
+        keep: _,
+        world_need,
+    } = boot;
     if let Some(need) = world_need {
         crate::runtime::fixture_world::preload(need);
     }
     let window = snapshot.settings().window;
-    let Some((runtime, reads)) = start_workers(snapshot, client, endpoint, &gate) else { return };
-    let parts = AppParts { runtime, persistence, reads, gate: gate.clone(), reading, window };
+    let Some((runtime, reads)) = start_workers(snapshot, client, endpoint, &gate) else {
+        return;
+    };
+    let parts = AppParts {
+        runtime,
+        persistence,
+        reads,
+        gate: gate.clone(),
+        reading,
+        window,
+    };
     let starting_platform = Instant::now();
     gpui::Application::with_platform(gpui_platform::current_platform(false))
         .with_assets(facet::icons::Assets)
@@ -328,7 +382,9 @@ pub(crate) fn start_workers(
     let starting_reads = Instant::now();
     let reads = endpoint.and_then(|endpoint| {
         let sessions = gate.clone();
-        match ReadPool::start(READ_SESSIONS, |_| SessionReader::gated(&endpoint, sessions.clone())) {
+        match ReadPool::start(READ_SESSIONS, |_| {
+            SessionReader::gated(&endpoint, sessions.clone())
+        }) {
             Ok(reads) => Some(reads),
             Err(error) => {
                 // The window still opens; every page then says it has no read lane.
@@ -337,20 +393,39 @@ pub(crate) fn start_workers(
             }
         }
     });
-    crate::runtime::trace::span("boot.read_pool", starting_reads, format_args!("{READ_SESSIONS} sessions"));
+    crate::runtime::trace::span(
+        "boot.read_pool",
+        starting_reads,
+        format_args!("{READ_SESSIONS} sessions"),
+    );
     Some((runtime, reads))
 }
 
 /// The platform's launch closure: assets, the data plane, the window.
 fn open_the_window(cx: &mut App, parts: AppParts, starting_platform: Instant) {
-    let AppParts { runtime, persistence, reads, gate, reading, window: remembered } = parts;
-    crate::runtime::trace::span("boot.platform", starting_platform, "Application::with_platform..run");
+    let AppParts {
+        runtime,
+        persistence,
+        reads,
+        gate,
+        reading,
+        window: remembered,
+    } = parts;
+    crate::runtime::trace::span(
+        "boot.platform",
+        starting_platform,
+        "Application::with_platform..run",
+    );
     let installing = Instant::now();
     if let Err(error) = install(cx) {
         eprintln!("backend-desktop: install UI assets: {error}");
         return;
     }
-    crate::runtime::trace::span("boot.fonts", installing, "gpui_component::init + facet::fonts::install");
+    crate::runtime::trace::span(
+        "boot.fonts",
+        installing,
+        "gpui_component::init + facet::fonts::install",
+    );
     crate::runtime::trace::frames(cx);
     crate::runtime::trace::mark("boot.app_running", "gpui");
     // Quitting before the owner answered: release the workers waiting on it
@@ -363,7 +438,8 @@ fn open_the_window(cx: &mut App, parts: AppParts, starting_platform: Instant) {
     .detach();
     let keep = reading.map(SnapshotRead::joined);
     let installing_graph = Instant::now();
-    let graph = UiEntityGraph::install_with_owner(cx, runtime, persistence, reads, Some(gate), keep);
+    let graph =
+        UiEntityGraph::install_with_owner(cx, runtime, persistence, reads, Some(gate), keep);
     // Quitting saves the route's pages for the next launch.
     let saved = graph.store.clone();
     cx.on_app_quit(move |cx| {
@@ -373,11 +449,19 @@ fn open_the_window(cx: &mut App, parts: AppParts, starting_platform: Instant) {
         async {}
     })
     .detach();
-    crate::runtime::trace::span("boot.ui_graph", installing_graph, "UiEntityGraph::install_with_owner");
+    crate::runtime::trace::span(
+        "boot.ui_graph",
+        installing_graph,
+        "UiEntityGraph::install_with_owner",
+    );
     // Temporary: `NUDOX_DEBUG_PAGE="search:Engine;orbit;health"` opens a plain-text
     // window onto the data plane (see runtime::debug_page).
     if let Ok(spec) = std::env::var("NUDOX_DEBUG_PAGE") {
-        crate::runtime::debug_page::open_window(cx, graph.store.clone(), crate::runtime::debug_page::parse_keys(&spec));
+        crate::runtime::debug_page::open_window(
+            cx,
+            graph.store.clone(),
+            crate::runtime::debug_page::parse_keys(&spec),
+        );
     }
     let options = window_options(cx, remembered);
     let opening = Instant::now();
@@ -425,7 +509,10 @@ mod tests {
     use super::*;
 
     fn keep_for(seed: mpsc::Receiver<Option<Seed>>) -> SnapshotRead {
-        SnapshotRead { file: SnapshotFile::in_data(std::path::Path::new("/nonexistent-i3")), seed }
+        SnapshotRead {
+            file: SnapshotFile::in_data(std::path::Path::new("/nonexistent-i3")),
+            seed,
+        }
     }
 
     #[test]
@@ -436,7 +523,10 @@ mod tests {
         let kept = keep_for(seed).joined();
         let waited = started.elapsed();
         assert!(kept.seed.is_none(), "the window opens without its pages");
-        assert!(waited >= SNAPSHOT_WAIT && waited < SNAPSHOT_WAIT * 8, "it waited its bound and not for ever: {waited:?}");
+        assert!(
+            waited >= SNAPSHOT_WAIT && waited < SNAPSHOT_WAIT * 8,
+            "it waited its bound and not for ever: {waited:?}"
+        );
     }
 
     #[test]
@@ -454,6 +544,9 @@ mod tests {
         let started = Instant::now();
         let kept = keep_for(seed).joined();
         assert!(kept.seed.is_none(), "no snapshot this launch");
-        assert!(started.elapsed() < SNAPSHOT_WAIT, "and the window did not wait out the bound for a reader that was already gone");
+        assert!(
+            started.elapsed() < SNAPSHOT_WAIT,
+            "and the window did not wait out the bound for a reader that was already gone"
+        );
     }
 }

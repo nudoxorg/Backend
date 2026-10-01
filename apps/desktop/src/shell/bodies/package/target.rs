@@ -86,7 +86,10 @@ impl PageTarget {
                 "pin" => Some(Self::Release(Mark::Pin)),
                 "reading" => Some(Self::Release(Mark::Reading)),
                 "newest" => Some(Self::Release(Mark::Newest)),
-                tick => tick.parse().ok().map(|tick| Self::Release(Mark::Breaking(tick))),
+                tick => tick
+                    .parse()
+                    .ok()
+                    .map(|tick| Self::Release(Mark::Breaking(tick))),
             };
         }
         if let Some(index) = id.strip_prefix(BLOCK) {
@@ -125,14 +128,30 @@ mod tests {
             PageTarget::Block(7),
             PageTarget::Dependency("serde_spanned".into()),
         ] {
-            assert_eq!(PageTarget::parse(&target.id()), Some(target.clone()), "{target:?}");
+            assert_eq!(
+                PageTarget::parse(&target.id()),
+                Some(target.clone()),
+                "{target:?}"
+            );
         }
-        assert_eq!(PageTarget::parse("tb-shelf"), None, "an id the page did not write is not a door");
+        assert_eq!(
+            PageTarget::parse("tb-shelf"),
+            None,
+            "an id the page did not write is not a door"
+        );
     }
 
     #[test]
     fn the_module_and_card_ids_keep_the_spelling_the_shell_tests_walk() {
-        assert_eq!(PageTarget::Module("glyph".into()).id().as_ref(), "pkg-module-glyph");
-        assert_eq!(PageTarget::Card(SymbolRef::new("a::b").expect("symbol")).id().as_ref(), "pkg-card-a::b");
+        assert_eq!(
+            PageTarget::Module("glyph".into()).id().as_ref(),
+            "pkg-module-glyph"
+        );
+        assert_eq!(
+            PageTarget::Card(SymbolRef::new("a::b").expect("symbol"))
+                .id()
+                .as_ref(),
+            "pkg-card-a::b"
+        );
     }
 }

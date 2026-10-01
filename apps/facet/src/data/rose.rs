@@ -25,8 +25,8 @@ use crate::fluid::Modes;
 use crate::icons::{Kind, Stroke, variant_path};
 use crate::measure::Measure;
 use crate::motion::{Spec, spec};
-use crate::paint::geom::{Fill, Pt, pt};
 use crate::paint::gem;
+use crate::paint::geom::{Fill, Pt, pt};
 use crate::theme::ActiveFacet;
 use crate::tokens::fluid::{Form, ROSE};
 use crate::tokens::{TypeRole, motion as dur, ty};
@@ -148,7 +148,11 @@ impl Rose {
     /// direction order.
     #[must_use]
     pub fn member_part(members: &[Rc<[Member]>; 4], dir: Dir, i: usize) -> usize {
-        4 + members[..dir.index()].iter().map(|m| m.len()).sum::<usize>() + i
+        4 + members[..dir.index()]
+            .iter()
+            .map(|m| m.len())
+            .sum::<usize>()
+            + i
     }
 
     /// The `(direction, member)` a part names (`None` member = the direction).
@@ -202,13 +206,25 @@ pub fn geometry(w: f32, counts: [usize; 4]) -> Geometry {
             (Dir::Is, _) => vec![pt(cx - spread, 34.0), pt(cx, 22.0), pt(cx + spread, 34.0)],
             (Dir::MadeOf, 1) => vec![pt(cx, 284.0)],
             (Dir::MadeOf, 2) => vec![pt(cx - spread, 272.0), pt(cx + spread, 272.0)],
-            (Dir::MadeOf, _) => vec![pt(cx - spread, 272.0), pt(cx, 284.0), pt(cx + spread, 272.0)],
+            (Dir::MadeOf, _) => vec![
+                pt(cx - spread, 272.0),
+                pt(cx, 284.0),
+                pt(cx + spread, 272.0),
+            ],
             (Dir::From, 1) => vec![pt(left, 150.0)],
             (Dir::From, 2) => vec![pt(left, 124.0), pt(left, 176.0)],
-            (Dir::From, _) => vec![pt(left, 104.0), pt(left - 4.0, 150.0), pt(left + 6.0, 196.0)],
+            (Dir::From, _) => vec![
+                pt(left, 104.0),
+                pt(left - 4.0, 150.0),
+                pt(left + 6.0, 196.0),
+            ],
             (Dir::To, 1) => vec![pt(right, 150.0)],
             (Dir::To, 2) => vec![pt(right, 124.0), pt(right, 176.0)],
-            (Dir::To, _) => vec![pt(right, 104.0), pt(right + 4.0, 150.0), pt(right - 10.0, 196.0)],
+            (Dir::To, _) => vec![
+                pt(right, 104.0),
+                pt(right + 4.0, 150.0),
+                pt(right - 10.0, 196.0),
+            ],
         };
         nodes.extend(at.into_iter().enumerate().map(|(i, p)| (dir, i, p)));
     }
@@ -296,7 +312,11 @@ impl gpui::RenderOnce for RoseForm {
             Some(true) => Form::List,
             Some(false) => Form::Field,
             None => {
-                let held = Modes::keyed(ElementId::NamedChild(Arc::new(self.rose.id.clone()), "form".into()), window, cx);
+                let held = Modes::keyed(
+                    ElementId::NamedChild(Arc::new(self.rose.id.clone()), "form".into()),
+                    window,
+                    cx,
+                );
                 held.settle(&ROSE, self.rose.measure.fluid_room()).mode
             }
         };
@@ -501,7 +521,9 @@ impl Element for RoseField {
         let hover = live.read(cx).hover.or(self.rose.rest);
         let walk = live::walking(&live, window, cx);
         let lit_part = hover.or(walk);
-        let lit = lit_part.and_then(|p| Rose::part(&members, p)).map(|(d, _)| d);
+        let lit = lit_part
+            .and_then(|p| Rose::part(&members, p))
+            .map(|(d, _)| d);
         // Flowing strands march on the leased pulse (≤ 12 fps), only while
         // one is drawn.
         let march = if members.iter().any(|m| m.iter().any(|m| m.flow)) {
@@ -546,13 +568,22 @@ impl Element for RoseField {
                 // The flow marches away from the hub: two periods per cycle.
                 let phase = if member.flow { march * 2.0 } else { 0.0 };
                 if l > 0.01 {
-                    strands::stroke(&mut hot, &scaled, (1.0 + 0.4 * l) * s, reveal, voice, phase, s);
+                    strands::stroke(
+                        &mut hot,
+                        &scaled,
+                        (1.0 + 0.4 * l) * s,
+                        reveal,
+                        voice,
+                        phase,
+                        s,
+                    );
                 } else {
                     strands::stroke(&mut quiet, &scaled, s, reveal, voice, phase, s);
                 }
             }
             if l > 0.01 {
-                let ink = crate::paint::mix(Hsla::from(palette.ink4).opacity(0.7), dir.color(palette), l);
+                let ink =
+                    crate::paint::mix(Hsla::from(palette.ink4).opacity(0.7), dir.color(palette), l);
                 hot.paint(window, ink);
             }
         }
@@ -562,7 +593,9 @@ impl Element for RoseField {
 
         // Members: a faint kind glyph and the name, centred on the node.
         let mut rects: Vec<(usize, Bounds<Pixels>)> = Vec::new();
-        for ((dir, i, node), (_, _, quiet_name, lit_name)) in g.nodes.iter().zip(layout.names.iter()) {
+        for ((dir, i, node), (_, _, quiet_name, lit_name)) in
+            g.nodes.iter().zip(layout.names.iter())
+        {
             let member = &members[dir.index()][*i];
             let l = light[dir.index()];
             let name = if l > 0.5 { lit_name } else { quiet_name };
@@ -580,7 +613,10 @@ impl Element for RoseField {
             let glyph_ink = member.kind.hue(palette).opacity(0.7 + 0.3 * l);
             window
                 .paint_svg(
-                    Bounds::new(point(px(left), px(c.y - glyph * 0.5)), size(px(glyph), px(glyph))),
+                    Bounds::new(
+                        point(px(left), px(c.y - glyph * 0.5)),
+                        size(px(glyph), px(glyph)),
+                    ),
                     variant_path(member.kind.path(), Stroke::width(1.8)),
                     None,
                     TransformationMatrix::unit(),
@@ -633,7 +669,11 @@ impl Element for RoseField {
             })
             .collect();
         let hub = at(g.hub);
-        let door = merged_door(self.rose.door.clone(), self.rose.member_door.clone(), members.clone());
+        let door = merged_door(
+            self.rose.door.clone(),
+            self.rose.member_door.clone(),
+            members.clone(),
+        );
         let order: Vec<usize> = (0..4)
             .filter(|d| !members[*d].is_empty())
             .chain(rects.iter().map(|(p, _)| *p))
@@ -673,10 +713,17 @@ impl Element for RoseField {
                         .filter(|(d, _)| d.index() == part)
                         .flat_map(|(_, st)| [st.to, st.at(0.5)])
                         .collect();
-                    let (x0, y0) = ends.iter().fold((f32::MAX, f32::MAX), |a, p| (a.0.min(p.x), a.1.min(p.y)));
-                    let (x1, y1) = ends.iter().fold((f32::MIN, f32::MIN), |a, p| (a.0.max(p.x), a.1.max(p.y)));
+                    let (x0, y0) = ends
+                        .iter()
+                        .fold((f32::MAX, f32::MAX), |a, p| (a.0.min(p.x), a.1.min(p.y)));
+                    let (x1, y1) = ends
+                        .iter()
+                        .fold((f32::MIN, f32::MIN), |a, p| (a.0.max(p.x), a.1.max(p.y)));
                     (!ends.is_empty()).then(|| {
-                        Bounds::new(point(px(x0), px(y0)), size(px((x1 - x0).max(2.0)), px((y1 - y0).max(2.0))))
+                        Bounds::new(
+                            point(px(x0), px(y0)),
+                            size(px((x1 - x0).max(2.0)), px((y1 - y0).max(2.0))),
+                        )
                     })
                 }),
                 step: Rc::new(move |current, key, _| {
@@ -693,14 +740,20 @@ impl Element for RoseField {
 }
 
 /// Direction and member doors behind one [`Door`].
-fn merged_door(direction: Option<Door>, member: Option<Door>, members: [Rc<[Member]>; 4]) -> Option<Door> {
+fn merged_door(
+    direction: Option<Door>,
+    member: Option<Door>,
+    members: [Rc<[Member]>; 4],
+) -> Option<Door> {
     if direction.is_none() && member.is_none() {
         return None;
     }
     let opens = member.as_ref().or(direction.as_ref()).map(Door::opens);
     let build = move |part: usize, m: &Measure, w: &mut Window, cx: &mut App| -> AnyElement {
         match Rose::part(&members, part) {
-            Some((d, None)) => direction.as_ref().map(|door| door.build(d.index(), m, w, cx)),
+            Some((d, None)) => direction
+                .as_ref()
+                .map(|door| door.build(d.index(), m, w, cx)),
             Some((_, Some(_))) => member.as_ref().map(|door| door.build(part, m, w, cx)),
             None => None,
         }
@@ -718,7 +771,10 @@ mod tests {
     use super::{Dir, Member, Rose, SHOWN, geometry, rose, strand};
     use crate::icons::Kind;
     use crate::theme::ActiveFacet;
-    use gpui::{Context, Entity, IntoElement, ParentElement, Render, Styled, TestAppContext, VisualTestContext, Window, div, px};
+    use gpui::{
+        Context, Entity, IntoElement, ParentElement, Render, Styled, TestAppContext,
+        VisualTestContext, Window, div, px,
+    };
     use std::rc::Rc;
 
     /// A page that draws a rose in the width it is given.
@@ -729,10 +785,15 @@ mod tests {
     impl Render for Host {
         fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let measure = cx.facet().measure(px(self.width));
-            div().size_full().child(
-                rose("rose", Kind::Struct, &measure)
-                    .members(Dir::Is, vec![Member::new("Display", Kind::Trait), Member::new("ToString", Kind::Trait)]),
-            )
+            div()
+                .size_full()
+                .child(rose("rose", Kind::Struct, &measure).members(
+                    Dir::Is,
+                    vec![
+                        Member::new("Display", Kind::Trait),
+                        Member::new("ToString", Kind::Trait),
+                    ],
+                ))
         }
     }
 
@@ -748,7 +809,12 @@ mod tests {
             window.refresh();
             window.draw(cx).clear(cx);
         });
-        cx.update(|window, _| window.painted_texts().iter().any(|text| text.text.contains("Display, ToString")))
+        cx.update(|window, _| {
+            window
+                .painted_texts()
+                .iter()
+                .any(|text| text.text.contains("Display, ToString"))
+        })
     }
 
     #[gpui::test]
@@ -756,9 +822,15 @@ mod tests {
         cx.update(|cx| cx.set_global(gpui::TextTrace));
         let (host, cx) = cx.add_window_view(|_, _| Host { width: 700.0 });
         assert!(!is_a_list(&host, cx, 700.0), "wide: the field");
-        assert!(!is_a_list(&host, cx, 552.0), "8 px under the edge, dragged narrower: still the field");
+        assert!(
+            !is_a_list(&host, cx, 552.0),
+            "8 px under the edge, dragged narrower: still the field"
+        );
         assert!(is_a_list(&host, cx, 540.0), "past the band: the four lines");
-        assert!(is_a_list(&host, cx, 568.0), "8 px over the edge, dragged wider: still the lines");
+        assert!(
+            is_a_list(&host, cx, 568.0),
+            "8 px over the edge, dragged wider: still the lines"
+        );
         assert!(!is_a_list(&host, cx, 580.0), "past the band: the field");
     }
 
@@ -766,9 +838,19 @@ mod tests {
     fn the_board_layout_at_760_is_the_targets() {
         let g = geometry(760.0, [2, 3, 3, 3]);
         assert_eq!(g.hub.x, 380.0);
-        let to: Vec<_> = g.nodes.iter().filter(|(d, _, _)| *d == Dir::To).map(|(_, _, p)| (p.x, p.y)).collect();
+        let to: Vec<_> = g
+            .nodes
+            .iter()
+            .filter(|(d, _, _)| *d == Dir::To)
+            .map(|(_, _, p)| (p.x, p.y))
+            .collect();
         assert_eq!(to, vec![(690.0, 104.0), (694.0, 150.0), (680.0, 196.0)]);
-        let is: Vec<_> = g.nodes.iter().filter(|(d, _, _)| *d == Dir::Is).map(|(_, _, p)| (p.x, p.y)).collect();
+        let is: Vec<_> = g
+            .nodes
+            .iter()
+            .filter(|(d, _, _)| *d == Dir::Is)
+            .map(|(_, _, p)| (p.x, p.y))
+            .collect();
         assert_eq!(is, vec![(230.0, 34.0), (530.0, 34.0)]);
         // Strands leave the hub on its own side and end short of the name.
         let s = strand(Dir::From, g.hub, g.nodes[2].2);
@@ -794,7 +876,10 @@ mod tests {
         let members: [Rc<[Member]>; 4] = [
             Rc::from(vec![Member::new("Display", Kind::Trait)]),
             Rc::from(vec![]),
-            Rc::from(vec![Member::new("a", Kind::Function), Member::new("b", Kind::Function)]),
+            Rc::from(vec![
+                Member::new("a", Kind::Function),
+                Member::new("b", Kind::Function),
+            ]),
             Rc::from(vec![Member::new("c", Kind::Method)]),
         ];
         assert_eq!(Rose::part(&members, 2), Some((Dir::From, None)));

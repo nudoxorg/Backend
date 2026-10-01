@@ -14,8 +14,8 @@ use crate::motion::{Carry, band, now, reduced, request_frame};
 use crate::paint::geom::{Fill, Poly};
 use crate::probe;
 use gpui::{
-    AnyElement, App, Bounds, Element, ElementId, GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Position, Style,
-    Window, point, px, size,
+    AnyElement, App, Bounds, Element, ElementId, GlobalElementId, Hsla, InspectorElementId,
+    IntoElement, LayoutId, Pixels, Position, Style, Window, point, px, size,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -72,7 +72,11 @@ impl Marks {
 /// flies) and once it has landed.
 #[must_use]
 pub fn progress(carry: &Carry, cx: &App) -> f32 {
-    if reduced(cx) { 1.0 } else { carry.value(now(cx)).clamp(0.0, 1.0) }
+    if reduced(cx) {
+        1.0
+    } else {
+        carry.value(now(cx)).clamp(0.0, 1.0)
+    }
 }
 
 /// How visible a card is at carry progress `p`: its face and its mark stay
@@ -92,7 +96,11 @@ pub struct Mark {
 /// `child`, reporting its bounds as card `index`'s mark.
 #[must_use]
 pub fn mark(marks: &Marks, index: usize, child: impl IntoElement) -> Mark {
-    Mark { marks: marks.clone(), index, child: child.into_any_element() }
+    Mark {
+        marks: marks.clone(),
+        index,
+        child: child.into_any_element(),
+    }
 }
 
 impl IntoElement for Mark {
@@ -114,16 +122,39 @@ impl Element for Mark {
         None
     }
 
-    fn request_layout(&mut self, _id: Option<&GlobalElementId>, _inspector_id: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, ()) {
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
         (self.child.request_layout(window, cx), ())
     }
 
-    fn prepaint(&mut self, _id: Option<&GlobalElementId>, _inspector_id: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _state: &mut (), window: &mut Window, cx: &mut App) {
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _state: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         self.marks.set(self.index, bounds);
         self.child.prepaint(window, cx);
     }
 
-    fn paint(&mut self, _id: Option<&GlobalElementId>, _inspector_id: Option<&InspectorElementId>, _bounds: Bounds<Pixels>, _state: &mut (), _prepaint: &mut (), window: &mut Window, cx: &mut App) {
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _state: &mut (),
+        _prepaint: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         self.child.paint(window, cx);
     }
 }
@@ -141,7 +172,12 @@ pub struct Flight {
 /// it is going, one pair per stone in the air).
 #[must_use]
 pub fn flight(id: ElementId, stones: Rc<[Stone]>, marks: Marks, carry: Carry) -> Flight {
-    Flight { id, stones, marks, carry }
+    Flight {
+        id,
+        stones,
+        marks,
+        carry,
+    }
 }
 
 impl IntoElement for Flight {
@@ -163,7 +199,13 @@ impl Element for Flight {
         None
     }
 
-    fn request_layout(&mut self, _id: Option<&GlobalElementId>, _inspector_id: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, ()) {
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
         // No room of its own: it paints in the air.
         let mut style = Style::default();
         style.position = Position::Absolute;
@@ -172,9 +214,27 @@ impl Element for Flight {
         (window.request_layout(style, [], cx), ())
     }
 
-    fn prepaint(&mut self, _id: Option<&GlobalElementId>, _inspector_id: Option<&InspectorElementId>, _bounds: Bounds<Pixels>, _state: &mut (), _window: &mut Window, _cx: &mut App) {}
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _state: &mut (),
+        _window: &mut Window,
+        _cx: &mut App,
+    ) {
+    }
 
-    fn paint(&mut self, _id: Option<&GlobalElementId>, _inspector_id: Option<&InspectorElementId>, _bounds: Bounds<Pixels>, _state: &mut (), _prepaint: &mut (), window: &mut Window, cx: &mut App) {
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _state: &mut (),
+        _prepaint: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         let p = progress(&self.carry, cx);
         if p >= 1.0 {
             return;
@@ -185,18 +245,31 @@ impl Element for Flight {
         for (index, stone) in self.stones.iter().enumerate() {
             // A name with no card yet stays where it was.
             let to = self.marks.get(index).unwrap_or(stone.from);
-            let (x, y) = (lerp(stone.from.origin.x, to.origin.x), lerp(stone.from.origin.y, to.origin.y));
-            let (w, h) = (lerp(stone.from.size.width, to.size.width), lerp(stone.from.size.height, to.size.height));
+            let (x, y) = (
+                lerp(stone.from.origin.x, to.origin.x),
+                lerp(stone.from.origin.y, to.origin.y),
+            );
+            let (w, h) = (
+                lerp(stone.from.size.width, to.size.width),
+                lerp(stone.from.size.height, to.size.height),
+            );
             if probe::enabled(cx) {
-                probe::record_bounds(cx, &key(&self.id, format!("stone-{index}")), Bounds::new(point(x, y), size(w, h)));
+                probe::record_bounds(
+                    cx,
+                    &key(&self.id, format!("stone-{index}")),
+                    Bounds::new(point(x, y), size(w, h)),
+                );
                 probe::record_bounds(cx, &key(&self.id, format!("mark-{index}")), to);
             }
             let (w, h) = (f32::from(w), f32::from(h));
             let poly = Poly::chamfer(f32::from(x), f32::from(y), w, h, (w.min(h) * 0.3).max(1.5));
-            let at = batches.iter().position(|(ink, _)| *ink == stone.ink).unwrap_or_else(|| {
-                batches.push((stone.ink, Fill::new()));
-                batches.len() - 1
-            });
+            let at = batches
+                .iter()
+                .position(|(ink, _)| *ink == stone.ink)
+                .unwrap_or_else(|| {
+                    batches.push((stone.ink, Fill::new()));
+                    batches.len() - 1
+                });
             batches[at].1.poly(&poly);
         }
         for (ink, fill) in batches {
@@ -211,7 +284,10 @@ mod tests {
 
     #[test]
     fn a_card_is_away_until_its_shingle_is_nearly_over_it_and_whole_when_it_lands() {
-        assert!(arrival(0.0) == 0.0 && arrival(0.5) == 0.0, "nothing of a card shows while its shingle is far");
+        assert!(
+            arrival(0.0) == 0.0 && arrival(0.5) == 0.0,
+            "nothing of a card shows while its shingle is far"
+        );
         assert!(arrival(0.8) > 0.4 && arrival(0.8) < 0.7);
         assert!((arrival(1.0) - 1.0).abs() < f32::EPSILON);
     }
@@ -220,8 +296,15 @@ mod tests {
     fn marks_are_reported_by_index_and_a_missing_one_is_none() {
         let marks = Marks::new();
         assert_eq!(marks.get(2), None);
-        marks.set(2, Bounds::new(point(px(4.0), px(5.0)), size(px(12.0), px(12.0))));
+        marks.set(
+            2,
+            Bounds::new(point(px(4.0), px(5.0)), size(px(12.0), px(12.0))),
+        );
         assert_eq!(marks.get(2).map(|b| f32::from(b.origin.x)), Some(4.0));
-        assert_eq!(marks.get(0), None, "the ones before it are unreported, not zeros");
+        assert_eq!(
+            marks.get(0),
+            None,
+            "the ones before it are unreported, not zeros"
+        );
     }
 }

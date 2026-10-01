@@ -136,7 +136,9 @@ fn object_result_records_its_delta_without_advancing_the_root() {
         basis,
         request,
     });
-    wait::until("the object result was delivered", || !runtime.poll().is_empty());
+    wait::until("the object result was delivered", || {
+        !runtime.poll().is_empty()
+    });
     assert_eq!(runtime.snapshot().key(), basis);
     assert_eq!(runtime.snapshot().delta(), Some(delta));
 }
@@ -156,7 +158,9 @@ fn result_delivery_stays_bounded_while_the_ui_is_not_polling() {
         };
         let _ = actor.try_submit(request);
     }
-    wait::until("the actor queued its one event", || actor.queued_events() == 1);
+    wait::until("the actor queued its one event", || {
+        actor.queued_events() == 1
+    });
     assert!(actor.queued_events() <= 1);
     drop(actor);
 }
@@ -180,7 +184,9 @@ fn result_coalescing_retires_the_replaced_request() {
         basis,
         request: first,
     });
-    wait::until("the first result was queued", || runtime.queued_results() == 1);
+    wait::until("the first result was queued", || {
+        runtime.queued_results() == 1
+    });
     assert!(runtime.is_inflight(first));
     let second = RequestId::new(21);
     runtime.dispatch(Intent::RefreshObject {

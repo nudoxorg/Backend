@@ -25,8 +25,14 @@ impl CrateName {
         let admitted = !name.is_empty()
             && name.len() <= 64
             && name.starts_with(|c: char| c.is_ascii_alphabetic())
-            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-        if admitted { Ok(Self(Arc::from(name))) } else { Err(ReleaseError::Name(name.to_owned())) }
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        if admitted {
+            Ok(Self(Arc::from(name)))
+        } else {
+            Err(ReleaseError::Name(name.to_owned()))
+        }
     }
 
     pub(crate) fn as_str(&self) -> &str {
@@ -51,10 +57,21 @@ impl Version {
     /// # Errors
     /// [`ReleaseError::Version`] for anything else.
     pub(crate) fn new(version: &str) -> Result<Self, ReleaseError> {
-        let (rest, build) = version.split_once('+').map_or((version, None), |(rest, build)| (rest, Some(build)));
-        let (core, pre) = rest.split_once('-').map_or((rest, None), |(core, pre)| (core, Some(pre)));
+        let (rest, build) = version
+            .split_once('+')
+            .map_or((version, None), |(rest, build)| (rest, Some(build)));
+        let (core, pre) = rest
+            .split_once('-')
+            .map_or((rest, None), |(core, pre)| (core, Some(pre)));
         let numeric = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
-        let tag = |part: Option<&str>| part.is_none_or(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-'));
+        let tag = |part: Option<&str>| {
+            part.is_none_or(|part| {
+                !part.is_empty()
+                    && part
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+            })
+        };
         let parts = core.split('.').collect::<Vec<_>>();
         if parts.len() == 3 && parts.iter().all(|part| numeric(part)) && tag(pre) && tag(build) {
             Ok(Self(Arc::from(version)))
@@ -88,7 +105,10 @@ pub(crate) struct Release {
 
 impl Release {
     pub(crate) fn new(name: &str, version: &str) -> Result<Self, ReleaseError> {
-        Ok(Self { name: CrateName::new(name)?, version: Version::new(version)? })
+        Ok(Self {
+            name: CrateName::new(name)?,
+            version: Version::new(version)?,
+        })
     }
 
     /// `name-version`, the registry's directory and archive stem.
@@ -100,7 +120,8 @@ impl Release {
     /// after a `-` that is a version, so `md-5-0.10.6` is `md-5` at `0.10.6`
     /// and `toml-1.1.6+spec-1.1.0` is `toml` at `1.1.6+spec-1.1.0`.
     pub(crate) fn from_stem(stem: &str) -> Option<Self> {
-        stem.match_indices('-').find_map(|(at, _)| Self::new(&stem[..at], &stem[at + 1..]).ok())
+        stem.match_indices('-')
+            .find_map(|(at, _)| Self::new(&stem[..at], &stem[at + 1..]).ok())
     }
 
     /// The registry's package URL for this release.

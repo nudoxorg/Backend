@@ -34,7 +34,10 @@ fn site(line: &UseLine) -> Site {
         path: line.path.to_string(),
         line: line.line,
         text: line.text.to_string(),
-        mark: line.mark.as_ref().map(|mark| mark.start as usize..mark.end as usize),
+        mark: line
+            .mark
+            .as_ref()
+            .map(|mark| mark.start as usize..mark.end as usize),
         rel: rel(line.relation),
         exact: line.resolution == Resolution::Resolved,
     }
@@ -63,7 +66,13 @@ mod tests {
             resolution: Resolution::ByName,
         };
         let site = site(&line);
-        assert_eq!((site.package.as_str(), site.line, site.rel, site.exact), ("engine", 12, Rel::TypeReference, false));
-        assert_eq!(site.mark.map(|mark| line.text[mark].to_owned()), Some("Value".to_owned()));
+        assert_eq!(
+            (site.package.as_str(), site.line, site.rel, site.exact),
+            ("engine", 12, Rel::TypeReference, false)
+        );
+        assert_eq!(
+            site.mark.map(|mark| line.text[mark].to_owned()),
+            Some("Value".to_owned())
+        );
     }
 }

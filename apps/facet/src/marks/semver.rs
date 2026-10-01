@@ -48,7 +48,10 @@ pub struct Ver {
 pub fn parse(v: &str) -> Ver {
     let core = v.split('+').next().unwrap_or(v);
     let (nums, pre) = core.split_once('-').unwrap_or((core, ""));
-    let mut parts = nums.trim_start_matches('v').split('.').map(|n| n.parse::<u64>().unwrap_or(0));
+    let mut parts = nums
+        .trim_start_matches('v')
+        .split('.')
+        .map(|n| n.parse::<u64>().unwrap_or(0));
     Ver {
         major: parts.next().unwrap_or(0),
         minor: parts.next().unwrap_or(0),
@@ -150,8 +153,13 @@ pub fn days(iso: &str) -> Option<f64> {
     let doy = (153 * mp + 2) / 5 + d - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let whole = era * 146_097 + doe - 719_468;
-    let mut hms = time.trim_end_matches('Z').split(':').map(|n| n.parse::<f64>().unwrap_or(0.0));
-    let secs = hms.next().unwrap_or(0.0) * 3600.0 + hms.next().unwrap_or(0.0) * 60.0 + hms.next().unwrap_or(0.0);
+    let mut hms = time
+        .trim_end_matches('Z')
+        .split(':')
+        .map(|n| n.parse::<f64>().unwrap_or(0.0));
+    let secs = hms.next().unwrap_or(0.0) * 3600.0
+        + hms.next().unwrap_or(0.0) * 60.0
+        + hms.next().unwrap_or(0.0);
     #[allow(clippy::cast_precision_loss)]
     Some(whole as f64 + secs / 86_400.0)
 }
@@ -179,8 +187,12 @@ pub fn plural(n: usize, one: &str, many: &str) -> String {
 /// Small counts as words (`two`), larger ones as digits.
 #[must_use]
 pub fn word(n: usize) -> String {
-    const WORDS: [&str; 11] = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
-    WORDS.get(n).map_or_else(|| n.to_string(), |w| (*w).to_owned())
+    const WORDS: [&str; 11] = [
+        "no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+    ];
+    WORDS
+        .get(n)
+        .map_or_else(|| n.to_string(), |w| (*w).to_owned())
 }
 
 /// How long ago `iso` was at `now` (`17 days`, `15 months`, `3 years`).
@@ -216,8 +228,10 @@ pub struct Reading {
 /// Reads `history` (any order) against `pin` at `now`.
 #[must_use]
 pub fn reading(history: &[ReleaseFact], pin: Option<&str>, now: &str) -> Reading {
-    let mut released: Vec<&ReleaseFact> =
-        history.iter().filter(|r| !r.yanked && parse(&r.v).pre.is_empty()).collect();
+    let mut released: Vec<&ReleaseFact> = history
+        .iter()
+        .filter(|r| !r.yanked && parse(&r.v).pre.is_empty())
+        .collect();
     released.sort_by(|a, b| cmp(&a.v, &b.v));
     let latest = released.last().map(|r| r.v.clone());
     let Some(pin) = pin else {
@@ -229,7 +243,10 @@ pub fn reading(history: &[ReleaseFact], pin: Option<&str>, now: &str) -> Reading
         let words = if history.is_empty() {
             "No releases".to_owned()
         } else {
-            format!("Not in your tree · {}{newest}", plural(history.len(), "release", "releases"))
+            format!(
+                "Not in your tree · {}{newest}",
+                plural(history.len(), "release", "releases")
+            )
         };
         return Reading {
             behind: None,
@@ -238,7 +255,10 @@ pub fn reading(history: &[ReleaseFact], pin: Option<&str>, now: &str) -> Reading
             words,
         };
     };
-    let after: Vec<&&ReleaseFact> = released.iter().filter(|r| cmp(&r.v, pin) == Ordering::Greater).collect();
+    let after: Vec<&&ReleaseFact> = released
+        .iter()
+        .filter(|r| cmp(&r.v, pin) == Ordering::Greater)
+        .collect();
     let mut classes: Vec<String> = after.iter().map(|r| caret(&r.v)).collect();
     classes.sort();
     classes.dedup();
@@ -254,7 +274,11 @@ pub fn reading(history: &[ReleaseFact], pin: Option<&str>, now: &str) -> Reading
     }
     let first_after = after
         .iter()
-        .filter_map(|r| r.at.as_deref().and_then(days).map(|d| (d, r.at.as_deref().unwrap_or_default())))
+        .filter_map(|r| {
+            r.at.as_deref()
+                .and_then(days)
+                .map(|d| (d, r.at.as_deref().unwrap_or_default()))
+        })
         .min_by(|a, b| a.0.total_cmp(&b.0))
         .and_then(|(_, at)| ago(at, now));
     let broke = if breaking > 0 {
@@ -267,7 +291,10 @@ pub fn reading(history: &[ReleaseFact], pin: Option<&str>, now: &str) -> Reading
         behind: Some(after.len()),
         breaking,
         latest,
-        words: format!("{} behind · {broke}{age}", plural(after.len(), "release", "releases")),
+        words: format!(
+            "{} behind · {broke}{age}",
+            plural(after.len(), "release", "releases")
+        ),
     }
 }
 
@@ -279,7 +306,10 @@ pub fn list(items: &[impl AsRef<str>], conj: &str) -> String {
         [one] => one.as_ref().to_owned(),
         [init @ .., last] => format!(
             "{} {conj} {}",
-            init.iter().map(AsRef::as_ref).collect::<Vec<_>>().join(", "),
+            init.iter()
+                .map(AsRef::as_ref)
+                .collect::<Vec<_>>()
+                .join(", "),
             last.as_ref()
         ),
     }
@@ -297,21 +327,30 @@ mod tests {
         assert_eq!(caret("0.0.3"), "0.0.3");
         assert_eq!(cmp("1.0.0-alpha.1", "1.0.0"), Ordering::Less);
         assert_eq!(cmp("0.10.0", "0.9.9"), Ordering::Greater);
-        assert_eq!(kinds(&["0.8.0", "0.8.1", "0.9.0", "1.0.0-rc.1", "1.0.0", "1.1.0"]), vec![
-            Tick::Breaking,
-            Tick::Patch,
-            Tick::Breaking,
-            Tick::Pre,
-            Tick::Breaking,
-            Tick::Minor
-        ]);
+        assert_eq!(
+            kinds(&["0.8.0", "0.8.1", "0.9.0", "1.0.0-rc.1", "1.0.0", "1.1.0"]),
+            vec![
+                Tick::Breaking,
+                Tick::Patch,
+                Tick::Breaking,
+                Tick::Pre,
+                Tick::Breaking,
+                Tick::Minor
+            ]
+        );
         assert_eq!(thousands(1189), "1,189");
     }
 
     #[test]
     fn ages_read_like_people_say_them() {
-        assert_eq!(ago("2026-09-10T00:00:00Z", "2026-09-27").as_deref(), Some("17 days"));
-        assert_eq!(ago("2025-06-20T00:00:00Z", "2026-09-27").as_deref(), Some("15 months"));
+        assert_eq!(
+            ago("2026-09-10T00:00:00Z", "2026-09-27").as_deref(),
+            Some("17 days")
+        );
+        assert_eq!(
+            ago("2025-06-20T00:00:00Z", "2026-09-27").as_deref(),
+            Some("15 months")
+        );
     }
 
     #[test]
@@ -324,8 +363,14 @@ mod tests {
             ReleaseFact::new("1.0.1", Some("2026-02-01"), true),
         ];
         let r = reading(&h, Some("0.8.23"), "2026-09-27");
-        assert_eq!(r.words, "3 releases behind · two of them breaking · 15 months");
+        assert_eq!(
+            r.words,
+            "3 releases behind · two of them breaking · 15 months"
+        );
         let none = reading(&h, None, "2026-09-27");
-        assert_eq!(none.words, "Not in your tree · 5 releases · the newest 9 months ago");
+        assert_eq!(
+            none.words,
+            "Not in your tree · 5 releases · the newest 9 months ago"
+        );
     }
 }

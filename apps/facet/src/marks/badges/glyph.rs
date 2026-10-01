@@ -99,24 +99,52 @@ impl Glyph {
     fn prims(self) -> &'static [Prim] {
         use Prim::{Arc, Dot, Half, Line, Loop, Ring, Solid};
         match self {
-            Self::Unsafe => &[Loop(&[(6.0, 1.4), (11.0, 10.6), (1.0, 10.6)]), Line(&[(6.0, 4.8), (6.0, 7.4)]), Dot((6.0, 9.1), 0.6)],
+            Self::Unsafe => &[
+                Loop(&[(6.0, 1.4), (11.0, 10.6), (1.0, 10.6)]),
+                Line(&[(6.0, 4.8), (6.0, 7.4)]),
+                Dot((6.0, 9.1), 0.6),
+            ],
             Self::Async => &[
                 Line(&[(1.5, 4.2), (8.0, 4.2)]),
                 Line(&[(6.2, 2.4), (8.0, 4.2), (6.2, 6.0)]),
                 Line(&[(10.5, 7.8), (4.0, 7.8)]),
                 Line(&[(5.8, 6.0), (4.0, 7.8), (5.8, 9.6)]),
             ],
-            Self::Fail => &[Ring((6.0, 6.0), 4.6), Line(&[(6.0, 3.5), (6.0, 6.4)]), Dot((6.0, 8.3), 0.6)],
+            Self::Fail => &[
+                Ring((6.0, 6.0), 4.6),
+                Line(&[(6.0, 3.5), (6.0, 6.4)]),
+                Dot((6.0, 8.3), 0.6),
+            ],
             Self::Maybe => &[Ring((6.0, 6.0), 4.6), Half((6.0, 6.0), 4.6, 0.0)],
             Self::Reads => &[
                 Loop(&[(1.6, 6.6), (3.6, 4.6), (6.0, 7.0), (4.0, 9.0)]),
                 Loop(&[(6.0, 5.0), (8.4, 2.6), (10.4, 4.6), (8.0, 7.0)]),
                 Line(&[(4.6, 7.4), (7.4, 4.6)]),
             ],
-            Self::Changes => &[Loop(&[(2.0, 10.0), (2.6, 7.6), (8.4, 1.8), (10.2, 3.6), (4.4, 9.4)]), Line(&[(7.0, 3.2), (8.8, 5.0)])],
-            Self::Consumes => &[Line(&[(1.2, 6.0), (7.0, 6.0)]), Line(&[(4.6, 3.6), (7.0, 6.0), (4.6, 8.4)]), Line(&[(8.6, 2.2), (10.6, 2.2), (10.6, 9.8), (8.6, 9.8)])],
-            Self::Generic => &[Line(&[(4.6, 2.0), (1.8, 6.0), (4.6, 10.0)]), Line(&[(7.4, 2.0), (10.2, 6.0), (7.4, 10.0)])],
-            Self::Const => &[Loop(&[(2.4, 5.2), (9.6, 5.2), (9.6, 10.6), (2.4, 10.6)]), Line(&[(4.0, 5.2), (4.0, 3.8), (5.0, 1.8), (7.0, 1.8), (8.0, 3.8), (8.0, 5.2)])],
+            Self::Changes => &[
+                Loop(&[(2.0, 10.0), (2.6, 7.6), (8.4, 1.8), (10.2, 3.6), (4.4, 9.4)]),
+                Line(&[(7.0, 3.2), (8.8, 5.0)]),
+            ],
+            Self::Consumes => &[
+                Line(&[(1.2, 6.0), (7.0, 6.0)]),
+                Line(&[(4.6, 3.6), (7.0, 6.0), (4.6, 8.4)]),
+                Line(&[(8.6, 2.2), (10.6, 2.2), (10.6, 9.8), (8.6, 9.8)]),
+            ],
+            Self::Generic => &[
+                Line(&[(4.6, 2.0), (1.8, 6.0), (4.6, 10.0)]),
+                Line(&[(7.4, 2.0), (10.2, 6.0), (7.4, 10.0)]),
+            ],
+            Self::Const => &[
+                Loop(&[(2.4, 5.2), (9.6, 5.2), (9.6, 10.6), (2.4, 10.6)]),
+                Line(&[
+                    (4.0, 5.2),
+                    (4.0, 3.8),
+                    (5.0, 1.8),
+                    (7.0, 1.8),
+                    (8.0, 3.8),
+                    (8.0, 5.2),
+                ]),
+            ],
             Self::Macro => &[Line(&[(6.0, 1.6), (6.0, 7.2)]), Dot((6.0, 9.6), 0.7)],
             Self::Iter => &[
                 Line(&[(1.6, 3.2), (8.2, 3.2)]),
@@ -124,10 +152,35 @@ impl Glyph {
                 Line(&[(1.6, 8.8), (8.2, 8.8)]),
                 Line(&[(9.2, 5.4), (10.6, 6.8), (9.2, 8.2)]),
             ],
-            Self::Error => &[Loop(&[(2.0, 2.0), (10.0, 2.0), (10.0, 10.0), (2.0, 10.0)]), Line(&[(4.2, 4.2), (7.8, 7.8)]), Line(&[(7.8, 4.2), (4.2, 7.8)])],
-            Self::Build => &[Line(&[(2.0, 10.0), (6.2, 5.8)]), Loop(&[(5.3, 2.4), (9.6, 6.7), (8.2, 8.1), (3.9, 3.8)])],
-            Self::MacroPkg => &[Loop(&[(6.0, 1.2), (7.1, 4.9), (10.8, 6.0), (7.1, 7.1), (6.0, 10.8), (4.9, 7.1), (1.2, 6.0), (4.9, 4.9)])],
-            Self::Shield => &[Loop(&[(6.0, 1.2), (10.2, 2.7), (10.2, 6.2), (8.6, 9.0), (6.0, 10.8), (3.4, 9.0), (1.8, 6.2), (1.8, 2.7)])],
+            Self::Error => &[
+                Loop(&[(2.0, 2.0), (10.0, 2.0), (10.0, 10.0), (2.0, 10.0)]),
+                Line(&[(4.2, 4.2), (7.8, 7.8)]),
+                Line(&[(7.8, 4.2), (4.2, 7.8)]),
+            ],
+            Self::Build => &[
+                Line(&[(2.0, 10.0), (6.2, 5.8)]),
+                Loop(&[(5.3, 2.4), (9.6, 6.7), (8.2, 8.1), (3.9, 3.8)]),
+            ],
+            Self::MacroPkg => &[Loop(&[
+                (6.0, 1.2),
+                (7.1, 4.9),
+                (10.8, 6.0),
+                (7.1, 7.1),
+                (6.0, 10.8),
+                (4.9, 7.1),
+                (1.2, 6.0),
+                (4.9, 4.9),
+            ])],
+            Self::Shield => &[Loop(&[
+                (6.0, 1.2),
+                (10.2, 2.7),
+                (10.2, 6.2),
+                (8.6, 9.0),
+                (6.0, 10.8),
+                (3.4, 9.0),
+                (1.8, 6.2),
+                (1.8, 2.7),
+            ])],
             Self::Net => &[
                 Ring((6.0, 6.0), 4.6),
                 Line(&[(1.4, 6.0), (10.6, 6.0)]),
@@ -135,25 +188,74 @@ impl Glyph {
                 Arc((6.0, 6.0), 4.6, 125.0, 235.0),
                 Line(&[(6.0, 1.4), (6.0, 10.6)]),
             ],
-            Self::Files => &[Loop(&[(1.6, 2.8), (4.9, 2.8), (5.9, 4.0), (10.4, 4.0), (10.4, 9.6), (1.6, 9.6)])],
-            Self::Process => &[Loop(&[(1.4, 2.2), (10.6, 2.2), (10.6, 9.8), (1.4, 9.8)]), Line(&[(3.3, 4.6), (5.0, 6.0), (3.3, 7.4)]), Line(&[(6.2, 7.6), (8.6, 7.6)])],
-            Self::Env => &[Ring((4.2, 6.0), 2.4), Line(&[(6.6, 6.0), (10.6, 6.0)]), Line(&[(9.0, 6.0), (9.0, 8.0)])],
+            Self::Files => &[Loop(&[
+                (1.6, 2.8),
+                (4.9, 2.8),
+                (5.9, 4.0),
+                (10.4, 4.0),
+                (10.4, 9.6),
+                (1.6, 9.6),
+            ])],
+            Self::Process => &[
+                Loop(&[(1.4, 2.2), (10.6, 2.2), (10.6, 9.8), (1.4, 9.8)]),
+                Line(&[(3.3, 4.6), (5.0, 6.0), (3.3, 7.4)]),
+                Line(&[(6.2, 7.6), (8.6, 7.6)]),
+            ],
+            Self::Env => &[
+                Ring((4.2, 6.0), 2.4),
+                Line(&[(6.6, 6.0), (10.6, 6.0)]),
+                Line(&[(9.0, 6.0), (9.0, 8.0)]),
+            ],
             Self::Ffi => &[
                 Line(&[(4.0, 1.4), (4.0, 4.4)]),
                 Line(&[(8.0, 1.4), (8.0, 4.4)]),
-                Loop(&[(2.6, 4.4), (9.4, 4.4), (9.4, 6.2), (7.8, 8.4), (4.2, 8.4), (2.6, 6.2)]),
+                Loop(&[
+                    (2.6, 4.4),
+                    (9.4, 4.4),
+                    (9.4, 6.2),
+                    (7.8, 8.4),
+                    (4.2, 8.4),
+                    (2.6, 6.2),
+                ]),
                 Line(&[(6.0, 8.4), (6.0, 10.8)]),
             ],
-            Self::You => &[Ring((6.0, 4.0), 2.0), Line(&[(2.2, 10.6), (2.8, 8.6), (4.4, 7.4), (7.6, 7.4), (9.2, 8.6), (9.8, 10.6)])],
+            Self::You => &[
+                Ring((6.0, 4.0), 2.0),
+                Line(&[
+                    (2.2, 10.6),
+                    (2.8, 8.6),
+                    (4.4, 7.4),
+                    (7.6, 7.4),
+                    (9.2, 8.6),
+                    (9.8, 10.6),
+                ]),
+            ],
             Self::Undoc => &[
-                Line(&[(2.8, 1.6), (7.2, 1.6), (9.2, 3.6), (9.2, 10.4), (2.8, 10.4), (2.8, 1.6)]),
+                Line(&[
+                    (2.8, 1.6),
+                    (7.2, 1.6),
+                    (9.2, 3.6),
+                    (9.2, 10.4),
+                    (2.8, 10.4),
+                    (2.8, 1.6),
+                ]),
                 Line(&[(4.6, 6.0), (7.6, 6.0)]),
                 Line(&[(4.6, 8.0), (6.8, 8.0)]),
             ],
             Self::Owner => &[Line(&[(2.2, 9.6), (6.0, 2.4), (9.8, 9.6)])],
-            Self::Makes => &[Line(&[(6.0, 2.0), (6.0, 10.0)]), Line(&[(2.0, 6.0), (10.0, 6.0)])],
-            Self::Marker => &[Line(&[(3.0, 10.6), (3.0, 1.6)]), Loop(&[(3.0, 2.2), (9.4, 2.2), (7.6, 4.4), (9.4, 6.6), (3.0, 6.6)])],
-            Self::Takes => &[Line(&[(1.4, 6.0), (7.4, 6.0)]), Line(&[(5.0, 3.6), (7.4, 6.0), (5.0, 8.4)]), Line(&[(9.6, 2.0), (9.6, 10.0)])],
+            Self::Makes => &[
+                Line(&[(6.0, 2.0), (6.0, 10.0)]),
+                Line(&[(2.0, 6.0), (10.0, 6.0)]),
+            ],
+            Self::Marker => &[
+                Line(&[(3.0, 10.6), (3.0, 1.6)]),
+                Loop(&[(3.0, 2.2), (9.4, 2.2), (7.6, 4.4), (9.4, 6.6), (3.0, 6.6)]),
+            ],
+            Self::Takes => &[
+                Line(&[(1.4, 6.0), (7.4, 6.0)]),
+                Line(&[(5.0, 3.6), (7.4, 6.0), (5.0, 8.4)]),
+                Line(&[(9.6, 2.0), (9.6, 10.0)]),
+            ],
             Self::Abstract => &[
                 Line(&[(2.0, 2.0), (4.2, 2.0)]),
                 Line(&[(7.8, 2.0), (10.0, 2.0)]),
@@ -165,7 +267,10 @@ impl Glyph {
                 Line(&[(2.0, 4.2), (2.0, 2.0)]),
                 Solid(&[(5.0, 5.0), (7.0, 5.0), (7.0, 7.0), (5.0, 7.0)]),
             ],
-            Self::Override => &[Loop(&[(1.8, 1.8), (8.0, 1.8), (8.0, 8.0), (1.8, 8.0)]), Loop(&[(4.4, 4.4), (10.2, 4.4), (10.2, 10.2), (4.4, 10.2)])],
+            Self::Override => &[
+                Loop(&[(1.8, 1.8), (8.0, 1.8), (8.0, 8.0), (1.8, 8.0)]),
+                Loop(&[(4.4, 4.4), (10.2, 4.4), (10.2, 10.2), (4.4, 10.2)]),
+            ],
         }
     }
 
@@ -267,7 +372,12 @@ fn segment(a: Pt, b: Pt, w: f32) -> Option<Poly> {
     let (nx, ny) = (-uy * w * 0.5, ux * w * 0.5);
     let (ex, ey) = (ux * w * 0.5, uy * w * 0.5);
     let (a, b) = (pt(a.x - ex, a.y - ey), pt(b.x + ex, b.y + ey));
-    let quad = [pt(a.x + nx, a.y + ny), pt(b.x + nx, b.y + ny), pt(b.x - nx, b.y - ny), pt(a.x - nx, a.y - ny)];
+    let quad = [
+        pt(a.x + nx, a.y + ny),
+        pt(b.x + nx, b.y + ny),
+        pt(b.x - nx, b.y - ny),
+        pt(a.x - nx, a.y - ny),
+    ];
     // Positive (clockwise on screen) orientation.
     let area: f32 = (0..4)
         .map(|i| {
@@ -275,7 +385,11 @@ fn segment(a: Pt, b: Pt, w: f32) -> Option<Poly> {
             p.x * q.y - q.x * p.y
         })
         .sum();
-    Some(if area >= 0.0 { Poly::new(quad) } else { Poly::new([quad[3], quad[2], quad[1], quad[0]]) })
+    Some(if area >= 0.0 {
+        Poly::new(quad)
+    } else {
+        Poly::new([quad[3], quad[2], quad[1], quad[0]])
+    })
 }
 
 fn positive(points: &[Pt]) -> Poly {
@@ -316,23 +430,47 @@ pub fn paint(window: &mut Window, bounds: Bounds<Pixels>, glyph: Glyph, color: H
     };
     for prim in glyph.prims() {
         match *prim {
-            Prim::Line(points) => stroke(&points.iter().map(|p| at(*p)).collect::<Vec<_>>(), false, &mut fill),
-            Prim::Loop(points) => stroke(&points.iter().map(|p| at(*p)).collect::<Vec<_>>(), true, &mut fill),
-            Prim::Solid(points) => fill.poly(&positive(&points.iter().map(|p| at(*p)).collect::<Vec<_>>())),
+            Prim::Line(points) => stroke(
+                &points.iter().map(|p| at(*p)).collect::<Vec<_>>(),
+                false,
+                &mut fill,
+            ),
+            Prim::Loop(points) => stroke(
+                &points.iter().map(|p| at(*p)).collect::<Vec<_>>(),
+                true,
+                &mut fill,
+            ),
+            Prim::Solid(points) => fill.poly(&positive(
+                &points.iter().map(|p| at(*p)).collect::<Vec<_>>(),
+            )),
             Prim::Ring(c, r) => {
-                let ring: Vec<Pt> = ring_points(c, r).into_iter().map(|p| at((p.x, p.y))).collect();
+                let ring: Vec<Pt> = ring_points(c, r)
+                    .into_iter()
+                    .map(|p| at((p.x, p.y)))
+                    .collect();
                 stroke(&ring, true, &mut fill);
             }
             Prim::Arc(c, r, from, to) => {
-                let arc: Vec<Pt> = arc_points(c, r, from, to).into_iter().map(|p| at((p.x, p.y))).collect();
+                let arc: Vec<Pt> = arc_points(c, r, from, to)
+                    .into_iter()
+                    .map(|p| at((p.x, p.y)))
+                    .collect();
                 stroke(&arc, false, &mut fill);
             }
             Prim::Half(c, r, facing) => {
-                let half: Vec<Pt> = arc_points(c, r, facing - 90.0, facing + 90.0).into_iter().map(|p| at((p.x, p.y))).collect();
+                let half: Vec<Pt> = arc_points(c, r, facing - 90.0, facing + 90.0)
+                    .into_iter()
+                    .map(|p| at((p.x, p.y)))
+                    .collect();
                 fill.poly(&positive(&half));
             }
             Prim::Dot(c, h) => {
-                let dot = Poly::rect(ox + (c.0 - h) * k, oy + (c.1 - h) * k, h * 2.0 * k, h * 2.0 * k);
+                let dot = Poly::rect(
+                    ox + (c.0 - h) * k,
+                    oy + (c.1 - h) * k,
+                    h * 2.0 * k,
+                    h * 2.0 * k,
+                );
                 fill.poly(&dot);
             }
         }
@@ -343,7 +481,10 @@ pub fn paint(window: &mut Window, bounds: Bounds<Pixels>, glyph: Glyph, color: H
 /// A glyph as an element, `size` px square, in `color`.
 pub fn glyph(glyph: Glyph, size: f32, color: impl Into<Hsla>) -> impl IntoElement {
     let color = color.into();
-    canvas(|_, _, _| {}, move |bounds, (), window, _| paint(window, bounds, glyph, color))
-        .flex_none()
-        .size(px(size))
+    canvas(
+        |_, _, _| {},
+        move |bounds, (), window, _| paint(window, bounds, glyph, color),
+    )
+    .flex_none()
+    .size(px(size))
 }

@@ -27,6 +27,7 @@
 pub mod can;
 pub mod contract;
 pub mod does;
+pub mod fails;
 pub mod fork;
 #[cfg(feature = "gallery")]
 pub(crate) mod gallery;
@@ -35,21 +36,20 @@ pub(crate) mod glyph_gallery;
 pub mod history;
 pub mod holds;
 pub mod in_use;
-pub mod pipe;
 pub mod operation;
 pub mod page;
+pub mod pipe;
 pub mod plan;
-pub mod unroll;
-pub mod fails;
 pub mod prism;
 pub mod rail;
 pub mod reach;
 pub mod reach_world;
 pub mod sigil;
 pub mod symbol;
-pub mod text;
 #[cfg(test)]
 mod tests;
+pub mod text;
+pub mod unroll;
 
 pub use can::{Can, can};
 pub use contract::{ContractView, contract};
@@ -57,8 +57,8 @@ pub use does::{DoesView, does};
 pub use fork::{ForkView, fork};
 pub use holds::{HoldsView, holds};
 pub use in_use::{InUse, in_use};
-pub use pipe::{PipeView, pipe};
 pub use operation::{Operation, operation};
+pub use pipe::{PipeView, pipe};
 pub use prism::{PrismView, ToGraph, prism};
 pub use rail::{RecipeSection, recipe};
 pub use text::{Deco, Line, Links, Open, TypeInk};
@@ -73,7 +73,14 @@ pub mod roles {
     use crate::tokens::{Face, TypeRole};
 
     const fn role(face: Face, weight: f32, size: f32, line: f32, tracking: f32) -> TypeRole {
-        TypeRole { face, weight, size, line, tracking, italic: matches!(face, Face::Serif) }
+        TypeRole {
+            face,
+            weight,
+            size,
+            line,
+            tracking,
+            italic: matches!(face, Face::Serif),
+        }
     }
 
     /// A part's heading (`one of`, `holds, all private`, `can`).
@@ -112,14 +119,27 @@ pub mod roles {
     /// The UI face at `base`'s size (plain words inside a mono line).
     #[must_use]
     pub const fn words(base: TypeRole) -> TypeRole {
-        TypeRole { face: Face::Ui, weight: 400.0, italic: false, tracking: 0.0, ..base }
+        TypeRole {
+            face: Face::Ui,
+            weight: 400.0,
+            italic: false,
+            tracking: 0.0,
+            ..base
+        }
     }
 
     /// A generic variable beside `base`: the italic serif, a size up, the
     /// way mathematics sets a variable (the mono face has no italic cut).
     #[must_use]
     pub const fn italic(base: TypeRole) -> TypeRole {
-        TypeRole { face: Face::Serif, weight: 400.0, italic: true, tracking: 0.0, size: base.size + 1.5, ..base }
+        TypeRole {
+            face: Face::Serif,
+            weight: 400.0,
+            italic: true,
+            tracking: 0.0,
+            size: base.size + 1.5,
+            ..base
+        }
     }
 }
 
@@ -162,7 +182,14 @@ pub fn heading(
         .text_color(palette.ink3.hsla())
         .mb(k(measure, 6.0))
         .child(text.clone());
-    crate::probe::text(id, text, measure.role(roles::HEAD), 1.0, crate::probe::TextOverflow::Wrap, words)
+    crate::probe::text(
+        id,
+        text,
+        measure.role(roles::HEAD),
+        1.0,
+        crate::probe::TextOverflow::Wrap,
+        words,
+    )
 }
 
 /// A section's title in the display face (`Does`, `In use`).

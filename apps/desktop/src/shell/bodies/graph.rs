@@ -10,9 +10,9 @@ use crate::model::pages::{PackageRef, PageKey, SearchContinuation, SearchQuery};
 use crate::navigation::{Intent, Route, View};
 use crate::runtime::store::{Branch, StoreEvent, route_symbol};
 use crate::shell::region::Links;
-use facet::graph::{GraphView, NodeId, Start};
 #[cfg(test)]
 use facet::graph::World;
+use facet::graph::{GraphView, NodeId, Start};
 use gpui::{
     App, AppContext as _, Context, Entity, Focusable as _, IntoElement, ParentElement, Render,
     Styled, Subscription, Task, Window, div, px,
@@ -116,7 +116,11 @@ pub(crate) fn install_test_fixture(cx: &mut App) {
 /// Mounts `world` as the graph's fixture for the next map (tests): the
 /// same world the page's anatomy reads, joined by `identities`.
 #[cfg(test)]
-pub(crate) fn install_test_world(world: Arc<World>, identities: Arc<IdentityAdapter>, cx: &mut App) {
+pub(crate) fn install_test_world(
+    world: Arc<World>,
+    identities: Arc<IdentityAdapter>,
+    cx: &mut App,
+) {
     let layout = facet::graph::layout::layout_of(&world);
     cx.set_global(TestFixture {
         scene: Arc::new(facet::graph::scene::Scene::new(world, layout)),
@@ -401,10 +405,17 @@ impl Map {
             && ask > self.toured
         {
             self.toured = ask;
-            let index = self.identities.as_ref().and_then(|identities| identities.packages_of(&package).first().copied());
-            let started = index.is_some_and(|index| graph.update(cx, |graph, cx| graph.start_tour(index, 0, cx)));
+            let index = self
+                .identities
+                .as_ref()
+                .and_then(|identities| identities.packages_of(&package).first().copied());
+            let started = index
+                .is_some_and(|index| graph.update(cx, |graph, cx| graph.start_tour(index, 0, cx)));
             if !started {
-                self.error = Some(format!("This graph fixture has no guided tour of {}.", package.display_name()));
+                self.error = Some(format!(
+                    "This graph fixture has no guided tour of {}.",
+                    package.display_name()
+                ));
             }
             return;
         }
@@ -890,7 +901,10 @@ impl Map {
 
 /// A last-good value cannot settle the latest root's open. Activity is
 /// checked first because an active retry retains its previous terminal too.
-pub(crate) fn open_value<T>(resource: &Resource<T>, root: VersionedRoot) -> Result<Option<&T>, String> {
+pub(crate) fn open_value<T>(
+    resource: &Resource<T>,
+    root: VersionedRoot,
+) -> Result<Option<&T>, String> {
     if matches!(
         resource.activity(),
         Activity::Waiting | Activity::Working | Activity::NotYet

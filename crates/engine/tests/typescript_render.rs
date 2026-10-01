@@ -179,7 +179,12 @@ fn template_renders() {
     let ir = compile(CASES[5].1);
     // Template text parts are staged as text children (f7af7b808), so the
     // literal segment renders alongside the structurally decoded placeholder.
-    signature(&ir, "Greet", ItemKind::TypeAlias, "type Greet = `hi ${str}`");
+    signature(
+        &ir,
+        "Greet",
+        ItemKind::TypeAlias,
+        "type Greet = `hi ${str}`",
+    );
 }
 
 #[test]

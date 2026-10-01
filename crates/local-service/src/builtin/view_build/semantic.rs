@@ -1156,18 +1156,25 @@ pub(super) fn project_image_rows(
             let LinkTarget::External(target) = link.target else {
                 continue;
             };
-            external.push(ExternalTargetIdentity::capture(image, target).map_err(|error| {
-                BuiltinModelError(format!(
-                    "identify project semantic external target: {error}"
-                ))
-            })?);
+            external.push(
+                ExternalTargetIdentity::capture(image, target).map_err(|error| {
+                    BuiltinModelError(format!(
+                        "identify project semantic external target: {error}"
+                    ))
+                })?,
+            );
         }
         // A documentation link to an external declaration (`[`f64::NAN`]`)
         // targets the same external row a graph link would. Without that row
         // the link dangles: its target has no claim in the view's
         // certificate, and the owner could not reopen its own view journal
         // ("snapshot row document: missing producer key commitment").
-        external.extend(content.documentation_targets.iter().map(|(identity, _)| *identity));
+        external.extend(
+            content
+                .documentation_targets
+                .iter()
+                .map(|(identity, _)| *identity),
+        );
         for identity in external {
             let symbol = external_semantic_symbol(project.package, image_identity, identity);
             let label = EXTERNAL_SEMANTIC_TARGET_LABEL;
@@ -1374,7 +1381,8 @@ pub(super) fn semantic_row_content<Reader: backend_semantic::ir::SemanticReader 
     let mut document = Vec::with_capacity(documentation.len());
     let mut documentation_targets = Vec::new();
     for fragment in documentation {
-        let (fragment, external) = documentation_fragment(reader, package, image_identity, fragment)?;
+        let (fragment, external) =
+            documentation_fragment(reader, package, image_identity, fragment)?;
         document.push(fragment);
         documentation_targets.extend(external);
     }
@@ -1417,9 +1425,10 @@ fn documentation_fragment<Reader: backend_semantic::ir::SemanticReader + ?Sized>
         }
         DocumentationFragment::Link { label, target } => {
             let (target, external) = match target {
-                backend_engine::application::DocumentationTarget::Local(target) => {
-                    (semantic_symbol(package, target.entity.version.identity()), None)
-                }
+                backend_engine::application::DocumentationTarget::Local(target) => (
+                    semantic_symbol(package, target.entity.version.identity()),
+                    None,
+                ),
                 backend_engine::application::DocumentationTarget::External { id, .. } => {
                     let identity =
                         ExternalTargetIdentity::capture(reader, id).map_err(|error| {
@@ -1427,7 +1436,10 @@ fn documentation_fragment<Reader: backend_semantic::ir::SemanticReader + ?Sized>
                                 "identify documentation external target: {error}"
                             ))
                         })?;
-                    (external_semantic_symbol(package, image, identity), Some((identity, id)))
+                    (
+                        external_semantic_symbol(package, image, identity),
+                        Some((identity, id)),
+                    )
                 }
             };
             (

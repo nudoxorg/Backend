@@ -11,13 +11,15 @@ use std::{
     task::{Context, Poll},
 };
 
+use backend_semantic::graph_vector::{
+    Cancellation, GraphAuthority, PartitionId, ValidatedGraphView,
+};
 use backend_semantic::ir::{
     Confidence, EntityId, FactAvailability, Ir, LinkId, LinkKind, LinkOccurrenceId, LinkTarget,
     SemanticCoreReader, SemanticImageView, SemanticReader, SourceSpan,
 };
 use futures_core::Stream;
 use futures_util::stream;
-use backend_semantic::graph_vector::{Cancellation, GraphAuthority, PartitionId, ValidatedGraphView};
 use thiserror::Error;
 use trustfall::{
     FieldValue, Schema,
@@ -1289,14 +1291,14 @@ mod tests {
     use std::hint::black_box;
 
     use allocation_counter::{AllocationInfo, measure};
+    use backend_semantic::graph_vector::{GraphEdge, GraphRow, ProjectionId};
+    use backend_semantic::index_vocabulary::IndexSnapshotId;
     use backend_semantic::ir::{
         BorrowedTree, Confidence, CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts,
         EntityVersion, FactAvailability, IrBuilder, ItemKind, LinkKind, OccurrenceAuthorityFacts,
         ParentageAuthority, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget,
         VariantFingerprint, Visibility,
     };
-    use backend_semantic::graph_vector::{GraphEdge, GraphRow, ProjectionId};
-    use backend_semantic::index_vocabulary::IndexSnapshotId;
     use trustfall::provider::check_adapter_invariants;
 
     use super::*;

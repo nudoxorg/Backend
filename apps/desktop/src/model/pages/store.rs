@@ -70,7 +70,11 @@ family_of! {
 impl PageValue {
     /// A search page, whether it is the first or a further one.
     fn search(self) -> Option<SearchPage> {
-        if let Self::Search(page) | Self::SearchMore(page) = self { Some(page) } else { None }
+        if let Self::Search(page) | Self::SearchMore(page) = self {
+            Some(page)
+        } else {
+            None
+        }
     }
 }
 
@@ -188,7 +192,10 @@ enum Fetch {
     /// No fetch is running.
     Idle,
     /// This one is.
-    Running { generation: Generation, manner: Manner },
+    Running {
+        generation: Generation,
+        manner: Manner,
+    },
 }
 
 /// Where a slot's value came from.
@@ -278,7 +285,11 @@ impl<K: Ord + Clone, T> Slots<K, T> {
         slot.asked_at = Some(root);
         // A snapshot value is revalidated quietly: it stays exactly as drawn
         // (no "working", no stamp) until a different value lands.
-        let manner = if slot.provenance == Provenance::Seeded && !force { Manner::Quiet } else { Manner::Loud };
+        let manner = if slot.provenance == Provenance::Seeded && !force {
+            Manner::Quiet
+        } else {
+            Manner::Loud
+        };
         slot.fetch = Fetch::Running { generation, manner };
         if manner == Manner::Loud {
             slot.resource = std::mem::replace(&mut slot.resource, Resource::not_yet()).working();
@@ -362,7 +373,11 @@ impl<K: Ord + Clone, T> Slots<K, T> {
         let Some(slot) = self.map.get_mut(key) else {
             return Landing::Superseded;
         };
-        let Fetch::Running { generation: running, manner } = slot.fetch else {
+        let Fetch::Running {
+            generation: running,
+            manner,
+        } = slot.fetch
+        else {
             return Landing::Superseded;
         };
         if running != generation {
@@ -435,11 +450,15 @@ impl<K: Ord + Clone, T> Slots<K, T> {
     }
 
     fn stamp(&self, key: &K) -> Stamp {
-        self.map.get(key).map_or(Stamp::UNSEEN, |slot| slot.revision)
+        self.map
+            .get(key)
+            .map_or(Stamp::UNSEEN, |slot| slot.revision)
     }
 
     fn seeded(&self, key: &K) -> bool {
-        self.map.get(key).is_some_and(|slot| slot.provenance == Provenance::Seeded)
+        self.map
+            .get(key)
+            .is_some_and(|slot| slot.provenance == Provenance::Seeded)
     }
 
     fn inflight(&self, key: &K) -> Option<Generation> {
@@ -608,7 +627,12 @@ impl PageStore {
         self.begin_with(key, root, true)
     }
 
-    fn begin_with(&mut self, key: &PageKey, root: VersionedRoot, force: bool) -> Option<Generation> {
+    fn begin_with(
+        &mut self,
+        key: &PageKey,
+        root: VersionedRoot,
+        force: bool,
+    ) -> Option<Generation> {
         self.clock = self.clock.next();
         let clock = self.clock;
         let generation = self.next_generation;
@@ -629,12 +653,22 @@ impl PageStore {
         self.clock = self.clock.next();
         let clock = self.clock;
         match entry {
-            SeedEntry::Symbol(symbol, page) => self.symbols.seed(&symbol, Arc::unwrap_or_clone(page), root, clock),
-            SeedEntry::Source(symbol, view) => self.sources.seed(&symbol, Arc::unwrap_or_clone(view), root, clock),
-            SeedEntry::Package(package, dossier) => {
-                self.packages.seed(&package, Arc::unwrap_or_clone(dossier), root, clock)
+            SeedEntry::Symbol(symbol, page) => {
+                self.symbols
+                    .seed(&symbol, Arc::unwrap_or_clone(page), root, clock)
             }
-            SeedEntry::Orbit(model) => self.orbit.seed(&(), Arc::unwrap_or_clone(model), root, clock),
+            SeedEntry::Source(symbol, view) => {
+                self.sources
+                    .seed(&symbol, Arc::unwrap_or_clone(view), root, clock)
+            }
+            SeedEntry::Package(package, dossier) => {
+                self.packages
+                    .seed(&package, Arc::unwrap_or_clone(dossier), root, clock)
+            }
+            SeedEntry::Orbit(model) => {
+                self.orbit
+                    .seed(&(), Arc::unwrap_or_clone(model), root, clock)
+            }
         }
     }
 
@@ -665,19 +699,44 @@ impl PageStore {
         result: Result<PageValue, ReadFailure>,
     ) -> Landing {
         match key {
-            PageKey::Symbol(symbol) => self.symbols.land(symbol, generation, take(result, PageValue::symbol), replace),
-            PageKey::Source(symbol) => self.sources.land(symbol, generation, take(result, PageValue::source), replace),
-            PageKey::Package(package) => self.packages.land(package, generation, take(result, PageValue::package), replace),
+            PageKey::Symbol(symbol) => {
+                self.symbols
+                    .land(symbol, generation, take(result, PageValue::symbol), replace)
+            }
+            PageKey::Source(symbol) => {
+                self.sources
+                    .land(symbol, generation, take(result, PageValue::source), replace)
+            }
+            PageKey::Package(package) => self.packages.land(
+                package,
+                generation,
+                take(result, PageValue::package),
+                replace,
+            ),
             PageKey::Search(query) => {
                 let append = matches!(result, Ok(PageValue::SearchMore(_)));
-                self.searches.land(query, generation, take(result, PageValue::search), move |previous, next| match previous {
-                    Some(previous) if append => append_search(previous, next),
-                    _ => next,
-                })
+                self.searches.land(
+                    query,
+                    generation,
+                    take(result, PageValue::search),
+                    move |previous, next| match previous {
+                        Some(previous) if append => append_search(previous, next),
+                        _ => next,
+                    },
+                )
             }
-            PageKey::Orbit => self.orbit.land(&(), generation, take(result, PageValue::orbit), replace),
-            PageKey::Health => self.health.land(&(), generation, take(result, PageValue::health), replace),
-            PageKey::Browse(browse) => self.browse.land(browse, generation, take(result, PageValue::browse), replace),
+            PageKey::Orbit => {
+                self.orbit
+                    .land(&(), generation, take(result, PageValue::orbit), replace)
+            }
+            PageKey::Health => {
+                self.health
+                    .land(&(), generation, take(result, PageValue::health), replace)
+            }
+            PageKey::Browse(browse) => {
+                self.browse
+                    .land(browse, generation, take(result, PageValue::browse), replace)
+            }
         }
     }
 
@@ -750,7 +809,10 @@ impl PageStore {
 
     /// Returns a browsing page's resource.
     #[must_use]
-    pub fn browse(&self, key: &crate::model::browse::BrowseKey) -> Resource<crate::model::browse::BrowseValue> {
+    pub fn browse(
+        &self,
+        key: &crate::model::browse::BrowseKey,
+    ) -> Resource<crate::model::browse::BrowseValue> {
         self.browse.get(key)
     }
 

@@ -22,8 +22,9 @@ use crate::paint::mix;
 use crate::theme::ActiveFacet;
 use crate::tokens::motion::DROP;
 use gpui::{
-    AnyElement, App, ClickEvent, ClipboardItem, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce,
-    SharedString, StatefulInteractiveElement, Styled, Window, canvas, div, px,
+    AnyElement, App, ClickEvent, ClipboardItem, ElementId, InteractiveElement, IntoElement,
+    ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, canvas,
+    div, px,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -157,7 +158,10 @@ impl EcoFacts {
     #[must_use]
     pub fn kind(&self) -> String {
         if self.local.is_some() {
-            format!("{} package", self.eco.kind().split(' ').next().unwrap_or_default())
+            format!(
+                "{} package",
+                self.eco.kind().split(' ').next().unwrap_or_default()
+            )
         } else {
             self.eco.kind().to_owned()
         }
@@ -218,7 +222,11 @@ pub struct EcosystemMark {
 
 /// The ecosystem mark for `facts`, sized for `measure`.
 #[must_use]
-pub fn ecosystem_mark(id: impl Into<ElementId>, facts: EcoFacts, measure: &Measure) -> EcosystemMark {
+pub fn ecosystem_mark(
+    id: impl Into<ElementId>,
+    facts: EcoFacts,
+    measure: &Measure,
+) -> EcosystemMark {
     EcosystemMark {
         id: id.into(),
         facts: Rc::new(facts),
@@ -275,11 +283,24 @@ impl EcosystemMark {
 }
 
 /// The stone as an element, `size` px square.
-fn stone_element(eco: Eco, size: f32, ink: gpui::Hsla, table: Option<gpui::Hsla>, turn: f32, lift: f32) -> AnyElement {
-    canvas(|_, _, _| {}, move |bounds, (), window, _| {
-        let bounds = gpui::Bounds::new(gpui::point(bounds.origin.x, bounds.origin.y - px(lift)), bounds.size);
-        glyph::stone(eco, bounds, ink, table, turn, window);
-    })
+fn stone_element(
+    eco: Eco,
+    size: f32,
+    ink: gpui::Hsla,
+    table: Option<gpui::Hsla>,
+    turn: f32,
+    lift: f32,
+) -> AnyElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, (), window, _| {
+            let bounds = gpui::Bounds::new(
+                gpui::point(bounds.origin.x, bounds.origin.y - px(lift)),
+                bounds.size,
+            );
+            glyph::stone(eco, bounds, ink, table, turn, window);
+        },
+    )
     .size(px(size))
     .flex_none()
     .into_any_element()
@@ -292,18 +313,36 @@ impl RenderOnce for EcosystemMark {
         let s = measure.scale();
         let key = self.key();
         let live = card::live(&self.id, &key, window, cx);
-        let copy = window.use_keyed_state(ElementId::NamedChild(Arc::new(self.id.clone()), "copy".into()), cx, |_, _| Copy {
-            at: Rc::new(Cell::new(None)),
-            scheduled: false,
-        });
+        let copy = window.use_keyed_state(
+            ElementId::NamedChild(Arc::new(self.id.clone()), "copy".into()),
+            cx,
+            |_, _| Copy {
+                at: Rc::new(Cell::new(None)),
+                scheduled: false,
+            },
+        );
         let copied = copy.read(cx).at.clone();
         let motion = Motion::scoped(ElementId::View(copy.entity_id()), cx);
         let turn_key = ElementId::NamedChild(Arc::new(self.id.clone()), "turn".into());
-        let turn = motion.animate(turn_key.clone(), 0.0, crate::motion::spec::FOLLOW, window, cx);
+        let turn = motion.animate(
+            turn_key.clone(),
+            0.0,
+            crate::motion::spec::FOLLOW,
+            window,
+            cx,
+        );
         let ink = mix(palette.ink2.into(), palette.ink0.into(), live.lit);
-        let table = self.facts.local.as_ref().map(|_| gpui::Hsla::from(palette.mint.base));
+        let table = self
+            .facts
+            .local
+            .as_ref()
+            .map(|_| gpui::Hsla::from(palette.mint.base));
         let stone = stone_element(self.facts.eco, 16.0 * s, ink, table, turn, live.lit);
-        let word = self.facts.local.as_ref().map_or(self.facts.eco.word(), |_| "local");
+        let word = self
+            .facts
+            .local
+            .as_ref()
+            .map_or(self.facts.eco.word(), |_| "local");
         let mut mark = div().flex().items_center().gap(px(7.0 * s)).child(stone);
         if self.word {
             mark = mark.child(text(
@@ -322,11 +361,14 @@ impl RenderOnce for EcosystemMark {
         let press_at = copied.clone();
         let press_motion = motion.clone();
         let press_turn = turn_key.clone();
-        let mark = div().id("eco-mark").child(mark).on_click(move |_: &ClickEvent, _window, cx| {
-            if let Some(line) = &facts.install {
-                press(line, &press_at, &press_motion, &press_turn, cx);
-            }
-        });
+        let mark = div()
+            .id("eco-mark")
+            .child(mark)
+            .on_click(move |_: &ClickEvent, _window, cx| {
+                if let Some(line) = &facts.install {
+                    press(line, &press_at, &press_motion, &press_turn, cx);
+                }
+            });
         if let Some(after) = self.pressed
             && !copy.read(cx).scheduled
         {
@@ -339,7 +381,9 @@ impl RenderOnce for EcosystemMark {
             {
                 window
                     .spawn(cx, async move |cx| {
-                        cx.background_executor().timer(std::time::Duration::from_millis(after)).await;
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(after))
+                            .await;
                         let _ = cx.update(|window, cx| {
                             if let Some(line) = &line
                                 && at.get().is_none()
@@ -357,48 +401,99 @@ impl RenderOnce for EcosystemMark {
     }
 }
 
-fn press(line: &SharedString, at: &Rc<Cell<Option<Instant>>>, motion: &Motion, turn: &ElementId, cx: &mut App) {
+fn press(
+    line: &SharedString,
+    at: &Rc<Cell<Option<Instant>>>,
+    motion: &Motion,
+    turn: &ElementId,
+    cx: &mut App,
+) {
     cx.write_to_clipboard(ClipboardItem::new_string(line.to_string()));
     at.set(Some(motion::now(cx)));
     // The stone turns one step back to where it started.
     motion.set(turn.clone(), 1.0);
 }
 
-fn eco_card(facts: Rc<EcoFacts>, copied: Rc<Cell<Option<Instant>>>, motion: Motion, turn_key: ElementId) -> Content {
+fn eco_card(
+    facts: Rc<EcoFacts>,
+    copied: Rc<Cell<Option<Instant>>>,
+    motion: Motion,
+    turn_key: ElementId,
+) -> Content {
     let field = Rc::new(Cell::new((0.0_f32, 0.0_f32)));
-    Rc::new(move |measure: &Measure, window: &mut Window, cx: &mut App| {
-        let palette = cx.facet().palette();
-        let s = measure.scale();
-        let now = motion::now(cx);
-        let reduced = motion::reduced(cx);
-        let t = copied.get().map(|at| now.saturating_duration_since(at).as_secs_f32() * 1000.0);
-        if t.is_some_and(|t| t < TICK_MS + 600.0) {
-            motion::request_frame(window, cx);
-        }
-        let turn = motion.animate(turn_key.clone(), 0.0, crate::motion::spec::FOLLOW, window, cx);
-        let table = facts.local.as_ref().map(|_| gpui::Hsla::from(palette.mint.base));
-        let head = div()
-            .flex()
-            .items_center()
-            .gap(k(measure, 11.0))
-            .child(stone_element(facts.eco, 30.0 * s, palette.ink1.into(), table, turn, 0.0))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(1.0 * s))
-                    .child(text("mk-eco-kind", facts.kind(), card::TITLE, measure, palette.ink0))
-                    .child(text("mk-eco-where", facts.place(), card::PLACE, measure, palette.ink3)),
+    Rc::new(
+        move |measure: &Measure, window: &mut Window, cx: &mut App| {
+            let palette = cx.facet().palette();
+            let s = measure.scale();
+            let now = motion::now(cx);
+            let reduced = motion::reduced(cx);
+            let t = copied
+                .get()
+                .map(|at| now.saturating_duration_since(at).as_secs_f32() * 1000.0);
+            if t.is_some_and(|t| t < TICK_MS + 600.0) {
+                motion::request_frame(window, cx);
+            }
+            let turn = motion.animate(
+                turn_key.clone(),
+                0.0,
+                crate::motion::spec::FOLLOW,
+                window,
+                cx,
             );
-        let mut body = card::body(356.0, measure).child(head);
-        if let Some(say) = facts.sentence() {
-            body = body.child(div().mt(k(measure, 8.0)).child(text("mk-eco-say", say, card::SAY, measure, palette.ink1)));
-        }
-        if let Some(line) = &facts.install {
-            body = body.child(well(line, t, reduced, measure, &copied, &motion, &turn_key, &field, window, cx));
-        }
-        body.into_any_element()
-    })
+            let table = facts
+                .local
+                .as_ref()
+                .map(|_| gpui::Hsla::from(palette.mint.base));
+            let head = div()
+                .flex()
+                .items_center()
+                .gap(k(measure, 11.0))
+                .child(stone_element(
+                    facts.eco,
+                    30.0 * s,
+                    palette.ink1.into(),
+                    table,
+                    turn,
+                    0.0,
+                ))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(1.0 * s))
+                        .child(text(
+                            "mk-eco-kind",
+                            facts.kind(),
+                            card::TITLE,
+                            measure,
+                            palette.ink0,
+                        ))
+                        .child(text(
+                            "mk-eco-where",
+                            facts.place(),
+                            card::PLACE,
+                            measure,
+                            palette.ink3,
+                        )),
+                );
+            let mut body = card::body(356.0, measure).child(head);
+            if let Some(say) = facts.sentence() {
+                body = body.child(div().mt(k(measure, 8.0)).child(text(
+                    "mk-eco-say",
+                    say,
+                    card::SAY,
+                    measure,
+                    palette.ink1,
+                )));
+            }
+            if let Some(line) = &facts.install {
+                body = body.child(well(
+                    line, t, reduced, measure, &copied, &motion, &turn_key, &field, window, cx,
+                ));
+            }
+            body.into_any_element()
+        },
+    )
 }
 
 /// The install line's well, and the slot under it the copy drops through.
@@ -420,12 +515,22 @@ fn well(
     let band = |from: f32, span: f32| t.map_or(0.0, |t| ((t - from) / span).clamp(0.0, 1.0));
     let live = t.is_some_and(|t| t < DROP_MS);
     // The line dims while its copy leaves and comes back.
-    let dim = if reduced || !live { 0.0 } else { band(0.0, 60.0) * (1.0 - band(340.0, 80.0)) };
+    let dim = if reduced || !live {
+        0.0
+    } else {
+        band(0.0, 60.0) * (1.0 - band(340.0, 80.0))
+    };
     let ink = mix(palette.ink0.into(), palette.ink3.into(), dim);
     // The slot's edge flashes mint as the copy passes it; under reduced
     // motion it holds mint for 1.2 s instead, then settles.
     let flash = if reduced {
-        t.map_or(0.0, |t| if t < 1200.0 { 1.0 } else { 1.0 - ((t - 1200.0) / 160.0).clamp(0.0, 1.0) })
+        t.map_or(0.0, |t| {
+            if t < 1200.0 {
+                1.0
+            } else {
+                1.0 - ((t - 1200.0) / 160.0).clamp(0.0, 1.0)
+            }
+        })
     } else {
         (std::f32::consts::PI * band(200.0, 200.0)).sin().max(0.0)
     };
@@ -433,7 +538,13 @@ fn well(
     // The reel: "copy" rolls up to "copied" and back.
     let ticked = t.is_some_and(|t| t < TICK_MS);
     let reel_key = ElementId::NamedChild(Arc::new(turn_key.clone()), "reel".into());
-    let reel = motion.animate(reel_key, if ticked { 1.0 } else { 0.0 }, crate::motion::Spec::Spring(REEL), window, cx);
+    let reel = motion.animate(
+        reel_key,
+        if ticked { 1.0 } else { 0.0 },
+        crate::motion::Spec::Spring(REEL),
+        window,
+        cx,
+    );
     let line_h = k(measure, 16.0);
     let pad_y = k(measure, 8.0);
     // The field is as tall as its wrapped line; its height is read back from
@@ -452,8 +563,17 @@ fn well(
                 .flex()
                 .flex_col()
                 .mt(-line_h * reel.clamp(0.0, 1.0))
-                .child(text("mk-eco-copy", "copy", card::FOOT, measure, palette.ink4).into_any_element())
-                .child(text("mk-eco-copied", "copied", card::FOOT, measure, palette.mint.base)),
+                .child(
+                    text("mk-eco-copy", "copy", card::FOOT, measure, palette.ink4)
+                        .into_any_element(),
+                )
+                .child(text(
+                    "mk-eco-copied",
+                    "copied",
+                    card::FOOT,
+                    measure,
+                    palette.mint.base,
+                )),
         );
     }
     let field = div()
@@ -469,22 +589,37 @@ fn well(
         .border_b_1()
         .border_color(edge)
         .cursor_pointer()
-        .child(div().relative().flex_1().min_w_0().child(tokens("mk-eco-install", line, measure, ink)).child({
-            let sizes = sizes.clone();
-            canvas(move |bounds, _, _| sizes.set((sizes.get().0, f32::from(bounds.size.width))), |_, (), _, _| {})
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full()
-        }))
+        .child(
+            div()
+                .relative()
+                .flex_1()
+                .min_w_0()
+                .child(tokens("mk-eco-install", line, measure, ink))
+                .child({
+                    let sizes = sizes.clone();
+                    canvas(
+                        move |bounds, _, _| {
+                            sizes.set((sizes.get().0, f32::from(bounds.size.width)))
+                        },
+                        |_, (), _, _| {},
+                    )
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                }),
+        )
         .child(hint)
         .child({
             let sizes = sizes.clone();
-            canvas(move |bounds, _, _| sizes.set((f32::from(bounds.size.height), sizes.get().1)), |_, (), _, _| {})
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full()
+            canvas(
+                move |bounds, _, _| sizes.set((f32::from(bounds.size.height), sizes.get().1)),
+                |_, (), _, _| {},
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
         })
         .on_click(move |_: &ClickEvent, _window, cx| {
             press(&press_line, &press_at, &press_motion, &press_turn, cx);
@@ -495,7 +630,11 @@ fn well(
     // It falls until it has left the slot entirely (field bottom, then the
     // tray to the card's foot), so it is never cut while still in view.
     let through = f32::from(field_h - pad_y + tray_h) + 2.0 * s;
-    let fall = if reduced || !live { None } else { Some(through * DROP.ease(band(60.0, 300.0))) };
+    let fall = if reduced || !live {
+        None
+    } else {
+        Some(through * DROP.ease(band(60.0, 300.0)))
+    };
     let tray = fall.map(|dy| {
         div()
             .absolute()
@@ -523,7 +662,6 @@ fn well(
         .into_any_element()
 }
 
-
 /// The card's content on its own (boards show it in place).
 #[cfg(feature = "gallery")]
 pub(crate) fn board_card(facts: &EcoFacts) -> Content {
@@ -547,9 +685,22 @@ fn tokens(key: &str, line: &SharedString, measure: &Measure, ink: gpui::Hsla) ->
         .gap_x(px(space))
         .set_line()
         .children(line.split_whitespace().map(|token| {
-            div().whitespace_nowrap().set_role(measure).text_color(ink).child(token.to_owned()).into_any_element()
+            div()
+                .whitespace_nowrap()
+                .set_role(measure)
+                .text_color(ink)
+                .child(token.to_owned())
+                .into_any_element()
         }));
-    crate::probe::text(key.to_owned(), line.clone(), role, 1.0, crate::probe::TextOverflow::Wrap, row).into_any_element()
+    crate::probe::text(
+        key.to_owned(),
+        line.clone(),
+        role,
+        1.0,
+        crate::probe::TextOverflow::Wrap,
+        row,
+    )
+    .into_any_element()
 }
 
 trait LineRole {

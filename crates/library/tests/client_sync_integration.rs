@@ -6,11 +6,6 @@
 
 use core::num::NonZeroU64;
 
-use backend_semantic::ir::EntityId;
-use backend_version::{
-    ArtifactId, ContentId, GenerationId, IndexExactSegmentDomain, IndexLexicalSegmentDomain,
-    IndexSnapshotDomain, IrFragmentDomain, IrFragmentEncoding, ObjectDomain, derive_index_snapshot,
-};
 use backend_library::interface::{
     BaseGeneration, ClientIndex, ClientManifest, ClientSyncError, ClientSyncPhase, DemandSelection,
     EffectiveSearchResult, LocalDelta, LocalQueryTerminal, LocalSelection, ManifestEpoch,
@@ -20,6 +15,11 @@ use backend_library::interface::{
     SyncTerminal,
 };
 use backend_semantic::index_core::{EntityArtifactIdentity, EntityDocumentId};
+use backend_semantic::ir::EntityId;
+use backend_version::{
+    ArtifactId, ContentId, GenerationId, IndexExactSegmentDomain, IndexLexicalSegmentDomain,
+    IndexSnapshotDomain, IrFragmentDomain, IrFragmentEncoding, ObjectDomain, derive_index_snapshot,
+};
 
 fn generation(value: u8) -> GenerationId {
     GenerationId::from_digest([value; 32])

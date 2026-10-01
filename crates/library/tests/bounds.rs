@@ -3,10 +3,6 @@
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 use std::io::{self, Cursor};
 
-use backend_semantic::vocabulary::{
-    CSharpVersion, CStandard, CxxStandard, GoVersion, JavaRelease, LanguageProfile, PythonVersion,
-    RustEdition, Stage, TypeScriptSource,
-};
 use backend_library::interface::{
     ApplicationInput, CapabilityDomain, ContentId, GenerationId, InconsistentRecovery,
     IndexSnapshotId, PORTABLE_LOCAL_SOURCE_LIMIT, Pin,
@@ -14,6 +10,10 @@ use backend_library::interface::{
 use backend_library::protocol::{
     AdapterErrorCause, AdapterField, CANONICAL_CONTENT_ID_TEXT_BYTES,
     CanonicalContentIdDecodeError, MAX_HEADER_LINE_BYTES, MAX_HEADER_LINES, decode_cli, read_frame,
+};
+use backend_semantic::vocabulary::{
+    CSharpVersion, CStandard, CxxStandard, GoVersion, JavaRelease, LanguageProfile, PythonVersion,
+    RustEdition, Stage, TypeScriptSource,
 };
 use serde::Serialize;
 

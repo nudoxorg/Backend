@@ -7,10 +7,10 @@ use core::mem::{MaybeUninit, size_of_val};
 use std::{array, num::NonZeroUsize};
 
 use backend_engine::driver::CompiledFragment;
+use backend_engine::index_build::{EntityFact, EntityProjection, build};
 use backend_engine::publication::{
     PublicationScratch, PublishControl, binding::COMPILATION_BINDING_BYTES, publish_compiled,
 };
-use backend_engine::index_build::{EntityFact, EntityProjection, build};
 use backend_semantic::index_core::{ExactRow, LexicalRow};
 use backend_store::journal::{DurablePublisher, PublicationLimits};
 

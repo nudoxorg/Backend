@@ -15,7 +15,14 @@ use std::rc::Rc;
 
 /// The branches, when there are any.
 #[must_use]
-pub fn fails(branches: &[FailBranch], geo: &Geometry, anchors: &Rc<Anchors>, m: &Measure, palette: &Palette, doors: &dyn Doors) -> Option<AnyElement> {
+pub fn fails(
+    branches: &[FailBranch],
+    geo: &Geometry,
+    anchors: &Rc<Anchors>,
+    m: &Measure,
+    palette: &Palette,
+    doors: &dyn Doors,
+) -> Option<AnyElement> {
     if branches.is_empty() {
         return None;
     }
@@ -23,28 +30,68 @@ pub fn fails(branches: &[FailBranch], geo: &Geometry, anchors: &Rc<Anchors>, m: 
     let mut body = div().flex().flex_col().gap(px(4.0 * s));
     for (n, branch) in branches.iter().enumerate() {
         let key = format!("page-fail-{n}");
-        let mut head = div().min_h(px(rhythm::ROW_PITCH * s)).flex().flex_wrap().items_center().gap_x(px(8.0 * s));
+        let mut head = div()
+            .min_h(px(rhythm::ROW_PITCH * s))
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_x(px(8.0 * s));
         if let Some(subject) = &branch.subject {
             doors.say(subject);
-            head = head.child(said(format!("{key}-subject"), subject.clone(), scale::MONO_NAME, palette.ink1, m));
+            head = head.child(said(
+                format!("{key}-subject"),
+                subject.clone(),
+                scale::MONO_NAME,
+                palette.ink1,
+                m,
+            ));
         }
         doors.say(branch.verb.words());
-        head = head.child(said(format!("{key}-verb"), branch.verb.words().trim_start_matches("or "), scale::LABEL, palette.coral.base, m));
+        head = head.child(said(
+            format!("{key}-verb"),
+            branch.verb.words().trim_start_matches("or "),
+            scale::LABEL,
+            palette.coral.base,
+            m,
+        ));
         if let Some(ty) = &branch.ty {
             doors.say(&ty.plain());
-            head = head.child(ty_lit(&format!("{key}-type"), ty, m, palette, m.reveal().xray, Lit::Rest));
+            head = head.child(ty_lit(
+                &format!("{key}-type"),
+                ty,
+                m,
+                palette,
+                m.reveal().xray,
+                Lit::Rest,
+            ));
         }
-        let mut row = div().flex().flex_col().child(anchor(at(SectionId::Fails, Part::Row(n as u16)), anchors, head));
-        if let Some(words) = branch.words.as_ref().filter(|words| !words.trim().is_empty()) {
+        let mut row = div().flex().flex_col().child(anchor(
+            at(SectionId::Fails, Part::Row(n as u16)),
+            anchors,
+            head,
+        ));
+        if let Some(words) = branch
+            .words
+            .as_ref()
+            .filter(|words| !words.trim().is_empty())
+        {
             doors.say(words);
-            row = row.child(div().max_w(geo.col_w - px(24.0 * s)).pb(px(4.0 * s)).child(probe::text(
-                ElementId::Name(SharedString::from(format!("{key}-words"))),
-                SharedString::from(words.clone()),
-                m.role(scale::BODY),
-                1.0,
-                TextOverflow::Wrap,
-                div().set(scale::BODY, m).text_color(palette.ink2.hsla()).child(words.clone()),
-            )));
+            row = row.child(
+                div()
+                    .max_w(geo.col_w - px(24.0 * s))
+                    .pb(px(4.0 * s))
+                    .child(probe::text(
+                        ElementId::Name(SharedString::from(format!("{key}-words"))),
+                        SharedString::from(words.clone()),
+                        m.role(scale::BODY),
+                        1.0,
+                        TextOverflow::Wrap,
+                        div()
+                            .set(scale::BODY, m)
+                            .text_color(palette.ink2.hsla())
+                            .child(words.clone()),
+                    )),
+            );
         }
         body = body.child(row);
     }

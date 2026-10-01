@@ -43,8 +43,7 @@ fn compile_project(source: &[u8], name: &str) -> Result<(), String> {
     let mut output = vec![0_u8; 32 << 20];
     let mut diagnostic_output = vec![0_u8; 8192];
     let cancelled = AtomicBool::new(false);
-    let identity =
-        ContentId::from_canonical_bytes(b"clang-macro-signature-twin-repro");
+    let identity = ContentId::from_canonical_bytes(b"clang-macro-signature-twin-repro");
     let toolchain = ToolchainSelection::ResolvedNative(
         ResolvedToolchain::from_identity(NativeTool::Clang, Path::new("/usr/bin/clang"), identity)
             .map_err(|cause| format!("{cause:?}"))?,
@@ -107,7 +106,10 @@ int pair(void *left, void *right) { return left == right; }
 ";
     let outcome = compile_project(source, "written_params");
     eprintln!("WRITTEN-PARAMS => {outcome:?}");
-    assert!(outcome.is_ok(), "the written shape must keep lowering, got {outcome:?}");
+    assert!(
+        outcome.is_ok(),
+        "the written shape must keep lowering, got {outcome:?}"
+    );
 }
 
 /// A function template expanded by a macro never reaches an executable's

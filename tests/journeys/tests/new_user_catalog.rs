@@ -76,7 +76,11 @@ impl ChildGuard {
 impl Drop for ChildGuard {
     fn drop(&mut self) {
         if let Some(child) = self.child.as_mut() {
-            if child.try_wait().expect("poll locald during cleanup").is_none() {
+            if child
+                .try_wait()
+                .expect("poll locald during cleanup")
+                .is_none()
+            {
                 let _ = child.kill();
             }
             let _ = child.wait();
@@ -132,8 +136,7 @@ fn launch(
     authority: &Path,
     registry_endpoint: &str,
 ) -> ChildGuard {
-    let mut args =
-        surface_matrix::locald_args(endpoint, workspace, authority, Some(0), false);
+    let mut args = surface_matrix::locald_args(endpoint, workspace, authority, Some(0), false);
     args.extend([
         OsString::from("--registry-endpoint"),
         OsString::from(registry_endpoint),
@@ -182,12 +185,7 @@ fn cli_json(endpoint: &Path, workspace: &Path, project: &Path, words: &[String])
 fn wait_for_index(endpoint: &Path, workspace: &Path, project: &Path) {
     let end = Instant::now() + INDEX_DEADLINE;
     loop {
-        let health = cli_json(
-            endpoint,
-            workspace,
-            project,
-            &["health".to_owned()],
-        );
+        let health = cli_json(endpoint, workspace, project, &["health".to_owned()]);
         if health["rows"].as_u64().unwrap_or(0) > 1 {
             return;
         }
@@ -215,15 +213,12 @@ fn wait_for_registry_symbol(
                 "20".to_owned(),
             ],
         );
-        if let Some(coordinate) = search["records"]
-            .as_array()
-            .and_then(|records| {
-                records
-                    .iter()
-                    .find(|record| record["identity"]["name"] == name)
-                    .and_then(|record| record["identity"]["coordinate"].as_str())
-            })
-        {
+        if let Some(coordinate) = search["records"].as_array().and_then(|records| {
+            records
+                .iter()
+                .find(|record| record["identity"]["name"] == name)
+                .and_then(|record| record["identity"]["coordinate"].as_str())
+        }) {
             return coordinate.to_owned();
         }
         assert!(
@@ -280,14 +275,12 @@ fn wait_for_packages(
 ) -> Value {
     let end = Instant::now() + INDEX_DEADLINE;
     loop {
-        let packages = cli_json(
-            endpoint,
-            workspace,
-            project,
-            &["packages".to_owned()],
-        );
+        let packages = cli_json(endpoint, workspace, project, &["packages".to_owned()]);
         let names = shelf_project_names(&packages);
-        if expected.iter().all(|name| names.iter().any(|listed| listed == name)) {
+        if expected
+            .iter()
+            .all(|name| names.iter().any(|listed| listed == name))
+        {
             return packages;
         }
         assert!(
@@ -299,7 +292,10 @@ fn wait_for_packages(
 }
 
 #[test]
-#[allow(clippy::too_many_lines, reason = "one conversation exercises catalog surfaces")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one conversation exercises catalog surfaces"
+)]
 fn new_user_catalog_covers_packages_status_owner_versions_and_remove() {
     let root = unique_root("catalog");
     let project = fixture_app();
@@ -361,12 +357,7 @@ fn new_user_catalog_covers_packages_status_owner_versions_and_remove() {
         "packages did not name journey-helper from the indexed manifest: {packages}"
     );
 
-    let status = cli_json(
-        &endpoint,
-        &workspace,
-        &project,
-        &["health".to_owned()],
-    );
+    let status = cli_json(&endpoint, &workspace, &project, &["health".to_owned()]);
     assert_eq!(status["answer"], "status");
     let rows = status["rows"]
         .as_u64()
@@ -514,7 +505,9 @@ fn new_user_catalog_covers_packages_status_owner_versions_and_remove() {
         &["new-user-app", "journey-helper"],
     );
     assert!(
-        shelf_project_names(&restored).iter().any(|name| name == "journey-helper"),
+        shelf_project_names(&restored)
+            .iter()
+            .any(|name| name == "journey-helper"),
         "re-add did not restore journey-helper on the shelf: {restored}"
     );
 

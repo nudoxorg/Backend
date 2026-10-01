@@ -257,7 +257,11 @@ fn explicit_interface_events_with_the_same_name_both_survive() {
         2,
         "both explicit Changed events must be declared"
     );
-    lower_to_completion(&dotnet, "explicit-interface-events", EXPLICIT_INTERFACE_EVENTS);
+    lower_to_completion(
+        &dotnet,
+        "explicit-interface-events",
+        EXPLICIT_INTERFACE_EVENTS,
+    );
 }
 
 #[test]

@@ -466,10 +466,8 @@ pub(super) fn validate_typed_v2_locator_binding(
             .first()
             .copied()
             .ok_or_else(|| "root typed V2 commit cannot carry parent lineage".to_owned())?;
-        let parent_record = load_history_commit(
-            &target_root.join("history").join("commits"),
-            parent,
-        )?;
+        let parent_record =
+            load_history_commit(&target_root.join("history").join("commits"), parent)?;
         let HistoryGenerationRoot::TypedV2(parent_claim) = parent_record.generation_root else {
             return Err("typed lineage edge set parent is not a V2 commit".to_owned());
         };
@@ -913,10 +911,14 @@ mod tests {
         let identity = files
             .typed_v2_locator_identity(&locator)
             .expect("identify canonical locator");
-        assert!(locator.validate_lineage_parent_binding(
-            HistoryCommitId::from_bytes([0x55; 32]),
-            &[0x66; 32],
-        ).is_ok());
+        assert!(
+            locator
+                .validate_lineage_parent_binding(
+                    HistoryCommitId::from_bytes([0x55; 32]),
+                    &[0x66; 32],
+                )
+                .is_ok()
+        );
         assert_ne!(
             identity,
             files
@@ -935,12 +937,14 @@ mod tests {
             lineage_edge_set: Some(empty_lineage(0x56)),
             ..locator.clone()
         };
-        assert!(wrong_parent_locator
-            .validate_lineage_parent_binding(
-                HistoryCommitId::from_bytes([0x55; 32]),
-                &[0x66; 32],
-            )
-            .is_err());
+        assert!(
+            wrong_parent_locator
+                .validate_lineage_parent_binding(
+                    HistoryCommitId::from_bytes([0x55; 32]),
+                    &[0x66; 32],
+                )
+                .is_err()
+        );
 
         let mut tampered_body = locator.encode_body().expect("encode tag-15 body");
         let lineage_offset = tampered_body

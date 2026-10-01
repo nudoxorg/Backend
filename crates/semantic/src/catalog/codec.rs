@@ -1,10 +1,10 @@
 //! Scalar decoding for durable Turso cells.
 
-use crate::ir::DeclarationIdentity;
-use backend_version::{ContentId, GenerationId};
 use crate::index_vocabulary::{
     CanonicalEntityLocator, IndexLocatorFacts, SemanticImageExtent, SemanticImageLocator,
 };
+use crate::ir::DeclarationIdentity;
+use backend_version::{ContentId, GenerationId};
 use turso::{Connection, Value};
 
 use super::{CatalogError, CatalogRecord};

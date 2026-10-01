@@ -34,7 +34,16 @@ pub(super) struct Chip {
 
 /// The hand's cards as chips, in the order they are shown.
 pub(super) fn chips(cards: impl IntoIterator<Item = (Held, SharedString, Kind)>) -> Vec<Chip> {
-    cards.into_iter().enumerate().map(|(card, (held, name, kind))| Chip { held, name, kind, card }).collect()
+    cards
+        .into_iter()
+        .enumerate()
+        .map(|(card, (held, name, kind))| Chip {
+            held,
+            name,
+            kind,
+            card,
+        })
+        .collect()
 }
 
 /// The key cap on a chip: ⌘ and its number.
@@ -61,7 +70,10 @@ pub(super) fn trail(back: &[Route], here: &Route) -> Vec<Step> {
         if words == here || steps.last().is_some_and(|step| step.label == words) {
             continue;
         }
-        steps.push(Step { label: words, route: route.clone() });
+        steps.push(Step {
+            label: words,
+            route: route.clone(),
+        });
         if steps.len() == TRAIL_SHOWN {
             break;
         }
@@ -73,12 +85,20 @@ pub(super) fn trail(back: &[Route], here: &Route) -> Vec<Step> {
 pub(super) fn label(route: &Route) -> SharedString {
     match route {
         Route::Symbol(route) => SymbolRef::new(route.id.as_str())
-            .map_or_else(|_| route.id.as_str().to_owned(), |symbol| symbol.identity().name().to_owned())
+            .map_or_else(
+                |_| route.id.as_str().to_owned(),
+                |symbol| symbol.identity().name().to_owned(),
+            )
             .into(),
         Route::Package(route) => PackageRef::parse(route.package.as_str())
-            .map_or_else(|_| route.package.as_str().to_owned(), |package| package.display_name().to_owned())
+            .map_or_else(
+                |_| route.package.as_str().to_owned(),
+                |package| package.display_name().to_owned(),
+            )
             .into(),
-        Route::Orbit(OrbitRoute::Browse(BrowseRoute::Find(query))) => format!("Find {}", query.text).into(),
+        Route::Orbit(OrbitRoute::Browse(BrowseRoute::Find(query))) => {
+            format!("Find {}", query.text).into()
+        }
         Route::Orbit(_) => "Library".into(),
         Route::World => "Graph".into(),
     }
@@ -104,7 +124,8 @@ mod tests {
         Route::Symbol(SymbolRoute {
             project: None,
             package: PackageId::new(&format!("pkg:cargo/{package}@1.0.0")).expect("package"),
-            id: Coordinate::new(&format!("pkg:cargo/{package}@1.0.0::a.rs:1::{name}")).expect("coordinate"),
+            id: Coordinate::new(&format!("pkg:cargo/{package}@1.0.0::a.rs:1::{name}"))
+                .expect("coordinate"),
             at: None,
             view: View::Page,
             line: None,
@@ -123,9 +144,24 @@ mod tests {
     #[test]
     fn the_trail_is_the_places_behind_you_newest_first_without_repeats_and_never_where_you_are() {
         let here = symbol("toml", "Value");
-        let back = [symbol("toml", "Value"), package("toml"), package("toml"), symbol("serde_json", "from_str"), Route::World, package("a"), package("b")];
-        let steps: Vec<_> = trail(&back, &here).iter().map(|step| step.label.to_string()).collect();
-        assert_eq!(steps, ["toml", "from_str", "Graph", "a"], "four places: the same place twice in a row is one, and Value is here");
+        let back = [
+            symbol("toml", "Value"),
+            package("toml"),
+            package("toml"),
+            symbol("serde_json", "from_str"),
+            Route::World,
+            package("a"),
+            package("b"),
+        ];
+        let steps: Vec<_> = trail(&back, &here)
+            .iter()
+            .map(|step| step.label.to_string())
+            .collect();
+        assert_eq!(
+            steps,
+            ["toml", "from_str", "Graph", "a"],
+            "four places: the same place twice in a row is one, and Value is here"
+        );
         assert!(trail(&[], &here).is_empty());
     }
 

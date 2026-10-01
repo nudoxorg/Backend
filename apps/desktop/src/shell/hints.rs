@@ -8,7 +8,9 @@ use super::focus::Target;
 use gpui::{Bounds, Pixels};
 
 /// Home row first, then the rest of the easy reach.
-const ALPHABET: &[char] = &['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'e', 'r', 'u', 'i', 'o', 'w', 'n'];
+const ALPHABET: &[char] = &[
+    'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'e', 'r', 'u', 'i', 'o', 'w', 'n',
+];
 
 /// One labelled target.
 #[derive(Clone)]
@@ -64,7 +66,11 @@ impl HintMode {
         let hinted = targets
             .into_iter()
             .zip(codes)
-            .map(|((target, bounds), code)| Hinted { code, target, bounds })
+            .map(|((target, bounds), code)| Hinted {
+                code,
+                target,
+                bounds,
+            })
             .collect();
         Self {
             hinted,

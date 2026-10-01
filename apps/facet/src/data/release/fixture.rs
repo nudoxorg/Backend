@@ -12,7 +12,9 @@ use std::sync::OnceLock;
 const FIXTURE: &str = include_str!("fixture.json");
 
 fn text(value: Option<&Json>) -> Option<SharedString> {
-    value.and_then(Json::str).map(|s| SharedString::from(s.to_owned()))
+    value
+        .and_then(Json::str)
+        .map(|s| SharedString::from(s.to_owned()))
 }
 
 fn word(value: Option<&Json>) -> SharedString {
@@ -58,7 +60,13 @@ fn change(x: &Json, what: What) -> Change {
         What::Removed => (sig.or_else(|| text(x.get("before"))), None),
         _ => (text(x.get("before")), text(x.get("after"))),
     };
-    Change { path: word(x.get("path")), what, severity: severity(x.get("kind"), default), before, after }
+    Change {
+        path: word(x.get("path")),
+        what,
+        severity: severity(x.get("kind"), default),
+        before,
+        after,
+    }
 }
 
 /// Every change in one diff object, in the release's order.
@@ -70,7 +78,13 @@ fn changes(d: &Json) -> Vec<Change> {
         ("changed", What::Changed),
         ("deprecated", What::Deprecated),
     ] {
-        out.extend(d.get(key).map(Json::items).unwrap_or_default().iter().map(|x| change(x, what)));
+        out.extend(
+            d.get(key)
+                .map(Json::items)
+                .unwrap_or_default()
+                .iter()
+                .map(|x| change(x, what)),
+        );
     }
     for x in d.get("renamed").map(Json::items).unwrap_or_default() {
         out.push(Change {
@@ -88,9 +102,16 @@ fn changes(d: &Json) -> Vec<Change> {
     ] {
         for owner in d.get(key).map(Json::items).unwrap_or_default() {
             let path = word(owner.get("path"));
-            for (side, what, default) in [("added", added, Severity::Additive), ("removed", removed, Severity::Breaking)] {
+            for (side, what, default) in [
+                ("added", added, Severity::Additive),
+                ("removed", removed, Severity::Breaking),
+            ] {
                 for member in owner.get(side).map(Json::items).unwrap_or_default() {
-                    let name = member.get("name").and_then(Json::str).or(member.str()).unwrap_or("");
+                    let name = member
+                        .get("name")
+                        .and_then(Json::str)
+                        .or(member.str())
+                        .unwrap_or("");
                     out.push(Change {
                         path: SharedString::from(format!("{path}::{name}")),
                         what,
@@ -110,13 +131,22 @@ fn site(x: &Json) -> UseSite {
         path: word(x.get("path")),
         file: word(x.get("file")),
         line: x.get("line").and_then(Json::num).unwrap_or(0.0) as u32,
-        text: SharedString::from(x.get("text").and_then(Json::str).unwrap_or("").trim().to_owned()),
+        text: SharedString::from(
+            x.get("text")
+                .and_then(Json::str)
+                .unwrap_or("")
+                .trim()
+                .to_owned(),
+        ),
     }
 }
 
 fn pair(key: &str) -> (SharedString, SharedString) {
     let (a, b) = key.split_once('→').unwrap_or((key, ""));
-    (SharedString::from(a.to_owned()), SharedString::from(b.to_owned()))
+    (
+        SharedString::from(a.to_owned()),
+        SharedString::from(b.to_owned()),
+    )
 }
 
 /// One crate from its fixture object.
@@ -179,8 +209,16 @@ fn krate(name: &str, c: &Json) -> Crate {
                         .iter()
                         .map(|u| {
                             let ch = u.get("change").cloned().unwrap_or(Json::Null);
-                            let what = ch.get("type").or(ch.get("what")).and_then(Json::str).and_then(What::parse).unwrap_or(What::Changed);
-                            Impacted { site: site(u), change: change(&ch, what) }
+                            let what = ch
+                                .get("type")
+                                .or(ch.get("what"))
+                                .and_then(Json::str)
+                                .and_then(What::parse)
+                                .unwrap_or(What::Changed);
+                            Impacted {
+                                site: site(u),
+                                change: change(&ch, what),
+                            }
                         })
                         .collect();
                     (from, to, list)
@@ -194,7 +232,13 @@ fn krate(name: &str, c: &Json) -> Crate {
         versions,
         aliases,
         diffs,
-        uses: c.get("uses").map(Json::items).unwrap_or_default().iter().map(site).collect(),
+        uses: c
+            .get("uses")
+            .map(Json::items)
+            .unwrap_or_default()
+            .iter()
+            .map(site)
+            .collect(),
         impact,
     }
 }
@@ -206,7 +250,8 @@ fn krate(name: &str, c: &Json) -> Crate {
 pub fn crates() -> &'static [Crate] {
     static CRATES: OnceLock<Vec<Crate>> = OnceLock::new();
     CRATES.get_or_init(|| {
-        let root = json::parse(FIXTURE).unwrap_or_else(|at| panic!("release fixture is not JSON at byte {at}"));
+        let root = json::parse(FIXTURE)
+            .unwrap_or_else(|at| panic!("release fixture is not JSON at byte {at}"));
         root.entries().map(|(name, c)| krate(name, c)).collect()
     })
 }

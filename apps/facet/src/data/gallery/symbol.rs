@@ -63,11 +63,18 @@ fn direction_lens(d: usize) -> Option<Lens> {
         Dir::MadeOf => ("variants", Vec::new()),
         Dir::From => (
             "ways in",
-            vec![("your code builds it in ".into(), false), ("6".into(), true), (" places".into(), false)],
+            vec![
+                ("your code builds it in ".into(), false),
+                ("6".into(), true),
+                (" places".into(), false),
+            ],
         ),
         Dir::To => (
             "ways out",
-            vec![("your code reads it through ".into(), false), ("as_str".into(), true)],
+            vec![
+                ("your code reads it through ".into(), false),
+                ("as_str".into(), true),
+            ],
         ),
     };
     Some(Lens::direction(dir, unit, items, yours))
@@ -91,13 +98,22 @@ pub(crate) fn folio(width: f32, rested: Option<usize>, cx: &mut App) -> AnyEleme
         .flex()
         .items_center()
         .gap(px((2.0 * cqi).clamp(14.0, 22.0) * scale))
-        .child(gem(Kind::Enum).size(64.0 * scale).state(crate::paint::GemState::Normal))
+        .child(
+            gem(Kind::Enum)
+                .size(64.0 * scale)
+                .state(crate::paint::GemState::Normal),
+        )
         .child(
             div()
                 .flex()
                 .flex_col()
                 .min_w_0()
-                .child(div().set(HERO_NAME, &m).text_color(palette.ink0.hsla()).child("RelationLabel"))
+                .child(
+                    div()
+                        .set(HERO_NAME, &m)
+                        .text_color(palette.ink0.hsla())
+                        .child("RelationLabel"),
+                )
                 .child(
                     div()
                         .mt(px(6.0 * scale))
@@ -107,9 +123,15 @@ pub(crate) fn folio(width: f32, rested: Option<usize>, cx: &mut App) -> AnyEleme
                 ),
         );
     let line = facts(&m, palette)
-        .fact([Run::Words("enum in ".into()), Run::Mono("present::glyph".into())])
+        .fact([
+            Run::Words("enum in ".into()),
+            Run::Mono("present::glyph".into()),
+        ])
         .fact([Run::Words("since ".into()), Run::Mono("0.3.0".into())])
-        .fact([Run::Yours("9".into()), Run::Words(" uses in your code".into())]);
+        .fact([
+            Run::Yours("9".into()),
+            Run::Words(" uses in your code".into()),
+        ]);
     let tabs = lens_bar(
         "tabs",
         vec![
@@ -124,7 +146,10 @@ pub(crate) fn folio(width: f32, rested: Option<usize>, cx: &mut App) -> AnyEleme
     );
     let syn = palette.syntax;
     let code_lines: Vec<Vec<(&str, Hsla)>> = vec![
-        vec![("#[derive(Clone, Copy, Debug, Eq, Hash)]", palette.ink3.into())],
+        vec![(
+            "#[derive(Clone, Copy, Debug, Eq, Hash)]",
+            palette.ink3.into(),
+        )],
         vec![
             ("pub enum ", syn.keyword.into()),
             ("RelationLabel", syn.type_name.into()),
@@ -138,8 +163,14 @@ pub(crate) fn folio(width: f32, rested: Option<usize>, cx: &mut App) -> AnyEleme
             ("RelationDirection", syn.type_name.into()),
             ("),", palette.ink3.into()),
         ],
-        vec![("    Neighbourhood", syn.constant.into()), (",", palette.ink3.into())],
-        vec![("    Related", syn.constant.into()), (",", palette.ink3.into())],
+        vec![
+            ("    Neighbourhood", syn.constant.into()),
+            (",", palette.ink3.into()),
+        ],
+        vec![
+            ("    Related", syn.constant.into()),
+            (",", palette.ink3.into()),
+        ],
         vec![("}", palette.ink3.into())],
     ];
     let mut code = div()
@@ -201,4 +232,3 @@ pub(crate) fn folio(width: f32, rested: Option<usize>, cx: &mut App) -> AnyEleme
         .typeset(ty::BODY, &facet)
         .into_any_element()
 }
-

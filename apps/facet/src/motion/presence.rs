@@ -62,9 +62,15 @@ pub struct Extent {
 
 impl Extent {
     /// Takes no room.
-    pub const NONE: Self = Self { share: 0.0, px: 0.0 };
+    pub const NONE: Self = Self {
+        share: 0.0,
+        px: 0.0,
+    };
     /// Takes exactly its natural size.
-    pub const FULL: Self = Self { share: 1.0, px: 0.0 };
+    pub const FULL: Self = Self {
+        share: 1.0,
+        px: 0.0,
+    };
 
     /// `share` of the natural size.
     #[must_use]
@@ -671,7 +677,8 @@ impl Model {
             after.entry(anchor.clone()).or_default().push(record);
         }
 
-        let mut records = Vec::with_capacity(alive.len() + after.values().map(Vec::len).sum::<usize>());
+        let mut records =
+            Vec::with_capacity(alive.len() + after.values().map(Vec::len).sum::<usize>());
         records.extend(after.remove(&None).unwrap_or_default());
         for record in alive {
             let key = Some(record.key.clone());
@@ -1295,7 +1302,10 @@ mod tests {
     use std::time::{Duration, Instant};
 
     fn keys(names: &[u64]) -> Vec<Entry> {
-        names.iter().map(|&n| Entry::new(ElementId::Integer(n))).collect()
+        names
+            .iter()
+            .map(|&n| Entry::new(ElementId::Integer(n)))
+            .collect()
     }
 
     fn id(n: u64) -> ElementId {
@@ -1389,7 +1399,10 @@ mod tests {
         // Retraces the drop-in: 100 ms later it is where it was at 100 ms in.
         let pose_at_100 = act::DROP_IN.pose.at(100.0 / 620.0);
         let back = look(&model, mid + ms(100))[1].3;
-        assert!((back.y - pose_at_100.y).abs() < 1e-3, "{back:?} vs {pose_at_100:?}");
+        assert!(
+            (back.y - pose_at_100.y).abs() < 1e-3,
+            "{back:?} vs {pose_at_100:?}"
+        );
         model.sync(keys(&[1]), mid + ms(200), false);
         assert_eq!(order(&model), [id(1)]);
     }
@@ -1534,11 +1547,19 @@ mod tests {
             assert_eq!(alive, want, "seed {seed} step {step}: alive order");
             // 2. No duplicates.
             let unique: HashSet<&ElementId> = after.iter().map(|item| &item.0).collect();
-            assert_eq!(unique.len(), after.len(), "seed {seed} step {step}: duplicate");
+            assert_eq!(
+                unique.len(),
+                after.len(),
+                "seed {seed} step {step}: duplicate"
+            );
             // 3. Leavers come only from what was drawn before.
             let drawn: HashSet<&ElementId> = before.iter().map(|item| &item.0).collect();
             for item in after.iter().filter(|item| item.1 == Phase::Leaving) {
-                assert!(drawn.contains(&item.0), "seed {seed} step {step}: {:?} left from nowhere", item.0);
+                assert!(
+                    drawn.contains(&item.0),
+                    "seed {seed} step {step}: {:?} left from nowhere",
+                    item.0
+                );
             }
             // 4. Continuity: presence moves no faster than the fastest act,
             //    and not at all within one instant (a reversal never jumps).
@@ -1562,12 +1583,21 @@ mod tests {
             // 5. Without a reorder, every item kept on both sides keeps its
             //    relative place (survivors keep order; leavers hold slots).
             if !reorder {
-                let kept_after: Vec<&ElementId> =
-                    after.iter().map(|i| &i.0).filter(|k| drawn.contains(k)).collect();
+                let kept_after: Vec<&ElementId> = after
+                    .iter()
+                    .map(|i| &i.0)
+                    .filter(|k| drawn.contains(k))
+                    .collect();
                 let now_keys: HashSet<&ElementId> = after.iter().map(|i| &i.0).collect();
-                let kept_before: Vec<&ElementId> =
-                    before.iter().map(|i| &i.0).filter(|k| now_keys.contains(k)).collect();
-                assert_eq!(kept_after, kept_before, "seed {seed} step {step}: slots moved");
+                let kept_before: Vec<&ElementId> = before
+                    .iter()
+                    .map(|i| &i.0)
+                    .filter(|k| now_keys.contains(k))
+                    .collect();
+                assert_eq!(
+                    kept_after, kept_before,
+                    "seed {seed} step {step}: slots moved"
+                );
             }
             before = after;
             before_at = now;
@@ -1577,12 +1607,26 @@ mod tests {
         model.sync(keys(&wanted), now, false);
         now += ms(2_000);
         model.sync(keys(&wanted), now, false);
-        assert!(model.is_settled(now), "seed {seed}: still moving after the tail");
+        assert!(
+            model.is_settled(now),
+            "seed {seed}: still moving after the tail"
+        );
         let mut fresh = Model::new();
         fresh.sync(keys(&wanted), now, false);
-        assert_eq!(look(&model, now), look(&fresh, now), "seed {seed}: settle != fresh");
-        assert_eq!(model.records.len(), wanted.len(), "seed {seed}: leaked leavers");
-        assert!(model.naturals.len() <= wanted.len(), "seed {seed}: leaked sizes");
+        assert_eq!(
+            look(&model, now),
+            look(&fresh, now),
+            "seed {seed}: settle != fresh"
+        );
+        assert_eq!(
+            model.records.len(),
+            wanted.len(),
+            "seed {seed}: leaked leavers"
+        );
+        assert!(
+            model.naturals.len() <= wanted.len(),
+            "seed {seed}: leaked sizes"
+        );
     }
 
     #[test]
@@ -1611,15 +1655,20 @@ mod tests {
 
         impl Render for List {
             fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-                let items = self
-                    .presence
-                    .sync(self.keys.iter().map(|&k| ElementId::Integer(k)), window, cx);
-                div().flex().flex_col().children(items.into_iter().map(|item| {
-                    probe::measure(
-                        ElementId::Name(format!("slot-{}", item.key).into()),
-                        item.slot(div().w(px(200.0)).h(px(30.0))),
-                    )
-                }))
+                let items = self.presence.sync(
+                    self.keys.iter().map(|&k| ElementId::Integer(k)),
+                    window,
+                    cx,
+                );
+                div()
+                    .flex()
+                    .flex_col()
+                    .children(items.into_iter().map(|item| {
+                        probe::measure(
+                            ElementId::Name(format!("slot-{}", item.key).into()),
+                            item.slot(div().w(px(200.0)).h(px(30.0))),
+                        )
+                    }))
             }
         }
 
@@ -1675,14 +1724,26 @@ mod tests {
                 let below = slot(&ledger, 3).expect("row 3").0 - top;
                 // The row below sits exactly under the leaving slot.
                 assert!((below - 30.0 - height).abs() < 0.01, "{below} vs {height}");
-                assert!(height <= previous + 0.01, "the slot only closes: {heights:?}");
+                assert!(
+                    height <= previous + 0.01,
+                    "the slot only closes: {heights:?}"
+                );
                 previous = height;
                 heights.push(height);
                 advance(cx, 40);
             }
-            assert!(heights.len() >= 8, "held its slot until the exit settled: {heights:?}");
-            assert!(heights.first().is_some_and(|h| (*h - 30.0).abs() < 0.01), "{heights:?}");
-            assert!(heights.iter().any(|h| *h > 0.5 && *h < 29.5), "it animated: {heights:?}");
+            assert!(
+                heights.len() >= 8,
+                "held its slot until the exit settled: {heights:?}"
+            );
+            assert!(
+                heights.first().is_some_and(|h| (*h - 30.0).abs() < 0.01),
+                "{heights:?}"
+            );
+            assert!(
+                heights.iter().any(|h| *h > 0.5 && *h < 29.5),
+                "it animated: {heights:?}"
+            );
             advance(cx, 400);
             let (_, ledger) = frame(cx);
             assert_eq!(slot(&ledger, 2), None, "the leaver is dropped");
@@ -1721,8 +1782,14 @@ mod tests {
             }
             assert!(heights[0] < 0.01, "starts closed: {heights:?}");
             let peak = heights.iter().copied().fold(0.0, f32::max);
-            assert!(peak > 32.0 && peak < 35.5, "the board's 5 px make-room overshoot: {heights:?}");
-            assert!((heights[19] - 30.0).abs() < 0.01, "rests at its height: {heights:?}");
+            assert!(
+                peak > 32.0 && peak < 35.5,
+                "the board's 5 px make-room overshoot: {heights:?}"
+            );
+            assert!(
+                (heights[19] - 30.0).abs() < 0.01,
+                "rests at its height: {heights:?}"
+            );
         }
     }
 }

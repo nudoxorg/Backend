@@ -185,16 +185,33 @@ pub fn forget(key: impl Into<ElementId>, window: &Window, cx: &mut App) {
 /// window-space box; 1 = its own layout) with its own fit, whatever its own
 /// clock says. Call it every frame the driver moves, before the element
 /// lays out (from the driving view's `render`).
-pub fn drive(key: impl Into<ElementId>, from: Bounds<Pixels>, t: f32, window: &Window, cx: &mut App) {
-    let valid = [from.origin.x, from.origin.y, from.size.width, from.size.height]
-        .iter()
-        .all(|value| f32::from(*value).is_finite())
+pub fn drive(
+    key: impl Into<ElementId>,
+    from: Bounds<Pixels>,
+    t: f32,
+    window: &Window,
+    cx: &mut App,
+) {
+    let valid = [
+        from.origin.x,
+        from.origin.y,
+        from.size.width,
+        from.size.height,
+    ]
+    .iter()
+    .all(|value| f32::from(*value).is_finite())
         && from.size.height > gpui::px(0.0)
         && t.is_finite();
     let slot = (window.window_handle().window_id(), key.into());
     let registry = cx.default_global::<Registry>();
     if valid {
-        registry.driven.insert(slot, Driven { from, t: t.clamp(0.0, 1.0) });
+        registry.driven.insert(
+            slot,
+            Driven {
+                from,
+                t: t.clamp(0.0, 1.0),
+            },
+        );
     } else {
         registry.driven.remove(&slot);
     }
@@ -485,7 +502,13 @@ impl gpui::Element for Shared {
             // Driven: its own clock is off, and nothing it would have started
             // survives the drive.
             window.with_element_state::<State, _>(owner, |state, _| {
-                ((), State { morph: None, ..state.unwrap_or_default() })
+                (
+                    (),
+                    State {
+                        morph: None,
+                        ..state.unwrap_or_default()
+                    },
+                )
             });
             self.morph = None;
         } else if let Some(owner) = id {
@@ -890,27 +913,45 @@ mod tests {
                 |_, _| Page { seen }
             });
             cx.update(|_, cx| reset_epoch(cx));
-            let row = Bounds::new(gpui::point(px(84.0), px(312.0)), gpui::size(px(120.0), px(18.0)));
+            let row = Bounds::new(
+                gpui::point(px(84.0), px(312.0)),
+                gpui::size(px(120.0), px(18.0)),
+            );
             let drive = |cx: &mut VisualTestContext, t: f32| {
                 cx.update(|window, cx| super::super::drive("gem", row, t, window, cx));
                 page.update(cx, |_, cx| cx.notify());
                 centre(&frame(cx, &seen), "page.gem")
             };
             // The row's centre and height; the layout's are (336, 236, 72).
-            assert_eq!(drive(cx, 0.0), (144.0, 321.0, 18.0), "frame 0 sits on the row");
+            assert_eq!(
+                drive(cx, 0.0),
+                (144.0, 321.0, 18.0),
+                "frame 0 sits on the row"
+            );
             let (x, y, h) = drive(cx, 0.5);
             for (actual, expected) in [(x, 240.0), (y, 278.5), (h, 45.0)] {
-                assert!((actual - expected).abs() < 1e-3, "half way: {:?}", (x, y, h));
+                assert!(
+                    (actual - expected).abs() < 1e-3,
+                    "half way: {:?}",
+                    (x, y, h)
+                );
             }
             // Time passing moves nothing while driven.
             cx.executor().advance_clock(Duration::from_millis(400));
             cx.run_until_parked();
             let held = drive(cx, 0.5);
-            assert!((held.1 - 278.5).abs() < 1e-3, "the clock does not move a driven morph: {held:?}");
+            assert!(
+                (held.1 - 278.5).abs() < 1e-3,
+                "the clock does not move a driven morph: {held:?}"
+            );
             assert_eq!(drive(cx, 1.0), (336.0, 236.0, 72.0));
             cx.update(|window, cx| super::super::release("gem", window, cx));
             page.update(cx, |_, cx| cx.notify());
-            assert_eq!(centre(&frame(cx, &seen), "page.gem"), (336.0, 236.0, 72.0), "released at rest");
+            assert_eq!(
+                centre(&frame(cx, &seen), "page.gem"),
+                (336.0, 236.0, 72.0),
+                "released at rest"
+            );
         }
 
         #[gpui::test]

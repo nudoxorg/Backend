@@ -229,7 +229,11 @@ fn the_pointer_leaving_the_window_leaves_the_mark(cx: &mut TestAppContext) {
         modifiers: Modifiers::none(),
     });
     frame(cx);
-    assert!(rested(cx).is_empty(), "the rest outlived the pointer: {:?}", rested(cx));
+    assert!(
+        rested(cx).is_empty(),
+        "the rest outlived the pointer: {:?}",
+        rested(cx)
+    );
     advance(cx, 600);
     assert_eq!(open_count(cx), 0);
 }
@@ -256,7 +260,13 @@ fn storm_of_hover_sweeps_and_resizes_keeps_every_report_true(cx: &mut TestAppCon
     // The comb's hitbox height at the card rung (field 40 + axis).
     let comb_h = cx.update(|_, cx| {
         let m = cx.facet().measure(px(WIDTH));
-        40.0 + 8.0 + m.role(crate::tokens::TypeRole { size: 12.5, line: 16.0, ..crate::tokens::ty::SMALL }).line
+        40.0 + 8.0
+            + m.role(crate::tokens::TypeRole {
+                size: 12.5,
+                line: 16.0,
+                ..crate::tokens::ty::SMALL
+            })
+            .line
     });
     let (mut x, mut y) = (0.0_f32, 0.0_f32);
     for step in 0..600 {
@@ -294,7 +304,11 @@ fn storm_of_hover_sweeps_and_resizes_keeps_every_report_true(cx: &mut TestAppCon
             .map(|(mark, r)| (mark.to_string(), r.part))
             .collect();
         assert_eq!(got, expected, "step {step} at ({x}, {y})");
-        assert!(open_count(cx) <= 1, "step {step}: {} cards open", open_count(cx));
+        assert!(
+            open_count(cx) <= 1,
+            "step {step}: {} cards open",
+            open_count(cx)
+        );
     }
 
     // Leave, settle: nothing rested, nothing open, and the window goes idle.
@@ -307,7 +321,10 @@ fn storm_of_hover_sweeps_and_resizes_keeps_every_report_true(cx: &mut TestAppCon
         advance(cx, 100);
     }
     let after = cx.update(|_, cx| frames_requested(cx));
-    assert_eq!(before, after, "the marks kept asking for frames after settling");
+    assert_eq!(
+        before, after,
+        "the marks kept asking for frames after settling"
+    );
 }
 
 /// 20 000 stones, most of them outside the window.
@@ -322,13 +339,11 @@ impl Render for Vast {
         div()
             .size_full()
             .relative()
-            .child(
-                div()
-                    .absolute()
-                    .left(px(0.0))
-                    .top(px(0.0))
-                    .child(mosaic("vast-mosaic", self.stones.clone(), &facet.measure(px(640.0)))),
-            )
+            .child(div().absolute().left(px(0.0)).top(px(0.0)).child(mosaic(
+                "vast-mosaic",
+                self.stones.clone(),
+                &facet.measure(px(640.0)),
+            )))
             .child(
                 div().absolute().left(px(0.0)).top(px(0.0)).child(
                     super::territory("vast-map", self.regions.clone(), &facet.measure(px(4400.0)))
@@ -341,9 +356,20 @@ impl Render for Vast {
 #[gpui::test]
 fn paint_follows_what_is_visible_not_what_exists(cx: &mut TestAppContext) {
     let stones: Vec<Stone> = (0..20_000)
-        .map(|i| Stone::new(Family::Type, if i % 3 == 0 { StoneState::Public } else { StoneState::Private }))
+        .map(|i| {
+            Stone::new(
+                Family::Type,
+                if i % 3 == 0 {
+                    StoneState::Public
+                } else {
+                    StoneState::Private
+                },
+            )
+        })
         .collect();
-    let regions: Vec<super::Region> = (0..400).map(|i| super::Region::new(format!("m{i}"), 50)).collect();
+    let regions: Vec<super::Region> = (0..400)
+        .map(|i| super::Region::new(format!("m{i}"), 50))
+        .collect();
     let (_view, cx) = cx.add_window_view(|_, _| Vast {
         stones: stones.into(),
         regions: regions.into(),
@@ -364,8 +390,16 @@ fn paint_follows_what_is_visible_not_what_exists(cx: &mut TestAppContext) {
         "painted {} stones of 40 000 (mosaic budget {mosaic_visible})",
         painted.stones
     );
-    assert!(painted.stones >= 2_000, "painted too few: {}", painted.stones);
-    assert!(painted.regions < 60, "drew {} of 400 regions", painted.regions);
+    assert!(
+        painted.stones >= 2_000,
+        "painted too few: {}",
+        painted.stones
+    );
+    assert!(
+        painted.regions < 60,
+        "drew {} of 400 regions",
+        painted.regions
+    );
     assert!(painted.regions >= 5);
 }
 
@@ -404,7 +438,10 @@ fn harness_storms_over_the_marks_find_nothing() {
             .output()
             .expect("the storm process ran");
         let text = String::from_utf8_lossy(&out.stdout);
-        for line in text.lines().filter(|l| l.contains("seed") || l.contains(" ms ")) {
+        for line in text
+            .lines()
+            .filter(|l| l.contains("seed") || l.contains(" ms "))
+        {
             println!("{line}");
         }
         assert!(

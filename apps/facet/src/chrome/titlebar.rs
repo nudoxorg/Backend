@@ -28,8 +28,8 @@ use crate::overlay::tooltip::Tipped;
 use crate::paint::geom::{Fill, Poly, pt};
 use crate::paint::{Bevel, Chamfer, Edge, Plate, cut, mix};
 use crate::theme::ActiveFacet;
-use crate::tokens::motion::{GLIDE, STD};
 use crate::tokens::fluid::{BEADS, Beads};
+use crate::tokens::motion::{GLIDE, STD};
 use crate::tokens::{Face, Palette, TypeRole, geo};
 use gpui::{
     AnyElement, App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels,
@@ -167,7 +167,10 @@ impl Titlebar {
 
     /// A bead was clicked: walk the thread to its page.
     #[must_use]
-    pub fn on_bead(mut self, handler: impl Fn(&ElementId, &mut Window, &mut App) + 'static) -> Self {
+    pub fn on_bead(
+        mut self,
+        handler: impl Fn(&ElementId, &mut Window, &mut App) + 'static,
+    ) -> Self {
         self.on_bead = Some(Rc::new(handler));
         self
     }
@@ -338,7 +341,12 @@ fn bead_art(color: Hsla, r: f32, hollow: bool, box_px: f32, s: f32) -> AnyElemen
         move |bounds, (), window, _| {
             let c = bounds.center();
             let (cx, cy) = (f32::from(c.x), f32::from(c.y));
-            let poly = Poly::new([pt(cx, cy - r), pt(cx + r, cy), pt(cx, cy + r), pt(cx - r, cy)]);
+            let poly = Poly::new([
+                pt(cx, cy - r),
+                pt(cx + r, cy),
+                pt(cx, cy + r),
+                pt(cx - r, cy),
+            ]);
             let mut fill = Fill::new();
             if hollow {
                 for piece in poly.offset(-0.75 * s).stroke_ring(1.5 * s) {
@@ -428,9 +436,20 @@ impl RenderOnce for Titlebar {
         let palette = cx.palette();
         let measure = self.measure;
         let s = measure.scale();
-        let plan = Plan::of(Modes::keyed(ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "beads".into()), window, cx).settle(&BEADS, measure.fluid_room()).mode);
+        let plan = Plan::of(
+            Modes::keyed(
+                ElementId::NamedChild(std::sync::Arc::new(self.id.clone()), "beads".into()),
+                window,
+                cx,
+            )
+            .settle(&BEADS, measure.fluid_room())
+            .mode,
+        );
         let id = self.id.clone();
-        let motion = Motion::scoped(ElementId::NamedChild(std::sync::Arc::new(id.clone()), "tb".into()), cx);
+        let motion = Motion::scoped(
+            ElementId::NamedChild(std::sync::Arc::new(id.clone()), "tb".into()),
+            cx,
+        );
         let height = px(f32::from(geo::TITLEBAR) * s);
 
         // --- left: lights and the shelf toggle -------------------------
@@ -471,10 +490,16 @@ impl RenderOnce for Titlebar {
             let n = self.data.behind.len();
             self.data.behind[n.saturating_sub(plan.behind)..].to_vec()
         };
-        let behind_keys: Vec<ElementId> = shown_behind.iter().map(|bead| bead.key.clone()).collect();
+        let behind_keys: Vec<ElementId> =
+            shown_behind.iter().map(|bead| bead.key.clone()).collect();
         let behind = presence(&id, "behind", cx).sync(behind_keys, window, cx);
         let ahead_keys: Vec<ElementId> = if plan.ahead {
-            self.data.ahead.iter().take(1).map(|bead| bead.key.clone()).collect()
+            self.data
+                .ahead
+                .iter()
+                .take(1)
+                .map(|bead| bead.key.clone())
+                .collect()
         } else {
             vec![]
         };
@@ -515,25 +540,48 @@ impl RenderOnce for Titlebar {
             let (size, strength) = bead_look(age);
             // Older beads shrink and fade a step as the thread grows.
             let r = motion.animate(
-                ElementId::NamedChild(std::sync::Arc::new(ElementId::NamedChild(std::sync::Arc::new(id.clone()), bead_name(&bead.key))), "r".into()),
+                ElementId::NamedChild(
+                    std::sync::Arc::new(ElementId::NamedChild(
+                        std::sync::Arc::new(id.clone()),
+                        bead_name(&bead.key),
+                    )),
+                    "r".into(),
+                ),
                 size * 0.5 * std::f32::consts::SQRT_2 * s,
                 spec::LIFT,
                 window,
                 cx,
             );
             let alpha = motion.animate(
-                ElementId::NamedChild(std::sync::Arc::new(ElementId::NamedChild(std::sync::Arc::new(id.clone()), bead_name(&bead.key))), "a".into()),
+                ElementId::NamedChild(
+                    std::sync::Arc::new(ElementId::NamedChild(
+                        std::sync::Arc::new(id.clone()),
+                        bead_name(&bead.key),
+                    )),
+                    "a".into(),
+                ),
                 strength,
                 spec::REVEAL,
                 window,
                 cx,
             );
             let hue = super::with_alpha(bead.kind.hue(palette), alpha);
-            let bead_id = ElementId::NamedChild(std::sync::Arc::new(bead.key.clone()), "bead".into());
+            let bead_id =
+                ElementId::NamedChild(std::sync::Arc::new(bead.key.clone()), "bead".into());
             let hovered = window.use_keyed_state(bead_id.clone(), cx, |_, _| false);
             let grow = motion.animate(
-                ElementId::NamedChild(std::sync::Arc::new(ElementId::NamedChild(std::sync::Arc::new(id.clone()), bead_name(&bead.key))), "grow".into()),
-                if *hovered.read(cx) && !item.is_leaving() { 1.25 } else { 1.0 },
+                ElementId::NamedChild(
+                    std::sync::Arc::new(ElementId::NamedChild(
+                        std::sync::Arc::new(id.clone()),
+                        bead_name(&bead.key),
+                    )),
+                    "grow".into(),
+                ),
+                if *hovered.read(cx) && !item.is_leaving() {
+                    1.25
+                } else {
+                    1.0
+                },
                 spec::LIFT,
                 window,
                 cx,
@@ -564,12 +612,25 @@ impl RenderOnce for Titlebar {
                 strand(super::with_alpha(ink3, 0.7), strand_w, false, s)
             };
             thread = thread.child(
-                item.slot(div().flex().flex_none().items_center().child(button).child(tie)),
+                item.slot(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .child(button)
+                        .child(tie),
+                ),
             );
         }
 
         // The capsule.
-        let fill_t = motion.animate(ElementId::NamedChild(std::sync::Arc::new(id.clone()), "fill".into()), if plan.fill { 1.0 } else { 0.0 }, spec::SETTLE, window, cx);
+        let fill_t = motion.animate(
+            ElementId::NamedChild(std::sync::Arc::new(id.clone()), "fill".into()),
+            if plan.fill { 1.0 } else { 0.0 },
+            spec::SETTLE,
+            window,
+            cx,
+        );
         let here_id = ElementId::NamedChild(std::sync::Arc::new(id.clone()), "here".into());
         thread = thread.child(capsule(
             &here_id,
@@ -606,7 +667,8 @@ impl RenderOnce for Titlebar {
                             ));
                         if let (Some(handler), false) = (self.on_bead.clone(), item.is_leaving()) {
                             let key = bead.key.clone();
-                            button = button.on_click(move |_, window, cx| handler(&key, window, cx));
+                            button =
+                                button.on_click(move |_, window, cx| handler(&key, window, cx));
                         }
                         button
                     })
@@ -629,9 +691,10 @@ impl RenderOnce for Titlebar {
             .items_center()
             .gap(px(6.0 * s))
             .children(self.data.buttons.iter().map(|spec| {
-                let mut button = icon_button(spec.id.clone(), spec.icon, spec.label.clone(), &measure)
-                    .size(IconButtonSize::Medium)
-                    .on(spec.on);
+                let mut button =
+                    icon_button(spec.id.clone(), spec.icon, spec.label.clone(), &measure)
+                        .size(IconButtonSize::Medium)
+                        .on(spec.on);
                 if let Some(key) = &spec.key {
                     button = button.key(key.clone());
                 }
@@ -680,7 +743,10 @@ fn capsule(
 ) -> AnyElement {
     let palette = cx.palette();
     let s = measure.scale();
-    let motion = Motion::scoped(ElementId::NamedChild(std::sync::Arc::new(id.clone()), "m".into()), cx);
+    let motion = Motion::scoped(
+        ElementId::NamedChild(std::sync::Arc::new(id.clone()), "m".into()),
+        cx,
+    );
     let hovered = window.use_keyed_state(id.clone(), cx, |_, _| false);
     let hover_t = motion.animate(
         ElementId::NamedChild(std::sync::Arc::new(id.clone()), "hover".into()),
@@ -805,7 +871,10 @@ mod tests {
     #[test]
     fn the_thread_degrades_at_the_flow_targets_breakpoints() {
         let wide = Plan::at(1440.0);
-        assert_eq!((wide.behind, wide.ahead, wide.fill, wide.buttons), (3, true, false, true));
+        assert_eq!(
+            (wide.behind, wide.ahead, wide.fill, wide.buttons),
+            (3, true, false, true)
+        );
         // With no history the ladder reads its plain edges: at 1100 the oldest bead is there.
         assert_eq!(Plan::at(1100.0).behind, 3);
         assert_eq!(Plan::at(1099.5).behind, 2);

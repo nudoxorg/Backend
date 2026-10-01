@@ -28,12 +28,11 @@ use backend_extension_tantivy::{
 use backend_extension_turso::{ProjectionUpdate, TursoProjection};
 use backend_library::{
     Basis, Command as LibraryCommand, CommandDto, Coverage, CoverageCapability, Cursor,
-    DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope,
-    source_selection_policy,
-    Fragment, Frontier, Library, PackageDependencyRecord, PackageDependencyTarget,
-    PackageReference, ProductText, Query, QueryLimit, RequestAdmissionError, Row, RowId, ViewDelta,
-    ViewRoot, admit_complete_scope, admit_producer_observation, object_version, package_key,
-    symbol_key, view_key,
+    DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope, Fragment, Frontier,
+    Library, PackageDependencyRecord, PackageDependencyTarget, PackageReference, ProductText,
+    Query, QueryLimit, RequestAdmissionError, Row, RowId, ViewDelta, ViewRoot,
+    admit_complete_scope, admit_producer_observation, object_version, package_key,
+    source_selection_policy, symbol_key, view_key,
 };
 use backend_mcp::{self};
 use backend_semantic::{Entity, Source, entity_key};
@@ -1145,10 +1144,7 @@ fn run_discovery() -> BenchResult<DiscoveryMeasurement> {
         let body = format!("pub fn fixture_{index}() -> usize {{ {index} }}\n");
         fs::write(root.join(format!("src/keep/file-{index}.rs")), &body)?;
         fs::write(root.join(format!("src/nested/keep/file-{index}.rs")), &body)?;
-        fs::write(
-            root.join(format!("src/nested/drop/file-{index}.rs")),
-            &body,
-        )?;
+        fs::write(root.join(format!("src/nested/drop/file-{index}.rs")), &body)?;
         fs::write(
             root.join(format!("src/root-ignored/file-{index}.rs")),
             &body,
@@ -1159,10 +1155,7 @@ fn run_discovery() -> BenchResult<DiscoveryMeasurement> {
         fs::write(root.join(directory).join("generated.rs"), b"generated\n")?;
     }
     let oversized_path = root.join("src/oversized.rs");
-    fs::write(
-        &oversized_path,
-        vec![b'x'; 512 * 1024 + 1],
-    )?;
+    fs::write(&oversized_path, vec![b'x'; 512 * 1024 + 1])?;
     let started = Instant::now();
     let mut admitted = Vec::new();
     for entry in source_selection_policy().walk(&root) {
@@ -1218,13 +1211,11 @@ fn run_discovery() -> BenchResult<DiscoveryMeasurement> {
         0
     };
     let passed = admitted_files == FILES_PER_CLASS.saturating_mul(2) + 1
-        && admitted
-            .iter()
-            .all(|path| {
-                path.starts_with(Path::new("src/keep"))
-                    || path.starts_with(Path::new("src/nested/keep"))
-                    || path == Path::new("src/oversized.rs")
-            })
+        && admitted.iter().all(|path| {
+            path.starts_with(Path::new("src/keep"))
+                || path.starts_with(Path::new("src/nested/keep"))
+                || path == Path::new("src/oversized.rs")
+        })
         && !admitted.iter().any(|path| {
             path.components().any(|component| {
                 matches!(
@@ -1242,7 +1233,7 @@ fn run_discovery() -> BenchResult<DiscoveryMeasurement> {
                     )
                 )
             })
-            })
+        })
         && oversized_claimed_files == 1
         && typed_unavailable_rows == oversized_claimed_files;
     let measurement = DiscoveryMeasurement {

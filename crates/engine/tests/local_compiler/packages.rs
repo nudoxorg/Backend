@@ -12,11 +12,11 @@ use backend_engine::application::{
     LocalCompiler, LocalCompilerConfig, LocalCompilerControl, LocalCompilerScratch,
     LocalCompilerTimeout, LocalPackageRoot, LocalPackageRootSet, LocalToolchainSet,
 };
-use backend_semantic::vocabulary::{CStandard, Language, LanguageProfile, NativeTool, Stage};
 use backend_library::interface::{
     CompilerCapability, CompilerTerminal, CorrelationId, GenerateTarget, PackageCompilePhase,
     PackageCompileRequest, PackageEcosystem, PackageSourceCause, PackageUrl, PackageUrlError,
 };
+use backend_semantic::vocabulary::{CStandard, Language, LanguageProfile, NativeTool, Stage};
 use backend_store::journal::{PublicationLimits, ShutdownError};
 
 static FIXTURE_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
@@ -234,9 +234,11 @@ fn package_symlink_cannot_escape_the_configured_store() -> Result<(), io::Error>
 fn package_root_table_rejects_relative_duplicate_and_unordered_rows() {
     assert!(matches!(
         LocalPackageRoot::new(PackageEcosystem::Cargo, Path::new("relative")),
-        Err(backend_engine::application::LocalPackageRootError::Relative {
-            ecosystem: PackageEcosystem::Cargo,
-        })
+        Err(
+            backend_engine::application::LocalPackageRootError::Relative {
+                ecosystem: PackageEcosystem::Cargo,
+            }
+        )
     ));
     let cargo = LocalPackageRoot::new(PackageEcosystem::Cargo, Path::new("/stores/cargo"))
         .expect("absolute root");
@@ -245,18 +247,22 @@ fn package_root_table_rejects_relative_duplicate_and_unordered_rows() {
             .expect("absolute root");
     assert!(matches!(
         LocalPackageRootSet::validate(&[cargo, cargo_again]),
-        Err(backend_engine::application::LocalPackageRootSetError::Duplicate {
-            ecosystem: PackageEcosystem::Cargo,
-        })
+        Err(
+            backend_engine::application::LocalPackageRootSetError::Duplicate {
+                ecosystem: PackageEcosystem::Cargo,
+            }
+        )
     ));
     let generic = LocalPackageRoot::new(PackageEcosystem::Generic, Path::new("/stores/generic"))
         .expect("absolute root");
     assert!(matches!(
         LocalPackageRootSet::validate(&[generic, cargo]),
-        Err(backend_engine::application::LocalPackageRootSetError::OutOfOrder {
-            preceding: PackageEcosystem::Generic,
-            observed: PackageEcosystem::Cargo,
-        })
+        Err(
+            backend_engine::application::LocalPackageRootSetError::OutOfOrder {
+                preceding: PackageEcosystem::Generic,
+                observed: PackageEcosystem::Cargo,
+            }
+        )
     ));
 }
 

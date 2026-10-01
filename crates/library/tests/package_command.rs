@@ -1,8 +1,8 @@
 //! Proves the CLI package command enters one typed package admission path.
 
-use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 use backend_library::interface::{ApplicationInput, CorrelationId, PackageEcosystem};
 use backend_library::protocol::{AdapterErrorCause, AdapterErrorCode, decode_cli};
+use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 
 #[test]
 fn the_cli_admits_pinned_package_facts() {

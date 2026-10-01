@@ -20,6 +20,7 @@
 use backend_locald::{ProcessConfig, ServiceStart};
 use backend_runtime::WorkspacePaths;
 use std::ffi::OsString;
+use std::fmt::Write as _;
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -27,7 +28,6 @@ use std::process::{Child, Command as ProcessCommand, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::thread;
-use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 /// How long a composed builtin owner may take to publish its endpoint.
@@ -243,10 +243,9 @@ fn a_second_surface_spelling_the_same_workspace_differently_attaches() {
     wait_for_socket(&endpoint, &mut owner);
 
     for spelling in &spellings {
-        let start = backend_locald::start_or_attach(surface_config(spelling, None))
-            .unwrap_or_else(|error| {
-                panic!("surface spelled {spelling} failed instead of attaching: {error}")
-            });
+        let start = backend_locald::start_or_attach(surface_config(spelling, None)).unwrap_or_else(
+            |error| panic!("surface spelled {spelling} failed instead of attaching: {error}"),
+        );
         match start {
             ServiceStart::Attached {
                 endpoint: attached_endpoint,
@@ -254,9 +253,9 @@ fn a_second_surface_spelling_the_same_workspace_differently_attaches() {
                 attached_endpoint, endpoint,
                 "spelling {spelling} attached to the wrong endpoint"
             ),
-            ServiceStart::Owned(_) => panic!(
-                "spelling {spelling} became a second owner of a live workspace"
-            ),
+            ServiceStart::Owned(_) => {
+                panic!("spelling {spelling} became a second owner of a live workspace")
+            }
         }
     }
 
@@ -279,8 +278,7 @@ fn a_killed_owner_leaves_a_socket_that_the_next_start_sweeps() {
     // SIGKILL cannot run a destructor, so the socket file outlives the owner
     // while the kernel releases both the listener and the workspace lock.
     assert!(
-        std::fs::symlink_metadata(&endpoint)
-            .is_ok_and(|metadata| metadata.file_type().is_socket()),
+        std::fs::symlink_metadata(&endpoint).is_ok_and(|metadata| metadata.file_type().is_socket()),
         "a killed owner must leave its socket behind for this case to mean anything"
     );
     assert!(
@@ -288,11 +286,8 @@ fn a_killed_owner_leaves_a_socket_that_the_next_start_sweeps() {
         "a killed owner must not still answer"
     );
 
-    let start = backend_locald::start_or_attach(surface_config(
-        &workspace.to_string_lossy(),
-        None,
-    ))
-    .expect("recover a workspace whose owner was killed");
+    let start = backend_locald::start_or_attach(surface_config(&workspace.to_string_lossy(), None))
+        .expect("recover a workspace whose owner was killed");
     match start {
         ServiceStart::Owned(service) => {
             assert_eq!(service.endpoint(), endpoint);
@@ -439,7 +434,9 @@ fn run_cli(project: &Path, workspace: &Path, args: &[&str]) -> String {
             }
         }
     }
-    let output = child.wait_with_output().expect("collect journey cli output");
+    let output = child
+        .wait_with_output()
+        .expect("collect journey cli output");
     let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&output.stderr));
     text
@@ -762,7 +759,11 @@ fn assert_fixture_progress(progress: &backend_library::IngestProgress) {
         "the declaration total and the per-language rows disagree, so one of \
          them is describing a revision the other is not"
     );
-    let claimed = progress.languages().iter().map(|row| row.files()).sum::<u64>();
+    let claimed = progress
+        .languages()
+        .iter()
+        .map(|row| row.files())
+        .sum::<u64>();
     assert_eq!(
         claimed,
         progress.files_discovered(),

@@ -37,7 +37,10 @@ pub(super) enum T {
 
 impl T {
     fn named(name: &str) -> Self {
-        Self::Name { path: vec![name.to_owned()], args: Vec::new() }
+        Self::Name {
+            path: vec![name.to_owned()],
+            args: Vec::new(),
+        }
     }
 
     /// The last path segment of a named type.
@@ -52,10 +55,19 @@ impl T {
     /// Whether `name` appears anywhere in the type.
     pub(super) fn mentions(&self, name: &str) -> bool {
         match self {
-            Self::Name { path, args } => path.first().is_some_and(|first| first == name) || path.last().is_some_and(|last| last == name) || args.iter().any(|arg| arg.mentions(name)),
+            Self::Name { path, args } => {
+                path.first().is_some_and(|first| first == name)
+                    || path.last().is_some_and(|last| last == name)
+                    || args.iter().any(|arg| arg.mentions(name))
+            }
             Self::Ref { inner, .. } | Self::Slice(inner) => inner.mentions(name),
-            Self::Tuple(items) | Self::Any(items) | Self::Union(items) => items.iter().any(|item| item.mentions(name)),
-            Self::Func { params, ret } => params.iter().any(|p| p.mentions(name)) || ret.as_ref().is_some_and(|r| r.mentions(name)),
+            Self::Tuple(items) | Self::Any(items) | Self::Union(items) => {
+                items.iter().any(|item| item.mentions(name))
+            }
+            Self::Func { params, ret } => {
+                params.iter().any(|p| p.mentions(name))
+                    || ret.as_ref().is_some_and(|r| r.mentions(name))
+            }
             Self::Object(fields) => fields.iter().any(|(_, ty, _)| ty.mentions(name)),
             Self::Lit(_) | Self::Infer => false,
         }
@@ -91,10 +103,20 @@ impl T {
     /// The type written back the way `spelling` writes it: the quiet text
     /// beside its plain words. Lifetimes and paths are not kept.
     pub(super) fn spelled(&self, spelling: Spelling) -> String {
-        let list = |items: &[Self]| items.iter().map(|item| item.spelled(spelling)).collect::<Vec<_>>().join(", ");
+        let list = |items: &[Self]| {
+            items
+                .iter()
+                .map(|item| item.spelled(spelling))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         match self {
             Self::Name { path, args } => {
-                let head = path.join(if spelling == Spelling::Rust { "::" } else { "." });
+                let head = path.join(if spelling == Spelling::Rust {
+                    "::"
+                } else {
+                    "."
+                });
                 match (args.is_empty(), spelling) {
                     (true, _) => head,
                     (false, Spelling::Python | Spelling::Go) => format!("{head}[{}]", list(args)),
@@ -123,13 +145,35 @@ impl T {
                 }
             }
             Self::Any(bounds) => {
-                let joined = bounds.iter().map(|b| b.spelled(spelling)).collect::<Vec<_>>().join(" + ");
-                if spelling == Spelling::Rust { format!("impl {joined}") } else { joined }
+                let joined = bounds
+                    .iter()
+                    .map(|b| b.spelled(spelling))
+                    .collect::<Vec<_>>()
+                    .join(" + ");
+                if spelling == Spelling::Rust {
+                    format!("impl {joined}")
+                } else {
+                    joined
+                }
             }
-            Self::Union(items) => items.iter().map(|item| item.spelled(spelling)).collect::<Vec<_>>().join(" | "),
+            Self::Union(items) => items
+                .iter()
+                .map(|item| item.spelled(spelling))
+                .collect::<Vec<_>>()
+                .join(" | "),
             Self::Lit(text) => text.clone(),
             Self::Object(fields) => {
-                let inner = fields.iter().map(|(name, ty, optional)| format!("{name}{}: {}", if *optional { "?" } else { "" }, ty.spelled(spelling))).collect::<Vec<_>>().join(", ");
+                let inner = fields
+                    .iter()
+                    .map(|(name, ty, optional)| {
+                        format!(
+                            "{name}{}: {}",
+                            if *optional { "?" } else { "" },
+                            ty.spelled(spelling)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 format!("{{ {inner} }}")
             }
             Self::Infer => "_".to_owned(),
@@ -146,7 +190,10 @@ struct Parser {
 
 /// Parses a type written in Rust, TypeScript or Python syntax.
 pub(super) fn parse(text: &str) -> T {
-    let mut parser = Parser { chars: text.chars().collect(), at: 0 };
+    let mut parser = Parser {
+        chars: text.chars().collect(),
+        at: 0,
+    };
     let ty = parser.union();
     ty.unwrap_or(T::Infer)
 }
@@ -175,7 +222,11 @@ impl Parser {
     fn word(&mut self) -> Option<String> {
         self.skip();
         let start = self.at;
-        while self.chars.get(self.at).is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '$')) {
+        while self
+            .chars
+            .get(self.at)
+            .is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '$'))
+        {
             self.at += 1;
         }
         (self.at > start).then(|| self.chars[start..self.at].iter().collect())
@@ -189,7 +240,11 @@ impl Parser {
             self.at += 1;
             all.push(self.postfix()?);
         }
-        Some(if all.len() == 1 { all.remove(0) } else { T::Union(all) })
+        Some(if all.len() == 1 {
+            all.remove(0)
+        } else {
+            T::Union(all)
+        })
     }
 
     fn postfix(&mut self) -> Option<T> {
@@ -228,7 +283,10 @@ impl Parser {
                     // `Item = T` binds an associated type: keep the value.
                     let before = self.at;
                     let named = self.word();
-                    if named.is_some() && self.peek() == Some('=') && self.chars.get(self.at + 1) != Some(&'>') {
+                    if named.is_some()
+                        && self.peek() == Some('=')
+                        && self.chars.get(self.at + 1) != Some(&'>')
+                    {
                         self.at += 1;
                     } else {
                         self.at = before;
@@ -257,7 +315,10 @@ impl Parser {
                 if !mutable {
                     self.at = before;
                 }
-                Some(T::Ref { mutable, inner: Box::new(self.postfix()?) })
+                Some(T::Ref {
+                    mutable,
+                    inner: Box::new(self.postfix()?),
+                })
             }
             '*' => {
                 self.at += 1;
@@ -294,7 +355,10 @@ impl Parser {
                 if self.peek() == Some('=') && self.chars.get(self.at + 1) == Some(&'>') {
                     self.at += 2;
                     let ret = self.union();
-                    return Some(T::Func { params: items, ret: ret.map(Box::new) });
+                    return Some(T::Func {
+                        params: items,
+                        ret: ret.map(Box::new),
+                    });
                 }
                 Some(T::Tuple(items))
             }
@@ -337,7 +401,11 @@ impl Parser {
                                 continue;
                             };
                             let optional = self.eat('?');
-                            let ty = if self.eat(':') { self.union().unwrap_or(T::Infer) } else { T::Infer };
+                            let ty = if self.eat(':') {
+                                self.union().unwrap_or(T::Infer)
+                            } else {
+                                T::Infer
+                            };
                             fields.push((name, ty, optional));
                         }
                     }
@@ -350,13 +418,19 @@ impl Parser {
                 while self.chars.get(self.at).is_some_and(|c| *c != quote) {
                     self.at += 1;
                 }
-                let text: String = self.chars[start..self.at.min(self.chars.len())].iter().collect();
+                let text: String = self.chars[start..self.at.min(self.chars.len())]
+                    .iter()
+                    .collect();
                 self.at += 1;
                 Some(T::Lit(format!("\"{text}\"")))
             }
             digit if digit.is_ascii_digit() => {
                 let start = self.at;
-                while self.chars.get(self.at).is_some_and(|c| c.is_ascii_alphanumeric() || *c == '.') {
+                while self
+                    .chars
+                    .get(self.at)
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '.')
+                {
                     self.at += 1;
                 }
                 Some(T::Lit(self.chars[start..self.at].iter().collect()))
@@ -365,7 +439,11 @@ impl Parser {
                 self.at += 1;
                 Some(T::named("never"))
             }
-            '_' if !self.chars.get(self.at + 1).is_some_and(|c| c.is_alphanumeric() || *c == '_') => {
+            '_' if !self
+                .chars
+                .get(self.at + 1)
+                .is_some_and(|c| c.is_alphanumeric() || *c == '_') =>
+            {
                 self.at += 1;
                 Some(T::Infer)
             }
@@ -393,7 +471,9 @@ impl Parser {
                 }
                 return Some(T::Any(bounds));
             }
-            "mut" | "const" | "readonly" | "unique" | "keyof" | "typeof" | "asserts" => return self.postfix(),
+            "mut" | "const" | "readonly" | "unique" | "keyof" | "typeof" | "asserts" => {
+                return self.postfix();
+            }
             "async" => return self.postfix(),
             _ => {}
         }
@@ -431,7 +511,12 @@ impl Parser {
                 self.at += 1;
                 args = self.args(']');
             }
-            Some('(') if matches!(name.as_str(), "Fn" | "FnMut" | "FnOnce" | "fn" | "Callable" | "Function") => {
+            Some('(')
+                if matches!(
+                    name.as_str(),
+                    "Fn" | "FnMut" | "FnOnce" | "fn" | "Callable" | "Function"
+                ) =>
+            {
                 self.at += 1;
                 let params = self.args(')');
                 let mut ret = None;
@@ -484,16 +569,66 @@ fn primitive(name: &str) -> Option<&'static str> {
 fn is_list(name: &str) -> bool {
     matches!(
         name,
-        "Vec" | "VecDeque" | "HashSet" | "BTreeSet" | "IndexSet" | "SmallVec" | "ArrayVec" | "list" | "List" | "set" | "Set" | "frozenset" | "Array" | "ReadonlyArray" | "Sequence" | "tuple" | "Tuple" | "Iterable" | "Collection" | "Deque"
+        "Vec"
+            | "VecDeque"
+            | "HashSet"
+            | "BTreeSet"
+            | "IndexSet"
+            | "SmallVec"
+            | "ArrayVec"
+            | "list"
+            | "List"
+            | "set"
+            | "Set"
+            | "frozenset"
+            | "Array"
+            | "ReadonlyArray"
+            | "Sequence"
+            | "tuple"
+            | "Tuple"
+            | "Iterable"
+            | "Collection"
+            | "Deque"
     )
 }
 
 fn is_map(name: &str) -> bool {
-    matches!(name, "HashMap" | "BTreeMap" | "Map" | "map" | "IndexMap" | "dict" | "Dict" | "Record" | "Mapping" | "MutableMapping" | "OrderedDict" | "defaultdict")
+    matches!(
+        name,
+        "HashMap"
+            | "BTreeMap"
+            | "Map"
+            | "map"
+            | "IndexMap"
+            | "dict"
+            | "Dict"
+            | "Record"
+            | "Mapping"
+            | "MutableMapping"
+            | "OrderedDict"
+            | "defaultdict"
+    )
 }
 
 fn is_wrapper(name: &str) -> bool {
-    matches!(name, "Box" | "Rc" | "Arc" | "RefCell" | "Cell" | "Mutex" | "RwLock" | "Pin" | "Readonly" | "Partial" | "Required" | "Final" | "ClassVar" | "Annotated" | "NonNull")
+    matches!(
+        name,
+        "Box"
+            | "Rc"
+            | "Arc"
+            | "RefCell"
+            | "Cell"
+            | "Mutex"
+            | "RwLock"
+            | "Pin"
+            | "Readonly"
+            | "Partial"
+            | "Required"
+            | "Final"
+            | "ClassVar"
+            | "Annotated"
+            | "NonNull"
+    )
 }
 
 fn is_maybe(name: &str) -> bool {
@@ -521,9 +656,18 @@ fn wrapper(name: &str, arity: usize) -> Option<Wrap> {
     match name {
         "Result" | "Fallible" => Some(Wrap::Fails),
         "Option" | "Optional" | "Maybe" if wraps => Some(Wrap::Maybe),
-        "Promise" | "PromiseLike" | "Future" | "Awaitable" | "Coroutine" | "CoroutineType" | "BoxFuture" => Some(Wrap::Later),
+        "Promise" | "PromiseLike" | "Future" | "Awaitable" | "Coroutine" | "CoroutineType"
+        | "BoxFuture" => Some(Wrap::Later),
         "Task" | "ValueTask" | "Deferred" if wraps => Some(Wrap::Later),
-        "Iterator" | "IntoIterator" | "Generator" | "AsyncGenerator" | "AsyncIterator" | "AsyncIterable" | "IterableIterator" | "ExactSizeIterator" | "DoubleEndedIterator" => Some(Wrap::Many),
+        "Iterator"
+        | "IntoIterator"
+        | "Generator"
+        | "AsyncGenerator"
+        | "AsyncIterator"
+        | "AsyncIterable"
+        | "IterableIterator"
+        | "ExactSizeIterator"
+        | "DoubleEndedIterator" => Some(Wrap::Many),
         "Stream" | "Observable" | "Iter" if wraps => Some(Wrap::Many),
         _ => None,
     }
@@ -538,7 +682,8 @@ fn is_many(name: &str) -> bool {
 }
 
 fn is_none_word(t: &T) -> bool {
-    matches!(t.last(), Some("None" | "null" | "undefined" | "void")) || matches!(t, T::Tuple(items) if items.is_empty())
+    matches!(t.last(), Some("None" | "null" | "undefined" | "void"))
+        || matches!(t, T::Tuple(items) if items.is_empty())
 }
 
 /// Whether, and how, a type can fail.
@@ -604,14 +749,22 @@ pub(super) fn peel(t: &T) -> Peeled {
                         out.many = true;
                         current = args.first().cloned().unwrap_or(T::Infer);
                     }
-                    None if is_wrapper(name) && args.len() == 1 && matches!(name, "Pin" | "Box") && matches!(&args[0], T::Any(_)) => current = args[0].clone(),
+                    None if is_wrapper(name)
+                        && args.len() == 1
+                        && matches!(name, "Pin" | "Box")
+                        && matches!(&args[0], T::Any(_)) =>
+                    {
+                        current = args[0].clone()
+                    }
                     None => break,
                 }
                 out.held = Some(current.clone());
             }
             T::Any(bounds) => {
                 // `impl Iterator<Item = T>` / `impl Future<Output = T>`.
-                let Some(T::Name { path, args }) = bounds.first() else { break };
+                let Some(T::Name { path, args }) = bounds.first() else {
+                    break;
+                };
                 let name = path.last().map_or("", String::as_str);
                 match wrapper(name, args.len().max(1)) {
                     Some(Wrap::Many) => {
@@ -628,8 +781,16 @@ pub(super) fn peel(t: &T) -> Peeled {
             }
             T::Union(items) if items.iter().any(is_none_word) && items.len() > 1 => {
                 out.maybe = true;
-                let rest: Vec<T> = items.iter().filter(|item| !is_none_word(item)).cloned().collect();
-                current = if rest.len() == 1 { rest[0].clone() } else { T::Union(rest) };
+                let rest: Vec<T> = items
+                    .iter()
+                    .filter(|item| !is_none_word(item))
+                    .cloned()
+                    .collect();
+                current = if rest.len() == 1 {
+                    rest[0].clone()
+                } else {
+                    T::Union(rest)
+                };
                 out.held = Some(current.clone());
             }
             T::Ref { inner, .. } => current = (**inner).clone(),
@@ -659,21 +820,27 @@ pub(super) fn word(t: &T, cx: &Cx<'_>) -> String {
         T::Infer => "anything".to_owned(),
         T::Lit(text) => text.clone(),
         T::Tuple(items) if items.is_empty() => "nothing".to_owned(),
-        T::Tuple(items) => items.iter().map(|item| word(item, cx)).collect::<Vec<_>>().join(" and "),
+        T::Tuple(items) => items
+            .iter()
+            .map(|item| word(item, cx))
+            .collect::<Vec<_>>()
+            .join(" and "),
         T::Slice(inner) => {
-            if matches!(&**inner, T::Name { path, .. } if path.last().is_some_and(|last| last == "u8")) {
+            if matches!(&**inner, T::Name { path, .. } if path.last().is_some_and(|last| last == "u8"))
+            {
                 "bytes".to_owned()
             } else {
                 format!("a list of {}", many_of(&word(inner, cx)))
             }
         }
         T::Func { .. } => "a function".to_owned(),
-        T::Any(bounds) => bounds
-            .first()
-            .map_or_else(|| "anything".to_owned(), |bound| match bound {
+        T::Any(bounds) => bounds.first().map_or_else(
+            || "anything".to_owned(),
+            |bound| match bound {
                 T::Name { path, .. } => format!("any {}", path.last().map_or("", String::as_str)),
                 other => word(other, cx),
-            }),
+            },
+        ),
         T::Union(items) => {
             let mut words: Vec<String> = Vec::new();
             for item in items.iter().filter(|item| !is_none_word(item)) {
@@ -691,9 +858,13 @@ pub(super) fn word(t: &T, cx: &Cx<'_>) -> String {
                 return name.to_owned();
             }
             if name == "Self" && path.len() == 1 {
-                return cx.owner.map_or_else(|| "this type".to_owned(), ToOwned::to_owned);
+                return cx
+                    .owner
+                    .map_or_else(|| "this type".to_owned(), ToOwned::to_owned);
             }
-            if name == "Vec" && matches!(args.first(), Some(T::Name { path, .. }) if path.last().is_some_and(|last| last == "u8")) {
+            if name == "Vec"
+                && matches!(args.first(), Some(T::Name { path, .. }) if path.last().is_some_and(|last| last == "u8"))
+            {
                 return "bytes".to_owned();
             }
             if let Some(prim) = primitive(name).filter(|_| args.is_empty() || name == "Cow") {
@@ -703,13 +874,21 @@ pub(super) fn word(t: &T, cx: &Cx<'_>) -> String {
                 return format!("a list of {}", many_of(&word(&args[0], cx)));
             }
             if is_map(name) && args.len() >= 2 {
-                return format!("a map of {} to {}", word(&args[0], cx), many_of(&word(&args[1], cx)));
+                return format!(
+                    "a map of {} to {}",
+                    word(&args[0], cx),
+                    many_of(&word(&args[1], cx))
+                );
             }
-            if (is_wrapper(name) || is_maybe(name) || is_later(name) || is_many(name)) && !args.is_empty() {
+            if (is_wrapper(name) || is_maybe(name) || is_later(name) || is_many(name))
+                && !args.is_empty()
+            {
                 return word(&args[args.len() - 1], cx);
             }
             if name == "Result" {
-                return args.first().map_or_else(|| "nothing".to_owned(), |ok| word(ok, cx));
+                return args
+                    .first()
+                    .map_or_else(|| "nothing".to_owned(), |ok| word(ok, cx));
             }
             name.to_owned()
         }
@@ -728,7 +907,12 @@ fn link_of(t: &T, cx: &Cx<'_>) -> Option<String> {
             if name == "Self" {
                 return cx.owner.and_then(|owner| (cx.link)(owner));
             }
-            if is_wrapper(name) || is_maybe(name) || is_later(name) || is_many(name) || name == "Result" {
+            if is_wrapper(name)
+                || is_maybe(name)
+                || is_later(name)
+                || is_many(name)
+                || name == "Result"
+            {
                 return args.last().and_then(|arg| link_of(arg, cx));
             }
             (cx.link)(name)
@@ -743,21 +927,44 @@ fn link_of(t: &T, cx: &Cx<'_>) -> Option<String> {
 pub(super) fn ty_of(t: &T, written: &str, cx: &Cx<'_>) -> Ty {
     let word_text = word(t, cx);
     let generic = match t {
-        T::Name { path, args } if path.len() == 1 && args.is_empty() && cx.generics.contains(&path[0]) => Some(path[0].clone()),
+        T::Name { path, args }
+            if path.len() == 1 && args.is_empty() && cx.generics.contains(&path[0]) =>
+        {
+            Some(path[0].clone())
+        }
         T::Ref { inner, .. } => match &**inner {
-            T::Name { path, args } if path.len() == 1 && args.is_empty() && cx.generics.contains(&path[0]) => Some(path[0].clone()),
+            T::Name { path, args }
+                if path.len() == 1 && args.is_empty() && cx.generics.contains(&path[0]) =>
+            {
+                Some(path[0].clone())
+            }
             _ => None,
         },
         _ => None,
     };
     let written = squash(written);
-    let written = (!written.is_empty() && written != word_text && generic.is_none()).then_some(written);
-    Ty { word: word_text, written, link: link_of(t, cx), generic, origin: cx.origin, loops: false }
+    let written =
+        (!written.is_empty() && written != word_text && generic.is_none()).then_some(written);
+    Ty {
+        word: word_text,
+        written,
+        link: link_of(t, cx),
+        generic,
+        origin: cx.origin,
+        loops: false,
+    }
 }
 
 /// The name of the type at the head, for `Self`-like checks.
 pub(super) fn head(text: &str) -> String {
-    last_segment(text.trim_start_matches(['&', '*']).trim_start_matches("mut ").split(['<', '[', '(']).next().unwrap_or("")).to_owned()
+    last_segment(
+        text.trim_start_matches(['&', '*'])
+            .trim_start_matches("mut ")
+            .split(['<', '[', '('])
+            .next()
+            .unwrap_or(""),
+    )
+    .to_owned()
 }
 
 #[cfg(test)]
@@ -765,7 +972,12 @@ mod tests {
     use super::*;
 
     fn cx<'a>(generics: &'a [String], link: &'a dyn Fn(&str) -> Option<String>) -> Cx<'a> {
-        Cx { generics, owner: Some("Value"), link, origin: Origin::Declared }
+        Cx {
+            generics,
+            owner: Some("Value"),
+            link,
+            origin: Origin::Declared,
+        }
     }
 
     fn says(text: &str) -> String {
@@ -796,7 +1008,10 @@ mod tests {
     fn typescript_and_python_annotations_read_the_same_way() {
         assert_eq!(says("string[]"), "a list of text");
         assert_eq!(says("Array<number>"), "a list of numbers");
-        assert_eq!(says("Record<string, boolean>"), "a map of text to yes or no");
+        assert_eq!(
+            says("Record<string, boolean>"),
+            "a map of text to yes or no"
+        );
         assert_eq!(says("list[str]"), "a list of text");
         assert_eq!(says("dict[str, int]"), "a map of text to integers");
         assert_eq!(says("str | bytes"), "text or bytes");
@@ -808,12 +1023,22 @@ mod tests {
     fn wrappers_peel_into_outcomes() {
         let out = peel(&parse("Result<Option<Value>, Error>"));
         assert!(out.maybe && out.fails.can());
-        assert_eq!(out.inner.and_then(|t| t.last().map(str::to_owned)).as_deref(), Some("Value"));
+        assert_eq!(
+            out.inner
+                .and_then(|t| t.last().map(str::to_owned))
+                .as_deref(),
+            Some("Value")
+        );
         let later = peel(&parse("Promise<string>"));
         assert!(later.later);
         let many = peel(&parse("impl Iterator<Item = &'a Value>"));
         assert!(many.many);
-        assert_eq!(many.inner.and_then(|t| t.last().map(str::to_owned)).as_deref(), Some("Value"));
+        assert_eq!(
+            many.inner
+                .and_then(|t| t.last().map(str::to_owned))
+                .as_deref(),
+            Some("Value")
+        );
         let union = peel(&parse("Match | None"));
         assert!(union.maybe);
         let t = peel(&parse("Result<T>"));
@@ -822,7 +1047,9 @@ mod tests {
 
     #[test]
     fn object_literals_keep_their_optional_fields() {
-        let T::Object(fields) = parse("{ nothrow?: boolean, path: string }") else { panic!("an object") };
+        let T::Object(fields) = parse("{ nothrow?: boolean, path: string }") else {
+            panic!("an object")
+        };
         assert_eq!(fields.len(), 2);
         assert!(fields[0].2 && !fields[1].2);
     }

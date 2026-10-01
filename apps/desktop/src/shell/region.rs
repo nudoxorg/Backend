@@ -67,7 +67,11 @@ impl RegionCore {
     }
 
     /// Replaces the watched page keys.
-    pub(crate) fn watch_keys(&mut self, store: &DataStore, keys: impl IntoIterator<Item = PageKey>) {
+    pub(crate) fn watch_keys(
+        &mut self,
+        store: &DataStore,
+        keys: impl IntoIterator<Item = PageKey>,
+    ) {
         self.watch.retarget(store, keys);
     }
 }
@@ -216,7 +220,11 @@ impl<R: Region> Element for Measured<R> {
             gpui::Refineable::refine(&mut style, &self.style);
             (window.request_layout(style, None, cx), None)
         } else {
-            let mut inner = self.entity.clone().cached(self.style.clone()).into_any_element();
+            let mut inner = self
+                .entity
+                .clone()
+                .cached(self.style.clone())
+                .into_any_element();
             (inner.request_layout(window, cx), Some(inner))
         }
     }
@@ -230,7 +238,8 @@ impl<R: Region> Element for Measured<R> {
         window: &mut Window,
         cx: &mut App,
     ) -> Option<AnyElement> {
-        self.entity.update(cx, |region, _| region.core().width = bounds.size.width);
+        self.entity
+            .update(cx, |region, _| region.core().width = bounds.size.width);
         if let Some(inner) = inner {
             inner.prepaint(window, cx);
             return None;
@@ -280,7 +289,11 @@ impl Links {
     }
 
     /// Runs `f` on the shell, when it is still alive.
-    pub(crate) fn shell(&self, cx: &mut App, f: impl FnOnce(&mut super::Shell, &mut Context<super::Shell>)) {
+    pub(crate) fn shell(
+        &self,
+        cx: &mut App,
+        f: impl FnOnce(&mut super::Shell, &mut Context<super::Shell>),
+    ) {
         if let Some(shell) = self.shell.upgrade() {
             shell.update(cx, f);
         }
@@ -293,7 +306,8 @@ impl Links {
 
     /// The pointer left a link before it was followed: drop its prefetch.
     pub(crate) fn cancel_prefetch(&self, key: &PageKey, cx: &mut App) {
-        self.store.update(cx, |store, cx| store.cancel_prefetch(key, cx));
+        self.store
+            .update(cx, |store, cx| store.cancel_prefetch(key, cx));
     }
 
     /// Asks for a page again after a fault.

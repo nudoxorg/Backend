@@ -13,7 +13,9 @@
 
 use crate::model::pages::SymbolRef;
 use facet::{ActiveFacet as _, Palette};
-use gpui::{AnyElement, App, Bounds, Global, IntoElement, ParentElement, Pixels, Point, Styled, div};
+use gpui::{
+    AnyElement, App, Bounds, Global, IntoElement, ParentElement, Pixels, Point, Styled, div,
+};
 
 /// The declaration hovered somewhere, if any.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -48,13 +50,23 @@ pub(crate) fn put_out(symbol: &SymbolRef, cx: &mut App) {
 /// scrolled out of its region keeps its last place, and must not draw a ring
 /// over the chrome beside it. The target under the pointer wears its own
 /// hover, not a ring.
-pub(crate) fn rings(regions: &[(Bounds<Pixels>, Vec<Bounds<Pixels>>)], pointer: Point<Pixels>, cx: &App) -> Option<AnyElement> {
+pub(crate) fn rings(
+    regions: &[(Bounds<Pixels>, Vec<Bounds<Pixels>>)],
+    pointer: Point<Pixels>,
+    cx: &App,
+) -> Option<AnyElement> {
     lit(cx)?;
     let palette = cx.facet().palette();
     let mut layer = div().absolute().inset_0();
     let mut any = false;
     for (clip, placed) in regions {
-        let mut region = div().absolute().left(clip.origin.x).top(clip.origin.y).w(clip.size.width).h(clip.size.height).overflow_hidden();
+        let mut region = div()
+            .absolute()
+            .left(clip.origin.x)
+            .top(clip.origin.y)
+            .w(clip.size.width)
+            .h(clip.size.height)
+            .overflow_hidden();
         let mut in_region = false;
         for bounds in placed {
             if bounds.contains(&pointer) || !clip.intersects(bounds) {

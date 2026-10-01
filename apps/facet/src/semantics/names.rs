@@ -26,7 +26,10 @@ impl Names {
         let mut by_name: HashMap<SharedString, Vec<NodeId>> = HashMap::new();
         for &i in &world.items {
             let node = world.node(i);
-            if matches!(node.kind, Kind::Struct | Kind::Enum | Kind::Trait | Kind::Type | Kind::Union) {
+            if matches!(
+                node.kind,
+                Kind::Struct | Kind::Enum | Kind::Trait | Kind::Type | Kind::Union
+            ) {
                 by_name.entry(node.name.clone()).or_default().push(i);
             }
         }
@@ -57,7 +60,9 @@ impl InWorld<'_> {
         }
         let node = self.world.node(candidate);
         let module = self.world.modules[node.module as usize].path.as_ref();
-        let package = self.world.packages[node.pkg as usize].name.replace('-', "_");
+        let package = self.world.packages[node.pkg as usize]
+            .name
+            .replace('-', "_");
         module == qualifier
             || module.rsplit("::").next() == Some(qualifier)
             || package == qualifier
@@ -79,7 +84,12 @@ impl InWorld<'_> {
                 let same = |c: NodeId| self.world.node(c).pkg == here;
                 same(a)
                     .cmp(&same(b))
-                    .then_with(|| self.world.importance(a).partial_cmp(&self.world.importance(b)).unwrap_or(std::cmp::Ordering::Equal))
+                    .then_with(|| {
+                        self.world
+                            .importance(a)
+                            .partial_cmp(&self.world.importance(b))
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
                     // Equal rank: the first in node order wins, as a stable sort would keep it.
                     .then_with(|| b.cmp(&a))
             })
@@ -112,12 +122,23 @@ pub fn scope<'w>(resolver: &'w InWorld<'w>, node: NodeId) -> Scope<'w> {
     let world = resolver.world;
     let n = world.node(node);
     let parent = n.parent.map(|p| world.node(p));
-    let lists: Vec<&str> = [n.generics.as_deref(), parent.and_then(|p| p.generics.as_deref())].into_iter().flatten().collect();
-    let names = generics(&lists, n.where_.as_deref().unwrap_or("")).into_iter().map(|g| g.name);
+    let lists: Vec<&str> = [
+        n.generics.as_deref(),
+        parent.and_then(|p| p.generics.as_deref()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let names = generics(&lists, n.where_.as_deref().unwrap_or(""))
+        .into_iter()
+        .map(|g| g.name);
     let owner = n.parent.unwrap_or(node);
     let owner_node = world.node(owner);
     let scope = Scope::new(resolver).generics(names);
-    if matches!(owner_node.kind, Kind::Function | Kind::Method | Kind::Macro | Kind::Constant) {
+    if matches!(
+        owner_node.kind,
+        Kind::Function | Kind::Method | Kind::Macro | Kind::Constant
+    ) {
         scope
     } else {
         scope.owner(Target::Node(owner), owner_node.name.clone())

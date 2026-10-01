@@ -486,10 +486,10 @@ impl Identity {
             parts.push(project.name().to_owned());
         }
         if let Some(path) = self.path.as_ref() {
-            parts.push(self.line.map_or_else(
-                || path.as_str().to_owned(),
-                |line| format!("{path}:{line}"),
-            ));
+            parts.push(
+                self.line
+                    .map_or_else(|| path.as_str().to_owned(), |line| format!("{path}:{line}")),
+            );
         }
         if !self.trail.is_empty() {
             parts.push(self.trail.joined());
@@ -532,12 +532,7 @@ fn parse_tail(rest: &str) -> Identity {
     let mut parts = rest.splitn(2, SEPARATOR);
     let head = parts.next().unwrap_or_default();
     let (shape, path, line, trail) = match (head, parts.next()) {
-        ("", None) => (
-            IdentityShape::Opaque,
-            None,
-            None,
-            SymbolTrail::default(),
-        ),
+        ("", None) => (IdentityShape::Opaque, None, None, SymbolTrail::default()),
         ("semantic", Some(tail)) => (
             IdentityShape::Semantic,
             None,

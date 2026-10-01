@@ -19,36 +19,40 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use backend_semantic::ir::{AtomId, EntityId, TypeId};
-use backend_semantic::ir::{
-    AtomInput, EntityKind, EntityRecord, FragmentView, PreparedFragment, PrimitiveType,
-    SourceIdentity, TypeNode,
+use backend_engine::index_publish::PublishedIndexSnapshot;
+use backend_engine::retrieval::{
+    RetrievalBoundary, RetrievalFailure, RetrievalOperationTerminal, RetrievalResult, VectorRoute,
 };
-use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
-use backend_store::hydration::{PlanScratch, Projection, demand, plan};
-use backend_version::{
-    ArtifactId, ContentId, IrFragmentDomain, IrFragmentEncoding, ObjectDomain, SourceFactDomain,
-    ToolchainDomain,
-};
-use backend_store::memory::{InsertOutcome, MemoryStore, StoreCapacity};
-use backend_version::object::ObjectRef;
-use backend_store::root::{ClosureScratch, GenerationRoot, GenerationView, PreparedLocality, RootEntry};
-use backend_version::schema::SchemaId;
-use backend_semantic::index_core::{
-    EntityArtifactIdentity, EntityDocumentId, ExactRow, ExactSegment, IndexSnapshot, LexicalRow,
-    LexicalScore, LexicalSegment,
-};
+use backend_extension_qdrant::server::{QdrantBlockingAdapter, QdrantDataKey, QdrantError};
 use backend_semantic::graph_vector::{
     Cancellation, GraphAuthority, GraphDegradation, GraphEdge, GraphLease, GraphStreamEvent,
     GraphTerminal, LeaseCapacity, LeaseStateCell, Metric, ModelId, PartitionId, ProjectionId,
     StreamCapacityError, TraceProbe, ValidatedVectorSegment, VectorAuthority, VectorPoint,
 };
-use backend_engine::index_publish::PublishedIndexSnapshot;
-use backend_extension_qdrant::server::{QdrantBlockingAdapter, QdrantDataKey, QdrantError};
-use backend_engine::retrieval::{
-    RetrievalBoundary, RetrievalFailure, RetrievalOperationTerminal, RetrievalResult, VectorRoute,
+use backend_semantic::index_core::{
+    EntityArtifactIdentity, EntityDocumentId, ExactRow, ExactSegment, IndexSnapshot, LexicalRow,
+    LexicalScore, LexicalSegment,
 };
+use backend_semantic::ir::{AtomId, EntityId, TypeId};
+use backend_semantic::ir::{
+    AtomInput, EntityKind, EntityRecord, FragmentView, PreparedFragment, PrimitiveType,
+    SourceIdentity, TypeNode,
+};
+use backend_semantic::vocabulary::{
+    CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage,
+};
+use backend_store::hydration::{PlanScratch, Projection, demand, plan};
 use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
+use backend_store::memory::{InsertOutcome, MemoryStore, StoreCapacity};
+use backend_store::root::{
+    ClosureScratch, GenerationRoot, GenerationView, PreparedLocality, RootEntry,
+};
+use backend_version::object::ObjectRef;
+use backend_version::schema::SchemaId;
+use backend_version::{
+    ArtifactId, ContentId, IrFragmentDomain, IrFragmentEncoding, ObjectDomain, SourceFactDomain,
+    ToolchainDomain,
+};
 
 static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
 

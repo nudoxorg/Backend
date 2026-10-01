@@ -6,17 +6,17 @@ use core::{
     mem::{size_of, size_of_val},
 };
 
+use backend_extension_trustfall::server::IrTrustfallGraph;
+use backend_semantic::graph_vector::{
+    Metric, ModelId, PartitionId, ValidatedVectorSegment, VectorAuthority, VectorPoint,
+    exact_vector_query,
+};
 use backend_semantic::ir::{
     Confidence, CorePayloadHash, DeclarationFamilyId, Diff, EntityAuthorityFacts, EntityVersion,
     FrontendTree, GenerationId, Ir, IrBuilder, ItemKind, LinkId, LinkKind, LinkTarget,
     OccurrenceAuthorityFacts, Snapshot, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget,
     VariantFingerprint, Visibility,
 };
-use backend_semantic::graph_vector::{
-    Metric, ModelId, PartitionId, ValidatedVectorSegment, VectorAuthority, VectorPoint,
-    exact_vector_query,
-};
-use backend_extension_trustfall::server::IrTrustfallGraph;
 
 use crate::{BenchmarkError, measure::StageWork, model::MAX_CORPUS, runner::fixture::Corpus};
 
@@ -121,9 +121,10 @@ pub(crate) fn render(ir: &Ir) -> Result<StageWork, BenchmarkError> {
         if let Some(signature) = ir.signature(item.id()) {
             write!(output, "{signature}").map_err(|_| BenchmarkError::SemanticRender)?;
         }
-        if let Some(embedding) =
-            ir.embedding_text(item.id(), backend_semantic::ir::semantic_render::EmbeddingProfile::CONTEXTUAL)
-        {
+        if let Some(embedding) = ir.embedding_text(
+            item.id(),
+            backend_semantic::ir::semantic_render::EmbeddingProfile::CONTEXTUAL,
+        ) {
             write!(output, "{embedding}").map_err(|_| BenchmarkError::SemanticRender)?;
         }
     }
@@ -201,7 +202,9 @@ pub(crate) fn trustfall(ir: &Ir) -> Result<StageWork, BenchmarkError> {
 pub(crate) fn vector(ir: &Ir) -> Result<StageWork, BenchmarkError> {
     let count = ir.entity_count();
     let authority = VectorAuthority::new(
-        backend_semantic::index_core::IndexSnapshotId::from_canonical_bytes(b"semantic-vector-snapshot"),
+        backend_semantic::index_core::IndexSnapshotId::from_canonical_bytes(
+            b"semantic-vector-snapshot",
+        ),
         ModelId::new([0x81; 16]),
         u16::try_from(VECTOR_DIMENSION).map_err(BenchmarkError::ByteCount)?,
         Metric::SquaredEuclidean,

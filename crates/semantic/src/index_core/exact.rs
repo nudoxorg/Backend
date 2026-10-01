@@ -5,8 +5,8 @@
 
 use core::ops::Deref;
 
-use backend_version::{ContentHasher, FixedCanonicalRecord, IndexExactSegmentDomain};
 use crate::index_vocabulary::ExactSegmentId;
+use backend_version::{ContentHasher, FixedCanonicalRecord, IndexExactSegmentDomain};
 
 /// Maximum number of rows admitted by one exact segment view.
 ///

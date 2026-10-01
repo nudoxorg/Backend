@@ -9,8 +9,8 @@ publish = false
 [features]
 search-bench = []
 cluster-process-journey-hooks = [
-    "backend-engine/cluster-process-journey-hooks",
-    "backend-store-s3/test-support",
+  "backend-engine/cluster-process-journey-hooks",
+  "backend-store-s3/test-support",
 ]
 # Builders for hosts' tests of states this build cannot write on its own
 # (`builtin::write_state_from_another_build`).
@@ -58,7 +58,10 @@ unicode-normalization = "0.1.25"
 backend-store-s3 = { path = "../store-s3", features = ["test-support"] }
 
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "1.1.4", default-features = false, features = ["fs", "std"] }
+rustix = { version = "1.1.4", default-features = false, features = [
+  "fs",
+  "std",
+] }
 
 [[bench]]
 name = "package_publication"

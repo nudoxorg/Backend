@@ -77,7 +77,9 @@ fn spawn_with<H>(
             join: Some(join),
         }),
         Err(error) => {
-            gate.publish(OwnerState::Failed(OwnerFault::Host(format!("the owner's thread could not start: {error}").into())));
+            gate.publish(OwnerState::Failed(OwnerFault::Host(
+                format!("the owner's thread could not start: {error}").into(),
+            )));
             None
         }
     }
@@ -125,7 +127,10 @@ fn start(paths: &WorkspacePaths, gate: &OwnerGate) -> Result<(DesktopHost, Versi
             }
         }
         if started.elapsed() >= DEADLINE {
-            return Err(format!("{last} (gave up after {}s)", started.elapsed().as_secs()));
+            return Err(format!(
+                "{last} (gave up after {}s)",
+                started.elapsed().as_secs()
+            ));
         }
         if attempt.saturating_add(1) < ATTEMPTS {
             std::thread::sleep(RETRY);
@@ -137,7 +142,11 @@ fn start(paths: &WorkspacePaths, gate: &OwnerGate) -> Result<(DesktopHost, Versi
 fn attempt_once(paths: &WorkspacePaths) -> Result<(DesktopHost, VersionedRoot), String> {
     let starting = Instant::now();
     let host = DesktopHost::start_with_paths(paths.clone()).map_err(|error| describe(&error))?;
-    crate::runtime::trace::span("boot.owner_start", starting, format_args!("{:?}", host.mode()));
+    crate::runtime::trace::span(
+        "boot.owner_start",
+        starting,
+        format_args!("{:?}", host.mode()),
+    );
     if let Some(moved) = host.state_set_aside() {
         super::aside::record(moved);
     }
@@ -163,10 +172,13 @@ mod tests {
 
     fn settle(gate: &OwnerGate, done: impl Fn(&OwnerState) -> bool) -> OwnerState {
         let mut state = gate.state();
-        crate::runtime::wait::until("the owner thread published the state the test waits for", || {
-            state = gate.state();
-            done(&state)
-        });
+        crate::runtime::wait::until(
+            "the owner thread published the state the test waits for",
+            || {
+                state = gate.state();
+                done(&state)
+            },
+        );
         state
     }
 
@@ -176,14 +188,29 @@ mod tests {
         let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counted = std::sync::Arc::clone(&attempts);
         let thread = spawn_with(gate.clone(), move |_| {
-            assert!(counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0, "the host tripped over its own lease");
-            Ok(Started { host: (), key: VersionedRoot::unserved(), mode: ServiceMode::Embedded })
+            assert!(
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0,
+                "the host tripped over its own lease"
+            );
+            Ok(Started {
+                host: (),
+                key: VersionedRoot::unserved(),
+                mode: ServiceMode::Embedded,
+            })
         })
         .expect("the owner thread");
         let failed = settle(&gate, |state| matches!(state, OwnerState::Failed(_)));
-        let OwnerState::Failed(OwnerFault::Panicked(what)) = failed else { panic!("not a panic fault: {failed:?}") };
-        assert!(what.contains("the host tripped over its own lease"), "the fault says what panicked: {what}");
-        assert!(gate.wait().is_err(), "a worker waiting on the gate is released with the fault, not left waiting");
+        let OwnerState::Failed(OwnerFault::Panicked(what)) = failed else {
+            panic!("not a panic fault: {failed:?}")
+        };
+        assert!(
+            what.contains("the host tripped over its own lease"),
+            "the fault says what panicked: {what}"
+        );
+        assert!(
+            gate.wait().is_err(),
+            "a worker waiting on the gate is released with the fault, not left waiting"
+        );
         // "Try again" starts it again, and this time it answers.
         assert!(gate.restart());
         settle(&gate, |state| matches!(state, OwnerState::Ready { .. }));

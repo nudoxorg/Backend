@@ -130,7 +130,13 @@ fn locked_roslyn_packaging_round_trips_fixture_and_rejects_tracked_outputs() -> 
         // server is exactly the kind of ambient, cross-process state that
         // isolated `obj/`/`bin/` directories alone cannot rule out as a
         // source of the "authority image changed" drift this test guards.
-        &["build", "-c", "Release", "--nologo", "-p:UseSharedCompilation=false"],
+        &[
+            "build",
+            "-c",
+            "Release",
+            "--nologo",
+            "-p:UseSharedCompilation=false",
+        ],
         &[intermediate_arg, output_arg],
         "build",
     )?;

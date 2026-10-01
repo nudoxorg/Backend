@@ -162,7 +162,10 @@ pub fn use_of(world: &World, i: NodeId, package: u32) -> Use {
             yours += 1;
         }
     }
-    Use { n: seen.len(), yours }
+    Use {
+        n: seen.len(),
+        yours,
+    }
 }
 
 /// The types `i`'s fields and variants are made of, in first-seen order: the
@@ -172,7 +175,12 @@ pub fn parts_of(world: &World, names: &Names, i: NodeId) -> Vec<NodeId> {
     let mut out: Vec<NodeId> = Vec::new();
     for &j in world.kids(i) {
         let n = world.node(j);
-        let Some(ty) = n.ty.as_deref().filter(|_| matches!(n.kind, Kind::Field | Kind::Variant)) else { continue };
+        let Some(ty) =
+            n.ty.as_deref()
+                .filter(|_| matches!(n.kind, Kind::Field | Kind::Variant))
+        else {
+            continue;
+        };
         let mut keys = Keys::new(world, names, j, i);
         keys.walk(&parse(ty));
         for t in keys.out {
@@ -197,18 +205,69 @@ struct Keys<'w> {
 
 /// Wrappers a key sees through (`recipes.js` `SEE`).
 const SEE: [&str; 21] = [
-    "Option", "Result", "Box", "Rc", "Arc", "Cow", "Pin", "RefCell", "Cell", "Mutex", "RwLock", "Ref", "RefMut",
-    "MutexGuard", "RwLockReadGuard", "RwLockWriteGuard", "AsRef", "Into", "Borrow", "ManuallyDrop", "Weak",
+    "Option",
+    "Result",
+    "Box",
+    "Rc",
+    "Arc",
+    "Cow",
+    "Pin",
+    "RefCell",
+    "Cell",
+    "Mutex",
+    "RwLock",
+    "Ref",
+    "RefMut",
+    "MutexGuard",
+    "RwLockReadGuard",
+    "RwLockWriteGuard",
+    "AsRef",
+    "Into",
+    "Borrow",
+    "ManuallyDrop",
+    "Weak",
 ];
 const LISTS: [&str; 11] = [
-    "Vec", "VecDeque", "SmallVec", "LinkedList", "HashSet", "BTreeSet", "IndexSet", "BinaryHeap", "IntoIterator",
-    "Iterator", "Peekable",
+    "Vec",
+    "VecDeque",
+    "SmallVec",
+    "LinkedList",
+    "HashSet",
+    "BTreeSet",
+    "IndexSet",
+    "BinaryHeap",
+    "IntoIterator",
+    "Iterator",
+    "Peekable",
 ];
 const MAPS: [&str; 3] = ["HashMap", "BTreeMap", "IndexMap"];
 /// Names a key spells as plain words (`text`, `path`, `number`, …).
 const PLAIN: [&str; 26] = [
-    "String", "str", "OsStr", "OsString", "Path", "PathBuf", "u8", "bool", "char", "u16", "u32", "u64", "u128",
-    "usize", "i8", "i16", "i32", "i64", "i128", "isize", "f32", "f64", "NonZeroU32", "NonZeroU64", "NonZeroUsize",
+    "String",
+    "str",
+    "OsStr",
+    "OsString",
+    "Path",
+    "PathBuf",
+    "u8",
+    "bool",
+    "char",
+    "u16",
+    "u32",
+    "u64",
+    "u128",
+    "usize",
+    "i8",
+    "i16",
+    "i32",
+    "i64",
+    "i128",
+    "isize",
+    "f32",
+    "f64",
+    "NonZeroU32",
+    "NonZeroU64",
+    "NonZeroUsize",
     "Duration",
 ];
 
@@ -216,15 +275,29 @@ impl<'w> Keys<'w> {
     fn new(world: &'w World, names: &'w Names, from: NodeId, owner: NodeId) -> Self {
         let n = world.node(from);
         let parent = n.parent.map(|p| world.node(p));
-        let lists: Vec<&str> =
-            [n.generics.as_deref(), parent.and_then(|p| p.generics.as_deref())].into_iter().flatten().collect();
-        let vars = generics(&lists, n.where_.as_deref().unwrap_or("")).into_iter().map(|g| g.name).collect();
-        Self { resolver: InWorld { world, names, from }, vars, owner, out: Vec::new() }
+        let lists: Vec<&str> = [
+            n.generics.as_deref(),
+            parent.and_then(|p| p.generics.as_deref()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let vars = generics(&lists, n.where_.as_deref().unwrap_or(""))
+            .into_iter()
+            .map(|g| g.name)
+            .collect();
+        Self {
+            resolver: InWorld { world, names, from },
+            vars,
+            owner,
+            out: Vec::new(),
+        }
     }
 
     /// A generic: declared, or a lone capital.
     fn is_var(&self, name: &str) -> bool {
-        self.vars.iter().any(|v| v == name) || (name.len() == 1 && name.bytes().all(|b| b.is_ascii_uppercase()))
+        self.vars.iter().any(|v| v == name)
+            || (name.len() == 1 && name.bytes().all(|b| b.is_ascii_uppercase()))
     }
 
     fn walk(&mut self, t: &TypeExpr) {
@@ -237,9 +310,12 @@ impl<'w> Keys<'w> {
             TypeExpr::Any(bounds) => bounds.iter().take(1).for_each(|b| self.walk(b)),
             TypeExpr::Binding { ty, .. } => self.walk(ty),
             // `Foo<T>::Bar` keys as `Foo`; `Self::X`, `T::X` and `<T as Tr>::X` as anything.
-            TypeExpr::Assoc { base, via: None, .. } => match &**base {
+            TypeExpr::Assoc {
+                base, via: None, ..
+            } => match &**base {
                 TypeExpr::Named { path, .. }
-                    if path.first().is_some_and(|p| p != "Self") && !(path.len() == 1 && self.is_var(&path[0])) =>
+                    if path.first().is_some_and(|p| p != "Self")
+                        && !(path.len() == 1 && self.is_var(&path[0])) =>
                 {
                     self.walk(base);
                 }
@@ -251,8 +327,12 @@ impl<'w> Keys<'w> {
     }
 
     fn named(&mut self, path: &[String], args: &[TypeExpr]) {
-        let Some(last) = path.last().map(String::as_str) else { return };
-        if (path.len() > 1 && (path[0] == "Self" || self.is_var(&path[0]))) || (path.len() == 1 && self.is_var(last)) {
+        let Some(last) = path.last().map(String::as_str) else {
+            return;
+        };
+        if (path.len() > 1 && (path[0] == "Self" || self.is_var(&path[0])))
+            || (path.len() == 1 && self.is_var(last))
+        {
             return;
         }
         let kept = if SEE.contains(&last) || LISTS.contains(&last) {
@@ -323,14 +403,20 @@ fn best(list: impl IntoIterator<Item = NodeId>, rank: impl Fn(NodeId) -> f64) ->
 
 impl Reading<'_> {
     fn use_(&self, i: NodeId) -> Use {
-        *self.uses.borrow_mut().entry(i).or_insert_with(|| use_of(self.world, i, self.package))
+        *self
+            .uses
+            .borrow_mut()
+            .entry(i)
+            .or_insert_with(|| use_of(self.world, i, self.package))
     }
 
     /// Importance + 0.22·ln(1 + use) + 0.15 if your code uses it.
     #[allow(clippy::cast_precision_loss)]
     fn score(&self, i: NodeId) -> f64 {
         let u = self.use_(i);
-        f64::from(self.world.importance(i)) + 0.22 * (u.n as f64).ln_1p() + if u.yours > 0 { 0.15 } else { 0.0 }
+        f64::from(self.world.importance(i))
+            + 0.22 * (u.n as f64).ln_1p()
+            + if u.yours > 0 { 0.15 } else { 0.0 }
     }
 
     /// Implementors: impl and derive edges into a trait.
@@ -368,7 +454,10 @@ impl Reading<'_> {
     fn door(&self, items: &[NodeId], heart: Option<NodeId>) -> Option<NodeId> {
         let world = self.world;
         let hands = |j: NodeId| heart.is_some_and(|h| self.returns(j, h));
-        let doors = items.iter().copied().filter(|&i| world.node(i).kind == Kind::Function && self.use_(i).n > 0);
+        let doors = items
+            .iter()
+            .copied()
+            .filter(|&i| world.node(i).kind == Kind::Function && self.use_(i).n > 0);
         let door = best(doors, |i| self.score(i) + if hands(i) { 0.3 } else { 0.0 });
         if door.is_some() {
             return door;
@@ -387,7 +476,10 @@ impl Reading<'_> {
             })
             .collect();
         makers.sort_by(|&a, &b| {
-            self.use_(b).n.cmp(&self.use_(a).n).then_with(|| world.importance(b).total_cmp(&world.importance(a)))
+            self.use_(b)
+                .n
+                .cmp(&self.use_(a).n)
+                .then_with(|| world.importance(b).total_cmp(&world.importance(a)))
         });
         makers.first().copied()
     }
@@ -422,14 +514,35 @@ pub fn of(world: &World, names: &Names, package: u32) -> Tour {
 /// Candidate order must match the world index to preserve ranking ties.
 #[must_use]
 pub fn of_items(world: &World, names: &Names, package: u32, candidates: &[NodeId]) -> Tour {
-    let r = Reading { world, names, candidates, package, uses: RefCell::new(HashMap::new()) };
+    let r = Reading {
+        world,
+        names,
+        candidates,
+        package,
+        uses: RefCell::new(HashMap::new()),
+    };
     let items = r.items();
-    let types: Vec<NodeId> = items.iter().copied().filter(|&i| is_type(world.node(i).kind)).collect();
-    let errors: Vec<NodeId> = types.iter().copied().filter(|&i| is_error(world, i)).collect();
-    let mut heart = best(types.iter().copied().filter(|&i| !is_error(world, i)), |i| r.score(i));
+    let types: Vec<NodeId> = items
+        .iter()
+        .copied()
+        .filter(|&i| is_type(world.node(i).kind))
+        .collect();
+    let errors: Vec<NodeId> = types
+        .iter()
+        .copied()
+        .filter(|&i| is_error(world, i))
+        .collect();
+    let mut heart = best(
+        types.iter().copied().filter(|&i| !is_error(world, i)),
+        |i| r.score(i),
+    );
     let door = r.door(&items, heart);
     let inside = heart.map_or_else(Vec::new, |h| r.inside(h));
-    let mut traits: Vec<NodeId> = items.iter().copied().filter(|&i| world.node(i).kind == Kind::Trait).collect();
+    let mut traits: Vec<NodeId> = items
+        .iter()
+        .copied()
+        .filter(|&i| world.node(i).kind == Kind::Trait)
+        .collect();
     traits.sort_by_key(|&t| std::cmp::Reverse(r.weight(t)));
     let contract = traits.first().copied();
     let fails = errors
@@ -461,7 +574,13 @@ pub fn of_items(world: &World, names: &Names, package: u32, candidates: &[NodeId
             heart = None;
         }
     }
-    let opens = door.map(|d| if world.node(d).kind == Kind::Function { Why::CallFirst } else { Why::GetOne });
+    let opens = door.map(|d| {
+        if world.node(d).kind == Kind::Function {
+            Why::CallFirst
+        } else {
+            Why::GetOne
+        }
+    });
     add(door, Role::StartHere, opens.unwrap_or(Why::CallFirst));
     add(heart, Role::WhatYouHold, Why::TurnsOnIt);
     if let Some(h) = heart {
@@ -473,10 +592,18 @@ pub fn of_items(world: &World, names: &Names, package: u32, candidates: &[NodeId
         0 => Why::OthersImplement,
         n => Why::Doers(n),
     });
-    add(contract, Role::WhatItPromises, promise.unwrap_or(Why::OthersImplement));
+    add(
+        contract,
+        Role::WhatItPromises,
+        promise.unwrap_or(Why::OthersImplement),
+    );
     add(fails, Role::WhenItFails, Why::YouHandle);
     stops.truncate(MAX_STOPS);
-    Tour { package, stops, items: items.len() }
+    Tour {
+        package,
+        stops,
+        items: items.len(),
+    }
 }
 
 /// A lede as prose: markdown links and intra-doc links become their text,
@@ -555,14 +682,29 @@ mod indexed_tests {
     #[test]
     fn package_index_preserves_semantic_tours_and_excludes_foreign_items() {
         let mut world = crate::graph::model::tests::tiny();
-        for node in &mut world.nodes { node.vis = Some("pub".into()); }
+        for node in &mut world.nodes {
+            node.vis = Some("pub".into());
+        }
         world.nodes[3].ret = Some("Result<(), Error>".into());
         let names = super::Names::new(&world);
         for package in 0..world.packages.len() as u32 {
-            let candidates: Vec<_> = world.items.iter().copied().filter(|&i| world.node(i).pkg == package).collect();
-            assert_eq!(super::of_items(&world, &names, package, &candidates), super::of(&world, &names, package));
+            let candidates: Vec<_> = world
+                .items
+                .iter()
+                .copied()
+                .filter(|&i| world.node(i).pkg == package)
+                .collect();
+            assert_eq!(
+                super::of_items(&world, &names, package, &candidates),
+                super::of(&world, &names, package)
+            );
         }
         let without_error = super::of_items(&world, &names, 1, &[0, 3, 4]);
-        assert!(without_error.stops.iter().all(|stop| stop.node != 0 && stop.node != 5));
+        assert!(
+            without_error
+                .stops
+                .iter()
+                .all(|stop| stop.node != 0 && stop.node != 5)
+        );
     }
 }

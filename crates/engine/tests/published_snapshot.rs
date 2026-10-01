@@ -10,35 +10,39 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use backend_semantic::ir::{AtomId, EntityId, TypeId};
-use backend_semantic::ir::{
-    AtomInput, EntityKind, EntityRecord, FragmentView, PreparedFragment, PrimitiveType,
-    SourceIdentity, TypeNode,
+use backend_engine::index_publish::{PublishedIndexSnapshot, PublishedIndexSnapshotError};
+use backend_extension_qdrant::server::{QdrantBlockingAdapter, QdrantDataKey, QdrantError};
+use backend_extension_tantivy::server::{TantivyHit, TantivyLexical};
+use backend_extension_trustfall::server::TrustfallGraph;
+use backend_semantic::graph_vector::{
+    GraphAuthority, GraphEdge, GraphRow, Metric, ModelId, PartitionId, ProjectionId,
+    ValidatedGraphView, ValidatedVectorSegment, VectorAuthority, VectorPoint, VectorSegmentError,
 };
-use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
-use backend_store::hydration::{PlanScratch, Projection, demand, plan};
-use backend_version::{
-    ArtifactId, ContentId, GenerationId, IrFragmentDomain, IrFragmentEncoding, ObjectDomain,
-    SourceFactDomain, ToolchainDomain,
-};
-use backend_store::memory::{InsertOutcome, MemoryStore, StoreCapacity};
-use backend_version::object::ObjectRef;
-use backend_store::root::{ClosureScratch, GenerationRoot, GenerationView, PreparedLocality, RootEntry};
-use backend_version::schema::SchemaId;
 use backend_semantic::index_core::{
     EntityArtifactIdentity, EntityDocumentId, ExactManifest, ExactOperation, ExactResolution,
     ExactRow, ExactSegment, ExactTerminal, IndexSnapshot, IndexSnapshotId, LexicalManifest,
     LexicalRow, LexicalScore, LexicalSegment,
 };
-use backend_semantic::graph_vector::{
-    GraphAuthority, GraphEdge, GraphRow, Metric, ModelId, PartitionId, ProjectionId,
-    ValidatedGraphView, ValidatedVectorSegment, VectorAuthority, VectorPoint, VectorSegmentError,
+use backend_semantic::ir::{AtomId, EntityId, TypeId};
+use backend_semantic::ir::{
+    AtomInput, EntityKind, EntityRecord, FragmentView, PreparedFragment, PrimitiveType,
+    SourceIdentity, TypeNode,
 };
-use backend_engine::index_publish::{PublishedIndexSnapshot, PublishedIndexSnapshotError};
-use backend_extension_qdrant::server::{QdrantBlockingAdapter, QdrantDataKey, QdrantError};
-use backend_extension_tantivy::server::{TantivyHit, TantivyLexical};
-use backend_extension_trustfall::server::TrustfallGraph;
+use backend_semantic::vocabulary::{
+    CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage,
+};
+use backend_store::hydration::{PlanScratch, Projection, demand, plan};
 use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
+use backend_store::memory::{InsertOutcome, MemoryStore, StoreCapacity};
+use backend_store::root::{
+    ClosureScratch, GenerationRoot, GenerationView, PreparedLocality, RootEntry,
+};
+use backend_version::object::ObjectRef;
+use backend_version::schema::SchemaId;
+use backend_version::{
+    ArtifactId, ContentId, GenerationId, IrFragmentDomain, IrFragmentEncoding, ObjectDomain,
+    SourceFactDomain, ToolchainDomain,
+};
 
 static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
 

@@ -76,7 +76,11 @@ impl ChildGuard {
 impl Drop for ChildGuard {
     fn drop(&mut self) {
         if let Some(child) = self.child.as_mut() {
-            if child.try_wait().expect("poll locald during cleanup").is_none() {
+            if child
+                .try_wait()
+                .expect("poll locald during cleanup")
+                .is_none()
+            {
                 let _ = child.kill();
             }
             let _ = child.wait();
@@ -132,8 +136,7 @@ fn launch(
     authority: &Path,
     registry_endpoint: &str,
 ) -> ChildGuard {
-    let mut args =
-        surface_matrix::locald_args(endpoint, workspace, authority, Some(0), false);
+    let mut args = surface_matrix::locald_args(endpoint, workspace, authority, Some(0), false);
     args.extend([
         OsString::from("--registry-endpoint"),
         OsString::from(registry_endpoint),
@@ -182,12 +185,7 @@ fn cli_json(endpoint: &Path, workspace: &Path, project: &Path, words: &[String])
 fn wait_for_index(endpoint: &Path, workspace: &Path, project: &Path) {
     let end = Instant::now() + INDEX_DEADLINE;
     loop {
-        let health = cli_json(
-            endpoint,
-            workspace,
-            project,
-            &["health".to_owned()],
-        );
+        let health = cli_json(endpoint, workspace, project, &["health".to_owned()]);
         if health["rows"].as_u64().unwrap_or(0) > 1 {
             return;
         }
@@ -230,7 +228,10 @@ fn record_by_title<'a>(value: &'a Value, title: &str) -> &'a Value {
 }
 
 #[test]
-#[allow(clippy::too_many_lines, reason = "one conversation exercises version surfaces")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one conversation exercises version surfaces"
+)]
 fn new_user_versions_covers_semantic_versions_package_profile_releases_and_index_search() {
     let root = unique_root("versions");
     let project = fixture_app();
@@ -283,7 +284,9 @@ fn new_user_versions_covers_semantic_versions_package_profile_releases_and_index
     assert_eq!(semantic["answer"], "product");
     let semantic_tags = product_tags(&semantic);
     assert!(
-        semantic_tags.iter().any(|tags| tags.iter().any(|tag| tag == "selected")),
+        semantic_tags
+            .iter()
+            .any(|tags| tags.iter().any(|tag| tag == "selected")),
         "semantic-versions did not mark the indexed helper generation selected: {semantic}"
     );
     assert!(
@@ -346,12 +349,7 @@ fn new_user_versions_covers_semantic_versions_package_profile_releases_and_index
         &project,
         &["subscribe".to_owned(), helper_v1.clone()],
     );
-    let releases = cli_json(
-        &endpoint,
-        &workspace,
-        &project,
-        &["releases".to_owned()],
-    );
+    let releases = cli_json(&endpoint, &workspace, &project, &["releases".to_owned()]);
     assert_eq!(releases["answer"], "product");
     let release_titles = product_titles(&releases);
     assert!(
@@ -361,9 +359,7 @@ fn new_user_versions_covers_semantic_versions_package_profile_releases_and_index
         "releases did not list the indexed helper release 1.0.0: {releases}"
     );
     assert!(
-        !release_titles
-            .iter()
-            .any(|title| title.ends_with(" 2.0.0")),
+        !release_titles.iter().any(|title| title.ends_with(" 2.0.0")),
         "releases must not list the unindexed registry feed release 2.0.0: {releases}"
     );
 
@@ -388,7 +384,9 @@ fn new_user_versions_covers_semantic_versions_package_profile_releases_and_index
     );
     let index_titles = product_titles(&index_parse);
     assert!(
-        index_titles.iter().any(|title| title == "parse_config src/lib.rs"),
+        index_titles
+            .iter()
+            .any(|title| title == "parse_config src/lib.rs"),
         "index-search did not return parse_config at src/lib.rs: {index_parse}"
     );
     assert!(

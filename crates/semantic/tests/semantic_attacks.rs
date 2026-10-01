@@ -10,13 +10,15 @@ use backend_semantic::ir::{
     AtomInput, CanonicalDataError, DataFacts, DataOutput, DataResourceBudget, DataScratch,
     EntityKind, EntityRecord, ExtensionFreePredicate, ExtensionPoolsLane, ExtensionTypeParameter,
     ExtensionTypeParameterBound, ExtensionTypeParameterBoundRange, ExtensionTypeParameterRange,
-    FragmentError, FragmentView, FreePredicateListId,
-    PrepareError, PreparedFragment, PrimitiveType, ReopenedTypeParameterList, SemanticDataFault,
-    SourceIdentity, TypeNode, TypeParameterListId, WriteError, canonicalize_data_with_budget,
+    FragmentError, FragmentView, FreePredicateListId, PrepareError, PreparedFragment,
+    PrimitiveType, ReopenedTypeParameterList, SemanticDataFault, SourceIdentity, TypeNode,
+    TypeParameterListId, WriteError, canonicalize_data_with_budget,
 };
-use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
-use core::mem::size_of;
+use backend_semantic::vocabulary::{
+    CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage,
+};
 use backend_version::{ContentId, Domain, IrFragmentDomain, SourceFactDomain, ToolchainDomain};
+use core::mem::size_of;
 use thiserror::Error;
 
 const HEADER_BYTES: usize = 12;
@@ -457,7 +459,9 @@ fn reopened_extension_parameters_parse_mixed_optional_operands_sequentially() {
         backend_semantic::ir::DecodedTypeParameter {
             name: b"T",
             default: Some(0),
-            semantics: backend_semantic::ir::DecodedTypeParameterSemantics::Legacy { constraint: None },
+            semantics: backend_semantic::ir::DecodedTypeParameterSemantics::Legacy {
+                constraint: None
+            },
         }
     );
     assert_eq!(
@@ -537,10 +541,12 @@ fn schema_five_type_parameter_ranges_keep_empty_lists_distinct_from_element_star
             assert!(empty.cursor()?.next().is_none());
         }
         ReopenedTypeParameterList::LegacyStartOnly { start } => {
-            return Err(backend_semantic::ir::ExtensionPoolFault::LegacyTypeParameterStart {
-                start,
-                element_count: 0,
-            });
+            return Err(
+                backend_semantic::ir::ExtensionPoolFault::LegacyTypeParameterStart {
+                    start,
+                    element_count: 0,
+                },
+            );
         }
     }
 
@@ -557,10 +563,12 @@ fn schema_five_type_parameter_ranges_keep_empty_lists_distinct_from_element_star
             assert_eq!(parameter.name, b"T");
         }
         ReopenedTypeParameterList::LegacyStartOnly { start } => {
-            return Err(backend_semantic::ir::ExtensionPoolFault::LegacyTypeParameterStart {
-                start,
-                element_count: 1,
-            });
+            return Err(
+                backend_semantic::ir::ExtensionPoolFault::LegacyTypeParameterStart {
+                    start,
+                    element_count: 1,
+                },
+            );
         }
     }
     Ok(())
@@ -609,12 +617,14 @@ fn schema_five_rejects_a_type_parameter_range_past_the_element_prefix() {
     };
     assert_eq!(
         lane.admit(0, 0, 0),
-        Err(backend_semantic::ir::ExtensionPoolFault::TypeParameterRange {
-            list: 0,
-            start: 1,
-            length: 1,
-            element_count: 1,
-        })
+        Err(
+            backend_semantic::ir::ExtensionPoolFault::TypeParameterRange {
+                list: 0,
+                start: 1,
+                length: 1,
+                element_count: 1,
+            }
+        )
     );
 }
 
@@ -633,7 +643,9 @@ fn schema_five_reopens_plural_bounds_and_closed_parameter_requirements()
             inference: backend_semantic::ir::TypeParameterInference::Const,
         },
         requirements: backend_semantic::ir::TypeParameterRequirements {
-            primary: backend_semantic::ir::TypeParameterPrimaryRequirement::Reference { nullable: false },
+            primary: backend_semantic::ir::TypeParameterPrimaryRequirement::Reference {
+                nullable: false,
+            },
             constructor: true,
             allows_ref_like: false,
         },
@@ -663,10 +675,12 @@ fn schema_five_reopens_plural_bounds_and_closed_parameter_requirements()
     let backend_semantic::ir::ReopenedTypeParameterList::Exact(parameters) =
         pools.type_parameter_list(TypeParameterListId::new(0))?
     else {
-        return Err(backend_semantic::ir::ExtensionPoolFault::LegacyTypeParameterStart {
-            start: 0,
-            element_count: 1,
-        });
+        return Err(
+            backend_semantic::ir::ExtensionPoolFault::LegacyTypeParameterStart {
+                start: 0,
+                element_count: 1,
+            },
+        );
     };
     let parameter = parameters.get(0)?;
     assert_eq!(
@@ -700,7 +714,9 @@ fn schema_five_reopens_plural_bounds_and_closed_parameter_requirements()
     let mut cursor = bounds.cursor()?;
     assert_eq!(
         cursor.next().transpose()?,
-        Some(backend_semantic::ir::DecodedTypeParameterBound::Lifetime(b"'scope"))
+        Some(backend_semantic::ir::DecodedTypeParameterBound::Lifetime(
+            b"'scope"
+        ))
     );
     assert_eq!(
         cursor.next().transpose()?,
@@ -741,12 +757,14 @@ fn schema_five_rejects_constructor_with_an_implied_value_requirement() {
     };
     assert_eq!(
         lane.admit(0, 0, 0),
-        Err(backend_semantic::ir::ExtensionPoolFault::TypeParameterRequirements {
-            ordinal: 0,
-            primary: backend_semantic::ir::TypeParameterPrimaryRequirement::Unmanaged,
-            constructor: true,
-            allows_ref_like: false,
-        })
+        Err(
+            backend_semantic::ir::ExtensionPoolFault::TypeParameterRequirements {
+                ordinal: 0,
+                primary: backend_semantic::ir::TypeParameterPrimaryRequirement::Unmanaged,
+                constructor: true,
+                allows_ref_like: false,
+            }
+        )
     );
 }
 
@@ -764,7 +782,9 @@ fn schema_five_rejects_ref_like_with_a_known_reference_requirement() {
             inference: backend_semantic::ir::TypeParameterInference::Ordinary,
         },
         requirements: backend_semantic::ir::TypeParameterRequirements {
-            primary: backend_semantic::ir::TypeParameterPrimaryRequirement::Reference { nullable: true },
+            primary: backend_semantic::ir::TypeParameterPrimaryRequirement::Reference {
+                nullable: true,
+            },
             constructor: false,
             allows_ref_like: true,
         },
@@ -781,12 +801,16 @@ fn schema_five_rejects_ref_like_with_a_known_reference_requirement() {
     };
     assert_eq!(
         lane.admit(0, 0, 0),
-        Err(backend_semantic::ir::ExtensionPoolFault::TypeParameterRequirements {
-            ordinal: 0,
-            primary: backend_semantic::ir::TypeParameterPrimaryRequirement::Reference { nullable: true },
-            constructor: false,
-            allows_ref_like: true,
-        })
+        Err(
+            backend_semantic::ir::ExtensionPoolFault::TypeParameterRequirements {
+                ordinal: 0,
+                primary: backend_semantic::ir::TypeParameterPrimaryRequirement::Reference {
+                    nullable: true
+                },
+                constructor: false,
+                allows_ref_like: true,
+            }
+        )
     );
 }
 
@@ -896,10 +920,12 @@ fn schema_seven_rejects_a_free_predicate_subject_outside_the_type_lane() {
     };
     assert_eq!(
         lane.admit(0, 4, 0),
-        Err(backend_semantic::ir::ExtensionPoolFault::FreePredicateSubject {
-            predicate: 0,
-            raw: 4,
-            limit: 4,
-        })
+        Err(
+            backend_semantic::ir::ExtensionPoolFault::FreePredicateSubject {
+                predicate: 0,
+                raw: 4,
+                limit: 4,
+            }
+        )
     );
 }

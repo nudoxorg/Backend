@@ -53,7 +53,9 @@ impl Strand {
     #[must_use]
     pub fn polyline(&self, n: usize) -> Vec<Pt> {
         #[allow(clippy::cast_precision_loss)]
-        (0..=n).map(|i| self.at(i as f32 / n.max(1) as f32)).collect()
+        (0..=n)
+            .map(|i| self.at(i as f32 / n.max(1) as f32))
+            .collect()
     }
 
     /// Distance from `p` to the curve (sampled), px.
@@ -106,7 +108,14 @@ fn piece(a: Pt, b: Pt, w: f32) -> Poly {
 /// in to `reveal` of its arc length, in `voice` (`phase` in periods marches
 /// a flow's dashes; `scale` scales the dash pattern with the text).
 #[must_use]
-pub fn pieces(strand: &Strand, width: f32, reveal: f32, voice: Voice, phase: f32, scale: f32) -> Vec<Poly> {
+pub fn pieces(
+    strand: &Strand,
+    width: f32,
+    reveal: f32,
+    voice: Voice,
+    phase: f32,
+    scale: f32,
+) -> Vec<Poly> {
     let mut out = Vec::new();
     let line = strand.polyline(40);
     let lengths: Vec<f32> = line
@@ -157,14 +166,31 @@ pub fn pieces(strand: &Strand, width: f32, reveal: f32, voice: Voice, phase: f32
 }
 
 /// Adds [`pieces`] to `fill`.
-pub fn stroke(fill: &mut Fill, strand: &Strand, width: f32, reveal: f32, voice: Voice, phase: f32, scale: f32) {
+pub fn stroke(
+    fill: &mut Fill,
+    strand: &Strand,
+    width: f32,
+    reveal: f32,
+    voice: Voice,
+    phase: f32,
+    scale: f32,
+) {
     for poly in pieces(strand, width, reveal, voice, phase, scale) {
         fill.poly(&poly);
     }
 }
 
 /// Paints one strand in one colour.
-pub fn paint(window: &mut Window, strand: &Strand, width: f32, reveal: f32, voice: Voice, phase: f32, scale: f32, color: Hsla) {
+pub fn paint(
+    window: &mut Window,
+    strand: &Strand,
+    width: f32,
+    reveal: f32,
+    voice: Voice,
+    phase: f32,
+    scale: f32,
+    color: Hsla,
+) {
     let mut fill = Fill::new();
     stroke(&mut fill, strand, width, reveal, voice, phase, scale);
     fill.paint(window, color);
@@ -202,8 +228,15 @@ mod tests {
                 .map(|p| p.area() - 0.5)
                 .sum::<f32>()
         };
-        assert!(pieces(&s, 1.0, 0.0, Voice::Written, 0.0, 1.0).is_empty(), "a zero reveal drew something");
-        assert!((painted(Voice::Written, 1.0) - 100.0).abs() < 2.0, "{}", painted(Voice::Written, 1.0));
+        assert!(
+            pieces(&s, 1.0, 0.0, Voice::Written, 0.0, 1.0).is_empty(),
+            "a zero reveal drew something"
+        );
+        assert!(
+            (painted(Voice::Written, 1.0) - 100.0).abs() < 2.0,
+            "{}",
+            painted(Voice::Written, 1.0)
+        );
         assert!((painted(Voice::Written, 0.5) - 50.0).abs() < 2.0);
         // Via: 2 on / 4 off → a third of the length.
         let via = painted(Voice::Via, 1.0);
@@ -211,7 +244,10 @@ mod tests {
         assert!((painted(Voice::Via, 0.5) - via / 2.0).abs() < 3.0);
         // Flow: 3 on / 9 off → a quarter, wherever the march is.
         for phase in [0.0, 0.3, 0.77] {
-            let flow: f32 = pieces(&s, 1.0, 1.0, Voice::Flow, phase, 1.0).iter().map(|p| p.area() - 0.5).sum();
+            let flow: f32 = pieces(&s, 1.0, 1.0, Voice::Flow, phase, 1.0)
+                .iter()
+                .map(|p| p.area() - 0.5)
+                .sum();
             assert!((flow - 25.0).abs() < 4.0, "{phase}: {flow}");
         }
     }

@@ -27,12 +27,12 @@ use backend_engine::publication::binding::COMPILATION_BINDING_BYTES;
 use backend_engine::publication::manifest::StoredFragmentFacts;
 use backend_engine::publication::{
     OpenPublicationScratch, OpenPublishedError, PublicationScratch, PublishCompiledError,
-    PublishedCompilation, PublishControl, UncommittedPublication, open_published, publish_compiled,
+    PublishControl, PublishedCompilation, UncommittedPublication, open_published, publish_compiled,
 };
 use backend_engine::queue::{BoundedQueue, QueueBudget, QueueError};
 use backend_semantic::index_core::{
-    EntityDocumentId, ExactManifest, ExactManifestError, ExactOperation, ExactResolution,
-    ExactRow, ExactSegment, ExactSegmentError, ExactSegmentId, IndexSnapshot, IndexSnapshotError,
+    EntityDocumentId, ExactManifest, ExactManifestError, ExactOperation, ExactResolution, ExactRow,
+    ExactSegment, ExactSegmentError, ExactSegmentId, IndexSnapshot, IndexSnapshotError,
     LexicalManifest, LexicalManifestError, LexicalOperation, LexicalQueryError, LexicalRow,
     LexicalSegment, LexicalSegmentError, LexicalSegmentId, LexicalSnapshotHit, LexicalTopK,
 };
@@ -287,9 +287,7 @@ fn owned_fragment_bytes(index: usize) -> Result<Vec<u8>, FleetError> {
         TypeNode::Primitive(PrimitiveType::String),
     ];
     let atoms = [
-        AtomInput {
-            bytes: &unique_raw,
-        },
+        AtomInput { bytes: &unique_raw },
         AtomInput { bytes: SHARED_TERM },
     ];
     let prepared = PreparedFragment::prepare(source, recipe, &entities, &types, &atoms)?;
@@ -329,7 +327,10 @@ fn manifest_file_bytes(artifacts: &std::path::Path) -> Result<Vec<u8>, FleetErro
     }
 }
 
-#[allow(clippy::too_many_lines, reason = "one deterministic fleet journey retains every public boundary")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one deterministic fleet journey retains every public boundary"
+)]
 fn run_once(label: &str) -> Result<FleetOutcome, FleetError> {
     let _ = build_support::limits()?;
     let base = fixture_base(label)?;
@@ -415,12 +416,11 @@ fn run_once(label: &str) -> Result<FleetOutcome, FleetError> {
             observed: "reopen selected another generation",
         });
     }
-    let fragment_total = usize::try_from(opened.manifest.fragment_count).map_err(|_| {
-        FleetError::Mismatch {
+    let fragment_total =
+        usize::try_from(opened.manifest.fragment_count).map_err(|_| FleetError::Mismatch {
             expected: "addressable fragment count",
             observed: "fragment count overflow",
-        }
-    })?;
+        })?;
     if fragment_total != FRAGMENT_COUNT {
         return Err(FleetError::Count {
             what: "reopened fleet fragments",
@@ -512,7 +512,8 @@ fn run_once(label: &str) -> Result<FleetOutcome, FleetError> {
         });
     }
 
-    let mut exact_ids = vec![ExactSegmentId::from_canonical_bytes(b"fleet-placeholder-exact"); FRAGMENT_COUNT];
+    let mut exact_ids =
+        vec![ExactSegmentId::from_canonical_bytes(b"fleet-placeholder-exact"); FRAGMENT_COUNT];
     let mut lexical_ids =
         vec![LexicalSegmentId::from_canonical_bytes(b"fleet-placeholder-lex"); FRAGMENT_COUNT];
     let sealed = seal_compilation_index(
@@ -558,7 +559,10 @@ fn run_once(label: &str) -> Result<FleetOutcome, FleetError> {
     match exact_terminal {
         backend_semantic::index_core::ExactTerminal::Complete {
             resolution:
-                ExactResolution::Present { value: _, segment: _ },
+                ExactResolution::Present {
+                    value: _,
+                    segment: _,
+                },
             ..
         } => {}
         _ => {
@@ -812,14 +816,18 @@ fn fleet_durable_queue_without_full() -> Result<(), FleetError> {
     Ok(())
 }
 
-#[allow(clippy::too_many_lines, reason = "typed terminal preservation checks every public failure family")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "typed terminal preservation checks every public failure family"
+)]
 #[test]
 fn fleet_typed_terminals_preserved() -> Result<(), FleetError> {
     let base = fixture_base("terminals")?;
     let journal_dir = base.join("journal");
     let artifacts = base.join("artifacts");
     let limits = PublicationLimits::new(nonzero(4)?, nonzero(4)?)?;
-    let publisher = DurablePublisher::create(&PublicationPaths::in_directory(&journal_dir), limits)?;
+    let publisher =
+        DurablePublisher::create(&PublicationPaths::in_directory(&journal_dir), limits)?;
     let single = owned_fragment_bytes(0)?;
     let view = FragmentView::validate(&single)?;
     let compiled_single = CompiledFragment {
@@ -984,8 +992,12 @@ fn fleet_typed_terminals_preserved() -> Result<(), FleetError> {
         },
     )?;
 
-    let mut exact_scratch = vec![ExactSegmentId::from_canonical_bytes(b"fleet-terminal-exact")];
-    let mut lexical_scratch = vec![LexicalSegmentId::from_canonical_bytes(b"fleet-terminal-lex")];
+    let mut exact_scratch = vec![ExactSegmentId::from_canonical_bytes(
+        b"fleet-terminal-exact",
+    )];
+    let mut lexical_scratch = vec![LexicalSegmentId::from_canonical_bytes(
+        b"fleet-terminal-lex",
+    )];
     match seal_compilation_index(
         opened,
         &[],
@@ -1016,8 +1028,11 @@ fn fleet_typed_terminals_preserved() -> Result<(), FleetError> {
 
     let exact_ids = [prepared.exact.id];
     let lexical_ids = [prepared.lexical.id];
-    let snapshot_value =
-        IndexSnapshot::new(published.publication.generation.pinned_root, &exact_ids, &lexical_ids)?;
+    let snapshot_value = IndexSnapshot::new(
+        published.publication.generation.pinned_root,
+        &exact_ids,
+        &lexical_ids,
+    )?;
     let exact_segments = [prepared.exact];
     let lexical_segments = [prepared.lexical];
     match ExactManifest::new(snapshot_value, &[], &[]) {

@@ -58,22 +58,49 @@ pub(crate) fn not_ready<T>(
                 .flex()
                 .items_center()
                 .gap(measure.space(Space::Wide))
-                .child(facet::paint::gem::gem(facet::icons::Kind::Unknown).size(56.0 * measure.scale()).opacity(0.35))
+                .child(
+                    facet::paint::gem::gem(facet::icons::Kind::Unknown)
+                        .size(56.0 * measure.scale())
+                        .opacity(0.35),
+                )
                 .child(
                     div()
                         .flex()
                         .flex_col()
                         .gap(measure.space(Space::Base))
-                        .child(text(ty::HERO, &measure, palette.ink2).child(SharedString::from(what.to_owned())))
-                        .child(pending(px(320.0 * measure.scale()), ty::LEDE, &measure, palette)),
+                        .child(
+                            text(ty::HERO, &measure, palette.ink2)
+                                .child(SharedString::from(what.to_owned())),
+                        )
+                        .child(pending(
+                            px(320.0 * measure.scale()),
+                            ty::LEDE,
+                            &measure,
+                            palette,
+                        )),
                 );
             let lines = div()
                 .flex()
                 .flex_col()
                 .gap(measure.space(Space::Roomy))
-                .child(pending(px(220.0 * measure.scale()), ty::BODY, &measure, palette))
-                .child(pending(px(420.0 * measure.scale()), ty::CODE, &measure, palette))
-                .child(pending(px(360.0 * measure.scale()), ty::CODE, &measure, palette))
+                .child(pending(
+                    px(220.0 * measure.scale()),
+                    ty::BODY,
+                    &measure,
+                    palette,
+                ))
+                .child(pending(
+                    px(420.0 * measure.scale()),
+                    ty::CODE,
+                    &measure,
+                    palette,
+                ))
+                .child(pending(
+                    px(360.0 * measure.scale()),
+                    ty::CODE,
+                    &measure,
+                    palette,
+                ))
                 .child(quiet(said, &measure, palette));
             vec![Leaf::new(hero), Leaf::new(lines)]
         }
@@ -90,7 +117,10 @@ pub(crate) fn not_ready<T>(
                 .flex()
                 .flex_col()
                 .gap(measure.space(Space::Base))
-                .child(text(ty::HEAD, &measure, palette.ink0).child(format!("{what} could not be read.")))
+                .child(
+                    text(ty::HEAD, &measure, palette.ink0)
+                        .child(format!("{what} could not be read.")),
+                )
                 .child(text(ty::BODY, &measure, palette.ink2).child(message))
                 .child(
                     div()
@@ -102,7 +132,12 @@ pub(crate) fn not_ready<T>(
                                 .primary()
                                 .on_click(move |_, cx| links.retry(key.clone(), cx)),
                         )
-                        .child(div().set(ty::MONO_SMALL, &measure).text_color(palette.ink3.hsla()).child(code)),
+                        .child(
+                            div()
+                                .set(ty::MONO_SMALL, &measure)
+                                .text_color(palette.ink3.hsla())
+                                .child(code),
+                        ),
                 );
             vec![Leaf::new(plate)]
         }
@@ -120,7 +155,10 @@ pub(crate) fn not_ready<T>(
                     .flex()
                     .flex_col()
                     .gap(measure.space(Space::Base))
-                    .child(text(ty::TITLE, &measure, palette.ink1).child(SharedString::from(what.to_owned())))
+                    .child(
+                        text(ty::TITLE, &measure, palette.ink1)
+                            .child(SharedString::from(what.to_owned())),
+                    )
                     .child(quiet(line, &measure, palette)),
             )]
         }

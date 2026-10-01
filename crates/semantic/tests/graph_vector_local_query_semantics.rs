@@ -1,13 +1,13 @@
 //! Exercises the `backend-semantic::graph_vector` tests local-query-semantics contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
-use backend_semantic::ir::EntityId;
 use backend_semantic::graph_vector::{
     GraphAuthority, GraphEdge, GraphQueryError, GraphRow, Metric, ModelId, PartitionId,
     ProjectionId, ValidatedGraphView, ValidatedVectorSegment, VectorAuthority, VectorHit,
     VectorPoint, VectorQueryError, VectorQueryTerminal, exact_vector_query,
 };
 use backend_semantic::index_vocabulary::IndexSnapshotId;
+use backend_semantic::ir::EntityId;
 
 fn snapshot(byte: u8) -> IndexSnapshotId {
     IndexSnapshotId::from_canonical_bytes(&[byte; 32])

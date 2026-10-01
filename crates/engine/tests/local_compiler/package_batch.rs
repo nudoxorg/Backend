@@ -428,9 +428,7 @@ fn owned_runtime_frontier_reaches_the_package_publication_owner()
                 MAX_SEMANTIC_SEGMENT_BYTES,
                 &mut sink,
             )?;
-            Ok::<_, CanonicalPlaneStreamError<SemanticPlaneRecordError>>((
-                streamed, sink, metrics,
-            ))
+            Ok::<_, CanonicalPlaneStreamError<SemanticPlaneRecordError>>((streamed, sink, metrics))
         })?;
     assert_eq!(reader_metrics.image_validation_count(), 1);
     assert_eq!(

@@ -23,8 +23,8 @@ use crate::theme::ActiveFacet;
 use crate::tokens::{Palette, motion::Bezier, ty};
 use gpui::{
     AnyElement, App, Bounds, Element, ElementId, Entity, GlobalElementId, Hitbox, Hsla,
-    InspectorElementId, IntoElement, LayoutId, Pixels, Point, SharedString, Style, Window,
-    point, px, size,
+    InspectorElementId, IntoElement, LayoutId, Pixels, Point, SharedString, Style, Window, point,
+    px, size,
 };
 use std::rc::Rc;
 use std::time::Duration;
@@ -173,7 +173,12 @@ pub struct GemProgress {
 
 /// The `kind`'s stone as the progress of `stages`, `size` px at 100 %.
 #[must_use]
-pub fn gem_progress(id: impl Into<ElementId>, kind: Kind, stages: impl Into<Rc<[Stage]>>, measure: &Measure) -> GemProgress {
+pub fn gem_progress(
+    id: impl Into<ElementId>,
+    kind: Kind,
+    stages: impl Into<Rc<[Stage]>>,
+    measure: &Measure,
+) -> GemProgress {
     GemProgress {
         id: id.into(),
         kind,
@@ -276,7 +281,12 @@ impl Element for GemProgress {
             let current = self
                 .stages
                 .iter()
-                .find(|s| matches!(s.state, StageState::Now | StageState::Stall | StageState::Bad))
+                .find(|s| {
+                    matches!(
+                        s.state,
+                        StageState::Now | StageState::Stall | StageState::Bad
+                    )
+                })
                 .or_else(|| self.stages.last());
             shape(
                 current.map_or_else(SharedString::default, |s| s.name.clone()),
@@ -355,11 +365,20 @@ impl Element for GemProgress {
             }
             ring.paint(
                 window,
-                Hsla::from(if walk.is_some() { palette.peri_hi } else { palette.peri.base }),
+                Hsla::from(if walk.is_some() {
+                    palette.peri_hi
+                } else {
+                    palette.peri.base
+                }),
             );
         }
         if let Some(word) = &layout.word {
-            word.paint(x + edge + 6.0 * s, centre.1 + word.role.size * 0.36, window, cx);
+            word.paint(
+                x + edge + 6.0 * s,
+                centre.1 + word.role.size * 0.36,
+                window,
+                cx,
+            );
         }
         let stages = self.stages.clone();
         let anchor_stages = stages.clone();
@@ -379,7 +398,8 @@ impl Element for GemProgress {
                     stage_of_facet(&stages, facet_at(dx, dy))
                 }),
                 anchor: Rc::new(move |i| {
-                    (i < anchor_stages.len()).then(|| Bounds::new(point(px(x), px(y)), size(px(edge), px(edge))))
+                    (i < anchor_stages.len())
+                        .then(|| Bounds::new(point(px(x), px(y)), size(px(edge), px(edge))))
                 }),
                 step: Rc::new(live::linear),
             },
@@ -445,7 +465,11 @@ pub struct SeamLayout {
 /// Each stage's `(x, width)` along `w` px with `gap` between.
 #[must_use]
 pub fn spans(stages: &[Stage], w: f32, gap: f32) -> Vec<(f32, f32)> {
-    let total: f32 = stages.iter().map(|s| s.weight.max(0.0)).sum::<f32>().max(1e-3);
+    let total: f32 = stages
+        .iter()
+        .map(|s| s.weight.max(0.0))
+        .sum::<f32>()
+        .max(1e-3);
     #[allow(clippy::cast_precision_loss)]
     let room = (w - gap * stages.len().saturating_sub(1) as f32).max(0.0);
     let mut x = 0.0;
@@ -503,7 +527,10 @@ impl Element for Seam {
         // 2 px drawn; the hit band is taller so the seam can be rested on.
         style.size.height = px(10.0 * s).into();
         style.flex_shrink = 0.0;
-        (window.request_layout(style, [kid], cx), SeamLayout { live, keys, phase })
+        (
+            window.request_layout(style, [kid], cx),
+            SeamLayout { live, keys, phase },
+        )
     }
 
     fn prepaint(
@@ -543,8 +570,20 @@ impl Element for Seam {
         for (i, (stage, (sx, sw))) in self.stages.iter().zip(&spans).enumerate() {
             let (sx, sw) = (x0 + sx, *sw);
             // Each stage's fill sweeps in when it starts, never snaps.
-            let target = if stage.state == StageState::Todo { 0.0 } else { 1.0 };
-            let fill = motion.animate(live::key_n(&self.id, "fill", i as u64), target, spec::LIFT, window, cx).clamp(0.0, 1.0);
+            let target = if stage.state == StageState::Todo {
+                0.0
+            } else {
+                1.0
+            };
+            let fill = motion
+                .animate(
+                    live::key_n(&self.id, "fill", i as u64),
+                    target,
+                    spec::LIFT,
+                    window,
+                    cx,
+                )
+                .clamp(0.0, 1.0);
             let lit = hover == Some(i) || walk == Some(i);
             let weight = if lit { line + s } else { line };
             let yy = y - (weight - line) * 0.5;
@@ -562,12 +601,20 @@ impl Element for Seam {
                     let mut soft = Fill::new();
                     soft.poly(&rect);
                     soft.paint(window, Hsla::from(palette.mint.soft));
-                    Hatch::vertical(4.0 * s, 8.0 * s)
-                        .phase(layout.phase)
-                        .paint(window, &rect, frame, seam_ink(stage.state, palette));
+                    Hatch::vertical(4.0 * s, 8.0 * s).phase(layout.phase).paint(
+                        window,
+                        &rect,
+                        frame,
+                        seam_ink(stage.state, palette),
+                    );
                 }
                 StageState::Stall => {
-                    Hatch::vertical(4.0 * s, 8.0 * s).paint(window, &rect, frame, seam_ink(stage.state, palette));
+                    Hatch::vertical(4.0 * s, 8.0 * s).paint(
+                        window,
+                        &rect,
+                        frame,
+                        seam_ink(stage.state, palette),
+                    );
                 }
                 _ => {
                     let mut solid = Fill::new();
@@ -586,7 +633,9 @@ impl Element for Seam {
                 count: self.stages.len(),
                 hit: Rc::new(move |p: Point<Pixels>| {
                     let along = f32::from(p.x) - x0;
-                    let i = hit_spans.partition_point(|(sx, _)| *sx <= along).checked_sub(1)?;
+                    let i = hit_spans
+                        .partition_point(|(sx, _)| *sx <= along)
+                        .checked_sub(1)?;
                     Some(i)
                 }),
                 anchor: Rc::new(move |i| {
@@ -627,7 +676,9 @@ mod tests {
 
     #[test]
     fn every_facet_belongs_to_the_stage_that_owns_its_share() {
-        let owners: Vec<usize> = (0..12).filter_map(|f| stage_of_facet(&stages(), f)).collect();
+        let owners: Vec<usize> = (0..12)
+            .filter_map(|f| stage_of_facet(&stages(), f))
+            .collect();
         // Weights 1:2:1:1 over 12 facets → 2.4 / 4.8 / 2.4 / 2.4 facets
         // each; a facet goes to the stage its centre falls in.
         assert_eq!(owners, vec![0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 3, 3]);

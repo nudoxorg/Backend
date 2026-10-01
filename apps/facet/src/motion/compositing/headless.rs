@@ -56,7 +56,11 @@ impl Render for Stage {
 }
 
 /// Draws `build` once at 2x in a `w` x `h` window and reads the pixels back.
-fn shoot(w: f32, h: f32, build: impl Fn(&mut Window, &mut App) -> AnyElement + 'static) -> RgbaImage {
+fn shoot(
+    w: f32,
+    h: f32,
+    build: impl Fn(&mut Window, &mut App) -> AnyElement + 'static,
+) -> RgbaImage {
     let platform = gpui_platform::current_platform(true);
     let mut cx = HeadlessAppContext::with_platform(
         platform.text_system(),
@@ -116,7 +120,12 @@ fn card(k: f32, cx: &App) -> AnyElement {
 }
 
 fn placed(child: AnyElement) -> AnyElement {
-    div().absolute().left(px(40.0)).top(px(40.0)).child(child).into_any_element()
+    div()
+        .absolute()
+        .left(px(40.0))
+        .top(px(40.0))
+        .child(child)
+        .into_any_element()
 }
 
 fn max_diff(a: &RgbaImage, b: &RgbaImage) -> u8 {
@@ -133,10 +142,19 @@ fn a_layer_at_rest_paints_bit_identical_pixels() {
     let _platform = platform();
     let bare = shoot(360.0, 200.0, |_, cx| placed(card(1.0, cx)));
     let rested = shoot(360.0, 200.0, |_, cx| {
-        placed(layer(card(1.0, cx)).opacity(1.0).scale(1.0).into_any_element())
+        placed(
+            layer(card(1.0, cx))
+                .opacity(1.0)
+                .scale(1.0)
+                .into_any_element(),
+        )
     });
     assert_eq!(bare.dimensions(), rested.dimensions());
-    assert!(bare.as_raw() == rested.as_raw(), "max channel diff {}", max_diff(&bare, &rested));
+    assert!(
+        bare.as_raw() == rested.as_raw(),
+        "max channel diff {}",
+        max_diff(&bare, &rested)
+    );
     // Not trivially equal to an empty frame: the card is really there.
     let empty = shoot(360.0, 200.0, |_, _| div().into_any_element());
     assert!(max_diff(&bare, &empty) > 100);
@@ -162,11 +180,7 @@ fn group_opacity_is_the_rest_frame_blended_over_the_background() {
         let mut worst = 0.0_f32;
         let mut sum = 0.0_f32;
         let mut count = 0.0_f32;
-        for ((got, r), b) in image
-            .pixels()
-            .zip(rest.pixels())
-            .zip(background.pixels())
-        {
+        for ((got, r), b) in image.pixels().zip(rest.pixels()).zip(background.pixels()) {
             for c in 0..3 {
                 let expected = alpha * f32::from(r[c]) + (1.0 - alpha) * f32::from(b[c]);
                 let e = (f32::from(got[c]) - expected).abs();
@@ -183,8 +197,14 @@ fn group_opacity_is_the_rest_frame_blended_over_the_background() {
         "group opacity vs alpha-blend of the rest frame: worst {group_worst:.2}/255, mean {group_mean:.4}; \
          per-primitive: worst {prim_worst:.2}/255, mean {prim_mean:.4}"
     );
-    assert!(group_worst <= 2.0, "group opacity is a true group: worst {group_worst}");
-    assert!(prim_worst >= 12.0, "per-primitive opacity really differs: worst {prim_worst}");
+    assert!(
+        group_worst <= 2.0,
+        "group opacity is a true group: worst {group_worst}"
+    );
+    assert!(
+        prim_worst >= 12.0,
+        "per-primitive opacity really differs: worst {prim_worst}"
+    );
 }
 
 /// Peak edge strength inside `region` (x0, y0, x1, y1): the mean of the
@@ -229,7 +249,12 @@ fn bilinear_zoom(image: &RgbaImage, k: f32, origin: (f32, f32)) -> RgbaImage {
             let y = (y.max(0.0) as u32).min(h - 1);
             *image.get_pixel(x, y)
         };
-        let (a, b, c, d) = (at(x0, y0), at(x0 + 1.0, y0), at(x0, y0 + 1.0), at(x0 + 1.0, y0 + 1.0));
+        let (a, b, c, d) = (
+            at(x0, y0),
+            at(x0 + 1.0, y0),
+            at(x0, y0 + 1.0),
+            at(x0 + 1.0, y0 + 1.0),
+        );
         let mut out = [0_u8; 4];
         for i in 0..4 {
             let top = f32::from(a[i]) * (1.0 - fx) + f32::from(b[i]) * fx;
@@ -267,7 +292,12 @@ fn a_scaled_layer_is_as_sharp_as_native_layout() {
     let rest = shoot(480.0, 260.0, |_, cx| placed(card(1.0, cx)));
     let native = shoot(480.0, 260.0, move |_, cx| placed(card(k, cx)));
     let scaled = shoot(480.0, 260.0, move |_, cx| {
-        placed(layer(card(1.0, cx)).scale(k).origin(0.0, 0.0).into_any_element())
+        placed(
+            layer(card(1.0, cx))
+                .scale(k)
+                .origin(0.0, 0.0)
+                .into_any_element(),
+        )
     });
     // The card's top-left is at (40, 40) logical = (80, 80) device.
     let texture = bilinear_zoom(&rest, k, (80.0, 80.0));
@@ -277,7 +307,10 @@ fn a_scaled_layer_is_as_sharp_as_native_layout() {
         sharpness(&scaled, region),
         sharpness(&texture, region),
     );
-    let (d_scaled, d_texture) = (mean_diff(&scaled, &native, region), mean_diff(&texture, &native, region));
+    let (d_scaled, d_texture) = (
+        mean_diff(&scaled, &native, region),
+        mean_diff(&texture, &native, region),
+    );
     eprintln!(
         "scale {k}: peak edge strength native {s_native:.1}, layer {s_scaled:.1}, texture {s_texture:.1}; \
          mean |diff| to native: layer {d_scaled:.3}, texture {d_texture:.3}"
@@ -287,9 +320,18 @@ fn a_scaled_layer_is_as_sharp_as_native_layout() {
         let _ = scaled.save(dir.join("scale-layer.png"));
         let _ = texture.save(dir.join("scale-texture.png"));
     }
-    assert!((s_scaled - s_native).abs() < 0.05 * s_native, "layer {s_scaled} vs native {s_native}");
-    assert!(s_texture < 0.9 * s_native, "texture {s_texture} vs native {s_native}");
-    assert!(d_scaled < d_texture, "layer {d_scaled} vs texture {d_texture}");
+    assert!(
+        (s_scaled - s_native).abs() < 0.05 * s_native,
+        "layer {s_scaled} vs native {s_native}"
+    );
+    assert!(
+        s_texture < 0.9 * s_native,
+        "texture {s_texture} vs native {s_native}"
+    );
+    assert!(
+        d_scaled < d_texture,
+        "layer {d_scaled} vs texture {d_texture}"
+    );
 }
 
 /// A shadow painted black on white reads back as coverage: 1 - value/255.
@@ -306,7 +348,12 @@ fn reference_shadow(
     sigma: f32,
 ) -> Vec<f32> {
     let inside = |x: f32, y: f32| {
-        x >= x0 && x <= x1 && y >= y0 && y <= y1 && (x - x0) + (y - y0) >= chamfer && (x1 - x) + (y1 - y) >= chamfer
+        x >= x0
+            && x <= x1
+            && y >= y0
+            && y <= y1
+            && (x - x0) + (y - y0) >= chamfer
+            && (x1 - x) + (y1 - y) >= chamfer
     };
     let mut mask = vec![0.0_f32; w * h];
     for y in 0..h {
@@ -375,7 +422,8 @@ fn chamfer_shadows_match_the_blurred_polygon() {
                     canvas(
                         |_, _, _| {},
                         move |_, (), window, _| {
-                            let bounds = gpui::Bounds::new(point(px(bx), px(by)), size(px(bw), px(bh)));
+                            let bounds =
+                                gpui::Bounds::new(point(px(bx), px(by)), size(px(bw), px(bh)));
                             if chamfered {
                                 window.paint_chamfer_shadows(bounds, chamfers(chamfer), &shadows);
                             } else {
@@ -397,7 +445,12 @@ fn chamfer_shadows_match_the_blurred_polygon() {
     let (dw, dh) = (exact.width() as usize, exact.height() as usize);
     let reference = reference_shadow(
         (dw, dh),
-        (bx * 2.0, (by + drop) * 2.0, (bx + bw) * 2.0, (by + drop + bh) * 2.0),
+        (
+            bx * 2.0,
+            (by + drop) * 2.0,
+            (bx + bw) * 2.0,
+            (by + drop + bh) * 2.0,
+        ),
         chamfer * 2.0,
         blur * 2.0,
     );
@@ -412,7 +465,8 @@ fn chamfer_shadows_match_the_blurred_polygon() {
         }
         (worst, sum / (dw * dh) as f32)
     };
-    let ((chamfer_worst, chamfer_mean), (rounded_worst, rounded_mean)) = (error(&exact), error(&rounded));
+    let ((chamfer_worst, chamfer_mean), (rounded_worst, rounded_mean)) =
+        (error(&exact), error(&rounded));
     eprintln!(
         "coverage error vs the exact blurred polygon: chamfer shadow worst {chamfer_worst:.4} mean {chamfer_mean:.5}; \
          rounded box shadow worst {rounded_worst:.4} mean {rounded_mean:.5}"
@@ -421,8 +475,14 @@ fn chamfer_shadows_match_the_blurred_polygon() {
         let _ = exact.save(dir.join("shadow-chamfer.png"));
         let _ = rounded.save(dir.join("shadow-rounded.png"));
     }
-    assert!(chamfer_worst < 0.03, "chamfer shadow worst error {chamfer_worst}");
-    assert!(chamfer_mean < rounded_mean, "{chamfer_mean} vs {rounded_mean}");
+    assert!(
+        chamfer_worst < 0.03,
+        "chamfer shadow worst error {chamfer_worst}"
+    );
+    assert!(
+        chamfer_mean < rounded_mean,
+        "{chamfer_mean} vs {rounded_mean}"
+    );
 }
 
 /// Frame cost (CPU: render + layout + prepaint + paint, then the GPU frame to
@@ -472,48 +532,64 @@ fn layer_timing() {
                     let key = (i * 37 + shift * 11) % 200;
                     self.flow.item(
                         ElementId::Integer(key as u64),
-                        cut().chamfer(Chamfer::Sm).w(px(260.0)).h(px(24.0)).px(px(8.0))
+                        cut()
+                            .chamfer(Chamfer::Sm)
+                            .w(px(260.0))
+                            .h(px(24.0))
+                            .px(px(8.0))
                             .typeset(ty::MONO_SMALL, &facet)
                             .child(format!("row {key}")),
                     )
                 });
                 return root.children(rows).into_any_element();
             }
-            let cards: Vec<_> = (0..20).map(|i| {
-                let card = card(1.0, cx);
-                let animated = match self.case {
-                    Case::Bare => false,
-                    Case::OneLayer => i == 0,
-                    Case::TwentyLayers => true,
-                    Case::Flip200 => false,
-                };
-                if animated {
-                    let wave = (phase + i as f32 * 0.3).sin();
-                    layer(card)
-                        .scale(1.0 + 0.03 * wave)
-                        .opacity(0.6 + 0.3 * wave)
-                        .into_any_element()
-                } else {
-                    card
-                }
-            }).collect();
+            let cards: Vec<_> = (0..20)
+                .map(|i| {
+                    let card = card(1.0, cx);
+                    let animated = match self.case {
+                        Case::Bare => false,
+                        Case::OneLayer => i == 0,
+                        Case::TwentyLayers => true,
+                        Case::Flip200 => false,
+                    };
+                    if animated {
+                        let wave = (phase + i as f32 * 0.3).sin();
+                        layer(card)
+                            .scale(1.0 + 0.03 * wave)
+                            .opacity(0.6 + 0.3 * wave)
+                            .into_any_element()
+                    } else {
+                        card
+                    }
+                })
+                .collect();
             root.children(cards).into_any_element()
         }
     }
 
     let _platform = platform();
-    for case in [Case::Bare, Case::OneLayer, Case::TwentyLayers, Case::Flip200] {
+    for case in [
+        Case::Bare,
+        Case::OneLayer,
+        Case::TwentyLayers,
+        Case::Flip200,
+    ] {
         let platform = gpui_platform::current_platform(true);
         let mut cx = HeadlessAppContext::with_platform(
             platform.text_system(),
             Arc::new(Assets),
             gpui_platform::current_headless_renderer,
         );
-        cx.update(|cx| gallery::bootstrap(Facet::default(), false, cx)).expect("bootstrap");
+        cx.update(|cx| gallery::bootstrap(Facet::default(), false, cx))
+            .expect("bootstrap");
         let handle = cx
             .open_window(size(px(1440.0), px(900.0)), |window, cx| {
                 window.set_scale_factor(2.0);
-                cx.new(|_| Bench { case, frame: 0, flow: Flow::new("bench") })
+                cx.new(|_| Bench {
+                    case,
+                    frame: 0,
+                    flow: Flow::new("bench"),
+                })
             })
             .expect("window");
         let any: gpui::AnyWindowHandle = handle.into();

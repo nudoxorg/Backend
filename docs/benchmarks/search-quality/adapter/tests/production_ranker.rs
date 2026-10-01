@@ -228,12 +228,14 @@ fn reopened_ranker_replays_yanked_overlay_and_update_cursor() {
     drop(index);
 
     let mut reopened = search_benchmark::open(&index_path).expect("reopen production search index");
-    assert!(document_ids(
-        &reopened
-            .search_request(&query)
-            .expect("filter replayed yanked update")
-    )
-    .is_empty());
+    assert!(
+        document_ids(
+            &reopened
+                .search_request(&query)
+                .expect("filter replayed yanked update")
+        )
+        .is_empty()
+    );
     let clear_yanked = json!({
         "op": "update",
         "updates": [{

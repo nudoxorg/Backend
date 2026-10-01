@@ -3,8 +3,8 @@
 use super::snapshot::{AppSnapshot, SessionState, ShelfItem, ShelfState};
 use super::workspace::{
     AppearancePreference, ConnectionStatus, ContrastPreference, DensityPreference,
-    MotionPreference, PrivacyPreference, ProjectPhase, ServiceMode, SettingsState,
-    ZoomPreference, WindowSize, WorkspaceProject, WorkspaceState,
+    MotionPreference, PrivacyPreference, ProjectPhase, ServiceMode, SettingsState, WindowSize,
+    WorkspaceProject, WorkspaceState, ZoomPreference,
 };
 use crate::core::ids::LocalProjectId;
 use crate::navigation::{Coordinate, Overlay, PackageLane, ReleaseId, Route, SettingsPage, View};
@@ -187,9 +187,9 @@ fn symbol_route(
     view: View,
     line: Option<u32>,
 ) -> Route {
-    let project = project
-        .and_then(std::num::NonZeroU64::new)
-        .map(|project| crate::core::ProjectId::from_backend(backend_library::ProjectId::new(project)));
+    let project = project.and_then(std::num::NonZeroU64::new).map(|project| {
+        crate::core::ProjectId::from_backend(backend_library::ProjectId::new(project))
+    });
     crate::core::PackageId::new(package)
         .ok()
         .zip(Coordinate::new(id).ok())
@@ -778,10 +778,10 @@ impl PersistentState {
                 })
                 .collect(),
             hand_whispered: snapshot.session().whispered,
-            window: snapshot
-                .settings()
-                .window
-                .map(|window| PersistedWindow { width: window.width, height: window.height }),
+            window: snapshot.settings().window.map(|window| PersistedWindow {
+                width: window.width,
+                height: window.height,
+            }),
             route: match snapshot.overlay() {
                 Some(Overlay::Settings(_)) => PersistedRoute::Settings,
                 Some(Overlay::AddProject | Overlay::CommandPalette | Overlay::Inbox) | None => {
@@ -790,7 +790,8 @@ impl PersistentState {
                         // one owner round trip away, and its route is not a
                         // persisted shape yet.
                         Route::Orbit(
-                            crate::navigation::OrbitRoute::Home | crate::navigation::OrbitRoute::Browse(_),
+                            crate::navigation::OrbitRoute::Home
+                            | crate::navigation::OrbitRoute::Browse(_),
                         ) => PersistedRoute::Home,
                         Route::Orbit(crate::navigation::OrbitRoute::Project(project)) => {
                             PersistedRoute::Project {
@@ -931,7 +932,10 @@ impl PersistentState {
     #[must_use]
     pub fn cold_settings(&self, state: &PersistedDesktopState) -> SettingsState {
         SettingsState {
-            window: state.window.map(|window| WindowSize { width: window.width, height: window.height }),
+            window: state.window.map(|window| WindowSize {
+                width: window.width,
+                height: window.height,
+            }),
             reduced_motion: state.reduced_motion,
             shelf_open: state.shelf_open,
             context_open: state.context_open,
@@ -1079,56 +1083,57 @@ impl PersistentState {
         if let Some(host) = host_project
             && let Ok(project) = LocalProjectId::from_path(host)
         {
-                if !shelf.iter().any(|item| {
-                    item.identity == crate::core::ResourceIdentity::Local(project.clone())
-                }) {
-                    shelf.push(ShelfItem {
-                        object: crate::model::ObjectId::from_backend(project.key()),
-                        identity: crate::core::ResourceIdentity::Local(project.clone()),
-                        label: host
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or("Workspace")
-                            .to_owned()
-                            .into(),
-                    });
+            if !shelf
+                .iter()
+                .any(|item| item.identity == crate::core::ResourceIdentity::Local(project.clone()))
+            {
+                shelf.push(ShelfItem {
+                    object: crate::model::ObjectId::from_backend(project.key()),
+                    identity: crate::core::ResourceIdentity::Local(project.clone()),
+                    label: host
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("Workspace")
+                        .to_owned()
+                        .into(),
+                });
+            }
+            let mut projects = workspace.projects.to_vec();
+            if let Some(existing) = projects.iter_mut().find(|item| item.id == project) {
+                if existing.phase == ProjectPhase::Missing && host.is_dir() {
+                    existing.phase = ProjectPhase::Indexing;
+                    existing.progress = None;
+                    existing.files_indexed = None;
+                    existing.error = None;
                 }
-                let mut projects = workspace.projects.to_vec();
-                if let Some(existing) = projects.iter_mut().find(|item| item.id == project) {
-                    if existing.phase == ProjectPhase::Missing && host.is_dir() {
-                        existing.phase = ProjectPhase::Indexing;
-                        existing.progress = None;
-                        existing.files_indexed = None;
-                        existing.error = None;
-                    }
-                } else {
-                    projects.push(WorkspaceProject {
-                        id: project.clone(),
-                        // The host path is shown as a label only; persisted
-                        // identity is carried by `NativePathWire` above.
-                        path: host.display().to_string().into(),
-                        label: host
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or("Workspace")
-                            .to_owned()
-                            .into(),
-                        phase: if host.is_dir() {
-                            ProjectPhase::Indexing
-                        } else {
-                            ProjectPhase::Missing
-                        },
-                        progress: None,
-                        files_indexed: None,
-                        request: None,
-                        error: None,
-                        recent: true,
-                    });
-                }
-                workspace.projects = projects.into();
-                if workspace.active.is_none() {
-                    workspace.active = Some(project.clone());
-                }
+            } else {
+                projects.push(WorkspaceProject {
+                    id: project.clone(),
+                    // The host path is shown as a label only; persisted
+                    // identity is carried by `NativePathWire` above.
+                    path: host.display().to_string().into(),
+                    label: host
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("Workspace")
+                        .to_owned()
+                        .into(),
+                    phase: if host.is_dir() {
+                        ProjectPhase::Indexing
+                    } else {
+                        ProjectPhase::Missing
+                    },
+                    progress: None,
+                    files_indexed: None,
+                    request: None,
+                    error: None,
+                    recent: true,
+                });
+            }
+            workspace.projects = projects.into();
+            if workspace.active.is_none() {
+                workspace.active = Some(project.clone());
+            }
         }
         let selected = workspace
             .active
@@ -1394,7 +1399,11 @@ mod tests {
         assert!(matches!(value.route, PersistedRoute::Symbol { .. }));
         assert_eq!(value.settings_page, None);
         let restored = PersistentState::at("unused").cold_reload(&value);
-        assert_eq!(restored.route, snapshot.route().clone(), "view, release and line survive");
+        assert_eq!(
+            restored.route,
+            snapshot.route().clone(),
+            "view, release and line survive"
+        );
         assert_eq!(restored.overlay, None);
     }
 
@@ -1406,15 +1415,17 @@ mod tests {
             backend_library::view_state_root(&[("persistence".to_owned(), "preview".to_owned())]),
             1,
         ));
-        let symbol = |name: &str| Route::Symbol(crate::navigation::SymbolRoute {
-            project: None,
-            package: crate::core::PackageId::new("pkg").expect("package"),
-            id: Coordinate::new(&format!("pkg::{name}")).expect("coordinate"),
-            at: None,
-            view: View::Page,
-            line: None,
-            selected: None,
-        });
+        let symbol = |name: &str| {
+            Route::Symbol(crate::navigation::SymbolRoute {
+                project: None,
+                package: crate::core::PackageId::new("pkg").expect("package"),
+                id: Coordinate::new(&format!("pkg::{name}")).expect("coordinate"),
+                at: None,
+                view: View::Page,
+                line: None,
+                selected: None,
+            })
+        };
         let session = SessionState {
             route: symbol("Walked"),
             preview: Some(symbol("Origin")),
@@ -1423,7 +1434,11 @@ mod tests {
         };
         let value = PersistentState::project(&snapshot.with_session(session));
         let restored = PersistentState::at("unused").cold_reload(&value);
-        assert_eq!(restored.route, symbol("Origin"), "the provisional page is not where you reopen");
+        assert_eq!(
+            restored.route,
+            symbol("Origin"),
+            "the provisional page is not where you reopen"
+        );
     }
 
     #[test]

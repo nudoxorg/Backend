@@ -15,17 +15,17 @@ use backend_engine::driver::{
     CompileScratch, NativeTool, ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection,
     compile, compile_ir,
 };
+use backend_engine::publication::{
+    OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
+};
 use backend_frontend_typescript::legacy::AuthorityError;
+use backend_frontend_typescript::legacy::{
+    Checker, MappedModifier as CheckerMappedModifier, Reference, Report, TypeTree,
+};
 use backend_semantic::ir::{
     DecodedOccurrence, DecodedTypeFact, DocFragmentInput, EntityId, EntityKind, ForeignOrigin,
     FragmentView, ItemKind, OccurrenceConfidence, OccurrenceTarget, PrimitiveShape, ReferenceKind,
     SemanticTypeTag, TypeReason, TypeWidth,
-};
-use backend_frontend_typescript::legacy::{
-    Checker, MappedModifier as CheckerMappedModifier, Reference, Report, TypeTree,
-};
-use backend_engine::publication::{
-    OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
 };
 use backend_semantic::vocabulary::{
     LanguageProfile, LoweringUnsupported, ProjectionAdmissionFault, ProjectionSemanticTypeFault,
@@ -214,11 +214,7 @@ fn property_token_nth(source: &[u8], prefix: &[u8], token: &[u8], index: usize) 
     unreachable!()
 }
 
-fn entity_decl_start(
-    source: &'static [u8],
-    authority: Option<&Report>,
-    owner: u32,
-) -> u32 {
+fn entity_decl_start(source: &'static [u8], authority: Option<&Report>, owner: u32) -> u32 {
     let default = report(source);
     let authority = authority.unwrap_or(&default);
     let compiled = try_lower(source, Some(authority)).expect("lower for owner source span");
@@ -295,9 +291,7 @@ impl StackLowered {
                 diagnostic_output: diagnostic,
                 native_work: Path::new("/tmp"),
             },
-            CompileOutput {
-                fragment_output,
-            },
+            CompileOutput { fragment_output },
         )
         .map(|compiled| compiled.fragment.as_ref().len())
     }
@@ -315,7 +309,10 @@ impl StackLowered {
     }
 }
 
-fn ir_tag_shape(ir: &backend_semantic::ir::Ir, id: backend_semantic::ir::TypeId) -> (SemanticTypeTag, u8) {
+fn ir_tag_shape(
+    ir: &backend_semantic::ir::Ir,
+    id: backend_semantic::ir::TypeId,
+) -> (SemanticTypeTag, u8) {
     use backend_semantic::ir::{ComputedType, ConcreteType, TypeExpr};
     match ir.ty(id).unwrap() {
         TypeExpr::Concrete(ConcreteType::Builtin(_) | ConcreteType::Literal(_)) => {
@@ -363,9 +360,13 @@ fn ir_tag_shape(ir: &backend_semantic::ir::Ir, id: backend_semantic::ir::TypeId)
 fn expected_kind_matches(actual: backend_semantic::ir::ItemKind, expected: EntityKind) -> bool {
     matches!(
         (actual, expected),
-        (backend_semantic::ir::ItemKind::Constant, EntityKind::Constant)
-            | (backend_semantic::ir::ItemKind::Function, EntityKind::Function)
-            | (backend_semantic::ir::ItemKind::Record, EntityKind::Record)
+        (
+            backend_semantic::ir::ItemKind::Constant,
+            EntityKind::Constant
+        ) | (
+            backend_semantic::ir::ItemKind::Function,
+            EntityKind::Function
+        ) | (backend_semantic::ir::ItemKind::Record, EntityKind::Record)
             | (backend_semantic::ir::ItemKind::Trait, EntityKind::Trait)
             | (backend_semantic::ir::ItemKind::Static, EntityKind::Static)
     )
@@ -441,9 +442,9 @@ fn mutually_recursive_interfaces_keep_diagonal_self_nominals_and_linked_members(
         assert_eq!(k, EntityKind::Trait);
         assert_eq!(
             fact(&v, id).record.nominal,
-            Some(backend_semantic::ir::NominalRef::Local(backend_semantic::ir::EntityId::new(
-                id
-            )))
+            Some(backend_semantic::ir::NominalRef::Local(
+                backend_semantic::ir::EntityId::new(id)
+            ))
         );
     }
 }
@@ -676,10 +677,12 @@ fn plugin_union_keeps_all_forty_literal_members_reachable() {
         overload_index: None,
         r#type: Some(backend_frontend_typescript::legacy::TypeTree::Union {
             members: (0..40)
-                .map(|index| backend_frontend_typescript::legacy::TypeTree::Literal {
-                    base: backend_frontend_typescript::legacy::LiteralBase::String,
-                    text: index.to_string(),
-                })
+                .map(
+                    |index| backend_frontend_typescript::legacy::TypeTree::Literal {
+                        base: backend_frontend_typescript::legacy::LiteralBase::String,
+                        text: index.to_string(),
+                    },
+                )
                 .collect(),
         }),
     }]);
@@ -926,11 +929,8 @@ fn checker_only_property_call_targets_the_exact_member() {
         .into_iter()
         .find(|o| {
             o.occurrence.kind == ReferenceKind::FunctionCall
-                && recover_site_bytes(
-                    SOURCE,
-                    entity_decl_start(SOURCE, None, o.owner.raw),
-                    o,
-                ) == b"tick"
+                && recover_site_bytes(SOURCE, entity_decl_start(SOURCE, None, o.owner.raw), o)
+                    == b"tick"
         })
         .expect("box.tick() must be a FunctionCall on the tick property token");
     match tick_call.occurrence.target {
@@ -953,11 +953,8 @@ fn checker_only_property_call_targets_the_exact_member() {
             .iter()
             .filter(|o| {
                 o.occurrence.kind == ReferenceKind::FunctionCall
-                    && recover_site_bytes(
-                        SOURCE,
-                        entity_decl_start(SOURCE, None, o.owner.raw),
-                        o,
-                    ) == b"tick"
+                    && recover_site_bytes(SOURCE, entity_decl_start(SOURCE, None, o.owner.raw), o)
+                        == b"tick"
             })
             .count(),
         1,
@@ -1008,8 +1005,14 @@ fn nested_same_name_field_inside_type_literal_does_not_shadow_class_member() {
         site.occurrence.target,
         OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(point_score))
     );
-    assert_ne!(site.occurrence.target, OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(score_fields[1])));
-    assert!(!matches!(site.occurrence.target, OccurrenceTarget::Foreign(_)));
+    assert_ne!(
+        site.occurrence.target,
+        OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(score_fields[1]))
+    );
+    assert!(!matches!(
+        site.occurrence.target,
+        OccurrenceTarget::Foreign(_)
+    ));
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
     assert_property_token_site(SOURCE, None, site, b"score", score_token_start);
 }
@@ -1085,15 +1088,13 @@ fn this_method_call_targets_the_enclosing_class_method() {
     );
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
     assert_property_token_site(SOURCE, None, site, b"send", send_token_start);
-    assert!(
-        !occurrences(&v).iter().any(|o| {
-            o.occurrence.kind == ReferenceKind::FieldAccess
-                && matches!(
-                    o.occurrence.target,
-                    OccurrenceTarget::Local(entity) if entity.raw == send_method
-                )
-        })
-    );
+    assert!(!occurrences(&v).iter().any(|o| {
+        o.occurrence.kind == ReferenceKind::FieldAccess
+            && matches!(
+                o.occurrence.target,
+                OccurrenceTarget::Local(entity) if entity.raw == send_method
+            )
+    }));
 }
 
 #[test]
@@ -1326,7 +1327,10 @@ fn parameter_property_ordinary_parameter_stays_syntactic() {
                 key.origin,
                 ForeignOrigin::Universe { ecosystem: "npm" }
             ));
-            assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Syntactic);
+            assert_eq!(
+                sites[0].occurrence.confidence,
+                OccurrenceConfidence::Syntactic
+            );
         }
         OccurrenceTarget::Local(_) | OccurrenceTarget::Stable(_) => {
             panic!("ordinary constructor parameter must stay syntactic foreign")
@@ -1848,7 +1852,10 @@ fn parameter_property_object_literal_inside_constructor_is_not_the_field() {
                 key.origin,
                 ForeignOrigin::Universe { ecosystem: "npm" }
             ));
-            assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Syntactic);
+            assert_eq!(
+                sites[0].occurrence.confidence,
+                OccurrenceConfidence::Syntactic
+            );
         }
         OccurrenceTarget::Local(_) | OccurrenceTarget::Stable(_) => {
             panic!("object-literal score inside constructor must not bind this.score")
@@ -1908,16 +1915,11 @@ fn this_inherited_method_call_resolves_to_base_note() {
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
     assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
-    assert!(
-        !occurrences(&v).iter().any(|o| {
-            o.occurrence.kind == ReferenceKind::FieldAccess
-                && recover_site_bytes(
-                    SOURCE,
-                    entity_decl_start(SOURCE, None, o.owner.raw),
-                    o,
-                ) == b"note"
-        })
-    );
+    assert!(!occurrences(&v).iter().any(|o| {
+        o.occurrence.kind == ReferenceKind::FieldAccess
+            && recover_site_bytes(SOURCE, entity_decl_start(SOURCE, None, o.owner.raw), o)
+                == b"note"
+    }));
 }
 
 #[test]
@@ -1943,16 +1945,11 @@ fn this_method_value_targets_enclosing_class_note() {
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
     assert_property_token_site(SOURCE, None, &sites[0], b"note", note_token_start);
-    assert!(
-        !occurrences(&v).iter().any(|o| {
-            o.occurrence.kind == ReferenceKind::FunctionCall
-                && recover_site_bytes(
-                    SOURCE,
-                    entity_decl_start(SOURCE, None, o.owner.raw),
-                    o,
-                ) == b"note"
-        })
-    );
+    assert!(!occurrences(&v).iter().any(|o| {
+        o.occurrence.kind == ReferenceKind::FunctionCall
+            && recover_site_bytes(SOURCE, entity_decl_start(SOURCE, None, o.owner.raw), o)
+                == b"note"
+    }));
 }
 
 #[test]
@@ -1982,16 +1979,11 @@ fn this_inherited_method_value_resolves_to_base_note() {
     );
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
     assert_property_token_site(SOURCE, None, &site, b"note", note_token_start);
-    assert!(
-        !occurrences(&v).iter().any(|o| {
-            o.occurrence.kind == ReferenceKind::FunctionCall
-                && recover_site_bytes(
-                    SOURCE,
-                    entity_decl_start(SOURCE, None, o.owner.raw),
-                    o,
-                ) == b"note"
-        })
-    );
+    assert!(!occurrences(&v).iter().any(|o| {
+        o.occurrence.kind == ReferenceKind::FunctionCall
+            && recover_site_bytes(SOURCE, entity_decl_start(SOURCE, None, o.owner.raw), o)
+                == b"note"
+    }));
 }
 
 #[test]
@@ -2015,16 +2007,11 @@ fn this_inherited_method_value_resolves_to_grand_note() {
     );
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
     assert_property_token_site(SOURCE, None, &site, b"note", note_token_start);
-    assert!(
-        !occurrences(&v).iter().any(|o| {
-            o.occurrence.kind == ReferenceKind::FunctionCall
-                && recover_site_bytes(
-                    SOURCE,
-                    entity_decl_start(SOURCE, None, o.owner.raw),
-                    o,
-                ) == b"note"
-        })
-    );
+    assert!(!occurrences(&v).iter().any(|o| {
+        o.occurrence.kind == ReferenceKind::FunctionCall
+            && recover_site_bytes(SOURCE, entity_decl_start(SOURCE, None, o.owner.raw), o)
+                == b"note"
+    }));
 }
 
 #[test]
@@ -2054,16 +2041,11 @@ fn this_inherited_method_value_child_shadows_base_note() {
     );
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
     assert_property_token_site(SOURCE, None, &site, b"note", note_token_start);
-    assert!(
-        !occurrences(&v).iter().any(|o| {
-            o.occurrence.kind == ReferenceKind::FunctionCall
-                && recover_site_bytes(
-                    SOURCE,
-                    entity_decl_start(SOURCE, None, o.owner.raw),
-                    o,
-                ) == b"note"
-        })
-    );
+    assert!(!occurrences(&v).iter().any(|o| {
+        o.occurrence.kind == ReferenceKind::FunctionCall
+            && recover_site_bytes(SOURCE, entity_decl_start(SOURCE, None, o.owner.raw), o)
+                == b"note"
+    }));
 }
 
 #[test]
@@ -2094,16 +2076,11 @@ fn this_inherited_method_value_child_field_shadows_base_method() {
     );
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
     assert_property_token_site(SOURCE, None, &site, b"note", note_token_start);
-    assert!(
-        !occurrences(&v).iter().any(|o| {
-            o.occurrence.kind == ReferenceKind::FunctionCall
-                && recover_site_bytes(
-                    SOURCE,
-                    entity_decl_start(SOURCE, None, o.owner.raw),
-                    o,
-                ) == b"note"
-        })
-    );
+    assert!(!occurrences(&v).iter().any(|o| {
+        o.occurrence.kind == ReferenceKind::FunctionCall
+            && recover_site_bytes(SOURCE, entity_decl_start(SOURCE, None, o.owner.raw), o)
+                == b"note"
+    }));
 }
 
 #[test]
@@ -2127,21 +2104,17 @@ fn this_inherited_method_value_generic_base_resolves_to_base_note() {
     );
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
     assert_property_token_site(SOURCE, None, &site, b"note", note_token_start);
-    assert!(
-        !occurrences(&v).iter().any(|o| {
-            o.occurrence.kind == ReferenceKind::FunctionCall
-                && recover_site_bytes(
-                    SOURCE,
-                    entity_decl_start(SOURCE, None, o.owner.raw),
-                    o,
-                ) == b"note"
-        })
-    );
+    assert!(!occurrences(&v).iter().any(|o| {
+        o.occurrence.kind == ReferenceKind::FunctionCall
+            && recover_site_bytes(SOURCE, entity_decl_start(SOURCE, None, o.owner.raw), o)
+                == b"note"
+    }));
 }
 
 #[test]
 fn this_inherited_method_value_imported_base_stays_syntactic() {
-    const SOURCE: &[u8] = b"export class Child extends Imported { read(): unknown { return this.note; } }";
+    const SOURCE: &[u8] =
+        b"export class Child extends Imported { read(): unknown { return this.note; } }";
     let stack = StackLowered::compile(SOURCE);
     let v = stack.view();
     let note_token_start = property_token(SOURCE, b"this.", b"note");
@@ -2167,16 +2140,11 @@ fn this_inherited_method_value_imported_base_stays_syntactic() {
     }
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Syntactic);
     assert_property_token_site(SOURCE, None, &site, b"note", note_token_start);
-    assert!(
-        !occurrences(&v).iter().any(|o| {
-            o.occurrence.kind == ReferenceKind::FunctionCall
-                && recover_site_bytes(
-                    SOURCE,
-                    entity_decl_start(SOURCE, None, o.owner.raw),
-                    o,
-                ) == b"note"
-        })
-    );
+    assert!(!occurrences(&v).iter().any(|o| {
+        o.occurrence.kind == ReferenceKind::FunctionCall
+            && recover_site_bytes(SOURCE, entity_decl_start(SOURCE, None, o.owner.raw), o)
+                == b"note"
+    }));
 }
 
 #[test]
@@ -2233,7 +2201,8 @@ fn this_inherited_field_generic_base_resolves_to_base_score() {
 
 #[test]
 fn this_inherited_field_imported_base_stays_syntactic() {
-    const SOURCE: &[u8] = b"export class Child extends Imported { read(): number { return this.score; } }";
+    const SOURCE: &[u8] =
+        b"export class Child extends Imported { read(): number { return this.score; } }";
     let stack = StackLowered::compile(SOURCE);
     let v = stack.view();
     let score_token_start = property_token(SOURCE, b"this.", b"score");
@@ -2346,9 +2315,8 @@ fn private_field_read_child_does_not_see_base_score() {
     const SOURCE: &[u8] = b"export class Base { #score: number; } export class Child extends Base { read(): number { return this.#score; } }";
     let mut diagnostic = [0u8; 4096];
     let mut output = vec![0_u8; 8 * 1024 * 1024];
-    let failure = StackLowered::try_compile(SOURCE, &mut diagnostic, &mut output).expect_err(
-        "child must not compile when it reads an undeclared private field",
-    );
+    let failure = StackLowered::try_compile(SOURCE, &mut diagnostic, &mut output)
+        .expect_err("child must not compile when it reads an undeclared private field");
     let CompileFailure::Authority { failure, .. } = failure else {
         panic!("expected authority rejection, got {failure:?}");
     };
@@ -2423,7 +2391,10 @@ fn private_field_read_other_receiver_stays_syntactic() {
             panic!("other-receiver private access must stay syntactic")
         }
     }
-    assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Syntactic);
+    assert_eq!(
+        sites[0].occurrence.confidence,
+        OccurrenceConfidence::Syntactic
+    );
     assert_ne!(
         sites[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(child_score))
@@ -2715,16 +2686,11 @@ fn super_method_value_targets_base_note_not_child() {
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
     assert_property_token_site(SOURCE, None, &sites[0], b"note", note_token_start);
-    assert!(
-        !occurrences(&v).iter().any(|o| {
-            o.occurrence.kind == ReferenceKind::FunctionCall
-                && recover_site_bytes(
-                    SOURCE,
-                    entity_decl_start(SOURCE, None, o.owner.raw),
-                    o,
-                ) == b"note"
-        })
-    );
+    assert!(!occurrences(&v).iter().any(|o| {
+        o.occurrence.kind == ReferenceKind::FunctionCall
+            && recover_site_bytes(SOURCE, entity_decl_start(SOURCE, None, o.owner.raw), o)
+                == b"note"
+    }));
 }
 
 #[test]
@@ -2757,21 +2723,17 @@ fn super_method_value_child_method_does_not_shadow_base_field() {
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
     assert_property_token_site(SOURCE, None, &sites[0], b"note", note_token_start);
-    assert!(
-        !occurrences(&v).iter().any(|o| {
-            o.occurrence.kind == ReferenceKind::FunctionCall
-                && recover_site_bytes(
-                    SOURCE,
-                    entity_decl_start(SOURCE, None, o.owner.raw),
-                    o,
-                ) == b"note"
-        })
-    );
+    assert!(!occurrences(&v).iter().any(|o| {
+        o.occurrence.kind == ReferenceKind::FunctionCall
+            && recover_site_bytes(SOURCE, entity_decl_start(SOURCE, None, o.owner.raw), o)
+                == b"note"
+    }));
 }
 
 #[test]
 fn super_field_read_imported_base_stays_syntactic() {
-    const SOURCE: &[u8] = b"export class Child extends Imported { read(): number { return super.score; } }";
+    const SOURCE: &[u8] =
+        b"export class Child extends Imported { read(): number { return super.score; } }";
     let stack = StackLowered::compile(SOURCE);
     let v = stack.view();
     let score_token_start = property_token(SOURCE, b"super.", b"score");
@@ -2796,7 +2758,10 @@ fn super_field_read_imported_base_stays_syntactic() {
             panic!("imported-only base must stay a syntactic npm-universe key")
         }
     }
-    assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Syntactic);
+    assert_eq!(
+        sites[0].occurrence.confidence,
+        OccurrenceConfidence::Syntactic
+    );
     assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
 }
 
@@ -2964,16 +2929,11 @@ fn computed_member_method_value_targets_enclosing_class_note() {
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
     assert_property_token_site(SOURCE, None, &sites[0], b"note", note_token_start);
-    assert!(
-        !occurrences(&v).iter().any(|o| {
-            o.occurrence.kind == ReferenceKind::FunctionCall
-                && recover_site_bytes(
-                    SOURCE,
-                    entity_decl_start(SOURCE, None, o.owner.raw),
-                    o,
-                ) == b"note"
-        })
-    );
+    assert!(!occurrences(&v).iter().any(|o| {
+        o.occurrence.kind == ReferenceKind::FunctionCall
+            && recover_site_bytes(SOURCE, entity_decl_start(SOURCE, None, o.owner.raw), o)
+                == b"note"
+    }));
 }
 
 #[test]
@@ -3027,13 +2987,17 @@ fn computed_member_imported_only_base_stays_syntactic() {
             panic!("imported-only base must stay a syntactic npm-universe key")
         }
     }
-    assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Syntactic);
+    assert_eq!(
+        sites[0].occurrence.confidence,
+        OccurrenceConfidence::Syntactic
+    );
     assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
 }
 
 #[test]
 fn computed_member_dynamic_key_emits_nothing() {
-    const SOURCE: &[u8] = b"export class Child { score: number; read(key: string): number { return this[key]; } }";
+    const SOURCE: &[u8] =
+        b"export class Child { score: number; read(key: string): number { return this[key]; } }";
     let stack = StackLowered::compile(SOURCE);
     let v = stack.view();
     let field_accesses = occurrences(&v)
@@ -3075,13 +3039,15 @@ fn computed_member_other_receiver_stays_syntactic() {
         OccurrenceTarget::Local(entity) => {
             panic!(
                 "obj[\"score\"] must not bind locally to {:?}, field is {}",
-                entity,
-                score_field
+                entity, score_field
             )
         }
         OccurrenceTarget::Stable(_) => panic!("obj[\"score\"] must not target a stable ref"),
     }
-    assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Syntactic);
+    assert_eq!(
+        sites[0].occurrence.confidence,
+        OccurrenceConfidence::Syntactic
+    );
     assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
 }
 
@@ -3099,8 +3065,14 @@ fn computed_member_escape_emits_nothing() {
         .iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
         .count();
-    assert_eq!(field_accesses, 0, "escaped computed key must not emit FieldAccess");
-    assert_eq!(function_calls, 0, "escaped computed key must not emit FunctionCall");
+    assert_eq!(
+        field_accesses, 0,
+        "escaped computed key must not emit FieldAccess"
+    );
+    assert_eq!(
+        function_calls, 0,
+        "escaped computed key must not emit FunctionCall"
+    );
 }
 
 #[test]
@@ -3135,8 +3107,14 @@ fn computed_member_template_key_emits_nothing() {
         .iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
         .count();
-    assert_eq!(field_accesses, 0, "template computed key must not emit FieldAccess");
-    assert_eq!(function_calls, 0, "template computed key must not emit FunctionCall");
+    assert_eq!(
+        field_accesses, 0,
+        "template computed key must not emit FieldAccess"
+    );
+    assert_eq!(
+        function_calls, 0,
+        "template computed key must not emit FunctionCall"
+    );
 }
 
 #[test]
@@ -3160,11 +3138,8 @@ fn chained_builtin_call_stays_foreign_while_this_field_is_local() {
         .into_iter()
         .find(|o| {
             o.occurrence.kind == ReferenceKind::FunctionCall
-                && recover_site_bytes(
-                    SOURCE,
-                    entity_decl_start(SOURCE, None, o.owner.raw),
-                    o,
-                ) == b"toFixed"
+                && recover_site_bytes(SOURCE, entity_decl_start(SOURCE, None, o.owner.raw), o)
+                    == b"toFixed"
         })
         .expect("foreign FunctionCall of toFixed");
     match to_fixed.occurrence.target {
@@ -3209,7 +3184,9 @@ fn checker_resolved_property_access_is_not_duplicated() {
         .enumerate()
         .filter(|(index, _)| {
             SOURCE[*index..].starts_with(b"score; }")
-                && SOURCE.get(..*index).is_some_and(|prefix| prefix.ends_with(b"this."))
+                && SOURCE
+                    .get(..*index)
+                    .is_some_and(|prefix| prefix.ends_with(b"this."))
         })
         .map(|(index, _)| u32::try_from(index).unwrap())
         .next()
@@ -3304,7 +3281,11 @@ export function group(service: WorkoutService) { const bound = service.setNote; 
                 )
         })
         .collect();
-    assert_eq!(call_rows.len(), 1, "expected one oracle package method call");
+    assert_eq!(
+        call_rows.len(),
+        1,
+        "expected one oracle package method call"
+    );
     let call_occ = call_rows[0];
     assert_eq!(call_occ.occurrence.kind, ReferenceKind::FunctionCall);
     assert_eq!(call_occ.occurrence.confidence, OccurrenceConfidence::Oracle);
@@ -3638,9 +3619,9 @@ fn forward_nominal_checker_and_lowering_keep_the_later_class() {
                                 && fact.segment == backend_semantic::ir::TypeFactSegment::Computed
                         })
                         .and_then(|fact| fact.record.nominal),
-                    Some(backend_semantic::ir::NominalRef::Local(backend_semantic::ir::EntityId::new(
-                        b_owner
-                    ))),
+                    Some(backend_semantic::ir::NominalRef::Local(
+                        backend_semantic::ir::EntityId::new(b_owner)
+                    )),
                 );
                 reopened_publisher.shutdown().unwrap();
                 std::fs::remove_dir_all(root).unwrap();
@@ -3972,8 +3953,7 @@ fn wide_syntactic_associative_fold_keeps_members_ordered_and_shallow() {
             let mut members = Vec::new();
             let mut max_depth = 0;
             flatten(&compiled.ir, root, &mut members, 0, &mut max_depth, &label);
-            let expected: Vec<Vec<u8>> =
-                (0..count).map(|i| format!("p{i}").into_bytes()).collect();
+            let expected: Vec<Vec<u8>> = (0..count).map(|i| format!("p{i}").into_bytes()).collect();
             assert_eq!(members, expected, "{label}");
             assert!(max_depth <= 4, "{label} max_depth={max_depth}");
         }
@@ -4029,8 +4009,7 @@ fn mapped_name_type_and_initializer_bindings_are_declared() {
     let mapped = fact(&view, bag.0);
     assert_eq!(mapped.record.tag, SemanticTypeTag::Mapped);
     assert_eq!(
-        mapped.record.children.length,
-        3,
+        mapped.record.children.length, 3,
         "mapped type keeps its as clause"
     );
 }
@@ -4115,11 +4094,7 @@ fn catch_binding_destructure_stays_unpublished() {
 }
 ";
     let v = view(SOURCE, None);
-    assert!(
-        !entities(&v)
-            .iter()
-            .any(|(_, name, _)| name == b"message")
-    );
+    assert!(!entities(&v).iter().any(|(_, name, _)| name == b"message"));
     assert!(
         !occurrences(&v)
             .iter()
@@ -4196,7 +4171,8 @@ fn catch_binding_repeated_name_still_lowers() {
 
 #[test]
 fn enum_member_missing_name_does_not_invent_a_variant() {
-    const SOURCE: &[u8] = b"export enum Color { Red = 1 }\nexport function pick(): void { Color.missing; }\n";
+    const SOURCE: &[u8] =
+        b"export enum Color { Red = 1 }\nexport function pick(): void { Color.missing; }\n";
     let view = view(SOURCE, None);
     assert!(
         !entities(&view)
@@ -4216,7 +4192,8 @@ fn enum_member_missing_name_does_not_invent_a_variant() {
 
 #[test]
 fn enum_member_non_enum_receiver_is_not_a_variant() {
-    const SOURCE: &[u8] = b"export function pick(box: { tick: number }): number { return box.tick; }\n";
+    const SOURCE: &[u8] =
+        b"export function pick(box: { tick: number }): number { return box.tick; }\n";
     let view = view(SOURCE, None);
     assert!(
         occurrences(&view).iter().all(|row| {
@@ -4319,7 +4296,11 @@ export function viaBang(items: number[]): number[] { return items.map(bang); }
                 && row.occurrence.target == OccurrenceTarget::Local(parse_id)
         })
         .collect::<Vec<_>>();
-    assert_eq!(parse_calls.len(), 4, "parse has four function-value/call sites");
+    assert_eq!(
+        parse_calls.len(),
+        4,
+        "parse has four function-value/call sites"
+    );
 
     let alias_parse_init = parse_calls
         .iter()
@@ -4343,7 +4324,10 @@ export function viaBang(items: number[]): number[] { return items.map(bang); }
         })
         .collect::<Vec<_>>();
     assert_eq!(bound_call.len(), 1, "bound = parse is one call");
-    assert_eq!(bound_call[0].occurrence.span.end, bound_call[0].occurrence.span.start + 5);
+    assert_eq!(
+        bound_call[0].occurrence.span.end,
+        bound_call[0].occurrence.span.start + 5
+    );
 
     let map_call = parse_calls
         .iter()
@@ -4353,7 +4337,10 @@ export function viaBang(items: number[]): number[] { return items.map(bang); }
         })
         .collect::<Vec<_>>();
     assert_eq!(map_call.len(), 1, "items.map(parse) is one call");
-    assert_eq!(map_call[0].occurrence.span.end, map_call[0].occurrence.span.start + 5);
+    assert_eq!(
+        map_call[0].occurrence.span.end,
+        map_call[0].occurrence.span.start + 5
+    );
     assert_ne!(
         (bound_call[0].owner.raw, bound_call[0].occurrence.span.start),
         (map_call[0].owner.raw, map_call[0].occurrence.span.start),
@@ -4364,12 +4351,14 @@ export function viaBang(items: number[]): number[] { return items.map(bang); }
         .iter()
         .filter(|row| row.owner.raw == direct_id)
         .filter(|row| {
-            row.occurrence.span.start
-                == relative(b"function direct", b"parse(raw)", b"parse")
+            row.occurrence.span.start == relative(b"function direct", b"parse(raw)", b"parse")
         })
         .collect::<Vec<_>>();
     assert_eq!(direct_call.len(), 1, "parse(raw) is one call not two");
-    assert_eq!(direct_call[0].occurrence.span.end, direct_call[0].occurrence.span.start + 5);
+    assert_eq!(
+        direct_call[0].occurrence.span.end,
+        direct_call[0].occurrence.span.start + 5
+    );
 
     let typeof_rows = rows
         .iter()
@@ -4403,7 +4392,10 @@ export function viaBang(items: number[]): number[] { return items.map(bang); }
         })
         .collect::<Vec<_>>();
     assert_eq!(arrow_call.len(), 1, "items.map(arrow) is one call");
-    assert_eq!(arrow_call[0].occurrence.span.end, arrow_call[0].occurrence.span.start + 5);
+    assert_eq!(
+        arrow_call[0].occurrence.span.end,
+        arrow_call[0].occurrence.span.start + 5
+    );
 
     let direct_arrow_call = rows
         .iter()
@@ -4411,8 +4403,7 @@ export function viaBang(items: number[]): number[] { return items.map(bang); }
         .filter(|row| row.occurrence.target == OccurrenceTarget::Local(arrow_id))
         .filter(|row| row.occurrence.kind == ReferenceKind::FunctionCall)
         .filter(|row| {
-            row.occurrence.span.start
-                == relative(b"function directArrow", b"arrow(raw)", b"arrow")
+            row.occurrence.span.start == relative(b"function directArrow", b"arrow(raw)", b"arrow")
         })
         .collect::<Vec<_>>();
     assert_eq!(direct_arrow_call.len(), 1, "arrow(raw) is one call not two");
@@ -4432,7 +4423,10 @@ export function viaBang(items: number[]): number[] { return items.map(bang); }
         })
         .collect::<Vec<_>>();
     assert_eq!(wrapped_call.len(), 1, "items.map(wrapped) is one call");
-    assert_eq!(wrapped_call[0].occurrence.span.end, wrapped_call[0].occurrence.span.start + 7);
+    assert_eq!(
+        wrapped_call[0].occurrence.span.end,
+        wrapped_call[0].occurrence.span.start + 7
+    );
 
     let rebound_rows = rows
         .iter()
@@ -4449,14 +4443,23 @@ export function viaBang(items: number[]): number[] { return items.map(bang); }
     let alias_parse_rows = rows
         .iter()
         .filter(|row| row.owner.raw == via_alias_parse_id)
-        .filter(|row| row.occurrence.target == OccurrenceTarget::Local(EntityId::new(alias_parse_binding_id)))
+        .filter(|row| {
+            row.occurrence.target == OccurrenceTarget::Local(EntityId::new(alias_parse_binding_id))
+        })
         .filter(|row| {
             row.occurrence.span.start
                 == relative(b"function viaAliasParse", b"items.map(alias)", b"alias")
         })
         .collect::<Vec<_>>();
-    assert_eq!(alias_parse_rows.len(), 1, "items.map(alias) through parse alias emits one row");
-    assert_eq!(alias_parse_rows[0].occurrence.kind, ReferenceKind::VariableUse);
+    assert_eq!(
+        alias_parse_rows.len(),
+        1,
+        "items.map(alias) through parse alias emits one row"
+    );
+    assert_eq!(
+        alias_parse_rows[0].occurrence.kind,
+        ReferenceKind::VariableUse
+    );
 
     let named_fn_call = rows
         .iter()
@@ -4471,7 +4474,8 @@ export function viaBang(items: number[]): number[] { return items.map(bang); }
     assert_eq!(named_fn_call.len(), 1, "items.map(namedFn) is one call");
     assert_eq!(
         named_fn_call[0].occurrence.span.end,
-        named_fn_call[0].occurrence.span.start + u32::try_from(b"namedFn".len()).expect("namedFn len")
+        named_fn_call[0].occurrence.span.start
+            + u32::try_from(b"namedFn".len()).expect("namedFn len")
     );
 
     let cast_call = rows
@@ -4480,8 +4484,7 @@ export function viaBang(items: number[]): number[] { return items.map(bang); }
         .filter(|row| row.occurrence.target == OccurrenceTarget::Local(cast_id))
         .filter(|row| row.occurrence.kind == ReferenceKind::FunctionCall)
         .filter(|row| {
-            row.occurrence.span.start
-                == relative(b"function viaCast", b"items.map(cast)", b"cast")
+            row.occurrence.span.start == relative(b"function viaCast", b"items.map(cast)", b"cast")
         })
         .collect::<Vec<_>>();
     assert_eq!(cast_call.len(), 1, "items.map(cast) is one call");
@@ -4496,8 +4499,7 @@ export function viaBang(items: number[]): number[] { return items.map(bang); }
         .filter(|row| row.occurrence.target == OccurrenceTarget::Local(bang_id))
         .filter(|row| row.occurrence.kind == ReferenceKind::FunctionCall)
         .filter(|row| {
-            row.occurrence.span.start
-                == relative(b"function viaBang", b"items.map(bang)", b"bang")
+            row.occurrence.span.start == relative(b"function viaBang", b"items.map(bang)", b"bang")
         })
         .collect::<Vec<_>>();
     assert_eq!(bang_call.len(), 1, "items.map(bang) is one call");
@@ -4565,7 +4567,10 @@ fn namespace_function_value_targets_box_note_not_other() {
         field_reads[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(other_note))
     );
-    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_eq!(
+        field_reads[0].occurrence.confidence,
+        OccurrenceConfidence::Index
+    );
     assert_property_token_site(SOURCE, None, &field_reads[0], b"note", note_token_start);
     let function_calls = occurrences(&v)
         .iter()
@@ -4601,7 +4606,10 @@ fn namespace_const_read_targets_box_score_not_other() {
         field_reads[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(other_score))
     );
-    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_eq!(
+        field_reads[0].occurrence.confidence,
+        OccurrenceConfidence::Index
+    );
     assert_property_token_site(SOURCE, None, &field_reads[0], b"score", score_token_start);
 }
 
@@ -4632,7 +4640,10 @@ fn namespace_let_read_targets_box_score_not_other() {
         field_reads[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(other_score))
     );
-    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_eq!(
+        field_reads[0].occurrence.confidence,
+        OccurrenceConfidence::Index
+    );
     assert_property_token_site(SOURCE, None, &field_reads[0], b"score", score_token_start);
 }
 
@@ -4778,7 +4789,10 @@ fn namespace_other_receiver_stays_syntactic() {
             panic!("other-receiver namespace member access must stay syntactic")
         }
     }
-    assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Syntactic);
+    assert_eq!(
+        calls[0].occurrence.confidence,
+        OccurrenceConfidence::Syntactic
+    );
     assert_ne!(
         calls[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(box_note))
@@ -4818,7 +4832,10 @@ fn namespace_class_value_targets_box_child_not_other() {
         field_reads[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(other_child))
     );
-    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_eq!(
+        field_reads[0].occurrence.confidence,
+        OccurrenceConfidence::Index
+    );
     assert_property_token_site(SOURCE, None, &field_reads[0], b"Child", child_token_start);
     let function_calls = occurrences(&v)
         .iter()
@@ -4854,7 +4871,10 @@ fn namespace_enum_value_targets_box_color_not_other() {
         field_reads[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(other_color))
     );
-    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_eq!(
+        field_reads[0].occurrence.confidence,
+        OccurrenceConfidence::Index
+    );
     assert_property_token_site(SOURCE, None, &field_reads[0], b"Color", color_token_start);
 }
 
@@ -4885,7 +4905,10 @@ fn namespace_parenthesized_class_value_targets_box_child() {
         field_reads[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(other_child))
     );
-    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_eq!(
+        field_reads[0].occurrence.confidence,
+        OccurrenceConfidence::Index
+    );
     assert_property_token_site(SOURCE, None, &field_reads[0], b"Child", child_token_start);
 }
 
@@ -4953,7 +4976,10 @@ fn namespace_class_other_receiver_stays_syntactic() {
             panic!("other-receiver class member access must stay syntactic")
         }
     }
-    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Syntactic);
+    assert_eq!(
+        field_reads[0].occurrence.confidence,
+        OccurrenceConfidence::Syntactic
+    );
     assert_ne!(
         field_reads[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(box_child))
@@ -4990,7 +5016,10 @@ fn namespace_computed_class_targets_box_child_not_score() {
         field_reads[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(box_score))
     );
-    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_eq!(
+        field_reads[0].occurrence.confidence,
+        OccurrenceConfidence::Index
+    );
     assert_property_token_site(SOURCE, None, &field_reads[0], b"Child", child_token_start);
 }
 
@@ -5102,7 +5131,10 @@ fn implements_field_read_targets_interface_score_not_other() {
         field_reads[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(other_score))
     );
-    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_eq!(
+        field_reads[0].occurrence.confidence,
+        OccurrenceConfidence::Index
+    );
     assert_property_token_site(SOURCE, None, &field_reads[0], b"score", score_token_start);
     let function_calls = occurrences(&v)
         .iter()
@@ -5144,7 +5176,10 @@ fn implements_two_interfaces_same_note_stays_syntactic() {
             panic!("ambiguous implements must stay syntactic")
         }
     }
-    assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Syntactic);
+    assert_eq!(
+        calls[0].occurrence.confidence,
+        OccurrenceConfidence::Syntactic
+    );
     assert_ne!(
         calls[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(a_note))
@@ -5245,7 +5280,10 @@ fn super_call_does_not_use_implements() {
             panic!("super.note must not bind through implements")
         }
     }
-    assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Syntactic);
+    assert_eq!(
+        calls[0].occurrence.confidence,
+        OccurrenceConfidence::Syntactic
+    );
     assert_ne!(
         calls[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(interface_note))
@@ -5285,7 +5323,10 @@ fn implements_qualified_name_stays_syntactic() {
             panic!("qualified implements must stay syntactic")
         }
     }
-    assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Syntactic);
+    assert_eq!(
+        calls[0].occurrence.confidence,
+        OccurrenceConfidence::Syntactic
+    );
     assert_ne!(
         calls[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(interface_note))
@@ -5450,7 +5491,10 @@ fn extends_base_two_interfaces_same_note_stays_syntactic() {
             panic!("ambiguous base implements must stay syntactic")
         }
     }
-    assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Syntactic);
+    assert_eq!(
+        calls[0].occurrence.confidence,
+        OccurrenceConfidence::Syntactic
+    );
     assert_ne!(
         calls[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(a_note))
@@ -5515,7 +5559,10 @@ fn extends_base_implements_field_targets_score_not_other() {
         field_reads[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(other_score))
     );
-    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_eq!(
+        field_reads[0].occurrence.confidence,
+        OccurrenceConfidence::Index
+    );
     assert_property_token_site(SOURCE, None, &field_reads[0], b"score", score_token_start);
     let function_calls = occurrences(&v)
         .iter()
@@ -5556,7 +5603,10 @@ fn super_does_not_follow_base_implements() {
             panic!("super.note must not bind through base implements")
         }
     }
-    assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Syntactic);
+    assert_eq!(
+        calls[0].occurrence.confidence,
+        OccurrenceConfidence::Syntactic
+    );
     assert_ne!(
         calls[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(interface_note))
@@ -5622,7 +5672,10 @@ fn class_qualified_method_value_targets_child_note_not_other() {
         field_reads[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(other_note))
     );
-    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_eq!(
+        field_reads[0].occurrence.confidence,
+        OccurrenceConfidence::Index
+    );
     assert_property_token_site(SOURCE, None, &field_reads[0], b"note", note_token_start);
     let function_calls = occurrences(&v)
         .iter()
@@ -5658,7 +5711,10 @@ fn class_qualified_field_targets_child_score_not_other() {
         field_reads[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(other_score))
     );
-    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_eq!(
+        field_reads[0].occurrence.confidence,
+        OccurrenceConfidence::Index
+    );
     assert_property_token_site(SOURCE, None, &field_reads[0], b"score", score_token_start);
     let function_calls = occurrences(&v)
         .iter()
@@ -5845,7 +5901,10 @@ fn class_qualified_other_receiver_stays_syntactic() {
             panic!("other-receiver class member access must stay syntactic")
         }
     }
-    assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Syntactic);
+    assert_eq!(
+        calls[0].occurrence.confidence,
+        OccurrenceConfidence::Syntactic
+    );
     assert_ne!(
         calls[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(child_note))
@@ -5883,7 +5942,10 @@ fn namespace_qualified_class_call_targets_box_note() {
         field_reads[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(child))
     );
-    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_eq!(
+        field_reads[0].occurrence.confidence,
+        OccurrenceConfidence::Index
+    );
     assert_property_token_site(SOURCE, None, &field_reads[0], b"Child", child_token_start);
     let calls = occurrences(&v)
         .into_iter()
@@ -5931,7 +5993,10 @@ fn namespace_qualified_enum_variant_targets_box_red_not_other() {
         field_reads[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(other_red))
     );
-    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_eq!(
+        field_reads[0].occurrence.confidence,
+        OccurrenceConfidence::Index
+    );
     assert_property_token_site(SOURCE, None, &field_reads[0], b"Red", red_token_start);
     assert_eq!(field_reads[1].owner.raw, read_owner);
     assert_eq!(
@@ -5942,7 +6007,10 @@ fn namespace_qualified_enum_variant_targets_box_red_not_other() {
         field_reads[1].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(other_color))
     );
-    assert_eq!(field_reads[1].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_eq!(
+        field_reads[1].occurrence.confidence,
+        OccurrenceConfidence::Index
+    );
     assert_property_token_site(SOURCE, None, &field_reads[1], b"Color", color_token_start);
     let function_calls = occurrences(&v)
         .iter()
@@ -5978,7 +6046,10 @@ fn namespace_qualified_parenthesized_variant_targets_box_red() {
         field_reads[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(other_red))
     );
-    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_eq!(
+        field_reads[0].occurrence.confidence,
+        OccurrenceConfidence::Index
+    );
     assert_property_token_site(SOURCE, None, &field_reads[0], b"Red", red_token_start);
 }
 
@@ -6011,7 +6082,10 @@ fn namespace_qualified_computed_variant_targets_box_red_not_blue() {
         field_reads[1].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(box_blue))
     );
-    assert_eq!(field_reads[1].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_eq!(
+        field_reads[1].occurrence.confidence,
+        OccurrenceConfidence::Index
+    );
     assert_property_token_site(SOURCE, None, &field_reads[1], b"Red", red_token_start);
 }
 
@@ -6043,7 +6117,10 @@ fn namespace_qualified_computed_escape_does_not_bind_red() {
         field_reads[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(box_red))
     );
-    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_eq!(
+        field_reads[0].occurrence.confidence,
+        OccurrenceConfidence::Index
+    );
     let function_calls = occurrences(&v)
         .iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -6083,7 +6160,10 @@ fn namespace_qualified_nested_call_targets_box_note_not_other() {
         field_reads[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(other_inner))
     );
-    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_eq!(
+        field_reads[0].occurrence.confidence,
+        OccurrenceConfidence::Index
+    );
     assert_property_token_site(SOURCE, None, &field_reads[0], b"Inner", inner_token_start);
     let calls = occurrences(&v)
         .into_iter()
@@ -6161,7 +6241,10 @@ fn namespace_qualified_other_receiver_stays_syntactic() {
             panic!("other-receiver enum member access must stay syntactic")
         }
     }
-    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Syntactic);
+    assert_eq!(
+        field_reads[0].occurrence.confidence,
+        OccurrenceConfidence::Syntactic
+    );
     assert_ne!(
         field_reads[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(box_red))
@@ -6182,7 +6265,10 @@ fn namespace_qualified_other_receiver_stays_syntactic() {
             panic!("other-receiver enum member access must stay syntactic")
         }
     }
-    assert_eq!(field_reads[1].occurrence.confidence, OccurrenceConfidence::Syntactic);
+    assert_eq!(
+        field_reads[1].occurrence.confidence,
+        OccurrenceConfidence::Syntactic
+    );
     let function_calls = occurrences(&v)
         .iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -6217,7 +6303,10 @@ fn class_qualified_getter_read_targets_getter_not_setter() {
         field_reads[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(setter))
     );
-    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_eq!(
+        field_reads[0].occurrence.confidence,
+        OccurrenceConfidence::Index
+    );
     assert_property_token_site(SOURCE, None, &field_reads[0], b"score", score_token_start);
     let function_calls = occurrences(&v)
         .iter()
@@ -6318,7 +6407,10 @@ fn new_instance_method_value_targets_child_note_not_other() {
         field_reads[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(other_note))
     );
-    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_eq!(
+        field_reads[0].occurrence.confidence,
+        OccurrenceConfidence::Index
+    );
     assert_property_token_site(SOURCE, None, &field_reads[0], b"note", note_token_start);
 }
 
@@ -6365,7 +6457,10 @@ fn new_instance_field_targets_child_score_not_other() {
         field_reads[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(other_score))
     );
-    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_eq!(
+        field_reads[0].occurrence.confidence,
+        OccurrenceConfidence::Index
+    );
     assert_property_token_site(SOURCE, None, &field_reads[0], b"score", score_token_start);
 }
 
@@ -6468,7 +6563,10 @@ fn new_instance_namespace_call_targets_box_note() {
         field_reads[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(child))
     );
-    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_eq!(
+        field_reads[0].occurrence.confidence,
+        OccurrenceConfidence::Index
+    );
     assert_property_token_site(SOURCE, None, &field_reads[0], b"Child", child_token_start);
     let calls = occurrences(&v)
         .into_iter()
@@ -6517,7 +6615,10 @@ fn new_instance_other_receiver_stays_syntactic() {
             panic!("dynamic constructor receiver must stay syntactic")
         }
     }
-    assert_eq!(note_call.occurrence.confidence, OccurrenceConfidence::Syntactic);
+    assert_eq!(
+        note_call.occurrence.confidence,
+        OccurrenceConfidence::Syntactic
+    );
     assert_ne!(
         note_call.occurrence.target,
         OccurrenceTarget::Local(EntityId::new(child_note))
@@ -6555,7 +6656,10 @@ fn new_instance_getter_read_targets_getter_not_setter() {
         field_reads[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(setter))
     );
-    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_eq!(
+        field_reads[0].occurrence.confidence,
+        OccurrenceConfidence::Index
+    );
     assert_property_token_site(SOURCE, None, &field_reads[0], b"score", score_token_start);
     let calls = occurrences(&v)
         .into_iter()
@@ -6633,7 +6737,10 @@ fn assertion_field_targets_child_score_not_other() {
         field_reads[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(other_score))
     );
-    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_eq!(
+        field_reads[0].occurrence.confidence,
+        OccurrenceConfidence::Index
+    );
     assert_property_token_site(SOURCE, None, &field_reads[0], b"score", score_token_start);
 }
 
@@ -6788,7 +6895,10 @@ fn assertion_satisfies_stays_syntactic() {
             panic!("satisfies receiver must stay syntactic")
         }
     }
-    assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Syntactic);
+    assert_eq!(
+        calls[0].occurrence.confidence,
+        OccurrenceConfidence::Syntactic
+    );
     assert_ne!(
         calls[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(child_note))
@@ -6833,7 +6943,10 @@ fn assertion_plain_receiver_stays_syntactic() {
             panic!("plain receiver must stay syntactic")
         }
     }
-    assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Syntactic);
+    assert_eq!(
+        calls[0].occurrence.confidence,
+        OccurrenceConfidence::Syntactic
+    );
     assert_ne!(
         calls[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(child_note))
@@ -7010,7 +7123,10 @@ fn non_null_enum_variant_targets_color_red_not_other() {
         field_reads[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(other_red))
     );
-    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_eq!(
+        field_reads[0].occurrence.confidence,
+        OccurrenceConfidence::Index
+    );
     assert_property_token_site(SOURCE, None, &field_reads[0], b"Red", red_token_start);
 }
 
@@ -7051,7 +7167,10 @@ fn non_null_plain_receiver_stays_syntactic() {
             panic!("plain receiver must stay syntactic")
         }
     }
-    assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Syntactic);
+    assert_eq!(
+        calls[0].occurrence.confidence,
+        OccurrenceConfidence::Syntactic
+    );
     assert_ne!(
         calls[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(child_note))
@@ -7411,7 +7530,10 @@ fn receiver_peel_satisfies_stays_syntactic() {
             panic!("satisfies receiver must stay syntactic")
         }
     }
-    assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Syntactic);
+    assert_eq!(
+        calls[0].occurrence.confidence,
+        OccurrenceConfidence::Syntactic
+    );
     assert_ne!(
         calls[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(child_note))
@@ -7452,7 +7574,10 @@ fn receiver_peel_plain_bang_stays_syntactic() {
             panic!("plain receiver must stay syntactic")
         }
     }
-    assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Syntactic);
+    assert_eq!(
+        calls[0].occurrence.confidence,
+        OccurrenceConfidence::Syntactic
+    );
     assert_ne!(
         calls[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(type_note))

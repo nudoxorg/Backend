@@ -20,22 +20,20 @@ mod symbol;
 
 /// How many declaration pages are still reading their lines (the harness
 /// waits for none before a capture).
-
-
 use super::focus::Targets;
 use super::kit::HoverIntent;
 use super::reader::Reader;
 use super::region::Links;
-use crate::model::AppSnapshot;
-use crate::navigation::{Overlay, Route, View};
 use crate::core::Resource;
+use crate::model::AppSnapshot;
 use crate::model::pages::{
     HealthModel, OrbitModel, PackageDossier, PackageRef, PageKey, SourceView, SymbolPage, SymbolRef,
 };
+use crate::navigation::{Overlay, Route, View};
 use crate::runtime::store::DataStore;
-use std::collections::BTreeMap;
 use facet::{Measure, Palette, Reveal};
 use gpui::{AnyElement, Context, SharedString};
+use std::collections::BTreeMap;
 
 /// One block of a page, with its margin note.
 pub(crate) struct Leaf {
@@ -125,14 +123,20 @@ impl Ctx<'_> {
     /// The one line a page says when its route reads no declaration.
     pub(crate) fn unread(&mut self, unread: &crate::runtime::store::Unread) -> Vec<Leaf> {
         let words = match unread {
-            crate::runtime::store::Unread::NotADeclaration => "This page's address is not a declaration.".to_owned(),
+            crate::runtime::store::Unread::NotADeclaration => {
+                "This page's address is not a declaration.".to_owned()
+            }
             crate::runtime::store::Unread::ReleaseNotHere(at) => format!(
                 "Release {} is not in this index; only your working copy is. Esc returns to it.",
                 at.as_str()
             ),
         };
         let words = self.say(words);
-        vec![Leaf::new(super::kit::quiet(words, &self.measure, self.palette))]
+        vec![Leaf::new(super::kit::quiet(
+            words,
+            &self.measure,
+            self.palette,
+        ))]
     }
 
     pub(crate) fn say(&mut self, text: impl Into<SharedString>) -> SharedString {
@@ -157,7 +161,8 @@ pub(crate) enum Lens {
 }
 
 impl Lens {
-    pub(crate) const ALL: [Self; 4] = [Self::Reference, Self::Relations, Self::Usage, Self::History];
+    pub(crate) const ALL: [Self; 4] =
+        [Self::Reference, Self::Relations, Self::Usage, Self::History];
 
     pub(crate) const fn name(self) -> &'static str {
         match self {
@@ -195,7 +200,9 @@ impl Pages {
                     pages.sources.insert(symbol.clone(), store.source(symbol));
                 }
                 PageKey::Package(package) => {
-                    pages.packages.insert(package.clone(), store.package(package));
+                    pages
+                        .packages
+                        .insert(package.clone(), store.package(package));
                 }
                 PageKey::Orbit => pages.orbit = Some(store.orbit()),
                 PageKey::Health => pages.health = Some(store.health()),
@@ -209,15 +216,24 @@ impl Pages {
     }
 
     pub(crate) fn symbol(&self, symbol: &SymbolRef) -> Resource<SymbolPage> {
-        self.symbols.get(symbol).cloned().unwrap_or_else(Resource::not_yet)
+        self.symbols
+            .get(symbol)
+            .cloned()
+            .unwrap_or_else(Resource::not_yet)
     }
 
     pub(crate) fn source(&self, symbol: &SymbolRef) -> Resource<SourceView> {
-        self.sources.get(symbol).cloned().unwrap_or_else(Resource::not_yet)
+        self.sources
+            .get(symbol)
+            .cloned()
+            .unwrap_or_else(Resource::not_yet)
     }
 
     pub(crate) fn package(&self, package: &PackageRef) -> Resource<PackageDossier> {
-        self.packages.get(package).cloned().unwrap_or_else(Resource::not_yet)
+        self.packages
+            .get(package)
+            .cloned()
+            .unwrap_or_else(Resource::not_yet)
     }
 
     pub(crate) fn orbit(&self) -> Resource<OrbitModel> {
@@ -228,8 +244,14 @@ impl Pages {
         self.health.clone().unwrap_or_else(Resource::not_yet)
     }
 
-    pub(crate) fn browse(&self, key: &crate::model::browse::BrowseKey) -> Resource<crate::model::browse::BrowseValue> {
-        self.browse.get(key).cloned().unwrap_or_else(Resource::not_yet)
+    pub(crate) fn browse(
+        &self,
+        key: &crate::model::browse::BrowseKey,
+    ) -> Resource<crate::model::browse::BrowseValue> {
+        self.browse
+            .get(key)
+            .cloned()
+            .unwrap_or_else(Resource::not_yet)
     }
 }
 
@@ -249,7 +271,9 @@ pub(crate) fn build(
         Some(Overlay::AddProject | Overlay::CommandPalette) | None => {}
     }
     match route {
-        Route::Orbit(crate::navigation::OrbitRoute::Browse(browse)) => browse::body(browse, store, ctx, cx),
+        Route::Orbit(crate::navigation::OrbitRoute::Browse(browse)) => {
+            browse::body(browse, store, ctx, cx)
+        }
         Route::Orbit(_) => orbit::body(snapshot, store, ctx, hover, cx),
         Route::Package(_) => package::body(route, snapshot, store, ctx, hover, cx),
         Route::Symbol(symbol) => match symbol.view {

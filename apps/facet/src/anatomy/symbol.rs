@@ -6,15 +6,15 @@
 //!
 //! [`derive`] is pure (facts in, a [`View`] out); [`page`] lays a view out.
 
-pub mod derive;
-mod body;
 #[cfg(any(test, feature = "gallery"))]
 mod board;
+mod body;
 mod call;
 mod card;
+pub mod derive;
+pub mod facts;
 #[cfg(feature = "gallery")]
 pub(crate) mod gallery;
-pub mod facts;
 pub mod host;
 pub mod ink;
 pub mod key;
@@ -26,7 +26,7 @@ pub mod view;
 mod workspace;
 
 pub use derive::{compile, with_uses};
+pub use facts::Facts;
 pub use host::{Act, Change, Fixed, Host, Spots, Ui};
 pub use page::{Chrome, gem, page};
-pub use facts::Facts;
 pub use view::View;

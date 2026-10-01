@@ -148,7 +148,13 @@ mod tests {
         let generation = armed.arm.expect("armed");
         assert_eq!(armed.reveal, None, "nothing shows before the hold");
         let shown = hold.fire(generation);
-        assert_eq!(shown.reveal, Some(Reveal { keys: true, xray: false }));
+        assert_eq!(
+            shown.reveal,
+            Some(Reveal {
+                keys: true,
+                xray: false
+            })
+        );
         let released = hold.modifiers(Modifiers::default());
         assert_eq!(released.reveal, Some(Reveal::default()));
     }
@@ -170,7 +176,11 @@ mod tests {
         let _ = hold.modifiers(Modifiers::default());
         let second = hold.modifiers(cmd()).arm.expect("re-armed");
         assert_ne!(first, second);
-        assert_eq!(hold.fire(first), Change::default(), "the old timer is stale");
+        assert_eq!(
+            hold.fire(first),
+            Change::default(),
+            "the old timer is stale"
+        );
         // A repeated identical modifier event keeps the pending hold.
         assert_eq!(hold.modifiers(cmd()).arm, None);
         assert!(hold.fire(second).reveal.is_some());
@@ -180,13 +190,23 @@ mod tests {
     fn option_xrays_and_adding_a_modifier_ends_a_reveal() {
         let mut hold = RevealHold::default();
         let generation = hold.modifiers(alt()).arm.expect("armed");
-        assert_eq!(hold.fire(generation).reveal, Some(Reveal { keys: false, xray: true }));
+        assert_eq!(
+            hold.fire(generation).reveal,
+            Some(Reveal {
+                keys: false,
+                xray: true
+            })
+        );
         let both = hold.modifiers(Modifiers {
             alt: true,
             shift: true,
             ..Modifiers::default()
         });
-        assert_eq!(both.reveal, Some(Reveal::default()), "⌥⇧ is a chord, not x-ray");
+        assert_eq!(
+            both.reveal,
+            Some(Reveal::default()),
+            "⌥⇧ is a chord, not x-ray"
+        );
     }
 
     #[test]

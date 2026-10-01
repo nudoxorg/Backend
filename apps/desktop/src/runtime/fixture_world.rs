@@ -117,7 +117,10 @@ pub(crate) struct WorldHandle {
 
 impl WorldHandle {
     fn new() -> Self {
-        Self { loaded: OnceLock::new(), producers: OnceLock::new() }
+        Self {
+            loaded: OnceLock::new(),
+            producers: OnceLock::new(),
+        }
     }
 
     /// The world, when it has loaded.
@@ -147,12 +150,14 @@ impl Global for WorldSlot {}
 /// The app's world if there is one: the installed one, else the process's if
 /// it was started. Asking never starts it.
 fn world_of(cx: &App) -> Option<Arc<WorldHandle>> {
-    cx.try_global::<WorldSlot>().map_or_else(|| PROCESS.get().cloned(), |slot| Some(Arc::clone(&slot.0)))
+    cx.try_global::<WorldSlot>()
+        .map_or_else(|| PROCESS.get().cloned(), |slot| Some(Arc::clone(&slot.0)))
 }
 
 /// The app's world, starting the process's if nothing has.
 fn world_or_start(cx: &App) -> Arc<WorldHandle> {
-    cx.try_global::<WorldSlot>().map_or_else(|| Arc::clone(started()), |slot| Arc::clone(&slot.0))
+    cx.try_global::<WorldSlot>()
+        .map_or_else(|| Arc::clone(started()), |slot| Arc::clone(&slot.0))
 }
 
 /// The snapshot's folder.
@@ -165,12 +170,24 @@ fn folder() -> PathBuf {
 fn load() -> Loaded {
     let path = folder().join("world.json");
     let reading = Instant::now();
-    let bytes = std::fs::read(&path).map_err(|error| WorldFault::Unreadable { path: path.clone(), error: error.to_string() })?;
-    let world = Arc::new(World::from_json(&bytes).map_err(|error| WorldFault::Malformed(error.to_string()))?);
-    super::trace::span("world.parse", reading, format_args!("{} bytes", bytes.len()));
+    let bytes = std::fs::read(&path).map_err(|error| WorldFault::Unreadable {
+        path: path.clone(),
+        error: error.to_string(),
+    })?;
+    let world = Arc::new(
+        World::from_json(&bytes).map_err(|error| WorldFault::Malformed(error.to_string()))?,
+    );
+    super::trace::span(
+        "world.parse",
+        reading,
+        format_args!("{} bytes", bytes.len()),
+    );
     drop(bytes);
     let joining = Instant::now();
-    let identities = Arc::new(IdentityAdapter::load(&world, &Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")));
+    let identities = Arc::new(IdentityAdapter::load(
+        &world,
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
+    ));
     super::trace::span("world.identities", joining, "IdentityAdapter::load");
     Ok(LoadedWorld { world, identities })
 }
@@ -179,13 +196,20 @@ fn load() -> Loaded {
 /// world's fault, not a thread that vanished with everyone waiting for it.
 fn load_on_a_thread(handle: &Arc<WorldHandle>, load: impl FnOnce() -> Loaded + Send + 'static) {
     let loading = Arc::clone(handle);
-    let spawned = std::thread::Builder::new().name("nudox-world".to_owned()).spawn(move || {
-        let result = std::panic::catch_unwind(AssertUnwindSafe(load))
-            .unwrap_or_else(|panic| Err(WorldFault::Panicked(super::offload::describe(panic.as_ref()))));
-        let _ = loading.loaded.set(result);
-    });
+    let spawned = std::thread::Builder::new()
+        .name("nudox-world".to_owned())
+        .spawn(move || {
+            let result = std::panic::catch_unwind(AssertUnwindSafe(load)).unwrap_or_else(|panic| {
+                Err(WorldFault::Panicked(super::offload::describe(
+                    panic.as_ref(),
+                )))
+            });
+            let _ = loading.loaded.set(result);
+        });
     if let Err(error) = spawned {
-        let _ = handle.loaded.set(Err(WorldFault::NotStarted(error.to_string())));
+        let _ = handle
+            .loaded
+            .set(Err(WorldFault::NotStarted(error.to_string())));
     }
 }
 
@@ -213,7 +237,9 @@ pub(crate) fn launch_need(route: &Route, hand: &Hand) -> Option<LaunchNeed> {
     match route {
         Route::World => Some(LaunchNeed::Graph),
         Route::Symbol(symbol) if symbol.view == View::Graph => Some(LaunchNeed::Graph),
-        Route::Orbit(_) | Route::Package(_) | Route::Symbol(_) => (!hand.is_empty()).then_some(LaunchNeed::Hand),
+        Route::Orbit(_) | Route::Package(_) | Route::Symbol(_) => {
+            (!hand.is_empty()).then_some(LaunchNeed::Hand)
+        }
     }
 }
 
@@ -236,7 +262,10 @@ pub(crate) fn fault(cx: &App) -> Option<WorldFault> {
 #[cfg(any(test, feature = "visual-harness"))]
 pub(crate) fn is_loading(cx: &App) -> bool {
     let loading = world_of(cx).is_some_and(|world| world.loaded.get().is_none());
-    loading || cx.try_global::<Hands>().is_some_and(|hands| hands.memo.reading() > 0)
+    loading
+        || cx
+            .try_global::<Hands>()
+            .is_some_and(|hands| hands.memo.reading() > 0)
 }
 
 /// One card of the hand, as the rungs draw it.
@@ -284,7 +313,8 @@ struct HandKey {
 
 impl PartialEq for HandKey {
     fn eq(&self, other: &Self) -> bool {
-        self.held.len() == other.held.len() && self.held.iter().zip(&other.held).all(|(a, b)| a.same(b))
+        self.held.len() == other.held.len()
+            && self.held.iter().zip(&other.held).all(|(a, b)| a.same(b))
     }
 }
 
@@ -331,7 +361,10 @@ impl Hands {
     }
 
     fn arranging(arranger: impl Fn(&HandKey) -> HandView + Send + Sync + 'static) -> Self {
-        Self { memo: Memo::new(HANDS_KEPT, arranger), shown: RefCell::new(None) }
+        Self {
+            memo: Memo::new(HANDS_KEPT, arranger),
+            shown: RefCell::new(None),
+        }
     }
 }
 
@@ -342,7 +375,9 @@ fn arrange(world: &WorldHandle, held: &[Held]) -> HandView {
     // The world may still be loading when the first hand is asked (a restored
     // hand is asked at the first frame): this thread waits for it, so the
     // arrangement is the world's, never the cards standing apart for good.
-    let Some(loaded) = world.loaded.wait().as_ref().ok() else { return standing_apart(held) };
+    let Some(loaded) = world.loaded.wait().as_ref().ok() else {
+        return standing_apart(held);
+    };
     let prepared = world.producers.get_or_init(|| {
         let building = Instant::now();
         let prepared = Recipes::new(&loaded.world).into_prepared();
@@ -371,7 +406,11 @@ fn standing_apart(held: &[Held]) -> HandView {
     HandView {
         cards: held
             .iter()
-            .map(|held| Card { name: name_of(held), kind: facet::icons::Kind::Unknown, held: held.clone() })
+            .map(|held| Card {
+                name: name_of(held),
+                kind: facet::icons::Kind::Unknown,
+                held: held.clone(),
+            })
             .collect(),
         roads: Vec::new(),
         apart: (0..held.len()).collect(),
@@ -384,16 +423,27 @@ fn arrange_with(loaded: &LoadedWorld, recipes: &Recipes, held: &[Held]) -> HandV
     let connector = facet::semantics::recipes::chain::Connector::new(recipes, world);
     let known: Vec<NodeId> = nodes.iter().flatten().copied().collect();
     let arrangement = connector.arrange(&known);
-    let card_of = |node: NodeId| held.iter().zip(&nodes).find(|(_, n)| **n == Some(node)).map(|(card, _)| card.clone());
+    let card_of = |node: NodeId| {
+        held.iter()
+            .zip(&nodes)
+            .find(|(_, n)| **n == Some(node))
+            .map(|(card, _)| card.clone())
+    };
     let make = |held: Held, node: Option<NodeId>| Card {
         name: node.map_or_else(|| name_of(&held), |node| world.name_of(node)),
-        kind: node.map_or(facet::icons::Kind::Unknown, |node| crate::shell::kit::world_kind(world.node(node).kind)),
+        kind: node.map_or(facet::icons::Kind::Unknown, |node| {
+            crate::shell::kit::world_kind(world.node(node).kind)
+        }),
         held,
     };
     let mut view = HandView::default();
     let twins: HashSet<String> = {
         let mut seen = HashSet::new();
-        known.iter().map(|&n| world.node(n).name.to_string()).filter(|name| !seen.insert(name.clone())).collect()
+        known
+            .iter()
+            .map(|&n| world.node(n).name.to_string())
+            .filter(|name| !seen.insert(name.clone()))
+            .collect()
     };
     for road in &arrangement.roads {
         let mut cards = Vec::new();
@@ -403,7 +453,9 @@ fn arrange_with(loaded: &LoadedWorld, recipes: &Recipes, held: &[Held]) -> HandV
                 verbs.push(match &join.how {
                     facet::semantics::recipes::chain::JoinHow::Direct => SharedString::default(),
                     facet::semantics::recipes::chain::JoinHow::As => SharedString::new_static("as"),
-                    facet::semantics::recipes::chain::JoinHow::Steps(_) => connector.verbs(join).join(" · ").into(),
+                    facet::semantics::recipes::chain::JoinHow::Steps(_) => {
+                        connector.verbs(join).join(" · ").into()
+                    }
                 });
             }
             if let Some(card) = card_of(link.piece.node) {
@@ -411,7 +463,11 @@ fn arrange_with(loaded: &LoadedWorld, recipes: &Recipes, held: &[Held]) -> HandV
                 view.cards.push(make(card, Some(link.piece.node)));
             }
         }
-        view.roads.push(RoadView { cards, verbs, sentence: connector.sentence(road, &twins).text() });
+        view.roads.push(RoadView {
+            cards,
+            verbs,
+            sentence: connector.sentence(road, &twins).text(),
+        });
     }
     // What joins nothing, and what the world does not know, in the order it
     // was held.
@@ -430,9 +486,15 @@ fn arrange_with(loaded: &LoadedWorld, recipes: &Recipes, held: &[Held]) -> HandV
 /// a package's display name).
 fn name_of(held: &Held) -> SharedString {
     match &held.id {
-        Some(id) => SharedString::from(backend_present::Identity::parse(id.as_str()).name().to_owned()),
-        None => PackageRef::parse(held.package.as_str())
-            .map_or_else(|_| SharedString::from(held.package.as_str().to_owned()), |p| SharedString::from(p.display_name().to_owned())),
+        Some(id) => SharedString::from(
+            backend_present::Identity::parse(id.as_str())
+                .name()
+                .to_owned(),
+        ),
+        None => PackageRef::parse(held.package.as_str()).map_or_else(
+            |_| SharedString::from(held.package.as_str().to_owned()),
+            |p| SharedString::from(p.display_name().to_owned()),
+        ),
     }
 }
 
@@ -474,7 +536,13 @@ pub(crate) fn hand_view(hand: &Hand, cx: &mut App) -> Rc<HandView> {
 
 /// [`hand_view`] for the view `cx` belongs to: only it redraws when the
 /// arrangement lands.
-#[cfg_attr(not(test), allow(dead_code, reason = "the shell's hand callers move to it (MIGRATE.md, R-Open3); delete this allow with that move"))]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "the shell's hand callers move to it (MIGRATE.md, R-Open3); delete this allow with that move"
+    )
+)]
 pub(crate) fn hand_view_for<T: 'static>(hand: &Hand, cx: &mut Context<T>) -> Rc<HandView> {
     let asker = Asker::View(cx.entity_id());
     hand_view_asked_by(hand, asker, cx)
@@ -498,22 +566,44 @@ fn hand_view_asked_by(hand: &Hand, asker: Asker, cx: &mut App) -> Rc<HandView> {
     {
         return Rc::clone(&shown.view);
     }
-    let key = HandKey { held: hand.held().to_vec() };
+    let key = HandKey {
+        held: hand.held().to_vec(),
+    };
     let (view, standing) = match memo.ask(&key, asker, cx) {
-        Answer::Ready(arranged) => (Rc::new(refreshed(&arranged, hand.held())), Standing::Arranged),
+        Answer::Ready(arranged) => (
+            Rc::new(refreshed(&arranged, hand.held())),
+            Standing::Arranged,
+        ),
         Answer::Reading | Answer::Failed(_) => match &remembered {
-            Some(shown) if shown.standing == Standing::Provisional && shown.held.as_slice() == hand.held() => return Rc::clone(&shown.view),
+            Some(shown)
+                if shown.standing == Standing::Provisional
+                    && shown.held.as_slice() == hand.held() =>
+            {
+                return Rc::clone(&shown.view);
+            }
             _ => (Rc::new(standing_apart(hand.held())), Standing::Provisional),
         },
     };
-    *cx.global::<Hands>().shown.borrow_mut() = Some(Shown { held: hand.held().to_vec(), view: Rc::clone(&view), standing });
+    *cx.global::<Hands>().shown.borrow_mut() = Some(Shown {
+        held: hand.held().to_vec(),
+        view: Rc::clone(&view),
+        standing,
+    });
     view
 }
 
 /// The indexed declaration a node of the fixture world names: the one entry
 /// of `package`'s outline `tree` that joins to exactly `node`.
-pub(crate) fn symbol_of(node: NodeId, package: &PackageRef, tree: &OutlineTree, cx: &App) -> Option<SymbolRef> {
-    world_of(cx)?.world()?.identities.outline_symbol(node, package, tree)
+pub(crate) fn symbol_of(
+    node: NodeId,
+    package: &PackageRef,
+    tree: &OutlineTree,
+    cx: &App,
+) -> Option<SymbolRef> {
+    world_of(cx)?
+        .world()?
+        .identities
+        .outline_symbol(node, package, tree)
 }
 
 /// Exact, immutable identity inputs for a page link. A caller pins these
@@ -537,7 +627,11 @@ pub(crate) fn install(
 
 /// [`install`] without the retired parameter: returns the handle.
 #[cfg(test)]
-fn install_world(world: Arc<World>, identities: Arc<IdentityAdapter>, cx: &mut App) -> Arc<WorldHandle> {
+fn install_world(
+    world: Arc<World>,
+    identities: Arc<IdentityAdapter>,
+    cx: &mut App,
+) -> Arc<WorldHandle> {
     let handle = Arc::new(WorldHandle::new());
     let _ = handle.loaded.set(Ok(LoadedWorld { world, identities }));
     cx.set_global(WorldSlot(Arc::clone(&handle)));

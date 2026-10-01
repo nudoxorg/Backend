@@ -33,7 +33,9 @@ impl CompareSet {
 
     /// Packages in the reader's selected order.
     #[must_use]
-    pub fn packages(&self) -> &[PackageRef] { &self.0 }
+    pub fn packages(&self) -> &[PackageRef] {
+        &self.0
+    }
 }
 
 /// Invalid comparison selection.
@@ -68,7 +70,18 @@ impl BrowseRoute {
             Self::Tree(project) => (vec![project_name(project)], "tree".to_owned()),
             Self::FindHome => (vec![], "find".to_owned()),
             Self::Find(query) => (vec![], format!("find?q={}", query_component(&query.text))),
-            Self::Compare(selection) => (vec![], format!("compare?packages={}", selection.packages().iter().map(|package| query_component(package.as_str())).collect::<Vec<_>>().join(","))),
+            Self::Compare(selection) => (
+                vec![],
+                format!(
+                    "compare?packages={}",
+                    selection
+                        .packages()
+                        .iter()
+                        .map(|package| query_component(package.as_str()))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ),
+            ),
         }
     }
 
@@ -99,10 +112,10 @@ fn query_component(value: &str) -> String {
 
 /// A project's name as people say it: its folder's name.
 fn project_name(project: &LocalProjectId) -> String {
-    project
-        .path()
-        .file_name()
-        .map_or_else(|| project.display_lossy(), |name| name.to_string_lossy().into_owned())
+    project.path().file_name().map_or_else(
+        || project.display_lossy(),
+        |name| name.to_string_lossy().into_owned(),
+    )
 }
 
 #[cfg(test)]
@@ -113,24 +126,44 @@ mod tests {
     fn a_tree_is_addressed_by_its_project_folder() {
         let project = LocalProjectId::new("/workspace/backend").expect("project");
         let route = BrowseRoute::Tree(project);
-        assert_eq!(route.address(), (vec!["backend".to_owned()], "tree".to_owned()));
+        assert_eq!(
+            route.address(),
+            (vec!["backend".to_owned()], "tree".to_owned())
+        );
         assert_eq!(route.here(), ("backend".to_owned(), "your tree"));
     }
 
     #[test]
     fn find_addresses_escape_query_delimiters_and_unicode() {
         let route = BrowseRoute::Find(SearchQuery::new("a & b/λ?", 50).unwrap());
-        assert_eq!(route.address(), (vec![], "find?q=a%20%26%20b%2F%CE%BB%3F".into()));
+        assert_eq!(
+            route.address(),
+            (vec![], "find?q=a%20%26%20b%2F%CE%BB%3F".into())
+        );
     }
 
     #[test]
     fn comparisons_preserve_order_and_reject_ambiguous_or_unbounded_selections() {
-        let packages = (0..5).map(|at| PackageRef::parse(&format!("pkg:cargo/example{at}@1.0.0")).unwrap()).collect::<Vec<_>>();
+        let packages = (0..5)
+            .map(|at| PackageRef::parse(&format!("pkg:cargo/example{at}@1.0.0")).unwrap())
+            .collect::<Vec<_>>();
         assert_eq!(CompareSet::new([]), Err(CompareError::TooFew));
-        assert_eq!(CompareSet::new(packages[..1].iter().cloned()), Err(CompareError::TooFew));
-        assert_eq!(CompareSet::new([packages[0].clone(), packages[0].clone()]), Err(CompareError::Duplicate));
-        assert_eq!(CompareSet::new(packages.iter().cloned()), Err(CompareError::TooMany));
+        assert_eq!(
+            CompareSet::new(packages[..1].iter().cloned()),
+            Err(CompareError::TooFew)
+        );
+        assert_eq!(
+            CompareSet::new([packages[0].clone(), packages[0].clone()]),
+            Err(CompareError::Duplicate)
+        );
+        assert_eq!(
+            CompareSet::new(packages.iter().cloned()),
+            Err(CompareError::TooMany)
+        );
         let reversed = [packages[2].clone(), packages[0].clone()];
-        assert_eq!(CompareSet::new(reversed.clone()).unwrap().packages(), &reversed);
+        assert_eq!(
+            CompareSet::new(reversed.clone()).unwrap().packages(),
+            &reversed
+        );
     }
 }

@@ -45,7 +45,11 @@ impl fmt::Display for OwnerFault {
         match self {
             Self::Host(words) => formatter.write_str(words),
             Self::Panicked(what) => write!(formatter, "the index's thread panicked: {what}"),
-            Self::Silent(waited) => write!(formatter, "the index did not answer within {} s", waited.as_secs()),
+            Self::Silent(waited) => write!(
+                formatter,
+                "the index did not answer within {} s",
+                waited.as_secs()
+            ),
             Self::Closed => formatter.write_str("the window closed before the index answered"),
         }
     }
@@ -77,7 +81,10 @@ impl Epoch {
 
 /// What the window knows about its owner.
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[allow(clippy::large_enum_variant, reason = "a handful are published per process")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "a handful are published per process"
+)]
 pub enum OwnerState {
     /// Starting, or attaching: nothing has answered yet.
     Starting,
@@ -304,7 +311,9 @@ impl OwnerGate {
 /// After `patience`, a start nobody answered is a fault on the gate itself:
 /// the store shows it and "Try again" restarts it.
 fn watch_patience(gate: &OwnerGate, patience: Duration, cx: &mut App) {
-    let Some(epoch) = gate.starting_at() else { return };
+    let Some(epoch) = gate.starting_at() else {
+        return;
+    };
     let gate = gate.clone();
     cx.spawn(async move |cx| {
         cx.background_executor().timer(patience).await;
@@ -317,7 +326,12 @@ fn watch_patience(gate: &OwnerGate, patience: Duration, cx: &mut App) {
 /// UI thread, for as long as the window's root and store live (D2). The task
 /// holds them weakly: a window that is let go is not kept alive by its owner's
 /// watch, and an app that is dropped leaks no handle.
-pub(crate) fn watch(gate: OwnerGate, root: &Entity<super::UiRootEntity>, store: &Entity<super::store::DataStore>, cx: &mut App) {
+pub(crate) fn watch(
+    gate: OwnerGate,
+    root: &Entity<super::UiRootEntity>,
+    store: &Entity<super::store::DataStore>,
+    cx: &mut App,
+) {
     watch_patience(&gate, PATIENCE, cx);
     let (root, store) = (root.downgrade(), store.downgrade());
     cx.spawn(async move |cx| {
@@ -372,7 +386,9 @@ mod tests {
         );
         gate.publish(OwnerState::Failed("could not own the workspace".into()));
         assert_eq!(
-            received.recv_timeout(Duration::from_secs(2)).expect("released"),
+            received
+                .recv_timeout(Duration::from_secs(2))
+                .expect("released"),
             Err(OwnerFault::from("could not own the workspace"))
         );
         thread.join().expect("join");
@@ -404,22 +420,34 @@ mod tests {
         let waker = Waker::noop();
         let mut task = std::task::Context::from_waker(waker);
         let mut first = Box::pin(gate.next(Epoch::default()));
-        assert!(first.as_mut().poll(&mut task).is_pending(), "nothing was published yet");
+        assert!(
+            first.as_mut().poll(&mut task).is_pending(),
+            "nothing was published yet"
+        );
         gate.publish(OwnerState::Failed("no".into()));
         let Poll::Ready((epoch, state)) = first.as_mut().poll(&mut task) else {
             panic!("a publish resolves the watcher");
         };
         assert_eq!(state, OwnerState::Failed("no".into()));
         let mut second = Box::pin(gate.next(epoch));
-        assert!(second.as_mut().poll(&mut task).is_pending(), "a seen state never resolves twice");
+        assert!(
+            second.as_mut().poll(&mut task).is_pending(),
+            "a seen state never resolves twice"
+        );
     }
 
     #[test]
     fn an_owner_that_never_answers_is_a_typed_fault_after_the_patience_not_a_wait_for_ever() {
         let gate = OwnerGate::starting();
         let started = Instant::now();
-        assert_eq!(gate.wait_for(Duration::from_millis(60)), Err(OwnerFault::Silent(Duration::from_millis(60))));
-        assert!(started.elapsed() >= Duration::from_millis(60), "it waited the patience, no less");
+        assert_eq!(
+            gate.wait_for(Duration::from_millis(60)),
+            Err(OwnerFault::Silent(Duration::from_millis(60)))
+        );
+        assert!(
+            started.elapsed() >= Duration::from_millis(60),
+            "it waited the patience, no less"
+        );
         assert_eq!(
             OwnerFault::Silent(Duration::from_mins(1)).to_string(),
             "the index did not answer within 60 s",
@@ -430,7 +458,10 @@ mod tests {
         let owner = answering.clone();
         let thread = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(20));
-            owner.publish(OwnerState::Ready { key: VersionedRoot::unserved(), mode: ServiceMode::Attached });
+            owner.publish(OwnerState::Ready {
+                key: VersionedRoot::unserved(),
+                mode: ServiceMode::Attached,
+            });
         });
         assert_eq!(answering.wait_for(Duration::from_secs(5)), Ok(()));
         thread.join().expect("join");
@@ -440,15 +471,28 @@ mod tests {
     fn giving_up_names_only_the_start_it_was_waiting_for() {
         let gate = OwnerGate::starting();
         let epoch = gate.starting_at().expect("starting");
-        gate.publish(OwnerState::Ready { key: VersionedRoot::unserved(), mode: ServiceMode::Attached });
+        gate.publish(OwnerState::Ready {
+            key: VersionedRoot::unserved(),
+            mode: ServiceMode::Attached,
+        });
         gate.give_up_on(epoch, PATIENCE);
-        assert!(matches!(gate.state(), OwnerState::Ready { .. }), "an owner that answered is never given up on");
+        assert!(
+            matches!(gate.state(), OwnerState::Ready { .. }),
+            "an owner that answered is never given up on"
+        );
         gate.publish(OwnerState::Failed("gone".into()));
         assert!(gate.restart());
         gate.give_up_on(epoch, PATIENCE);
-        assert_eq!(gate.state(), OwnerState::Starting, "the old wait does not fail the new start");
+        assert_eq!(
+            gate.state(),
+            OwnerState::Starting,
+            "the old wait does not fail the new start"
+        );
         let now = gate.starting_at().expect("starting again");
         gate.give_up_on(now, PATIENCE);
-        assert_eq!(gate.state(), OwnerState::Failed(OwnerFault::Silent(PATIENCE)));
+        assert_eq!(
+            gate.state(),
+            OwnerState::Failed(OwnerFault::Silent(PATIENCE))
+        );
     }
 }

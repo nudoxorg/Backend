@@ -98,7 +98,8 @@ impl Frame {
         };
         // Pinned peeks get a third column only on a window wide enough that
         // the page keeps its full measure beside them (the calm Peeks board).
-        let pins = !input.zen && input.pinned && modes.settle(&PINS, input.window).mode == Pins::Column;
+        let pins =
+            !input.zen && input.pinned && modes.settle(&PINS, input.window).mode == Pins::Column;
         Self {
             room: input.window,
             dock,
@@ -106,7 +107,8 @@ impl Frame {
             shelf_overlays: !input.zen && dock.mode != Dock::Shelf,
             shelf_width,
             shelf_body,
-            drawer: shelf_body.min((input.window.width() - DRAWER_STRIP.at(input.window)).max(px(0.0))),
+            drawer: shelf_body
+                .min((input.window.width() - DRAWER_STRIP.at(input.window)).max(px(0.0))),
             pins,
             pins_width: if pins { geo::PINS * scale } else { px(0.0) },
             titlebar: geo::TITLEBAR * scale,
@@ -153,7 +155,11 @@ mod tests {
         // 1440 and 1100: the shelf stays, no pins.
         for width in [1440.0, 1100.0] {
             let frame = at(width, 1.0);
-            assert_eq!((frame.shelf, frame.pins), (ShelfMode::Shelf, false), "{width}");
+            assert_eq!(
+                (frame.shelf, frame.pins),
+                (ShelfMode::Shelf, false),
+                "{width}"
+            );
         }
         // 760: the shelf is a spine.
         assert_eq!(at(760.0, 1.0).shelf, ShelfMode::Spine);
@@ -171,8 +177,16 @@ mod tests {
             assert_eq!(frame.dock.mode, Dock::Drawer, "{width}");
             assert_eq!(frame.shelf, ShelfMode::Hidden);
             assert!(frame.shelf_overlays);
-            assert!(f32::from(frame.drawer) <= width - 47.9, "{width}: the drawer covers the whole page ({:?})", frame.drawer);
-            assert!(f32::from(frame.drawer) >= 200.0, "{width}: the drawer is a sliver ({:?})", frame.drawer);
+            assert!(
+                f32::from(frame.drawer) <= width - 47.9,
+                "{width}: the drawer covers the whole page ({:?})",
+                frame.drawer
+            );
+            assert!(
+                f32::from(frame.drawer) >= 200.0,
+                "{width}: the drawer is a sliver ({:?})",
+                frame.drawer
+            );
         }
         // A roomy window's drawer is the shelf's own width.
         assert!(near(at(620.0, 1.0).drawer, 264.0));
@@ -198,21 +212,47 @@ mod tests {
         // 200 % text on 2560 px is 1280 effective: no pins.
         assert!(!at(2560.0, 2.0).pins);
         // Nothing pinned, no column, however wide.
-        let empty = Frame::resolve(FrameInput { pinned: false, ..input(2560.0, 1.0) }, &Modes::new());
+        let empty = Frame::resolve(
+            FrameInput {
+                pinned: false,
+                ..input(2560.0, 1.0)
+            },
+            &Modes::new(),
+        );
         assert!(!empty.pins);
     }
 
     #[test]
     fn zen_and_the_shelf_toggle() {
-        let zen = Frame::resolve(FrameInput { zen: true, ..input(2560.0, 1.0) }, &Modes::new());
+        let zen = Frame::resolve(
+            FrameInput {
+                zen: true,
+                ..input(2560.0, 1.0)
+            },
+            &Modes::new(),
+        );
         assert_eq!((zen.shelf, zen.pins), (ShelfMode::Hidden, false));
-        let closed = Frame::resolve(FrameInput { shelf_open: false, pinned: false, ..input(1440.0, 1.0) }, &Modes::new());
+        let closed = Frame::resolve(
+            FrameInput {
+                shelf_open: false,
+                pinned: false,
+                ..input(1440.0, 1.0)
+            },
+            &Modes::new(),
+        );
         assert_eq!(closed.shelf, ShelfMode::Spine);
     }
 
     #[test]
     fn the_splitter_is_clamped_and_scaled() {
-        let frame = Frame::resolve(FrameInput { shelf_width: px(900.0), pinned: false, ..input(1440.0, 1.25) }, &Modes::new());
+        let frame = Frame::resolve(
+            FrameInput {
+                shelf_width: px(900.0),
+                pinned: false,
+                ..input(1440.0, 1.25)
+            },
+            &Modes::new(),
+        );
         assert!(near(frame.shelf_width, 420.0 * 1.25));
     }
 
@@ -226,7 +266,11 @@ mod tests {
         assert_eq!(shelf(1000.0), ShelfMode::Shelf);
         assert_eq!(shelf(890.0), ShelfMode::Shelf, "inside the band: held");
         assert_eq!(shelf(883.0), ShelfMode::Spine, "past it: a spine");
-        assert_eq!(shelf(910.0), ShelfMode::Spine, "inside the band again: held");
+        assert_eq!(
+            shelf(910.0),
+            ShelfMode::Spine,
+            "inside the band again: held"
+        );
         assert_eq!(shelf(917.0), ShelfMode::Shelf, "past it: a shelf");
         // Ten px either side of the edge, for 200 frames: no change at all.
         for frame in 0..200 {

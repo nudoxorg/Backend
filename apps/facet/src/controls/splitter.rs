@@ -212,12 +212,20 @@ fn update(id: &ElementId, cx: &mut App, f: impl FnOnce(&mut Split) -> bool) {
 }
 
 fn motion(id: &ElementId, cx: &mut App) -> Motion {
-    Motion::scoped(ElementId::NamedChild(std::sync::Arc::new(id.clone()), "split".into()), cx)
+    Motion::scoped(
+        ElementId::NamedChild(std::sync::Arc::new(id.clone()), "split".into()),
+        cx,
+    )
 }
 
 fn raw_width(drag: &Dragging, side: PanelSide) -> f32 {
     let delta = drag.now - drag.origin;
-    drag.start + if side == PanelSide::Left { delta } else { -delta }
+    drag.start
+        + if side == PanelSide::Left {
+            delta
+        } else {
+            -delta
+        }
 }
 
 /// This frame's width for the panel the splitter `id` sizes: following the
@@ -278,7 +286,10 @@ impl Splitter {
 
     /// Called when a release, a double-click or a key commits a change.
     #[must_use]
-    pub fn on_change(mut self, handler: impl Fn(SplitEvent, &mut Window, &mut App) + 'static) -> Self {
+    pub fn on_change(
+        mut self,
+        handler: impl Fn(SplitEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
         self.on_change = Some(Rc::new(handler));
         self
     }
@@ -320,7 +331,11 @@ impl RenderOnce for Splitter {
         let motion = motion(&id, cx);
         let lit = motion.animate(
             track(&id, "lit"),
-            if hovered || drag.is_some() || focused { 1.0 } else { 0.0 },
+            if hovered || drag.is_some() || focused {
+                1.0
+            } else {
+                0.0
+            },
             spec::REVEAL,
             window,
             cx,
@@ -335,7 +350,11 @@ impl RenderOnce for Splitter {
         );
         let limit_t = motion.animate(
             track(&id, "limit"),
-            if pulled.is_some_and(|p| p.at_limit) { 1.0 } else { 0.0 },
+            if pulled.is_some_and(|p| p.at_limit) {
+                1.0
+            } else {
+                0.0
+            },
             spec::HOVER,
             window,
             cx,
@@ -378,9 +397,13 @@ impl RenderOnce for Splitter {
             } else {
                 #[allow(clippy::cast_possible_truncation)]
                 let shown = pulled.commit.round() as i32;
-                (SharedString::from(shown.to_string()), SharedString::from("px"))
+                (
+                    SharedString::from(shown.to_string()),
+                    SharedString::from("px"),
+                )
             };
-            let bevel = Edge::of(Bevel::Peri, palette).mix(Edge::of(Bevel::Amber, palette), limit_t);
+            let bevel =
+                Edge::of(Bevel::Peri, palette).mix(Edge::of(Bevel::Amber, palette), limit_t);
             let y = drag.map_or(0.0, |drag| drag.y);
             div()
                 .absolute()
@@ -499,19 +522,22 @@ impl RenderOnce for Splitter {
                     changed
                 });
             })
-            .on_mouse_down(MouseButton::Left, move |event: &MouseDownEvent, _window, cx| {
-                let x = f32::from(event.position.x);
-                let start = model.resting();
-                update(&down_id, cx, |state| {
-                    state.drag = Some(Dragging {
-                        origin: x,
-                        start,
-                        now: x,
-                        y: 0.0,
+            .on_mouse_down(
+                MouseButton::Left,
+                move |event: &MouseDownEvent, _window, cx| {
+                    let x = f32::from(event.position.x);
+                    let start = model.resting();
+                    update(&down_id, cx, |state| {
+                        state.drag = Some(Dragging {
+                            origin: x,
+                            start,
+                            now: x,
+                            y: 0.0,
+                        });
+                        true
                     });
-                    true
-                });
-            })
+                },
+            )
             .on_click(move |event: &ClickEvent, window, cx| {
                 if event.click_count() == 2
                     && let Some(change) = &click_change
@@ -520,11 +546,19 @@ impl RenderOnce for Splitter {
                 }
             })
             .on_key_down(move |event: &KeyDownEvent, window, cx| {
-                let step = if event.keystroke.modifiers.shift { 32.0 } else { 8.0 };
+                let step = if event.keystroke.modifiers.shift {
+                    32.0
+                } else {
+                    8.0
+                };
                 let toward = if side == PanelSide::Left { 1.0 } else { -1.0 };
                 let event = match event.keystroke.key.as_str() {
-                    "right" => Some(SplitEvent::Resize((model.width + step * toward).clamp(model.min, model.max))),
-                    "left" => Some(SplitEvent::Resize((model.width - step * toward).clamp(model.min, model.max))),
+                    "right" => Some(SplitEvent::Resize(
+                        (model.width + step * toward).clamp(model.min, model.max),
+                    )),
+                    "left" => Some(SplitEvent::Resize(
+                        (model.width - step * toward).clamp(model.min, model.max),
+                    )),
                     "home" => Some(SplitEvent::Resize(model.min)),
                     "end" => Some(SplitEvent::Resize(model.max)),
                     "enter" if model.collapsed.is_some() => Some(if model.is_collapsed {
@@ -564,7 +598,10 @@ mod tests {
         let near = pull(&model, 430.0);
         let far = pull(&model, 900.0);
         assert!(near.shown > 420.0 && near.shown < 430.0, "{near:?}");
-        assert!(far.shown > near.shown && far.shown <= 420.0 + GIVE, "{far:?}");
+        assert!(
+            far.shown > near.shown && far.shown <= 420.0 + GIVE,
+            "{far:?}"
+        );
         assert!((far.commit - 420.0).abs() < 1e-4 && far.at_limit);
     }
 

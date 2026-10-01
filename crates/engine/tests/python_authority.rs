@@ -15,12 +15,12 @@ use backend_engine::driver::{
     CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, NativeTool,
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
+use backend_frontend_python::legacy::{
+    CheckerReport, Inference, InferenceSite, InferredType, Span, SymbolOutcome, SymbolResolution,
+};
 use backend_semantic::ir::{
     Confidence, DecodedOccurrence, EntityKind, FragmentView, LanguageExtensionWireFact,
     OccurrenceConfidence, OccurrenceTarget, PythonFacts,
-};
-use backend_frontend_python::legacy::{
-    CheckerReport, Inference, InferenceSite, InferredType, Span, SymbolOutcome, SymbolResolution,
 };
 use backend_semantic::vocabulary::{LanguageProfile, PythonVersion, Stage, TypeScriptSource};
 use thiserror::Error;
@@ -84,7 +84,9 @@ fn failure_label(failure: &CompileFailure<'_>) -> &'static str {
         CompileFailure::AuthorityInputRequired { .. } => "authority-input-required",
         CompileFailure::AuthorityInputProfileMismatch { .. } => "authority-profile-mismatch",
         CompileFailure::LoweringUnsupported { cause, .. } => match cause {
-            backend_semantic::vocabulary::LoweringUnsupported::FactRejected { .. } => "fact-rejected",
+            backend_semantic::vocabulary::LoweringUnsupported::FactRejected { .. } => {
+                "fact-rejected"
+            }
             backend_semantic::vocabulary::LoweringUnsupported::CSharpProjection { .. } => {
                 "csharp-projection"
             }

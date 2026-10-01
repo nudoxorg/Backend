@@ -10,7 +10,11 @@ use gpui::{Pixels, px};
 /// nothing, and it shuts at once when the pointer goes.
 #[must_use]
 pub fn plate(wanted: bool) -> Spec {
-    if wanted { spec::LIFT.delayed(QUICK_REST) } else { spec::LEAVE }
+    if wanted {
+        spec::LIFT.delayed(QUICK_REST)
+    } else {
+        spec::LEAVE
+    }
 }
 
 /// Whether your project reaches a name (the mint mark on a shingle or card).

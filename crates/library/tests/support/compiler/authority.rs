@@ -235,11 +235,21 @@ impl From<backend_semantic::vocabulary::LanguageProfile> for GoldenLanguageProfi
                 backend_semantic::vocabulary::TypeScriptSource::Tsx => GoldenTypeScriptSource::Tsx,
             }),
             LanguageProfile::Python(value) => Self::Python(match value {
-                backend_semantic::vocabulary::PythonVersion::Python310 => GoldenPythonVersion::Python310,
-                backend_semantic::vocabulary::PythonVersion::Python311 => GoldenPythonVersion::Python311,
-                backend_semantic::vocabulary::PythonVersion::Python312 => GoldenPythonVersion::Python312,
-                backend_semantic::vocabulary::PythonVersion::Python313 => GoldenPythonVersion::Python313,
-                backend_semantic::vocabulary::PythonVersion::Python314 => GoldenPythonVersion::Python314,
+                backend_semantic::vocabulary::PythonVersion::Python310 => {
+                    GoldenPythonVersion::Python310
+                }
+                backend_semantic::vocabulary::PythonVersion::Python311 => {
+                    GoldenPythonVersion::Python311
+                }
+                backend_semantic::vocabulary::PythonVersion::Python312 => {
+                    GoldenPythonVersion::Python312
+                }
+                backend_semantic::vocabulary::PythonVersion::Python313 => {
+                    GoldenPythonVersion::Python313
+                }
+                backend_semantic::vocabulary::PythonVersion::Python314 => {
+                    GoldenPythonVersion::Python314
+                }
             }),
             LanguageProfile::Go(value) => Self::Go(match value {
                 backend_semantic::vocabulary::GoVersion::Go122 => GoldenGoVersion::Go122,
@@ -255,11 +265,21 @@ impl From<backend_semantic::vocabulary::LanguageProfile> for GoldenLanguageProfi
                 backend_semantic::vocabulary::JavaRelease::Java25 => GoldenJavaRelease::Java25,
             }),
             LanguageProfile::CSharp(value) => Self::CSharp(match value {
-                backend_semantic::vocabulary::CSharpVersion::CSharp10 => GoldenCSharpVersion::CSharp10,
-                backend_semantic::vocabulary::CSharpVersion::CSharp11 => GoldenCSharpVersion::CSharp11,
-                backend_semantic::vocabulary::CSharpVersion::CSharp12 => GoldenCSharpVersion::CSharp12,
-                backend_semantic::vocabulary::CSharpVersion::CSharp13 => GoldenCSharpVersion::CSharp13,
-                backend_semantic::vocabulary::CSharpVersion::CSharp14 => GoldenCSharpVersion::CSharp14,
+                backend_semantic::vocabulary::CSharpVersion::CSharp10 => {
+                    GoldenCSharpVersion::CSharp10
+                }
+                backend_semantic::vocabulary::CSharpVersion::CSharp11 => {
+                    GoldenCSharpVersion::CSharp11
+                }
+                backend_semantic::vocabulary::CSharpVersion::CSharp12 => {
+                    GoldenCSharpVersion::CSharp12
+                }
+                backend_semantic::vocabulary::CSharpVersion::CSharp13 => {
+                    GoldenCSharpVersion::CSharp13
+                }
+                backend_semantic::vocabulary::CSharpVersion::CSharp14 => {
+                    GoldenCSharpVersion::CSharp14
+                }
             }),
             LanguageProfile::C(value) => Self::C(match value {
                 backend_semantic::vocabulary::CStandard::C11 => GoldenCStandard::C11,
@@ -330,7 +350,9 @@ impl From<backend_semantic::vocabulary::NativeTool> for GoldenNativeTool {
             backend_semantic::vocabulary::NativeTool::Rustc => Self::Rustc,
             backend_semantic::vocabulary::NativeTool::Clang => Self::Clang,
             backend_semantic::vocabulary::NativeTool::Python => Self::Python,
-            backend_semantic::vocabulary::NativeTool::TypeScriptCompiler => Self::TypeScriptCompiler,
+            backend_semantic::vocabulary::NativeTool::TypeScriptCompiler => {
+                Self::TypeScriptCompiler
+            }
             backend_semantic::vocabulary::NativeTool::GoCompiler => Self::GoCompiler,
             backend_semantic::vocabulary::NativeTool::JavaCompiler => Self::JavaCompiler,
             backend_semantic::vocabulary::NativeTool::CSharpCompiler => Self::CSharpCompiler,

@@ -37,14 +37,18 @@ pub(crate) fn add_actions(links: &Links, view: EntityId) -> AddActions {
 
 /// Where adding the release at `purl` stands, in facet's words.
 fn adding_state(purl: &SharedString, asker: Asker, cx: &mut App) -> Adding {
-    let Some(release) = Release::from_purl(purl) else { return Adding::Idle };
+    let Some(release) = Release::from_purl(purl) else {
+        return Adding::Idle;
+    };
     match acquire::stage(&release, asker, cx) {
         None => Adding::Idle,
         Some(Stage::Queued) => Adding::Working(Step::Waiting),
         Some(Stage::Resolving) => Adding::Working(Step::Resolving),
         Some(Stage::Unpacking) => Adding::Working(Step::Unpacking),
         Some(Stage::Indexing) => Adding::Working(Step::Indexing),
-        Some(Stage::Added(package) | Stage::Partial { page: package, .. }) => Adding::Added { open: package.as_str().to_owned().into() },
+        Some(Stage::Added(package) | Stage::Partial { page: package, .. }) => Adding::Added {
+            open: package.as_str().to_owned().into(),
+        },
         Some(Stage::Failed(reason)) => Adding::Failed(reason.to_string().into()),
     }
 }
@@ -59,7 +63,10 @@ pub(crate) fn facet_offer(offer: &Offer) -> facet::browse::acquire::Offer {
             Availability::Archive(_) => Place::Archive,
             Availability::Download => Place::Download,
         },
-        library: offer.library.as_ref().map(|package| package.as_str().to_owned().into()),
+        library: offer
+            .library
+            .as_ref()
+            .map(|package| package.as_str().to_owned().into()),
     }
 }
 
@@ -67,8 +74,18 @@ pub(crate) fn facet_offer(offer: &Offer) -> facet::browse::acquire::Offer {
 /// library: a registry package reached through a dependency or from Find,
 /// whose own address the owner has not indexed. `None` for a local project,
 /// and for a page that already reads indexed names.
-pub(crate) fn page_offer(dossier: &crate::model::pages::PackageDossier, links: &Links, view: EntityId, measure: &Measure, cx: &mut App) -> Option<AnyElement> {
-    if dossier.outline.known().is_some_and(|outline| outline.count() > 0) {
+pub(crate) fn page_offer(
+    dossier: &crate::model::pages::PackageDossier,
+    links: &Links,
+    view: EntityId,
+    measure: &Measure,
+    cx: &mut App,
+) -> Option<AnyElement> {
+    if dossier
+        .outline
+        .known()
+        .is_some_and(|outline| outline.count() > 0)
+    {
         return None;
     }
     // A purl, or a registry release's own tree (an earlier release of a
@@ -76,7 +93,11 @@ pub(crate) fn page_offer(dossier: &crate::model::pages::PackageDossier, links: &
     // project.
     let release = dossier.package.release()?;
     let source = crate::host::registry::composed()?.source;
-    let offer = Offer { availability: source.availability(&release), release, library: None };
+    let offer = Offer {
+        availability: source.availability(&release),
+        release,
+        library: None,
+    };
     let palette = cx.palette();
     let actions = add_actions(links, view);
     Some(
@@ -85,8 +106,16 @@ pub(crate) fn page_offer(dossier: &crate::model::pages::PackageDossier, links: &
             .flex_col()
             .gap(measure.space(Space::Base))
             .pb(measure.space(Space::Wide))
-            .child(super::kit::text(ty::CAPTION, measure, palette.ink2).child("NOT IN YOUR LIBRARY"))
-            .child(add_control("package-offer", &facet_offer(&offer), &actions, measure, cx))
+            .child(
+                super::kit::text(ty::CAPTION, measure, palette.ink2).child("NOT IN YOUR LIBRARY"),
+            )
+            .child(add_control(
+                "package-offer",
+                &facet_offer(&offer),
+                &actions,
+                measure,
+                cx,
+            ))
             .into_any_element(),
     )
 }

@@ -23,13 +23,12 @@ pub use persistence::{
 };
 pub use selectors::{KeyedSelectorCache, LayoutKey, RowHeightCache, SelectorKey};
 pub use snapshot::{
-    AppSnapshot, AppearancePreference, CatalogState, ConnectionStatus, ContrastPreference,
-    DeltaId, DensityPreference, DocumentState, MotionPreference,
-    DocumentTab, ObjectId, PackageSummary, PrivacyPreference, ProjectPhase, ProjectState,
-    ServiceMode, SessionState, SettingsState, ShelfItem, ShelfState, ZoomPreference, ZoomStep,
-    WorkspaceProject, WorkspaceState,
+    AppSnapshot, AppearancePreference, CatalogState, ConnectionStatus, ContrastPreference, DeltaId,
+    DensityPreference, DocumentState, DocumentTab, MotionPreference, ObjectId, PackageSummary,
+    PrivacyPreference, ProjectPhase, ProjectState, ServiceMode, SessionState, SettingsState,
+    ShelfItem, ShelfState, WorkspaceProject, WorkspaceState, ZoomPreference, ZoomStep,
 };
-pub use workspace::{Note, WindowSize};
 pub use viewport::{
     DocumentViewportState, SourceViewportState, ViewportId, ViewportState, VirtualCollection,
 };
+pub use workspace::{Note, WindowSize};

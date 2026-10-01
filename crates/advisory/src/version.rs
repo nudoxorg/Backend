@@ -742,11 +742,20 @@ impl CargoVersion {
             syntax: VersionSyntax::Semver,
             value: value.to_owned(),
         };
-        let core = value.trim().split_once('+').map_or(value.trim(), |(core, _)| core);
-        let (release, pre) = core.split_once('-').map_or((core, ""), |(release, pre)| (release, pre));
+        let core = value
+            .trim()
+            .split_once('+')
+            .map_or(value.trim(), |(core, _)| core);
+        let (release, pre) = core
+            .split_once('-')
+            .map_or((core, ""), |(release, pre)| (release, pre));
         let mut parts = release.split('.');
         let mut number = || -> Result<u64, VersionCompareError> {
-            parts.next().ok_or_else(invalid)?.parse::<u64>().map_err(|_| invalid())
+            parts
+                .next()
+                .ok_or_else(invalid)?
+                .parse::<u64>()
+                .map_err(|_| invalid())
         };
         let (major, minor, patch) = (number()?, number()?, number()?);
         if parts.next().is_some() {
@@ -756,7 +765,11 @@ impl CargoVersion {
             major,
             minor,
             patch,
-            pre: pre.split('.').filter(|part| !part.is_empty()).map(ToOwned::to_owned).collect(),
+            pre: pre
+                .split('.')
+                .filter(|part| !part.is_empty())
+                .map(ToOwned::to_owned)
+                .collect(),
         })
     }
 
@@ -807,7 +820,9 @@ impl CargoComparator {
         .find_map(|(token, op)| text.strip_prefix(token).map(|rest| (op, rest.trim_start())))
         .unwrap_or((CargoOp::Caret, text));
         let rest = rest.split_once('+').map_or(rest, |(core, _)| core);
-        let (release, pre) = rest.split_once('-').map_or((rest, ""), |(release, pre)| (release, pre));
+        let (release, pre) = rest
+            .split_once('-')
+            .map_or((rest, ""), |(release, pre)| (release, pre));
         let wild = |part: &str| matches!(part, "*" | "x" | "X");
         let mut parts = release.split('.');
         let major_text = parts.next().ok_or_else(invalid)?;
@@ -815,18 +830,23 @@ impl CargoComparator {
             return Err(invalid());
         }
         let major = major_text.parse::<u64>().map_err(|_| invalid())?;
-        let mut component = |parts: &mut std::str::Split<'_, char>| -> Result<Option<u64>, VersionCompareError> {
-            match parts.next() {
-                None => Ok(None),
-                Some(part) if wild(part) => {
-                    op = CargoOp::Wildcard;
-                    Ok(None)
+        let mut component =
+            |parts: &mut std::str::Split<'_, char>| -> Result<Option<u64>, VersionCompareError> {
+                match parts.next() {
+                    None => Ok(None),
+                    Some(part) if wild(part) => {
+                        op = CargoOp::Wildcard;
+                        Ok(None)
+                    }
+                    Some(part) => part.parse::<u64>().map(Some).map_err(|_| invalid()),
                 }
-                Some(part) => part.parse::<u64>().map(Some).map_err(|_| invalid()),
-            }
-        };
+            };
         let minor = component(&mut parts)?;
-        let patch = if minor.is_some() { component(&mut parts)? } else { None };
+        let patch = if minor.is_some() {
+            component(&mut parts)?
+        } else {
+            None
+        };
         if parts.next().is_some() || (!pre.is_empty() && patch.is_none()) {
             return Err(invalid());
         }
@@ -835,7 +855,11 @@ impl CargoComparator {
             major,
             minor,
             patch,
-            pre: pre.split('.').filter(|part| !part.is_empty()).map(ToOwned::to_owned).collect(),
+            pre: pre
+                .split('.')
+                .filter(|part| !part.is_empty())
+                .map(ToOwned::to_owned)
+                .collect(),
         })
     }
 
@@ -850,11 +874,15 @@ impl CargoComparator {
         if version.major != self.major {
             return version.major > self.major;
         }
-        let Some(minor) = self.minor else { return false };
+        let Some(minor) = self.minor else {
+            return false;
+        };
         if version.minor != minor {
             return version.minor > minor;
         }
-        let Some(patch) = self.patch else { return false };
+        let Some(patch) = self.patch else {
+            return false;
+        };
         if version.patch != patch {
             return version.patch > patch;
         }
@@ -865,11 +893,15 @@ impl CargoComparator {
         if version.major != self.major {
             return version.major < self.major;
         }
-        let Some(minor) = self.minor else { return false };
+        let Some(minor) = self.minor else {
+            return false;
+        };
         if version.minor != minor {
             return version.minor < minor;
         }
-        let Some(patch) = self.patch else { return false };
+        let Some(patch) = self.patch else {
+            return false;
+        };
         if version.patch != patch {
             return version.patch < patch;
         }
@@ -966,7 +998,10 @@ pub fn cargo_requirement_matches(
         .split(',')
         .map(|part| CargoComparator::parse(part, requirement))
         .collect::<Result<Vec<_>, _>>()?;
-    if !comparators.iter().all(|comparator| comparator.matches(&candidate)) {
+    if !comparators
+        .iter()
+        .all(|comparator| comparator.matches(&candidate))
+    {
         return Ok(false);
     }
     Ok(candidate.pre.is_empty()
@@ -1036,8 +1071,14 @@ mod cargo_tests {
             ("=1.2.3", "1.2.3", "1.2.4"),
             (">= 1.2, < 1.5", "1.4.9", "1.5.0"),
         ] {
-            assert!(holds(requirement, inside), "{requirement} must accept {inside}");
-            assert!(!holds(requirement, outside), "{requirement} must refuse {outside}");
+            assert!(
+                holds(requirement, inside),
+                "{requirement} must accept {inside}"
+            );
+            assert!(
+                !holds(requirement, outside),
+                "{requirement} must refuse {outside}"
+            );
         }
         assert!(!holds("1.2.3", "1.2.2"), "a caret floor holds");
         assert!(holds("*", "3.1.4"));
@@ -1045,19 +1086,37 @@ mod cargo_tests {
 
     #[test]
     fn prereleases_need_a_prerelease_comparator_and_build_metadata_is_ignored() {
-        assert!(!holds("1.0", "1.1.0-alpha"), "a stable requirement never picks a pre-release");
+        assert!(
+            !holds("1.0", "1.1.0-alpha"),
+            "a stable requirement never picks a pre-release"
+        );
         assert!(holds("1.1.0-alpha", "1.1.0-beta"));
-        assert!(holds("1.0", "1.1.5+spec-1.1.0"), "build metadata plays no part");
+        assert!(
+            holds("1.0", "1.1.5+spec-1.1.0"),
+            "build metadata plays no part"
+        );
         assert!(holds("0.8.23", "0.8.23"));
-        assert!(!holds("0.8.23", "1.1.5+spec-1.1.0"), "toml 0.8 and 1.x are two copies");
+        assert!(
+            !holds("0.8.23", "1.1.5+spec-1.1.0"),
+            "toml 0.8 and 1.x are two copies"
+        );
     }
 
     #[test]
     fn classes_and_order() {
         assert_eq!(cargo_compatibility_class("0.8.23").as_deref(), Ok("0.8"));
-        assert_eq!(cargo_compatibility_class("1.1.5+spec-1.1.0").as_deref(), Ok("1"));
-        assert_eq!(cargo_compatibility_class("0.0.341").as_deref(), Ok("0.0.341"));
-        assert_eq!(cargo_version_cmp("0.8.23", "1.1.5+spec-1.1.0"), Ok(Ordering::Less));
+        assert_eq!(
+            cargo_compatibility_class("1.1.5+spec-1.1.0").as_deref(),
+            Ok("1")
+        );
+        assert_eq!(
+            cargo_compatibility_class("0.0.341").as_deref(),
+            Ok("0.0.341")
+        );
+        assert_eq!(
+            cargo_version_cmp("0.8.23", "1.1.5+spec-1.1.0"),
+            Ok(Ordering::Less)
+        );
         assert_eq!(cargo_version_cmp("2.0.0-rc.1", "2.0.0"), Ok(Ordering::Less));
         assert!(cargo_requirement_matches("banana", "1.0.0").is_err());
     }

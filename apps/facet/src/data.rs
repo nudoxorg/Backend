@@ -28,9 +28,9 @@ pub mod spatial;
 pub mod spell;
 pub mod strands;
 pub mod territory;
-pub mod text;
 #[cfg(test)]
 mod tests;
+pub mod text;
 
 pub use caps::{Caps, Has, Slot, caps};
 pub use comb::{Comb, CombOrientation, FileComb, FileUses, Tick, TickInk, TickTone, comb, fcomb};
@@ -38,8 +38,8 @@ pub use compass::{
     ArmLight, Compass, CompassBar, CompassSize, Dir, Directions, arm_length, compass, compass_bar,
     compass_row, paint_arms,
 };
-pub use facts::{Facts, LensBar, Run, Tab, facts, lens_bar};
 pub use door::{Door, Opens, Rested, Side, part_key};
+pub use facts::{Facts, LensBar, Run, Tab, facts, lens_bar};
 pub use live::Live;
 pub use mosaic::{Cell, Mosaic, Stone, StoneState, mosaic};
 pub use progress::{GemProgress, Seam, Stage, StageState, gem_progress, seam};

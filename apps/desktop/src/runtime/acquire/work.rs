@@ -70,12 +70,19 @@ pub(crate) struct Queue {
 
 impl Queue {
     pub(crate) fn new() -> Arc<Self> {
-        Arc::new(Self { pending: Mutex::new(Pending::default()) })
+        Arc::new(Self {
+            pending: Mutex::new(Pending::default()),
+        })
     }
 
     /// Queues `job` (first when a person asked for it) and starts a worker
     /// when none runs. Returns whether the job was new.
-    pub(crate) fn push(self: &Arc<Self>, job: Job, composition: Composition, post: Arc<dyn Fn(Landed) + Send + Sync>) -> bool {
+    pub(crate) fn push(
+        self: &Arc<Self>,
+        job: Job,
+        composition: Composition,
+        post: Arc<dyn Fn(Landed) + Send + Sync>,
+    ) -> bool {
         let start = {
             let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
             if pending.jobs.contains(&job) {
@@ -89,9 +96,14 @@ impl Queue {
         };
         if start {
             let queue = Arc::clone(self);
-            let spawned = std::thread::Builder::new().name("nudox-acquire".to_owned()).spawn(move || queue.drain(&composition, post.as_ref()));
+            let spawned = std::thread::Builder::new()
+                .name("nudox-acquire".to_owned())
+                .spawn(move || queue.drain(&composition, post.as_ref()));
             if spawned.is_err() {
-                self.pending.lock().unwrap_or_else(PoisonError::into_inner).running = false;
+                self.pending
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .running = false;
             }
         }
         true
@@ -100,7 +112,10 @@ impl Queue {
     /// Whether a worker is draining the queue.
     #[cfg(feature = "visual-harness")]
     pub(crate) fn running(&self) -> bool {
-        self.pending.lock().unwrap_or_else(PoisonError::into_inner).running
+        self.pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .running
     }
 
     fn next(&self) -> Option<Job> {
@@ -115,9 +130,14 @@ impl Queue {
     fn drain(&self, composition: &Composition, post: &(dyn Fn(Landed) + Send + Sync)) {
         while let Some(job) = self.next() {
             // A panic is that job's failure, never a worker that silently stops.
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&job, composition, post)));
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run(&job, composition, post)
+            }));
             if let Err(panic) = outcome {
-                let words: Arc<str> = Arc::from(format!("the work panicked: {}", super::super::offload::describe(panic.as_ref())));
+                let words: Arc<str> = Arc::from(format!(
+                    "the work panicked: {}",
+                    super::super::offload::describe(panic.as_ref())
+                ));
                 match job {
                     Job::Release(release) => post(Landed::Stage(release, Stage::Failed(words))),
                     Job::Dependencies(project) => post(Landed::Dependencies(project, Err(words))),
@@ -130,14 +150,18 @@ impl Queue {
 pub(crate) fn run(job: &Job, composition: &Composition, post: &(dyn Fn(Landed) + Send + Sync)) {
     match job {
         Job::Release(release) => {
-            index_release(composition, release, Listed::Ready, &|stage| post(Landed::Stage(release.clone(), stage)));
+            index_release(composition, release, Listed::Ready, &|stage| {
+                post(Landed::Stage(release.clone(), stage))
+            });
         }
         Job::Dependencies(project) => {
             let root = project.path();
             let read = if root.join("Cargo.toml").is_file() {
                 Session::connect(&composition.endpoint)
                     .map_err(|error| format!("the index could not be reached: {error}"))
-                    .and_then(|mut session| dependencies(&mut session, composition.source.as_ref(), &root))
+                    .and_then(|mut session| {
+                        dependencies(&mut session, composition.source.as_ref(), &root)
+                    })
             } else {
                 Err(NOT_CARGO.to_owned())
             };
@@ -151,8 +175,14 @@ pub(crate) fn run(job: &Job, composition: &Composition, post: &(dyn Fn(Landed) +
                     for (release, stage) in &settled {
                         post(Landed::Stage(release.clone(), stage.clone()));
                     }
-                    post(Landed::Dependencies(project.clone(), Ok(Arc::clone(&found))));
-                    for dependency in found.iter().filter(|dependency| matches!(dependency.origin, Origin::Registry(_))) {
+                    post(Landed::Dependencies(
+                        project.clone(),
+                        Ok(Arc::clone(&found)),
+                    ));
+                    for dependency in found
+                        .iter()
+                        .filter(|dependency| matches!(dependency.origin, Origin::Registry(_)))
+                    {
                         let release = &dependency.release;
                         if settled.iter().any(|(settled, _)| settled == release) {
                             continue;
@@ -161,7 +191,9 @@ pub(crate) fn run(job: &Job, composition: &Composition, post: &(dyn Fn(Landed) +
                         // A package the owner already lists, in any state, was
                         // read once: a project indexed again does not compile
                         // it again (a refusal stays the owner's).
-                        index_release(composition, release, Listed::Any, &|stage| post(Landed::Stage(release.clone(), stage)));
+                        index_release(composition, release, Listed::Any, &|stage| {
+                            post(Landed::Stage(release.clone(), stage))
+                        });
                     }
                 }
                 Err(words) => post(Landed::Dependencies(project.clone(), Err(Arc::from(words)))),
@@ -175,7 +207,10 @@ pub(crate) fn run(job: &Job, composition: &Composition, post: &(dyn Fn(Landed) +
 /// a person opened) before the next package starts (`runtime::traffic`). A
 /// release a person asked for starts at once.
 fn reads_first() {
-    super::super::traffic::yield_to_reads(std::time::Duration::from_millis(300), std::time::Duration::from_secs(10));
+    super::super::traffic::yield_to_reads(
+        std::time::Duration::from_millis(300),
+        std::time::Duration::from_secs(10),
+    );
 }
 
 /// What a project that is not a Cargo project says about its packages: only a
@@ -199,29 +234,58 @@ pub(crate) enum Listed {
 ///
 /// # Errors
 /// The owner's refusal to read the project's tree, in its words.
-pub(crate) fn dependencies(session: &mut Session, source: &dyn RegistrySource, root: &Path) -> Result<Vec<Dependency>, String> {
-    let text = root.to_str().ok_or_else(|| format!("{} is not UTF-8", root.display()))?;
+pub(crate) fn dependencies(
+    session: &mut Session,
+    source: &dyn RegistrySource,
+    root: &Path,
+) -> Result<Vec<Dependency>, String> {
+    let text = root
+        .to_str()
+        .ok_or_else(|| format!("{} is not UTF-8", root.display()))?;
     let root = ProductText::new(text.to_owned()).map_err(|error| error.to_string())?;
-    let tree = match session.surface(SurfaceCommand::ProjectTree { root }).map_err(|error| format!("the index could not read the project's packages: {error}"))? {
+    let tree = match session
+        .surface(SurfaceCommand::ProjectTree { root })
+        .map_err(|error| format!("the index could not read the project's packages: {error}"))?
+    {
         SurfaceReply::ProjectTree(tree) => tree,
-        other => return Err(format!("the index answered the project's packages with {:?}", other.id())),
+        other => {
+            return Err(format!(
+                "the index answered the project's packages with {:?}",
+                other.id()
+            ));
+        }
     };
     Ok(ordered(&tree, source))
 }
 
 fn ordered(tree: &ProjectTree, source: &dyn RegistrySource) -> Vec<Dependency> {
     let mut packages = tree.packages.iter().collect::<Vec<_>>();
-    packages.sort_by_key(|package| (package.role != PackageRole::Direct, package.why.len(), package.name.clone(), package.version.clone()));
+    packages.sort_by_key(|package| {
+        (
+            package.role != PackageRole::Direct,
+            package.why.len(),
+            package.name.clone(),
+            package.version.clone(),
+        )
+    });
     packages
         .into_iter()
         .filter_map(|package| {
             let release = Release::new(&package.name, &package.version).ok()?;
             let origin = match &package.origin {
                 PackageOrigin::Registry => Origin::Registry(source.availability(&release)),
-                PackageOrigin::Git { url } => Origin::Elsewhere(Arc::from(format!("from git ({url}): only registry releases are added"))),
-                PackageOrigin::Vendored { path } => Origin::Elsewhere(Arc::from(format!("vendored at {path}: only registry releases are added"))),
+                PackageOrigin::Git { url } => Origin::Elsewhere(Arc::from(format!(
+                    "from git ({url}): only registry releases are added"
+                ))),
+                PackageOrigin::Vendored { path } => Origin::Elsewhere(Arc::from(format!(
+                    "vendored at {path}: only registry releases are added"
+                ))),
             };
-            Some(Dependency { release, direct: package.role == PackageRole::Direct, origin })
+            Some(Dependency {
+                release,
+                direct: package.role == PackageRole::Direct,
+                origin,
+            })
         })
         .collect()
 }
@@ -230,24 +294,46 @@ fn ordered(tree: &ProjectTree, source: &dyn RegistrySource) -> Vec<Dependency> {
 /// from one read of its list), with the stage it stands at: added, or thin
 /// for the reason the owner gave when it could not finish the compile. Only
 /// trees already on disk are looked at; nothing is unpacked or indexed.
-pub(crate) fn listed_already(composition: &Composition, found: &[Dependency]) -> Vec<(Release, Stage)> {
-    let Ok(mut session) = Session::connect(&composition.endpoint) else { return Vec::new() };
-    let Ok(reply) = session.packages() else { return Vec::new() };
-    let backend_library::CommandReply::Packages(snapshot) = reply.reply else { return Vec::new() };
-    let listed = snapshot.root.rows().iter().map(|row| row.label.clone()).collect::<std::collections::HashSet<_>>();
+pub(crate) fn listed_already(
+    composition: &Composition,
+    found: &[Dependency],
+) -> Vec<(Release, Stage)> {
+    let Ok(mut session) = Session::connect(&composition.endpoint) else {
+        return Vec::new();
+    };
+    let Ok(reply) = session.packages() else {
+        return Vec::new();
+    };
+    let backend_library::CommandReply::Packages(snapshot) = reply.reply else {
+        return Vec::new();
+    };
+    let listed = snapshot
+        .root
+        .rows()
+        .iter()
+        .map(|row| row.label.clone())
+        .collect::<std::collections::HashSet<_>>();
     let refusals = composition.refusals.as_deref().map(Refusals::at);
     found
         .iter()
         .filter_map(|dependency| {
-            let Origin::Registry(Availability::Unpacked(tree)) = &dependency.origin else { return None };
+            let Origin::Registry(Availability::Unpacked(tree)) = &dependency.origin else {
+                return None;
+            };
             let tree = tree.canonicalize().ok()?;
             let coordinate = tree.to_str()?;
             if !listed.contains(coordinate) {
                 return None;
             }
             let package = PackageRef::parse(coordinate).ok()?;
-            let stage = match refusals.as_ref().and_then(|refusals| refusals.words(coordinate)) {
-                Some(words) => Stage::Partial { page: package, words },
+            let stage = match refusals
+                .as_ref()
+                .and_then(|refusals| refusals.words(coordinate))
+            {
+                Some(words) => Stage::Partial {
+                    page: package,
+                    words,
+                },
                 None => Stage::Added(package),
             };
             Some((dependency.release.clone(), stage))
@@ -258,7 +344,12 @@ pub(crate) fn listed_already(composition: &Composition, found: &[Dependency]) ->
 /// Resolves `release` through the source and has the owner index its tree,
 /// posting each stage it reaches; returns the last one. A release the owner
 /// already lists as `skip` says is not indexed again.
-pub(crate) fn index_release(composition: &Composition, release: &Release, skip: Listed, post: &dyn Fn(Stage)) -> Stage {
+pub(crate) fn index_release(
+    composition: &Composition,
+    release: &Release,
+    skip: Listed,
+    post: &dyn Fn(Stage),
+) -> Stage {
     let finish = |stage: Stage| {
         post(stage.clone());
         stage
@@ -268,13 +359,19 @@ pub(crate) fn index_release(composition: &Composition, release: &Release, skip: 
     match composition.source.availability(release) {
         Availability::Unpacked(_) => {}
         Availability::Archive(_) => post(Stage::Unpacking),
-        Availability::Download => return failed(format!("{release} is not on this machine; reading it needs a download")),
+        Availability::Download => {
+            return failed(format!(
+                "{release} is not on this machine; reading it needs a download"
+            ));
+        }
     }
     let tree = match composition.source.resolve(release) {
         Ok(tree) => tree,
         Err(error) => return failed(error.to_string()),
     };
-    let Some(coordinate) = tree.root.to_str() else { return failed(format!("{} is not UTF-8", tree.root.display())) };
+    let Some(coordinate) = tree.root.to_str() else {
+        return failed(format!("{} is not UTF-8", tree.root.display()));
+    };
     let started = std::time::Instant::now();
     let refusals = composition.refusals.as_deref().map(Refusals::at);
     let mut listed_already = false;
@@ -290,8 +387,14 @@ pub(crate) fn index_release(composition: &Composition, release: &Release, skip: 
     match (indexed, PackageRef::parse(coordinate)) {
         // Listed by an earlier launch: what the owner said then, if it could
         // not finish the compile, still stands.
-        (Ok(()), Ok(package)) if listed_already => match refusals.as_ref().and_then(|refusals| refusals.words(coordinate)) {
-            Some(words) => finish(Stage::Partial { page: package, words }),
+        (Ok(()), Ok(package)) if listed_already => match refusals
+            .as_ref()
+            .and_then(|refusals| refusals.words(coordinate))
+        {
+            Some(words) => finish(Stage::Partial {
+                page: package,
+                words,
+            }),
             None => finish(Stage::Added(package)),
         },
         (Ok(()), Ok(package)) => {
@@ -303,13 +406,17 @@ pub(crate) fn index_release(composition: &Composition, release: &Release, skip: 
         // A compile the owner refused still lists the release, on the names
         // its source declares: it is in the library, and says why it is thin.
         (Err(error), Ok(package))
-            if Session::connect(&composition.endpoint).is_ok_and(|mut session| is_listed(&mut session, coordinate, Listed::Any)) =>
+            if Session::connect(&composition.endpoint)
+                .is_ok_and(|mut session| is_listed(&mut session, coordinate, Listed::Any)) =>
         {
             let words: Arc<str> = Arc::from(error.to_string());
             if let Some(refusals) = &refusals {
                 refusals.keep(coordinate, &words);
             }
-            finish(Stage::Partial { page: package, words })
+            finish(Stage::Partial {
+                page: package,
+                words,
+            })
         }
         (Err(error), _) => failed(format!("the index refused {release}: {error}")),
         (Ok(()), Err(error)) => failed(format!("{coordinate} is not a package address: {error:?}")),
@@ -326,19 +433,28 @@ pub(crate) struct Refusals {
 
 impl Refusals {
     pub(crate) fn at(path: &Path) -> Self {
-        Self { path: path.to_path_buf() }
+        Self {
+            path: path.to_path_buf(),
+        }
     }
 
     fn read(&self) -> std::collections::BTreeMap<String, String> {
-        std::fs::read(&self.path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
+        std::fs::read(&self.path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
     }
 
     fn write(&self, map: &std::collections::BTreeMap<String, String>) {
-        let Some(parent) = self.path.parent() else { return };
+        let Some(parent) = self.path.parent() else {
+            return;
+        };
         if std::fs::create_dir_all(parent).is_err() {
             return;
         }
-        let Ok(bytes) = serde_json::to_vec_pretty(map) else { return };
+        let Ok(bytes) = serde_json::to_vec_pretty(map) else {
+            return;
+        };
         let staged = self.path.with_extension("json.new");
         if std::fs::write(&staged, bytes).is_ok() {
             let _ = std::fs::rename(&staged, &self.path);
@@ -347,7 +463,9 @@ impl Refusals {
 
     /// The words kept for `coordinate`.
     pub(crate) fn words(&self, coordinate: &str) -> Option<Arc<str>> {
-        self.read().get(coordinate).map(|words| Arc::from(words.as_str()))
+        self.read()
+            .get(coordinate)
+            .map(|words| Arc::from(words.as_str()))
     }
 
     /// Keeps `words` for `coordinate`.
@@ -368,7 +486,14 @@ impl Refusals {
 
 /// Whether the owner already lists `coordinate` as `listed` says.
 fn is_listed(session: &mut Session, coordinate: &str, listed: Listed) -> bool {
-    let Ok(reply) = session.packages() else { return false };
-    let backend_library::CommandReply::Packages(snapshot) = reply.reply else { return false };
-    snapshot.root.rows().iter().any(|row| row.label == coordinate && (listed == Listed::Any || row.state == backend_library::RowState::Ready))
+    let Ok(reply) = session.packages() else {
+        return false;
+    };
+    let backend_library::CommandReply::Packages(snapshot) = reply.reply else {
+        return false;
+    };
+    snapshot.root.rows().iter().any(|row| {
+        row.label == coordinate
+            && (listed == Listed::Any || row.state == backend_library::RowState::Ready)
+    })
 }

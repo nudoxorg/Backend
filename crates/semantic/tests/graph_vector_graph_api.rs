@@ -1,12 +1,12 @@
 //! Exercises the `backend-semantic::graph_vector` tests graph-api contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
-use backend_semantic::ir::EntityId;
 use backend_semantic::graph_vector::{
     GraphAuthority, GraphEdge, GraphQueryTerminal, GraphRow, PartitionId, ProjectionId,
     ValidatedGraphView,
 };
 use backend_semantic::index_vocabulary::IndexSnapshotId;
+use backend_semantic::ir::EntityId;
 
 fn authority() -> GraphAuthority {
     GraphAuthority {

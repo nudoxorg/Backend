@@ -5,6 +5,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use backend_extension_trustfall::server::SemanticTrustfallGraph;
+use backend_semantic::graph_vector::Cancellation;
 use backend_semantic::ir::{
     BorrowedTree, Confidence, CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts, EntityId,
     EntityVersion, FactAvailability, IrBuilder, ItemKind, LinkKind, OccurrenceAuthorityFacts,
@@ -13,8 +15,6 @@ use backend_semantic::ir::{
     full_semantic_image_len,
 };
 use futures_core::Stream;
-use backend_semantic::graph_vector::Cancellation;
-use backend_extension_trustfall::server::SemanticTrustfallGraph;
 
 fn fixture(count: u32) -> Result<(Vec<u8>, EntityId), Box<dyn std::error::Error>> {
     let mut builder = IrBuilder::new();

@@ -3,13 +3,13 @@
 //! Results support capacity decisions without changing the measured implementation.
 //! Lexical row derivation and Tantivy adapter build/query phases.
 
-use backend_semantic::ir::EntityId;
-use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
+use backend_extension_tantivy::server::{TantivyLexical, TantivyTerminal};
 use backend_semantic::index_core::{
     EntityArtifactIdentity, EntityDocumentId, GenerationId, IndexSnapshot, LexicalManifest,
     LexicalRow, LexicalScore, LexicalSegment,
 };
-use backend_extension_tantivy::server::{TantivyLexical, TantivyTerminal};
+use backend_semantic::ir::EntityId;
+use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 
 use crate::{
     BenchmarkError,

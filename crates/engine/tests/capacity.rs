@@ -7,13 +7,13 @@ mod build_support;
 
 use core::mem::MaybeUninit;
 
-use backend_semantic::ir::{Atom, AtomInput, EntityKind, EntityRecord, PrimitiveType, TypeNode};
-use backend_semantic::ir::{AtomId, TypeId};
 use backend_engine::index_build::{
     BuildAdmissionError, BuildRegion, EntityFact, EntityProjection, IndexBuildCapacity,
     IndexBuildScratch, build, preflight,
 };
 use backend_semantic::index_core::{ExactRow, LexicalRow};
+use backend_semantic::ir::{Atom, AtomInput, EntityKind, EntityRecord, PrimitiveType, TypeNode};
+use backend_semantic::ir::{AtomId, TypeId};
 use build_support::{
     BuildProofError, Fixture, OpenBuffers, TestError, compiled, next_fragment, publish,
     write_fragment, written,

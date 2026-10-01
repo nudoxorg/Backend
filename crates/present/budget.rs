@@ -138,8 +138,7 @@ pub fn bounded_text(text: &str) -> String {
     if text.len() <= MAX_PREVIEW_TEXT_BYTES {
         return text.to_owned();
     }
-    const MARKER: &str =
-        "\n\n… output truncated; request a narrower page or detail=summary";
+    const MARKER: &str = "\n\n… output truncated; request a narrower page or detail=summary";
     let mut end = MAX_PREVIEW_TEXT_BYTES.saturating_sub(MARKER.len());
     while end > 0 && !text.is_char_boundary(end) {
         end -= 1;

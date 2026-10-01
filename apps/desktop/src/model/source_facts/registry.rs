@@ -24,11 +24,15 @@ pub struct Published {
 }
 
 fn cargo_home() -> Option<PathBuf> {
-    std::env::var_os("CARGO_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".cargo")))
+    std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".cargo")))
 }
 
 fn glob_dirs(parent: &Path, prefix: &str) -> Vec<PathBuf> {
-    let Ok(read) = fs::read_dir(parent) else { return Vec::new() };
+    let Ok(read) = fs::read_dir(parent) else {
+        return Vec::new();
+    };
     let mut out: Vec<PathBuf> = read
         .filter_map(Result::ok)
         .filter(|e| e.file_name().to_string_lossy().starts_with(prefix))
@@ -41,12 +45,19 @@ fn glob_dirs(parent: &Path, prefix: &str) -> Vec<PathBuf> {
 /// The registries' unpacked source directories (`~/.cargo/registry/src/index.crates.io-*`).
 #[must_use]
 pub fn source_dirs() -> Vec<PathBuf> {
-    cargo_home().map(|home| glob_dirs(&home.join("registry").join("src"), "index.crates.io-")).unwrap_or_default()
+    cargo_home()
+        .map(|home| glob_dirs(&home.join("registry").join("src"), "index.crates.io-"))
+        .unwrap_or_default()
 }
 
 fn cache_dirs() -> Vec<PathBuf> {
     cargo_home()
-        .map(|home| glob_dirs(&home.join("registry").join("index"), "index.crates.io-").into_iter().map(|d| d.join(".cache")).collect())
+        .map(|home| {
+            glob_dirs(&home.join("registry").join("index"), "index.crates.io-")
+                .into_iter()
+                .map(|d| d.join(".cache"))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -69,7 +80,10 @@ fn cache_relative(name: &str) -> PathBuf {
 #[must_use]
 pub fn releases(name: &str) -> Vec<Published> {
     let relative = cache_relative(name);
-    let Some(bytes) = cache_dirs().into_iter().find_map(|dir| fs::read(dir.join(&relative)).ok()) else {
+    let Some(bytes) = cache_dirs()
+        .into_iter()
+        .find_map(|dir| fs::read(dir.join(&relative)).ok())
+    else {
         return Vec::new();
     };
     let mut out: Vec<Published> = Vec::new();
@@ -79,13 +93,32 @@ pub fn releases(name: &str) -> Vec<Published> {
         if part.first() != Some(&b'{') {
             continue;
         }
-        let Ok(value) = serde_json::from_slice::<serde_json::Value>(part) else { continue };
-        let Some(version) = value.get("vers").and_then(|v| v.as_str()) else { continue };
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(part) else {
+            continue;
+        };
+        let Some(version) = value.get("vers").and_then(|v| v.as_str()) else {
+            continue;
+        };
         out.push(Published {
             version: version.to_owned(),
-            date: value.get("pubtime").and_then(|v| v.as_str()).and_then(|t| t.get(..10)).map(str::to_owned),
-            standing: if value.get("yanked").and_then(serde_json::Value::as_bool).unwrap_or(false) { Standing::Yanked } else { Standing::Available },
-            checksum: value.get("cksum").and_then(|v| v.as_str()).map(str::to_owned),
+            date: value
+                .get("pubtime")
+                .and_then(|v| v.as_str())
+                .and_then(|t| t.get(..10))
+                .map(str::to_owned),
+            standing: if value
+                .get("yanked")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                Standing::Yanked
+            } else {
+                Standing::Available
+            },
+            checksum: value
+                .get("cksum")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned),
         });
     }
     out.sort_by(|a, b| semver::cmp(&a.version, &b.version));
@@ -96,7 +129,10 @@ pub fn releases(name: &str) -> Vec<Published> {
 /// The source directory of `name` at exactly `version`, when it is unpacked.
 #[must_use]
 pub fn source_of(name: &str, version: &str) -> Option<PathBuf> {
-    source_dirs().into_iter().map(|dir| dir.join(format!("{name}-{version}"))).find(|dir| dir.is_dir())
+    source_dirs()
+        .into_iter()
+        .map(|dir| dir.join(format!("{name}-{version}")))
+        .find(|dir| dir.is_dir())
 }
 
 /// Every version of `name` unpacked on this machine.
@@ -104,10 +140,14 @@ fn unpacked(name: &str) -> Vec<String> {
     let prefix = format!("{name}-");
     let mut out = Vec::new();
     for dir in source_dirs() {
-        let Ok(read) = fs::read_dir(&dir) else { continue };
+        let Ok(read) = fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in read.filter_map(Result::ok) {
             let file = entry.file_name().to_string_lossy().into_owned();
-            let Some(rest) = file.strip_prefix(&prefix) else { continue };
+            let Some(rest) = file.strip_prefix(&prefix) else {
+                continue;
+            };
             // `foo-1.2.3`, never `foo-bar-1.2.3`.
             if rest.chars().next().is_some_and(|c| c.is_ascii_digit()) && rest.contains('.') {
                 out.push(rest.to_owned());
@@ -134,8 +174,21 @@ fn comparator(text: &str, version: &str) -> bool {
         .iter()
         .find_map(|op| text.strip_prefix(op).map(|rest| (*op, rest.trim())))
         .unwrap_or(("^", text));
-    let parts: Vec<Option<u64>> = rest.split('-').next().unwrap_or(rest).split('+').next().unwrap_or(rest).split('.').map(|p| p.trim().parse().ok()).collect();
-    let (major, minor, patch) = (parts.first().copied().flatten(), parts.get(1).copied().flatten(), parts.get(2).copied().flatten());
+    let parts: Vec<Option<u64>> = rest
+        .split('-')
+        .next()
+        .unwrap_or(rest)
+        .split('+')
+        .next()
+        .unwrap_or(rest)
+        .split('.')
+        .map(|p| p.trim().parse().ok())
+        .collect();
+    let (major, minor, patch) = (
+        parts.first().copied().flatten(),
+        parts.get(1).copied().flatten(),
+        parts.get(2).copied().flatten(),
+    );
     let Some(major) = major else { return true };
     let v = numbers(version);
     let lower = (major, minor.unwrap_or(0), patch.unwrap_or(0));
@@ -189,7 +242,11 @@ pub fn pick(name: &str, requirement: &str, hint: Option<&str>) -> Option<String>
     if let Some(hint) = hint.filter(|hint| have.iter().any(|v| v == hint)) {
         return Some(hint.to_owned());
     }
-    have.iter().rev().find(|v| satisfies(requirement, v)).or_else(|| have.last()).cloned()
+    have.iter()
+        .rev()
+        .find(|v| satisfies(requirement, v))
+        .or_else(|| have.last())
+        .cloned()
 }
 
 /// Lines of code per `(crate, version)`, kept for the process.
@@ -230,13 +287,22 @@ mod tests {
 
     #[test]
     fn requirements_read_the_way_cargo_reads_them() {
-        assert!(satisfies("1.2", "1.9.0") && !satisfies("1.2", "2.0.0") && !satisfies("1.2", "1.1.9"));
-        assert!(satisfies("^0.8", "0.8.23") && !satisfies("^0.8", "0.9.0") && !satisfies("^0.8", "0.7.9"));
+        assert!(
+            satisfies("1.2", "1.9.0") && !satisfies("1.2", "2.0.0") && !satisfies("1.2", "1.1.9")
+        );
+        assert!(
+            satisfies("^0.8", "0.8.23")
+                && !satisfies("^0.8", "0.9.0")
+                && !satisfies("^0.8", "0.7.9")
+        );
         assert!(satisfies("^0.0.3", "0.0.3") && !satisfies("^0.0.3", "0.0.4"));
         assert!(satisfies("~1.2.3", "1.2.9") && !satisfies("~1.2.3", "1.3.0"));
         assert!(satisfies(">=1.0, <2", "1.5.0") && !satisfies(">=1.0, <2", "2.0.0"));
         assert!(satisfies("=1.2.3", "1.2.3") && !satisfies("=1.2.3", "1.2.4"));
         assert!(satisfies("*", "9.9.9"));
-        assert!(!satisfies("^1", "2.0.0-rc.1"), "a pre-release satisfies only a requirement that names one");
+        assert!(
+            !satisfies("^1", "2.0.0-rc.1"),
+            "a pre-release satisfies only a requirement that names one"
+        );
     }
 }

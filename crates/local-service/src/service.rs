@@ -849,7 +849,6 @@ where
         &self.daemon
     }
 
-
     /// Returns the embedded daemon mutably.
     #[must_use]
     pub const fn daemon_mut(&mut self) -> &mut crate::Locald<M, V, A> {

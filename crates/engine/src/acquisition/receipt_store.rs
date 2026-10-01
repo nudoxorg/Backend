@@ -959,8 +959,8 @@ fn hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::acquisition::{
-        AcquisitionOutcome, AcquisitionRequest, DeltaChange, FactFreshness, ManifestEntry,
-        LeaseStore, MetadataRecord, Policy, ReleaseClaim, Resolve, TreeManifest,
+        AcquisitionOutcome, AcquisitionRequest, DeltaChange, FactFreshness, LeaseStore,
+        ManifestEntry, MetadataRecord, Policy, ReleaseClaim, Resolve, TreeManifest,
     };
     use std::time::{SystemTime, UNIX_EPOCH};
 

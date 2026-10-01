@@ -13,8 +13,10 @@ use backend_engine::driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile,
 };
+use backend_frontend_rust::legacy::{
+    RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
+};
 use backend_semantic::ir::{FragmentView, TypeFactSegment};
-use backend_frontend_rust::legacy::{RustFeatureControl, RustProject, RustToolchain, SourceByteLimit};
 use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 
 /// Distinguishes fixture directories created by parallel test threads within
@@ -131,12 +133,8 @@ fn registry_log_compiles_within_the_corpus_deadline() -> Result<(), Box<dyn std:
         .ok_or_else(|| std::io::Error::other("no cargo home"))?
         .join("registry/src");
     let cancelled = AtomicBool::new(false);
-    let located = backend_frontend_rust::legacy::RustPackageUrl::parse("cargo:log@0.4.34")?.locate(
-        &workspace,
-        &toolchain,
-        Some(&registry),
-        &cancelled,
-    )?;
+    let located = backend_frontend_rust::legacy::RustPackageUrl::parse("cargo:log@0.4.34")?
+        .locate(&workspace, &toolchain, Some(&registry), &cancelled)?;
     let source = fs::read(&located.project().source_path)?;
     let resolved =
         ResolvedToolchain::from_version(NativeTool::Rustc, &rustc, b"rust-shortcuts-log")?;

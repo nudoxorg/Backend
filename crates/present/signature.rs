@@ -298,7 +298,8 @@ fn start_class(character: char) -> LexClass {
         LexClass::Quoted
     } else if character == '\'' {
         LexClass::Lifetime
-    } else if character.is_alphabetic() || character == '_' || character == '$' || character == '@' {
+    } else if character.is_alphabetic() || character == '_' || character == '$' || character == '@'
+    {
         LexClass::Identifier
     } else {
         LexClass::Punctuation
@@ -333,7 +334,11 @@ fn classify(lexemes: &[Lexeme], language: Language) -> Box<[Token]> {
             LexClass::Number | LexClass::Quoted => TokenKind::Literal,
             LexClass::Lifetime => lifetime_kind(language),
             LexClass::Punctuation => {
-                update_punctuation(&mut cursor, &lexeme.text, previous_significant(lexemes, index));
+                update_punctuation(
+                    &mut cursor,
+                    &lexeme.text,
+                    previous_significant(lexemes, index),
+                );
                 TokenKind::Punctuation
             }
             LexClass::Identifier => identifier_kind(&mut cursor, lexemes, index, language),
@@ -419,7 +424,9 @@ fn positional_kind(
     let next_opens_type = next.is_some_and(|text| is_identifier_like(text) || opens_type(text));
     let follows_type = previous.is_some_and(|text| is_identifier_like(text) || closes_type(text));
     match language {
-        Language::Java | Language::CSharp | Language::C | Language::Cxx if cursor.parameters > 0 => {
+        Language::Java | Language::CSharp | Language::C | Language::Cxx
+            if cursor.parameters > 0 =>
+        {
             if next_opens_name {
                 TokenKind::Type
             } else if follows_type {
@@ -520,7 +527,9 @@ fn is_primitive_type(text: &str, language: Language) -> bool {
     SHARED_TYPES.contains(&text) || primitive_types(language).contains(&text)
 }
 
-const SHARED_TYPES: &[&str] = &["void", "bool", "char", "double", "float", "int", "long", "short"];
+const SHARED_TYPES: &[&str] = &[
+    "void", "bool", "char", "double", "float", "int", "long", "short",
+];
 
 const fn primitive_types(language: Language) -> &'static [&'static str] {
     match language {
@@ -541,18 +550,55 @@ const RUST_TYPES: &[&str] = &[
 ];
 
 const TYPESCRIPT_TYPES: &[&str] = &[
-    "any", "bigint", "boolean", "never", "number", "object", "string", "symbol", "undefined",
-    "unknown", "void",
+    "any",
+    "bigint",
+    "boolean",
+    "never",
+    "number",
+    "object",
+    "string",
+    "symbol",
+    "undefined",
+    "unknown",
+    "void",
 ];
 
 const PYTHON_TYPES: &[&str] = &[
-    "bool", "bytes", "complex", "dict", "float", "frozenset", "int", "list", "set", "str", "tuple",
+    "bool",
+    "bytes",
+    "complex",
+    "dict",
+    "float",
+    "frozenset",
+    "int",
+    "list",
+    "set",
+    "str",
+    "tuple",
 ];
 
 const GO_TYPES: &[&str] = &[
-    "any", "bool", "byte", "complex64", "complex128", "error", "float32", "float64", "int",
-    "int8", "int16", "int32", "int64", "rune", "string", "uint", "uint8", "uint16", "uint32",
-    "uint64", "uintptr",
+    "any",
+    "bool",
+    "byte",
+    "complex64",
+    "complex128",
+    "error",
+    "float32",
+    "float64",
+    "int",
+    "int8",
+    "int16",
+    "int32",
+    "int64",
+    "rune",
+    "string",
+    "uint",
+    "uint8",
+    "uint16",
+    "uint32",
+    "uint64",
+    "uintptr",
 ];
 
 const JAVA_TYPES: &[&str] = &[
@@ -560,8 +606,8 @@ const JAVA_TYPES: &[&str] = &[
 ];
 
 const CSHARP_TYPES: &[&str] = &[
-    "bool", "byte", "char", "decimal", "double", "float", "int", "long", "nint", "nuint",
-    "object", "sbyte", "short", "string", "uint", "ulong", "ushort", "void",
+    "bool", "byte", "char", "decimal", "double", "float", "int", "long", "nint", "nuint", "object",
+    "sbyte", "short", "string", "uint", "ulong", "ushort", "void",
 ];
 
 const C_TYPES: &[&str] = &[
@@ -571,7 +617,8 @@ const C_TYPES: &[&str] = &[
 
 /// Keywords every supported language shares.
 const SHARED: &[&str] = &[
-    "class", "const", "else", "enum", "extern", "false", "for", "if", "import", "in", "new", "null", "return", "static", "struct", "switch", "true", "type", "while",
+    "class", "const", "else", "enum", "extern", "false", "for", "if", "import", "in", "new",
+    "null", "return", "static", "struct", "switch", "true", "type", "while",
 ];
 
 const fn keywords(language: Language) -> &'static [&'static str] {
@@ -594,7 +641,27 @@ const RUST: &[&str] = &[
 ];
 
 const TYPESCRIPT: &[&str] = &[
-    "abstract", "as", "async", "await", "declare", "export", "extends", "function", "implements", "interface", "keyof", "let", "namespace", "private", "protected", "public", "readonly", "this", "typeof", "var", "yield",
+    "abstract",
+    "as",
+    "async",
+    "await",
+    "declare",
+    "export",
+    "extends",
+    "function",
+    "implements",
+    "interface",
+    "keyof",
+    "let",
+    "namespace",
+    "private",
+    "protected",
+    "public",
+    "readonly",
+    "this",
+    "typeof",
+    "var",
+    "yield",
 ];
 
 const PYTHON: &[&str] = &[
@@ -603,15 +670,58 @@ const PYTHON: &[&str] = &[
 ];
 
 const GO: &[&str] = &[
-    "chan", "defer", "func", "go", "interface", "map", "package", "range", "select", "var",
+    "chan",
+    "defer",
+    "func",
+    "go",
+    "interface",
+    "map",
+    "package",
+    "range",
+    "select",
+    "var",
 ];
 
 const JAVA: &[&str] = &[
-    "abstract", "extends", "final", "implements", "interface", "native", "package", "private", "protected", "public", "record", "sealed", "synchronized", "throws", "transient", "volatile",
+    "abstract",
+    "extends",
+    "final",
+    "implements",
+    "interface",
+    "native",
+    "package",
+    "private",
+    "protected",
+    "public",
+    "record",
+    "sealed",
+    "synchronized",
+    "throws",
+    "transient",
+    "volatile",
 ];
 
 const CSHARP: &[&str] = &[
-    "abstract", "async", "await", "delegate", "event", "internal", "interface", "namespace", "override", "partial", "private", "protected", "public", "readonly", "record", "sealed", "using", "var", "virtual", "where",
+    "abstract",
+    "async",
+    "await",
+    "delegate",
+    "event",
+    "internal",
+    "interface",
+    "namespace",
+    "override",
+    "partial",
+    "private",
+    "protected",
+    "public",
+    "readonly",
+    "record",
+    "sealed",
+    "using",
+    "var",
+    "virtual",
+    "where",
 ];
 
 const C: &[&str] = &[
@@ -619,5 +729,28 @@ const C: &[&str] = &[
 ];
 
 const CXX: &[&str] = &[
-    "auto", "concept", "constexpr", "decltype", "explicit", "friend", "inline", "mutable", "namespace", "noexcept", "operator", "private", "protected", "public", "requires", "sizeof", "template", "this", "typedef", "typename", "union", "using", "virtual", "volatile",
+    "auto",
+    "concept",
+    "constexpr",
+    "decltype",
+    "explicit",
+    "friend",
+    "inline",
+    "mutable",
+    "namespace",
+    "noexcept",
+    "operator",
+    "private",
+    "protected",
+    "public",
+    "requires",
+    "sizeof",
+    "template",
+    "this",
+    "typedef",
+    "typename",
+    "union",
+    "using",
+    "virtual",
+    "volatile",
 ];

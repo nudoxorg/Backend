@@ -76,7 +76,11 @@ impl ChildGuard {
 impl Drop for ChildGuard {
     fn drop(&mut self) {
         if let Some(child) = self.child.as_mut() {
-            if child.try_wait().expect("poll locald during cleanup").is_none() {
+            if child
+                .try_wait()
+                .expect("poll locald during cleanup")
+                .is_none()
+            {
                 let _ = child.kill();
             }
             let _ = child.wait();
@@ -132,8 +136,7 @@ fn launch(
     authority: &Path,
     registry_endpoint: &str,
 ) -> ChildGuard {
-    let mut args =
-        surface_matrix::locald_args(endpoint, workspace, authority, Some(0), false);
+    let mut args = surface_matrix::locald_args(endpoint, workspace, authority, Some(0), false);
     args.extend([
         OsString::from("--registry-endpoint"),
         OsString::from(registry_endpoint),
@@ -182,12 +185,7 @@ fn cli_json(endpoint: &Path, workspace: &Path, project: &Path, words: &[String])
 fn wait_for_index(endpoint: &Path, workspace: &Path, project: &Path) {
     let end = Instant::now() + INDEX_DEADLINE;
     loop {
-        let health = cli_json(
-            endpoint,
-            workspace,
-            project,
-            &["health".to_owned()],
-        );
+        let health = cli_json(endpoint, workspace, project, &["health".to_owned()]);
         if health["rows"].as_u64().unwrap_or(0) > 1 {
             return;
         }
@@ -267,7 +265,10 @@ fn indexed_app_identity(
 }
 
 #[test]
-#[allow(clippy::too_many_lines, reason = "one conversation exercises projects surfaces")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one conversation exercises projects surfaces"
+)]
 fn new_user_projects_covers_advisory_semantic_selection_and_project_folders() {
     let root = unique_root("projects");
     let project = fixture_app();
@@ -326,11 +327,15 @@ fn new_user_projects_covers_advisory_semantic_selection_and_project_folders() {
     assert_eq!(advisory["answer"], "product");
     let advisory_titles = product_titles(&advisory);
     assert!(
-        advisory_titles.iter().any(|title| title == "security decision"),
+        advisory_titles
+            .iter()
+            .any(|title| title == "security decision"),
         "advisory did not return a typed security decision: {advisory}"
     );
     assert!(
-        advisory_titles.iter().any(|title| title == "no matching advisory object"),
+        advisory_titles
+            .iter()
+            .any(|title| title == "no matching advisory object"),
         "advisory must name the explicit empty reason when no CVE matches: {advisory}"
     );
 
@@ -398,19 +403,18 @@ fn new_user_projects_covers_advisory_semantic_selection_and_project_folders() {
         "select-semantic-version must not select the unindexed registry feed release 2.0.0: {selected}"
     );
     assert!(
-        selected_tags.iter().any(|tags| tags.iter().any(|tag| tag == "selected")),
+        selected_tags
+            .iter()
+            .any(|tags| tags.iter().any(|tag| tag == "selected")),
         "select-semantic-version did not mark the generation selected: {selected}"
     );
 
-    let empty_projects = cli_json(
-        &endpoint,
-        &workspace,
-        &project,
-        &["projects".to_owned()],
-    );
+    let empty_projects = cli_json(&endpoint, &workspace, &project, &["projects".to_owned()]);
     assert_eq!(empty_projects["answer"], "product");
     assert!(
-        empty_projects["records"].as_array().is_none_or(|records| records.is_empty()),
+        empty_projects["records"]
+            .as_array()
+            .is_none_or(|records| records.is_empty()),
         "projects should start empty before a folder is created: {empty_projects}"
     );
 
@@ -432,12 +436,7 @@ fn new_user_projects_covers_advisory_semantic_selection_and_project_folders() {
         ],
     );
 
-    let projects = cli_json(
-        &endpoint,
-        &workspace,
-        &project,
-        &["projects".to_owned()],
-    );
+    let projects = cli_json(&endpoint, &workspace, &project, &["projects".to_owned()]);
     assert_eq!(projects["answer"], "product");
     let project_tags = product_tags(&projects);
     assert!(
@@ -447,12 +446,10 @@ fn new_user_projects_covers_advisory_semantic_selection_and_project_folders() {
         "projects did not report the indexed app package as a member: {projects}"
     );
     assert!(
-        project_tags
-            .iter()
-            .any(|tags| {
-                tags.iter()
-                    .any(|tag| tag == &format!("member {indexed_manifest_name}"))
-            }),
+        project_tags.iter().any(|tags| {
+            tags.iter()
+                .any(|tag| tag == &format!("member {indexed_manifest_name}"))
+        }),
         "projects did not name the indexed manifest package {indexed_manifest_name} from Cargo.toml: {projects}"
     );
 

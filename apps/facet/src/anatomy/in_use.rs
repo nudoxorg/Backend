@@ -10,7 +10,9 @@ use crate::semantics::model::Use;
 use crate::semantics::types::Target;
 use crate::theme::ActiveFacet;
 use gpui::{
-    InteractiveElement,App, ElementId, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, div};
+    App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
+    Styled, Window, div,
+};
 use std::sync::Arc;
 
 /// In use. Build with [`in_use`].
@@ -25,8 +27,18 @@ pub struct InUse {
 /// The In use section for `uses` (each with its caller's display name,
 /// `Page::new`) at `measure`. Nothing when there are none.
 #[must_use]
-pub fn in_use(id: impl Into<ElementId>, uses: Vec<(Use, SharedString)>, measure: &Measure, links: &Links) -> InUse {
-    InUse { id: id.into(), uses, measure: *measure, links: links.clone() }
+pub fn in_use(
+    id: impl Into<ElementId>,
+    uses: Vec<(Use, SharedString)>,
+    measure: &Measure,
+    links: &Links,
+) -> InUse {
+    InUse {
+        id: id.into(),
+        uses,
+        measure: *measure,
+        links: links.clone(),
+    }
 }
 
 impl RenderOnce for InUse {
@@ -38,18 +50,39 @@ impl RenderOnce for InUse {
             return root;
         }
         root = root.child(section_title("In use", &m, palette));
-        let key = |part: String| ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::from(part));
+        let key = |part: String| {
+            ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::from(part))
+        };
         let pad_x = k(&m, 14.0);
         let code_measure = m.within(m.width() - pad_x * 2.0);
         for (n, (u, caller)) in self.uses.iter().enumerate() {
             let mut caption = Line::new();
-            caption.link(caller, roles::CAPTION, palette.ink1.hsla(), Target::Node(u.caller));
-            let caption = caption.element(key(format!("caller-{n}")), roles::CAPTION, &m, &self.links, palette);
+            caption.link(
+                caller,
+                roles::CAPTION,
+                palette.ink1.hsla(),
+                Target::Node(u.caller),
+            );
+            let caption = caption.element(
+                key(format!("caller-{n}")),
+                roles::CAPTION,
+                &m,
+                &self.links,
+                palette,
+            );
             let place = div()
                 .set(roles::NOTE, &m)
                 .text_color(palette.ink4.hsla())
-                .child(SharedString::from(format!("{} · {}:{}", u.package, u.file, u.excerpt.line)));
-            let mut code = div().flex().flex_col().px(pad_x).py(k(&m, 10.0)).bg(palette.well.hsla());
+                .child(SharedString::from(format!(
+                    "{} · {}:{}",
+                    u.package, u.file, u.excerpt.line
+                )));
+            let mut code = div()
+                .flex()
+                .flex_col()
+                .px(pad_x)
+                .py(k(&m, 10.0))
+                .bg(palette.well.hsla());
             for (q, text) in u.excerpt.lines.iter().enumerate() {
                 let hot = q == u.excerpt.hit;
                 let mut line = Line::new();
@@ -57,21 +90,38 @@ impl RenderOnce for InUse {
                 if hot {
                     let mark = u.excerpt.mark.clone();
                     line.push(&text[..mark.start], roles::CODE, ink.hsla());
-                    let name_role = crate::tokens::TypeRole { weight: 600.0, ..roles::CODE };
+                    let name_role = crate::tokens::TypeRole {
+                        weight: 600.0,
+                        ..roles::CODE
+                    };
                     let range = line.push(&text[mark.clone()], name_role, palette.ink0.hsla());
                     line.mark(range);
                     line.push(&text[mark.end..], roles::CODE, ink.hsla());
                 } else {
                     line.push(text, roles::CODE, ink.hsla());
                 }
-                code = code.child(line.element(key(format!("code-{n}-{q}")), roles::CODE, &code_measure, &self.links, palette));
+                code = code.child(line.element(
+                    key(format!("code-{n}-{q}")),
+                    roles::CODE,
+                    &code_measure,
+                    &self.links,
+                    palette,
+                ));
             }
             root = root.child(
                 div()
                     .flex()
                     .flex_col()
                     .gap(k(&m, 6.0))
-                    .child(div().flex().flex_wrap().items_baseline().gap(k(&m, 10.0)).child(caption).child(place))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .items_baseline()
+                            .gap(k(&m, 10.0))
+                            .child(caption)
+                            .child(place),
+                    )
                     .child(code),
             );
         }

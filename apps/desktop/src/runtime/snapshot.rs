@@ -71,7 +71,9 @@ impl Digest {
 
 impl fmt::Display for Digest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.iter().try_for_each(|byte| write!(formatter, "{byte:02x}"))
+        self.0
+            .iter()
+            .try_for_each(|byte| write!(formatter, "{byte:02x}"))
     }
 }
 
@@ -209,7 +211,10 @@ enum Refusal {
     TableEnd,
     TableHash,
     Table(String),
-    Section { key: SectionKey, fault: SectionFault },
+    Section {
+        key: SectionKey,
+        fault: SectionFault,
+    },
 }
 
 /// What is wrong with one section.
@@ -276,7 +281,12 @@ impl SnapshotFile {
                 super::trace::span(
                     "boot.snapshot",
                     reading,
-                    format_args!("{} of {} wanted, {} bytes", seed.pages.len(), wanted.len(), bytes.len()),
+                    format_args!(
+                        "{} of {} wanted, {} bytes",
+                        seed.pages.len(),
+                        wanted.len(),
+                        bytes.len()
+                    ),
                 );
                 Some(seed)
             }
@@ -413,25 +423,35 @@ fn decode(bytes: &[u8], wanted: &[PageKey]) -> Result<Seed, Refusal> {
     if header[..8] != MAGIC {
         return Err(Refusal::NotASnapshot);
     }
-    let word = |at: usize| u32::from_le_bytes([header[at], header[at + 1], header[at + 2], header[at + 3]]);
+    let word = |at: usize| {
+        u32::from_le_bytes([header[at], header[at + 1], header[at + 2], header[at + 3]])
+    };
     let schema = word(8);
     if schema != SCHEMA {
         return Err(Refusal::Schema(schema));
     }
     let table_len = usize::try_from(word(12)).map_err(|_| Refusal::TableLength)?;
-    let table = bytes.get(HEADER..HEADER + table_len).ok_or(Refusal::TableEnd)?;
+    let table = bytes
+        .get(HEADER..HEADER + table_len)
+        .ok_or(Refusal::TableEnd)?;
     if Digest::of(table).0[..] != header[16..48] {
         return Err(Refusal::TableHash);
     }
-    let table: Table = serde_json::from_slice(table).map_err(|error| Refusal::Table(error.to_string()))?;
+    let table: Table =
+        serde_json::from_slice(table).map_err(|error| Refusal::Table(error.to_string()))?;
     let payload = &bytes[HEADER + table_len..];
     let mut pages = Vec::new();
     for key in wanted {
-        let Some(wanted) = SectionKey::of(key) else { continue };
+        let Some(wanted) = SectionKey::of(key) else {
+            continue;
+        };
         let Some(section) = table.sections.iter().find(|section| section.key == wanted) else {
             continue;
         };
-        let fault = |fault| Refusal::Section { key: wanted.clone(), fault };
+        let fault = |fault| Refusal::Section {
+            key: wanted.clone(),
+            fault,
+        };
         let body = section
             .offset
             .checked_add(section.len)
@@ -440,7 +460,8 @@ fn decode(bytes: &[u8], wanted: &[PageKey]) -> Result<Seed, Refusal> {
         if Digest::of(body) != section.hash {
             return Err(fault(SectionFault::Hash));
         }
-        let entry = entry(wanted.clone(), body).map_err(|error| fault(SectionFault::Decode(error.to_string())))?;
+        let entry = entry(wanted.clone(), body)
+            .map_err(|error| fault(SectionFault::Decode(error.to_string())))?;
         pages.push(entry);
     }
     Ok(Seed {

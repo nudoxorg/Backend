@@ -25,7 +25,11 @@ pub struct Param {
 pub fn is_receiver(param: &str) -> bool {
     let p = param.trim();
     let p = p.strip_prefix('&').unwrap_or(p).trim_start();
-    let p = if p.starts_with('\'') { p.split_once(' ').map_or("", |(_, rest)| rest).trim_start() } else { p };
+    let p = if p.starts_with('\'') {
+        p.split_once(' ').map_or("", |(_, rest)| rest).trim_start()
+    } else {
+        p
+    };
     let p = p.strip_prefix("mut ").unwrap_or(p).trim_start();
     p == "self" || p.starts_with("self:") || p.starts_with("self :")
 }
@@ -38,10 +42,17 @@ pub fn params<S: AsRef<str>>(raw: &[S]) -> Vec<Param> {
         .filter(|p| !is_receiver(p))
         .map(|p| match name_colon(p) {
             Some(colon) => Param {
-                name: p[..colon].trim().trim_start_matches("mut ").trim().to_owned(),
+                name: p[..colon]
+                    .trim()
+                    .trim_start_matches("mut ")
+                    .trim()
+                    .to_owned(),
                 ty: p[colon + 1..].trim().to_owned(),
             },
-            None => Param { name: String::new(), ty: p.trim().to_owned() },
+            None => Param {
+                name: String::new(),
+                ty: p.trim().to_owned(),
+            },
         })
         .collect()
 }
@@ -136,7 +147,9 @@ pub fn fold(items: &[Look<'_>]) -> Vec<Vec<usize>> {
             continue;
         }
         let group: Vec<usize> = match key(&items[k]) {
-            Some(own) => (k..items.len()).filter(|&q| !done[q] && key(&items[q]) == Some(own)).collect(),
+            Some(own) => (k..items.len())
+                .filter(|&q| !done[q] && key(&items[q]) == Some(own))
+                .collect(),
             None => vec![k],
         };
         if group.len() >= FOLD_AT {

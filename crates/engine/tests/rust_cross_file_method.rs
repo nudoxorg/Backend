@@ -11,10 +11,11 @@ use backend_engine::driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile,
 };
-use backend_frontend_rust::legacy::{RustFeatureControl, RustProject, RustToolchain, SourceByteLimit};
+use backend_frontend_rust::legacy::{
+    RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
+};
 use backend_semantic::ir::{
-    DecodedOccurrence, FragmentView, OccurrenceConfidence, OccurrenceTarget,
-    ReferenceKind,
+    DecodedOccurrence, FragmentView, OccurrenceConfidence, OccurrenceTarget, ReferenceKind,
 };
 use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 
@@ -87,8 +88,9 @@ fn compile_source(root: &PathBuf, relative: &str, source: &str) -> Result<Vec<u8
     let tool = rustc()?;
     let toolchain =
         RustToolchain::discover(&tool).map_err(|error| format!("toolchain: {error:?}"))?;
-    let project = RustProject::open_with_source(root, &source_path, &toolchain, RustEdition::Rust2024)
-        .map_err(|error| format!("project: {error:?}"))?;
+    let project =
+        RustProject::open_with_source(root, &source_path, &toolchain, RustEdition::Rust2024)
+            .map_err(|error| format!("project: {error:?}"))?;
     let resolved = ResolvedToolchain::from_version(
         backend_engine::driver::NativeTool::Rustc,
         &tool,
@@ -285,9 +287,7 @@ fn unresolved_method_call_stays_universe_foreign() -> Result<(), String> {
     let bytes = compile_source(&root, "src/lib.rs", GHOST)?;
     let _ = fs::remove_dir_all(&root);
     let lane = lane(&bytes)?;
-    let method = method_calls(&lane)
-        .next()
-        .ok_or("method call absent")?;
+    let method = method_calls(&lane).next().ok_or("method call absent")?;
     if method.confidence != OccurrenceConfidence::Syntactic {
         return Err("unresolved method call must stay syntactic".to_owned());
     }

@@ -14,7 +14,12 @@ use crate::semantics::types::Piece;
 /// Getting one's rails for `source`.
 pub(super) fn rails(source: &Source) -> Vec<Rail> {
     let mut out = if source.rails.is_empty() {
-        source.does.iter().filter(|member| member.effect == Effect::Makes).filter_map(|member| maker(source, member)).collect()
+        source
+            .does
+            .iter()
+            .filter(|member| member.effect == Effect::Makes)
+            .filter_map(|member| maker(source, member))
+            .collect()
     } else {
         source
             .rails
@@ -65,11 +70,25 @@ fn rank(from: &Ty) -> u8 {
 fn maker(source: &Source, member: &super::SourceMember) -> Option<Rail> {
     let signature = member.signature.as_deref()?;
     let pipe = callable(signature, &member.name, language(source.lang))?;
-    let input = pipe.inputs.iter().find(|input| input.receiver.is_none() && input.ty.is_some());
+    let input = pipe
+        .inputs
+        .iter()
+        .find(|input| input.receiver.is_none() && input.ty.is_some());
     let from = match input.and_then(|input| input.ty.as_ref()) {
         Some(ty) => {
-            let generic = match ty.pieces.iter().find(|piece| !matches!(piece, Piece::Space)) {
-                Some(Piece::Var(name)) if ty.pieces.iter().filter(|piece| !matches!(piece, Piece::Space)).count() == 1 => {
+            let generic = match ty
+                .pieces
+                .iter()
+                .find(|piece| !matches!(piece, Piece::Space))
+            {
+                Some(Piece::Var(name))
+                    if ty
+                        .pieces
+                        .iter()
+                        .filter(|piece| !matches!(piece, Piece::Space))
+                        .count()
+                        == 1 =>
+                {
                     pipe.wheres.iter().find(|clause| clause.name == *name)
                 }
                 _ => None,
@@ -79,26 +98,61 @@ fn maker(source: &Source, member: &super::SourceMember) -> Option<Rail> {
                 Some(clause) => {
                     // The sentence reads "is any Serialize": the rail says
                     // what you start from, "any Serialize".
-                    let mut pieces = clause.sentence.iter().skip_while(|piece| matches!(piece, Piece::Space)).cloned().collect::<Vec<_>>();
+                    let mut pieces = clause
+                        .sentence
+                        .iter()
+                        .skip_while(|piece| matches!(piece, Piece::Space))
+                        .cloned()
+                        .collect::<Vec<_>>();
                     if let Some(Piece::Word(word)) = pieces.first().cloned() {
                         match word.as_ref().strip_prefix("is") {
-                            Some("") => { pieces.remove(0); }
-                            Some(rest) if rest.starts_with(' ') => pieces[0] = Piece::Word(rest.trim_start().to_owned().into()),
+                            Some("") => {
+                                pieces.remove(0);
+                            }
+                            Some(rest) if rest.starts_with(' ') => {
+                                pieces[0] = Piece::Word(rest.trim_start().to_owned().into())
+                            }
                             _ => {}
                         }
                     }
-                    let pieces = pieces.into_iter().skip_while(|piece| matches!(piece, Piece::Space)).collect::<Vec<_>>();
+                    let pieces = pieces
+                        .into_iter()
+                        .skip_while(|piece| matches!(piece, Piece::Space))
+                        .collect::<Vec<_>>();
                     spelled(&pieces, &ty.source)
                 }
                 None => spelled(&ty.pieces, &ty.source),
             }
         }
-        None => Ty { toks: vec![Tok { kind: TokKind::Word, text: "nothing".to_owned(), fam: super::Fam::Type }], exact: String::new() },
+        None => Ty {
+            toks: vec![Tok {
+                kind: TokKind::Word,
+                text: "nothing".to_owned(),
+                fam: super::Fam::Type,
+            }],
+            exact: String::new(),
+        },
     };
     let maybe = pipe.output.as_ref().is_some_and(|output| {
-        output.pieces.iter().find(|piece| !matches!(piece, Piece::Space)).is_some_and(|piece| matches!(piece, Piece::Word(word) if word.as_ref() == "maybe"))
+        output
+            .pieces
+            .iter()
+            .find(|piece| !matches!(piece, Piece::Space))
+            .is_some_and(|piece| matches!(piece, Piece::Word(word) if word.as_ref() == "maybe"))
     });
     // Rust's `FromStr::from_str` is called as `s.parse()`.
-    let verb = if source.lang == Lang::Rust && member.name == "from_str" { "parse".to_owned() } else { member.name.clone() };
-    Some(Rail { from, verb, fails: pipe.fails.is_some(), maybe, lands: None, code: None, link: member.link.clone() })
+    let verb = if source.lang == Lang::Rust && member.name == "from_str" {
+        "parse".to_owned()
+    } else {
+        member.name.clone()
+    };
+    Some(Rail {
+        from,
+        verb,
+        fails: pipe.fails.is_some(),
+        maybe,
+        lands: None,
+        code: None,
+        link: member.link.clone(),
+    })
 }

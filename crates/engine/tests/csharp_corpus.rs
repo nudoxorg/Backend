@@ -20,21 +20,21 @@ use backend_engine::driver::{
     CompiledFragment, ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile,
     compile_ir,
 };
-use backend_semantic::ir::{
-    DocFragmentInput, EntityKind, FragmentView, ImageProvenance, OccurrenceTarget, ReferenceKind,
+use backend_engine::index_build::{IndexBuildScratch, build};
+use backend_engine::index_publish::{
+    CompilationIndexScratch, encode_index_pack, plan_index_pack, seal_compilation_index,
 };
 use backend_engine::publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
 };
 use backend_engine::publication::{PublishedCompilation, immutable::ImmutableArtifactStore};
-use backend_semantic::vocabulary::{CSharpVersion, LanguageProfile, NativeTool, Stage};
-use csharp_support::Error as SupportError;
-use backend_version::{ContentId, SourceFactDomain};
-use backend_engine::index_build::{IndexBuildScratch, build};
-use backend_engine::index_publish::{
-    CompilationIndexScratch, encode_index_pack, plan_index_pack, seal_compilation_index,
+use backend_semantic::ir::{
+    DocFragmentInput, EntityKind, FragmentView, ImageProvenance, OccurrenceTarget, ReferenceKind,
 };
+use backend_semantic::vocabulary::{CSharpVersion, LanguageProfile, NativeTool, Stage};
 use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
+use backend_version::{ContentId, SourceFactDomain};
+use csharp_support::Error as SupportError;
 use sha2::{Digest, Sha256};
 use std::{
     fs,
@@ -629,11 +629,12 @@ fn verify_digest(archive: &[u8], declared: &[u8; 64]) -> Result<(), TestError> {
 /// truths from `languages/csharp/tests/fixtures/producer/fidelity.cs`.
 #[test]
 fn committed_fidelity_fixture_collects_without_faults() -> Result<(), TestError> {
-    let image = backend_frontend_csharp::legacy::CSharpImage::open(FIDELITY_IMAGE).map_err(|cause| {
-        TestError::JourneyCompile {
-            cause: format!("authority image admission failed: {cause:?}"),
-        }
-    })?;
+    let image =
+        backend_frontend_csharp::legacy::CSharpImage::open(FIDELITY_IMAGE).map_err(|cause| {
+            TestError::JourneyCompile {
+                cause: format!("authority image admission failed: {cause:?}"),
+            }
+        })?;
     let declarations = image
         .declarations()
         .collect::<Result<Vec<_>, _>>()
@@ -930,11 +931,12 @@ fn corpus_row_lifecycle(row: &CorpusRow) -> Result<(), TestError> {
 
     // The produced image must bind exactly the fetched primary bytes and
     // resolve exactly the pinned reference count.
-    let opened_image = backend_frontend_csharp::legacy::CSharpImage::open(&image).map_err(|cause| {
-        TestError::JourneyCompile {
-            cause: format!("{cause:?}"),
-        }
-    })?;
+    let opened_image =
+        backend_frontend_csharp::legacy::CSharpImage::open(&image).map_err(|cause| {
+            TestError::JourneyCompile {
+                cause: format!("{cause:?}"),
+            }
+        })?;
     if opened_image.source_digest() != <[u8; 32]>::from(Sha256::digest(&source)) {
         return Err(TestError::Digest);
     }

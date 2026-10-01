@@ -20,9 +20,19 @@ pub fn visible_bounds(text: &TextSample, width: f32, height: f32) -> Option<Boun
     let clip = text.paint_clip.as_ref();
     let x = bounds.x.max(clip.map_or(0.0, |b| b.x)).max(0.0);
     let y = bounds.y.max(clip.map_or(0.0, |b| b.y)).max(0.0);
-    let right = (bounds.x + bounds.width).min(clip.map_or(width, |b| b.x + b.width)).min(width);
-    let bottom = (bounds.y + bounds.height).min(clip.map_or(height, |b| b.y + b.height)).min(height);
-    (right > x && bottom > y).then(|| BoundsSample { key: bounds.key.clone(), x, y, width: right - x, height: bottom - y })
+    let right = (bounds.x + bounds.width)
+        .min(clip.map_or(width, |b| b.x + b.width))
+        .min(width);
+    let bottom = (bounds.y + bounds.height)
+        .min(clip.map_or(height, |b| b.y + b.height))
+        .min(height);
+    (right > x && bottom > y).then(|| BoundsSample {
+        key: bounds.key.clone(),
+        x,
+        y,
+        width: right - x,
+        height: bottom - y,
+    })
 }
 
 /// Whether every point of a text's intrinsic box is inside its paint clip
@@ -31,7 +41,11 @@ pub fn visible_bounds(text: &TextSample, width: f32, height: f32) -> Option<Boun
 #[must_use]
 pub fn fully_visible(text: &TextSample, width: f32, height: f32) -> bool {
     let bounds = &text.bounds;
-    if bounds.x < 0.0 || bounds.y < 0.0 || bounds.x + bounds.width > width || bounds.y + bounds.height > height {
+    if bounds.x < 0.0
+        || bounds.y < 0.0
+        || bounds.x + bounds.width > width
+        || bounds.y + bounds.height > height
+    {
         return false;
     }
     text.paint_clip.as_ref().is_none_or(|clip| {
@@ -99,7 +113,13 @@ mod tests {
     use crate::probe::TextOverflow;
 
     fn bounds(x: f32, y: f32, width: f32, height: f32) -> BoundsSample {
-        BoundsSample { key: "box".to_owned(), x, y, width, height }
+        BoundsSample {
+            key: "box".to_owned(),
+            x,
+            y,
+            width,
+            height,
+        }
     }
 
     fn text(content: &str, x: f32, y: f32, width: f32, height: f32) -> TextSample {
@@ -122,9 +142,16 @@ mod tests {
     fn a_text_cut_by_the_window_shows_only_the_part_inside_it() {
         let cut = text("wide words", 300.0, 10.0, 100.0, 20.0);
         let seen = visible_bounds(&cut, 360.0, 640.0).expect("the left 60 px are on screen");
-        assert_eq!((seen.x, seen.y, seen.width, seen.height), (300.0, 10.0, 60.0, 20.0));
+        assert_eq!(
+            (seen.x, seen.y, seen.width, seen.height),
+            (300.0, 10.0, 60.0, 20.0)
+        );
         assert!(!fully_visible(&cut, 360.0, 640.0));
-        assert!(fully_visible(&text("inside", 10.0, 10.0, 100.0, 20.0), 360.0, 640.0));
+        assert!(fully_visible(
+            &text("inside", 10.0, 10.0, 100.0, 20.0),
+            360.0,
+            640.0
+        ));
     }
 
     #[test]
@@ -134,7 +161,10 @@ mod tests {
         let seen = visible_bounds(&clipped, 360.0, 640.0).expect("50 px inside the clip");
         assert_eq!(seen.width, 50.0);
         clipped.paint_clip = Some(bounds(300.0, 0.0, 50.0, 20.0));
-        assert!(visible_bounds(&clipped, 360.0, 640.0).is_none(), "the clip and the box do not meet");
+        assert!(
+            visible_bounds(&clipped, 360.0, 640.0).is_none(),
+            "the clip and the box do not meet"
+        );
     }
 
     #[test]
@@ -144,13 +174,28 @@ mod tests {
         let strip = text("as_integer", 400.0, 10.0, 90.0, 20.0);
         assert!(visible_bounds(&strip, 360.0, 640.0).is_none());
         assert_eq!(stranded(&strip, &scrolls, 360.0), Some(Side::Right));
-        assert_eq!(stranded(&text("left", -120.0, 10.0, 90.0, 20.0), &scrolls, 360.0), Some(Side::Left));
+        assert_eq!(
+            stranded(&text("left", -120.0, 10.0, 90.0, 20.0), &scrolls, 360.0),
+            Some(Side::Left)
+        );
         // Cut by the edge (part of it shows) is `clip`/`edge`, not stranded.
-        assert_eq!(stranded(&text("cut", 300.0, 10.0, 90.0, 20.0), &scrolls, 360.0), None);
+        assert_eq!(
+            stranded(&text("cut", 300.0, 10.0, 90.0, 20.0), &scrolls, 360.0),
+            None
+        );
         // Below the fold is a page that scrolls; blank text and zero-width boxes are not text.
-        assert_eq!(stranded(&text("below", 10.0, 2000.0, 90.0, 20.0), &scrolls, 360.0), None);
-        assert_eq!(stranded(&text("   ", 400.0, 10.0, 90.0, 20.0), &scrolls, 360.0), None);
-        assert_eq!(stranded(&text("empty", 400.0, 10.0, 0.0, 20.0), &scrolls, 360.0), None);
+        assert_eq!(
+            stranded(&text("below", 10.0, 2000.0, 90.0, 20.0), &scrolls, 360.0),
+            None
+        );
+        assert_eq!(
+            stranded(&text("   ", 400.0, 10.0, 90.0, 20.0), &scrolls, 360.0),
+            None
+        );
+        assert_eq!(
+            stranded(&text("empty", 400.0, 10.0, 0.0, 20.0), &scrolls, 360.0),
+            None
+        );
     }
 
     #[test]
@@ -166,8 +211,17 @@ mod tests {
 
     #[test]
     fn two_boxes_meet_by_the_size_of_their_intersection() {
-        assert_eq!(overlap(&bounds(0.0, 0.0, 100.0, 20.0), &bounds(60.0, 5.0, 100.0, 20.0)), (40.0, 15.0));
-        let (w, _) = overlap(&bounds(0.0, 0.0, 10.0, 20.0), &bounds(60.0, 0.0, 10.0, 20.0));
+        assert_eq!(
+            overlap(
+                &bounds(0.0, 0.0, 100.0, 20.0),
+                &bounds(60.0, 5.0, 100.0, 20.0)
+            ),
+            (40.0, 15.0)
+        );
+        let (w, _) = overlap(
+            &bounds(0.0, 0.0, 10.0, 20.0),
+            &bounds(60.0, 0.0, 10.0, 20.0),
+        );
         assert!(w < 0.0, "apart on x");
     }
 }

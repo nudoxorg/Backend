@@ -221,7 +221,9 @@ fn as_const_authority_reports_sealed_members_readonly() -> Result<(), CheckerErr
         panic!("sealed object type missing");
     };
     assert!(
-        members.iter().any(|member| member.name == "a" && member.readonly),
+        members
+            .iter()
+            .any(|member| member.name == "a" && member.readonly),
         "the live authority must seal `as const` members readonly: {members:?}"
     );
     Ok(())
@@ -231,8 +233,7 @@ fn as_const_authority_reports_sealed_members_readonly() -> Result<(), CheckerErr
 fn structured_parameter_golden_preserves_names_and_flags() -> Result<(), CheckerError> {
     let report = adapter().decode(SIGNATURE_PARAMETERS.as_bytes())?;
     assert_eq!(report.source_digest, hex_of(SIGNATURE_PARAMETERS_SOURCE));
-    let Some(TypeTree::Function { parameters, .. }) = report.declarations[0].r#type.as_ref()
-    else {
+    let Some(TypeTree::Function { parameters, .. }) = report.declarations[0].r#type.as_ref() else {
         return Err(CheckerError::Decode {
             message: "signature missing".to_owned(),
             transcript: String::new(),
@@ -354,7 +355,10 @@ fn type_alias_golden_decodes_declared_cells() -> Result<(), CheckerError> {
         panic!("object alias must carry its literal members");
     };
     assert_eq!(
-        members.iter().map(|member| member.name.as_str()).collect::<Vec<_>>(),
+        members
+            .iter()
+            .map(|member| member.name.as_str())
+            .collect::<Vec<_>>(),
         vec!["first", "second"]
     );
     Ok(())

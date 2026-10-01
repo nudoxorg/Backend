@@ -170,13 +170,12 @@ pub fn generate(seed: u64, vocabulary: &Vocabulary, acts: usize, span_ms: u64) -
     let weights = vocabulary.weights();
     let total: u32 = weights.iter().sum();
     let point = |rng: &mut Rng, size: (u32, u32)| -> (f32, f32) {
-        let aim = rng.chance(0.65).then(|| rng.pick(&vocabulary.targets).copied()).flatten();
-        let (x, y) = aim.unwrap_or_else(|| {
-            (
-                rng.range(0.0, size.0 as f32),
-                rng.range(0.0, size.1 as f32),
-            )
-        });
+        let aim = rng
+            .chance(0.65)
+            .then(|| rng.pick(&vocabulary.targets).copied())
+            .flatten();
+        let (x, y) =
+            aim.unwrap_or_else(|| (rng.range(0.0, size.0 as f32), rng.range(0.0, size.1 as f32)));
         // Jitter inside the target, clamp inside the window.
         let x = (x + rng.range(-6.0, 6.0)).clamp(0.0, size.0 as f32 - 1.0);
         let y = (y + rng.range(-4.0, 4.0)).clamp(0.0, size.1 as f32 - 1.0);
@@ -509,7 +508,10 @@ mod tests {
         for _ in 0..10_000 {
             buckets[usize::try_from(rng.below(10)).unwrap_or(0)] += 1;
         }
-        assert!(buckets.iter().all(|count| (800..1200).contains(count)), "{buckets:?}");
+        assert!(
+            buckets.iter().all(|count| (800..1200).contains(count)),
+            "{buckets:?}"
+        );
     }
 
     #[test]
@@ -542,10 +544,12 @@ mod tests {
             },
         );
         let culprit = |script: &Script| {
-            script
-                .events
-                .iter()
-                .any(|event| event.act == Act::Key { chord: "x".to_owned() })
+            script.events.iter().any(|event| {
+                event.act
+                    == Act::Key {
+                        chord: "x".to_owned(),
+                    }
+            })
         };
         let (small, runs) = shrink(&storm, 200, &mut |script| culprit(script));
         assert_eq!(small.events.len(), 1, "{small}");

@@ -154,9 +154,7 @@ fn owner_name(lane: &Lane<'_>, owner: backend_semantic::ir::EntityId) -> Result<
         .ok_or_else(|| format!("entity {} name atom absent", owner.raw))
 }
 
-fn package_field_reads<'a>(
-    lane: &'a Lane<'a>,
-) -> Vec<&'a backend_semantic::ir::Occurrence<'a>> {
+fn package_field_reads<'a>(lane: &'a Lane<'a>) -> Vec<&'a backend_semantic::ir::Occurrence<'a>> {
     lane.occurrences
         .iter()
         .map(|row| &row.occurrence)
@@ -311,18 +309,15 @@ fn variable_read_does_not_retarget_to_package_field() -> Result<(), String> {
     let bytes = compile_source(&root, "lib.go", VARIABLE_LIB)?;
     let _ = fs::remove_dir_all(&root);
     let lane = lane(&bytes)?;
-    if package_field_reads(&lane)
-        .into_iter()
-        .any(|occurrence| {
-            let OccurrenceTarget::Foreign(key) = occurrence.target else {
-                return false;
-            };
-            let backend_semantic::ir::ForeignOrigin::Package(lineage) = key.origin else {
-                return false;
-            };
-            lineage.name == MODULE_PATH && key.kind == Some(EntityKind::Field)
-        })
-    {
+    if package_field_reads(&lane).into_iter().any(|occurrence| {
+        let OccurrenceTarget::Foreign(key) = occurrence.target else {
+            return false;
+        };
+        let backend_semantic::ir::ForeignOrigin::Package(lineage) = key.origin else {
+            return false;
+        };
+        lineage.name == MODULE_PATH && key.kind == Some(EntityKind::Field)
+    }) {
         return Err("variable read must not retarget to a package field key".to_owned());
     }
     Ok(())

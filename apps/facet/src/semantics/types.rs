@@ -118,22 +118,38 @@ impl TypeExpr {
     pub fn substitute(&self, from: &str, to: &TypeExpr) -> Self {
         let sub = |t: &TypeExpr| Box::new(t.substitute(from, to));
         match self {
-            Self::Named { path, args } if path.len() == 1 && path[0] == from && args.is_empty() => to.clone(),
+            Self::Named { path, args } if path.len() == 1 && path[0] == from && args.is_empty() => {
+                to.clone()
+            }
             Self::Named { path, args } => Self::Named {
                 path: path.clone(),
                 args: args.iter().map(|a| a.substitute(from, to)).collect(),
             },
-            Self::Binding { name, ty } => Self::Binding { name: name.clone(), ty: sub(ty) },
+            Self::Binding { name, ty } => Self::Binding {
+                name: name.clone(),
+                ty: sub(ty),
+            },
             Self::Assoc { base, via, name } => Self::Assoc {
                 base: sub(base),
                 via: via.as_ref().map(|v| sub(v)),
                 name: name.clone(),
             },
-            Self::Ref { mutable, inner } => Self::Ref { mutable: *mutable, inner: sub(inner) },
-            Self::Ptr { mutable, inner } => Self::Ptr { mutable: *mutable, inner: sub(inner) },
+            Self::Ref { mutable, inner } => Self::Ref {
+                mutable: *mutable,
+                inner: sub(inner),
+            },
+            Self::Ptr { mutable, inner } => Self::Ptr {
+                mutable: *mutable,
+                inner: sub(inner),
+            },
             Self::Slice(inner) => Self::Slice(sub(inner)),
-            Self::Array { inner, len } => Self::Array { inner: sub(inner), len: len.clone() },
-            Self::Tuple(items) => Self::Tuple(items.iter().map(|t| t.substitute(from, to)).collect()),
+            Self::Array { inner, len } => Self::Array {
+                inner: sub(inner),
+                len: len.clone(),
+            },
+            Self::Tuple(items) => {
+                Self::Tuple(items.iter().map(|t| t.substitute(from, to)).collect())
+            }
             Self::Func { params, ret } => Self::Func {
                 params: params.iter().map(|t| t.substitute(from, to)).collect(),
                 ret: ret.as_ref().map(|r| sub(r)),
@@ -167,10 +183,22 @@ impl fmt::Display for TypeExpr {
                 Ok(())
             }
             Self::Binding { name, ty } => write!(f, "{name} = {ty}"),
-            Self::Assoc { base, via: Some(via), name } => write!(f, "<{base} as {via}>::{name}"),
-            Self::Assoc { base, via: None, name } => write!(f, "{base}::{name}"),
-            Self::Ref { mutable, inner } => write!(f, "&{}{inner}", if *mutable { "mut " } else { "" }),
-            Self::Ptr { mutable, inner } => write!(f, "*{} {inner}", if *mutable { "mut" } else { "const" }),
+            Self::Assoc {
+                base,
+                via: Some(via),
+                name,
+            } => write!(f, "<{base} as {via}>::{name}"),
+            Self::Assoc {
+                base,
+                via: None,
+                name,
+            } => write!(f, "{base}::{name}"),
+            Self::Ref { mutable, inner } => {
+                write!(f, "&{}{inner}", if *mutable { "mut " } else { "" })
+            }
+            Self::Ptr { mutable, inner } => {
+                write!(f, "*{} {inner}", if *mutable { "mut" } else { "const" })
+            }
             Self::Slice(inner) => write!(f, "[{inner}]"),
             Self::Array { inner, len } => write!(f, "[{inner}; {len}]"),
             Self::Tuple(items) => {
@@ -338,19 +366,28 @@ impl Parser {
                     self.at += 1;
                 }
                 let mutable = self.eat_word("mut");
-                TypeExpr::Ref { mutable, inner: Box::new(self.ty()) }
+                TypeExpr::Ref {
+                    mutable,
+                    inner: Box::new(self.ty()),
+                }
             }
             Tok::Punct('*') => {
                 let mutable = self.eat_word("mut");
                 if !mutable {
                     self.eat_word("const");
                 }
-                TypeExpr::Ptr { mutable, inner: Box::new(self.ty()) }
+                TypeExpr::Ptr {
+                    mutable,
+                    inner: Box::new(self.ty()),
+                }
             }
             Tok::Punct('(') => {
                 let (items, trailing) = self.list(')');
                 if items.len() == 1 && !trailing {
-                    items.into_iter().next().unwrap_or(TypeExpr::Tuple(Vec::new()))
+                    items
+                        .into_iter()
+                        .next()
+                        .unwrap_or(TypeExpr::Tuple(Vec::new()))
                 } else {
                     TypeExpr::Tuple(items)
                 }
@@ -373,7 +410,10 @@ impl Parser {
                         }
                     }
                     self.eat(']');
-                    TypeExpr::Array { inner: Box::new(inner), len }
+                    TypeExpr::Array {
+                        inner: Box::new(inner),
+                        len,
+                    }
                 } else {
                     self.eat(']');
                     TypeExpr::Slice(Box::new(inner))
@@ -383,20 +423,33 @@ impl Parser {
             Tok::Punct('<') => {
                 // A qualified path: `<T as Trait>::Name`.
                 let base = self.ty();
-                let via = if self.eat_word("as") { Some(Box::new(self.ty())) } else { None };
+                let via = if self.eat_word("as") {
+                    Some(Box::new(self.ty()))
+                } else {
+                    None
+                };
                 self.eat('>');
                 let mut expr = base;
                 let mut via = via;
                 while self.peek() == Some(&Tok::Path) {
                     self.at += 1;
-                    let Some(Tok::Ident(name)) = self.peek().cloned() else { break };
+                    let Some(Tok::Ident(name)) = self.peek().cloned() else {
+                        break;
+                    };
                     self.at += 1;
-                    expr = TypeExpr::Assoc { base: Box::new(expr), via: via.take(), name };
+                    expr = TypeExpr::Assoc {
+                        base: Box::new(expr),
+                        via: via.take(),
+                        name,
+                    };
                 }
                 expr
             }
             Tok::Lifetime => self.ty(),
-            Tok::Number(n) => TypeExpr::Named { path: vec![n], args: Vec::new() },
+            Tok::Number(n) => TypeExpr::Named {
+                path: vec![n],
+                args: Vec::new(),
+            },
             Tok::Ident(word) => match word.as_str() {
                 "dyn" | "impl" => TypeExpr::Any(self.bounds()),
                 "mut" | "const" | "unsafe" | "extern" => self.ty(),
@@ -488,10 +541,17 @@ impl Parser {
                 continue;
             }
             // `Name = T` or `Name: Bound`
-            if let (Some(Tok::Ident(name)), Some(Tok::Punct('='))) = (self.peek().cloned(), self.peek_at(1)) {
+            if let (Some(Tok::Ident(name)), Some(Tok::Punct('='))) =
+                (self.peek().cloned(), self.peek_at(1))
+            {
                 self.at += 2;
-                out.push(TypeExpr::Binding { name, ty: Box::new(self.ty()) });
-            } else if let (Some(Tok::Ident(_)), Some(Tok::Punct(':'))) = (self.peek(), self.peek_at(1)) {
+                out.push(TypeExpr::Binding {
+                    name,
+                    ty: Box::new(self.ty()),
+                });
+            } else if let (Some(Tok::Ident(_)), Some(Tok::Punct(':'))) =
+                (self.peek(), self.peek_at(1))
+            {
                 self.at += 2;
                 let _ = self.bounds();
             } else {
@@ -529,7 +589,10 @@ impl Parser {
                             path.push(next);
                         } else {
                             // `Foo<T>::Bar`: a projection out of an applied type.
-                            let base = TypeExpr::Named { path: std::mem::take(&mut path), args: std::mem::take(&mut args) };
+                            let base = TypeExpr::Named {
+                                path: std::mem::take(&mut path),
+                                args: std::mem::take(&mut args),
+                            };
                             return self.project(base, next);
                         }
                         continue;
@@ -546,17 +609,31 @@ impl Parser {
         }
         if path.len() > 1 && path[0] == "Self" {
             let name = path[1..].join("::");
-            return TypeExpr::Assoc { base: Box::new(TypeExpr::name("Self")), via: None, name };
+            return TypeExpr::Assoc {
+                base: Box::new(TypeExpr::name("Self")),
+                via: None,
+                name,
+            };
         }
         TypeExpr::Named { path, args }
     }
 
     fn project(&mut self, base: TypeExpr, name: String) -> TypeExpr {
-        let mut expr = TypeExpr::Assoc { base: Box::new(base), via: None, name };
+        let mut expr = TypeExpr::Assoc {
+            base: Box::new(base),
+            via: None,
+            name,
+        };
         while self.peek() == Some(&Tok::Path) {
-            let Some(Tok::Ident(next)) = self.peek_at(1).cloned() else { break };
+            let Some(Tok::Ident(next)) = self.peek_at(1).cloned() else {
+                break;
+            };
             self.at += 2;
-            expr = TypeExpr::Assoc { base: Box::new(expr), via: None, name: next };
+            expr = TypeExpr::Assoc {
+                base: Box::new(expr),
+                via: None,
+                name: next,
+            };
         }
         expr
     }
@@ -566,13 +643,20 @@ impl Parser {
 /// empty text is the empty tuple.
 #[must_use]
 pub fn parse(text: &str) -> TypeExpr {
-    Parser { toks: lex(text), at: 0 }.ty()
+    Parser {
+        toks: lex(text),
+        at: 0,
+    }
+    .ty()
 }
 
 /// Parses a comma-separated list of types (a tuple variant's payload).
 #[must_use]
 pub fn parse_list(text: &str) -> Vec<TypeExpr> {
-    let mut parser = Parser { toks: lex(text), at: 0 };
+    let mut parser = Parser {
+        toks: lex(text),
+        at: 0,
+    };
     let mut out = Vec::new();
     while !parser.done() {
         out.push(parser.ty());
@@ -620,7 +704,13 @@ pub fn parse_fields(text: &str) -> Vec<(Option<String>, TypeExpr)> {
         .into_iter()
         .map(|part| match name_colon(&part) {
             Some(colon) => (
-                Some(part[..colon].trim().trim_start_matches("pub ").trim().to_owned()),
+                Some(
+                    part[..colon]
+                        .trim()
+                        .trim_start_matches("pub ")
+                        .trim()
+                        .to_owned(),
+                ),
                 parse(&part[colon + 1..]),
             ),
             None => (None, parse(&part)),
@@ -715,7 +805,10 @@ impl Spelled {
     /// Words only (no source), e.g. `nothing`.
     #[must_use]
     pub fn words(words: &str) -> Self {
-        Self { pieces: vec![Piece::Word(SharedString::from(words.to_owned()))], source: SharedString::default() }
+        Self {
+            pieces: vec![Piece::Word(SharedString::from(words.to_owned()))],
+            source: SharedString::default(),
+        }
     }
 }
 
@@ -776,8 +869,8 @@ impl Vocabulary for Rust {
             "String" | "str" | "OsStr" | "OsString" | "CStr" | "CString" => Meaning::Text,
             "PathBuf" | "Path" => Meaning::PathWord,
             "PhantomData" => Meaning::Marker,
-            "bool" | "char" | "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32"
-            | "i64" | "i128" | "isize" | "f32" | "f64" => Meaning::Primitive,
+            "bool" | "char" | "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16"
+            | "i32" | "i64" | "i128" | "isize" | "f32" | "f64" => Meaning::Primitive,
             _ => return None,
         })
     }
@@ -826,7 +919,10 @@ fn std_alias(path: &[String], args: &[TypeExpr]) -> Option<(TypeExpr, TypeExpr)>
         return None;
     }
     let module = path[path.len() - 2].as_str();
-    let err = TypeExpr::Named { path: vec![module.to_owned(), "Error".to_owned()], args: Vec::new() };
+    let err = TypeExpr::Named {
+        path: vec![module.to_owned(), "Error".to_owned()],
+        args: Vec::new(),
+    };
     match (module, args) {
         ("fmt", []) => Some((TypeExpr::Tuple(Vec::new()), err)),
         ("io", [ok]) => Some((ok.clone(), err)),
@@ -838,7 +934,12 @@ impl<'a> Scope<'a> {
     /// A scope with no generics and no owner.
     #[must_use]
     pub fn new(resolve: &'a dyn Resolve) -> Self {
-        Self { generics: HashSet::new(), owner: None, resolve, vocabulary: &Rust }
+        Self {
+            generics: HashSet::new(),
+            owner: None,
+            resolve,
+            vocabulary: &Rust,
+        }
     }
 
     /// Adds generic parameters.
@@ -866,20 +967,28 @@ impl<'a> Scope<'a> {
     #[must_use]
     pub fn spell_text(&self, source: &str) -> Spelled {
         let expr = parse(source);
-        Spelled { pieces: self.pieces(&expr), source: SharedString::from(source.trim().to_owned()) }
+        Spelled {
+            pieces: self.pieces(&expr),
+            source: SharedString::from(source.trim().to_owned()),
+        }
     }
 
     /// Spells a tree (its source is the tree printed back).
     #[must_use]
     pub fn spell(&self, expr: &TypeExpr) -> Spelled {
-        Spelled { pieces: self.pieces(expr), source: SharedString::from(expr.to_string()) }
+        Spelled {
+            pieces: self.pieces(expr),
+            source: SharedString::from(expr.to_string()),
+        }
     }
 
     /// If `expr` is fallible (`Result<T, E>`, an alias of one, `fmt::Result`),
     /// its success and failure types.
     #[must_use]
     pub fn fallible(&self, expr: &TypeExpr) -> Option<(TypeExpr, Option<TypeExpr>)> {
-        let TypeExpr::Named { path, args } = expr else { return None };
+        let TypeExpr::Named { path, args } = expr else {
+            return None;
+        };
         if self.vocabulary.meaning(path) != Some(Meaning::Fallible) {
             return None;
         }
@@ -894,14 +1003,20 @@ impl<'a> Scope<'a> {
             for (param, arg) in params.iter().zip(args) {
                 body = body.substitute(param, arg);
             }
-            if let TypeExpr::Named { path: inner, args: full } = &body
+            if let TypeExpr::Named {
+                path: inner,
+                args: full,
+            } = &body
                 && self.vocabulary.meaning(inner) == Some(Meaning::Fallible)
                 && full.len() >= 2
             {
                 return Some((full[0].clone(), Some(full[1].clone())));
             }
         }
-        Some((args.first().cloned().unwrap_or(TypeExpr::Tuple(Vec::new())), None))
+        Some((
+            args.first().cloned().unwrap_or(TypeExpr::Tuple(Vec::new())),
+            None,
+        ))
     }
 
     fn word(out: &mut Vec<Piece>, w: &str) {
@@ -1012,7 +1127,8 @@ impl<'a> Scope<'a> {
 
     fn assoc(&self, base: &TypeExpr, name: &str, out: &mut Vec<Piece>) {
         let shown = SharedString::from(name.rsplit("::").next().unwrap_or(name).to_owned());
-        if matches!(base, TypeExpr::Named { path, args } if args.is_empty() && path.len() == 1 && path[0] == "Self") {
+        if matches!(base, TypeExpr::Named { path, args } if args.is_empty() && path.len() == 1 && path[0] == "Self")
+        {
             Self::word(out, "its");
             out.push(Piece::Space);
             out.push(Piece::Assoc(shown));
@@ -1039,7 +1155,10 @@ impl<'a> Scope<'a> {
         match last.as_str() {
             "Self" if path.len() == 1 => {
                 match &self.owner {
-                    Some((target, name)) => out.push(Piece::Name { text: name.clone(), target: target.clone() }),
+                    Some((target, name)) => out.push(Piece::Name {
+                        text: name.clone(),
+                        target: target.clone(),
+                    }),
                     None => out.push(Piece::Prim(SharedString::new_static("Self"))),
                 }
                 return;
@@ -1080,8 +1199,13 @@ impl<'a> Scope<'a> {
                 arg(1, out);
             }
             Some(Meaning::Fallible) => {
-                let expr = TypeExpr::Named { path: path.to_vec(), args: args.to_vec() };
-                let (ok, err) = self.fallible(&expr).unwrap_or((TypeExpr::Tuple(Vec::new()), None));
+                let expr = TypeExpr::Named {
+                    path: path.to_vec(),
+                    args: args.to_vec(),
+                };
+                let (ok, err) = self
+                    .fallible(&expr)
+                    .unwrap_or((TypeExpr::Tuple(Vec::new()), None));
                 self.put(&ok, out);
                 out.push(Piece::Space);
                 Self::word(out, "or fails with");
@@ -1091,10 +1215,12 @@ impl<'a> Scope<'a> {
                     None => Self::word(out, "an error"),
                 }
             }
-            Some(Meaning::Through) => match args.iter().find(|a| !matches!(a, TypeExpr::Binding { .. })) {
-                Some(a) => self.put(a, out),
-                None => self.link(path, out),
-            },
+            Some(Meaning::Through) => {
+                match args.iter().find(|a| !matches!(a, TypeExpr::Binding { .. })) {
+                    Some(a) => self.put(a, out),
+                    None => self.link(path, out),
+                }
+            }
             Some(Meaning::Shared) => {
                 Self::word(out, "shared");
                 out.push(Piece::Space);
@@ -1138,7 +1264,9 @@ impl<'a> Scope<'a> {
     }
 
     fn owner_named(&self, name: &str) -> bool {
-        self.owner.as_ref().is_some_and(|(_, owner)| owner.as_ref() == name)
+        self.owner
+            .as_ref()
+            .is_some_and(|(_, owner)| owner.as_ref() == name)
     }
 
     fn link(&self, path: &[String], out: &mut Vec<Piece>) {

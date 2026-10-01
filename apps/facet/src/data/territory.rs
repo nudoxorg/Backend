@@ -119,30 +119,41 @@ pub fn squarify(values: &[f32], w: f32, h: f32) -> Vec<Rect> {
     let (mut x, mut y, mut w, mut h) = (0.0_f32, 0.0_f32, w, h);
     let mut row: Vec<usize> = Vec::new();
     let mut rest = order.into_iter().peekable();
-    let lay = |row: &[usize], x: &mut f32, y: &mut f32, w: &mut f32, h: &mut f32, out: &mut Vec<Rect>| {
-        let sum: f32 = row.iter().map(|i| area(*i)).sum();
-        if *w >= *h {
-            let cw = if *h > 0.0 { sum / *h } else { 0.0 };
-            let mut cy = *y;
-            for i in row {
-                let ch = if cw > 0.0 { area(*i) / cw } else { 0.0 };
-                out[*i] = Rect { x: *x, y: cy, w: cw, h: ch };
-                cy += ch;
+    let lay =
+        |row: &[usize], x: &mut f32, y: &mut f32, w: &mut f32, h: &mut f32, out: &mut Vec<Rect>| {
+            let sum: f32 = row.iter().map(|i| area(*i)).sum();
+            if *w >= *h {
+                let cw = if *h > 0.0 { sum / *h } else { 0.0 };
+                let mut cy = *y;
+                for i in row {
+                    let ch = if cw > 0.0 { area(*i) / cw } else { 0.0 };
+                    out[*i] = Rect {
+                        x: *x,
+                        y: cy,
+                        w: cw,
+                        h: ch,
+                    };
+                    cy += ch;
+                }
+                *x += cw;
+                *w -= cw;
+            } else {
+                let ch = if *w > 0.0 { sum / *w } else { 0.0 };
+                let mut cx = *x;
+                for i in row {
+                    let cw = if ch > 0.0 { area(*i) / ch } else { 0.0 };
+                    out[*i] = Rect {
+                        x: cx,
+                        y: *y,
+                        w: cw,
+                        h: ch,
+                    };
+                    cx += cw;
+                }
+                *y += ch;
+                *h -= ch;
             }
-            *x += cw;
-            *w -= cw;
-        } else {
-            let ch = if *w > 0.0 { sum / *w } else { 0.0 };
-            let mut cx = *x;
-            for i in row {
-                let cw = if ch > 0.0 { area(*i) / ch } else { 0.0 };
-                out[*i] = Rect { x: cx, y: *y, w: cw, h: ch };
-                cx += cw;
-            }
-            *y += ch;
-            *h -= ch;
-        }
-    };
+        };
     while let Some(&next) = rest.peek() {
         let side = w.min(h);
         let mut with = row.clone();
@@ -196,7 +207,11 @@ pub struct Territory {
 /// A territory map of `regions` as wide as `measure` gives it; its height
 /// follows from how many stones there are.
 #[must_use]
-pub fn territory(id: impl Into<ElementId>, regions: impl Into<Rc<[Region]>>, measure: &Measure) -> Territory {
+pub fn territory(
+    id: impl Into<ElementId>,
+    regions: impl Into<Rc<[Region]>>,
+    measure: &Measure,
+) -> Territory {
     Territory {
         id: id.into(),
         regions: regions.into(),
@@ -320,11 +335,19 @@ struct Placed {
 
 fn place(rect: Rect, s: f32) -> Placed {
     let label = rect.w > 70.0 * s && rect.h > 44.0 * s;
-    let top = if label { PAD * s + LABEL.line * s + 6.0 * s } else { PAD * s };
+    let top = if label {
+        PAD * s + LABEL.line * s + 6.0 * s
+    } else {
+        PAD * s
+    };
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let columns = (((rect.w - PAD * 2.0 * s) + (PITCH - STONE) * s) / (PITCH * s)).floor().max(0.0) as usize;
+    let columns = (((rect.w - PAD * 2.0 * s) + (PITCH - STONE) * s) / (PITCH * s))
+        .floor()
+        .max(0.0) as usize;
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let rows = (((rect.h - top - PAD * s) + (PITCH - STONE) * s) / (PITCH * s)).floor().max(0.0) as usize;
+    let rows = (((rect.h - top - PAD * s) + (PITCH - STONE) * s) / (PITCH * s))
+        .floor()
+        .max(0.0) as usize;
     Placed {
         rect,
         label,
@@ -335,7 +358,14 @@ fn place(rect: Rect, s: f32) -> Placed {
 }
 
 /// The spot under `p` (relative to the map), by arithmetic per region.
-fn spot_at(placed: &[Placed], grid: &Grid, regions: &[Region], x: f32, y: f32, s: f32) -> Option<Spot> {
+fn spot_at(
+    placed: &[Placed],
+    grid: &Grid,
+    regions: &[Region],
+    x: f32,
+    y: f32,
+    s: f32,
+) -> Option<Spot> {
     // The region: one bucket of the spatial index, not a scan.
     let i = grid.at(x, y)?;
     let r = &placed[i];
@@ -343,7 +373,8 @@ fn spot_at(placed: &[Placed], grid: &Grid, regions: &[Region], x: f32, y: f32, s
     if lx >= 0.0 && ly >= 0.0 {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let (c, row) = ((lx / (PITCH * s)) as usize, (ly / (PITCH * s)) as usize);
-        let within = lx - c as f32 * PITCH * s <= STONE * s + 1.0 && ly - row as f32 * PITCH * s <= STONE * s + 1.0;
+        let within = lx - c as f32 * PITCH * s <= STONE * s + 1.0
+            && ly - row as f32 * PITCH * s <= STONE * s + 1.0;
         if within && c < r.columns && row < r.rows {
             let item = row * r.columns + c;
             if item < regions[i].items {
@@ -418,7 +449,16 @@ impl Element for Territory {
         let regions = self.regions.clone();
 
         let (targets, grid) = cached_layout(&layout.flip, &regions, w, h, cx);
-        let (rects, moving) = flip(&self.id, &layout.flip, &motion, &regions, &targets, s, window, cx);
+        let (rects, moving) = flip(
+            &self.id,
+            &layout.flip,
+            &motion,
+            &regions,
+            &targets,
+            s,
+            window,
+            cx,
+        );
         let placed: Rc<Vec<Placed>> = Rc::new(rects.iter().map(|r| place(*r, s)).collect());
         // What the window can show, in the map's own coordinates. While a
         // FLIP runs, regions travel, so every region is drawn.
@@ -509,8 +549,13 @@ impl Element for Territory {
                     || matches!(walk, Some(Spot::Stone(a, b)) if a == i && b == item);
                 if rested {
                     let e = STONE * s * 1.4;
-                    let poly = Poly::rect(sx - (e - STONE * s) * 0.5, sy - (e - STONE * s) * 0.5, e, e);
-                    let ink = if reach.contains(&item) { palette.mint.base } else { palette.ink2 };
+                    let poly =
+                        Poly::rect(sx - (e - STONE * s) * 0.5, sy - (e - STONE * s) * 0.5, e, e);
+                    let ink = if reach.contains(&item) {
+                        palette.mint.base
+                    } else {
+                        palette.ink2
+                    };
                     single = Some((poly, ink.into()));
                     continue;
                 }
@@ -548,7 +593,12 @@ impl Element for Territory {
                 r.rect.w - GAP * s - PAD * 2.0 * s,
                 window,
             );
-            label.paint(ox + r.rect.x + PAD * s, oy + r.rect.y + PAD * s + label.ascent(), window, cx);
+            label.paint(
+                ox + r.rect.x + PAD * s,
+                oy + r.rect.y + PAD * s + label.ascent(),
+                window,
+                cx,
+            );
         }
 
         // Doors: regions and stones share one mark, so one lens at a time.
@@ -653,7 +703,13 @@ impl TerritoryDoor {
 
 /// The squarified layout for `w × h` and its spatial index, from the cache
 /// when nothing it depends on changed.
-fn cached_layout(memory: &Entity<Flip>, regions: &Rc<[Region]>, w: f32, h: f32, cx: &mut App) -> (Rc<Vec<Rect>>, Rc<Grid>) {
+fn cached_layout(
+    memory: &Entity<Flip>,
+    regions: &Rc<[Region]>,
+    w: f32,
+    h: f32,
+    cx: &mut App,
+) -> (Rc<Vec<Rect>>, Rc<Grid>) {
     let key = LayoutKey {
         w,
         h,
@@ -669,9 +725,14 @@ fn cached_layout(memory: &Entity<Flip>, regions: &Rc<[Region]>, w: f32, h: f32, 
     #[allow(clippy::cast_precision_loss)]
     let values: Vec<f32> = regions.iter().map(|r| r.items as f32).collect();
     let targets = Rc::new(squarify(&values, w, h));
-    let boxes: Vec<Aabb> = targets.iter().map(|r| Aabb::new(r.x, r.y, r.w, r.h)).collect();
+    let boxes: Vec<Aabb> = targets
+        .iter()
+        .map(|r| Aabb::new(r.x, r.y, r.w, r.h))
+        .collect();
     let grid = Rc::new(Grid::build(&boxes, 0.0));
-    memory.update(cx, |flip, _| flip.cache = Some((key, targets.clone(), grid.clone())));
+    memory.update(cx, |flip, _| {
+        flip.cache = Some((key, targets.clone(), grid.clone()))
+    });
     (targets, grid)
 }
 
@@ -694,13 +755,19 @@ fn flip(
     const JUMP: f32 = 24.0;
     let key = |name: &SharedString, channel: &'static str| {
         ElementId::NamedChild(
-            std::sync::Arc::new(ElementId::NamedChild(std::sync::Arc::new(mark.clone()), name.clone())),
+            std::sync::Arc::new(ElementId::NamedChild(
+                std::sync::Arc::new(mark.clone()),
+                name.clone(),
+            )),
             SharedString::new_static(channel),
         )
     };
     let previous: Vec<Option<Rect>> = {
         let flip = memory.read(cx);
-        regions.iter().map(|r| flip.targets.get(&r.name).copied()).collect()
+        regions
+            .iter()
+            .map(|r| flip.targets.get(&r.name).copied())
+            .collect()
     };
     let jumped: Vec<bool> = targets
         .iter()
@@ -717,7 +784,11 @@ fn flip(
     let travelling = motion.is_live(cx) && memory.read(cx).targets.len() == regions.len();
     let out = if jumped.iter().any(|j| *j) || travelling {
         let mut out = Vec::with_capacity(targets.len());
-        for ((region, target), (prev, jump)) in regions.iter().zip(targets).zip(previous.iter().zip(&jumped)) {
+        for ((region, target), (prev, jump)) in regions
+            .iter()
+            .zip(targets)
+            .zip(previous.iter().zip(&jumped))
+        {
             let mut rect = [0.0_f32; 4];
             let from = prev.unwrap_or(*target);
             for (k, (channel, value, was)) in [
@@ -733,7 +804,8 @@ fn flip(
                     // Start from where it was painted.
                     motion.set(key(&region.name, channel), was);
                 }
-                rect[k] = motion.animate(key(&region.name, channel), value, spec::SETTLE, window, cx);
+                rect[k] =
+                    motion.animate(key(&region.name, channel), value, spec::SETTLE, window, cx);
             }
             out.push(Rect {
                 x: rect[0],
@@ -753,7 +825,10 @@ fn flip(
             .map(|(r, t)| (r.name.clone(), *t))
             .collect();
     });
-    let moving = out.iter().zip(targets).any(|(a, b)| (a.x - b.x).abs() + (a.y - b.y).abs() > 0.5);
+    let moving = out
+        .iter()
+        .zip(targets)
+        .any(|(a, b)| (a.x - b.x).abs() + (a.y - b.y).abs() > 0.5);
     (out, moving)
 }
 
@@ -810,21 +885,38 @@ mod tests {
     #[test]
     fn the_pointer_finds_a_stone_or_falls_back_to_its_region() {
         let regions = vec![Region::new("de", 30)];
-        let placed: Vec<Placed> = vec![place(Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 }, 1.0)];
+        let placed: Vec<Placed> = vec![place(
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 200.0,
+            },
+            1.0,
+        )];
         let grid = Grid::build(&[Aabb::new(0.0, 0.0, 200.0, 200.0)], 0.0);
         let p = placed[0];
         assert!(p.label);
         // The first stone's centre.
-        assert_eq!(spot_at(&placed, &grid, &regions, 8.0 + 5.0, p.top + 5.0, 1.0), Some(Spot::Stone(0, 0)));
+        assert_eq!(
+            spot_at(&placed, &grid, &regions, 8.0 + 5.0, p.top + 5.0, 1.0),
+            Some(Spot::Stone(0, 0))
+        );
         // The next row's first stone.
         assert_eq!(
             spot_at(&placed, &grid, &regions, 8.0 + 5.0, p.top + 15.5 + 5.0, 1.0),
             Some(Spot::Stone(0, p.columns))
         );
         // The label and the padding are the region.
-        assert_eq!(spot_at(&placed, &grid, &regions, 20.0, 4.0, 1.0), Some(Spot::Region(0)));
+        assert_eq!(
+            spot_at(&placed, &grid, &regions, 20.0, 4.0, 1.0),
+            Some(Spot::Region(0))
+        );
         // Past the last stone is the region too.
-        assert_eq!(spot_at(&placed, &grid, &regions, 190.0, 190.0, 1.0), Some(Spot::Region(0)));
+        assert_eq!(
+            spot_at(&placed, &grid, &regions, 190.0, 190.0, 1.0),
+            Some(Spot::Region(0))
+        );
         assert_eq!(spot_at(&placed, &grid, &regions, 250.0, 10.0, 1.0), None);
     }
 }

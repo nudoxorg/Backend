@@ -204,7 +204,12 @@ pub fn page(page: &Page, theme: Theme) -> String {
     }
     push_prose(&mut lines, page.prose(), theme);
     push_members(&mut lines, page.members(), page.identity().project(), theme);
-    push_relations(&mut lines, page.relations(), page.identity().project(), theme);
+    push_relations(
+        &mut lines,
+        page.relations(),
+        page.identity().project(),
+        theme,
+    );
     push_source(&mut lines, page.source(), theme);
     push_notes(&mut lines, page.notes(), theme);
     lines.finish()
@@ -308,10 +313,7 @@ fn push_relations(
             group.relations().len()
         ));
         for relation in group.relations() {
-            lines.push(format!(
-                "    {}",
-                trail(relation.identity(), within, theme)
-            ));
+            lines.push(format!("    {}", trail(relation.identity(), within, theme)));
             lines.push(format!(
                 "      {}",
                 theme.paint(Style::Coordinate, relation.identity().coordinate().as_str())
@@ -423,7 +425,11 @@ pub fn outline(tree: &OutlineTree, theme: Theme) -> String {
     for root in tree.roots() {
         push_outline_entry(&mut lines, root, 0, theme);
     }
-    let mut summary = format!("{} declaration(s) · {}", tree.count(), tree.truncation().name());
+    let mut summary = format!(
+        "{} declaration(s) · {}",
+        tree.count(),
+        tree.truncation().name()
+    );
     if tree.unresolved() > 0 {
         let _ = write!(summary, " · {} unnamed", tree.unresolved());
     }
@@ -433,9 +439,10 @@ pub fn outline(tree: &OutlineTree, theme: Theme) -> String {
 
 fn push_outline_entry(lines: &mut Lines, entry: &OutlineEntry, depth: usize, theme: Theme) {
     let indent = "  ".repeat(depth.min(16));
-    let glyph = entry
-        .kind()
-        .map_or_else(|| "·".to_owned(), |kind| KindGlyph::new(kind).as_str().to_owned());
+    let glyph = entry.kind().map_or_else(
+        || "·".to_owned(),
+        |kind| KindGlyph::new(kind).as_str().to_owned(),
+    );
     let name = entry.name();
     let painted = if entry.identity().is_some() {
         theme.paint(Style::Name, &name)
@@ -510,9 +517,17 @@ pub fn product(view: &ProductView, theme: Theme) -> String {
         return lines.finish();
     }
     for record in view.records() {
-        let mut head = format!("{} {}", theme.paint(Style::Ready, "●"), theme.paint(Style::Name, record.title()));
+        let mut head = format!(
+            "{} {}",
+            theme.paint(Style::Ready, "●"),
+            theme.paint(Style::Name, record.title())
+        );
         if !record.tags().is_empty() {
-            let _ = write!(head, "  {}", theme.paint(Style::Dim, &record.tags().join(" · ")));
+            let _ = write!(
+                head,
+                "  {}",
+                theme.paint(Style::Dim, &record.tags().join(" · "))
+            );
         }
         lines.push(head);
         if let Some(operand) = record.operand() {

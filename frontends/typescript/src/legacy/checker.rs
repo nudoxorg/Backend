@@ -1748,10 +1748,7 @@ fn tail(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod capability_tests {
-    use std::{
-        path::PathBuf,
-        process::Command,
-    };
+    use std::{path::PathBuf, process::Command};
 
     use super::{Checker, TypeScriptCheckerProgramError, TypeScriptInvocationModeV1};
 

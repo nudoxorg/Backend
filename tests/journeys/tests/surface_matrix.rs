@@ -387,7 +387,10 @@ fn assert_capability_truth(status: &Value, surface: &str) -> bool {
 /// false claim; a typed fault is still checked like every other lane.
 fn assert_dependencies_lane(value: &Value, surface: &str) -> bool {
     if value["fault"].is_null() {
-        assert_eq!(value["answer"], "product", "dependencies changed answer kind");
+        assert_eq!(
+            value["answer"], "product",
+            "dependencies changed answer kind"
+        );
         let records = value["records"]
             .as_array()
             .unwrap_or_else(|| panic!("dependencies omitted typed records: {value}"));

@@ -8,8 +8,8 @@ use std::{
 };
 
 use backend_engine::driver::{
-    CompileControl, CompileOutput, CompileRequest, CompileScratch, NativeTool,
-    ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile,
+    CompileControl, CompileOutput, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
+    SemanticAuthorityInput, ToolchainSelection, compile,
 };
 use backend_frontend_typescript::legacy::{Checker, CheckerError, Report};
 use backend_semantic::ir::{

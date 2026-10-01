@@ -83,7 +83,11 @@ impl Grid {
             mean += (b.x1 - b.x0).max(b.y1 - b.y0);
         }
         #[allow(clippy::cast_precision_loss)]
-        let cell = if cell > 0.0 { cell } else { (mean / boxes.len() as f32).max(1.0) };
+        let cell = if cell > 0.0 {
+            cell
+        } else {
+            (mean / boxes.len() as f32).max(1.0)
+        };
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let (cols, rows) = (
             (((x1 - x0) / cell).ceil() as usize).clamp(1, 4096),
@@ -155,7 +159,10 @@ impl Grid {
             return None;
         }
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let (c, r) = (((x - self.x0) / self.cell) as usize, ((y - self.y0) / self.cell) as usize);
+        let (c, r) = (
+            ((x - self.x0) / self.cell) as usize,
+            ((y - self.y0) / self.cell) as usize,
+        );
         if c >= self.cols || r >= self.rows {
             return None;
         }
@@ -260,11 +267,16 @@ mod tests {
         let mut seed = 42_u64;
         (0..n)
             .map(|_| {
-                seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+                seed = seed
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
                 #[allow(clippy::cast_precision_loss)]
                 let (x, y) = (((seed >> 33) % 4000) as f32, ((seed >> 13) % 3000) as f32);
                 #[allow(clippy::cast_precision_loss)]
-                let (w, h) = (5.0 + ((seed >> 7) % 60) as f32, 5.0 + ((seed >> 3) % 40) as f32);
+                let (w, h) = (
+                    5.0 + ((seed >> 7) % 60) as f32,
+                    5.0 + ((seed >> 3) % 40) as f32,
+                );
                 Aabb::new(x, y, w, h)
             })
             .collect()
@@ -278,11 +290,20 @@ mod tests {
         for _ in 0..4000 {
             seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
             #[allow(clippy::cast_precision_loss)]
-            let (x, y) = (((seed >> 33) % 4100) as f32 - 50.0, ((seed >> 17) % 3100) as f32 - 50.0);
+            let (x, y) = (
+                ((seed >> 33) % 4100) as f32 - 50.0,
+                ((seed >> 17) % 3100) as f32 - 50.0,
+            );
             let got = grid.at(x, y);
             match got {
-                Some(i) => assert!(all[i].contains(x, y), "({x}, {y}) -> {i} does not contain it"),
-                None => assert!(!all.iter().any(|b| b.contains(x, y)), "({x}, {y}) missed a box"),
+                Some(i) => assert!(
+                    all[i].contains(x, y),
+                    "({x}, {y}) -> {i} does not contain it"
+                ),
+                None => assert!(
+                    !all.iter().any(|b| b.contains(x, y)),
+                    "({x}, {y}) missed a box"
+                ),
             }
         }
     }

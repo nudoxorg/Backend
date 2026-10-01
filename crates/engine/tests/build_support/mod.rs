@@ -16,21 +16,23 @@ use std::{
 };
 
 use backend_engine::driver::CompiledFragment;
-use backend_semantic::ir::{
-    Atom, AtomInput, EntityRecord, FragmentView, PreparedFragment, SourceIdentity, TypeNode,
+use backend_engine::index_build::{
+    BuildAdmissionError, BuildDerivationError, BuildError, EntityFact, EntityProjection,
+    IndexBuildScratch, PreparedIndex, build,
 };
 use backend_engine::publication::{
     OpenPublicationScratch, OpenedCompilation, OpenedFragment, OpenedFragmentCursor,
     PublicationScratch, PublishControl, open_published, publish_compiled,
 };
-use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
-use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
-use backend_engine::index_build::{
-    BuildAdmissionError, BuildDerivationError, BuildError, EntityFact, EntityProjection,
-    IndexBuildScratch, PreparedIndex, build,
-};
 use backend_semantic::index_core::{ExactRow, ExactSegmentError, LexicalRow, LexicalSegmentError};
+use backend_semantic::ir::{
+    Atom, AtomInput, EntityRecord, FragmentView, PreparedFragment, SourceIdentity, TypeNode,
+};
+use backend_semantic::vocabulary::{
+    CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage,
+};
 use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
+use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 
 pub(crate) const CAPACITY: usize = 4;

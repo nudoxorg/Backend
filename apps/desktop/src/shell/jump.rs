@@ -6,8 +6,8 @@
 //! press on back lists the last ten places.
 
 use super::kit::kind_of;
-use crate::model::pages::{OutlineNode, PackageRef, SymbolRef};
 use crate::model::AppSnapshot;
+use crate::model::pages::{OutlineNode, PackageRef, SymbolRef};
 use crate::navigation::{OrbitRoute, Overlay, Route, SettingsPage};
 use crate::runtime::store::DataStore;
 use facet::icons::Kind;
@@ -53,7 +53,11 @@ pub(crate) fn here(snapshot: &AppSnapshot, store: &DataStore) -> Here {
         },
         _ => {
             if let Some(focus) = store.graph_focus() {
-                return Here { mark: Mark::Kind(kind_of(Some(focus.kind))), name: focus.name.to_string().into(), path: focus.caption_path().into() };
+                return Here {
+                    mark: Mark::Kind(kind_of(Some(focus.kind))),
+                    name: focus.name.to_string().into(),
+                    path: focus.caption_path().into(),
+                };
             }
             let mut here = route_here(snapshot.route(), store);
             // Viewing another release: the capsule says which, and which you
@@ -86,10 +90,12 @@ fn pinned_release(route: &Route, store: &DataStore) -> Option<String> {
         Route::Orbit(_) | Route::World => return None,
     };
     let current = store.package(&package).loaded_value().and_then(|dossier| {
-        dossier
-            .versions
-            .known()
-            .and_then(|versions| versions.iter().find(|entry| entry.current).map(|entry| entry.version.to_string()))
+        dossier.versions.known().and_then(|versions| {
+            versions
+                .iter()
+                .find(|entry| entry.current)
+                .map(|entry| entry.version.to_string())
+        })
     });
     current.or_else(|| package.release_version().map(ToOwned::to_owned))
 }
@@ -124,11 +130,19 @@ pub(crate) fn bar_segments(snapshot: &AppSnapshot, store: &DataStore) -> Vec<Seg
     if let Some(focus) = store.graph_focus()
         && focus.indexed.is_none()
     {
-        return [focus.package.as_ref(), focus.module.as_ref(), focus.name.as_ref()]
-            .into_iter()
-            .filter(|name| !name.is_empty())
-            .map(|name| Segment { name: name.to_owned().into(), route: None, quiet: true })
-            .collect();
+        return [
+            focus.package.as_ref(),
+            focus.module.as_ref(),
+            focus.name.as_ref(),
+        ]
+        .into_iter()
+        .filter(|name| !name.is_empty())
+        .map(|name| Segment {
+            name: name.to_owned().into(),
+            route: None,
+            quiet: true,
+        })
+        .collect();
     }
     segments(&bar_route(snapshot, store), store)
 }
@@ -138,7 +152,9 @@ pub(crate) fn bar_segments(snapshot: &AppSnapshot, store: &DataStore) -> Vec<Seg
 pub(crate) fn segments(route: &Route, store: &DataStore) -> Vec<Segment> {
     match route {
         Route::Symbol(symbol) => {
-            let Ok(package) = PackageRef::parse(symbol.package.as_str()) else { return Vec::new() };
+            let Ok(package) = PackageRef::parse(symbol.package.as_str()) else {
+                return Vec::new();
+            };
             let identity = backend_present::Identity::parse(symbol.id.as_str());
             let mut out = vec![Segment {
                 name: package.display_name().to_owned().into(),
@@ -148,22 +164,43 @@ pub(crate) fn segments(route: &Route, store: &DataStore) -> Vec<Segment> {
             // Modules and owners, found in the outline by name so each
             // opens its own page.
             let dossier = store.package(&package);
-            let tree = dossier.loaded_value().and_then(|dossier| dossier.outline.known().cloned());
+            let tree = dossier
+                .loaded_value()
+                .and_then(|dossier| dossier.outline.known().cloned());
             let mut level: Option<&[OutlineNode]> = tree.as_ref().map(|tree| &tree.roots[..]);
-            for name in crumbs(&identity).into_iter().skip(usize::from(identity.project().is_some())) {
-                let node = level.and_then(|nodes| nodes.iter().find(|node| super::shelf::shelf_name(node) == name));
+            for name in crumbs(&identity)
+                .into_iter()
+                .skip(usize::from(identity.project().is_some()))
+            {
+                let node = level.and_then(|nodes| {
+                    nodes
+                        .iter()
+                        .find(|node| super::shelf::shelf_name(node) == name)
+                });
                 out.push(Segment {
                     name: name.into(),
-                    route: node.and_then(|node| super::kit::symbol_route(package.as_str(), &node.decl.coordinate)),
+                    route: node.and_then(|node| {
+                        super::kit::symbol_route(package.as_str(), &node.decl.coordinate)
+                    }),
                     quiet: false,
                 });
                 level = node.map(|node| &node.children[..]);
             }
-            out.push(Segment { name: identity.name().to_owned().into(), route: Some(route.clone()), quiet: false });
+            out.push(Segment {
+                name: identity.name().to_owned().into(),
+                route: Some(route.clone()),
+                quiet: false,
+            });
             out
         }
         Route::Package(package) => PackageRef::parse(package.package.as_str())
-            .map(|package| vec![Segment { name: package.display_name().to_owned().into(), route: Some(route.clone()), quiet: false }])
+            .map(|package| {
+                vec![Segment {
+                    name: package.display_name().to_owned().into(),
+                    route: Some(route.clone()),
+                    quiet: false,
+                }]
+            })
             .unwrap_or_default(),
         Route::Orbit(_) | Route::World => Vec::new(),
     }
@@ -190,18 +227,33 @@ impl Siblings {
 /// The siblings of segment `index` (what the menu under it lists), each
 /// with its page.
 pub(crate) fn siblings(route: &Route, index: usize, store: &DataStore) -> Siblings {
-    let Route::Symbol(symbol) = route else { return Siblings::default() };
-    let Ok(package) = PackageRef::parse(symbol.package.as_str()) else { return Siblings::default() };
+    let Route::Symbol(symbol) = route else {
+        return Siblings::default();
+    };
+    let Ok(package) = PackageRef::parse(symbol.package.as_str()) else {
+        return Siblings::default();
+    };
     let identity = backend_present::Identity::parse(symbol.id.as_str());
     let dossier = store.package(&package);
-    let Some(tree) = dossier.loaded_value().and_then(|dossier| dossier.outline.known().cloned()) else { return Siblings::default() };
+    let Some(tree) = dossier
+        .loaded_value()
+        .and_then(|dossier| dossier.outline.known().cloned())
+    else {
+        return Siblings::default();
+    };
     if index == 0 {
         return Siblings::default();
     }
-    let path: Vec<String> = crumbs(&identity).into_iter().skip(usize::from(identity.project().is_some())).collect();
+    let path: Vec<String> = crumbs(&identity)
+        .into_iter()
+        .skip(usize::from(identity.project().is_some()))
+        .collect();
     let mut level: &[OutlineNode] = &tree.roots;
     for name in path.iter().take(index - 1) {
-        match level.iter().find(|node| super::shelf::shelf_name(node) == name.as_str()) {
+        match level
+            .iter()
+            .find(|node| super::shelf::shelf_name(node) == name.as_str())
+        {
             Some(node) => level = &node.children,
             None => return Siblings::default(),
         }
@@ -211,7 +263,9 @@ pub(crate) fn siblings(route: &Route, index: usize, store: &DataStore) -> Siblin
         route: super::kit::symbol_route(package.as_str(), &node.decl.coordinate),
         quiet: false,
     };
-    let (tests, real): (Vec<&OutlineNode>, Vec<&OutlineNode>) = level.iter().partition(|node| super::shelf::is_test_module(node));
+    let (tests, real): (Vec<&OutlineNode>, Vec<&OutlineNode>) = level
+        .iter()
+        .partition(|node| super::shelf::is_test_module(node));
     Siblings {
         real: real.into_iter().map(segment).collect(),
         tests: tests.into_iter().map(segment).collect(),
@@ -248,7 +302,11 @@ fn route_here(route: &Route, store: &DataStore) -> Here {
         },
         Route::Orbit(OrbitRoute::Browse(browse)) => {
             let (name, path) = browse.here();
-            Here { mark: Mark::Orbit, name: name.into(), path: path.into() }
+            Here {
+                mark: Mark::Orbit,
+                name: name.into(),
+                path: path.into(),
+            }
         }
         Route::World => Here {
             mark: Mark::Orbit,
@@ -261,11 +319,20 @@ fn route_here(route: &Route, store: &DataStore) -> Here {
                 mark: Mark::Kind(Kind::Package),
                 name: package
                     .as_ref()
-                    .map_or_else(|| route.package.as_str().to_owned(), |package| package.display_name().to_owned())
+                    .map_or_else(
+                        || route.package.as_str().to_owned(),
+                        |package| package.display_name().to_owned(),
+                    )
                     .into(),
                 path: package
                     .as_ref()
-                    .map_or("package", |package| if package.is_local() { "local project" } else { "registry" })
+                    .map_or("package", |package| {
+                        if package.is_local() {
+                            "local project"
+                        } else {
+                            "registry"
+                        }
+                    })
                     .into(),
             }
         }
@@ -379,8 +446,10 @@ pub(crate) fn address_parts(snapshot: &AppSnapshot) -> Address {
         Route::World => place(&[], "graph".to_owned()),
         Route::Package(route) => place(
             &[],
-            PackageRef::parse(route.package.as_str())
-                .map_or_else(|_| route.package.as_str().to_owned(), |package| package.display_name().to_owned()),
+            PackageRef::parse(route.package.as_str()).map_or_else(
+                |_| route.package.as_str().to_owned(),
+                |package| package.display_name().to_owned(),
+            ),
         ),
         Route::Symbol(route) => {
             let mut address = symbol_parts(route.id.as_str());
@@ -410,15 +479,20 @@ fn symbol_parts(coordinate: &str) -> Address {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn viewing_another_release_names_the_one_you_pin_as_the_comb_does() {
-        assert_eq!(viewing("0.3.0", Some("0.4.2")), "viewing 0.3.0 · you pin 0.4.2");
-        assert_eq!(viewing("0.3.0", None), "viewing 0.3.0 · yours is the working copy");
+        assert_eq!(
+            viewing("0.3.0", Some("0.4.2")),
+            "viewing 0.3.0 · you pin 0.4.2"
+        );
+        assert_eq!(
+            viewing("0.3.0", None),
+            "viewing 0.3.0 · yours is the working copy"
+        );
     }
 
     #[test]
@@ -427,7 +501,8 @@ mod tests {
         assert_eq!(address.full(), "nudox://present/glyph/RelationLabel");
         assert_eq!(address.keeping(1), "…/glyph/RelationLabel");
         assert_eq!(address.keeping(0), "…/RelationLabel");
-        let identity = backend_present::Identity::parse("/repo/crates/present::glyph.rs:138::RelationLabel");
+        let identity =
+            backend_present::Identity::parse("/repo/crates/present::glyph.rs:138::RelationLabel");
         assert_eq!(crumbs(&identity).join(" › "), "present › glyph");
     }
 }

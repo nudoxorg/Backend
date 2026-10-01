@@ -7,10 +7,10 @@ use super::{Ctx, Leaf};
 use crate::model::{
     AppSnapshot, AppearancePreference, ContrastPreference, DensityPreference, MotionPreference,
 };
-use facet::controls::Swatch;
 use crate::navigation::{Intent, SettingsPage};
 use crate::shell::kit::{quiet, text};
 use crate::shell::reader::Reader;
+use facet::controls::Swatch;
 use facet::tokens::ty;
 use facet::{Measure, Palette, Space};
 use gpui::{AnyElement, Context, IntoElement, ParentElement, Styled, div, px};
@@ -26,15 +26,20 @@ pub(super) fn body(
         SettingsPage::Index | SettingsPage::Registry => index(store, ctx),
         SettingsPage::Help | SettingsPage::Legend => keys(ctx),
         SettingsPage::Diagnostics | SettingsPage::Connections => about(snapshot, ctx),
-        SettingsPage::Appearance | SettingsPage::Editor | SettingsPage::Agents | SettingsPage::Privacy => {
-            appearance(snapshot, ctx)
-        }
+        SettingsPage::Appearance
+        | SettingsPage::Editor
+        | SettingsPage::Agents
+        | SettingsPage::Privacy => appearance(snapshot, ctx),
     }
 }
 
 fn title(words: &str, ctx: &mut Ctx<'_>) -> Leaf {
     let said = ctx.say(words.to_owned());
-    Leaf::new(text(ty::DISPLAY, &ctx.measure, ctx.palette.ink0).pb(ctx.measure.space(Space::Base)).child(said))
+    Leaf::new(
+        text(ty::DISPLAY, &ctx.measure, ctx.palette.ink0)
+            .pb(ctx.measure.space(Space::Base))
+            .child(said),
+    )
 }
 
 fn appearance(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
@@ -62,11 +67,13 @@ fn appearance(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
         links.dispatch(Intent::SetAppearance(appearance), cx);
     });
     let words = ["System", "Abyss", "Glacier"];
-    ctx.say(words[match settings.appearance {
-        AppearancePreference::System => 0,
-        AppearancePreference::Abyss => 1,
-        AppearancePreference::Glacier => 2,
-    }]);
+    ctx.say(
+        words[match settings.appearance {
+            AppearancePreference::System => 0,
+            AppearancePreference::Abyss => 1,
+            AppearancePreference::Glacier => 2,
+        }],
+    );
     leaves.push(setting("Theme", theme.into_any_element(), ctx));
     let links = ctx.links.clone();
     let contrast = facet::controls::seg("set-contrast", &measure)
@@ -74,7 +81,11 @@ fn appearance(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
         .label("High")
         .selected(usize::from(settings.contrast == ContrastPreference::High))
         .on_select(move |index, _, cx| {
-            let contrast = if index == 1 { ContrastPreference::High } else { ContrastPreference::Normal };
+            let contrast = if index == 1 {
+                ContrastPreference::High
+            } else {
+                ContrastPreference::Normal
+            };
             links.dispatch(Intent::SetContrast(contrast), cx);
         });
     leaves.push(setting("Contrast", contrast.into_any_element(), ctx));
@@ -148,10 +159,17 @@ fn index(store: &super::Pages, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     if let Some(rust) = crate::host::toolchain::report() {
         let missing = matches!(rust, crate::host::toolchain::Rust::Missing { .. });
         let words = ctx.say(rust.words());
-        let ink = if missing { palette.coral.base } else { palette.ink1 };
+        let ink = if missing {
+            palette.coral.base
+        } else {
+            palette.ink1
+        };
         leaves.push(setting(
             "Compiler",
-            text(ty::SMALL, &measure, ink).min_w(px(0.0)).child(words).into_any_element(),
+            text(ty::SMALL, &measure, ink)
+                .min_w(px(0.0))
+                .child(words)
+                .into_any_element(),
             ctx,
         ));
     }
@@ -159,17 +177,41 @@ fn index(store: &super::Pages, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
         Some(health) => {
             let facts = [
                 ("Declarations", health.rows.to_string()),
-                ("Files indexed", format!("{} of {}", health.ingest.files_indexed, health.ingest.files_discovered)),
-                ("Files without declarations", health.ingest.files_unavailable.to_string()),
+                (
+                    "Files indexed",
+                    format!(
+                        "{} of {}",
+                        health.ingest.files_indexed, health.ingest.files_discovered
+                    ),
+                ),
+                (
+                    "Files without declarations",
+                    health.ingest.files_unavailable.to_string(),
+                ),
                 ("Capabilities ready", health.ready_capabilities.join(", ")),
             ];
             for (name, value) in facts {
                 let value = ctx.say(value);
-                leaves.push(setting(name, text(ty::MONO_ROW, &measure, palette.ink1).child(value).into_any_element(), ctx));
+                leaves.push(setting(
+                    name,
+                    text(ty::MONO_ROW, &measure, palette.ink1)
+                        .child(value)
+                        .into_any_element(),
+                    ctx,
+                ));
             }
             for language in health.ingest.languages.iter() {
-                let value = ctx.say(format!("{} declarations in {} files", language.declarations, language.files));
-                leaves.push(setting(&language.language, text(ty::MONO_SMALL, &measure, palette.ink2).child(value).into_any_element(), ctx));
+                let value = ctx.say(format!(
+                    "{} declarations in {} files",
+                    language.declarations, language.files
+                ));
+                leaves.push(setting(
+                    &language.language,
+                    text(ty::MONO_SMALL, &measure, palette.ink2)
+                        .child(value)
+                        .into_any_element(),
+                    ctx,
+                ));
             }
         }
         None => {
@@ -199,25 +241,48 @@ fn keys(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
         let caps = ctx.say(caps);
         leaves.push(setting(
             key.says,
-            text(ty::MONO_ROW, &measure, palette.ink1).child(caps).into_any_element(),
+            text(ty::MONO_ROW, &measure, palette.ink1)
+                .child(caps)
+                .into_any_element(),
             ctx,
         ));
     }
     // The sidebar's and the graph's own keys, while each has the keyboard.
     let groups: [(&str, Vec<(&str, &str)>); 2] = [
-        ("In the sidebar", crate::shell::side::KEYS.iter().map(|key| (key.cap, key.says)).collect()),
-        ("In the graph", facet::graph::keys::KEYS.iter().map(|key| (key.cap, key.says)).collect()),
+        (
+            "In the sidebar",
+            crate::shell::side::KEYS
+                .iter()
+                .map(|key| (key.cap, key.says))
+                .collect(),
+        ),
+        (
+            "In the graph",
+            facet::graph::keys::KEYS
+                .iter()
+                .map(|key| (key.cap, key.says))
+                .collect(),
+        ),
     ];
     for (group, keys) in groups {
         let measure = ctx.measure;
         let palette = ctx.palette;
         let heading = ctx.say(group);
         leaves.push(Leaf::new(
-            text(ty::HEAD, &measure, palette.ink0).pt(measure.space(Space::Roomy)).pb(measure.space(Space::Base)).child(heading),
+            text(ty::HEAD, &measure, palette.ink0)
+                .pt(measure.space(Space::Roomy))
+                .pb(measure.space(Space::Base))
+                .child(heading),
         ));
         for (cap, says) in keys {
             let caps = ctx.say(cap);
-            leaves.push(setting(says, text(ty::MONO_ROW, &measure, palette.ink1).child(caps).into_any_element(), ctx));
+            leaves.push(setting(
+                says,
+                text(ty::MONO_ROW, &measure, palette.ink1)
+                    .child(caps)
+                    .into_any_element(),
+                ctx,
+            ));
         }
     }
     leaves
@@ -228,12 +293,24 @@ fn about(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     let measure = ctx.measure;
     let palette = ctx.palette;
     let version = ctx.say(env!("CARGO_PKG_VERSION"));
-    leaves.push(setting("Version", text(ty::MONO_ROW, &measure, palette.ink1).child(version).into_any_element(), ctx));
+    leaves.push(setting(
+        "Version",
+        text(ty::MONO_ROW, &measure, palette.ink1)
+            .child(version)
+            .into_any_element(),
+        ctx,
+    ));
     let mode = ctx.say(match snapshot.settings().service_mode {
         crate::model::ServiceMode::Embedded => "embedded local service",
         crate::model::ServiceMode::Attached => "attached to a running local service",
     });
-    leaves.push(setting("Service", text(ty::ROW, &measure, palette.ink1).child(mode).into_any_element(), ctx));
+    leaves.push(setting(
+        "Service",
+        text(ty::ROW, &measure, palette.ink1)
+            .child(mode)
+            .into_any_element(),
+        ctx,
+    ));
     leaves
 }
 

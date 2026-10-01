@@ -3,14 +3,14 @@
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use backend_semantic::vocabulary::{
-    Language, LanguageProfile, PythonVersion, RustEdition, Stage, TypeScriptSource,
-};
-use backend_version::{ContentId, SourceFactDomain};
 use backend_library::interface::{
     ApplicationDisposition, ApplicationOutcome, ApplicationReply, ApplicationService,
     CompilerTerminal, Diagnostic, DiagnosticCode, DiagnosticDetail, ReplyBody,
 };
+use backend_semantic::vocabulary::{
+    Language, LanguageProfile, PythonVersion, RustEdition, Stage, TypeScriptSource,
+};
+use backend_version::{ContentId, SourceFactDomain};
 
 use super::support::{
     Fixture, LocalCompilerTestError, generate, open_local_compiler, python_path, python_toolchains,

@@ -45,8 +45,18 @@ pub fn glyph(glyph: Glyph, size: Pixels, color: Hsla) -> impl IntoElement + Styl
             match glyph {
                 Glyph::Plus => {
                     fill.poly(&bar(bounds, (12.0, 5.0), (12.0, 19.0), w));
-                    fill.poly(&bar(bounds, (5.0, 12.0), (12.0 - w * 0.5 * 24.0 / f32::from(size), 12.0), w));
-                    fill.poly(&bar(bounds, (12.0 + w * 0.5 * 24.0 / f32::from(size), 12.0), (19.0, 12.0), w));
+                    fill.poly(&bar(
+                        bounds,
+                        (5.0, 12.0),
+                        (12.0 - w * 0.5 * 24.0 / f32::from(size), 12.0),
+                        w,
+                    ));
+                    fill.poly(&bar(
+                        bounds,
+                        (12.0 + w * 0.5 * 24.0 / f32::from(size), 12.0),
+                        (19.0, 12.0),
+                        w,
+                    ));
                 }
                 Glyph::Cross => {
                     fill.poly(&bar(bounds, (6.0, 6.0), (18.0, 18.0), w));

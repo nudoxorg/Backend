@@ -1565,7 +1565,9 @@ impl From<backend_semantic::vocabulary::ProjectionLineagePart> for GoldenLineage
     }
 }
 
-impl From<backend_semantic::vocabulary::ProjectionPackageLineageFault> for GoldenPackageLineageFault {
+impl From<backend_semantic::vocabulary::ProjectionPackageLineageFault>
+    for GoldenPackageLineageFault
+{
     fn from(fault: backend_semantic::vocabulary::ProjectionPackageLineageFault) -> Self {
         use backend_semantic::vocabulary::ProjectionPackageLineageFault;
         match fault {
@@ -1587,7 +1589,9 @@ impl_unit_conversion!(ProjectionTypeCell => GoldenProjectionTypeCell [Payload0, 
 impl_unit_conversion!(ProjectionTypeChildLane => GoldenProjectionTypeChildLane [Declared, Anonymous, Computed]);
 impl_unit_conversion!(ProjectionFactLane => GoldenProjectionFactLane [TypeRows, ReservedTypeRows, ComputedOwners, Extensions, ReplacementTypeParameterRange, TypeParameterRanges, CapturedTypeParameterRange, EntityMembers, EntityParentage, EntityParents, EntitySourceSpans, TypeParameters, TypeLists, EntityLists, AtomLists]);
 
-impl From<backend_semantic::vocabulary::ProjectionConstructorFault> for GoldenProjectionConstructorFault {
+impl From<backend_semantic::vocabulary::ProjectionConstructorFault>
+    for GoldenProjectionConstructorFault
+{
     fn from(fault: backend_semantic::vocabulary::ProjectionConstructorFault) -> Self {
         use backend_semantic::vocabulary::ProjectionConstructorFault;
         match fault {
@@ -1623,7 +1627,9 @@ impl From<backend_semantic::vocabulary::ProjectionConstructorFault> for GoldenPr
     }
 }
 
-impl From<backend_semantic::vocabulary::ProjectionSemanticTypeFault> for GoldenProjectionSemanticTypeFault {
+impl From<backend_semantic::vocabulary::ProjectionSemanticTypeFault>
+    for GoldenProjectionSemanticTypeFault
+{
     fn from(fault: backend_semantic::vocabulary::ProjectionSemanticTypeFault) -> Self {
         use backend_semantic::vocabulary::ProjectionSemanticTypeFault;
         match fault {
@@ -1688,7 +1694,9 @@ impl From<backend_semantic::vocabulary::ProjectionSemanticTypeFault> for GoldenP
     }
 }
 
-impl From<backend_semantic::vocabulary::ProjectionParentageState> for GoldenProjectionParentageState {
+impl From<backend_semantic::vocabulary::ProjectionParentageState>
+    for GoldenProjectionParentageState
+{
     fn from(state: backend_semantic::vocabulary::ProjectionParentageState) -> Self {
         match state {
             backend_semantic::vocabulary::ProjectionParentageState::Unavailable => Self::Unavailable,
@@ -1712,7 +1720,9 @@ impl From<backend_semantic::vocabulary::ProjectionSpan> for GoldenProjectionSpan
     }
 }
 
-impl From<backend_semantic::vocabulary::ProjectionAdmissionFault> for GoldenProjectionAdmissionFault {
+impl From<backend_semantic::vocabulary::ProjectionAdmissionFault>
+    for GoldenProjectionAdmissionFault
+{
     fn from(fault: backend_semantic::vocabulary::ProjectionAdmissionFault) -> Self {
         use backend_semantic::vocabulary::ProjectionAdmissionFault;
         match fault {
@@ -2334,7 +2344,9 @@ impl_unit_conversion!(GoImageTypeKind => GoldenGoImageTypeKind [Basic, Named, Al
 impl_unit_conversion!(GoProjectionIndexPhase => GoldenGoProjectionIndexPhase [ImageHeader, ImageRow, FactOrdinal, TypeRow, TypeChild, Declaration, Method, TypeParameter, Member, Documentation, Reference, Constraint, Satisfaction, Package, SignatureParameter, MethodSet, Atom, EntityList]);
 impl_unit_conversion!(GoProjectionListPhase => GoldenGoProjectionListPhase [Entity, Type, Atom, TypeParameter]);
 
-impl From<backend_semantic::vocabulary::TypeScriptProjectionFault> for GoldenTypeScriptProjectionFault {
+impl From<backend_semantic::vocabulary::TypeScriptProjectionFault>
+    for GoldenTypeScriptProjectionFault
+{
     fn from(fault: backend_semantic::vocabulary::TypeScriptProjectionFault) -> Self {
         use backend_semantic::vocabulary::TypeScriptProjectionFault;
         match fault {
@@ -2578,7 +2590,9 @@ impl From<backend_semantic::vocabulary::ClangProjectionDeclaration> for GoldenCl
             backend_semantic::vocabulary::ClangProjectionDeclaration::Known { identity } => {
                 Self::Known { identity }
             }
-            backend_semantic::vocabulary::ClangProjectionDeclaration::Unavailable => Self::Unavailable,
+            backend_semantic::vocabulary::ClangProjectionDeclaration::Unavailable => {
+                Self::Unavailable
+            }
         }
     }
 }

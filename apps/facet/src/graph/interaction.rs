@@ -7,17 +7,33 @@ use std::collections::BTreeMap;
 /// Estimate reliable release velocity in screen pixels per millisecond.
 /// Coalesced events do not measure physical speed; the total coast remains
 /// bounded by one third of the shorter viewport dimension.
-pub(crate) fn release_velocity(samples: &[(std::time::Instant, f32, f32)], now: std::time::Instant, width: f32, height: f32) -> Option<(f64, f64)> {
+pub(crate) fn release_velocity(
+    samples: &[(std::time::Instant, f32, f32)],
+    now: std::time::Instant,
+    width: f32,
+    height: f32,
+) -> Option<(f64, f64)> {
     let newest = samples.last()?;
-    if now.saturating_duration_since(newest.0) > std::time::Duration::from_millis(60) { return None; }
-    let oldest = samples.iter().find(|sample| newest.0.saturating_duration_since(sample.0) <= std::time::Duration::from_millis(90))?;
+    if now.saturating_duration_since(newest.0) > std::time::Duration::from_millis(60) {
+        return None;
+    }
+    let oldest = samples.iter().find(|sample| {
+        newest.0.saturating_duration_since(sample.0) <= std::time::Duration::from_millis(90)
+    })?;
     let span = newest.0.saturating_duration_since(oldest.0);
-    if span < std::time::Duration::from_millis(16) { return None; }
+    if span < std::time::Duration::from_millis(16) {
+        return None;
+    }
     let milliseconds = span.as_secs_f64() * 1000.0;
-    let (vx, vy) = (f64::from(newest.1 - oldest.1) / milliseconds, f64::from(newest.2 - oldest.2) / milliseconds);
+    let (vx, vy) = (
+        f64::from(newest.1 - oldest.1) / milliseconds,
+        f64::from(newest.2 - oldest.2) / milliseconds,
+    );
     let speed = vx.hypot(vy);
     let extent = f64::from(width.min(height));
-    if !speed.is_finite() || speed == 0.0 || !extent.is_finite() || extent <= 0.0 { return None; }
+    if !speed.is_finite() || speed == 0.0 || !extent.is_finite() || extent <= 0.0 {
+        return None;
+    }
     let factor = (extent / 3.0 / super::camera::GLIDE_MS / speed).min(1.0);
     Some((vx * factor, vy * factor))
 }
@@ -51,18 +67,26 @@ impl Reach {
         depth[world.top(source) as usize] = Some(0);
         let mut front = vec![source];
         front.extend_from_slice(world.kids(source));
-        if world.node(source).kind.is_part() && let Some(owner) = world.node(source).parent {
+        if world.node(source).kind.is_part()
+            && let Some(owner) = world.node(source).parent
+        {
             front.push(owner);
         }
-        for &i in &front { seen[i as usize] = true; }
+        for &i in &front {
+            seen[i as usize] = true;
+        }
         let mut waves = Vec::new();
         for d in 1..=8 {
-            if front.is_empty() { break; }
+            if front.is_empty() {
+                break;
+            }
             let mut next = Vec::new();
             let mut wave = Vec::new();
             for a in front {
                 for (b, _) in world.in_edges(a) {
-                    if seen[b as usize] || world.node(b).orphan { continue; }
+                    if seen[b as usize] || world.node(b).orphan {
+                        continue;
+                    }
                     seen[b as usize] = true;
                     next.push(b);
                     if matches!(world.node(b).kind, Kind::Field | Kind::Variant)
@@ -82,45 +106,88 @@ impl Reach {
             waves.push(wave);
             front = next;
         }
-        while waves.last().is_some_and(Vec::is_empty) { waves.pop(); }
+        while waves.last().is_some_and(Vec::is_empty) {
+            waves.pop();
+        }
         let all: Vec<_> = waves.iter().flatten().copied().collect();
         let mut threads = waves.first().cloned().unwrap_or_default();
-        threads.sort_by(|a, b| world.importance(*b).total_cmp(&world.importance(*a)).then(a.cmp(b)));
+        threads.sort_by(|a, b| {
+            world
+                .importance(*b)
+                .total_cmp(&world.importance(*a))
+                .then(a.cmp(b))
+        });
         threads.truncate(48);
         let yours = all.iter().filter(|&&i| world.yours(i)).count();
         let mut per = BTreeMap::new();
-        for &i in &all { *per.entry(world.node(i).pkg).or_insert(0) += 1; }
+        for &i in &all {
+            *per.entry(world.node(i).pkg).or_insert(0) += 1;
+        }
         let mut packages: Vec<_> = per.into_iter().collect();
         packages.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        Self { source, waves, depth, all, threads, yours, packages }
+        Self {
+            source,
+            waves,
+            depth,
+            all,
+            threads,
+            yours,
+            packages,
+        }
     }
 
     /// Frames the nearest 90% around the source, so one distant dependent
     /// cannot make the thing being changed vanish into the world.
     #[must_use]
     pub fn bounds(&self, layout: &Layout) -> Box2 {
-        let source = [layout.x[self.source as usize], layout.y[self.source as usize]];
-        let mut points: Vec<_> = self.all.iter().map(|&i| {
-            let p = [layout.x[i as usize], layout.y[i as usize]];
-            ((p[0] - source[0]).hypot(p[1] - source[1]), p)
-        }).collect();
+        let source = [
+            layout.x[self.source as usize],
+            layout.y[self.source as usize],
+        ];
+        let mut points: Vec<_> = self
+            .all
+            .iter()
+            .map(|&i| {
+                let p = [layout.x[i as usize], layout.y[i as usize]];
+                ((p[0] - source[0]).hypot(p[1] - source[1]), p)
+            })
+            .collect();
         points.push((0.0, source));
         points.sort_by(|a, b| a.0.total_cmp(&b.0));
         let percentile = ((points.len() - 1) * 9 / 10).max(usize::from(points.len() > 1));
         let limit = points[percentile].0;
-        points.into_iter().filter(|(d, _)| *d <= limit + 1e-6)
-            .fold(Box2::EMPTY.with(source[0] - 1.0, source[1] - 1.0).with(source[0] + 1.0, source[1] + 1.0), |b, (_, p)| b.with(p[0], p[1]))
+        points.into_iter().filter(|(d, _)| *d <= limit + 1e-6).fold(
+            Box2::EMPTY
+                .with(source[0] - 1.0, source[1] - 1.0)
+                .with(source[0] + 1.0, source[1] + 1.0),
+            |b, (_, p)| b.with(p[0], p[1]),
+        )
     }
 
     /// The quiet sentence in the focus card.
     #[must_use]
     pub fn summary(&self) -> String {
-        if self.all.is_empty() { return "Nothing in this world depends on it.".to_owned(); }
+        if self.all.is_empty() {
+            return "Nothing in this world depends on it.".to_owned();
+        }
         let mut words = vec![format!("{} direct", self.waves[0].len())];
-        if self.waves.len() > 1 { words.push(format!("{} within two steps", self.waves.iter().take(2).map(Vec::len).sum::<usize>())); }
-        if self.waves.len() > 2 { words.push(format!("{} in all", self.all.len())); }
-        words.push(format!("across {} package{}", self.packages.len(), if self.packages.len() == 1 { "" } else { "s" }));
-        if self.yours > 0 { words.push(format!("{} in your code", self.yours)); }
+        if self.waves.len() > 1 {
+            words.push(format!(
+                "{} within two steps",
+                self.waves.iter().take(2).map(Vec::len).sum::<usize>()
+            ));
+        }
+        if self.waves.len() > 2 {
+            words.push(format!("{} in all", self.all.len()));
+        }
+        words.push(format!(
+            "across {} package{}",
+            self.packages.len(),
+            if self.packages.len() == 1 { "" } else { "s" }
+        ));
+        if self.yours > 0 {
+            words.push(format!("{} in your code", self.yours));
+        }
         format!("If it changes — {}", words.join(" · "))
     }
 }
@@ -143,20 +210,45 @@ mod tests {
         let start = Instant::now();
         for span in [0, 1, 15] {
             let end = start + Duration::from_millis(span);
-            assert!(super::release_velocity(&[(start, 0.0, 0.0), (end, 250.0, -50.0)], end, 1440.0, 900.0).is_none());
+            assert!(
+                super::release_velocity(
+                    &[(start, 0.0, 0.0), (end, 250.0, -50.0)],
+                    end,
+                    1440.0,
+                    900.0
+                )
+                .is_none()
+            );
         }
         for (width, height) in [(1440.0, 900.0), (480.0, 400.0), (96.0, 64.0)] {
             let end = start + Duration::from_millis(32);
-            let (vx, vy) = super::release_velocity(&[(start, 0.0, 0.0), (end, 250.0, -50.0)], end, width, height).expect("reliable span");
-            assert!(vx.hypot(vy) * super::super::camera::GLIDE_MS <= f64::from(width.min(height)) / 3.0 + 1e-9);
+            let (vx, vy) = super::release_velocity(
+                &[(start, 0.0, 0.0), (end, 250.0, -50.0)],
+                end,
+                width,
+                height,
+            )
+            .expect("reliable span");
+            assert!(
+                vx.hypot(vy) * super::super::camera::GLIDE_MS
+                    <= f64::from(width.min(height)) / 3.0 + 1e-9
+            );
             assert!(vx > 0.0 && vy < 0.0);
-            assert!(super::release_velocity(&[(start, 0.0, 0.0), (end, 250.0, -50.0)], end + Duration::from_millis(61), width, height).is_none());
+            assert!(
+                super::release_velocity(
+                    &[(start, 0.0, 0.0), (end, 250.0, -50.0)],
+                    end + Duration::from_millis(61),
+                    width,
+                    height
+                )
+                .is_none()
+            );
         }
     }
 
+    use crate::graph::layout::Layout;
     use crate::graph::model::tests::tiny;
     use crate::graph::model::{Edge, Kind, Node, Rel, World};
-    use crate::graph::layout::Layout;
 
     #[test]
     fn reach_counts_top_level_once_and_propagates_through_a_field_owner() {
@@ -164,14 +256,22 @@ mod tests {
         let mut nodes = base.nodes.clone();
         nodes.push(Node::new(Kind::Function, "render", 0, 0));
         let mut edges = base.edges.clone();
-        edges.push(Edge { from: 6, to: 0, rel: Rel::TAKES });
-        let world = World::new(base.packages.clone(), base.modules.clone(), nodes, edges).expect("fixture");
+        edges.push(Edge {
+            from: 6,
+            to: 0,
+            rel: Rel::TAKES,
+        });
+        let world =
+            World::new(base.packages.clone(), base.modules.clone(), nodes, edges).expect("fixture");
         let reach = Reach::of(&world, 5);
         assert_eq!(reach.waves, vec![vec![0, 3], vec![6]]);
         assert_eq!(reach.depth[6], Some(2));
         assert_eq!(reach.yours, 2);
         assert_eq!(reach.packages, vec![(0, 2), (1, 1)]);
-        assert_eq!(reach.summary(), "If it changes — 2 direct · 3 within two steps · across 2 packages · 2 in your code");
+        assert_eq!(
+            reach.summary(),
+            "If it changes — 2 direct · 3 within two steps · across 2 packages · 2 in your code"
+        );
     }
 
     #[test]
@@ -181,10 +281,26 @@ mod tests {
         nodes.push(Node::new(Kind::Method, "middle", 0, 0).member_of(0));
         nodes.push(Node::new(Kind::Function, "caller", 1, 1));
         let edges = vec![
-            Edge { from: 2, to: 5, rel: Rel::GIVES },
-            Edge { from: 6, to: 2, rel: Rel::CALLS },
-            Edge { from: 7, to: 6, rel: Rel::CALLS },
-            Edge { from: 2, to: 7, rel: Rel::CALLS },
+            Edge {
+                from: 2,
+                to: 5,
+                rel: Rel::GIVES,
+            },
+            Edge {
+                from: 6,
+                to: 2,
+                rel: Rel::CALLS,
+            },
+            Edge {
+                from: 7,
+                to: 6,
+                rel: Rel::CALLS,
+            },
+            Edge {
+                from: 2,
+                to: 7,
+                rel: Rel::CALLS,
+            },
         ];
         let world = World::new(base.packages, base.modules, nodes, edges).expect("fixture");
         let reach = Reach::of(&world, 5);
@@ -197,7 +313,11 @@ mod tests {
     fn a_source_field_passes_through_its_owner_and_small_reach_has_extent() {
         let base = tiny();
         let mut edges = base.edges.clone();
-        edges.push(Edge { from: 3, to: 0, rel: Rel::TAKES });
+        edges.push(Edge {
+            from: 3,
+            to: 0,
+            rel: Rel::TAKES,
+        });
         let world = World::new(base.packages, base.modules, base.nodes, edges).expect("fixture");
         assert_eq!(Reach::of(&world, 1).all, vec![3]);
         let layout = Layout::compute(&world);

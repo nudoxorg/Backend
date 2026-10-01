@@ -19,7 +19,7 @@ baseline_tree = "309acc8f1 (== local canonical; origin/canonical ancestor); froz
 candidate_commit = ""
 candidate_tree = ""
 testing_path = ""
-testing_sha256 = "" # TESTING.md does not exist in this repository; evidenced exclusion in brief.md
+testing_sha256 = ""                                                                                                                                          # TESTING.md does not exist in this repository; evidenced exclusion in brief.md
 
 # Environment block (pre-edit-1 MAJOR 4): checker output is version-sensitive.
 # L5 session adaptation: the lane now runs in worktree
@@ -96,7 +96,11 @@ retention = "active"
 task = "done"
 role = "nudox_luna_implementer"
 card = "L4b-checker-package-context"
-paths = ["compiler/languages/typescript/checker.rs", "compiler/languages/typescript/checker/main.cjs", "compiler/driver/tests/typescript_package.rs"]
+paths = [
+  "compiler/languages/typescript/checker.rs",
+  "compiler/languages/typescript/checker/main.cjs",
+  "compiler/driver/tests/typescript_package.rs",
+]
 result_commit = "870afdf39"
 ingest = "Terra reproduced all four falsifiers (typescript_package 1 green; bare-run discriminator rows []) and ran the staging-bypass mutation: routing the child at the bare work-dir file flips the package-run assertions red at typescript_package.rs:112; restore goes green. R10 -> REPRODUCED BY TERRA."
 
@@ -117,13 +121,21 @@ task_id = "ses_f9a956588ffeWMiACTSWAa8cqc"
 role = "nudox_terra_reviewer"
 model = "opencode reviewer subagent (read-only)"
 packet_path = ".codex/evidence/capabilities/typescript-checker-authority/packets/pre-edit-1.md"
-result = "findings" # 2 blockers, 7 majors, 5 minors; packet repaired before L1
+result = "findings"                                                                             # 2 blockers, 7 majors, 5 minors; packet repaired before L1
 
 [[workers]]
 task = "pending"
 role = "nudox_luna_implementer"
 card = "L1a-checker-first-class (card sha256 4bd16d1b5defccedbbc994dc001d9d6020fa8c2506b66e4edfbdb2f854e10b21)"
-paths = ["compiler/languages/typescript/", "compiler/driver/lower/typescript.rs", "compiler/driver/lower.rs (TypeScript surface only)", "compiler/driver/types/request.rs", "compiler/driver/types/compile.rs", "compiler/driver/tests/typescript_authority.rs", "compiler/driver/tests/typescript_lower.rs"]
+paths = [
+  "compiler/languages/typescript/",
+  "compiler/driver/lower/typescript.rs",
+  "compiler/driver/lower.rs (TypeScript surface only)",
+  "compiler/driver/types/request.rs",
+  "compiler/driver/types/compile.rs",
+  "compiler/driver/tests/typescript_authority.rs",
+  "compiler/driver/tests/typescript_lower.rs",
+]
 state = "planned"
 
 # ---- L5 session dispatches (2026-09-03, worktree /private/tmp/nudox-fidelity-typescript) ----

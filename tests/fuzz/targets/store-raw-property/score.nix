@@ -41,7 +41,10 @@
     commits = 1;
     method = "measured";
     ranking_factor = false;
-    paths = [ "crates/store/src/view/validate.rs" "crates/store/src/view/validate" ];
+    paths = [
+      "crates/store/src/view/validate.rs"
+      "crates/store/src/view/validate"
+    ];
   };
   entrypoints = [
     "crates/store/src/view/validate/frame.rs"

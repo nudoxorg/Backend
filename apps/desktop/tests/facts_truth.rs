@@ -12,7 +12,12 @@
 //! named method, a member's second paragraph), never a count, and each page
 //! states which lane answered so neither lane can pass for the other.
 
-#![allow(clippy::expect_used, clippy::panic, clippy::too_many_lines, missing_docs)]
+#![allow(
+    clippy::expect_used,
+    clippy::panic,
+    clippy::too_many_lines,
+    missing_docs
+)]
 
 use backend_client::{LocalSubscriptionTransport, Session};
 use backend_desktop::core::{LocalProjectId, VersionedRoot};
@@ -77,7 +82,11 @@ fn serve(projects: &[&Path]) -> (backend_desktop::DesktopHost, PathBuf, PathBuf)
             _ => false,
         };
         let rows = session.health().map_or(0, |health| health.row_count());
-        stable = if ready && rows > 0 && rows == last_rows { stable + 1 } else { 0 };
+        stable = if ready && rows > 0 && rows == last_rows {
+            stable + 1
+        } else {
+            0
+        };
         last_rows = rows;
         if stable >= 3 {
             break;
@@ -101,7 +110,12 @@ impl Plane {
 
     /// Runs the UI executor until `done` holds; worker threads land results
     /// through the store's wake task in between.
-    fn until<T>(&self, cx: &mut TestAppContext, what: &str, read: impl Fn(&DataStore) -> Option<T>) -> T {
+    fn until<T>(
+        &self,
+        cx: &mut TestAppContext,
+        what: &str,
+        read: impl Fn(&DataStore) -> Option<T>,
+    ) -> T {
         let started = Instant::now();
         loop {
             cx.run_until_parked();
@@ -113,7 +127,11 @@ impl Plane {
         }
     }
 
-    fn search(&self, cx: &mut TestAppContext, text: &str) -> backend_desktop::model::pages::SearchPage {
+    fn search(
+        &self,
+        cx: &mut TestAppContext,
+        text: &str,
+    ) -> backend_desktop::model::pages::SearchPage {
         let query = SearchQuery::new(text, 200).expect("query");
         self.ensure(cx, PageKey::Search(query.clone()));
         self.until(cx, text, |store| {
@@ -125,7 +143,13 @@ impl Plane {
 
     /// Searches `name`, picks the row of `kind` whose coordinate contains
     /// `within`, and returns its exact coordinate.
-    fn find(&self, cx: &mut TestAppContext, name: &str, kind: DeclarationKind, within: &str) -> SymbolRef {
+    fn find(
+        &self,
+        cx: &mut TestAppContext,
+        name: &str,
+        kind: DeclarationKind,
+        within: &str,
+    ) -> SymbolRef {
         let page = self.search(cx, name);
         page.rows
             .iter()
@@ -164,7 +188,6 @@ fn fault<T>(resource: &backend_desktop::core::Resource<T>, what: &str) {
     }
 }
 
-
 fn member<'a>(page: &'a SymbolPage, name: &str) -> &'a Member {
     page.members
         .known()
@@ -177,19 +200,31 @@ fn member<'a>(page: &'a SymbolPage, name: &str) -> &'a Member {
 /// Reads every fact of the fixture source on one lane's pages.
 fn assert_facts(plane: &Plane, cx: &mut TestAppContext, root: &Path, semantic: bool) {
     let within = utf8(root);
-    let lane = if semantic { "compiler-backed" } else { "structural" };
+    let lane = if semantic {
+        "compiler-backed"
+    } else {
+        "structural"
+    };
 
     // Item-level deprecation, with the source's own since and note.
     let stale = plane.find(cx, "stale", DeclarationKind::Function, within);
     let stale_page = plane.symbol(cx, &stale);
-    assert_eq!(stale_page.identity.semantic, semantic, "{lane} lane answered stale");
-    let notice = stale_page
-        .identity
-        .facts
-        .deprecated()
-        .unwrap_or_else(|| panic!("{lane}: stale is not deprecated: {:?}", stale_page.identity.facts));
+    assert_eq!(
+        stale_page.identity.semantic, semantic,
+        "{lane} lane answered stale"
+    );
+    let notice = stale_page.identity.facts.deprecated().unwrap_or_else(|| {
+        panic!(
+            "{lane}: stale is not deprecated: {:?}",
+            stale_page.identity.facts
+        )
+    });
     assert_eq!(notice.since.as_deref(), Some("1.2.0"), "{lane}");
-    assert_eq!(notice.note.as_deref(), Some("use `fresh` instead"), "{lane}");
+    assert_eq!(
+        notice.note.as_deref(),
+        Some("use `fresh` instead"),
+        "{lane}"
+    );
 
     // Doc sections, read by the Rust convention.
     let sections = stale_page
@@ -207,8 +242,16 @@ fn assert_facts(plane: &Plane, cx: &mut TestAppContext, root: &Path, semantic: b
     assert_eq!(
         sections,
         [
-            (SectionKind::Errors, "Errors".to_owned(), "Fails when the name is empty.".to_owned()),
-            (SectionKind::Panics, "Panics".to_owned(), "Never panics.".to_owned()),
+            (
+                SectionKind::Errors,
+                "Errors".to_owned(),
+                "Fails when the name is empty.".to_owned()
+            ),
+            (
+                SectionKind::Panics,
+                "Panics".to_owned(),
+                "Never panics.".to_owned()
+            ),
         ],
         "{lane}"
     );
@@ -221,7 +264,11 @@ fn assert_facts(plane: &Plane, cx: &mut TestAppContext, root: &Path, semantic: b
     // A declaration the producer read and found current.
     let fresh = plane.find(cx, "fresh", DeclarationKind::Function, within);
     let fresh_page = plane.symbol(cx, &fresh);
-    assert_eq!(fresh_page.identity.facts.deprecation.known(), Some(&None), "{lane}");
+    assert_eq!(
+        fresh_page.identity.facts.deprecation.known(),
+        Some(&None),
+        "{lane}"
+    );
 
     // Required and provided trait members, and a member's whole documentation.
     let service = plane.find(cx, "Service", DeclarationKind::Trait, within);
@@ -238,7 +285,11 @@ fn assert_facts(plane: &Plane, cx: &mut TestAppContext, root: &Path, semantic: b
         "{lane}: the member's second paragraph is gone: {docs:?}"
     );
     assert_eq!(
-        member(&service_page, "describe").decl.facts.obligation.known(),
+        member(&service_page, "describe")
+            .decl
+            .facts
+            .obligation
+            .known(),
         Some(&Some(Obligation::Provided)),
         "{lane}: describe has a default body"
     );
@@ -248,7 +299,11 @@ fn assert_facts(plane: &Plane, cx: &mut TestAppContext, root: &Path, semantic: b
     let plain_page = plane.symbol(cx, &plain);
     let label = member(&plain_page, "label");
     assert_eq!(
-        label.decl.facts.deprecated().and_then(|notice| notice.note.as_deref()),
+        label
+            .decl
+            .facts
+            .deprecated()
+            .and_then(|notice| notice.note.as_deref()),
         Some("read `name` instead"),
         "{lane}"
     );
@@ -277,7 +332,8 @@ fn declaration_facts_reach_the_page_on_both_lanes(cx: &mut TestAppContext) {
     let actor = EngineActor::start(LocalEngineClient::new(&endpoint, project), 32).expect("actor");
     let runtime = DesktopRuntime::new(snapshot, actor);
     let reader_endpoint = endpoint.clone();
-    let pool = ReadPool::start(3, move |_| SessionReader::connect(&reader_endpoint)).expect("read pool");
+    let pool =
+        ReadPool::start(3, move |_| SessionReader::connect(&reader_endpoint)).expect("read pool");
     let graph = cx.update(|cx| UiEntityGraph::install_with_reads(cx, runtime, None, Some(pool)));
     let plane = Plane {
         store: graph.store.clone(),

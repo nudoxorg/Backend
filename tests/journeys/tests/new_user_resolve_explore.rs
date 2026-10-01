@@ -65,7 +65,11 @@ impl ChildGuard {
 impl Drop for ChildGuard {
     fn drop(&mut self) {
         if let Some(child) = self.child.as_mut() {
-            if child.try_wait().expect("poll locald during cleanup").is_none() {
+            if child
+                .try_wait()
+                .expect("poll locald during cleanup")
+                .is_none()
+            {
                 let _ = child.kill();
             }
             let _ = child.wait();
@@ -121,8 +125,7 @@ fn launch(
     authority: &Path,
     registry_endpoint: &str,
 ) -> ChildGuard {
-    let mut args =
-        surface_matrix::locald_args(endpoint, workspace, authority, Some(0), false);
+    let mut args = surface_matrix::locald_args(endpoint, workspace, authority, Some(0), false);
     args.extend([
         OsString::from("--registry-endpoint"),
         OsString::from(registry_endpoint),
@@ -171,12 +174,7 @@ fn cli_json(endpoint: &Path, workspace: &Path, project: &Path, words: &[String])
 fn wait_for_index(endpoint: &Path, workspace: &Path, project: &Path) {
     let end = Instant::now() + INDEX_DEADLINE;
     loop {
-        let health = cli_json(
-            endpoint,
-            workspace,
-            project,
-            &["health".to_owned()],
-        );
+        let health = cli_json(endpoint, workspace, project, &["health".to_owned()]);
         if health["rows"].as_u64().unwrap_or(0) > 1 {
             return;
         }
@@ -228,7 +226,10 @@ fn record_tag_sets(value: &Value) -> Vec<Vec<String>> {
 }
 
 #[test]
-#[allow(clippy::too_many_lines, reason = "one conversation exercises resolve/explore/tree")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one conversation exercises resolve/explore/tree"
+)]
 fn new_user_resolve_explore_covers_resolve_explore_package_and_tree_navigation() {
     let root = unique_root("resolve-explore");
     let project = fixture_app();
@@ -339,12 +340,7 @@ fn new_user_resolve_explore_covers_resolve_explore_package_and_tree_navigation()
         "tree-open did not look up the declaration path from the index: {tree_open}"
     );
 
-    let tree = cli_json(
-        &endpoint,
-        &workspace,
-        &project,
-        &["tree".to_owned()],
-    );
+    let tree = cli_json(&endpoint, &workspace, &project, &["tree".to_owned()]);
     assert_eq!(tree["answer"], "product");
     let tree_tag_sets = record_tag_sets(&tree);
     assert!(

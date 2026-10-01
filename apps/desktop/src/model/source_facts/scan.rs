@@ -11,7 +11,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Directories whose files are examples, tests or fixtures, not the crate.
-const TESTISH: [&str; 11] = ["tests", "test", "benches", "bench", "examples", "example", "fixtures", "fixture", "testdata", "corpus", "target"];
+const TESTISH: [&str; 11] = [
+    "tests", "test", "benches", "bench", "examples", "example", "fixtures", "fixture", "testdata",
+    "corpus", "target",
+];
 
 /// Example lines kept per capability.
 const EXAMPLES: usize = 3;
@@ -132,7 +135,11 @@ pub fn mask(src: &str, literals: Literals) -> String {
             // A char literal or a lifetime.
             let end = char_literal(bytes, i);
             if let Some(end) = end {
-                if strings { keep(&mut out, i, end) } else { blank(&mut out, i, end) }
+                if strings {
+                    keep(&mut out, i, end)
+                } else {
+                    blank(&mut out, i, end)
+                }
                 i = end;
             } else {
                 out.push(b'\'');
@@ -140,17 +147,29 @@ pub fn mask(src: &str, literals: Literals) -> String {
             }
         } else if b == b'"' {
             let end = string_end(bytes, i + 1);
-            if strings { keep(&mut out, i, end) } else { blank(&mut out, i, end) }
+            if strings {
+                keep(&mut out, i, end)
+            } else {
+                blank(&mut out, i, end)
+            }
             i = end;
-        } else if (b == b'r' || (b == b'b' && next == Some(b'r'))) && (i == 0 || !ident(bytes[i - 1])) {
+        } else if (b == b'r' || (b == b'b' && next == Some(b'r')))
+            && (i == 0 || !ident(bytes[i - 1]))
+        {
             // A raw string: r#"…"#, br"…".
             let start = if b == b'b' { i + 2 } else { i + 1 };
             let hashes = bytes[start..].iter().take_while(|c| **c == b'#').count();
             if bytes.get(start + hashes) == Some(&b'"') {
                 let body = start + hashes + 1;
-                let close: Vec<u8> = std::iter::once(b'"').chain(std::iter::repeat_n(b'#', hashes)).collect();
+                let close: Vec<u8> = std::iter::once(b'"')
+                    .chain(std::iter::repeat_n(b'#', hashes))
+                    .collect();
                 let end = find(bytes, &close, body).map_or(bytes.len(), |at| at + close.len());
-                if strings { keep(&mut out, i, end) } else { blank(&mut out, i, end) }
+                if strings {
+                    keep(&mut out, i, end)
+                } else {
+                    blank(&mut out, i, end)
+                }
                 i = end;
             } else {
                 out.push(b);
@@ -165,14 +184,20 @@ pub fn mask(src: &str, literals: Literals) -> String {
 }
 
 fn memchr(needle: u8, hay: &[u8], from: usize) -> Option<usize> {
-    hay[from..].iter().position(|b| *b == needle).map(|at| from + at)
+    hay[from..]
+        .iter()
+        .position(|b| *b == needle)
+        .map(|at| from + at)
 }
 
 fn find(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
     if needle.is_empty() || from >= hay.len() {
         return None;
     }
-    hay[from..].windows(needle.len()).position(|w| w == needle).map(|at| from + at)
+    hay[from..]
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .map(|at| from + at)
 }
 
 /// The end of a string whose body starts at `from`.
@@ -197,7 +222,9 @@ fn char_literal(bytes: &[u8], at: usize) -> Option<usize> {
         let mut end = 2;
         match second {
             b'x' => end = 4,
-            b'u' if rest.get(2) == Some(&b'{') => end = 3 + rest[3..].iter().position(|c| *c == b'}')? + 1,
+            b'u' if rest.get(2) == Some(&b'{') => {
+                end = 3 + rest[3..].iter().position(|c| *c == b'}')? + 1
+            }
             b'\n' => return None,
             _ => {}
         }
@@ -222,7 +249,11 @@ fn line_of(newlines: &[usize], at: usize) -> usize {
 }
 
 fn newlines(text: &str) -> Vec<usize> {
-    text.bytes().enumerate().filter(|(_, b)| *b == b'\n').map(|(i, _)| i).collect()
+    text.bytes()
+        .enumerate()
+        .filter(|(_, b)| *b == b'\n')
+        .map(|(i, _)| i)
+        .collect()
 }
 
 /// One literal to find, and whether an identifier character may touch it.
@@ -256,9 +287,21 @@ const FS: [Pattern; 6] = [
     p("tokio::fs", true, true),
     p("read_dir", true, true),
 ];
-const PROCESS: [Pattern; 2] = [p("std::process::Command", true, false), p("Command::new(", true, false)];
-const ENV: [Pattern; 4] = [p("std::env::var", true, false), p("env::var(", true, false), p("env::vars(", true, false), p("env::set_var", true, false)];
-const FFI: [Pattern; 3] = [p("#[link(", false, false), p("dlopen", false, false), p("libloading", false, false)];
+const PROCESS: [Pattern; 2] = [
+    p("std::process::Command", true, false),
+    p("Command::new(", true, false),
+];
+const ENV: [Pattern; 4] = [
+    p("std::env::var", true, false),
+    p("env::var(", true, false),
+    p("env::vars(", true, false),
+    p("env::set_var", true, false),
+];
+const FFI: [Pattern; 3] = [
+    p("#[link(", false, false),
+    p("dlopen", false, false),
+    p("libloading", false, false),
+];
 
 /// Byte offsets where `pattern` occurs in `code`.
 fn occurrences(code: &str, pattern: &Pattern) -> Vec<usize> {
@@ -267,7 +310,8 @@ fn occurrences(code: &str, pattern: &Pattern) -> Vec<usize> {
         .map(|(at, _)| at)
         .filter(|at| {
             let end = at + pattern.text.len();
-            (!pattern.lead || *at == 0 || !ident(bytes[at - 1])) && (!pattern.tail || end >= bytes.len() || !ident(bytes[end]))
+            (!pattern.lead || *at == 0 || !ident(bytes[at - 1]))
+                && (!pattern.tail || end >= bytes.len() || !ident(bytes[end]))
         })
         .collect()
 }
@@ -301,7 +345,9 @@ fn unsafe_at(bytes: &[u8], at: usize) -> bool {
         return false;
     }
     j = skip(j);
-    let word = |j: usize, w: &str| bytes[j..].starts_with(w.as_bytes()) && bytes.get(j + w.len()).is_none_or(|b| !ident(*b));
+    let word = |j: usize, w: &str| {
+        bytes[j..].starts_with(w.as_bytes()) && bytes.get(j + w.len()).is_none_or(|b| !ident(*b))
+    };
     if bytes.get(j) == Some(&b'{') {
         return true;
     }
@@ -321,7 +367,9 @@ fn unsafe_at(bytes: &[u8], at: usize) -> bool {
 
 fn count_unsafe(code: &str) -> usize {
     let bytes = code.as_bytes();
-    code.match_indices("unsafe").filter(|(at, _)| (*at == 0 || !ident(bytes[at - 1])) && unsafe_at(bytes, *at)).count()
+    code.match_indices("unsafe")
+        .filter(|(at, _)| (*at == 0 || !ident(bytes[at - 1])) && unsafe_at(bytes, *at))
+        .count()
 }
 
 fn process_imported(code: &str) -> bool {
@@ -333,7 +381,9 @@ fn process_imported(code: &str) -> bool {
         }
         if let Some(group) = rest.strip_prefix('{')
             && let Some(close) = group.find('}')
-            && group[..close].split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| w == "Command")
+            && group[..close]
+                .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .any(|w| w == "Command")
         {
             return true;
         }
@@ -348,9 +398,16 @@ fn forbids_unsafe(code: &str) -> bool {
         let attr = &code[from + at + 3..];
         let Some(close) = attr.find(']') else { break };
         let inner = attr[..close].trim();
-        if let Some(rest) = inner.strip_prefix("forbid").or_else(|| inner.strip_prefix("deny"))
+        if let Some(rest) = inner
+            .strip_prefix("forbid")
+            .or_else(|| inner.strip_prefix("deny"))
             && let Some(list) = rest.trim_start().strip_prefix('(')
-            && list.split(')').next().unwrap_or("").split(',').any(|x| x.trim() == "unsafe_code")
+            && list
+                .split(')')
+                .next()
+                .unwrap_or("")
+                .split(',')
+                .any(|x| x.trim() == "unsafe_code")
         {
             return true;
         }
@@ -393,14 +450,28 @@ fn rust_files(root: &Path) -> Vec<(PathBuf, Vec<String>)> {
         for entry in entries {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().into_owned();
-            let Ok(kind) = entry.file_type() else { continue };
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
             if kind.is_dir() {
-                if name.starts_with('.') || name == "target" || name == "node_modules" || path.join("Cargo.toml").exists() {
+                if name.starts_with('.')
+                    || name == "target"
+                    || name == "node_modules"
+                    || path.join("Cargo.toml").exists()
+                {
                     continue;
                 }
                 walk(&path, root, out);
             } else if kind.is_file() && name.ends_with(".rs") {
-                let rel: Vec<String> = path.strip_prefix(root).ok().map(|r| r.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect()).unwrap_or_default();
+                let rel: Vec<String> = path
+                    .strip_prefix(root)
+                    .ok()
+                    .map(|r| {
+                        r.components()
+                            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 out.push((path, rel));
             }
         }
@@ -414,24 +485,43 @@ fn rust_files(root: &Path) -> Vec<(PathBuf, Vec<String>)> {
 /// to `root` (`src/lib.rs`).
 #[must_use]
 pub fn scan(root: &Path, lib: &str) -> Scan {
-    let lib_parts: Vec<&str> = Path::new(lib).parent().map(|p| p.components().filter_map(|c| c.as_os_str().to_str()).collect()).unwrap_or_default();
+    let lib_parts: Vec<&str> = Path::new(lib)
+        .parent()
+        .map(|p| {
+            p.components()
+                .filter_map(|c| c.as_os_str().to_str())
+                .collect()
+        })
+        .unwrap_or_default();
     let mut out = Scan::default();
-    let (mut net, mut fs_hits, mut process, mut env, mut ffi) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut net, mut fs_hits, mut process, mut env, mut ffi) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let mut counts = [0usize; 5];
     for (path, rel) in rust_files(root) {
-        let top = if rel.len() > 1 { rel[0].to_lowercase() } else { String::new() };
+        let top = if rel.len() > 1 {
+            rel[0].to_lowercase()
+        } else {
+            String::new()
+        };
         if top == "examples" || top == "example" {
             out.examples += 1;
         }
         let dirs = &rel[..rel.len().saturating_sub(1)];
-        let cap_ok = !dirs.iter().any(|part| TESTISH.contains(&part.to_lowercase().as_str()));
+        let cap_ok = !dirs
+            .iter()
+            .any(|part| TESTISH.contains(&part.to_lowercase().as_str()));
         // `src/**`, or a library root elsewhere (`[lib] path = "rust/lib.rs"`).
         let in_src = top == "src"
             || (rel != ["build.rs".to_owned()]
                 && rel.len() > lib_parts.len()
-                && rel[..lib_parts.len()].iter().map(String::as_str).eq(lib_parts.iter().copied())
+                && rel[..lib_parts.len()]
+                    .iter()
+                    .map(String::as_str)
+                    .eq(lib_parts.iter().copied())
                 && lib_parts != ["src"]
-                && !rel[lib_parts.len()..rel.len() - 1].iter().any(|part| TESTISH.contains(&part.to_lowercase().as_str())));
+                && !rel[lib_parts.len()..rel.len() - 1]
+                    .iter()
+                    .any(|part| TESTISH.contains(&part.to_lowercase().as_str())));
         if !(in_src || cap_ok) {
             continue;
         }
@@ -439,7 +529,11 @@ pub fn scan(root: &Path, lib: &str) -> Scan {
         let text = String::from_utf8_lossy(&bytes).into_owned();
         let code = mask(&text, Literals::Keep);
         if in_src {
-            out.sloc += text.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with("//")).count();
+            out.sloc += text
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty() && !line.starts_with("//"))
+                .count();
             out.unsafe_count += count_unsafe(&code);
             if out.suite == Suite::Untested && code.contains("#[test]") {
                 out.suite = Suite::Tested;
@@ -450,7 +544,10 @@ pub fn scan(root: &Path, lib: &str) -> Scan {
             let lines: Vec<&str> = text.split('\n').collect();
             let file = rel.join("/");
             let proc_ok = process_imported(&code);
-            let mut hit = |list: &mut Vec<Evidence>, count: &mut usize, offsets: Vec<usize>, skip: &dyn Fn(usize) -> bool| {
+            let mut hit = |list: &mut Vec<Evidence>,
+                           count: &mut usize,
+                           offsets: Vec<usize>,
+                           skip: &dyn Fn(usize) -> bool| {
                 let mut offsets = offsets;
                 offsets.sort_unstable();
                 let mut seen: Vec<usize> = Vec::new();
@@ -466,15 +563,26 @@ pub fn scan(root: &Path, lib: &str) -> Scan {
                     *count += 1;
                     if list.len() < HITS {
                         let raw = lines.get(line - 1).copied().unwrap_or("").trim();
-                        list.push(Evidence { file: file.clone(), line, text: raw.chars().take(EVIDENCE).collect() });
+                        list.push(Evidence {
+                            file: file.clone(),
+                            line,
+                            text: raw.chars().take(EVIDENCE).collect(),
+                        });
                     }
                 }
             };
-            let of = |patterns: &[Pattern]| -> Vec<usize> { patterns.iter().flat_map(|pattern| occurrences(&code, pattern)).collect() };
+            let of = |patterns: &[Pattern]| -> Vec<usize> {
+                patterns
+                    .iter()
+                    .flat_map(|pattern| occurrences(&code, pattern))
+                    .collect()
+            };
             hit(&mut net, &mut counts[0], of(&NET), &|_| false);
             hit(&mut fs_hits, &mut counts[1], of(&FS), &|_| false);
             // A bare `Command::new(` may be clap's, not `std::process`'s.
-            hit(&mut process, &mut counts[2], of(&PROCESS), &|at| code[at..].starts_with("Command::new(") && !proc_ok);
+            hit(&mut process, &mut counts[2], of(&PROCESS), &|at| {
+                code[at..].starts_with("Command::new(") && !proc_ok
+            });
             hit(&mut env, &mut counts[3], of(&ENV), &|_| false);
             let mut ffi_at = of(&FFI);
             ffi_at.extend(extern_c(&code));
@@ -482,19 +590,47 @@ pub fn scan(root: &Path, lib: &str) -> Scan {
         }
     }
     let lib_file = root.join(lib);
-    let lib_file = if lib_file.is_file() { lib_file } else { root.join("src").join("main.rs") };
+    let lib_file = if lib_file.is_file() {
+        lib_file
+    } else {
+        root.join("src").join("main.rs")
+    };
     if let Ok(bytes) = fs::read(&lib_file) {
-        out.unsafe_code = if forbids_unsafe(&mask(&String::from_utf8_lossy(&bytes), Literals::Keep)) { Unsafe::Forbidden } else { Unsafe::Allowed };
+        out.unsafe_code = if forbids_unsafe(&mask(&String::from_utf8_lossy(&bytes), Literals::Keep))
+        {
+            Unsafe::Forbidden
+        } else {
+            Unsafe::Allowed
+        };
     }
     if root.join("tests").is_dir() {
         out.suite = Suite::Tested;
     }
-    out.build = if root.join("build.rs").is_file() { Build::Script } else { Build::Plain };
-    out.net = Capability { count: counts[0], examples: first_examples(&net, EXAMPLES) };
-    out.fs = Capability { count: counts[1], examples: first_examples(&fs_hits, EXAMPLES) };
-    out.process = Capability { count: counts[2], examples: first_examples(&process, EXAMPLES) };
-    out.env = Capability { count: counts[3], examples: first_examples(&env, EXAMPLES) };
-    out.ffi = Capability { count: counts[4], examples: first_examples(&ffi, EXAMPLES) };
+    out.build = if root.join("build.rs").is_file() {
+        Build::Script
+    } else {
+        Build::Plain
+    };
+    out.net = Capability {
+        count: counts[0],
+        examples: first_examples(&net, EXAMPLES),
+    };
+    out.fs = Capability {
+        count: counts[1],
+        examples: first_examples(&fs_hits, EXAMPLES),
+    };
+    out.process = Capability {
+        count: counts[2],
+        examples: first_examples(&process, EXAMPLES),
+    };
+    out.env = Capability {
+        count: counts[3],
+        examples: first_examples(&env, EXAMPLES),
+    };
+    out.ffi = Capability {
+        count: counts[4],
+        examples: first_examples(&ffi, EXAMPLES),
+    };
     out
 }
 
@@ -502,21 +638,38 @@ pub fn scan(root: &Path, lib: &str) -> Scan {
 /// without the rest (what a dependency weighs).
 #[must_use]
 pub fn sloc(root: &Path, lib: &str) -> usize {
-    let lib_parts: Vec<String> = Path::new(lib).parent().map(|p| p.components().filter_map(|c| c.as_os_str().to_str().map(str::to_owned)).collect()).unwrap_or_default();
+    let lib_parts: Vec<String> = Path::new(lib)
+        .parent()
+        .map(|p| {
+            p.components()
+                .filter_map(|c| c.as_os_str().to_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
     rust_files(root)
         .into_iter()
         .filter(|(_, rel)| {
-            let top = if rel.len() > 1 { rel[0].to_lowercase() } else { String::new() };
+            let top = if rel.len() > 1 {
+                rel[0].to_lowercase()
+            } else {
+                String::new()
+            };
             top == "src"
                 || (rel != &["build.rs".to_owned()]
                     && rel.len() > lib_parts.len()
                     && rel[..lib_parts.len()] == lib_parts[..]
                     && lib_parts != ["src".to_owned()]
-                    && !rel[lib_parts.len()..rel.len() - 1].iter().any(|part| TESTISH.contains(&part.to_lowercase().as_str())))
+                    && !rel[lib_parts.len()..rel.len() - 1]
+                        .iter()
+                        .any(|part| TESTISH.contains(&part.to_lowercase().as_str())))
         })
         .map(|(path, _)| {
             fs::read(&path).map_or(0, |bytes| {
-                String::from_utf8_lossy(&bytes).lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with("//")).count()
+                String::from_utf8_lossy(&bytes)
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty() && !line.starts_with("//"))
+                    .count()
             })
         })
         .sum()

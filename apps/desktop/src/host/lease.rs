@@ -288,7 +288,10 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    #[allow(clippy::too_many_lines, reason = "one journey: embed, attach, index, read the revision")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one journey: embed, attach, index, read the revision"
+    )]
     fn one_gui_embeds_and_every_other_surface_attaches_to_that_owner() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)

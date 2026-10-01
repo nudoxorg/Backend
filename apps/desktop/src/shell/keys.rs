@@ -185,7 +185,13 @@ pub(crate) struct Key {
     pub says: &'static str,
 }
 
-const fn key(command: Command, chord: &'static str, cap: &'static str, scope: Scope, says: &'static str) -> Key {
+const fn key(
+    command: Command,
+    chord: &'static str,
+    cap: &'static str,
+    scope: Scope,
+    says: &'static str,
+) -> Key {
     Key {
         command,
         chord,
@@ -197,48 +203,216 @@ const fn key(command: Command, chord: &'static str, cap: &'static str, scope: Sc
 
 /// The table. The first row for a command is its primary chord (its cap).
 pub(crate) const TABLE: &[Key] = &[
-    key(Command::FocusNext, "j", "J", Scope::Plain, "walk focus down"),
-    key(Command::FocusNext, "down", "↓", Scope::Plain, "walk focus down"),
+    key(
+        Command::FocusNext,
+        "j",
+        "J",
+        Scope::Plain,
+        "walk focus down",
+    ),
+    key(
+        Command::FocusNext,
+        "down",
+        "↓",
+        Scope::Plain,
+        "walk focus down",
+    ),
     key(Command::FocusPrev, "k", "K", Scope::Plain, "walk focus up"),
     key(Command::FocusPrev, "up", "↑", Scope::Plain, "walk focus up"),
-    key(Command::Activate, "enter", "↵", Scope::Plain, "open what the focus stands on"),
-    key(Command::Peek, "space", "Space", Scope::Plain, "peek; again to pin"),
-    key(Command::PeelSource, "s", "S", Scope::Plain, "the focused declaration's code"),
+    key(
+        Command::Activate,
+        "enter",
+        "↵",
+        Scope::Plain,
+        "open what the focus stands on",
+    ),
+    key(
+        Command::Peek,
+        "space",
+        "Space",
+        Scope::Plain,
+        "peek; again to pin",
+    ),
+    key(
+        Command::PeelSource,
+        "s",
+        "S",
+        Scope::Plain,
+        "the focused declaration's code",
+    ),
     // provisional (owner, 2026-09-25)
     key(Command::Graph, "g", "G", Scope::Plain, "the graph"),
     // provisional (owner, 2026-09-25)
-    key(Command::CodePage, "secondary-.", "⌘.", Scope::Shell, "code ↔ page"),
+    key(
+        Command::CodePage,
+        "secondary-.",
+        "⌘.",
+        Scope::Shell,
+        "code ↔ page",
+    ),
     key(Command::HintMode, "f", "F", Scope::Plain, "hint mode"),
     key(Command::Ask, "secondary-k", "⌘K", Scope::Shell, "ask"),
-    key(Command::Back, "secondary-[", "⌘[", Scope::Shell, "back along the thread"),
-    key(Command::Forward, "secondary-]", "⌘]", Scope::Shell, "forward along the thread"),
-    key(Command::Surface, "secondary-up", "⌘↑", Scope::Plain, "surface one depth"),
+    key(
+        Command::Back,
+        "secondary-[",
+        "⌘[",
+        Scope::Shell,
+        "back along the thread",
+    ),
+    key(
+        Command::Forward,
+        "secondary-]",
+        "⌘]",
+        Scope::Shell,
+        "forward along the thread",
+    ),
+    key(
+        Command::Surface,
+        "secondary-up",
+        "⌘↑",
+        Scope::Plain,
+        "surface one depth",
+    ),
     // provisional: ⌘. went to code ↔ page
-    key(Command::Zen, "secondary-shift-.", "⌘⇧.", Scope::Shell, "zen: one page, no shelf"),
-    key(Command::ToggleShelf, "secondary-\\", "⌘\\", Scope::Shell, "the shelf"),
+    key(
+        Command::Zen,
+        "secondary-shift-.",
+        "⌘⇧.",
+        Scope::Shell,
+        "zen: one page, no shelf",
+    ),
+    key(
+        Command::ToggleShelf,
+        "secondary-\\",
+        "⌘\\",
+        Scope::Shell,
+        "the shelf",
+    ),
     key(Command::NextZone, "tab", "Tab", Scope::Plain, "next zone"),
-    key(Command::PrevZone, "shift-tab", "⇧Tab", Scope::Plain, "previous zone"),
-    key(Command::Escape, "escape", "Esc", Scope::Shell, "close the topmost thing; back to the pinned release"),
-    key(Command::ZoomIn, "secondary-=", "⌘+", Scope::Shell, "text larger"),
-    key(Command::ZoomIn, "secondary-+", "⌘+", Scope::Shell, "text larger"),
-    key(Command::ZoomOut, "secondary--", "⌘−", Scope::Shell, "text smaller"),
-    key(Command::ZoomReset, "secondary-0", "⌘0", Scope::Shell, "text at the system's size"),
+    key(
+        Command::PrevZone,
+        "shift-tab",
+        "⇧Tab",
+        Scope::Plain,
+        "previous zone",
+    ),
+    key(
+        Command::Escape,
+        "escape",
+        "Esc",
+        Scope::Shell,
+        "close the topmost thing; back to the pinned release",
+    ),
+    key(
+        Command::ZoomIn,
+        "secondary-=",
+        "⌘+",
+        Scope::Shell,
+        "text larger",
+    ),
+    key(
+        Command::ZoomIn,
+        "secondary-+",
+        "⌘+",
+        Scope::Shell,
+        "text larger",
+    ),
+    key(
+        Command::ZoomOut,
+        "secondary--",
+        "⌘−",
+        Scope::Shell,
+        "text smaller",
+    ),
+    key(
+        Command::ZoomReset,
+        "secondary-0",
+        "⌘0",
+        Scope::Shell,
+        "text at the system's size",
+    ),
     // Depth moved to ⌃ when the hand took ⌘1–⌘5 (lead, 2026-09-27).
     key(Command::DepthOrbit, "ctrl-1", "⌃1", Scope::Shell, "Orbit"),
-    key(Command::DepthPackage, "ctrl-2", "⌃2", Scope::Shell, "the package"),
+    key(
+        Command::DepthPackage,
+        "ctrl-2",
+        "⌃2",
+        Scope::Shell,
+        "the package",
+    ),
     key(Command::DepthPage, "ctrl-3", "⌃3", Scope::Shell, "the page"),
     key(Command::DepthCode, "ctrl-4", "⌃4", Scope::Shell, "the code"),
-    key(Command::OpenSettings, "secondary-,", "⌘,", Scope::Shell, "settings"),
-    key(Command::Hold, "secondary-d", "⌘D", Scope::Shell, "hold it in the hand"),
+    key(
+        Command::OpenSettings,
+        "secondary-,",
+        "⌘,",
+        Scope::Shell,
+        "settings",
+    ),
+    key(
+        Command::Hold,
+        "secondary-d",
+        "⌘D",
+        Scope::Shell,
+        "hold it in the hand",
+    ),
     key(Command::OpenHand, "h", "H", Scope::Plain, "the hand"),
-    key(Command::HandCard1, "secondary-1", "⌘1", Scope::Shell, "the hand's first card"),
-    key(Command::HandCard2, "secondary-2", "⌘2", Scope::Shell, "the hand's second card"),
-    key(Command::HandCard3, "secondary-3", "⌘3", Scope::Shell, "the hand's third card"),
-    key(Command::HandCard4, "secondary-4", "⌘4", Scope::Shell, "the hand's fourth card"),
-    key(Command::HandCard5, "secondary-5", "⌘5", Scope::Shell, "the hand's fifth card"),
-    key(Command::CopyAddress, "secondary-shift-c", "⌘⇧C", Scope::Shell, "copy the address"),
-    key(Command::Tour, "t", "T", Scope::Plain, "tour this package in the graph"),
-    key(Command::AddFolder, "secondary-o", "⌘O", Scope::Shell, "add a folder"),
+    key(
+        Command::HandCard1,
+        "secondary-1",
+        "⌘1",
+        Scope::Shell,
+        "the hand's first card",
+    ),
+    key(
+        Command::HandCard2,
+        "secondary-2",
+        "⌘2",
+        Scope::Shell,
+        "the hand's second card",
+    ),
+    key(
+        Command::HandCard3,
+        "secondary-3",
+        "⌘3",
+        Scope::Shell,
+        "the hand's third card",
+    ),
+    key(
+        Command::HandCard4,
+        "secondary-4",
+        "⌘4",
+        Scope::Shell,
+        "the hand's fourth card",
+    ),
+    key(
+        Command::HandCard5,
+        "secondary-5",
+        "⌘5",
+        Scope::Shell,
+        "the hand's fifth card",
+    ),
+    key(
+        Command::CopyAddress,
+        "secondary-shift-c",
+        "⌘⇧C",
+        Scope::Shell,
+        "copy the address",
+    ),
+    key(
+        Command::Tour,
+        "t",
+        "T",
+        Scope::Plain,
+        "tour this package in the graph",
+    ),
+    key(
+        Command::AddFolder,
+        "secondary-o",
+        "⌘O",
+        Scope::Shell,
+        "add a folder",
+    ),
 ];
 
 /// The cap a command shows (its first row).
@@ -252,15 +426,31 @@ pub(crate) fn cap(command: Command) -> &'static str {
 
 fn binding_context(key: &Key) -> String {
     // Graph, menus and Compare each own a different part of the keyboard.
-    let graph_owns = matches!(key.command,
-        Command::FocusNext | Command::FocusPrev | Command::Activate | Command::Ask | Command::Escape | Command::Peek | Command::Tour);
+    let graph_owns = matches!(
+        key.command,
+        Command::FocusNext
+            | Command::FocusPrev
+            | Command::Activate
+            | Command::Ask
+            | Command::Escape
+            | Command::Peek
+            | Command::Tour
+    );
     let menu_owns = key.scope == Scope::Plain || key.command == Command::Escape;
     let compare_owns = matches!(key.command, Command::FocusNext | Command::FocusPrev);
     let mut context = String::from(CONTEXT);
-    if key.scope == Scope::Plain { context.push_str(" && !Input"); }
-    if graph_owns { context.push_str(" && !Graph"); }
-    if menu_owns { context.push_str(" && !Menu"); }
-    if compare_owns { context.push_str(" && !BrowseCompare"); }
+    if key.scope == Scope::Plain {
+        context.push_str(" && !Input");
+    }
+    if graph_owns {
+        context.push_str(" && !Graph");
+    }
+    if menu_owns {
+        context.push_str(" && !Menu");
+    }
+    if compare_owns {
+        context.push_str(" && !BrowseCompare");
+    }
     context
 }
 
@@ -321,25 +511,47 @@ mod tests {
     #[test]
     fn compare_keeps_its_own_row_keys_without_losing_shell_shortcuts() {
         for chord in ["j", "k", "down", "up"] {
-            let key = TABLE.iter().find(|key| key.chord == chord).expect("row key is bound");
-            assert!(binding_context(key).contains("!BrowseCompare"), "{chord} must reach the focused Compare page");
+            let key = TABLE
+                .iter()
+                .find(|key| key.chord == chord)
+                .expect("row key is bound");
+            assert!(
+                binding_context(key).contains("!BrowseCompare"),
+                "{chord} must reach the focused Compare page"
+            );
         }
-        let ask = TABLE.iter().find(|key| key.command == Command::Ask).expect("Ask is bound");
-        assert!(!binding_context(ask).contains("BrowseCompare"), "Ask stays available over Compare");
+        let ask = TABLE
+            .iter()
+            .find(|key| key.command == Command::Ask)
+            .expect("Ask is bound");
+        assert!(
+            !binding_context(ask).contains("BrowseCompare"),
+            "Ask stays available over Compare"
+        );
     }
 
     #[test]
     fn no_chord_is_bound_twice_and_every_command_has_a_cap() {
         let mut seen = HashSet::new();
         for key in TABLE {
-            assert!(seen.insert((key.chord, key.scope == Scope::Plain)), "{} is bound twice", key.chord);
+            assert!(
+                seen.insert((key.chord, key.scope == Scope::Plain)),
+                "{} is bound twice",
+                key.chord
+            );
             assert!(!cap(key.command).is_empty(), "{:?} has no cap", key.command);
         }
         // The owner's zoom keys hold ⌘− and ⌘0: nothing else may.
-        let zoom_out = TABLE.iter().filter(|key| key.chord == "secondary--").collect::<Vec<_>>();
+        let zoom_out = TABLE
+            .iter()
+            .filter(|key| key.chord == "secondary--")
+            .collect::<Vec<_>>();
         assert_eq!(zoom_out.len(), 1);
         assert_eq!(zoom_out[0].command, Command::ZoomOut);
-        let reset = TABLE.iter().filter(|key| key.chord == "secondary-0").collect::<Vec<_>>();
+        let reset = TABLE
+            .iter()
+            .filter(|key| key.chord == "secondary-0")
+            .collect::<Vec<_>>();
         assert_eq!(reset.len(), 1);
         assert_eq!(reset[0].command, Command::ZoomReset);
         // Every binding parses.

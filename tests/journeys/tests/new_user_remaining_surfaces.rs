@@ -67,7 +67,11 @@ impl ChildGuard {
 impl Drop for ChildGuard {
     fn drop(&mut self) {
         if let Some(child) = self.child.as_mut() {
-            if child.try_wait().expect("poll locald during cleanup").is_none() {
+            if child
+                .try_wait()
+                .expect("poll locald during cleanup")
+                .is_none()
+            {
                 let _ = child.kill();
             }
             let _ = child.wait();
@@ -123,8 +127,7 @@ fn launch(
     authority: &Path,
     registry_endpoint: &str,
 ) -> ChildGuard {
-    let mut args =
-        surface_matrix::locald_args(endpoint, workspace, authority, Some(0), false);
+    let mut args = surface_matrix::locald_args(endpoint, workspace, authority, Some(0), false);
     args.extend([
         OsString::from("--registry-endpoint"),
         OsString::from(registry_endpoint),
@@ -173,12 +176,7 @@ fn cli_json(endpoint: &Path, workspace: &Path, project: &Path, words: &[String])
 fn wait_for_index(endpoint: &Path, workspace: &Path, project: &Path) {
     let end = Instant::now() + INDEX_DEADLINE;
     loop {
-        let health = cli_json(
-            endpoint,
-            workspace,
-            project,
-            &["health".to_owned()],
-        );
+        let health = cli_json(endpoint, workspace, project, &["health".to_owned()]);
         if health["rows"].as_u64().unwrap_or(0) > 1 {
             return;
         }
@@ -207,12 +205,11 @@ fn wait_for_search(
                 "20".to_owned(),
             ],
         );
-        if let Some(record) = search["records"]
-            .as_array()
-            .and_then(|records| {
-                records.iter().find(|record| record["identity"]["name"] == name)
-            })
-        {
+        if let Some(record) = search["records"].as_array().and_then(|records| {
+            records
+                .iter()
+                .find(|record| record["identity"]["name"] == name)
+        }) {
             return record.clone();
         }
         assert!(
@@ -242,15 +239,12 @@ fn wait_for_registry_symbol(
                 "20".to_owned(),
             ],
         );
-        if let Some(coordinate) = search["records"]
-            .as_array()
-            .and_then(|records| {
-                records
-                    .iter()
-                    .find(|record| record["identity"]["name"] == name)
-                    .and_then(|record| record["identity"]["coordinate"].as_str())
-            })
-        {
+        if let Some(coordinate) = search["records"].as_array().and_then(|records| {
+            records
+                .iter()
+                .find(|record| record["identity"]["name"] == name)
+                .and_then(|record| record["identity"]["coordinate"].as_str())
+        }) {
             return coordinate.to_owned();
         }
         assert!(
@@ -305,7 +299,10 @@ fn outline_names(value: &Value) -> BTreeSet<String> {
 }
 
 #[test]
-#[allow(clippy::too_many_lines, reason = "one conversation exercises the remaining surfaces")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one conversation exercises the remaining surfaces"
+)]
 fn new_user_remaining_surfaces_cover_read_references_outline_source_document_and_dependencies() {
     let root = unique_root("remaining");
     let project = fixture_app();
@@ -342,7 +339,13 @@ fn new_user_remaining_surfaces_cover_read_references_outline_source_document_and
     );
     wait_for_registry_symbol(&endpoint, &workspace, &project, "helper_value");
 
-    let parse_config = wait_for_search(&endpoint, &workspace, &project, "parse_config", "parse_config");
+    let parse_config = wait_for_search(
+        &endpoint,
+        &workspace,
+        &project,
+        "parse_config",
+        "parse_config",
+    );
     let parse_coordinate = parse_config["identity"]["coordinate"]
         .as_str()
         .expect("parse_config coordinate")
@@ -388,7 +391,9 @@ fn new_user_remaining_surfaces_cover_read_references_outline_source_document_and
         "references must carry the Calls relation kind, not substring mention: {references}"
     );
     assert!(
-        !reference_titles.iter().any(|name| name.ends_with("::decoy_mention")),
+        !reference_titles
+            .iter()
+            .any(|name| name.ends_with("::decoy_mention")),
         "comment/string mention must not become a reference: {references}"
     );
 
@@ -467,7 +472,9 @@ fn new_user_remaining_surfaces_cover_read_references_outline_source_document_and
     assert_eq!(dependents["answer"], "product");
     let dependent_titles = product_titles(&dependents);
     assert!(
-        dependent_titles.iter().any(|title| title.contains("new-user-app")),
+        dependent_titles
+            .iter()
+            .any(|title| title.contains("new-user-app")),
         "dependents on journey-helper did not name new-user-app: {dependents}"
     );
 

@@ -16,8 +16,8 @@ use crate::semantics::types::Target;
 use crate::theme::ActiveFacet;
 use crate::tokens::Palette;
 use gpui::{
-    AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
-    Styled, StatefulInteractiveElement, Window, div,
+    AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce,
+    SharedString, StatefulInteractiveElement, Styled, Window, div,
 };
 use std::sync::Arc;
 
@@ -26,7 +26,14 @@ use std::sync::Arc;
 pub const SAY_BELOW: f32 = 580.0;
 
 /// Writes `(params) → ret` after whatever the line holds.
-pub(crate) fn sig(line: &mut Line, sig: &SigLine, ink: &TypeInk, links: &Links, xray: bool, palette: &Palette) {
+pub(crate) fn sig(
+    line: &mut Line,
+    sig: &SigLine,
+    ink: &TypeInk,
+    links: &Links,
+    xray: bool,
+    palette: &Palette,
+) {
     let punct = palette.ink4.hsla();
     if !sig.params.is_empty() {
         line.push("(", ink.base, punct);
@@ -47,10 +54,18 @@ pub(crate) fn sig(line: &mut Line, sig: &SigLine, ink: &TypeInk, links: &Links, 
 /// A member's name and signature as one line.
 pub(crate) fn member_line(row: &MemberRow, links: &Links, xray: bool, palette: &Palette) -> Line {
     let mut line = Line::new();
-    line.link(&row.name, roles::ROW, palette.ink0.hsla(), Target::Node(row.node));
+    line.link(
+        &row.name,
+        roles::ROW,
+        palette.ink0.hsla(),
+        Target::Node(row.node),
+    );
     line.push(" ", roles::ROW, palette.ink2.hsla());
     let mut ink = TypeInk::new(roles::words(roles::ROW), palette);
-    ink.base = crate::tokens::TypeRole { weight: 400.0, ..roles::ROW };
+    ink.base = crate::tokens::TypeRole {
+        weight: 400.0,
+        ..roles::ROW
+    };
     sig(&mut line, &row.sig, &ink, links, xray, palette);
     line
 }
@@ -60,7 +75,13 @@ pub(crate) fn fold_line(row: &FoldRow, links: &Links, xray: bool, palette: &Pale
     let mut line = Line::new();
     line.push(&row.prefix, roles::ROW, palette.ink0.hsla());
     line.push("…", roles::ROW, palette.ink3.hsla());
-    let ink = TypeInk::new(crate::tokens::TypeRole { weight: 400.0, ..roles::ROW }, palette);
+    let ink = TypeInk::new(
+        crate::tokens::TypeRole {
+            weight: 400.0,
+            ..roles::ROW
+        },
+        palette,
+    );
     let punct = palette.ink4.hsla();
     if !row.inputs.is_empty() {
         line.push(" (", ink.base, punct);
@@ -73,7 +94,11 @@ pub(crate) fn fold_line(row: &FoldRow, links: &Links, xray: bool, palette: &Pale
         }
         let more = row.inputs.len().saturating_sub(FoldRow::SHOWN);
         if more > 0 {
-            line.push(&format!(" and {more} more"), roles::words(ink.base), palette.ink3.hsla());
+            line.push(
+                &format!(" and {more} more"),
+                roles::words(ink.base),
+                palette.ink3.hsla(),
+            );
         }
         line.push(")", ink.base, punct);
     }
@@ -103,22 +128,61 @@ pub(crate) fn row(
     palette: &Palette,
 ) -> gpui::Stateful<gpui::Div> {
     let (data, say) = match row {
-        Row::One(member) => (super::Operation {
-            name: member.name.clone(), target: Some(Target::Node(member.node)),
-            inputs: member.sig.params.clone(), result: member.sig.success.clone(), failure: member.sig.fails.clone(), signature_known: true,
-        }, member.doc.clone()),
-        Row::Fold(fold) => (super::Operation {
-            name: SharedString::from(format!("{}…", fold.prefix)), target: None,
-            inputs: fold.inputs.iter().take(FoldRow::SHOWN).cloned().collect(), result: fold.success.clone(), failure: fold.fails.clone(), signature_known: true,
-        }, Some(SharedString::from(fold_count(fold)))),
+        Row::One(member) => (
+            super::Operation {
+                name: member.name.clone(),
+                target: Some(Target::Node(member.node)),
+                inputs: member.sig.params.clone(),
+                result: member.sig.success.clone(),
+                failure: member.sig.fails.clone(),
+                signature_known: true,
+            },
+            member.doc.clone(),
+        ),
+        Row::Fold(fold) => (
+            super::Operation {
+                name: SharedString::from(format!("{}…", fold.prefix)),
+                target: None,
+                inputs: fold.inputs.iter().take(FoldRow::SHOWN).cloned().collect(),
+                result: fold.success.clone(),
+                failure: fold.fails.clone(),
+                signature_known: true,
+            },
+            Some(SharedString::from(fold_count(fold))),
+        ),
     };
-    let operation = super::operation(ElementId::NamedChild(Arc::new(id.clone()), "path".into()), data, measure, links, palette);
-    div().id(id).flex().items_start().gap(k(measure, 10.0))
-        .py(row_pad(measure, 8.0)).px(k(measure, 10.0)).mx(-k(measure, 10.0))
+    let operation = super::operation(
+        ElementId::NamedChild(Arc::new(id.clone()), "path".into()),
+        data,
+        measure,
+        links,
+        palette,
+    );
+    div()
+        .id(id)
+        .flex()
+        .items_start()
+        .gap(k(measure, 10.0))
+        .py(row_pad(measure, 8.0))
+        .px(k(measure, 10.0))
+        .mx(-k(measure, 10.0))
         .hover(|s| s.bg(palette.tint.hsla()))
         .children(mark.map(|mark| div().pt(k(measure, 8.0)).flex_none().child(mark)))
-        .child(div().flex_1().min_w_0().flex().flex_col().gap(k(measure, 3.0))
-            .child(operation).children(say.map(|say| div().set(roles::SAY, measure).text_color(palette.ink3.hsla()).child(say))))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(k(measure, 3.0))
+                .child(operation)
+                .children(say.map(|say| {
+                    div()
+                        .set(roles::SAY, measure)
+                        .text_color(palette.ink3.hsla())
+                        .child(say)
+                })),
+        )
 }
 
 /// The Does section. Build with [`does`].
@@ -136,18 +200,35 @@ pub struct DoesView {
 /// The Does section for `does` at `measure`.
 #[must_use]
 pub fn does(id: impl Into<ElementId>, does: Does, measure: &Measure, links: &Links) -> DoesView {
-    DoesView { id: id.into(), does, measure: *measure, links: links.clone(), expanded: Vec::new(), toggle: None, title: true }
+    DoesView {
+        id: id.into(),
+        does,
+        measure: *measure,
+        links: links.clone(),
+        expanded: Vec::new(),
+        toggle: None,
+        title: true,
+    }
 }
 
 impl DoesView {
     /// Keep controls in the shell's bounded per-symbol state.
     #[must_use]
-    pub fn disclosure(mut self, expanded: Vec<crate::semantics::members::Receiver>, toggle: impl Fn(crate::semantics::members::Receiver, &mut App) + 'static) -> Self {
-        self.expanded = expanded; self.toggle = Some(std::rc::Rc::new(toggle)); self
+    pub fn disclosure(
+        mut self,
+        expanded: Vec<crate::semantics::members::Receiver>,
+        toggle: impl Fn(crate::semantics::members::Receiver, &mut App) + 'static,
+    ) -> Self {
+        self.expanded = expanded;
+        self.toggle = Some(std::rc::Rc::new(toggle));
+        self
     }
     /// The enclosing page supplies its own tracked section heading.
     #[must_use]
-    pub fn without_title(mut self) -> Self { self.title = false; self }
+    pub fn without_title(mut self) -> Self {
+        self.title = false;
+        self
+    }
 }
 
 fn mode(receiver: crate::semantics::members::Receiver) -> (&'static str, crate::icons::Mod) {
@@ -160,7 +241,12 @@ fn mode(receiver: crate::semantics::members::Receiver) -> (&'static str, crate::
     }
 }
 
-fn group_heading(id: ElementId, text: &str, measure: &Measure, palette: &Palette) -> crate::probe::Text {
+fn group_heading(
+    id: ElementId,
+    text: &str,
+    measure: &Measure,
+    palette: &Palette,
+) -> crate::probe::Text {
     let text = SharedString::from(text.to_owned());
     let words = div()
         .set(roles::GROUP, measure)
@@ -168,7 +254,14 @@ fn group_heading(id: ElementId, text: &str, measure: &Measure, palette: &Palette
         .pt(k(measure, 12.0))
         .pb(k(measure, 2.0))
         .child(text.clone());
-    crate::probe::text(id, text, measure.role(roles::GROUP), 1.0, crate::probe::TextOverflow::Wrap, words)
+    crate::probe::text(
+        id,
+        text,
+        measure.role(roles::GROUP),
+        1.0,
+        crate::probe::TextOverflow::Wrap,
+        words,
+    )
 }
 
 impl RenderOnce for DoesView {
@@ -179,13 +272,27 @@ impl RenderOnce for DoesView {
         if self.does.is_empty() {
             return root;
         }
-        if self.title { root = root.child(section_title("What it does", &m, palette)); }
-        let sub = |part: String| ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::from(part));
+        if self.title {
+            root = root.child(section_title("What it does", &m, palette));
+        }
+        let sub = |part: String| {
+            ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::from(part))
+        };
         for (g, group) in self.does.groups.iter().enumerate() {
             let (label, glyph) = mode(group.receiver);
-            root = root.child(div().flex().items_center().gap(k(&m, 8.0))
-                .child(icons::mod_mark(glyph, 14.0 * m.scale(), palette))
-                .child(group_heading(sub(format!("group-{g}-heading")), label, &m, palette)));
+            root = root.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(k(&m, 8.0))
+                    .child(icons::mod_mark(glyph, 14.0 * m.scale(), palette))
+                    .child(group_heading(
+                        sub(format!("group-{g}-heading")),
+                        label,
+                        &m,
+                        palette,
+                    )),
+            );
             let expanded = self.expanded.contains(&group.receiver);
             let limit = if expanded { group.rows.len() } else { 6 };
             for (r, member) in group.rows.iter().take(limit).enumerate() {
@@ -194,19 +301,45 @@ impl RenderOnce for DoesView {
                     Row::Fold(_) => icons::Kind::Method,
                 };
                 let mark = icons::kind_mark(kind, KindSize::Sm, palette);
-                root = root.child(row(sub(format!("{g}-{r}")), member, Some(mark), &m, &self.links, palette));
+                root = root.child(row(
+                    sub(format!("{g}-{r}")),
+                    member,
+                    Some(mark),
+                    &m,
+                    &self.links,
+                    palette,
+                ));
             }
             if group.rows.len() > 6 {
-                let label = if expanded { "Show fewer operations".to_owned() } else { format!("Explore {} more operations", group.rows.len() - 6) };
+                let label = if expanded {
+                    "Show fewer operations".to_owned()
+                } else {
+                    format!("Explore {} more operations", group.rows.len() - 6)
+                };
                 let receiver = group.receiver;
                 let toggle = self.toggle.clone();
-                root = root.child(div().id(sub(format!("group-{g}-fold"))).py(k(&m, 8.0))
-                    .set(roles::QUIET, &m).text_color(palette.peri.base.hsla()).child(label)
-                    .on_click(move |_, _, cx| { if let Some(toggle) = &toggle { toggle(receiver, cx); } }));
+                root = root.child(
+                    div()
+                        .id(sub(format!("group-{g}-fold")))
+                        .py(k(&m, 8.0))
+                        .set(roles::QUIET, &m)
+                        .text_color(palette.peri.base.hsla())
+                        .child(label)
+                        .on_click(move |_, _, cx| {
+                            if let Some(toggle) = &toggle {
+                                toggle(receiver, cx);
+                            }
+                        }),
+                );
             }
         }
         if !self.does.through.is_empty() {
-            root = root.child(group_heading(sub("traits-heading".to_owned()), "through its traits", &m, palette));
+            root = root.child(group_heading(
+                sub("traits-heading".to_owned()),
+                "through its traits",
+                &m,
+                palette,
+            ));
             for (t, through) in self.does.through.iter().enumerate() {
                 let mut line = Line::new();
                 line.push(&through.trait_name, roles::ROW, palette.ink2.hsla());
@@ -215,7 +348,15 @@ impl RenderOnce for DoesView {
                     if n > 0 {
                         line.push(", ", roles::ROW, palette.ink4.hsla());
                     }
-                    line.link(name, crate::tokens::TypeRole { weight: 400.0, ..roles::ROW }, palette.ink1.hsla(), Target::Node(*node));
+                    line.link(
+                        name,
+                        crate::tokens::TypeRole {
+                            weight: 400.0,
+                            ..roles::ROW
+                        },
+                        palette.ink1.hsla(),
+                        Target::Node(*node),
+                    );
                 }
                 let id = sub(format!("via-{t}"));
                 root = root.child(
@@ -225,7 +366,11 @@ impl RenderOnce for DoesView {
                         .gap(k(&m, 12.0))
                         .py(row_pad(&m, 7.0))
                         .min_h(row_pad(&m, 34.0))
-                        .child(div().flex_none().w(k(&m, 18.0)).child(icons::kind_mark(icons::Kind::Trait, KindSize::Sm, palette)))
+                        .child(div().flex_none().w(k(&m, 18.0)).child(icons::kind_mark(
+                            icons::Kind::Trait,
+                            KindSize::Sm,
+                            palette,
+                        )))
                         .child(line.element(id, roles::ROW, &m, &self.links, palette)),
                 );
             }

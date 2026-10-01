@@ -7,14 +7,26 @@ use std::path::PathBuf;
 /// modules each, items of every kind with members, and relations that
 /// mostly stay close (same module, same package) like real code.
 pub(crate) fn synthetic(packages: u32, seed: u64) -> World {
-    let mut s = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+    let mut s = seed
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407);
     let mut next = move |n: u32| {
-        s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        s = s
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
         #[allow(clippy::cast_possible_truncation)]
         let v = ((s >> 33) % u64::from(n.max(1))) as u32;
         v
     };
-    let kinds = [Kind::Struct, Kind::Enum, Kind::Trait, Kind::Function, Kind::Type, Kind::Constant, Kind::Macro];
+    let kinds = [
+        Kind::Struct,
+        Kind::Enum,
+        Kind::Trait,
+        Kind::Function,
+        Kind::Type,
+        Kind::Constant,
+        Kind::Macro,
+    ];
     let mut pkgs = Vec::new();
     let mut modules = Vec::new();
     let mut nodes: Vec<Node> = Vec::new();
@@ -29,10 +41,20 @@ pub(crate) fn synthetic(packages: u32, seed: u64) -> World {
         });
         let mods = 1 + next(9);
         for m in 0..mods {
-            let path = if m == 0 { String::new() } else if m % 3 == 0 { format!("m{}::sub{m}", m - 1) } else { format!("m{m}") };
+            let path = if m == 0 {
+                String::new()
+            } else if m % 3 == 0 {
+                format!("m{}::sub{m}", m - 1)
+            } else {
+                format!("m{m}")
+            };
             #[allow(clippy::cast_possible_truncation)]
             let module = modules.len() as u32;
-            modules.push(Module { pkg: p, path: path.into(), file: "src/lib.rs".into() });
+            modules.push(Module {
+                pkg: p,
+                path: path.into(),
+                file: "src/lib.rs".into(),
+            });
             let mut items = Vec::new();
             for k in 0..(1 + next(40)) {
                 let kind = kinds[next(kinds.len() as u32) as usize];
@@ -43,15 +65,24 @@ pub(crate) fn synthetic(packages: u32, seed: u64) -> World {
                 nodes.push(node);
                 items.push(id);
                 if kind.is_type_like() {
-                    let (parts, methods) = if next(10) == 0 { (next(60), next(80)) } else { (next(8), next(12)) };
+                    let (parts, methods) = if next(10) == 0 {
+                        (next(60), next(80))
+                    } else {
+                        (next(8), next(12))
+                    };
                     for f in 0..parts {
-                        let part = if kind == Kind::Enum { Kind::Variant } else { Kind::Field };
+                        let part = if kind == Kind::Enum {
+                            Kind::Variant
+                        } else {
+                            Kind::Field
+                        };
                         let mut member = Node::new(part, format!("f{f}"), p, module).member_of(id);
                         member.line = k * 10 + f;
                         nodes.push(member);
                     }
                     for f in 0..methods {
-                        let mut member = Node::new(Kind::Method, format!("m{f}"), p, module).member_of(id);
+                        let mut member =
+                            Node::new(Kind::Method, format!("m{f}"), p, module).member_of(id);
                         member.line = k * 10 + 100 + f;
                         nodes.push(member);
                     }
@@ -63,7 +94,15 @@ pub(crate) fn synthetic(packages: u32, seed: u64) -> World {
     let mut edges = Vec::new();
     #[allow(clippy::cast_possible_truncation)]
     let n = nodes.len() as u32;
-    let rels = [Rel::HAS, Rel::TAKES, Rel::GIVES, Rel::CALLS, Rel::USES, Rel::TYPE, Rel::IMPL];
+    let rels = [
+        Rel::HAS,
+        Rel::TAKES,
+        Rel::GIVES,
+        Rel::CALLS,
+        Rel::USES,
+        Rel::TYPE,
+        Rel::IMPL,
+    ];
     let mut seen = std::collections::HashSet::new();
     for _ in 0..(n * 2) {
         let from = next(n);
@@ -76,7 +115,11 @@ pub(crate) fn synthetic(packages: u32, seed: u64) -> World {
             _ => next(n),
         };
         if from != to && seen.insert((from, to)) {
-            edges.push(Edge { from, to, rel: rels[next(rels.len() as u32) as usize] });
+            edges.push(Edge {
+                from,
+                to,
+                rel: rels[next(rels.len() as u32) as usize],
+            });
         }
     }
     match World::new(pkgs, modules, nodes, edges) {
@@ -89,7 +132,8 @@ pub(crate) fn synthetic(packages: u32, seed: u64) -> World {
 /// not pass silently) unless `NUDOX_ALLOW_MISSING_WORLD=1`, which skips it
 /// loudly.
 pub(crate) fn fixture() -> Option<World> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Nudox-Design-System/v4/graph/world.json");
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../Nudox-Design-System/v4/graph/world.json");
     let Ok(bytes) = std::fs::read(&path) else {
         assert!(
             std::env::var_os("NUDOX_ALLOW_MISSING_WORLD").is_some_and(|v| v == "1"),
@@ -149,10 +193,22 @@ fn assert_no_overlap(world: &World, layout: &Layout) {
     for (m, items) in layout.module_items.iter().enumerate() {
         let discs: Vec<_> = items
             .iter()
-            .map(|&i| (f64::from(layout.x[i as usize]), f64::from(layout.y[i as usize]), f64::from(layout.r[i as usize]) + 0.45))
+            .map(|&i| {
+                (
+                    f64::from(layout.x[i as usize]),
+                    f64::from(layout.y[i as usize]),
+                    f64::from(layout.r[i as usize]) + 0.45,
+                )
+            })
             .collect();
         let bad = overlaps(&discs);
-        assert!(bad.is_empty(), "module {m} ({}): {} overlapping items, first {:?}", world.modules[m].path, bad.len(), bad.first());
+        assert!(
+            bad.is_empty(),
+            "module {m} ({}): {} overlapping items, first {:?}",
+            world.modules[m].path,
+            bad.len(),
+            bad.first()
+        );
     }
     // Modules in a package, by their enclosing radius (+1.2).
     for (p, mods) in layout.package_modules.iter().enumerate() {
@@ -164,7 +220,13 @@ fn assert_no_overlap(world: &World, layout: &Layout) {
             })
             .collect();
         let bad = overlaps(&discs);
-        assert!(bad.is_empty(), "package {}: {} overlapping modules, first {:?}", world.packages[p].name, bad.len(), bad.first());
+        assert!(
+            bad.is_empty(),
+            "package {}: {} overlapping modules, first {:?}",
+            world.packages[p].name,
+            bad.len(),
+            bad.first()
+        );
     }
     // Packages in the world (+10).
     let discs: Vec<_> = layout
@@ -173,28 +235,45 @@ fn assert_no_overlap(world: &World, layout: &Layout) {
         .map(|t| (f64::from(t.x), f64::from(t.y), f64::from(t.r) + 10.0))
         .collect();
     let bad = overlaps(&discs);
-    assert!(bad.is_empty(), "{} overlapping packages, first {:?}", bad.len(), bad.first());
+    assert!(
+        bad.is_empty(),
+        "{} overlapping packages, first {:?}",
+        bad.len(),
+        bad.first()
+    );
     // And the claim that matters on screen: no two items anywhere overlap.
     let items: Vec<NodeId> = world.items.clone();
     let cell = 8.0_f32;
-    let mut grid: std::collections::HashMap<(i32, i32), Vec<NodeId>> = std::collections::HashMap::new();
+    let mut grid: std::collections::HashMap<(i32, i32), Vec<NodeId>> =
+        std::collections::HashMap::new();
     for &i in &items {
         #[allow(clippy::cast_possible_truncation)]
-        let c = ((layout.x[i as usize] / cell).floor() as i32, (layout.y[i as usize] / cell).floor() as i32);
+        let c = (
+            (layout.x[i as usize] / cell).floor() as i32,
+            (layout.y[i as usize] / cell).floor() as i32,
+        );
         grid.entry(c).or_default().push(i);
     }
     let mut worst = 0.0_f32;
     for &i in &items {
         #[allow(clippy::cast_possible_truncation)]
-        let c = ((layout.x[i as usize] / cell).floor() as i32, (layout.y[i as usize] / cell).floor() as i32);
+        let c = (
+            (layout.x[i as usize] / cell).floor() as i32,
+            (layout.y[i as usize] / cell).floor() as i32,
+        );
         for dx in -1..=1 {
             for dy in -1..=1 {
-                for &j in grid.get(&(c.0 + dx, c.1 + dy)).map_or(&[][..], Vec::as_slice) {
+                for &j in grid
+                    .get(&(c.0 + dx, c.1 + dy))
+                    .map_or(&[][..], Vec::as_slice)
+                {
                     if j <= i {
                         continue;
                     }
-                    let d = (layout.x[i as usize] - layout.x[j as usize]).hypot(layout.y[i as usize] - layout.y[j as usize]);
-                    let need = layout.r[i as usize].min(cell / 2.0) + layout.r[j as usize].min(cell / 2.0);
+                    let d = (layout.x[i as usize] - layout.x[j as usize])
+                        .hypot(layout.y[i as usize] - layout.y[j as usize]);
+                    let need =
+                        layout.r[i as usize].min(cell / 2.0) + layout.r[j as usize].min(cell / 2.0);
                     worst = worst.max(need - d);
                 }
             }
@@ -217,23 +296,44 @@ fn shells_are_evenly_spaced_polygons() {
     let mut checked = 0;
     for &i in &world.items {
         let shells = layout.shells_of(i);
-        let (cx, cy) = (f64::from(layout.x[i as usize]), f64::from(layout.y[i as usize]));
+        let (cx, cy) = (
+            f64::from(layout.x[i as usize]),
+            f64::from(layout.y[i as usize]),
+        );
         for (k, shell) in shells.iter().enumerate() {
             let members = layout.shell(shell);
             assert_eq!(members.len(), shell.len as usize);
             // Parts before methods: never a part on a shell outside a method shell.
             if k > 0 {
-                let prev_methods = layout.shell(&shells[k - 1]).iter().any(|&j| world.node(j).kind == Kind::Method);
+                let prev_methods = layout
+                    .shell(&shells[k - 1])
+                    .iter()
+                    .any(|&j| world.node(j).kind == Kind::Method);
                 let parts = members.iter().any(|&j| world.node(j).kind.is_part());
-                assert!(!(prev_methods && parts), "item {i}: a part shell outside a method shell");
-                assert!((shell.r - shells[k - 1].r - 0.72).abs() < 1e-4, "shell gap {} -> {}", shells[k - 1].r, shell.r);
+                assert!(
+                    !(prev_methods && parts),
+                    "item {i}: a part shell outside a method shell"
+                );
+                assert!(
+                    (shell.r - shells[k - 1].r - 0.72).abs() < 1e-4,
+                    "shell gap {} -> {}",
+                    shells[k - 1].r,
+                    shell.r
+                );
             }
             #[allow(clippy::cast_precision_loss)]
             let step = 2.0 * PI / members.len() as f64;
-            let angle = |j: NodeId| (f64::from(layout.y[j as usize]) - cy).atan2(f64::from(layout.x[j as usize]) - cx);
+            let angle = |j: NodeId| {
+                (f64::from(layout.y[j as usize]) - cy).atan2(f64::from(layout.x[j as usize]) - cx)
+            };
             for (q, &j) in members.iter().enumerate() {
-                let rr = (f64::from(layout.x[j as usize]) - cx).hypot(f64::from(layout.y[j as usize]) - cy);
-                assert!((rr - f64::from(shell.r)).abs() < 1e-3, "member {j} at {rr}, shell {}", shell.r);
+                let rr = (f64::from(layout.x[j as usize]) - cx)
+                    .hypot(f64::from(layout.y[j as usize]) - cy);
+                assert!(
+                    (rr - f64::from(shell.r)).abs() < 1e-3,
+                    "member {j} at {rr}, shell {}",
+                    shell.r
+                );
                 assert!((layout.r[j as usize] - MEMBER_R).abs() < f32::EPSILON);
                 if members.len() > 1 {
                     let next = members[(q + 1) % members.len()];
@@ -241,16 +341,25 @@ fn shells_are_evenly_spaced_polygons() {
                     while d < 0.0 {
                         d += 2.0 * PI;
                     }
-                    assert!((d - step).abs() < 1e-3, "item {i} shell {k}: step {d} expected {step}");
+                    assert!(
+                        (d - step).abs() < 1e-3,
+                        "item {i} shell {k}: step {d} expected {step}"
+                    );
                 }
             }
             checked += 1;
         }
         if let Some(last) = shells.last() {
-            assert!((layout.r[i as usize] - (last.r + 0.4)).abs() < 1e-5, "an item's extent is its outer shell + 0.4");
+            assert!(
+                (layout.r[i as usize] - (last.r + 0.4)).abs() < 1e-5,
+                "an item's extent is its outer shell + 0.4"
+            );
         }
     }
-    assert!(checked > 20, "only {checked} shells: the synthetic world has too few members");
+    assert!(
+        checked > 20,
+        "only {checked} shells: the synthetic world has too few members"
+    );
 }
 
 /// Whether `(x, y)` is inside the convex polygon (either winding), with a
@@ -281,11 +390,23 @@ fn assert_hulls_contain(world: &World, layout: &Layout) {
             for q in 0..8 {
                 #[allow(clippy::cast_precision_loss)]
                 let t = q as f32 * std::f32::consts::FRAC_PI_4;
-                let (x, y) = (layout.x[i as usize] + layout.r[i as usize] * t.cos(), layout.y[i as usize] + layout.r[i as usize] * t.sin());
-                assert!(inside(hull, x, y, 1e-3), "module {m} ({}) cuts item {} ({})", world.modules[m].path, i, world.node(i).name);
+                let (x, y) = (
+                    layout.x[i as usize] + layout.r[i as usize] * t.cos(),
+                    layout.y[i as usize] + layout.r[i as usize] * t.sin(),
+                );
+                assert!(
+                    inside(hull, x, y, 1e-3),
+                    "module {m} ({}) cuts item {} ({})",
+                    world.modules[m].path,
+                    i,
+                    world.node(i).name
+                );
             }
             for &j in world.kids(i) {
-                assert!(inside(hull, layout.x[j as usize], layout.y[j as usize], 1e-3), "module {m} cuts member {j}");
+                assert!(
+                    inside(hull, layout.x[j as usize], layout.y[j as usize], 1e-3),
+                    "module {m} cuts member {j}"
+                );
             }
         }
     }
@@ -293,7 +414,11 @@ fn assert_hulls_contain(world: &World, layout: &Layout) {
         let hull = &layout.packages[p].hull;
         for &m in mods {
             for v in &layout.modules[m as usize].hull {
-                assert!(inside(hull, v[0], v[1], 1e-3), "package {} cuts module {m}", world.packages[p].name);
+                assert!(
+                    inside(hull, v[0], v[1], 1e-3),
+                    "package {} cuts module {m}",
+                    world.packages[p].name
+                );
             }
         }
     }

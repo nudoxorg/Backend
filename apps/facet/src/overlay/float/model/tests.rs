@@ -22,9 +22,12 @@ fn ms(value: u64) -> Duration {
 
 fn req(key: &str, anchor: Bounds<Pixels>, kind: FloatKind) -> FloatRequest {
     let label: gpui::SharedString = key.to_owned().into();
-    FloatRequest::new(ElementId::Name(label.clone()), anchor, kind, move |_, _, _| {
-        div().child(label.clone()).into_any_element()
-    })
+    FloatRequest::new(
+        ElementId::Name(label.clone()),
+        anchor,
+        kind,
+        move |_, _, _| div().child(label.clone()).into_any_element(),
+    )
 }
 
 fn key(name: &str) -> ElementId {
@@ -49,7 +52,11 @@ fn paint_below(model: &mut Model, name: &str, width: f32, height: f32) -> Bounds
 }
 
 fn open_keys(model: &Model) -> Vec<String> {
-    model.chain().iter().map(|card| card.key.to_string()).collect()
+    model
+        .chain()
+        .iter()
+        .map(|card| card.key.to_string())
+        .collect()
 }
 
 #[test]
@@ -82,7 +89,11 @@ fn a_rest_repeated_on_the_same_trigger_does_not_restart_the_delay() {
     model.rest(req("a", anchor, FloatKind::Peek), t0);
     model.rest(req("a", anchor, FloatKind::Peek), t0 + ms(300));
     model.tick(t0 + ms(350));
-    assert_eq!(open_keys(&model), ["a"], "the second report must not push the rise back");
+    assert_eq!(
+        open_keys(&model),
+        ["a"],
+        "the second report must not push the rise back"
+    );
 }
 
 #[test]
@@ -97,7 +108,10 @@ fn warm_sweep_morphs_the_same_card_to_the_next_trigger_at_once() {
     model.rest(req("b", b(200.0, 100.0, 60.0, 18.0), FloatKind::Peek), t1);
     let top = model.top().expect("b opens without a delay");
     assert_eq!(top.key, key("b"));
-    assert_eq!(top.id, first, "the card morphs; it is not closed and reopened");
+    assert_eq!(
+        top.id, first,
+        "the card morphs; it is not closed and reopened"
+    );
     assert!(top.swapped.is_some());
     assert_eq!(model.cards().count(), 1, "no second card was created");
 }
@@ -114,13 +128,19 @@ fn a_kind_stays_warm_for_300_ms_after_it_closed_then_goes_cold() {
     assert!(model.chain().is_empty(), "closed after the grace");
     let closed_at = t0 + ms(400) + FloatKind::Peek.grace();
     // Within the warm window: immediate.
-    model.rest(req("b", b(200.0, 100.0, 60.0, 18.0), FloatKind::Peek), closed_at + ms(250));
+    model.rest(
+        req("b", b(200.0, 100.0, 60.0, 18.0), FloatKind::Peek),
+        closed_at + ms(250),
+    );
     assert_eq!(open_keys(&model), ["b"]);
     // Close it and wait past the warm window and the exit: cold again.
     model.close_all(closed_at + ms(260));
     let later = closed_at + ms(260) + WARM + ms(200);
     model.tick(later);
-    model.rest(req("c", b(300.0, 100.0, 60.0, 18.0), FloatKind::Peek), later);
+    model.rest(
+        req("c", b(300.0, 100.0, 60.0, 18.0), FloatKind::Peek),
+        later,
+    );
     assert!(model.chain().is_empty(), "cold after the warm window");
     model.tick(later + ms(350));
     assert_eq!(open_keys(&model), ["c"]);
@@ -164,13 +184,21 @@ fn aiming_at_the_card_defers_a_rest_on_another_trigger_and_reaching_it_drops_tha
     now += ms(16);
     model.pointer_at(Some(at(170.0, 121.0)), now);
     model.rest(req("b", b(160.0, 119.0, 40.0, 4.0), FloatKind::Peek), now);
-    assert_eq!(open_keys(&model), ["a"], "b must not swap while the pointer aims at a's card");
+    assert_eq!(
+        open_keys(&model),
+        ["a"],
+        "b must not swap while the pointer aims at a's card"
+    );
     assert!(model.pending().is_some_and(|pending| pending.aimed));
     now += ms(16);
     model.leave(&key("b"), now);
     model.pointer_at(Some(plate.center()), now);
     model.tick(now + ms(1_000));
-    assert_eq!(open_keys(&model), ["a"], "reached the card: a stays, b never opened");
+    assert_eq!(
+        open_keys(&model),
+        ["a"],
+        "reached the card: a stays, b never opened"
+    );
     assert!(model.pending().is_none());
 }
 
@@ -217,7 +245,10 @@ fn a_rest_inside_a_card_chains_three_deep_then_flags_overflow() {
     let t0 = Instant::now();
     let mut model = Model::new();
     let mut now = t0;
-    model.rest(req("root", b(100.0, 100.0, 60.0, 18.0), FloatKind::Peek), now);
+    model.rest(
+        req("root", b(100.0, 100.0, 60.0, 18.0), FloatKind::Peek),
+        now,
+    );
     now += ms(350);
     model.tick(now);
     let root = paint_below(&mut model, "root", 392.0, 300.0);
@@ -250,8 +281,15 @@ fn a_rest_inside_a_card_chains_three_deep_then_flags_overflow() {
     model.rest(req("three", word(two), FloatKind::Peek), now);
     now += ms(1_000);
     model.tick(now);
-    assert_eq!(open_keys(&model), ["root", "one", "two"], "a fourth never opens");
-    assert!(model.top().is_some_and(|card| card.overflow), "the deepest offers open");
+    assert_eq!(
+        open_keys(&model),
+        ["root", "one", "two"],
+        "a fourth never opens"
+    );
+    assert!(
+        model.top().is_some_and(|card| card.overflow),
+        "the deepest offers open"
+    );
 }
 
 #[test]
@@ -259,11 +297,19 @@ fn esc_steps_back_exactly_one_and_the_parent_holds() {
     let t0 = Instant::now();
     let mut model = Model::new();
     let mut now = t0;
-    model.rest(req("root", b(100.0, 100.0, 60.0, 18.0), FloatKind::Peek), now);
+    model.rest(
+        req("root", b(100.0, 100.0, 60.0, 18.0), FloatKind::Peek),
+        now,
+    );
     now += ms(350);
     model.tick(now);
     let root = paint_below(&mut model, "root", 392.0, 300.0);
-    let word = b(f32::from(root.origin.x) + 40.0, f32::from(root.origin.y) + 60.0, 70.0, 18.0);
+    let word = b(
+        f32::from(root.origin.x) + 40.0,
+        f32::from(root.origin.y) + 60.0,
+        70.0,
+        18.0,
+    );
     model.pointer_at(Some(word.center()), now);
     model.rest(req("one", word, FloatKind::Peek), now);
     now += ms(350);
@@ -275,7 +321,10 @@ fn esc_steps_back_exactly_one_and_the_parent_holds() {
     assert_eq!(open_keys(&model), ["root"]);
     assert!(model.step_back(now + ms(2_000)));
     assert!(model.chain().is_empty());
-    assert!(!model.step_back(now + ms(2_001)), "nothing left to step back");
+    assert!(
+        !model.step_back(now + ms(2_001)),
+        "nothing left to step back"
+    );
 }
 
 #[test]
@@ -317,7 +366,10 @@ fn a_closed_card_stays_in_the_model_until_its_exit_settles() {
     model.close_all(t0 + ms(400));
     // Every card unfurls: its exit is the unfurl's, run backwards.
     model.tick(t0 + ms(400) + crate::overlay::float::UNFURL_EXIT - ms(1));
-    assert!(model.card(id).is_some_and(|card| !card.is_open()), "leaving, still drawn");
+    assert!(
+        model.card(id).is_some_and(|card| !card.is_open()),
+        "leaving, still drawn"
+    );
     model.tick(t0 + ms(400) + crate::overlay::float::UNFURL_EXIT);
     assert!(model.card(id).is_none(), "gone once the exit settled");
 }
@@ -347,7 +399,10 @@ fn pins_dedupe_by_key_and_newest_goes_first() {
 fn a_press_outside_closes_everything_and_a_press_inside_closes_nothing() {
     let t0 = Instant::now();
     let mut model = Model::new();
-    model.open(req("menu", b(100.0, 100.0, 60.0, 18.0), FloatKind::Menu), t0);
+    model.open(
+        req("menu", b(100.0, 100.0, 60.0, 18.0), FloatKind::Menu),
+        t0,
+    );
     let plate = paint_below(&mut model, "menu", 240.0, 200.0);
     assert!(!model.press(plate.center(), t0 + ms(50)));
     assert_eq!(open_keys(&model), ["menu"]);
@@ -365,10 +420,18 @@ fn the_press_that_closed_a_menu_on_its_own_trigger_does_not_reopen_it() {
     let press = t0 + ms(500);
     assert!(model.press(anchor.center(), press));
     // The trigger's click handler fires in the same instant.
-    assert!(model.open(req("menu", anchor, FloatKind::Menu), press).is_none());
+    assert!(
+        model
+            .open(req("menu", anchor, FloatKind::Menu), press)
+            .is_none()
+    );
     assert!(model.chain().is_empty(), "the click toggled it shut");
     // A later click opens it again.
-    assert!(model.open(req("menu", anchor, FloatKind::Menu), press + ms(300)).is_some());
+    assert!(
+        model
+            .open(req("menu", anchor, FloatKind::Menu), press + ms(300))
+            .is_some()
+    );
 }
 
 #[test]
@@ -383,10 +446,16 @@ fn one_tip_per_window_and_tips_sweep_warm() {
     let id = model.tip().expect("tip").id;
     let t1 = t0 + rest + ms(50);
     model.leave(&key("t1"), t1);
-    model.rest(req("t2", b(40.0, 10.0, 20.0, 20.0), FloatKind::Tip), t1 + ms(30));
+    model.rest(
+        req("t2", b(40.0, 10.0, 20.0, 20.0), FloatKind::Tip),
+        t1 + ms(30),
+    );
     let tip = model.tip().expect("swept");
     assert_eq!((tip.id, tip.key.clone()), (id, key("t2")));
-    let open_tips = model.cards().filter(|card| card.is_open() && card.level.is_none()).count();
+    let open_tips = model
+        .cards()
+        .filter(|card| card.is_open() && card.level.is_none())
+        .count();
     assert_eq!(open_tips, 1);
 }
 
@@ -411,9 +480,16 @@ fn scrolling_closes_tips_and_stale_cards_re_anchor_or_close() {
     model.scroll(at(700.0, 700.0), t0 + ms(500));
     assert!(model.tip().is_none(), "tips close on scroll");
     let moved = b(100.0, 260.0, 60.0, 18.0);
-    model.resolve_stale(|key| (key.to_string() == "b").then_some(moved), t0 + ms(516));
+    model.resolve_stale(
+        |key| (key.to_string() == "b").then_some(moved),
+        t0 + ms(516),
+    );
     assert_eq!(open_keys(&model), ["b"]);
-    assert_eq!(model.top().expect("b").anchor, moved, "re-anchored to the scrolled rect");
+    assert_eq!(
+        model.top().expect("b").anchor,
+        moved,
+        "re-anchored to the scrolled rect"
+    );
 }
 
 // ------------------------------------------------------------------ storm
@@ -444,17 +520,31 @@ impl Rng {
 /// Every structural invariant the layer relies on.
 fn check(model: &Model, now: Instant, step: usize) {
     let chain = model.chain();
-    assert!(chain.len() <= MAX_DEPTH, "step {step}: chain {}", chain.len());
+    assert!(
+        chain.len() <= MAX_DEPTH,
+        "step {step}: chain {}",
+        chain.len()
+    );
     for (index, card) in chain.iter().enumerate() {
-        assert_eq!(card.level, Some(index), "step {step}: levels not contiguous");
+        assert_eq!(
+            card.level,
+            Some(index),
+            "step {step}: levels not contiguous"
+        );
     }
-    let tips = model.cards().filter(|card| card.is_open() && card.level.is_none()).count();
+    let tips = model
+        .cards()
+        .filter(|card| card.is_open() && card.level.is_none())
+        .count();
     assert!(tips <= 1, "step {step}: {tips} open tips");
     let mut ids = HashSet::new();
     for card in model.cards() {
         assert!(ids.insert(card.id), "step {step}: duplicate card id");
         let value = card.presence.value(now);
-        assert!((0.0..=1.0).contains(&value), "step {step}: presence {value}");
+        assert!(
+            (0.0..=1.0).contains(&value),
+            "step {step}: presence {value}"
+        );
         if card.is_open() && card.kind == FloatKind::Tip {
             assert!(card.level.is_none());
         }
@@ -464,7 +554,10 @@ fn check(model: &Model, now: Instant, step: usize) {
         assert!(keys.insert(pin.key.clone()), "step {step}: duplicate pin");
     }
     if let Some(deadline) = model.next_deadline(now) {
-        assert!(deadline > now, "step {step}: a due deadline survived a tick");
+        assert!(
+            deadline > now,
+            "step {step}: a due deadline survived a tick"
+        );
     }
 }
 
@@ -543,8 +636,10 @@ fn storm_of_interleaved_events_keeps_the_model_consistent_and_settles_to_nothing
                 check(&model, now, step);
             }
             // The layer paints every open card below its anchor.
-            let open: Vec<(u64, Bounds<Pixels>, Option<usize>)> =
-                model.cards().map(|card| (card.id, card.anchor, card.level)).collect();
+            let open: Vec<(u64, Bounds<Pixels>, Option<usize>)> = model
+                .cards()
+                .map(|card| (card.id, card.anchor, card.level))
+                .collect();
             for (id, anchor, level) in open {
                 #[allow(clippy::cast_precision_loss)]
                 let shift = level.map_or(0.0, |level| level as f32 * 340.0);
@@ -573,13 +668,19 @@ fn storm_of_interleaved_events_keeps_the_model_consistent_and_settles_to_nothing
         }
         let mut guard = 0;
         while let Some(next) = model.next_deadline(now) {
-            assert!(next > now, "seed {seed}: a deadline at or before now would spin the timer");
+            assert!(
+                next > now,
+                "seed {seed}: a deadline at or before now would spin the timer"
+            );
             now = next;
             model.tick(now);
             guard += 1;
             assert!(guard < 100, "seed {seed}: deadlines never ran out");
         }
-        assert!(model.cards().next().is_none(), "seed {seed}: a card survived the tail");
+        assert!(
+            model.cards().next().is_none(),
+            "seed {seed}: a card survived the tail"
+        );
         assert!(model.pins().is_empty(), "seed {seed}: a pin survived");
         assert!(model.is_settled(now), "seed {seed}: not settled");
     }
@@ -590,8 +691,17 @@ fn storm_of_interleaved_events_keeps_the_model_consistent_and_settles_to_nothing
 /// of the pointer leaving its trigger.
 #[test]
 fn no_card_rests_over_400_ms_and_a_tip_is_gone_120_ms_after_the_leave() {
-    for kind in [FloatKind::Tip, FloatKind::Peek, FloatKind::Lens, FloatKind::Menu] {
-        assert!(kind.rest_delay() <= ms(400), "{kind:?} waits {:?} to rise", kind.rest_delay());
+    for kind in [
+        FloatKind::Tip,
+        FloatKind::Peek,
+        FloatKind::Lens,
+        FloatKind::Menu,
+    ] {
+        assert!(
+            kind.rest_delay() <= ms(400),
+            "{kind:?} waits {:?} to rise",
+            kind.rest_delay()
+        );
     }
     let t0 = Instant::now();
     let mut model = Model::new();
@@ -606,8 +716,23 @@ fn no_card_rests_over_400_ms_and_a_tip_is_gone_120_ms_after_the_leave() {
     let before = left + ms(100);
     let gone = left + ms(120);
     model.tick(gone);
-    assert!(model.tip().is_none(), "the tip is closed 120 ms after the leave");
-    let body = |at: Instant| model.cards().map(|card| card.presence.bands(at).body).fold(0.0_f32, f32::max);
-    assert!(body(before) > 0.0, "the body is still rolling up at 100 ms: the check is not vacuous");
-    assert!(body(gone) <= 0.0, "the body is gone 120 ms after the leave: {}", body(gone));
+    assert!(
+        model.tip().is_none(),
+        "the tip is closed 120 ms after the leave"
+    );
+    let body = |at: Instant| {
+        model
+            .cards()
+            .map(|card| card.presence.bands(at).body)
+            .fold(0.0_f32, f32::max)
+    };
+    assert!(
+        body(before) > 0.0,
+        "the body is still rolling up at 100 ms: the check is not vacuous"
+    );
+    assert!(
+        body(gone) <= 0.0,
+        "the body is gone 120 ms after the leave: {}",
+        body(gone)
+    );
 }

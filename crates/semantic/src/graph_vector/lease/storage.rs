@@ -381,12 +381,12 @@ mod trait_contracts {
 mod loom_tests {
     use core::sync::atomic::Ordering;
 
+    use crate::index_vocabulary::IndexSnapshotId;
     use crate::ir::EntityId;
     use loom::{
         sync::{Arc, atomic::AtomicBool},
         thread,
     };
-    use crate::index_vocabulary::IndexSnapshotId;
 
     use super::{EdgeSlot, SlotPhase};
     use crate::graph_vector::{GraphAuthority, GraphEdge, PartitionId, ProjectionId};

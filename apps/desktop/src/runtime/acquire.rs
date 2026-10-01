@@ -32,8 +32,8 @@ use crate::model::{AppSnapshot, ProjectPhase};
 use gpui::{App, Global, Task, WeakEntity};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
-pub(crate) use work::{Job, Landed};
 use work::Queue;
+pub(crate) use work::{Job, Landed};
 
 /// Where adding one release stands.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -58,7 +58,10 @@ pub(crate) enum Stage {
 impl Stage {
     /// Whether work is still under way (or waiting to be).
     pub(crate) const fn working(&self) -> bool {
-        matches!(self, Self::Queued | Self::Resolving | Self::Unpacking | Self::Indexing)
+        matches!(
+            self,
+            Self::Queued | Self::Resolving | Self::Unpacking | Self::Indexing
+        )
     }
 }
 
@@ -99,7 +102,14 @@ impl ProjectPackages {
     /// are being read or could not be.
     pub(crate) fn progress(&self) -> Option<InstallProgress> {
         let Self::Read(found) = self else { return None };
-        let mut progress = InstallProgress { total: found.len(), landed: 0, now: None, refused: Vec::new(), thin: Vec::new(), done: true };
+        let mut progress = InstallProgress {
+            total: found.len(),
+            landed: 0,
+            now: None,
+            refused: Vec::new(),
+            thin: Vec::new(),
+            done: true,
+        };
         for (at, (dependency, stage)) in found.iter().enumerate() {
             let release = dependency.release.clone();
             match (&dependency.origin, stage) {
@@ -109,8 +119,13 @@ impl ProjectPackages {
                     progress.landed += 1;
                     progress.thin.push((release, Arc::clone(words)));
                 }
-                (Origin::Registry(_), Some(Stage::Failed(why))) => progress.refused.push((release, Arc::clone(why))),
-                (Origin::Registry(_), Some(working @ (Stage::Resolving | Stage::Unpacking | Stage::Indexing))) => {
+                (Origin::Registry(_), Some(Stage::Failed(why))) => {
+                    progress.refused.push((release, Arc::clone(why)))
+                }
+                (
+                    Origin::Registry(_),
+                    Some(working @ (Stage::Resolving | Stage::Unpacking | Stage::Indexing)),
+                ) => {
                     progress.done = false;
                     if progress.now.is_none() {
                         progress.now = Some((release, working.clone(), at + 1));
@@ -176,7 +191,10 @@ fn push(job: Job, composition: Composition, cx: &mut App) {
     let additions = additions(cx);
     let (mailbox, wake) = (Arc::clone(&additions.mailbox), additions.wake.clone());
     let post: Arc<dyn Fn(Landed) + Send + Sync> = Arc::new(move |landed| {
-        mailbox.lock().unwrap_or_else(PoisonError::into_inner).push(landed);
+        mailbox
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(landed);
         wake.wake();
     });
     additions.queue.push(job, composition, post);
@@ -202,26 +220,56 @@ pub(crate) fn add(release: Release, root: WeakEntity<UiRootEntity>, cx: &mut App
 }
 
 /// [`add`] through `composition` (the process's, or a test's own).
-pub(crate) fn add_with(release: Release, composition: Option<Composition>, root: WeakEntity<UiRootEntity>, cx: &mut App) {
+pub(crate) fn add_with(
+    release: Release,
+    composition: Option<Composition>,
+    root: WeakEntity<UiRootEntity>,
+    cx: &mut App,
+) {
     let additions = additions(cx);
     additions.root = Some(root);
-    if additions.entries.get(&release).is_some_and(|entry| !matches!(entry.stage, Stage::Failed(_) | Stage::Partial { .. })) {
+    if additions
+        .entries
+        .get(&release)
+        .is_some_and(|entry| !matches!(entry.stage, Stage::Failed(_) | Stage::Partial { .. }))
+    {
         return;
     }
-    let askers = additions.entries.remove(&release).map(|entry| entry.askers).unwrap_or_default();
+    let askers = additions
+        .entries
+        .remove(&release)
+        .map(|entry| entry.askers)
+        .unwrap_or_default();
     let Some(composition) = composition else {
-        additions.entries.insert(release, Entry { stage: Stage::Failed(Arc::from("the index is not open yet")), askers });
+        additions.entries.insert(
+            release,
+            Entry {
+                stage: Stage::Failed(Arc::from("the index is not open yet")),
+                askers,
+            },
+        );
         cx.refresh_windows();
         return;
     };
-    additions.entries.insert(release.clone(), Entry { stage: Stage::Queued, askers });
+    additions.entries.insert(
+        release.clone(),
+        Entry {
+            stage: Stage::Queued,
+            askers,
+        },
+    );
     push(Job::Release(release), composition, cx);
     cx.refresh_windows();
 }
 
 /// Adds every registry package the projects the owner just answered for
 /// build with ([`just_indexed`]).
-pub(crate) fn follow_indexed_projects(before: Option<&AppSnapshot>, now: &AppSnapshot, root: WeakEntity<UiRootEntity>, cx: &mut App) {
+pub(crate) fn follow_indexed_projects(
+    before: Option<&AppSnapshot>,
+    now: &AppSnapshot,
+    root: WeakEntity<UiRootEntity>,
+    cx: &mut App,
+) {
     let Some(before) = before else { return };
     for project in just_indexed(before, now) {
         add_dependencies_with(project, crate::host::registry::composed(), root.clone(), cx);
@@ -234,12 +282,18 @@ pub(crate) fn follow_indexed_projects(before: Option<&AppSnapshot>, now: &AppSna
 /// A restored or injected answer is not one ([`resume`] takes those).
 pub(crate) fn just_indexed(before: &AppSnapshot, now: &AppSnapshot) -> Vec<LocalProjectId> {
     let was_indexing = |project: &LocalProjectId| {
-        before.workspace().projects.iter().any(|row| &row.id == project && matches!(row.phase, ProjectPhase::Indexing))
+        before
+            .workspace()
+            .projects
+            .iter()
+            .any(|row| &row.id == project && matches!(row.phase, ProjectPhase::Indexing))
     };
     now.workspace()
         .projects
         .iter()
-        .filter(|row| matches!(row.phase, ProjectPhase::Ready | ProjectPhase::Failed) && was_indexing(&row.id))
+        .filter(|row| {
+            matches!(row.phase, ProjectPhase::Ready | ProjectPhase::Failed) && was_indexing(&row.id)
+        })
         .map(|row| row.id.clone())
         .collect()
 }
@@ -258,7 +312,9 @@ pub(crate) fn resume(now: &AppSnapshot, root: WeakEntity<UiRootEntity>, cx: &mut
         .map(|row| row.id.clone())
         .collect::<Vec<_>>();
     for project in answered {
-        let asked = cx.try_global::<Additions>().is_some_and(|additions| additions.projects.contains_key(&project));
+        let asked = cx
+            .try_global::<Additions>()
+            .is_some_and(|additions| additions.projects.contains_key(&project));
         if !asked {
             add_dependencies_with(project, crate::host::registry::composed(), root.clone(), cx);
         }
@@ -270,26 +326,56 @@ pub(crate) fn resume(now: &AppSnapshot, root: WeakEntity<UiRootEntity>, cx: &mut
 #[cfg(feature = "visual-harness")]
 pub(crate) fn working(cx: &App) -> bool {
     cx.try_global::<Additions>().is_some_and(|additions| {
-        additions.queue.running() || !additions.mailbox.lock().unwrap_or_else(PoisonError::into_inner).is_empty()
+        additions.queue.running()
+            || !additions
+                .mailbox
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_empty()
     })
 }
 
 /// Adds every registry package `project` builds with, through `composition`.
-pub(crate) fn add_dependencies_with(project: LocalProjectId, composition: Option<Composition>, root: WeakEntity<UiRootEntity>, cx: &mut App) {
+pub(crate) fn add_dependencies_with(
+    project: LocalProjectId,
+    composition: Option<Composition>,
+    root: WeakEntity<UiRootEntity>,
+    cx: &mut App,
+) {
     let additions = additions(cx);
     additions.root = Some(root);
-    let askers = additions.projects.remove(&project).map(|project| project.askers).unwrap_or_default();
+    let askers = additions
+        .projects
+        .remove(&project)
+        .map(|project| project.askers)
+        .unwrap_or_default();
     let Some(composition) = composition else {
-        additions.projects.insert(project, Project { read: Err(Arc::from("the index is not open yet")), askers });
+        additions.projects.insert(
+            project,
+            Project {
+                read: Err(Arc::from("the index is not open yet")),
+                askers,
+            },
+        );
         return;
     };
-    additions.projects.insert(project.clone(), Project { read: Ok(None), askers });
+    additions.projects.insert(
+        project.clone(),
+        Project {
+            read: Ok(None),
+            askers,
+        },
+    );
     push(Job::Dependencies(project), composition, cx);
 }
 
 /// What adding `project`'s packages has come to, if it was ever asked for;
 /// `asker` is told when it moves.
-pub(crate) fn project_packages(project: &LocalProjectId, asker: Asker, cx: &mut App) -> Option<ProjectPackages> {
+pub(crate) fn project_packages(
+    project: &LocalProjectId,
+    asker: Asker,
+    cx: &mut App,
+) -> Option<ProjectPackages> {
     cx.try_global::<Additions>()?;
     let additions = cx.global_mut::<Additions>();
     let entry = additions.projects.get_mut(project)?;
@@ -301,7 +387,20 @@ pub(crate) fn project_packages(project: &LocalProjectId, asker: Asker, cx: &mut 
         Ok(None) => ProjectPackages::Reading,
         Ok(Some(found)) => {
             let found = Arc::clone(found);
-            ProjectPackages::Read(found.iter().map(|dependency| (dependency.clone(), additions.entries.get(&dependency.release).map(|entry| entry.stage.clone()))).collect())
+            ProjectPackages::Read(
+                found
+                    .iter()
+                    .map(|dependency| {
+                        (
+                            dependency.clone(),
+                            additions
+                                .entries
+                                .get(&dependency.release)
+                                .map(|entry| entry.stage.clone()),
+                        )
+                    })
+                    .collect(),
+            )
         }
     })
 }
@@ -312,7 +411,12 @@ pub(crate) fn project_packages(project: &LocalProjectId, asker: Asker, cx: &mut 
 /// wait. Returns whether it finished.
 #[cfg(feature = "visual-harness")]
 pub(crate) fn await_workers(deadline: std::time::Duration, cx: &App) -> bool {
-    let Some(queue) = cx.try_global::<Additions>().map(|additions| Arc::clone(&additions.queue)) else { return true };
+    let Some(queue) = cx
+        .try_global::<Additions>()
+        .map(|additions| Arc::clone(&additions.queue))
+    else {
+        return true;
+    };
     let started = std::time::Instant::now();
     while queue.running() {
         if started.elapsed() > deadline {
@@ -333,8 +437,15 @@ pub(crate) fn land_now(cx: &mut App) {
 /// Lands everything the worker posted: the views that asked redraw, and a
 /// release the owner indexed makes the window read its root again.
 fn drain(cx: &mut App) {
-    let Some(additions) = cx.try_global::<Additions>() else { return };
-    let landed = std::mem::take(&mut *additions.mailbox.lock().unwrap_or_else(PoisonError::into_inner));
+    let Some(additions) = cx.try_global::<Additions>() else {
+        return;
+    };
+    let landed = std::mem::take(
+        &mut *additions
+            .mailbox
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner),
+    );
     if landed.is_empty() {
         return;
     }
@@ -352,25 +463,50 @@ fn drain(cx: &mut App) {
         match landed {
             Landed::Stage(release, stage) => {
                 added |= matches!(stage, Stage::Added(_) | Stage::Partial { .. });
-                let entry = additions.entries.entry(release.clone()).or_insert_with(|| Entry { stage: Stage::Queued, askers: Vec::new() });
+                let entry = additions
+                    .entries
+                    .entry(release.clone())
+                    .or_insert_with(|| Entry {
+                        stage: Stage::Queued,
+                        askers: Vec::new(),
+                    });
                 entry.stage = stage;
                 tell(&entry.askers);
                 for project in additions.projects.values() {
-                    if project.read.as_ref().is_ok_and(|read| read.as_ref().is_some_and(|found| found.iter().any(|dependency| dependency.release == release))) {
+                    if project.read.as_ref().is_ok_and(|read| {
+                        read.as_ref().is_some_and(|found| {
+                            found.iter().any(|dependency| dependency.release == release)
+                        })
+                    }) {
                         tell(&project.askers);
                     }
                 }
             }
             Landed::Dependencies(project, read) => {
                 if let Ok(found) = &read {
-                    for dependency in found.iter().filter(|dependency| matches!(dependency.origin, Origin::Registry(_))) {
-                        let entry = additions.entries.entry(dependency.release.clone()).or_insert_with(|| Entry { stage: Stage::Queued, askers: Vec::new() });
+                    for dependency in found
+                        .iter()
+                        .filter(|dependency| matches!(dependency.origin, Origin::Registry(_)))
+                    {
+                        let entry = additions
+                            .entries
+                            .entry(dependency.release.clone())
+                            .or_insert_with(|| Entry {
+                                stage: Stage::Queued,
+                                askers: Vec::new(),
+                            });
                         if let Stage::Failed(_) = entry.stage {
                             entry.stage = Stage::Queued;
                         }
                     }
                 }
-                let entry = additions.projects.entry(project).or_insert_with(|| Project { read: Ok(None), askers: Vec::new() });
+                let entry = additions
+                    .projects
+                    .entry(project)
+                    .or_insert_with(|| Project {
+                        read: Ok(None),
+                        askers: Vec::new(),
+                    });
                 entry.read = read.map(Some);
                 tell(&entry.askers);
             }

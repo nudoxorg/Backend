@@ -19,7 +19,10 @@ thiserror.workspace = true
 zerocopy.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "1.1.4", default-features = false, features = ["fs", "std"] }
+rustix = { version = "1.1.4", default-features = false, features = [
+  "fs",
+  "std",
+] }
 
 [features]
 loom-model = ["dep:loom"]
@@ -31,7 +34,10 @@ backend-extension-trustfall = { path = "../../extensions/trustfall" }
 backend-semantic = { path = "../semantic" }
 bolero.workspace = true
 backend-engine = { path = "../engine" }
-fearless_simd = { workspace = true, features = ["force_support_fallback", "std"] }
+fearless_simd = { workspace = true, features = [
+  "force_support_fallback",
+  "std",
+] }
 rstest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

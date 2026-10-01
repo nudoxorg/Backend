@@ -57,8 +57,12 @@ impl Doors for ShellHost<'_> {
         let peek_key = key.clone();
         Some(Door {
             subject: Subject::new(link.to_owned()),
-            peek: Some(Rc::new(move |bounds| crate::shell::peeks::request(peek_key.clone(), label.clone(), bounds, store.clone()))),
-            open: Some(Rc::new(move |_, cx| links.dispatch(Intent::Navigate(route.clone()), cx))),
+            peek: Some(Rc::new(move |bounds| {
+                crate::shell::peeks::request(peek_key.clone(), label.clone(), bounds, store.clone())
+            })),
+            open: Some(Rc::new(move |_, cx| {
+                links.dispatch(Intent::Navigate(route.clone()), cx)
+            })),
             from,
         })
     }
@@ -67,11 +71,25 @@ impl Doors for ShellHost<'_> {
         None
     }
 
-    fn track(&self, key: SharedString, label: SharedString, door: Option<&Door>, element: AnyElement) -> AnyElement {
+    fn track(
+        &self,
+        key: SharedString,
+        label: SharedString,
+        door: Option<&Door>,
+        element: AnyElement,
+    ) -> AnyElement {
         if self.active {
-            let act: Action = door.and_then(|door| door.open.clone()).unwrap_or_else(|| Rc::new(|_, _| {}));
+            let act: Action = door
+                .and_then(|door| door.open.clone())
+                .unwrap_or_else(|| Rc::new(|_, _| {}));
             let target = door.and_then(|door| SymbolRef::new(door.subject.0.as_ref()).ok());
-            self.targets.push(Target { id: key.clone(), label, act, peek: target.clone().map(PageKey::Symbol), source: target });
+            self.targets.push(Target {
+                id: key.clone(),
+                label,
+                act,
+                peek: target.clone().map(PageKey::Symbol),
+                source: target,
+            });
         }
         gpui::IntoElement::into_any_element(self.targets.track(key, element))
     }
@@ -82,11 +100,15 @@ impl Doors for ShellHost<'_> {
     }
 
     fn mark(&self, link: &str) -> Option<gpui::ElementId> {
-        SymbolRef::new(link).ok().map(|symbol| crate::shell::kit::shared_id(&symbol))
+        SymbolRef::new(link)
+            .ok()
+            .map(|symbol| crate::shell::kit::shared_id(&symbol))
     }
 
     fn say(&self, text: &str) {
-        self.said.borrow_mut().push(SharedString::from(text.to_owned()));
+        self.said
+            .borrow_mut()
+            .push(SharedString::from(text.to_owned()));
     }
 }
 
@@ -98,14 +120,24 @@ impl Host for ShellHost<'_> {
     fn change(&self, change: Change) -> Act {
         let (reader, symbol) = (self.reader.clone(), self.symbol.clone());
         Rc::new(move |_, cx| {
-            let _ = reader.update(cx, |reader, cx| reader.change_symbol(symbol.clone(), &change, cx));
+            let _ = reader.update(cx, |reader, cx| {
+                reader.change_symbol(symbol.clone(), &change, cx)
+            });
         })
     }
 
     fn open_source(&self, path: &str, line: u32) -> Act {
         let links = self.links.clone();
         let (path, line): (std::sync::Arc<str>, u32) = (std::sync::Arc::from(path), line);
-        Rc::new(move |_, cx| links.dispatch(Intent::OpenSource { path: std::sync::Arc::clone(&path), line }, cx))
+        Rc::new(move |_, cx| {
+            links.dispatch(
+                Intent::OpenSource {
+                    path: std::sync::Arc::clone(&path),
+                    line,
+                },
+                cx,
+            )
+        })
     }
 
     fn unfold(&self, key: &FoldKey) -> Option<Fold> {
@@ -116,7 +148,9 @@ impl Host for ShellHost<'_> {
             open: self.disclosure.is_open(&fold),
             presence: self.disclosure.unroll(fold),
             toggle: Rc::new(move |_, cx| {
-                let _ = reader.update(cx, |reader, cx| reader.toggle_symbol(symbol.clone(), toggle_fold.clone(), cx));
+                let _ = reader.update(cx, |reader, cx| {
+                    reader.toggle_symbol(symbol.clone(), toggle_fold.clone(), cx)
+                });
             }),
         })
     }
@@ -129,18 +163,33 @@ impl Host for ShellHost<'_> {
             && symbol.identity().path().is_some()
             && let Some(route) = symbol_route(&package, &symbol)
         {
-            return Some(Rc::new(move |_, cx| links.dispatch(Intent::Navigate(route.clone()), cx)));
+            return Some(Rc::new(move |_, cx| {
+                links.dispatch(Intent::Navigate(route.clone()), cx)
+            }));
         }
         let query = crate::model::pages::SearchQuery::new(target, 50).ok()?;
         Some(Rc::new(move |_, cx| {
-            links.dispatch(Intent::Navigate(crate::navigation::Route::Orbit(crate::navigation::OrbitRoute::Browse(crate::navigation::BrowseRoute::Find(query.clone())))), cx);
+            links.dispatch(
+                Intent::Navigate(crate::navigation::Route::Orbit(
+                    crate::navigation::OrbitRoute::Browse(crate::navigation::BrowseRoute::Find(
+                        query.clone(),
+                    )),
+                )),
+                cx,
+            );
         }))
     }
 
     fn target(&self, key: &Key, label: SharedString, act: Act, element: AnyElement) -> AnyElement {
         let id = key.text();
         if self.active {
-            self.targets.push(Target { id: id.clone(), label, act, peek: None, source: None });
+            self.targets.push(Target {
+                id: id.clone(),
+                label,
+                act,
+                peek: None,
+                source: None,
+            });
         }
         gpui::IntoElement::into_any_element(self.targets.track(id, element))
     }
@@ -166,6 +215,10 @@ impl Host for ShellHost<'_> {
         // part where it lays out, so a still copy neither glides (a moving
         // part is drawn above the page, out of the fold's reach) nor moves
         // the live page's springs.
-        if self.active { self.disclosure.flow.clone() } else { facet::motion::Flow::new("s6-inert") }
+        if self.active {
+            self.disclosure.flow.clone()
+        } else {
+            facet::motion::Flow::new("s6-inert")
+        }
     }
 }

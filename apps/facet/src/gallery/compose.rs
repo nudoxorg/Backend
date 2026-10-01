@@ -285,10 +285,17 @@ mod tests {
     #[test]
     fn more_labels_than_one_texture_holds_come_back_one_per_line() {
         let scale = 2_u8;
-        let count = usize::try_from(MAX_TEXTURE / (LABEL_HEIGHT * u32::from(scale))).expect("fits") * 2 + 7;
+        let count =
+            usize::try_from(MAX_TEXTURE / (LABEL_HEIGHT * u32::from(scale))).expect("fits") * 2 + 7;
         let lines: Vec<String> = (0..count).map(|index| format!("check {index}")).collect();
-        let images = labels(&lines, 120, scale, Appearance::Abyss).expect("the labels are captured");
+        let images =
+            labels(&lines, 120, scale, Appearance::Abyss).expect("the labels are captured");
         assert_eq!(images.len(), count, "one image per line");
-        assert!(images.iter().all(|image| image.height() == LABEL_HEIGHT * u32::from(scale)), "each one label tall");
+        assert!(
+            images
+                .iter()
+                .all(|image| image.height() == LABEL_HEIGHT * u32::from(scale)),
+            "each one label tall"
+        );
     }
 }

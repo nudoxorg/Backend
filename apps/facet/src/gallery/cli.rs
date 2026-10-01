@@ -309,7 +309,9 @@ fn soak(options: &Options) -> Result<()> {
     }
     resolve_script(&scene, &mut shot)?;
     let script_end = shot.script.as_ref().map_or(0, Script::end_ms);
-    shot.until_ms = options.number::<u64>("until")?.unwrap_or(script_end + 2_000);
+    shot.until_ms = options
+        .number::<u64>("until")?
+        .unwrap_or(script_end + 2_000);
     let report = super::soak::measure(&scene, &shot)?;
     let path = PathBuf::from(options.require("out")?);
     if let Some(parent) = path.parent() {
@@ -373,7 +375,11 @@ fn digest(image: &image::RgbaImage) -> String {
 }
 
 fn save(image: &image::RgbaImage, path: &Path) -> Result<()> {
-    if path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("png")) {
+    if path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
+    {
         // Large film sheets are evidence, so prefer quick lossless encoding to
         // expensive filtering that can dwarf the actual native rendering.
         use image::ImageEncoder as _;
@@ -383,11 +389,19 @@ fn save(image: &image::RgbaImage, path: &Path) -> Result<()> {
             &mut writer,
             image::codecs::png::CompressionType::Fast,
             image::codecs::png::FilterType::NoFilter,
-        ).write_image(image.as_raw(),image.width(),image.height(),image::ColorType::Rgba8.into())
-            .map_err(|error| GalleryError(format!("{}: {error}",path.display())))?;
+        )
+        .write_image(
+            image.as_raw(),
+            image.width(),
+            image.height(),
+            image::ColorType::Rgba8.into(),
+        )
+        .map_err(|error| GalleryError(format!("{}: {error}", path.display())))?;
         std::io::Write::flush(&mut writer).map_err(GalleryError::from_display)?;
     } else {
-        image.save(path).map_err(|error| GalleryError(format!("{}: {error}", path.display())))?;
+        image
+            .save(path)
+            .map_err(|error| GalleryError(format!("{}: {error}", path.display())))?;
     }
     println!(
         "{}  {}x{}  rgba-sha256 {}",
@@ -423,40 +437,67 @@ fn capture(options: &Options) -> Result<()> {
 
 /// Export genuine native frames without retaining the sequence's RGBA images.
 fn sequence(options: &Options) -> Result<()> {
-    let scene=scene(options.require("scene")?)?;
-    let mut shot=options.shot(&scene)?;
-    shot.times=options.times("times")?.ok_or_else(||GalleryError("sequence requires --times".to_owned()))?;
-    if shot.times.is_empty() || shot.frame_ms==0 { return fail("sequence needs capture times and a real simulated frame loop"); }
-    shot.probe=true;
-    shot.until_ms=options.number::<u64>("until")?.unwrap_or(0);
-    resolve_script(&scene,&mut shot)?;
-    let directory=out_dir(options)?;
-    let mut exported=0;
-    let script=gallery::run(&scene,&shot,&mut |tick,_,_| {
-        if let Some(image)=tick.image {
-            let path=directory.join(format!("{}-{}.png",scene.id,suffix(&shot,tick.drawn.at_ms)));
-            save(image,&path)?;
-            let state=Json::obj([
-                ("scene",Json::str(scene.id)),("time_ms",Json::num(tick.drawn.at_ms as f64)),
-                ("image",Json::str(path.to_string_lossy())),("rgba_sha256",Json::str(digest(image))),
-                ("state",tick.state.clone().unwrap_or(Json::Null)),
-                ("cpu_ms",Json::num(tick.drawn.cpu.as_secs_f64()*1000.0)),
-                ("input_cpu_ms",Json::num(tick.drawn.input_cpu.as_secs_f64()*1000.0)),
-                ("requested",Json::Bool(tick.drawn.requested())),
+    let scene = scene(options.require("scene")?)?;
+    let mut shot = options.shot(&scene)?;
+    shot.times = options
+        .times("times")?
+        .ok_or_else(|| GalleryError("sequence requires --times".to_owned()))?;
+    if shot.times.is_empty() || shot.frame_ms == 0 {
+        return fail("sequence needs capture times and a real simulated frame loop");
+    }
+    shot.probe = true;
+    shot.until_ms = options.number::<u64>("until")?.unwrap_or(0);
+    resolve_script(&scene, &mut shot)?;
+    let directory = out_dir(options)?;
+    let mut exported = 0;
+    let script = gallery::run(&scene, &shot, &mut |tick, _, _| {
+        if let Some(image) = tick.image {
+            let path = directory.join(format!(
+                "{}-{}.png",
+                scene.id,
+                suffix(&shot, tick.drawn.at_ms)
+            ));
+            save(image, &path)?;
+            let state = Json::obj([
+                ("scene", Json::str(scene.id)),
+                ("time_ms", Json::num(tick.drawn.at_ms as f64)),
+                ("image", Json::str(path.to_string_lossy())),
+                ("rgba_sha256", Json::str(digest(image))),
+                ("state", tick.state.clone().unwrap_or(Json::Null)),
+                ("cpu_ms", Json::num(tick.drawn.cpu.as_secs_f64() * 1000.0)),
+                (
+                    "input_cpu_ms",
+                    Json::num(tick.drawn.input_cpu.as_secs_f64() * 1000.0),
+                ),
+                ("requested", Json::Bool(tick.drawn.requested())),
             ]);
-            std::fs::write(path.with_extension("json"),format!("{state}\n")).map_err(GalleryError::from_display)?;
-            exported+=1;
+            std::fs::write(path.with_extension("json"), format!("{state}\n"))
+                .map_err(GalleryError::from_display)?;
+            exported += 1;
         }
         Ok(())
     })?;
-    if exported==0 { return fail("sequence captured no native frames"); }
-    let manifest=Json::obj([
-        ("scene",Json::str(scene.id)),("frames",Json::num(exported)),
-        ("frame_ms",Json::num(shot.frame_ms as f64)),("input",Json::str(script.to_string())),
-        ("capture_times",Json::Arr(shot.times.iter().map(|&at|Json::num(at as f64)).collect())),
-        ("notes",Json::str("Each image is a genuine GPUI draw. Images are written and released per frame. No interpolation; CPU times are diagnostic and include probes, excluding PNG export.")),
+    if exported == 0 {
+        return fail("sequence captured no native frames");
+    }
+    let manifest = Json::obj([
+        ("scene", Json::str(scene.id)),
+        ("frames", Json::num(exported)),
+        ("frame_ms", Json::num(shot.frame_ms as f64)),
+        ("input", Json::str(script.to_string())),
+        (
+            "capture_times",
+            Json::Arr(shot.times.iter().map(|&at| Json::num(at as f64)).collect()),
+        ),
+        (
+            "notes",
+            Json::str(
+                "Each image is a genuine GPUI draw. Images are written and released per frame. No interpolation; CPU times are diagnostic and include probes, excluding PNG export.",
+            ),
+        ),
     ]);
-    std::fs::write(directory.join("SEQUENCE.json"),format!("{manifest}\n")).map_err(GalleryError::from_display)?;
+    std::fs::write(directory.join("SEQUENCE.json"), format!("{manifest}\n"))
+        .map_err(GalleryError::from_display)?;
     Ok(())
 }
 
@@ -547,7 +588,11 @@ fn legibility(options: &Options) -> Result<()> {
     if report.passed() {
         Ok(())
     } else {
-        fail(format!("{}: {} legibility findings", scene.id, report.findings.len()))
+        fail(format!(
+            "{}: {} legibility findings",
+            scene.id,
+            report.findings.len()
+        ))
     }
 }
 
@@ -571,7 +616,9 @@ fn film_legibility(
     let end = shot.script.as_ref().map_or(0, Script::end_ms) + 600;
     let from = span.0.unwrap_or(0) / step * step;
     let to = span.1.unwrap_or(end);
-    shot.times = (from..=to).step_by(usize::try_from(step).unwrap_or(16)).collect();
+    shot.times = (from..=to)
+        .step_by(usize::try_from(step).unwrap_or(16))
+        .collect();
     shot.until_ms = to;
     let keep = options.flag("frames");
     let mut film = Vec::new();
@@ -609,8 +656,11 @@ fn film_legibility(
                 .map(|frame| gallery::legible::frame_json(frame).to_string())
                 .collect::<Vec<_>>()
                 .join("\n");
-            std::fs::write(dir.join(format!("{}-texts.jsonl", scene.id)), format!("{lines}\n"))
-                .map_err(GalleryError::from_display)?;
+            std::fs::write(
+                dir.join(format!("{}-texts.jsonl", scene.id)),
+                format!("{lines}\n"),
+            )
+            .map_err(GalleryError::from_display)?;
         }
         for (at, image) in &kept {
             let broken = report
@@ -642,7 +692,9 @@ fn catalog(options: &Options, path: &Path) -> Result<()> {
     let source = std::fs::read_to_string(path)
         .map_err(|error| GalleryError(format!("--catalog {}: {error}", path.display())))?;
     let base = path.parent().unwrap_or_else(|| Path::new("."));
-    let only: Option<Vec<&str>> = options.get("only").map(|only| only.split(',').map(str::trim).collect());
+    let only: Option<Vec<&str>> = options
+        .get("only")
+        .map(|only| only.split(',').map(str::trim).collect());
     let out = options.get("out").map(PathBuf::from);
     let known: HashSet<&str> = all_scenes()
         .iter()
@@ -654,20 +706,33 @@ fn catalog(options: &Options, path: &Path) -> Result<()> {
     for line in source.lines() {
         let line = line.split('#').next().unwrap_or_default().trim();
         let mut words = line.split_whitespace();
-        let Some(scene_id) = words.next() else { continue };
+        let Some(scene_id) = words.next() else {
+            continue;
+        };
         let words: Vec<&str> = words.collect();
         let bound = |name: &str| -> Result<Option<u64>> {
             words
                 .iter()
                 .find_map(|word| word.strip_prefix(name))
-                .map(|value| value.parse::<u64>().map_err(|_| GalleryError(format!("{scene_id}: `{name}{value}` is not ms"))))
+                .map(|value| {
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| GalleryError(format!("{scene_id}: `{name}{value}` is not ms")))
+                })
                 .transpose()
         };
         let span = (bound("from=")?, bound("to=")?);
         let script = words.iter().copied().find(|word| !word.contains('='));
         let stem = script.map_or(scene_id, |script| script.trim_end_matches(".txt"));
-        let name = if script.is_some() { stem.to_owned() } else { scene_id.to_owned() };
-        if only.as_ref().is_some_and(|only| !only.contains(&scene_id) && !only.contains(&stem)) {
+        let name = if script.is_some() {
+            stem.to_owned()
+        } else {
+            scene_id.to_owned()
+        };
+        if only
+            .as_ref()
+            .is_some_and(|only| !only.contains(&scene_id) && !only.contains(&stem))
+        {
             continue;
         }
         if !known.contains(scene_id) {
@@ -706,7 +771,11 @@ fn catalog(options: &Options, path: &Path) -> Result<()> {
             }
         }
         let text = gallery::legible::ledger_text(&name, &rows);
-        println!("ledger  {name}  ({scene_id}, {} frames, {:.0} s)", film.len(), started.elapsed().as_secs_f32());
+        println!(
+            "ledger  {name}  ({scene_id}, {} frames, {:.0} s)",
+            film.len(),
+            started.elapsed().as_secs_f32()
+        );
         print!("{text}");
         ledger.push_str(&text);
     }
@@ -716,18 +785,25 @@ fn catalog(options: &Options, path: &Path) -> Result<()> {
         if skipped.is_empty() {
             String::new()
         } else {
-            format!("  (skipped, not served by {}: {})", registry().name, skipped.join(", "))
+            format!(
+                "  (skipped, not served by {}: {})",
+                registry().name,
+                skipped.join(", ")
+            )
         }
     );
     print!("{summary}");
     if let Some(out) = &out {
         std::fs::create_dir_all(out).map_err(GalleryError::from_display)?;
-        std::fs::write(out.join("ledger.txt"), format!("{ledger}{summary}")).map_err(GalleryError::from_display)?;
+        std::fs::write(out.join("ledger.txt"), format!("{ledger}{summary}"))
+            .map_err(GalleryError::from_display)?;
     }
     if failed == 0 {
         Ok(())
     } else {
-        fail(format!("{failed} catalog transitions break the legibility law"))
+        fail(format!(
+            "{failed} catalog transitions break the legibility law"
+        ))
     }
 }
 
@@ -780,9 +856,14 @@ fn sheet(options: &Options) -> Result<()> {
 
 fn frame_json(frame: &Frame) -> Json {
     let ledger: &Ledger = &frame.ledger;
-    let bounds = |b: &crate::probe::BoundsSample| Json::obj([
-        ("x",Json::num(b.x)),("y",Json::num(b.y)),("width",Json::num(b.width)),("height",Json::num(b.height)),
-    ]);
+    let bounds = |b: &crate::probe::BoundsSample| {
+        Json::obj([
+            ("x", Json::num(b.x)),
+            ("y", Json::num(b.y)),
+            ("width", Json::num(b.width)),
+            ("height", Json::num(b.height)),
+        ])
+    };
     Json::obj([
         ("time_ms", Json::num(frame.time_ms as f64)),
         (
@@ -791,17 +872,60 @@ fn frame_json(frame: &Frame) -> Json {
         ),
         ("live", Json::Bool(ledger.any_live())),
         ("state", frame.state.clone().unwrap_or(Json::Null)),
-        ("scrolls",Json::Arr(ledger.scrolls.iter().map(|scroll|Json::obj([
-            ("key",Json::str(scroll.key.clone())),("viewport",bounds(&scroll.viewport)),("content",bounds(&scroll.content)),
-        ])).collect())),
-        ("stacks", Json::Arr(ledger.stacks.iter().map(|stack| Json::obj([
-            ("layer", Json::str(stack.layer.clone())),
-            ("entries", Json::Arr(stack.entries.iter().map(|entry| Json::obj([
-                ("key", Json::str(entry.key.clone())), ("kind", Json::str(entry.kind.clone())),
-                ("phase", Json::str(entry.phase.name())), ("parent", entry.parent.clone().map_or(Json::Null, Json::str)),
-                ("pinned", Json::Bool(entry.pinned)),
-            ])).collect())),
-        ])).collect())),
+        (
+            "scrolls",
+            Json::Arr(
+                ledger
+                    .scrolls
+                    .iter()
+                    .map(|scroll| {
+                        Json::obj([
+                            ("key", Json::str(scroll.key.clone())),
+                            ("viewport", bounds(&scroll.viewport)),
+                            ("content", bounds(&scroll.content)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+        (
+            "stacks",
+            Json::Arr(
+                ledger
+                    .stacks
+                    .iter()
+                    .map(|stack| {
+                        Json::obj([
+                            ("layer", Json::str(stack.layer.clone())),
+                            (
+                                "entries",
+                                Json::Arr(
+                                    stack
+                                        .entries
+                                        .iter()
+                                        .map(|entry| {
+                                            Json::obj([
+                                                ("key", Json::str(entry.key.clone())),
+                                                ("kind", Json::str(entry.kind.clone())),
+                                                ("phase", Json::str(entry.phase.name())),
+                                                (
+                                                    "parent",
+                                                    entry
+                                                        .parent
+                                                        .clone()
+                                                        .map_or(Json::Null, Json::str),
+                                                ),
+                                                ("pinned", Json::Bool(entry.pinned)),
+                                            ])
+                                        })
+                                        .collect(),
+                                ),
+                            ),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
         (
             "texts",
             Json::Arr(
@@ -812,7 +936,10 @@ fn frame_json(frame: &Frame) -> Json {
                         Json::obj([
                             ("key", Json::str(text.key.clone())),
                             ("content", Json::str(text.content.clone())),
-                            ("paint_clip", text.paint_clip.as_ref().map_or(Json::Null, bounds)),
+                            (
+                                "paint_clip",
+                                text.paint_clip.as_ref().map_or(Json::Null, bounds),
+                            ),
                             ("x", Json::num(f64::from(text.bounds.x))),
                             ("y", Json::num(f64::from(text.bounds.y))),
                             ("width", Json::num(f64::from(text.bounds.width))),
@@ -961,9 +1088,15 @@ fn motion_report(options: &Options) -> Result<()> {
                                 ("callbacks", Json::num(frame.drawn.callbacks as f64)),
                                 ("events", Json::num(frame.events as f64)),
                                 ("state", frame.state.clone().unwrap_or(Json::Null)),
-                                ("input_cpu_ms",Json::num(frame.drawn.input_cpu.as_secs_f64()*1000.0)),
-                                ("input_events",Json::num(frame.drawn.input_events as f64)),
-                                ("input_max_ms",Json::num(frame.drawn.input_max.as_secs_f64()*1000.0)),
+                                (
+                                    "input_cpu_ms",
+                                    Json::num(frame.drawn.input_cpu.as_secs_f64() * 1000.0),
+                                ),
+                                ("input_events", Json::num(frame.drawn.input_events as f64)),
+                                (
+                                    "input_max_ms",
+                                    Json::num(frame.drawn.input_max.as_secs_f64() * 1000.0),
+                                ),
                             ])
                         })
                         .collect(),
@@ -1472,83 +1605,125 @@ fn storm(options: &Options) -> Result<()> {
 
 fn window(options: &Options) -> Result<()> {
     let diagnostics = std::env::var_os("NUDOX_REVIEW_DIAGNOSTICS").is_some();
-    if diagnostics { eprintln!("[w-pages-review] window command entered"); }
-    let trace_path=options.get("native-trace").map(PathBuf::from);
+    if diagnostics {
+        eprintln!("[w-pages-review] window command entered");
+    }
+    let trace_path = options.get("native-trace").map(PathBuf::from);
     let scene = scene(options.require("scene")?)?;
     let shot = options.shot(&scene)?;
     let facet = shot.facet();
     let (width, height) = shot.size;
     #[allow(clippy::cast_precision_loss)]
     let window_size = size(px(width as f32), px(height as f32));
-    let failure=std::rc::Rc::new(std::cell::RefCell::new(None));
-    let boot_failure=std::rc::Rc::clone(&failure);
-    if diagnostics { eprintln!("[w-pages-review] before Application::run"); }
+    let failure = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let boot_failure = std::rc::Rc::clone(&failure);
+    if diagnostics {
+        eprintln!("[w-pages-review] before Application::run");
+    }
     gpui::Application::with_platform(gpui_platform::current_platform(false))
         .with_assets(crate::icons::Assets)
         .run(move |cx| {
-        if diagnostics { eprintln!("[w-pages-review] Application::run callback entered"); }
-        if diagnostics { eprintln!("[w-pages-review] gallery bootstrap starting"); }
-        if let Err(error) = gallery::bootstrap(facet, false, cx) {
-            eprintln!("facet-gallery: {error}");
-            *boot_failure.borrow_mut()=Some(error);
-            cx.quit();
-            return;
-        }
-        if diagnostics { eprintln!("[w-pages-review] gallery bootstrap complete"); }
-        if let Some(path)=&trace_path {
-            if let Err(error)=super::native_trace::start(path,cx) {
-                eprintln!("facet-gallery: native trace: {error}");
-                *boot_failure.borrow_mut()=Some(GalleryError::from_display(error));
-                cx.quit();return;
+            if diagnostics {
+                eprintln!("[w-pages-review] Application::run callback entered");
             }
-        }
-        pulse::thaw(cx);
-        let bounds = Bounds::centered(None, window_size, cx);
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(TitlebarOptions {
-                title: Some(format!("facet-gallery \u{b7} {}", scene.id).into()),
-                ..TitlebarOptions::default()
-            }),
-            ..WindowOptions::default()
-        };
-        if diagnostics { eprintln!("[w-pages-review] open_window starting"); }
-        if let Err(error) = cx.open_window(options, move |window, cx| {
-            gallery::mount(&scene, window, cx)
-        }) {
-            eprintln!("facet-gallery: open window: {error}");
-            *boot_failure.borrow_mut()=Some(GalleryError::from_display(error));
-            cx.quit();
-            return;
-        }
-        if diagnostics { eprintln!("[w-pages-review] open_window returned; windows={}", cx.windows().len()); }
-        cx.on_window_closed(move |cx, window| {
-            if diagnostics { eprintln!("[w-pages-review] window closed {window:?}; remaining={}", cx.windows().len()); }
-            cx.quit();
-        }).detach();
-        cx.activate(true);
-        if diagnostics { eprintln!("[w-pages-review] application activated"); }
-    });
-    if diagnostics { eprintln!("[w-pages-review] Application::run returned"); }
-    if let Some(error)=failure.borrow_mut().take() { return Err(error); }
+            if diagnostics {
+                eprintln!("[w-pages-review] gallery bootstrap starting");
+            }
+            if let Err(error) = gallery::bootstrap(facet, false, cx) {
+                eprintln!("facet-gallery: {error}");
+                *boot_failure.borrow_mut() = Some(error);
+                cx.quit();
+                return;
+            }
+            if diagnostics {
+                eprintln!("[w-pages-review] gallery bootstrap complete");
+            }
+            if let Some(path) = &trace_path {
+                if let Err(error) = super::native_trace::start(path, cx) {
+                    eprintln!("facet-gallery: native trace: {error}");
+                    *boot_failure.borrow_mut() = Some(GalleryError::from_display(error));
+                    cx.quit();
+                    return;
+                }
+            }
+            pulse::thaw(cx);
+            let bounds = Bounds::centered(None, window_size, cx);
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                titlebar: Some(TitlebarOptions {
+                    title: Some(format!("facet-gallery \u{b7} {}", scene.id).into()),
+                    ..TitlebarOptions::default()
+                }),
+                ..WindowOptions::default()
+            };
+            if diagnostics {
+                eprintln!("[w-pages-review] open_window starting");
+            }
+            if let Err(error) = cx.open_window(options, move |window, cx| {
+                gallery::mount(&scene, window, cx)
+            }) {
+                eprintln!("facet-gallery: open window: {error}");
+                *boot_failure.borrow_mut() = Some(GalleryError::from_display(error));
+                cx.quit();
+                return;
+            }
+            if diagnostics {
+                eprintln!(
+                    "[w-pages-review] open_window returned; windows={}",
+                    cx.windows().len()
+                );
+            }
+            cx.on_window_closed(move |cx, window| {
+                if diagnostics {
+                    eprintln!(
+                        "[w-pages-review] window closed {window:?}; remaining={}",
+                        cx.windows().len()
+                    );
+                }
+                cx.quit();
+            })
+            .detach();
+            cx.activate(true);
+            if diagnostics {
+                eprintln!("[w-pages-review] application activated");
+            }
+        });
+    if diagnostics {
+        eprintln!("[w-pages-review] Application::run returned");
+    }
+    if let Some(error) = failure.borrow_mut().take() {
+        return Err(error);
+    }
     Ok(())
 }
-
 
 #[cfg(test)]
 mod png_export {
     #[test]
     fn exported_native_evidence_preserves_every_rgba_channel() {
-        let image = image::RgbaImage::from_fn(67,53,|x,y| image::Rgba([
-            ((x*29+y*7)%256) as u8, ((x*3+y*41)%256) as u8,
-            ((x*19+y*13)%256) as u8, ((x*17+y*23)%256) as u8,
-        ]));
-        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
-        let path = std::env::temp_dir().join(format!("facet-evidence-{}-{nonce}.png",std::process::id()));
-        super::save(&image,&path).unwrap_or_else(|error| panic!("{error}"));
-        let decoded = image::open(&path).unwrap_or_else(|error| panic!("{error}")).to_rgba8();
+        let image = image::RgbaImage::from_fn(67, 53, |x, y| {
+            image::Rgba([
+                ((x * 29 + y * 7) % 256) as u8,
+                ((x * 3 + y * 41) % 256) as u8,
+                ((x * 19 + y * 13) % 256) as u8,
+                ((x * 17 + y * 23) % 256) as u8,
+            ])
+        });
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("facet-evidence-{}-{nonce}.png", std::process::id()));
+        super::save(&image, &path).unwrap_or_else(|error| panic!("{error}"));
+        let decoded = image::open(&path)
+            .unwrap_or_else(|error| panic!("{error}"))
+            .to_rgba8();
         std::fs::remove_file(&path).unwrap_or_else(|error| panic!("{error}"));
-        assert_eq!(decoded,image,"PNG evidence changed colors or transparency");
-        assert_eq!(super::digest(&decoded),super::digest(&image));
+        assert_eq!(
+            decoded, image,
+            "PNG evidence changed colors or transparency"
+        );
+        assert_eq!(super::digest(&decoded), super::digest(&image));
     }
 }

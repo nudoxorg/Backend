@@ -24,22 +24,22 @@ use super::flow::Flow;
 use super::presence::{Phase, Presence, act};
 use super::shared::{Morphing, shared, shared_with};
 use super::{LINEAR, Motion, Spec, offset};
+use crate::Density;
+use crate::fluid::Modes;
 use crate::fonts::Typeset;
 use crate::gallery::Scene;
 use crate::icons::Kind;
-use crate::fluid::Modes;
 use crate::measure::{Measure, Set, Space};
 use crate::paint::{Bevel, Chamfer, cut, gem};
 use crate::probe;
 use crate::theme::{ActiveFacet, Facet, set_facet};
 use crate::tokens::fluid::{LAB_CARDS, NOTES as MARGIN_MODE, Notes};
 use crate::tokens::{Palette, ty};
-use crate::Density;
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, AnyView, AppContext, BoxShadow, Context, ElementId, Entity, Hsla, IntoElement,
     ParentElement, Render, SharedString, Styled, Window, canvas, div, layer, point, px,
 };
-use gpui::prelude::FluentBuilder as _;
 use std::time::Duration;
 
 pub(crate) const SCENES: &[Scene] = &[
@@ -122,12 +122,22 @@ fn script<V: 'static>(cx: &mut Context<V>, steps: Vec<(u64, Step<V>)>) {
     .detach();
 }
 
-fn step<V: 'static>(at: u64, edit: impl FnOnce(&mut V, &mut Context<V>) + 'static) -> (u64, Step<V>) {
+fn step<V: 'static>(
+    at: u64,
+    edit: impl FnOnce(&mut V, &mut Context<V>) + 'static,
+) -> (u64, Step<V>) {
     (at, Box::new(edit))
 }
 
 const CRATES: [&str; 8] = [
-    "serde", "serde_json", "toml", "ron", "tokio", "anyhow", "rayon", "regex",
+    "serde",
+    "serde_json",
+    "toml",
+    "ron",
+    "tokio",
+    "anyhow",
+    "rayon",
+    "regex",
 ];
 
 const KINDS: [Kind; 8] = [
@@ -315,19 +325,24 @@ impl Render for ListLab {
             let plate = row(
                 index,
                 bevel_of(item.phase),
-                format!("#{}", self.rows.iter().position(|&r| r == index).map_or(0, |p| p + 1)).into(),
+                format!(
+                    "#{}",
+                    self.rows
+                        .iter()
+                        .position(|&r| r == index)
+                        .map_or(0, |p| p + 1)
+                )
+                .into(),
                 &facet,
             );
             let key = item.key.clone();
-            item.slot(
-                div().pb(px(10.0)).child(self.flow.item(
-                    key,
-                    probe::measure(
-                        ElementId::Name(format!("flow-list.row.{}", CRATES[index]).into()),
-                        plate,
-                    ),
-                )),
-            )
+            item.slot(div().pb(px(10.0)).child(self.flow.item(
+                key,
+                probe::measure(
+                    ElementId::Name(format!("flow-list.row.{}", CRATES[index]).into()),
+                    plate,
+                ),
+            )))
         });
         div()
             .size_full()
@@ -566,7 +581,8 @@ impl Render for ScaleLab {
         let facet = cx.facet();
         let measure = Measure::new(px(940.0), &facet);
         let margin = self.modes.settle(&MARGIN_MODE, measure.fluid_room());
-        self.flow.epoch((facet.text_scale.to_bits(), facet.density, margin.epoch));
+        self.flow
+            .epoch((facet.text_scale.to_bits(), facet.density, margin.epoch));
         div()
             .size_full()
             .bg(facet.palette().g1)
@@ -593,8 +609,28 @@ struct DescentLab {
 /// The page body's way in: held while the hero lands (240 ms), then a 10 px
 /// rise with a fade (380 ms). No room: the body is placed absolutely.
 static BODY_IN_POSE: [(f32, crate::Pose); 3] = [
-    (0.0, crate::Pose { x: 0.0, y: 10.0, sx: 1.0, sy: 1.0, rotate: 0.0, opacity: 0.0 }),
-    (0.387, crate::Pose { x: 0.0, y: 10.0, sx: 1.0, sy: 1.0, rotate: 0.0, opacity: 0.0 }),
+    (
+        0.0,
+        crate::Pose {
+            x: 0.0,
+            y: 10.0,
+            sx: 1.0,
+            sy: 1.0,
+            rotate: 0.0,
+            opacity: 0.0,
+        },
+    ),
+    (
+        0.387,
+        crate::Pose {
+            x: 0.0,
+            y: 10.0,
+            sx: 1.0,
+            sy: 1.0,
+            rotate: 0.0,
+            opacity: 0.0,
+        },
+    ),
     (1.0, crate::Pose::REST),
 ];
 static BODY_ROOM: [(f32, super::presence::Extent); 2] = [
@@ -603,8 +639,16 @@ static BODY_ROOM: [(f32, super::presence::Extent); 2] = [
 ];
 const BODY_IN: super::presence::Act = super::presence::Act {
     duration: Duration::from_millis(620),
-    pose: super::keys::Keys::new(Duration::from_millis(620), &BODY_IN_POSE, crate::tokens::motion::GLIDE),
-    room: super::keys::Keys::new(Duration::from_millis(620), &BODY_ROOM, crate::tokens::motion::GLIDE),
+    pose: super::keys::Keys::new(
+        Duration::from_millis(620),
+        &BODY_IN_POSE,
+        crate::tokens::motion::GLIDE,
+    ),
+    room: super::keys::Keys::new(
+        Duration::from_millis(620),
+        &BODY_ROOM,
+        crate::tokens::motion::GLIDE,
+    ),
 };
 
 impl DescentLab {
@@ -648,7 +692,13 @@ impl Render for DescentLab {
                 ))
             })
             .collect::<Vec<_>>();
-        let base = div().size_full().relative().bg(palette.g1).p(px(36.0)).flex().flex_col();
+        let base = div()
+            .size_full()
+            .relative()
+            .bg(palette.g1)
+            .p(px(36.0))
+            .flex()
+            .flex_col();
         let base = match self.open {
             None => {
                 let rows = (0..6).map(|index| {
@@ -672,28 +722,26 @@ impl Render for DescentLab {
                                 .child(CRATES[index]),
                         ))
                 });
-                base.child(caption("descent \u{b7} orbit", &facet)).children(rows)
+                base.child(caption("descent \u{b7} orbit", &facet))
+                    .children(rows)
             }
-            Some(index) => {
-                base.child(caption("descent \u{b7} package", &facet))
-                    .child(
+            Some(index) => base.child(caption("descent \u{b7} package", &facet)).child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(20.0))
+                    .child(shared(
+                        ElementId::Name(format!("gem-{index}").into()),
+                        gem(KINDS[index]).size(72.0),
+                    ))
+                    .child(shared(
+                        ElementId::Name(format!("name-{index}").into()),
                         div()
-                            .flex()
-                            .items_center()
-                            .gap(px(20.0))
-                            .child(shared(
-                                ElementId::Name(format!("gem-{index}").into()),
-                                gem(KINDS[index]).size(72.0),
-                            ))
-                            .child(shared(
-                                ElementId::Name(format!("name-{index}").into()),
-                                div()
-                                    .typeset(ty::HERO, &facet)
-                                    .text_color(palette.ink0.hsla())
-                                    .child(CRATES[index]),
-                            )),
-                    )
-            }
+                            .typeset(ty::HERO, &facet)
+                            .text_color(palette.ink0.hsla())
+                            .child(CRATES[index]),
+                    )),
+            ),
         };
         base.children(bodies)
     }
@@ -769,7 +817,10 @@ impl Render for FadeLab {
             .p(px(36.0))
             .flex()
             .flex_col()
-            .child(caption("group opacity (left) vs per primitive (right)", &facet))
+            .child(caption(
+                "group opacity (left) vs per primitive (right)",
+                &facet,
+            ))
             .child(
                 div()
                     .flex()
@@ -784,7 +835,12 @@ impl Render for FadeLab {
 
 struct ShadowLab;
 
-fn floating_plate(chamfer: Chamfer, width: f32, label: &'static str, facet: &Facet) -> impl IntoElement {
+fn floating_plate(
+    chamfer: Chamfer,
+    width: f32,
+    label: &'static str,
+    facet: &Facet,
+) -> impl IntoElement {
     cut()
         .chamfer(chamfer)
         .floating()
@@ -841,7 +897,10 @@ impl Render for ShadowLab {
             .flex()
             .flex_col()
             .gap(px(60.0))
-            .child(caption("chamfered shadow (top) vs rounded box shadow (bottom)", &facet))
+            .child(caption(
+                "chamfered shadow (top) vs rounded box shadow (bottom)",
+                &facet,
+            ))
             .child(
                 div()
                     .flex()
@@ -868,9 +927,26 @@ const NODES: usize = 20;
 
 fn node_name(index: usize) -> &'static str {
     const NAMES: [&str; NODES] = [
-        "serde", "serde_json", "toml", "ron", "tokio", "anyhow", "rayon", "regex", "clap",
-        "syn", "quote", "rand", "bytes", "hyper", "axum", "tracing", "thiserror", "itertools",
-        "smallvec", "once_cell",
+        "serde",
+        "serde_json",
+        "toml",
+        "ron",
+        "tokio",
+        "anyhow",
+        "rayon",
+        "regex",
+        "clap",
+        "syn",
+        "quote",
+        "rand",
+        "bytes",
+        "hyper",
+        "axum",
+        "tracing",
+        "thiserror",
+        "itertools",
+        "smallvec",
+        "once_cell",
     ];
     NAMES[index % NODES]
 }
@@ -906,10 +982,19 @@ fn shared_key(prefix: &'static str, index: usize) -> ElementId {
 /// end is the title (the other the label). The departing typeface is set at
 /// this end's line height, so the morph's scale (which maps this end's box
 /// onto the departing box) restores it exactly at t = 0.
-fn crossfaded_name(name: &'static str, morph: Morphing, title_end: bool, facet: &Facet) -> AnyElement {
+fn crossfaded_name(
+    name: &'static str,
+    morph: Morphing,
+    title_end: bool,
+    facet: &Facet,
+) -> AnyElement {
     let palette = facet.palette();
     let (title, label) = ((ty::HERO, palette.ink0), (ty::MONO_SMALL, palette.ink1));
-    let ((own, own_ink), (other, other_ink)) = if title_end { (title, label) } else { (label, title) };
+    let ((own, own_ink), (other, other_ink)) = if title_end {
+        (title, label)
+    } else {
+        (label, title)
+    };
     let text = |role: crate::tokens::TypeRole, ink: crate::tokens::Tone| {
         div()
             .h(px(role.line))

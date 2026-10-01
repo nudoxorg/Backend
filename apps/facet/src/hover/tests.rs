@@ -44,9 +44,21 @@ impl Render for Words {
             .flex_col()
             .gap(px(20.0))
             .pt(px(self.drop.get()))
-            .child(word("a", "present::SemanticLinkKind", Rc::clone(&self.seen)))
-            .child(word("b", "present::SemanticLinkKind", Rc::clone(&self.seen)))
-            .child(word("c", "present::RelationDirection", Rc::clone(&self.seen)))
+            .child(word(
+                "a",
+                "present::SemanticLinkKind",
+                Rc::clone(&self.seen),
+            ))
+            .child(word(
+                "b",
+                "present::SemanticLinkKind",
+                Rc::clone(&self.seen),
+            ))
+            .child(word(
+                "c",
+                "present::RelationDirection",
+                Rc::clone(&self.seen),
+            ))
     }
 }
 
@@ -80,18 +92,38 @@ fn a_hovered_word_lights_every_other_occurrence_in_the_answering_frame(cx: &mut 
     cx.simulate_mouse_move(point(px(10.0), px(10.0)), None, Modifiers::none());
     frame(cx);
     let lit = seen.borrow().clone();
-    assert_eq!(lit.get("a"), Some(&Lit::Target), "the word under the pointer: {lit:?}");
-    assert_eq!(lit.get("b"), Some(&Lit::Related), "the other occurrence of its symbol: {lit:?}");
-    assert_eq!(lit.get("c"), Some(&Lit::Rest), "another symbol stays at rest: {lit:?}");
+    assert_eq!(
+        lit.get("a"),
+        Some(&Lit::Target),
+        "the word under the pointer: {lit:?}"
+    );
+    assert_eq!(
+        lit.get("b"),
+        Some(&Lit::Related),
+        "the other occurrence of its symbol: {lit:?}"
+    );
+    assert_eq!(
+        lit.get("c"),
+        Some(&Lit::Rest),
+        "another symbol stays at rest: {lit:?}"
+    );
     // The pointer moves to `c`: `a` and `b` let go in the same frame.
     cx.simulate_mouse_move(point(px(10.0), px(90.0)), None, Modifiers::none());
     frame(cx);
     let lit = seen.borrow().clone();
-    assert_eq!((lit.get("a"), lit.get("b"), lit.get("c")), (Some(&Lit::Rest), Some(&Lit::Rest), Some(&Lit::Target)), "{lit:?}");
+    assert_eq!(
+        (lit.get("a"), lit.get("b"), lit.get("c")),
+        (Some(&Lit::Rest), Some(&Lit::Rest), Some(&Lit::Target)),
+        "{lit:?}"
+    );
     // Leaving the words clears the field.
     cx.simulate_mouse_move(point(px(400.0), px(400.0)), None, Modifiers::none());
     frame(cx);
-    assert!(seen.borrow().values().all(|lit| *lit == Lit::Rest), "{:?}", seen.borrow());
+    assert!(
+        seen.borrow().values().all(|lit| *lit == Lit::Rest),
+        "{:?}",
+        seen.borrow()
+    );
 }
 
 #[test]
@@ -99,15 +131,26 @@ fn ink_rises_one_step_and_strokes_rise_to_the_relation_width() {
     let palette = Facet::default().palette();
     assert_eq!(ink(palette.ink2, Lit::Rest, palette), palette.ink2.hsla());
     assert_eq!(ink(palette.ink2, Lit::Target, palette), palette.ink1.hsla());
-    assert_eq!(ink(palette.ink3, Lit::Related, palette), palette.ink2.hsla());
-    assert_eq!(ink(palette.ink0, Lit::Target, palette), palette.ink0.hsla(), "the top of the ramp holds");
+    assert_eq!(
+        ink(palette.ink3, Lit::Related, palette),
+        palette.ink2.hsla()
+    );
+    assert_eq!(
+        ink(palette.ink0, Lit::Target, palette),
+        palette.ink0.hsla(),
+        "the top of the ramp holds"
+    );
     assert!((super::stroke(1.2, Lit::Target) - 1.5).abs() < 1e-6);
     assert!((super::stroke(1.2, Lit::Rest) - 1.2).abs() < 1e-6);
 }
 
 fn lit_of(seen: &Seen) -> (Option<Lit>, Option<Lit>, Option<Lit>) {
     let seen = seen.borrow();
-    (seen.get("a").copied(), seen.get("b").copied(), seen.get("c").copied())
+    (
+        seen.get("a").copied(),
+        seen.get("b").copied(),
+        seen.get("c").copied(),
+    )
 }
 
 /// The pointer can leave the window without a last move: the words it held
@@ -118,14 +161,30 @@ fn leaving_the_window_lets_go_of_the_target(cx: &mut TestAppContext) {
     frame(cx);
     cx.simulate_mouse_move(point(px(10.0), px(10.0)), None, Modifiers::none());
     frame(cx);
-    assert_eq!(lit_of(&seen), (Some(Lit::Target), Some(Lit::Related), Some(Lit::Rest)), "the pointer is on a");
+    assert_eq!(
+        lit_of(&seen),
+        (Some(Lit::Target), Some(Lit::Related), Some(Lit::Rest)),
+        "the pointer is on a"
+    );
     // The exit reports the last position: the word reaches the window's edge, so the
     // pointer leaves from over it and only the exit event can tell the word.
-    cx.simulate_event(MouseExitEvent { position: point(px(10.0), px(10.0)), pressed_button: None, modifiers: Modifiers::none() });
+    cx.simulate_event(MouseExitEvent {
+        position: point(px(10.0), px(10.0)),
+        pressed_button: None,
+        modifiers: Modifiers::none(),
+    });
     // Before any frame: a window nothing repaints must not keep a lit word.
-    assert_eq!(cx.update(|window, cx| super::target(window, cx)), None, "the exit event itself lets go");
+    assert_eq!(
+        cx.update(|window, cx| super::target(window, cx)),
+        None,
+        "the exit event itself lets go"
+    );
     frame(cx);
-    assert_eq!(lit_of(&seen), (Some(Lit::Rest), Some(Lit::Rest), Some(Lit::Rest)), "the pointer left the window");
+    assert_eq!(
+        lit_of(&seen),
+        (Some(Lit::Rest), Some(Lit::Rest), Some(Lit::Rest)),
+        "the pointer left the window"
+    );
 }
 
 /// A scroll or a reflow moves the word away from a pointer that has not
@@ -140,7 +199,11 @@ fn a_word_that_moves_out_from_under_a_still_pointer_lets_go(cx: &mut TestAppCont
     drop.set(200.0);
     frame(cx);
     frame(cx);
-    assert_eq!(lit_of(&seen), (Some(Lit::Rest), Some(Lit::Rest), Some(Lit::Rest)), "the pointer is over empty space now");
+    assert_eq!(
+        lit_of(&seen),
+        (Some(Lit::Rest), Some(Lit::Rest), Some(Lit::Rest)),
+        "the pointer is over empty space now"
+    );
 }
 
 /// Keyboard focus lights a word while the pointer is nowhere near it, and
@@ -149,10 +212,20 @@ fn a_word_that_moves_out_from_under_a_still_pointer_lets_go(cx: &mut TestAppCont
 fn a_focus_target_survives_frames_with_the_pointer_elsewhere(cx: &mut TestAppContext) {
     let (seen, _drop, cx) = words(cx);
     frame(cx);
-    cx.update(|window, cx| super::focus(Some(("c".into(), Subject::new("present::RelationDirection"))), window, cx));
+    cx.update(|window, cx| {
+        super::focus(
+            Some(("c".into(), Subject::new("present::RelationDirection"))),
+            window,
+            cx,
+        )
+    });
     frame(cx);
     frame(cx);
-    assert_eq!(lit_of(&seen), (Some(Lit::Rest), Some(Lit::Rest), Some(Lit::Target)), "focus on c lights c");
+    assert_eq!(
+        lit_of(&seen),
+        (Some(Lit::Rest), Some(Lit::Rest), Some(Lit::Target)),
+        "focus on c lights c"
+    );
 }
 
 /// Navigation closes what floats and lets go of the hover target: the page
@@ -167,7 +240,14 @@ fn closing_everything_on_navigation_lets_go_of_the_target(cx: &mut TestAppContex
     cx.update(|window, cx| {
         float::close_all(window, cx);
     });
-    assert_eq!(cx.update(|window, cx| super::target(window, cx)), None, "closing everything lets go at once");
+    assert_eq!(
+        cx.update(|window, cx| super::target(window, cx)),
+        None,
+        "closing everything lets go at once"
+    );
     frame(cx);
-    assert_eq!(lit_of(&seen), (Some(Lit::Rest), Some(Lit::Rest), Some(Lit::Rest)));
+    assert_eq!(
+        lit_of(&seen),
+        (Some(Lit::Rest), Some(Lit::Rest), Some(Lit::Rest))
+    );
 }

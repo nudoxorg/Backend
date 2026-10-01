@@ -948,10 +948,8 @@ impl ProductSourceFileKey {
 
     fn to_bytes(self) -> [u8; 32] {
         let mut bytes = [0; 32];
-        bytes[..PRODUCT_SOURCE_FILE_PROJECT_PREFIX_BYTES]
-            .copy_from_slice(&self.project_prefix);
-        bytes[PRODUCT_SOURCE_FILE_PROJECT_PREFIX_BYTES..]
-            .copy_from_slice(&self.file_digest);
+        bytes[..PRODUCT_SOURCE_FILE_PROJECT_PREFIX_BYTES].copy_from_slice(&self.project_prefix);
+        bytes[PRODUCT_SOURCE_FILE_PROJECT_PREFIX_BYTES..].copy_from_slice(&self.file_digest);
         bytes
     }
 }
@@ -1639,7 +1637,11 @@ mod tests {
             super::product_source_file_key(project, "src/lib.rs"),
             "a workspace keyed this way is state from another build, not a current one"
         );
-        assert_ne!(legacy[..16], project[..16], "the retired key carries no project prefix");
+        assert_ne!(
+            legacy[..16],
+            project[..16],
+            "the retired key carries no project prefix"
+        );
     }
 
     #[test]

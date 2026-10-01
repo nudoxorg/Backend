@@ -6,10 +6,10 @@
 mod build_support;
 
 use allocation_counter::{AllocationInfo, measure};
+use backend_semantic::index_core::{ExactOperation, IndexSnapshot, LexicalRow};
 use backend_semantic::ir::{AtomId, TypeId};
 use backend_semantic::ir::{AtomInput, EntityKind, EntityRecord, PrimitiveType, TypeNode};
 use backend_version::{ContentId, SourceFactDomain};
-use backend_semantic::index_core::{ExactOperation, IndexSnapshot, LexicalRow};
 use build_support::{
     BuildBuffers, BuildProofError, Fixture, OpenBuffers, TestError, compiled, next_fragment,
     publish, write_fragment, written,
@@ -158,10 +158,13 @@ fn verify_rows(index: &backend_engine::index_build::PreparedIndex<'_>) -> Result
         .zip(index.lexical.rows)
     {
         let document = backend_semantic::index_core::EntityDocumentId {
-            artifact: backend_semantic::index_core::EntityArtifactIdentity::Compact(index.fragment.fragment),
+            artifact: backend_semantic::index_core::EntityArtifactIdentity::Compact(
+                index.fragment.fragment,
+            ),
             entity: fact.entity,
         };
-        let document_bytes: [u8; backend_semantic::index_core::ENTITY_DOCUMENT_ID_BYTES] = document.into();
+        let document_bytes: [u8; backend_semantic::index_core::ENTITY_DOCUMENT_ID_BYTES] =
+            document.into();
         if exact.key != document_bytes
             || exact.key != fact.exact_key.as_ref()
             || exact.value_bytes().is_none()
@@ -343,7 +346,9 @@ fn assert_warm_build_does_not_allocate(
     }
 }
 
-fn witness(index: &backend_engine::index_build::PreparedIndex<'_>) -> Result<SegmentWitness, TestError> {
+fn witness(
+    index: &backend_engine::index_build::PreparedIndex<'_>,
+) -> Result<SegmentWitness, TestError> {
     let Some(entity) = index.entities.first() else {
         return Err(TestError::BuildProof(BuildProofError::MissingIndexedEntity));
     };

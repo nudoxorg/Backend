@@ -5,17 +5,21 @@ use backend_engine::driver::{
     CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, NativeTool,
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
-use backend_semantic::ir::{EntityKind, FragmentError, FragmentView, OccurrenceConfidence, TypeFactSegment};
-use backend_frontend_rust::legacy::{RustAuthorityError, RustPackageUrl, RustPurlError, RustToolchain};
-use backend_engine::publication::immutable::ImmutableArtifactStore;
-use backend_engine::publication::{
-    OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
-};
-use backend_semantic::vocabulary::{LanguageProfile, Stage};
 use backend_engine::index_build::{IndexBuildScratch, build};
 use backend_engine::index_publish::{
     CompilationIndexScratch, encode_index_pack, plan_index_pack, seal_compilation_index,
 };
+use backend_engine::publication::immutable::ImmutableArtifactStore;
+use backend_engine::publication::{
+    OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
+};
+use backend_frontend_rust::legacy::{
+    RustAuthorityError, RustPackageUrl, RustPurlError, RustToolchain,
+};
+use backend_semantic::ir::{
+    EntityKind, FragmentError, FragmentView, OccurrenceConfidence, TypeFactSegment,
+};
+use backend_semantic::vocabulary::{LanguageProfile, Stage};
 use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use sha2::{Digest, Sha256};
 use std::{
@@ -320,7 +324,9 @@ fn compile_row(
         toolchain: ToolchainSelection::ResolvedNative(*tool),
         authority: SemanticAuthorityInput::Rust {
             project: located.project(),
-            maximum_source_bytes: backend_frontend_rust::legacy::SourceByteLimit::from(SOURCE_LIMIT),
+            maximum_source_bytes: backend_frontend_rust::legacy::SourceByteLimit::from(
+                SOURCE_LIMIT,
+            ),
             features: backend_frontend_rust::legacy::RustFeatureControl::default(),
         },
         control: CompileControl {

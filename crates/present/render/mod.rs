@@ -193,7 +193,9 @@ impl Theme {
 /// Returns the display column count of one line, counting each `char` once.
 #[must_use]
 pub fn display_width(text: &str) -> usize {
-    text.chars().filter(|character| *character != '\u{1b}').count()
+    text.chars()
+        .filter(|character| *character != '\u{1b}')
+        .count()
 }
 
 /// A bounded writer that never grows past one frame.

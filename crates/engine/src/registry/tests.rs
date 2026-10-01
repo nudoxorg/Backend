@@ -2486,7 +2486,8 @@ fn metadata_404_becomes_a_durable_not_found_fact() {
         0,
     )
     .expect("request");
-    let mut transport = HttpRegistryTransport::new(endpoint.clone(), None, limits()).expect("transport");
+    let mut transport =
+        HttpRegistryTransport::new(endpoint.clone(), None, limits()).expect("transport");
     assert!(matches!(
         service.acquire(&request, &mut transport),
         crate::acquisition::AcquisitionOutcome::NegativeFact(crate::acquisition::NegativeFact {

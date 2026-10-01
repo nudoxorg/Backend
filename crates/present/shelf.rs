@@ -140,11 +140,9 @@ impl ShelfEntry {
                 .cmp(&left.declarations)
                 .then_with(|| left.language.cmp(&right.language))
         });
-        self.declarations = RowCount::new(
-            sorted
-                .iter()
-                .fold(0_u64, |total, row| total.saturating_add(row.declarations.get())),
-        );
+        self.declarations = RowCount::new(sorted.iter().fold(0_u64, |total, row| {
+            total.saturating_add(row.declarations.get())
+        }));
         self.languages = sorted.into_boxed_slice();
         self
     }

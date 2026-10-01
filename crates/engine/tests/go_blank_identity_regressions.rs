@@ -51,8 +51,11 @@ fn stage_blank_module() -> Result<(PathBuf, PathBuf), String> {
         std::process::id()
     ));
     fs::create_dir_all(&root).map_err(|error| error.to_string())?;
-    fs::write(root.join("go.mod"), b"module blank.example/fixture\n\ngo 1.22\n")
-        .map_err(|error| error.to_string())?;
+    fs::write(
+        root.join("go.mod"),
+        b"module blank.example/fixture\n\ngo 1.22\n",
+    )
+    .map_err(|error| error.to_string())?;
     let source_path = root.join("blank.go");
     fs::write(&source_path, BLANK_STRUCT_SOURCE).map_err(|error| error.to_string())?;
     Ok((root, source_path))
