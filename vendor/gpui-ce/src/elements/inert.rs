@@ -844,7 +844,7 @@ mod tests {
         cx.simulate_click(point(px(10.), px(10.)), Default::default());
         cx.simulate_keystrokes("a");
         assert_eq!(events.clicks.get(), 2);
-        assert_eq!(events.keys.get(), 2);
+        assert_eq!(events.keys.get(), active_key_events + 1);
     }
 
     #[gpui::test]
