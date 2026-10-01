@@ -313,10 +313,10 @@ mod tests {
 
     struct PointerCaptureRoot {
         child: Entity<PointerCaptureTargetView>,
+        sibling: Entity<PointerCaptureTargetView>,
         inert: Rc<Cell<bool>>,
         replace_child: Rc<Cell<bool>>,
         child_hitbox: Rc<Cell<Option<HitboxId>>>,
-        sibling_hitbox: Rc<Cell<Option<HitboxId>>>,
     }
 
     impl Render for PointerCaptureRoot {
@@ -345,17 +345,18 @@ mod tests {
                 }
             };
 
+            let sibling = self
+                .sibling
+                .clone()
+                .cached(StyleRefinement::default().w(px(100.)).h(px(60.)));
+
             div()
                 .w(px(220.))
                 .h(px(70.))
                 .flex()
                 .flex_row()
                 .child(child)
-                .child(PointerCaptureProbe {
-                    id: None,
-                    hitbox: self.sibling_hitbox.clone(),
-                    moves: None,
-                })
+                .child(sibling)
         }
     }
 
@@ -1132,7 +1133,7 @@ mod tests {
         let child_hitbox = Rc::new(Cell::new(None));
         let sibling_hitbox = Rc::new(Cell::new(None));
         let captured_sibling = Rc::new(Cell::new(None));
-        let (_root, cx) = cx.add_window_view({
+        let (root, cx) = cx.add_window_view({
             let inert_state = inert_state.clone();
             let replace_child = replace_child.clone();
             let child_hitbox = child_hitbox.clone();
@@ -1141,12 +1142,15 @@ mod tests {
                 let child = cx.new(|_| PointerCaptureTargetView {
                     hitbox: child_hitbox.clone(),
                 });
+                let sibling = cx.new(|_| PointerCaptureTargetView {
+                    hitbox: sibling_hitbox,
+                });
                 PointerCaptureRoot {
                     child,
+                    sibling,
                     inert: inert_state,
                     replace_child,
                     child_hitbox,
-                    sibling_hitbox,
                 }
             }
         });
@@ -1161,8 +1165,8 @@ mod tests {
 
         // Redrawing an inert sibling must not cancel capture held by this active sibling.
         inert_state.set(true);
+        root.update(cx, |_, root_cx| root_cx.notify());
         cx.update(|window, cx| {
-            window.refresh();
             window.draw(cx).clear(cx);
             let owner_work = window.element_owner_path_work();
             assert!(owner_work.nodes_created > 0);
@@ -1415,7 +1419,9 @@ mod tests {
             // Commit the transition before delivering callbacks queued by the prior active
             // frame, matching the dirty-frame production path.
             window.draw(cx).clear(cx);
-            assert_eq!(window.simulate_reconciled_next_frame(cx), (1, 1));
+            // The child callback is skipped, while the sibling and true window-level callbacks
+            // both run in their original order; only the sibling dirties a reconciliation draw.
+            assert_eq!(window.simulate_reconciled_next_frame(cx), (2, 1));
         });
 
         assert_eq!(child_events.animation_frames.get(), 0);

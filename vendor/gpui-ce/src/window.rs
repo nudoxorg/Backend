@@ -1243,6 +1243,8 @@ mod element_owner_path_tests {
         assert!(before_reuse.node_storage_growths <= 2);
         assert_eq!(arena.work().cached_handles_reused, 2);
         assert!(anonymous.same_owner(&child(&arena, Some(&root), 0, None)));
+        let owners = std::collections::HashSet::from([anonymous.clone()]);
+        assert!(owners.contains(&child(&arena, Some(&root), 0, None)));
         assert!(arena.work().path_equality_segments > 0);
         assert!(arena.work().path_hash_segments > 0);
     }
