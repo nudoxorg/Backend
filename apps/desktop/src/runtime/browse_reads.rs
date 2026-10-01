@@ -151,7 +151,13 @@ fn release_key(
             }
             Some(PackageOrigin::Unresolved { source }) => {
                 key_part(&mut key, "unresolved");
-                key_part(&mut key, source.as_deref().unwrap_or("unknown"));
+                match source {
+                    Some(source) => {
+                        key_part(&mut key, "some");
+                        key_part(&mut key, source);
+                    }
+                    None => key_part(&mut key, "none"),
+                }
             }
             None => key_part(&mut key, "unknown"),
         }
@@ -832,6 +838,20 @@ mod find_tests {
         assert_ne!(
             release_key("1.0.0", None, Some(&registry)),
             release_key("1.0.0", None, Some(&git_a))
+        );
+        assert_ne!(
+            release_key(
+                "1.0.0",
+                None,
+                Some(&PackageOrigin::Unresolved { source: None })
+            ),
+            release_key(
+                "1.0.0",
+                None,
+                Some(&PackageOrigin::Unresolved {
+                    source: Some("unknown".to_owned())
+                })
+            )
         );
     }
 
