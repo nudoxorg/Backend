@@ -31,6 +31,7 @@ const MAX_SOURCE_LINES: usize = 64;
 const MAX_SOURCE_BYTES: usize = 8 * 1024;
 const MAX_SOURCE_LINE_BYTES: usize = 2 * 1024;
 const MAX_PAGE_REFERENCES: usize = 32;
+const MAX_PAGE_HISTORY: usize = 128;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct SourceCursor {
@@ -245,6 +246,8 @@ fn verified_link(coverage: SourceCoverage, identifier: ByteSpan, visible: ByteSp
 
 struct Pager {
     cursor: SourceCursor,
+    back: Vec<SourceCursor>,
+    forward: Vec<SourceCursor>,
     first: u32,
     last: u32,
     input: Entity<InputState>,
@@ -278,6 +281,8 @@ impl Pager {
         );
         Self {
             cursor,
+            back: Vec::new(),
+            forward: Vec::new(),
             first,
             last,
             input,
@@ -291,10 +296,34 @@ impl Pager {
 
     fn show(&mut self, cursor: SourceCursor, focus: u32, cx: &mut Context<Self>) {
         self.cursor = cursor;
+        self.back.clear();
+        self.forward.clear();
         self.error = None;
         self.reference_page = 0;
         self.recall
             .focus(crate::shell::reader::source_line_shared_id(focus));
+        self.reveal.set(true);
+        cx.notify();
+    }
+
+    fn next(&mut self, fallback: SourceCursor, cx: &mut Context<Self>) {
+        let next = self.forward.pop().unwrap_or(fallback);
+        push_history(&mut self.back, self.cursor);
+        self.cursor = next;
+        self.reference_page = 0;
+        self.recall
+            .focus(crate::shell::reader::source_line_shared_id(next.line));
+        self.reveal.set(true);
+        cx.notify();
+    }
+
+    fn previous(&mut self, fallback: SourceCursor, cx: &mut Context<Self>) {
+        let previous = self.back.pop().unwrap_or(fallback);
+        push_history(&mut self.forward, self.cursor);
+        self.cursor = previous;
+        self.reference_page = 0;
+        self.recall
+            .focus(crate::shell::reader::source_line_shared_id(previous.line));
         self.reveal.set(true);
         cx.notify();
     }
@@ -321,6 +350,13 @@ impl Pager {
         self.reveal.set(true);
         cx.notify();
     }
+}
+
+fn push_history(history: &mut Vec<SourceCursor>, cursor: SourceCursor) {
+    if history.len() == MAX_PAGE_HISTORY {
+        history.remove(0);
+    }
+    history.push(cursor);
 }
 
 pub(super) fn body(
@@ -942,11 +978,17 @@ fn pager_controls(
         .min_w_0()
         .child(quiet(ctx.say(range), &measure, palette));
 
-    if let Some(previous) = previous_cursor(source, cursor) {
+    if let Some(previous) = pager
+        .read(cx)
+        .back
+        .last()
+        .copied()
+        .or_else(|| previous_cursor(source, cursor))
+    {
         let id: SharedString = format!("source-page-{position}-previous").into();
         let state = pager.clone();
         let act: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
-            state.update(app, |pager, cx| pager.show(previous, previous.line, cx));
+            state.update(app, |pager, cx| pager.previous(previous, cx));
         });
         ctx.targets.push(Target {
             id: id.clone(),
@@ -965,11 +1007,11 @@ fn pager_controls(
             ),
         );
     }
-    if let Some(next) = page.next {
+    if let Some(next) = pager.read(cx).forward.last().copied().or(page.next) {
         let id: SharedString = format!("source-page-{position}-next").into();
         let state = pager.clone();
         let act: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
-            state.update(app, |pager, cx| pager.show(next, next.line, cx));
+            state.update(app, |pager, cx| pager.next(next, cx));
         });
         ctx.targets.push(Target {
             id: id.clone(),
