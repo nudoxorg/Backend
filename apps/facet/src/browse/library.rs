@@ -31,18 +31,43 @@ use std::sync::Arc;
 /// One source-backed release that a dependency row can offer.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReleaseLink {
+    /// Stable identity of this exact release within its dependency row.
+    pub key: SharedString,
     /// Exact version as the owner recorded it.
     pub version: SharedString,
     /// An admitted package coordinate when this source can be opened.
-    pub target: Option<SharedString>,
+    pub target: Option<ReleaseHandle>,
     /// Explicit reason when the tree cannot open this source.
     pub unavailable: Option<SharedString>,
+}
+
+/// An action address into the immutable tree that produced one rendered page.
+/// It is never interpreted as a package coordinate by the component.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ReleaseHandle {
+    role: usize,
+    row: usize,
+    release: usize,
+}
+
+impl ReleaseHandle {
+    /// Names a release in the same immutable tree as the rendered model.
+    #[must_use]
+    pub const fn new(role: usize, row: usize, release: usize) -> Self {
+        Self { role, row, release }
+    }
+
+    /// The positions to resolve against that immutable tree's typed links.
+    #[must_use]
+    pub const fn positions(self) -> (usize, usize, usize) {
+        (self.role, self.row, self.release)
+    }
 }
 
 /// Navigation supplied by the desktop; the shared facet never parses paths.
 #[derive(Clone)]
 pub struct Actions {
-    pub open_package: Rc<dyn Fn(SharedString, &mut Window, &mut App)>,
+    pub open_package: Rc<dyn Fn(ReleaseHandle, &mut Window, &mut App)>,
 }
 
 /// How loudly an alert speaks.
@@ -70,6 +95,8 @@ pub struct Alert {
 /// One direct dependency.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Row {
+    /// Exact stable row identity; never its current ordinal.
+    pub key: SharedString,
     /// Package name.
     pub name: SharedString,
     /// The one quiet descriptor at rest ("tests only", "twice · 0.22.1 · 0.23.1").
@@ -85,6 +112,8 @@ pub struct Row {
 /// One role and its dependencies.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Role {
+    /// Stable role identity; never its current ordinal.
+    pub key: SharedString,
     /// "speaks formats".
     pub label: SharedString,
     /// "for engine, store and advisory".
@@ -346,11 +375,11 @@ fn roles(
         .roles
         .iter()
         .enumerate()
-        .map(|(index, role)| {
-            let block = role_block(id, index, role, actions, &column, palette, window, cx);
+        .map(|(_index, role)| {
+            let block = role_block(id, role, actions, &column, palette, window, cx);
             (
                 role.rows.len().min(6) + 2,
-                flow.item(child(id, format!("role-flow-{index}")), block)
+                flow.item(child(id, format!("role-flow-{}", role.key)), block)
                     .into_any_element(),
             )
         })
@@ -396,7 +425,6 @@ fn roles(
 
 fn role_block(
     id: &ElementId,
-    index: usize,
     role: &Role,
     actions: &Actions,
     measure: &Measure,
@@ -404,7 +432,7 @@ fn role_block(
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    let block_id = child(id, format!("role-{index}"));
+    let block_id = child(id, format!("role-{}", role.key));
     let shown_count = window.use_keyed_state(child(&block_id, "shown"), cx, |_, _| 6usize);
     let icon = match role.label.as_ref() {
         "checks our work" => Icon::ShieldCheck,
@@ -451,9 +479,9 @@ fn role_block(
         .gap(measure.space(Space::Tight))
         .child(head);
     let shown = role.rows.len().min(*shown_count.read(cx));
-    for (at, row) in role.rows.iter().take(shown).enumerate() {
+    for row in role.rows.iter().take(shown) {
         block = block.child(row_view(
-            &child(&block_id, format!("row-{at}")),
+            &child(&block_id, row.key.clone()),
             row,
             actions,
             measure,
@@ -582,13 +610,13 @@ fn row_view(
             TextOverflow::Wrap,
         ));
     }
-    for (at, release) in row.releases.iter().enumerate() {
+    for release in &row.releases {
         if let Some(target) = &release.target {
-            let target = target.clone();
+            let target = *target;
             let open = Rc::clone(&actions.open_package);
             detail = detail.child(
                 button(
-                    child(id, format!("open-{at}")),
+                    child(id, release.key.clone()),
                     format!("Open {} ›", release.version),
                     measure,
                 )
@@ -597,7 +625,7 @@ fn row_view(
             );
         } else if let Some(reason) = &release.unavailable {
             detail = detail.child(words(
-                child(id, format!("unavailable-{at}")),
+                child(id, release.key.clone()),
                 format!("{} · {reason}", release.version).into(),
                 ty::CAPTION,
                 palette.ink3,

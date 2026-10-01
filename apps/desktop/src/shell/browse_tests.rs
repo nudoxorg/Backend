@@ -21,6 +21,45 @@ use gpui::TestAppContext;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+#[test]
+fn library_release_actions_keep_exact_source_and_row_keys_survive_reorder() {
+    use crate::model::browse::{TreeDestination, TreeReleaseLink, TreeRoleLinks, TreeRowLinks};
+    use crate::model::pages::PackageRef;
+    use backend_library::browse::RoleId;
+    use facet::browse::library::ReleaseHandle;
+
+    let first = PackageRef::parse("pkg:cargo/shared@1.0.0").expect("crates.io release");
+    let alternate = PackageRef::parse("pkg:cargo/shared@1.0.0?repository_url=https%3A%2F%2Fregistry.example%2Findex")
+        .expect("alternate registry release");
+    let make = |package: PackageRef| TreeRoleLinks {
+        role: RoleId::Formats,
+        rows: vec![TreeRowLinks {
+            name: "shared".into(),
+            releases: vec![TreeReleaseLink {
+                version: "1.0.0".into(),
+                destination: TreeDestination::Open(package),
+            }].into(),
+        }].into(),
+    };
+    let roles = [make(first.clone()), make(alternate.clone())];
+    assert_eq!(super::typed_library_release(&roles, ReleaseHandle::new(0, 0, 0)), Some(&first));
+    assert_eq!(super::typed_library_release(&roles, ReleaseHandle::new(1, 0, 0)), Some(&alternate));
+    assert_eq!(super::typed_library_release(&roles, ReleaseHandle::new(2, 0, 0)), None);
+
+    let row = backend_present::RowReading {
+        name: "shared".to_owned(),
+        at_rest: None,
+        evidence: String::new(),
+        description: None,
+        versions: vec!["1.0.0".to_owned()].into_boxed_slice(),
+        sources: vec![None].into_boxed_slice(),
+    };
+    let first_key = super::row_key(&row, roles[0].rows.first());
+    let alternate_key = super::row_key(&row, roles[1].rows.first());
+    assert_ne!(first_key, alternate_key, "the same display version at another registry must not inherit disclosure or focus");
+    assert_eq!(first_key, super::row_key(&row, roles[0].rows.first()), "reordering unrelated rows does not change identity");
+}
+
 fn repository() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().expect("repository")
 }

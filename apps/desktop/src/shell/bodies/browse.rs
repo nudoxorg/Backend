@@ -3,12 +3,13 @@
 
 use super::state::{Shown, not_ready, shown};
 use super::{Ctx, Leaf, Pages};
-use crate::model::browse::{BrowseKey, BrowseValue, TreeDestination, TreeModel};
+use crate::model::browse::{BrowseKey, BrowseValue, TreeDestination, TreeModel, TreeRoleLinks};
 use crate::model::pages::{PageKey, PackageRef, SearchQuery, SymbolRef};
 use crate::navigation::{BrowseRoute, CompareSet, Intent, OrbitRoute, Route, View};
 use crate::shell::kit::{package_route, symbol_route, symbol_view_route};
 use crate::shell::reader::Reader;
 use facet::browse::{Alert, AlertTone, LibraryActions, LibraryModel, LibraryReleaseLink, LibraryRole, LibraryRow, Twice, library};
+use facet::browse::library::ReleaseHandle;
 use gpui::{Context, SharedString};
 use std::sync::Arc;
 use std::rc::Rc;
@@ -44,7 +45,7 @@ pub(super) fn body(route: &BrowseRoute, store: &Pages, ctx: &mut Ctx<'_>, cx: &m
     match shown(&resource) {
         Shown::Ready(BrowseValue::Tree(tree)) => {
             let model = library_model(tree, ctx);
-            vec![Leaf::new(library("library", Arc::new(model), LibraryActions { open_package: open_package_action(ctx) }, &ctx.measure))]
+            vec![Leaf::new(library("library", Arc::new(model), LibraryActions { open_package: open_library_package_action(Arc::clone(tree), ctx) }, &ctx.measure))]
         }
         Shown::Ready(BrowseValue::Compare(compare)) => {
             let model = Arc::clone(&compare.prepared);
@@ -73,6 +74,24 @@ fn open_package_action(ctx: &Ctx<'_>) -> Rc<dyn Fn(SharedString, &mut gpui::Wind
     Rc::new(move |key, _, cx| {
         if let Ok(package) = PackageRef::parse(&key) && let Some(route) = package_route(&package) { links.dispatch(Intent::Navigate(route), cx); }
     })
+}
+
+fn open_library_package_action(tree: Arc<TreeModel>, ctx: &Ctx<'_>) -> Rc<dyn Fn(ReleaseHandle, &mut gpui::Window, &mut gpui::App)> {
+    let links = ctx.links.clone();
+    Rc::new(move |handle, _, cx| {
+        let Some(package) = typed_library_release(&tree.links, handle) else { return; };
+        if let Some(route) = package_route(package) {
+            links.dispatch(Intent::Navigate(route), cx);
+        }
+    })
+}
+
+fn typed_library_release(roles: &[TreeRoleLinks], handle: ReleaseHandle) -> Option<&PackageRef> {
+    let (role, row, release) = handle.positions();
+    match &roles.get(role)?.rows.get(row)?.releases.get(release)?.destination {
+        TreeDestination::Open(package) => Some(package),
+        TreeDestination::Unavailable(_) => None,
+    }
 }
 
 fn find_actions(route: &BrowseRoute, ctx: &Ctx<'_>, cx: &mut Context<Reader>) -> facet::browse::find::Actions {
@@ -125,6 +144,37 @@ fn unbroken_hops(path: &str) -> SharedString {
         .into()
 }
 
+fn key_part(into: &mut String, part: &str) {
+    use std::fmt::Write as _;
+    let _ = write!(into, "{}:", part.len());
+    into.push_str(part);
+}
+
+/// Exact release source, including registry authority, participates in the
+/// element key. A reorder never lends another release its focus or disclosure.
+fn release_key(version: &str, destination: Option<&TreeDestination>) -> SharedString {
+    let mut key = String::new();
+    key_part(&mut key, version);
+    match destination {
+        Some(TreeDestination::Open(package)) => key_part(&mut key, package.as_str()),
+        Some(TreeDestination::Unavailable(reason)) => key_part(&mut key, reason),
+        None => key_part(&mut key, "unresolved"),
+    }
+    key.into()
+}
+
+fn row_key(row: &backend_present::RowReading, links: Option<&crate::model::browse::TreeRowLinks>) -> SharedString {
+    let mut key = String::new();
+    key_part(&mut key, &row.name);
+    for (at, version) in row.versions.iter().enumerate() {
+        let destination = links.and_then(|links| links.releases.get(at))
+            .filter(|release| release.version.as_ref() == version)
+            .map(|release| &release.destination);
+        key_part(&mut key, release_key(version, destination).as_ref());
+    }
+    key.into()
+}
+
 /// The facet model of one tree, every sentence recorded as said.
 fn library_model(tree: &TreeModel, ctx: &mut Ctx<'_>) -> LibraryModel {
     let reading = &tree.reading;
@@ -156,6 +206,7 @@ fn library_model(tree: &TreeModel, ctx: &mut Ctx<'_>) -> LibraryModel {
         .iter()
         .enumerate()
         .map(|(role_at, role)| LibraryRole {
+            key: role.id.as_str().into(),
             label: say(role.label),
             serving: role.serving.as_deref().map(&mut say),
             rows: role
@@ -163,6 +214,10 @@ fn library_model(tree: &TreeModel, ctx: &mut Ctx<'_>) -> LibraryModel {
                 .iter()
                 .enumerate()
                 .map(|(row_at, row)| LibraryRow {
+                    key: row_key(row, tree.links.get(role_at)
+                        .filter(|links| links.role == role.id)
+                        .and_then(|links| links.rows.get(row_at))
+                        .filter(|links| links.name.as_ref() == row.name)),
                     name: say(&row.name),
                     at_rest: row.at_rest.as_deref().map(&mut say),
                     why: row.evidence.clone().into(),
@@ -174,18 +229,30 @@ fn library_model(tree: &TreeModel, ctx: &mut Ctx<'_>) -> LibraryModel {
                             .filter(|links| links.name.as_ref() == row.name)
                             .and_then(|links| links.releases.get(version_at))
                             .filter(|link| link.version.as_ref() == version);
+                        let key = release_key(version, destination.map(|link| &link.destination));
+                        // Two unresolved copies can have identical visible
+                        // version/reason text. They have no action to lend;
+                        // disambiguate only those element ids.
+                        let key = if matches!(destination.map(|link| &link.destination), Some(TreeDestination::Open(_))) {
+                            key
+                        } else {
+                            format!("{key}#{version_at}").into()
+                        };
                         match destination.map(|link| &link.destination) {
-                            Some(TreeDestination::Open(package)) => LibraryReleaseLink {
+                            Some(TreeDestination::Open(_package)) => LibraryReleaseLink {
+                                key,
                                 version: version.clone().into(),
-                                target: Some(package.as_str().to_owned().into()),
+                                target: Some(ReleaseHandle::new(role_at, row_at, version_at)),
                                 unavailable: None,
                             },
                             Some(TreeDestination::Unavailable(reason)) => LibraryReleaseLink {
+                                key,
                                 version: version.clone().into(),
                                 target: None,
                                 unavailable: Some(reason.to_string().into()),
                             },
                             None => LibraryReleaseLink {
+                                key,
                                 version: version.clone().into(),
                                 target: None,
                                 unavailable: Some("The source for this release was not resolved.".into()),
