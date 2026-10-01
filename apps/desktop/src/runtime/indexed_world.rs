@@ -992,7 +992,7 @@ mod tests {
         let changed_root = root("fixture-b", 3, 7, 99);
         let changed_epoch = root("fixture-a", 4, 7, 99);
         let changed_cursor = root("fixture-a", 3, 8, 99);
-        let key = |root, id| Key {
+        let key = |root: VersionedRoot, id| Key {
             authority: root.authority(),
             root,
             owner: OwnerIdentity::Synthetic(id),
