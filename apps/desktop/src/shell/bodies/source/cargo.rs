@@ -19,7 +19,7 @@ use std::rc::Rc;
 
 pub(super) fn body(
     route: &CargoSourceRoute,
-    store: &Pages,
+    _store: &Pages,
     ctx: &mut Ctx<'_>,
     window: &mut Window,
     cx: &mut Context<Reader>,
@@ -28,11 +28,16 @@ pub(super) fn body(
         return vec![Leaf::new(quiet("This Cargo source address is invalid.", &ctx.measure, ctx.palette))];
     };
     let key = CargoSourceKey { package, file: route.file.clone() };
-    let resource = store.cargo_source(&key);
     let page_key = PageKey::CargoSource(key.clone());
+    // Transition plates may retain a captured Pages snapshot. Source bytes
+    // must always come from the live store after its owner revocation fence.
+    let live = ctx.links.store.read(cx);
+    let resource = live.cargo_source(&key);
+    let checking = live.is_loading(&page_key);
+    drop(live);
     // A formerly valid file cannot be painted as current while the owner is
     // checking a newer observation or a forced revalidation is in flight.
-    if ctx.links.store.read(cx).is_loading(&page_key)
+    if checking
         || resource.value_root().is_some_and(|root| root != ctx.links.snapshot(cx).key())
     {
         let status = ctx.say("Checking the current Cargo source and file bytes…");
