@@ -334,12 +334,14 @@ impl ProductState {
                 {
                     if self.discovery_search.is_none() {
                         self.discovery_search = Some(match discovery {
-                            Some(store) => DiscoverySearchIndex::open_with_forge_and_source_pins_at(
-                                store.search_projection_path(),
-                                store,
-                                &forge_documents,
-                                &forge_source_pin_documents,
-                            )?,
+                            Some(store) => {
+                                DiscoverySearchIndex::open_with_forge_and_source_pins_at(
+                                    store.search_projection_path(),
+                                    store,
+                                    &forge_documents,
+                                    &forge_source_pin_documents,
+                                )?
+                            }
                             None => DiscoverySearchIndex::open_forge_only_with_source_pins_at(
                                 self.search_projection_path()?,
                                 &forge_documents,
@@ -3372,7 +3374,7 @@ fn dependents(
                 .map_err(|error| error.to_string())?,
         ));
     }
-    let (sources, gap) = match index.dependent_sources(facts, package) {
+    let (sources, mut gap) = match index.dependent_sources(facts, package) {
         DependentSources::NotPurl => {
             return Ok(RegistryMetadata::NotRecorded(
                 ProductText::new("reverse dependency lookup requires a pinned package URL")
@@ -3381,22 +3383,47 @@ fn dependents(
         }
         DependentSources::Matched { sources, gap } => (sources, gap),
     };
-    if sources.is_empty()
-        && let Some(reason) = gap
-    {
-        return Ok(RegistryMetadata::NotRecorded(reason));
-    }
     let mut records = catalog_index
         .records_for_sources(catalog, &sources)?
         .into_iter()
         .cloned()
         .collect::<Vec<_>>();
     for source in sources {
-        if matches!(source.authority, PackageGraphSourceAuthority::Local(_)) {
-            records.push(local_manifest_registry_record(&source.coordinate)?);
+        match source.authority {
+            PackageGraphSourceAuthority::Local(_) => {
+                records.push(local_manifest_registry_record(&source.coordinate)?);
+            }
+            PackageGraphSourceAuthority::Registry(authority) => {
+                if !records.iter().any(|record| {
+                    record.coordinate == source.coordinate
+                        && record.authority.is_some_and(|record_authority| {
+                            record_authority.source == authority.as_bytes()
+                        })
+                }) {
+                    gap.get_or_insert_with(|| {
+                        ProductText::from_static(
+                            "a proven dependent source is missing from the package catalog",
+                        )
+                    });
+                }
+            }
+            PackageGraphSourceAuthority::Unattributed => {
+                gap.get_or_insert_with(|| {
+                    ProductText::from_static("a dependent source lacks registry authority")
+                });
+            }
+            PackageGraphSourceAuthority::Forge(_) | PackageGraphSourceAuthority::Archive(_) => {
+                gap.get_or_insert_with(|| {
+                    ProductText::from_static("a dependent source is outside the registry catalog")
+                });
+            }
         }
     }
-    Ok(RegistryMetadata::Recorded(records.into_boxed_slice()))
+    let value = records.into_boxed_slice();
+    Ok(match gap {
+        Some(reason) => RegistryMetadata::Partial { value, reason },
+        None => RegistryMetadata::Recorded(value),
+    })
 }
 
 fn local_manifest_registry_record(
@@ -3812,21 +3839,28 @@ mod tests {
         PackageGraphSourceKey,
         DependencyFacts<Box<[PackageDependencyRecord]>>,
     ) {
+        dependency_edge_to(source, scope, Some("pkg:cargo/target-lib@1.0.0"), frontier)
+    }
+
+    fn dependency_edge_to(
+        source: &str,
+        scope: DependencyScope,
+        resolved: Option<&str>,
+        frontier: u8,
+    ) -> (
+        PackageGraphSourceKey,
+        DependencyFacts<Box<[PackageDependencyRecord]>>,
+    ) {
         let source = PackageReference::parse(source).expect("source");
         let source_authority = PackageGraphSourceAuthority::Registry(
             backend_library::RegistryAuthorityId::from_configured_source([1; 32]),
         );
-        let target = PackageReference::parse("pkg:cargo/target-lib@1.0.0").expect("target");
+        let target = resolved.map(|resolved| PackageReference::parse(resolved).expect("target"));
         let row = PackageDependencyRecord::new_with_source_authority(
             source.clone(),
             source_authority,
-            PackageDependencyTarget::new(
-                RegistryEcosystem::Cargo,
-                "target-lib",
-                "^1",
-                Some(target),
-            )
-            .expect("target"),
+            PackageDependencyTarget::new(RegistryEcosystem::Cargo, "target-lib", "^1", target)
+                .expect("target"),
             scope,
             false,
             DependencyEvidence {
@@ -3878,6 +3912,61 @@ mod tests {
                 "pkg:cargo/runtime-src@1.0.0",
                 "pkg:cargo/optional-src@1.0.0",
             ])
+        );
+    }
+
+    #[test]
+    fn qualified_dependents_preserve_exact_rows_with_an_explicit_partial_gap() {
+        let target = PackageReference::parse(
+            "pkg:cargo/target-lib@1.0.0?repository_url=https%3A%2F%2Fother.example",
+        )
+        .expect("target");
+        let mut catalog = [
+            registry_row("pkg:cargo/other-client@1.0.0", "other-client"),
+            registry_row("pkg:cargo/crates-client@1.0.0", "crates-client"),
+            registry_row("pkg:cargo/unknown-client@1.0.0", "unknown-client"),
+        ];
+        for row in &mut catalog {
+            row.authority = Some(current_test_authority(row));
+        }
+        let facts = [
+            dependency_edge_to(
+                "pkg:cargo/other-client@1.0.0",
+                DependencyScope::Runtime,
+                Some(target.as_str()),
+                1,
+            ),
+            dependency_edge_to(
+                "pkg:cargo/crates-client@1.0.0",
+                DependencyScope::Runtime,
+                Some("pkg:cargo/target-lib@1.0.0"),
+                2,
+            ),
+            dependency_edge_to(
+                "pkg:cargo/unknown-client@1.0.0",
+                DependencyScope::Runtime,
+                None,
+                3,
+            ),
+        ];
+        let catalog_index = CatalogLookupIndex::from_catalog(&catalog);
+        let index = PackageGraphIndex::from_facts(&facts);
+        let result =
+            dependents(&catalog, &catalog_index, &facts, &index, &target).expect("dependents");
+        let RegistryMetadata::Partial { value, reason } = result else {
+            panic!("the unresolved source must make this partial")
+        };
+        assert_eq!(
+            value
+                .iter()
+                .map(|row| row.coordinate.as_str())
+                .collect::<Vec<_>>(),
+            ["pkg:cargo/other-client@1.0.0"]
+        );
+        assert!(
+            reason
+                .as_str()
+                .contains("do not establish this registry authority")
         );
     }
 
@@ -3951,20 +4040,51 @@ mod tests {
     fn catalog_lineage_keeps_registry_qualifiers_across_versions() {
         let catalog = [
             registry_row("pkg:cargo/serde@1.0.0", "serde"),
-            registry_row("pkg:cargo/serde@1.0.0?repository_url=https%3A%2F%2Ffirst.example", "serde"),
-            registry_row("pkg:cargo/serde@2.0.0?repository_url=https%3A%2F%2Ffirst.example", "serde"),
-            registry_row("pkg:cargo/serde@1.0.0?repository_url=https%3A%2F%2Fsecond.example", "serde"),
+            registry_row(
+                "pkg:cargo/serde@1.0.0?repository_url=https%3A%2F%2Ffirst.example",
+                "serde",
+            ),
+            registry_row(
+                "pkg:cargo/serde@2.0.0?repository_url=https%3A%2F%2Ffirst.example",
+                "serde",
+            ),
+            registry_row(
+                "pkg:cargo/serde@1.0.0?repository_url=https%3A%2F%2Fsecond.example",
+                "serde",
+            ),
         ];
         let index = CatalogLookupIndex::from_catalog(&catalog);
-        let first = PackageReference::parse("pkg:cargo/serde@1.0.0?repository_url=https%3A%2F%2Ffirst.example").expect("first authority");
-        let rows = index.records_for(&catalog, &first, true).expect("first lineage");
-        assert_eq!(rows.iter().map(|row| row.coordinate.as_str()).collect::<Vec<_>>(), [
+        let first = PackageReference::parse(
             "pkg:cargo/serde@1.0.0?repository_url=https%3A%2F%2Ffirst.example",
-            "pkg:cargo/serde@2.0.0?repository_url=https%3A%2F%2Ffirst.example",
-        ]);
-        assert_eq!(index.records_for(&catalog, &first, false).expect("exact").len(), 1);
+        )
+        .expect("first authority");
+        let rows = index
+            .records_for(&catalog, &first, true)
+            .expect("first lineage");
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.coordinate.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "pkg:cargo/serde@1.0.0?repository_url=https%3A%2F%2Ffirst.example",
+                "pkg:cargo/serde@2.0.0?repository_url=https%3A%2F%2Ffirst.example",
+            ]
+        );
+        assert_eq!(
+            index
+                .records_for(&catalog, &first, false)
+                .expect("exact")
+                .len(),
+            1
+        );
         let crates_io = PackageReference::parse("pkg:cargo/serde@1.0.0").expect("crates.io");
-        assert_eq!(index.records_for(&catalog, &crates_io, true).expect("crates.io lineage").len(), 1);
+        assert_eq!(
+            index
+                .records_for(&catalog, &crates_io, true)
+                .expect("crates.io lineage")
+                .len(),
+            1
+        );
         assert!(version_matches(&first, rows[0]));
         assert!(!version_matches(&first, &catalog[3]));
     }
@@ -3973,22 +4093,58 @@ mod tests {
     fn acquired_search_keeps_same_named_registry_lineages_apart() {
         let catalog = [
             registry_row("pkg:cargo/serde@1.0.0", "serde"),
-            registry_row("pkg:cargo/serde@1.0.0?repository_url=https%3A%2F%2Ffirst.example", "serde"),
-            registry_row("pkg:cargo/serde@2.0.0?repository_url=https%3A%2F%2Ffirst.example", "serde"),
-            registry_row("pkg:cargo/serde@1.0.0?repository_url=https%3A%2F%2Fsecond.example", "serde"),
+            registry_row(
+                "pkg:cargo/serde@1.0.0?repository_url=https%3A%2F%2Ffirst.example",
+                "serde",
+            ),
+            registry_row(
+                "pkg:cargo/serde@2.0.0?repository_url=https%3A%2F%2Ffirst.example",
+                "serde",
+            ),
+            registry_row(
+                "pkg:cargo/serde@1.0.0?repository_url=https%3A%2F%2Fsecond.example",
+                "serde",
+            ),
         ];
         let index = catalog_search::CatalogSearchIndex::build(&catalog).expect("search projection");
-        let page = index.lineage_page_after(&catalog, "serde", 10, None).expect("lineages");
-        assert_eq!(page.hits.len(), 3, "crates.io and each alternate registry are distinct search results");
-        let mut releases = page.hits.iter().map(|hit| {
-            let (rows, _, _, _) = index.matching_lineage_releases(&catalog, &hit.key, "serde").expect("releases");
-            rows.into_iter().map(|row| row.coordinate.as_str().to_owned()).collect::<Vec<_>>()
-        }).collect::<Vec<_>>();
+        let page = index
+            .lineage_page_after(&catalog, "serde", 10, None)
+            .expect("lineages");
+        assert_eq!(
+            page.hits.len(),
+            3,
+            "crates.io and each alternate registry are distinct search results"
+        );
+        let mut releases = page
+            .hits
+            .iter()
+            .map(|hit| {
+                let (rows, _, _, _) = index
+                    .matching_lineage_releases(&catalog, &hit.key, "serde")
+                    .expect("releases");
+                rows.into_iter()
+                    .map(|row| row.coordinate.as_str().to_owned())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
         releases.sort();
         assert_eq!(releases.iter().map(Vec::len).sum::<usize>(), 4);
-        assert!(releases.iter().any(|rows| rows.len() == 2 && rows.iter().all(|coordinate| coordinate.contains("first.example"))));
-        assert!(releases.iter().any(|rows| rows.len() == 1 && rows[0] == "pkg:cargo/serde@1.0.0"));
-        assert!(releases.iter().any(|rows| rows.len() == 1 && rows[0].contains("second.example")));
+        assert!(releases.iter().any(|rows| {
+            rows.len() == 2
+                && rows
+                    .iter()
+                    .all(|coordinate| coordinate.contains("first.example"))
+        }));
+        assert!(
+            releases
+                .iter()
+                .any(|rows| rows.len() == 1 && rows[0] == "pkg:cargo/serde@1.0.0")
+        );
+        assert!(
+            releases
+                .iter()
+                .any(|rows| rows.len() == 1 && rows[0].contains("second.example"))
+        );
     }
 
     #[test]

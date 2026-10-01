@@ -264,9 +264,12 @@ impl ProjectTree {
     /// The package record for one exact version.
     #[must_use]
     pub fn package(&self, name: &str, version: &str) -> Option<&TreePackage> {
-        self.packages
+        let mut matches = self
+            .packages
             .iter()
-            .find(|package| package.name == name && package.version == version)
+            .filter(|package| package.name == name && package.version == version);
+        let first = matches.next()?;
+        matches.next().is_none().then_some(first)
     }
 }
 
@@ -578,7 +581,10 @@ pub fn build_tree(input: &TreeInput, advisories: &dyn AdvisoryObserver) -> Proje
             TreePackage {
                 name: package.name.clone(),
                 version: package.version.clone(),
-                origin: package.origin.clone().unwrap_or(PackageOrigin::Unresolved { source: None }),
+                origin: package
+                    .origin
+                    .clone()
+                    .unwrap_or(PackageOrigin::Unresolved { source: None }),
                 license: package.license.clone(),
                 why: why(at),
                 role: if direct_set.contains(&at) {
@@ -669,7 +675,11 @@ pub fn build_tree(input: &TreeInput, advisories: &dyn AdvisoryObserver) -> Proje
         // The observer takes only name and version, without source authority.
         // Another registry (or a vendored/git source) can carry the same
         // spelling without carrying the crates.io release's advisories.
-        if !package.origin.as_ref().is_some_and(PackageOrigin::is_crates_io_registry) {
+        if !package
+            .origin
+            .as_ref()
+            .is_some_and(PackageOrigin::is_crates_io_registry)
+        {
             coverage = weaker_coverage(coverage, AdvisoryCoverage::Unknown);
             freshness = weaker_freshness(freshness, FreshnessState::Unknown);
             continue;
