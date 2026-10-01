@@ -6,7 +6,7 @@
 
 use backend_library::browse::{
     DirectDependency, Duplicate, LockedInactiveCoverage, LockfileGraphCoverage,
-    LockfileWorkspaceMembership, MemberEdge, PackageOrigin, ProjectTree, RoleEvidence, RoleId,
+    LockfileWorkspaceMembership, MemberEdge, PackageOrigin, PackageRole, ProjectTree, RoleEvidence, RoleId,
     TreeAdvisory, TreeSource, WhyHop,
 };
 use backend_library::{AdvisoryCoverage, AdvisoryStatus, FreshnessState, PackageReference};
@@ -32,6 +32,11 @@ pub struct TreeReading {
     pub health: String,
     /// The roles, in display order, with their dependencies.
     pub roles: Box<[RoleReading]>,
+    /// Every retained external package row, including lockfile-only rows
+    /// whose workspace role cannot be inferred from Cargo.lock.
+    pub inventory: Box<[InventoryReading]>,
+    /// What these rows cover and what source navigation cannot prove.
+    pub inventory_note: String,
     /// "Here twice" or "Multiple versions", then the recorded count.
     pub twice_heading: Option<(String, String)>,
     /// The packages present at more than one incompatible version.
@@ -90,6 +95,22 @@ pub struct RowReading {
     /// Exact source spelling for each release, even when a file receipt is
     /// unavailable and its action must remain disabled.
     pub origins: Box<[PackageOrigin]>,
+}
+
+/// One exact external package row as the owner observed it. Its origin is
+/// display evidence; only `source` carries a route admitted by the owner.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InventoryReading {
+    /// Exact package name.
+    pub name: String,
+    /// Exact version, including Cargo build metadata.
+    pub version: String,
+    /// Full observed source spelling or explicit unresolved origin.
+    pub origin: PackageOrigin,
+    /// Its known role, or Unknown when only Cargo.lock answered.
+    pub role: PackageRole,
+    /// Exact qualified reference only when a current Cargo receipt exists.
+    pub source: Option<PackageReference>,
 }
 
 /// A package present more than once.
@@ -221,6 +242,31 @@ pub fn read_tree(tree: &ProjectTree) -> TreeReading {
             })
         })
         .collect();
+    let inventory = tree
+        .packages
+        .iter()
+        .map(|package| InventoryReading {
+            name: package.name.clone(),
+            version: package.version.clone(),
+            origin: package.origin.clone(),
+            role: package.role,
+            source: package.source_qualified_reference(),
+        })
+        .collect();
+    let inventory_note = match &tree.source {
+        TreeSource::Cargo { .. } => format!(
+            "All {} external packages in this target/features resolution are listed. Locked but inactive packages are counted separately above; source files open only with a current exact receipt.",
+            count(tree.packages.len()),
+        ),
+        TreeSource::Lockfile { coverage: LockfileGraphCoverage::Complete, .. } => format!(
+            "All {} retained Cargo.lock package rows are listed. Workspace roles and source-file access are unknown without verified Cargo metadata.",
+            count(tree.packages.len()),
+        ),
+        TreeSource::Lockfile { coverage: LockfileGraphCoverage::Partial { ambiguous_edges, ambiguous_package_rows }, .. } => format!(
+            "All {} retained Cargo.lock package rows are listed. Workspace roles and source-file access are unknown; {ambiguous_edges} dependency edge(s) and {ambiguous_package_rows} same-identity row(s) remain ambiguous.",
+            count(tree.packages.len()),
+        ),
+    };
     TreeReading {
         name: tree.name.clone(),
         lede,
@@ -230,6 +276,8 @@ pub fn read_tree(tree: &ProjectTree) -> TreeReading {
         twice_line,
         health: health(tree),
         roles,
+        inventory,
+        inventory_note,
         twice_heading: (!tree.twice.is_empty()).then(|| {
             (
                 if all_pairs { "Here twice" } else { "Multiple versions" }.to_owned(),

@@ -224,6 +224,12 @@ fn lockfile_fallback_never_claims_workspace_membership() {
     );
     assert_eq!(tree.members.len(), 0);
     assert_eq!(tree.direct.len(), 0);
+    assert_eq!(reading.inventory.len(), 1237);
+    assert!(reading.inventory.iter().all(|row| {
+        row.role == backend_library::browse::PackageRole::Unknown && row.source.is_none()
+    }));
+    assert!(reading.inventory_note.contains("All 1,237 retained Cargo.lock package rows"));
+    assert!(reading.inventory_note.contains("source-file access are unknown"));
     assert!(tree.packages.iter().all(|package| package.why.is_empty()));
     assert!(
         reading.twice.iter().all(|duplicate| {
