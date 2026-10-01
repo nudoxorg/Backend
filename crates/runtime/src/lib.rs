@@ -1057,7 +1057,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn passive_connect_preserves_missing_endpoint_cause_without_creating_state() {
-        let root = test_directory("passive-owner-absent");
+        let root = socket_test_directory("passive-owner-absent");
         let project = root.join("project");
         let workspace = root.join("state");
         let endpoint = root.join("run").join("locald.sock");
@@ -1092,7 +1092,7 @@ mod tests {
     fn passive_connect_preserves_refused_stale_socket_cause() {
         use std::os::unix::net::UnixListener;
 
-        let root = test_directory("passive-owner-refused");
+        let root = socket_test_directory("passive-owner-refused");
         fs::create_dir_all(&root).expect("create fixture root");
         let project = root.join("project");
         let workspace = root.join("state");
@@ -1398,6 +1398,15 @@ mod tests {
             "an absent endpoint is not a removal"
         );
         fs::remove_dir_all(root).expect("remove runtime fixture");
+    }
+
+    #[cfg(unix)]
+    fn socket_test_directory(label: &str) -> PathBuf {
+        // Nix and macOS can put TMPDIR beyond sun_path's limit before the
+        // fixture adds its name. Keep only socket fixtures on a short root;
+        // ordinary path tests still exercise the configured temporary root.
+        let directory = test_directory(label);
+        Path::new("/tmp").join(directory.file_name().expect("fixture directory name"))
     }
 
     fn test_directory(label: &str) -> PathBuf {

@@ -13,7 +13,8 @@ fn scratch(label: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("clock after epoch")
         .as_nanos();
-    std::env::temp_dir().join(format!(
+    // Unix socket fixtures must fit sun_path even when Nix's TMPDIR is deep.
+    PathBuf::from("/tmp").join(format!(
         "backend-cli-passive-{label}-{}-{nonce:x}",
         std::process::id()
     ))
