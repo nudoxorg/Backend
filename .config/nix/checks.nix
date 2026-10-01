@@ -14,6 +14,7 @@
   toolchains,
   gui,
   lunaTools,
+  workspaceRoot,
 }:
 let
   # Materialize the closure during evaluation. A sandboxed check cannot
@@ -24,6 +25,28 @@ let
   lunaToolsClosure = pkgs.closureInfo {
     rootPaths = [ lunaTools ];
   };
+  localHostRuntimeContract =
+    if builtins.pathExists (workspaceRoot + "/Cargo.toml") then
+      pkgs.runCommand "nudox-local-host-runtime-contract"
+        {
+          nativeBuildInputs = [ pkgs.python3 ];
+        }
+        ''
+          python3 ${../scripts/nix-host-runtime-contract.py} \
+            ${workspaceRoot + "/crates/engine/src/application/host.rs"} \
+            ${workspaceRoot + "/.config/nix/corpus-env.nix"} \
+            ${workspaceRoot + "/.config/nix/shells.nix"} \
+            ${workspaceRoot + "/frontends/typescript/src/legacy/checker.rs"} \
+            ${workspaceRoot + "/frontends/go/src/legacy/oracle.rs"} \
+            ${workspaceRoot + "/frontends/python/src/legacy/checker.rs"} \
+            ${workspaceRoot + "/frontends/csharp/src/legacy/oracle.rs"} \
+            ${workspaceRoot + "/tests/fleet/src/lib.rs"} \
+            ${workspaceRoot + "/tests/fleet/run-fleet.sh"}
+          mkdir -p "$out/share"
+          printf '%s\n' validated > "$out/share/local-host-runtime-contract"
+        ''
+    else
+      null;
 in
 {
   nushell-command = commands.backend;
@@ -251,4 +274,7 @@ in
       "validated" | save ($env.out | path join "share" "control-plane")
     '';
   };
+}
+// pkgs.lib.optionalAttrs (localHostRuntimeContract != null) {
+  local-host-runtime-contract = localHostRuntimeContract;
 }

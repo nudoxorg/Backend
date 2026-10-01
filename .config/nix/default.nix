@@ -172,6 +172,7 @@ let
           pkgs
           toolchains
           tools
+          workspaceRoot
           ;
         lunaTools = tools.lunaTools;
       };
@@ -238,6 +239,9 @@ in
     )
     // value.pkgs.lib.optionalAttrs (value.tools.guiRuntime != null) {
       gui-runtime = value.tools.guiRuntime;
+    }
+    // value.pkgs.lib.optionalAttrs (value.tools.roslynHelper != null) {
+      roslyn-helper = value.tools.roslynHelper;
     }
     // value.pkgs.lib.optionalAttrs (value.corpus != null) {
       fleet-corpus-rust = value.corpus.rust;

@@ -75,14 +75,18 @@ pub const fn lanes() -> &'static [Lane; 7] {
 /// Semantic-authority variables the runner verifies in addition to the seven
 /// compiler lanes. `RUSTC` and `LIBCLANG_PATH` are Rust-native seams; the
 /// `NUDOX_*` names are the producers' explicit overrides.
-pub const AUTHORITY_VARIABLES: [&str; 8] = [
+pub const AUTHORITY_VARIABLES: [&str; 12] = [
     "RUSTC",
     "LIBCLANG_PATH",
     "NUDOX_JDK",
+    "NUDOX_CARGO",
+    "NUDOX_TYPESCRIPT_REPORT_PROGRAM",
     "NUDOX_TYPESCRIPT_CHECKER_BIN",
+    "NUDOX_GO_ORACLE",
+    "NUDOX_ROSLYN_HELPER",
     "NUDOX_CSHARP_DOTNET",
     "NUDOX_PYREFLY_BIN",
-    "NUDOX_CLANG_DRIVER",
+    "NUDOX_CLANG",
     "NUDOX_GO_ORACLE_BIN",
 ];
 
@@ -125,11 +129,15 @@ mod tests {
         }
         for required in [
             "RUSTC",
+            "NUDOX_CARGO",
             "NUDOX_JDK",
+            "NUDOX_TYPESCRIPT_REPORT_PROGRAM",
             "NUDOX_TYPESCRIPT_CHECKER_BIN",
+            "NUDOX_GO_ORACLE",
+            "NUDOX_ROSLYN_HELPER",
             "NUDOX_CSHARP_DOTNET",
             "NUDOX_PYREFLY_BIN",
-            "NUDOX_CLANG_DRIVER",
+            "NUDOX_CLANG",
             "NUDOX_GO_ORACLE_BIN",
         ] {
             assert!(

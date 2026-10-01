@@ -42,13 +42,16 @@
 #   * rust/typescript/python/go/java/csharp/clang binaries all come from the
 #     pinned nixpkgs devShell (`nix develop .#development`). No version is
 #     asserted here beyond what the binary reports.
-#   * `NUDOX_GO_ORACLE_BIN` is the nix-built oracle from
+#   * `NUDOX_GO_ORACLE` is the Host authority; `NUDOX_GO_ORACLE_BIN` is the
+#     standalone frontend adapter. Both name the same nix-built oracle from
 #     `frontends/go/src/legacy/oracle` (vendorHash pinned in `.config/nix/tools.nix`).
-#   * `NUDOX_TYPESCRIPT_CHECKER_BIN` wraps the vendored `main.cjs` with the
-#     pinned `typescript` npm package on `NODE_PATH`.
+#   * `NUDOX_TYPESCRIPT_REPORT_PROGRAM` is the Host authority;
+#     `NUDOX_TYPESCRIPT_CHECKER_BIN` is the standalone frontend adapter. Both
+#     name the vendored `main.cjs` wrapper with pinned `typescript` on `NODE_PATH`.
 #   * `NUDOX_PYREFLY_BIN` is the pinned `pyrefly` package.
-#   * `NUDOX_JDK` is the pinned Zulu 21 root; `NUDOX_CLANG_DRIVER` is the
-#     pinned clang driver; `NUDOX_CSHARP_DOTNET` is the pinned dotnet host.
+#   * `NUDOX_JDK` is the pinned Zulu 21 root; `NUDOX_CLANG` is the pinned
+#     clang driver; `NUDOX_CSHARP_DOTNET` and `NUDOX_ROSLYN_HELPER` are the
+#     pinned dotnet host and lockfile-built semantic helper.
 #   * The real 200-row selection additionally needs package caches named by
 #     `NUDOX_RUST_CORPUS_DIR`, `NUDOX_TYPESCRIPT_CORPUS_DIR`,
 #     `NUDOX_PYTHON_CORPUS_DIR`, `NUDOX_GO_CORPUS_DIR`,
@@ -292,6 +295,7 @@ check_authority() {
   case "$expectation" in
     directory) [ -d "$value" ] && ok=1 ;;
     jdk) [ -x "$value/bin/javac" ] && ok=1 ;;
+    file) [ -f "$value" ] && ok=1 ;;
     executable) [ -x "$value" ] && ok=1 ;;
   esac
   if [ "$ok" -eq 1 ]; then
@@ -307,11 +311,15 @@ check_authority() {
   fi
 }
 
+check_authority NUDOX_CARGO executable
 check_authority NUDOX_JDK jdk
+check_authority NUDOX_TYPESCRIPT_REPORT_PROGRAM executable
 check_authority NUDOX_TYPESCRIPT_CHECKER_BIN executable
+check_authority NUDOX_GO_ORACLE executable
+check_authority NUDOX_ROSLYN_HELPER file
 check_authority NUDOX_CSHARP_DOTNET executable
 check_authority NUDOX_PYREFLY_BIN executable
-check_authority NUDOX_CLANG_DRIVER executable
+check_authority NUDOX_CLANG executable
 check_authority NUDOX_GO_ORACLE_BIN executable
 check_authority RUSTC executable
 check_authority LIBCLANG_PATH directory
