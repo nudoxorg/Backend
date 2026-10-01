@@ -162,6 +162,11 @@ pub fn seam_stages(place: &Place, step: Step) -> Vec<Stage> {
 
 /// The control for `offer`, in whatever state the shell says it is.
 pub fn add_control(id: impl Into<ElementId>, offer: &Offer, actions: &AddActions, measure: &Measure, cx: &mut App) -> AnyElement {
+    add_control_enabled(id, offer, actions, measure, true, cx)
+}
+
+/// The same owner-backed acquisition control, inert while its evidence is pending.
+pub fn add_control_enabled(id: impl Into<ElementId>, offer: &Offer, actions: &AddActions, measure: &Measure, enabled: bool, cx: &mut App) -> AnyElement {
     let id: ElementId = id.into();
     let palette = cx.palette();
     let state = match ((actions.state)(&offer.release, cx), &offer.library) {
@@ -175,10 +180,11 @@ pub fn add_control(id: impl Into<ElementId>, offer: &Offer, actions: &AddActions
             let add = Rc::clone(&actions.add);
             let release = offer.release.clone();
             let button = button(child(&id, "add"), "Add to library", measure)
+                .aria_label(format!("Add {} to library", offer.label))
                 .primary()
                 .size(Control::Small)
                 .glyph(Glyph::Plus)
-                .disabled(!offer.place.addable())
+                .disabled(!enabled || !offer.place.addable())
                 .on_click(move |window, cx| add(release.clone(), window, cx));
             row.child(button).child(caption("where", format!("{} · {}", offer.label, offer.place.words()).into())).into_any_element()
         }
@@ -193,6 +199,7 @@ pub fn add_control(id: impl Into<ElementId>, offer: &Offer, actions: &AddActions
                     let release = offer.release.clone();
                     status = status.child(
                         button(child(&id, "cancel"), "Cancel", measure)
+                .aria_label(format!("Cancel adding {}", offer.label)).disabled(!enabled)
                             .ghost()
                             .size(Control::Small)
                             .on_click(move |window, cx| cancel(release.clone(), window, cx)),
@@ -205,6 +212,7 @@ pub fn add_control(id: impl Into<ElementId>, offer: &Offer, actions: &AddActions
         Adding::Added { open: target } => {
             let open = Rc::clone(&actions.open);
             let button = button(child(&id, "open"), "Open", measure)
+                .aria_label(format!("Explore package {}", offer.label)).disabled(!enabled)
                 .ghost()
                 .size(Control::Small)
                 .icon(Icon::Package)
@@ -218,10 +226,11 @@ pub fn add_control(id: impl Into<ElementId>, offer: &Offer, actions: &AddActions
             let add = Rc::clone(&actions.add);
             let release = offer.release.clone();
             let button = button(child(&id, "retry"), "Try again", measure)
+                .aria_label(format!("Retry adding {}", offer.label))
                 .edge()
                 .size(Control::Small)
                 .glyph(Glyph::Plus)
-                .disabled(!offer.place.addable())
+                .disabled(!enabled || !offer.place.addable())
                 .on_click(move |window, cx| add(release.clone(), window, cx));
             div()
                 .flex()
