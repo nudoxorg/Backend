@@ -27,8 +27,8 @@ use std::sync::Arc;
 /// Bounded source pages keep wrapping, syntax work and keyboard targets small
 /// while every byte remains reachable, including a long minified line.
 const CONTEXT_BEFORE: u32 = 24;
-const MAX_SOURCE_LINES: usize = 128;
-const MAX_SOURCE_BYTES: usize = 64 * 1024;
+const MAX_SOURCE_LINES: usize = 64;
+const MAX_SOURCE_BYTES: usize = 8 * 1024;
 const MAX_SOURCE_LINE_BYTES: usize = 2 * 1024;
 const MAX_PAGE_REFERENCES: usize = 32;
 
@@ -1171,7 +1171,7 @@ mod tests {
             cursor = next;
         }
         assert_eq!(visited, (1..=600).collect::<Vec<_>>());
-        assert_eq!(cursor.line, 513);
+        assert_eq!(cursor.line, 577);
         let mut backward = cursor;
         let mut steps = 0;
         while let Some(previous) = previous_cursor(&source, backward) {
@@ -1308,5 +1308,15 @@ mod tests {
             words.iter().any(|word| word.contains("Lines 500")),
             "pager not visible: {words:#?}"
         );
+        let (zone, focus) = rig
+            .shell
+            .read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+        assert_eq!(zone, crate::shell::focus::Zone::Reader);
+        assert_eq!(focus.as_deref(), Some("source-line-500"));
+        rig.keys("j");
+        let (_, walked) = rig
+            .shell
+            .read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+        assert_eq!(walked.as_deref(), Some("source-line-501"));
     }
 }
