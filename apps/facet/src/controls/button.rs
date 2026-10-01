@@ -99,6 +99,13 @@ pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, measure:
 }
 
 impl Button {
+    /// Human name for a symbolic or context-dependent face; visual text is unchanged.
+    #[must_use]
+    pub fn aria_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.accessibility_label = label.into();
+        self
+    }
+
     /// Keeps keyboard focus stable when a virtual row is unmounted and rebuilt.
     #[must_use]
     pub fn focus_handle(mut self, focus: FocusHandle) -> Self {
