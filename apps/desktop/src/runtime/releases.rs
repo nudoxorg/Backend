@@ -124,7 +124,8 @@ fn read(key: &ReleaseKey, cancellation: &Cancellation) -> Result<Arc<ReleaseData
         })?;
     let pinned = key
         .package
-        .release()
+        .verify_registry_manifest()
+        .or_else(|| key.package.release())
         .ok_or_else(|| Arc::from("this package is not an exact registry release"))?;
     let published = composition.source.releases(&pinned.name);
     ensure_active(cancellation)?;

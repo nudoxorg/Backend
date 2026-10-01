@@ -255,7 +255,10 @@ pub fn route_package(route: &Route) -> Option<PackageRef> {
 /// once it is added. This is lexical only: the worker verifies existence and
 /// index coverage. Route resolution must never touch disk on the UI lane.
 fn release_tree(pinned: &PackageRef, at: &str) -> Option<PackageRef> {
-    let (name, version) = pinned.registry_release()?;
+    let (name, version) = pinned.registry_shape()?;
+    // Only Cargo registry trees use this path layout. Other ecosystems keep
+    // their own exact version spelling and are read through their purl.
+    crate::model::release::Release::new(name, at).ok()?;
     if version == at {
         return Some(pinned.clone());
     }
@@ -267,7 +270,7 @@ fn release_tree(pinned: &PackageRef, at: &str) -> Option<PackageRef> {
     } else {
         parent.join(&target)
     };
-    PackageRef::parse(tree.to_str()?).ok()
+    PackageRef::parse(tree.to_str()?).ok().map(|target| target.with_release_origin(pinned))
 }
 
 /// The declaration a route reads, scoped to the release it views.
@@ -1212,6 +1215,10 @@ mod tests {
         assert_ne!(current, Some(old));
         assert!(current.is_some(), "R2 starts despite the old Running slot");
         assert_eq!(submitted - rig.base.submitted, 2, "one R1 and exactly one R2 request");
+        rig.store.update(cx, |store, _| {
+            let stale_stage = store.pages.stage(&key, old, PageValue::Symbol(page(&symbol("slow-root"))));
+            assert_eq!(stale_stage, Landing::Superseded, "a queued R1 stage cannot overwrite R2");
+        });
 
         rig.open("slow-root");
         rig.until(cx, |store| store.symbol(&symbol("slow-root")).is_loaded() && store.pool_activity().is_idle());

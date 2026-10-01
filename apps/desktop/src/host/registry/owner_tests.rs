@@ -1263,22 +1263,21 @@ fn an_earlier_release_is_read_from_its_own_tree_once_it_is_added() {
         "the route at 0.5.11 reads 0.5.11's own tree, not the pin's"
     );
     assert_eq!(
-        viewed.release(),
+        viewed.verify_registry_manifest(),
         Some(earlier.clone()),
-        "and its page offers exactly that release"
+        "the read worker admits only the target manifest's exact release"
     );
     assert_eq!(
         crate::runtime::store::route_package(&at("0.8.23")).as_ref(),
         Some(&pinned_page),
         "the pinned release reads the pin"
     );
-    let Stage::Added(page) = index_release(&composition, &earlier, Listed::Ready, &|_| {}) else {
-        panic!("toml 0.5.11 is added")
+    let stage = index_release(&composition, &earlier, Listed::Ready, &|_| {});
+    let Stage::Added(page) = &stage else {
+        panic!("toml 0.5.11 is added: {stage:?}")
     };
-    assert_eq!(
-        page, viewed,
-        "added, it is listed under the root the route reads"
-    );
+    assert_eq!(page.as_str(), viewed.as_str(), "added, it is listed under the root the route reads");
+    assert_ne!(page, &viewed, "the alternate route retains its original pin in the page key");
     let earlier_names = names_at(owner.host.endpoint(), &earlier_tree);
     let pinned_names = names_at(
         owner.host.endpoint(),
@@ -1550,6 +1549,7 @@ fn probe_outline_rows_named() {
 fn a_registry_package_is_named_as_its_manifest_names_it_with_its_version_apart() {
     let named = |path: &Path| {
         let package = PackageRef::parse(path.to_str().expect("UTF-8")).expect("package");
+        let _ = package.verify_registry_manifest();
         (
             package.display_name().to_owned(),
             package.release_version().map(str::to_owned),

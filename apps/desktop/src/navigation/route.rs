@@ -40,7 +40,7 @@ pub enum CoordinateError {
     Empty,
     /// The coordinate cannot cross the persistence or accessibility boundary.
     ControlCharacter,
-    /// A release did not use an exact registry version spelling.
+    /// A release contains an address separator or exceeds its size bound.
     InvalidRelease,
 }
 
@@ -49,7 +49,7 @@ impl fmt::Display for CoordinateError {
         match self {
             Self::Empty => f.write_str("coordinate must not be empty"),
             Self::ControlCharacter => f.write_str("coordinate contains a control character"),
-            Self::InvalidRelease => f.write_str("release must be an exact registry version"),
+            Self::InvalidRelease => f.write_str("release contains an address separator or is too long"),
         }
     }
 }
@@ -81,45 +81,56 @@ pub enum OrbitRoute {
     Browse(super::BrowseRoute),
 }
 
-/// One immutable release of a package: the registry's version spelling.
+/// One immutable release of a package. Ecosystem-specific admission happens
+/// at the package read boundary, where the producer's identity is available.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct ReleaseId {
-    spelling: Arc<str>,
-    valid: bool,
+pub enum ReleaseId {
+    /// The producer confirmed this exact version for its package.
+    Admitted(Arc<str>),
+    /// Safe saved or requested text awaiting package-specific validation.
+    Unresolved(Arc<str>),
+    /// The saved spelling is unsafe; keep it for recovery but never read it.
+    InvalidSaved(Arc<str>),
 }
 
 impl ReleaseId {
     /// Admits one version spelling.
     pub fn new(value: &str) -> Result<Self, CoordinateError> {
-        let value = value.trim();
-        if value.is_empty() {
+        if value.trim().is_empty() {
             return Err(CoordinateError::Empty);
         }
         if value.chars().any(char::is_control) {
             return Err(CoordinateError::ControlCharacter);
         }
-        crate::model::release::Version::new(value).map_err(|_| CoordinateError::InvalidRelease)?;
-        Ok(Self { spelling: Arc::from(value), valid: true })
+        if value != value.trim()
+            || value.len() > 256
+            || value.chars().any(|part| matches!(part, '/' | '\\' | '?' | '#' | '@'))
+        {
+            return Err(CoordinateError::InvalidRelease);
+        }
+        Ok(Self::Unresolved(Arc::from(value)))
     }
 
     /// Retains an invalid saved address as unread instead of treating it as the working copy.
     #[must_use]
     pub(crate) fn from_persisted(value: &str) -> Self {
-        Self::new(value).unwrap_or_else(|_| Self { spelling: Arc::from(value), valid: false })
+        Self::new(value).unwrap_or_else(|_| Self::InvalidSaved(Arc::from(value)))
     }
 
     /// Whether this release can be used as an index address.
     #[must_use]
-    pub const fn is_valid(&self) -> bool { self.valid }
+    pub const fn is_valid(&self) -> bool { !matches!(self, Self::InvalidSaved(_)) }
 
     /// Exact saved spelling, including an invalid one for recovery.
     #[must_use]
-    pub(crate) fn persisted_wire(&self) -> &str { &self.spelling }
+    pub(crate) fn persisted_wire(&self) -> &str {
+        match self { Self::Admitted(value) | Self::Unresolved(value) | Self::InvalidSaved(value) => value }
+    }
 
     /// Returns the version spelling.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        if self.valid { &self.spelling } else { "invalid saved release" }
+        if self.is_valid() { self.persisted_wire() } else { "invalid saved release" }
     }
 }
 
@@ -451,6 +462,18 @@ pub enum Selection {
 mod tests {
     use super::*;
     use crate::model::ObjectId;
+
+    #[test]
+    fn release_spelling_is_ecosystem_neutral_but_never_a_path_component_escape() {
+        for spelling in ["1.1.post1", "1.0-SNAPSHOT", "1.0.0-preview.1", "1!2.0"] {
+            assert_eq!(ReleaseId::new(spelling).expect("safe release").as_str(), spelling);
+        }
+        for spelling in ["../other", "1.0/other", "1.0\\other", " 1.0.0 "] {
+            assert!(ReleaseId::new(spelling).is_err());
+            assert!(!ReleaseId::from_persisted(spelling).is_valid());
+            assert_eq!(ReleaseId::from_persisted(spelling).persisted_wire(), spelling);
+        }
+    }
 
     fn symbol(view: View) -> Route {
         Route::Symbol(SymbolRoute {
