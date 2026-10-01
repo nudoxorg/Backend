@@ -709,12 +709,6 @@ mod tests {
             active_ime_insertions > 0,
             "the active input handler receives text input"
         );
-        let active_animation_frames = events.animation_frames.get();
-        assert!(
-            active_animation_frames > 0,
-            "active frame callbacks are delivered"
-        );
-
         cx.simulate_click(point(px(10.), px(40.)), Default::default());
         assert_eq!(events.nested_clicks.get(), 0);
         cx.update(|window, cx| {
@@ -723,6 +717,18 @@ mod tests {
             window.focus(&focus, cx);
             assert!(focus.is_focused(window));
         });
+
+        let animation_frames_before_drain = events.animation_frames.get();
+        let delivered_active_frames = cx.update(|window, cx| window.simulate_next_frame(cx));
+        assert!(
+            delivered_active_frames > 0,
+            "the active subtree has queued frame callbacks"
+        );
+        let active_animation_frames = events.animation_frames.get();
+        assert_eq!(
+            active_animation_frames,
+            animation_frames_before_drain + delivered_active_frames
+        );
 
         inert_state.set(true);
         cx.update(|window, cx| {
