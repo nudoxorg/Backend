@@ -514,6 +514,10 @@ impl DataStore {
         &self.focused
     }
 
+    /// Read-only admission boundary; saved GUI connection status is not a lease.
+    #[must_use]
+    pub fn owner_serving(&self) -> bool { self.owner.is_serving() }
+
     /// What the read pool is doing now.
     #[must_use]
     pub fn pool_activity(&self) -> PoolLoad {
