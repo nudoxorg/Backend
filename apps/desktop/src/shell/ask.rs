@@ -410,6 +410,7 @@ impl Ask {
                 crate::core::ResourceTerminal::Unavailable(_) => "The index does not search yet.".into(),
                 crate::core::ResourceTerminal::Complete if searching => "Searching the library…".into(),
                 crate::core::ResourceTerminal::Complete => "Nothing matches that yet.".into(),
+                crate::core::ResourceTerminal::Partial => "Searching the library…".into(),
             };
             list = list.child(div().id("ask-said").px(measure.space(Space::Gutter)).py(measure.space(Space::Roomy)).child(super::kit::quiet(words, &measure, palette)));
         }

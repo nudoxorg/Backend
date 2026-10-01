@@ -36,7 +36,7 @@ pub(crate) fn shown<T>(resource: &Resource<T>) -> Shown<'_, T> {
     match resource.terminal() {
         ResourceTerminal::Fault(error) => Shown::Fault(error),
         ResourceTerminal::Unavailable(reason) => Shown::Unavailable(reason, None),
-        ResourceTerminal::Complete => Shown::Pending,
+        ResourceTerminal::Complete | ResourceTerminal::Partial => Shown::Pending,
     }
 }
 
