@@ -1828,15 +1828,24 @@ fn sccache_configuration_paths(workspace: &Path) -> Result<Vec<PathBuf>, String>
         }
         paths.insert(root.join("sccache/config"));
         paths.insert(root.join("sccache/config.toml"));
-    } else if let Some(home) = std::env::var_os("HOME") {
+    }
+    if let Some(home) = std::env::var_os("HOME") {
         let home = PathBuf::from(home);
         if !home.is_absolute() {
             return Err("relative HOME cannot be safely observed".to_owned());
         }
         paths.insert(home.join(".config/sccache/config"));
         paths.insert(home.join(".config/sccache/config.toml"));
+        paths.insert(home.join("Library/Application Support/Mozilla.sccache/config"));
     }
-    if paths.len() > 8 {
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        let appdata = PathBuf::from(appdata);
+        if !appdata.is_absolute() {
+            return Err("relative APPDATA cannot be safely observed".to_owned());
+        }
+        paths.insert(appdata.join("Mozilla/sccache/config/config"));
+    }
+    if paths.len() > 12 {
         return Err("sccache configuration input set exceeds its limit".to_owned());
     }
     Ok(paths.into_iter().collect())
