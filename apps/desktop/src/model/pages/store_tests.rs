@@ -25,8 +25,9 @@ fn cargo_file_slots_keep_exact_authority_and_drop_stale_landings() {
     let qualified = |digit: char| PackageRef::parse(&format!(
         "pkg:cargo/demo@1.0.0?cargo-authority={}", digit.to_string().repeat(64)
     )).expect("qualified package");
-    let first = CargoSourceKey { package: qualified('a'), file: file.clone() };
-    let second = CargoSourceKey { package: qualified('b'), file };
+    let project = crate::core::LocalProjectId::new("/tmp/nudox-cargo-source-store").expect("project");
+    let first = CargoSourceKey { project: project.clone(), package: qualified('a'), file: file.clone() };
+    let second = CargoSourceKey { project, package: qualified('b'), file };
     let mut store = PageStore::default();
     let first_key = PageKey::CargoSource(first.clone());
     let second_key = PageKey::CargoSource(second.clone());
@@ -45,6 +46,13 @@ fn cargo_file_slots_keep_exact_authority_and_drop_stale_landings() {
     assert_eq!(store.land(&first_key, stale, Ok(PageValue::CargoSource(page(&first)))), Landing::Superseded);
     assert_eq!(store.land(&first_key, newer, Ok(PageValue::CargoSource(page(&first)))), Landing::Unchanged);
     assert_ne!(first, second);
+    let other_project = CargoSourceKey {
+        project: crate::core::LocalProjectId::new("/tmp/nudox-cargo-source-store-other").expect("other tree"),
+        package: first.package.clone(),
+        file: first.file.clone(),
+    };
+    assert_ne!(first, other_project, "a cold owner rehydrates against the selected tree, not an arbitrary matching package");
+    assert!(store.cargo_source(&other_project).loaded_value().is_none());
 
     let lost = store.begin_forced(&first_key, root()).expect("owner revalidation");
     assert_eq!(store.land(&first_key, lost, Err(ReadFailure::Fault(ErrorValue::new(FaultCode::Missing, "source authority changed")))), Landing::Applied);

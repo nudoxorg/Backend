@@ -413,6 +413,10 @@ pub enum PersistedRoute {
     },
     /// A Cargo source file address; cold reload must ask the owner again.
     CargoSource {
+        /// Exact project-tree address for owner observation rehydration.
+        /// Older files had no project and cannot restore this capability.
+        #[serde(default)]
+        project: Option<String>,
         /// Full source-qualified package coordinate, including authority digest.
         package: String,
         /// Canonical package-relative file spelling.
@@ -516,6 +520,7 @@ fn persist_route(route: &Route) -> PersistedRoute {
             line: route.line,
         },
         Route::CargoSource(route) => PersistedRoute::CargoSource {
+            project: route.project.service_coordinate().ok().map(str::to_owned),
             package: route.package.as_str().to_owned(),
             file: route.file.as_str().to_owned(),
             line: route.line,
@@ -1007,11 +1012,11 @@ impl PersistentState {
                 View::parse(view).unwrap_or_default(),
                 *line,
             ),
-            PersistedRoute::CargoSource { package, file, line } => {
-                crate::core::PackageId::new(package)
-                    .ok()
+            PersistedRoute::CargoSource { project, package, file, line } => {
+                project.as_deref().and_then(|project| crate::core::LocalProjectId::new(project).ok())
+                    .zip(crate::core::PackageId::new(package).ok())
                     .zip(CargoSourcePath::new(file))
-                    .and_then(|(package, file)| CargoSourceRoute::new(package, file, *line))
+                    .and_then(|((project, package), file)| CargoSourceRoute::new(project, package, file, *line))
                     .map(Route::CargoSource)
                     .unwrap_or(Route::Orbit(crate::navigation::OrbitRoute::Home))
             }
@@ -1674,8 +1679,9 @@ mod tests {
         let package = crate::core::PackageId::new(
             "pkg:cargo/demo@1.2.3?cargo-authority=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         ).expect("qualified package");
+        let project = crate::core::LocalProjectId::new("/tmp/nudox-cargo-source-persistence").expect("tree address");
         let file = CargoSourcePath::new("src/lib.rs").expect("relative file");
-        let route = Route::CargoSource(CargoSourceRoute::new(package, file, Some(43)).expect("source address"));
+        let route = Route::CargoSource(CargoSourceRoute::new(project.clone(), package, file, Some(43)).expect("source address"));
         let wire = PersistentState::project(&snapshot.with_session(SessionState { route: route.clone(), ..SessionState::default() }));
         let bytes = serde_json::to_vec(&wire).expect("serialize address");
         let decoded: PersistedDesktopState = serde_json::from_slice(&bytes).expect("decode address");
@@ -1685,6 +1691,15 @@ mod tests {
 
         let mut forged = decoded;
         forged.route = PersistedRoute::CargoSource {
+            project: None,
+            package: "pkg:cargo/demo@1.2.3?cargo-authority=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+            file: "src/lib.rs".to_owned(),
+            line: Some(43),
+        };
+        assert!(matches!(PersistentState::at("unused").cold_reload(&forged).route, Route::Orbit(_)),
+            "an old source address without its tree cannot rehydrate owner authority");
+        forged.route = PersistedRoute::CargoSource {
+            project: Some(project.as_str().to_owned()),
             package: "pkg:cargo/demo@1.2.3".to_owned(),
             file: "../secret".to_owned(),
             line: Some(0),

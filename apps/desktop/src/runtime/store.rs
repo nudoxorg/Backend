@@ -343,6 +343,7 @@ pub fn route_keys(route: &Route) -> Vec<PageKey> {
         Route::CargoSource(route) => PackageRef::parse(route.package.as_str())
             .ok()
             .map(|package| PageKey::CargoSource(crate::model::pages::CargoSourceKey {
+                project: route.project.clone(),
                 package,
                 file: route.file.clone(),
             }))

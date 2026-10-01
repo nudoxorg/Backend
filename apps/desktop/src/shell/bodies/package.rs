@@ -68,7 +68,7 @@ pub(super) fn body(
                 ctx,
                 cx,
             );
-            if let Some(offer) = cargo_manifest_offer(&package, place, ctx) {
+            if let Some(offer) = cargo_manifest_offer(&package, place, snapshot, ctx, cx) {
                 leaves.push(offer);
             }
             return leaves;
@@ -250,7 +250,7 @@ pub(super) fn body(
     // Centred on the reading column it overflows.
     let overshoot = (measure.width() - ctx.measure.width()).max(px(0.0));
     let mut leaves = vec![Leaf::new(div().ml(-(overshoot * 0.5)).child(folio))];
-    if let Some(offer) = cargo_manifest_offer(&package, place, ctx) {
+    if let Some(offer) = cargo_manifest_offer(&package, place, snapshot, ctx, cx) {
         leaves.push(offer);
     }
     // A registry release the owner has not indexed offers to be added (W-Acquire).
@@ -267,10 +267,58 @@ pub(super) fn body(
 
 /// Cargo metadata observed the manifest path for this exact qualified source
 /// receipt. The address is still inert until the owner revalidates it on read.
-fn cargo_manifest_offer(package: &PackageRef, place: &Route, ctx: &mut Ctx<'_>) -> Option<Leaf> {
+fn cargo_manifest_offer(
+    package: &PackageRef,
+    place: &Route,
+    snapshot: &AppSnapshot,
+    ctx: &mut Ctx<'_>,
+    cx: &mut Context<Reader>,
+) -> Option<Leaf> {
+    // A package route alone has no project path authority. Only a retained,
+    // loaded tree that contains this exact source-qualified reference can
+    // provide the checked address for a cold owner observation. The active
+    // shelf and package display name are deliberately never consulted.
     let package_id = crate::core::PackageId::new(package.as_str()).ok()?;
+    if !CargoSourceRoute::supports_package(&package_id) {
+        return None;
+    }
+    let owner_pages = ctx.links.store.read(cx);
+    let project = snapshot.session().back.iter().find_map(|route| {
+        match route {
+            Route::Orbit(crate::navigation::OrbitRoute::Browse(crate::navigation::BrowseRoute::Tree(project))) => {
+                let resource = owner_pages
+                    .pages()
+                    .browse(&crate::model::browse::BrowseKey::Tree(project.clone()));
+                resource
+                    .loaded_value()
+                    .and_then(|value| value.tree())
+                    .filter(|tree| tree.source_packages.contains(package))
+                    .map(|_| project.clone())
+            }
+            // Zoom-out after a verified file should preserve the same entry.
+            // The file is useful here only while its owner reply remains live;
+            // a saved address alone cannot restore a package-page offer.
+            Route::CargoSource(file) if file.package == package_id => {
+                let key = crate::model::pages::CargoSourceKey {
+                    project: file.project.clone(),
+                    package: package.clone(),
+                    file: file.file.clone(),
+                };
+                let resource = owner_pages.cargo_source(&key);
+                resource.loaded_value().map(|_| file.project.clone())
+            }
+            _ => None,
+        }
+    });
+    let Some(project) = project else {
+        return Some(Leaf::new(quiet(
+            "Open this release from its Library project tree to browse current Cargo files.",
+            &ctx.measure,
+            ctx.palette,
+        )));
+    };
     let file = CargoSourcePath::new("Cargo.toml")?;
-    let route = Route::CargoSource(CargoSourceRoute::new(package_id, file, None)?);
+    let route = Route::CargoSource(CargoSourceRoute::new(project, package_id, file, None)?);
     let id: SharedString = "cargo-source-open-manifest".into();
     let leaving = place.clone();
     let recall = ctx.targets.recall();
@@ -1017,7 +1065,7 @@ fn route_page_key(route: &Route) -> Option<crate::model::pages::PageKey> {
                 }
             }),
         Route::CargoSource(route) => PackageRef::parse(route.package.as_str()).ok()
-            .map(|package| crate::model::pages::PageKey::CargoSource(crate::model::pages::CargoSourceKey { package, file: route.file.clone() })),
+            .map(|package| crate::model::pages::PageKey::CargoSource(crate::model::pages::CargoSourceKey { project: route.project.clone(), package, file: route.file.clone() })),
         Route::Orbit(_) | Route::World => None,
     }
 }

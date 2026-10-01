@@ -1,6 +1,7 @@
 //! Identity keys for page resources.
 
 use super::common::{KeyError, PackageRef, SymbolRef};
+use crate::core::LocalProjectId;
 use crate::navigation::CargoSourcePath;
 use std::fmt;
 use std::sync::Arc;
@@ -19,6 +20,8 @@ pub struct SearchQuery {
 /// not enter the read key; the authority digest remains in `package`.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct CargoSourceKey {
+    /// Exact project-tree address that supplied the source authority.
+    pub project: LocalProjectId,
     /// Full source-qualified Cargo package reference.
     pub package: PackageRef,
     /// Canonical package-relative file path.

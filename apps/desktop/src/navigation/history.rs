@@ -49,6 +49,13 @@ impl RouteHistory {
         self.head.as_deref().map(|node| &node.route)
     }
 
+    /// Borrows recent routes from newest to oldest without cloning the
+    /// bounded history. Used to recover a source page's exact tree address.
+    pub fn iter(&self) -> impl Iterator<Item = &Route> {
+        std::iter::successors(self.head.as_deref(), |node| node.previous.as_deref())
+            .map(|node| &node.route)
+    }
+
     /// Adds a route at the newest end, dropping the oldest route at the cap.
     #[must_use]
     pub fn push(&self, route: Route) -> Self {

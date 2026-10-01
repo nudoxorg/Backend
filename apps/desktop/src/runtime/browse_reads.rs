@@ -357,6 +357,9 @@ pub fn compose(engine: &mut dyn Engine, key: &BrowseKey) -> Result<PageValue, Re
 pub fn tree_model(tree: &backend_library::browse::ProjectTree) -> TreeModel {
     let reading = backend_present::read_tree(tree);
     let sources = TreeSources::new(tree);
+    let source_packages = Arc::new(
+        sources.by_reference.keys().cloned().map(PackageRef::from_reference).collect(),
+    );
     let links: Arc<[TreeRoleLinks]> = reading
         .roles
         .iter()
@@ -411,6 +414,7 @@ pub fn tree_model(tree: &backend_library::browse::ProjectTree) -> TreeModel {
         root: Arc::from(tree.root.as_str()),
         reading,
         links,
+        source_packages,
         prepared,
     }
 }
@@ -732,7 +736,7 @@ mod find_tests {
     #[test]
     fn tree_links_use_only_exact_owner_observed_cargo_source_receipts() {
         use backend_advisory::{AdvisoryAuthority, normalize_package};
-        use backend_library::browse::{build_tree, metadata_input};
+        use backend_library::browse::{build_tree, metadata_input_with_stable_source_witness};
         const METADATA: &[u8] = include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../crates/library/browse/fixtures/tree-2026-09-27/metadata.json"
@@ -741,7 +745,7 @@ mod find_tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../crates/library/browse/fixtures/tree-2026-09-27/Cargo.lock"
         ));
-        let input = metadata_input(METADATA, "aarch64-apple-darwin", Some(LOCKFILE))
+        let input = metadata_input_with_stable_source_witness(METADATA, "aarch64-apple-darwin", Some(LOCKFILE), [7; 32])
             .expect("actual Cargo metadata fixture");
         let authority = AdvisoryAuthority::new(1);
         let observe = |name: &str, version: &str| {
@@ -754,6 +758,8 @@ mod find_tests {
             .expect("resolved Cargo package")
             .clone();
         let receipt = serde.source_qualified_reference().expect("owner receipt");
+        let model = tree_model(&tree);
+        assert!(model.source_packages.contains(&PackageRef::from_reference(receipt.clone())));
         let TreeDestination::Open(exact) =
             TreeSources::new(&tree).destination(&serde.name, &serde.version, Some(&receipt))
         else {

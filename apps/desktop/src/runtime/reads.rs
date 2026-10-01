@@ -1418,17 +1418,82 @@ fn compose_cargo_source(
     let path = CargoPackageSourcePathV1::new(key.file.as_str()).map_err(|_| {
         ReadFailure::Fault(ErrorValue::new(FaultCode::Protocol, "invalid Cargo source file address"))
     })?;
-    let reply = engine
-        .surface(SurfaceCommand::CargoPackageSourceFile {
-            package: key.package.reference().clone(),
-            path,
-        })
-        .map_err(|error| failure(&error))?;
+    let reply = request_cargo_source_file(engine, key, &path)?;
     check(context.cancel)?;
     let SurfaceReply::CargoPackageSourceFile(result) = reply else {
         return Err(shape("Cargo source file"));
     };
+    if !result.has_admissible_shape() {
+        return Err(shape("Cargo source file proof"));
+    }
+    if matches!(
+        &result,
+        CargoPackageSourceFileResultV1::Unavailable {
+            package,
+            reason: CargoPackageSourceReadFailureV1::AuthorityUnavailable,
+        } if package.as_ref().is_none_or(|package| package == key.package.reference())
+    ) {
+        // A cold owner has no prior ProjectTree observation. The retained
+        // project is only an address: the owner reads it again, then this
+        // worker verifies that its current tree contains the exact qualified
+        // package before asking for bytes. No UI path becomes file authority.
+        rehydrate_cargo_source_authority(engine, key, context.cancel)?;
+        check(context.cancel)?;
+        let reply = request_cargo_source_file(engine, key, &path)?;
+        check(context.cancel)?;
+        let SurfaceReply::CargoPackageSourceFile(result) = reply else {
+            return Err(shape("Cargo source file"));
+        };
+        return cargo_source_page(key, result);
+    }
     cargo_source_page(key, result)
+}
+
+fn request_cargo_source_file(
+    engine: &mut dyn Engine,
+    key: &CargoSourceKey,
+    path: &CargoPackageSourcePathV1,
+) -> Result<SurfaceReply, ReadFailure> {
+    engine
+        .surface(SurfaceCommand::CargoPackageSourceFile {
+            package: key.package.reference().clone(),
+            path: path.clone(),
+        })
+        .map_err(|error| failure(&error))
+}
+
+fn rehydrate_cargo_source_authority(
+    engine: &mut dyn Engine,
+    key: &CargoSourceKey,
+    cancel: &CancellationToken,
+) -> Result<(), ReadFailure> {
+    check(cancel)?;
+    let root = key.project.service_coordinate().map_err(|_| {
+        ReadFailure::Fault(ErrorValue::new(
+            FaultCode::Protocol,
+            "This project path cannot be sent to the Cargo owner.",
+        ))
+    })?;
+    let root = ProductText::new(root).map_err(|_| {
+        ReadFailure::Fault(ErrorValue::new(FaultCode::Protocol, "Invalid Cargo project address."))
+    })?;
+    let reply = engine
+        .surface(SurfaceCommand::ProjectTree { root })
+        .map_err(|error| failure(&error))?;
+    check(cancel)?;
+    let SurfaceReply::ProjectTree(tree) = reply else {
+        return Err(shape("Cargo project-tree rehydration"));
+    };
+    if !tree.has_admissible_shape() {
+        return Err(shape("Cargo project-tree proof"));
+    }
+    if tree.package_by_reference(key.package.reference()).is_none() {
+        return Err(ReadFailure::Fault(ErrorValue::new(
+            FaultCode::Missing,
+            "This exact Cargo package is no longer in the project tree.",
+        )));
+    }
+    Ok(())
 }
 
 /// Admits only exact owner replies and prepares the immutable line index on
@@ -1732,7 +1797,7 @@ mod tests {
     fn cargo_source_reply_requires_current_exact_file_proof_and_marks_semantics_unindexed() {
         use backend_library::CargoPackageSourceAuthorityStateV1;
         const METADATA: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../crates/library/browse/fixtures/tree-2026-09-27/metadata.json"));
-        let input = backend_library::browse::metadata_input(METADATA, "aarch64-apple-darwin", None)
+        let input = backend_library::browse::metadata_input_with_stable_source_witness(METADATA, "aarch64-apple-darwin", None, [7; 32])
             .expect("Cargo metadata fixture");
         let row = input.packages.iter().find(|row| row.name == "serde" && row.version == "1.0.219")
             .expect("resolved package");
@@ -1741,6 +1806,7 @@ mod tests {
         let reference = authority.package_reference().expect("qualified package");
         let path = CargoPackageSourcePathV1::new("Cargo.toml").expect("relative file");
         let key = CargoSourceKey {
+            project: crate::core::LocalProjectId::new("/tmp/nudox-source-reply").expect("project"),
             package: PackageRef::from_reference(reference.clone()),
             file: crate::navigation::CargoSourcePath::new(path.as_str()).expect("GUI path"),
         };
@@ -1767,6 +1833,109 @@ mod tests {
         assert!(cargo_source_page(&key, forged).is_err(), "a display address cannot authenticate file bytes");
         assert!(matches!(cargo_source_page(&key, CargoPackageSourceFileResultV1::Stale { package: reference }),
             Err(ReadFailure::Fault(error)) if error.code() == FaultCode::Missing));
+    }
+
+    #[test]
+    fn cold_cargo_file_rehydrates_only_the_tree_containing_its_exact_authority() {
+        use backend_advisory::{AdvisoryAuthority, normalize_package};
+        use backend_library::CargoPackageSourceAuthorityStateV1;
+        use backend_library::browse::{ProjectTree, build_tree, metadata_input_with_stable_source_witness};
+
+        const METADATA: &[u8] = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../crates/library/browse/fixtures/tree-2026-09-27/metadata.json"
+        ));
+        const LOCKFILE: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../crates/library/browse/fixtures/tree-2026-09-27/Cargo.lock"
+        ));
+        let input = metadata_input_with_stable_source_witness(METADATA, "aarch64-apple-darwin", Some(LOCKFILE), [7; 32])
+            .expect("Cargo metadata fixture");
+        let advisories = AdvisoryAuthority::new(1);
+        let observe = |name: &str, version: &str| {
+            let package = normalize_package("cargo", name).expect("identity");
+            advisories.observe(&package, version, false, false, 0, false)
+        };
+        let tree = build_tree(&input, &observe);
+        let row = tree.package("serde", "1.0.219").expect("exact row");
+        let CargoPackageSourceAuthorityStateV1::Admitted(authority) = &row.source_authority
+            else { panic!("metadata receipt") };
+        let package = authority.package_reference().expect("qualified package");
+        let path = CargoPackageSourcePathV1::new("Cargo.toml").expect("path");
+        let contents: Box<str> = "[package]\nname = \"serde\"\n".into();
+        let digest = *blake3::hash(contents.as_bytes()).as_bytes();
+        let current = CargoPackageSourceFileResultV1::Read {
+            package: package.clone(),
+            authority: authority.clone(),
+            path: path.clone(),
+            content_digest: digest,
+            contents,
+            semantic: CargoPackageSourceSemanticStatusV1::NotIndexed,
+        };
+        struct ColdEngine {
+            tree: ProjectTree,
+            current: CargoPackageSourceFileResultV1,
+            seen: Vec<&'static str>,
+        }
+        impl Engine for ColdEngine {
+            fn revision(&mut self) -> Result<ViewStateRoot, ClientError> {
+                Err(ClientError::Protocol("unused".to_owned()))
+            }
+            fn health(&mut self) -> Result<HealthReport, ClientError> {
+                Err(ClientError::Protocol("unused".to_owned()))
+            }
+            fn probe(&mut self, _: Probe<'_>) -> Result<ReplyDto, ClientError> {
+                Err(ClientError::Protocol("unused".to_owned()))
+            }
+            fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
+                match command {
+                    SurfaceCommand::CargoPackageSourceFile { .. } if self.seen.is_empty() => {
+                        self.seen.push("file");
+                        Ok(SurfaceReply::CargoPackageSourceFile(
+                            CargoPackageSourceFileResultV1::Unavailable {
+                                package: None,
+                                reason: CargoPackageSourceReadFailureV1::AuthorityUnavailable,
+                            },
+                        ))
+                    }
+                    SurfaceCommand::ProjectTree { root } => {
+                        assert_eq!(root.as_str(), "/workspace/backend");
+                        self.seen.push("tree");
+                        Ok(SurfaceReply::ProjectTree(self.tree.clone()))
+                    }
+                    SurfaceCommand::CargoPackageSourceFile { package, path } => {
+                        assert_eq!(path.as_str(), "Cargo.toml");
+                        self.seen.push("file");
+                        if let CargoPackageSourceFileResultV1::Read { package: current, .. } = &self.current {
+                            assert_eq!(&package, current);
+                        }
+                        Ok(SurfaceReply::CargoPackageSourceFile(self.current.clone()))
+                    }
+                    _ => Err(ClientError::Protocol("unexpected command".to_owned())),
+                }
+            }
+        }
+
+        let key = CargoSourceKey {
+            project: LocalProjectId::new("/workspace/backend").expect("tree root"),
+            package: PackageRef::from_reference(package),
+            file: crate::navigation::CargoSourcePath::new(path.as_str()).expect("path"),
+        };
+        let cancel = CancellationToken::new();
+        let outlines = OutlineCache::default();
+        let context = ReadContext { worker: 0, cancel: &cancel, outlines: &outlines, progress: None };
+        let mut engine = ColdEngine { tree, current, seen: Vec::new() };
+        assert!(matches!(compose_cargo_source(&mut engine, &key, &context), Ok(PageValue::CargoSource(_))));
+        assert_eq!(engine.seen, ["file", "tree", "file"]);
+
+        let other = CargoSourceKey {
+            package: PackageRef::parse("pkg:cargo/serde@1.0.219?cargo-authority=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+                .expect("other authority"),
+            ..key
+        };
+        let mut engine = ColdEngine { tree: engine.tree, current: engine.current, seen: Vec::new() };
+        assert!(matches!(compose_cargo_source(&mut engine, &other, &context), Err(ReadFailure::Fault(error)) if error.code() == FaultCode::Missing));
+        assert_eq!(engine.seen, ["file", "tree"], "an unrelated tree cannot trigger a file retry");
     }
 
     #[test]

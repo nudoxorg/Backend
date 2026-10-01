@@ -1551,8 +1551,9 @@ mod source_paging_memory_tests {
         let package = crate::core::PackageId::new(
             "pkg:cargo/demo@1.0.0?cargo-authority=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         ).expect("authority address");
+        let project = crate::core::LocalProjectId::new("/tmp/nudox-cargo-reader").expect("tree address");
         let file = CargoSourcePath::new("src/lib.rs").expect("file");
-        let route = Route::CargoSource(CargoSourceRoute::new(package, file, Some(77)).expect("route"));
+        let route = Route::CargoSource(CargoSourceRoute::new(project, package, file, Some(77)).expect("route"));
         let original = memory.for_route(&route, Some(SourceGeneration::Cargo([1; 32])), true);
         assert!(Rc::ptr_eq(&original, &memory.for_route(&route, Some(SourceGeneration::Cargo([1; 32])), true)));
         assert!(!Rc::ptr_eq(&original, &memory.for_route(&route, Some(SourceGeneration::Cargo([2; 32])), true)));
@@ -1702,7 +1703,7 @@ impl Reader {
             Route::CargoSource(file) => crate::model::pages::PackageRef::parse(file.package.as_str())
                 .ok()
                 .and_then(|package| self.links.store.read(cx)
-                    .cargo_source(&crate::model::pages::CargoSourceKey { package, file: file.file.clone() })
+                    .cargo_source(&crate::model::pages::CargoSourceKey { project: file.project.clone(), package, file: file.file.clone() })
                     .loaded_value()
                     .map(|page| SourceGeneration::Cargo(page.content_digest))),
             _ => route_symbol(&place.route).and_then(|symbol| pages.source(&symbol).value_root().map(SourceGeneration::Indexed)),
@@ -1779,7 +1780,7 @@ fn place_keys(route: &Route, overlay: Option<Overlay>) -> Vec<PageKey> {
         Route::Package(_) => route_package(route).map(PageKey::Package).into_iter().collect(),
         Route::CargoSource(file) => crate::model::pages::PackageRef::parse(file.package.as_str())
             .ok()
-            .map(|package| PageKey::CargoSource(crate::model::pages::CargoSourceKey { package, file: file.file.clone() }))
+            .map(|package| PageKey::CargoSource(crate::model::pages::CargoSourceKey { project: file.project.clone(), package, file: file.file.clone() }))
             .into_iter()
             .collect(),
         Route::Symbol(symbol) => match symbol.view {
