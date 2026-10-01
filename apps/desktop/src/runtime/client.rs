@@ -262,13 +262,9 @@ impl LocalEngineClient {
             .bootstrap_root()
             .map_err(|_error| EngineFault::IndexUnconfirmed { project: project.clone() })?;
         if revision.root() != view.root() {
-            return Err(EngineFault::IndexFailed {
-                project: project.clone(),
-                error: crate::core::ErrorValue::new(
-                    FaultCode::Protocol,
-                    "the local service returned mismatched index and health revisions",
-                ),
-            });
+            // The owner already accepted the index command. A failed
+            // projection cannot turn that mutation into a safe retry.
+            return Err(EngineFault::IndexUnconfirmed { project: project.clone() });
         }
         // The owner has now admitted the selected project and published its
         // post-index revision. Switch subsequent root/read projections to
@@ -423,13 +419,36 @@ impl EngineClient for LocalEngineClient {
             }),
         };
         self.active_cancel = None;
-        if self.attached_epoch.is_some()
-            && self.gate.as_ref().and_then(super::owner::OwnerGate::attached_ready_epoch) != self.attached_epoch
-        {
-            Err(EngineFault::Superseded)
-        } else {
-            result
-        }
+        let owner_changed = self.attached_epoch.is_some()
+            && self.gate.as_ref().and_then(super::owner::OwnerGate::attached_ready_epoch)
+                != self.attached_epoch;
+        owner_change_result(request, result, owner_changed)
+    }
+}
+
+/// A replacement owner supersedes reads, but cannot erase a mutation receipt.
+/// An uncertain mutation remains uncertain; the caller must reconcile it by
+/// the exact operation key before a new submission.
+fn owner_change_result(
+    request: &EngineRequest,
+    result: Result<EngineDto, EngineFault>,
+    owner_changed: bool,
+) -> Result<EngineDto, EngineFault> {
+    if !owner_changed {
+        return result;
+    }
+    match (request, result) {
+            // An explicit successful reply remains a real owner receipt even
+            // when a replacement owner comes up before the UI observes it.
+            (EngineRequest::IndexProject { .. }, Ok(dto @ EngineDto::Index { .. })) => Ok(dto),
+            (EngineRequest::IndexProject { .. }, Err(EngineFault::IndexCancelled { project })) =>
+                Err(EngineFault::IndexCancelled { project }),
+            (EngineRequest::IndexProject { project, .. }, _) =>
+                Err(EngineFault::IndexUnconfirmed { project: project.clone() }),
+            (EngineRequest::Surface { command, .. }, Ok(dto)) if !super::reads::read_only(command) => Ok(dto),
+            (EngineRequest::Surface { command, .. }, _) if !super::reads::read_only(command) =>
+                Err(EngineFault::MutationUnconfirmed),
+        _ => Err(EngineFault::Superseded),
     }
 }
 
@@ -530,6 +549,35 @@ fn owner_fault(fault: OwnerFault) -> EngineFault {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::navigation::RequestId;
+
+    #[test]
+    fn owner_replacement_preserves_a_confirmed_index_and_blocks_an_ambiguous_one() {
+        let project = LocalProjectId::new("/tmp/owner-change-project").expect("project");
+        let basis = VersionedRoot::unserved();
+        let request_id = RequestId::new(17);
+        let request = EngineRequest::IndexProject {
+            request: request_id, project: project.clone(), basis,
+            cancel: CancellationToken::new(),
+        };
+        let confirmed = EngineDto::Index {
+            request: request_id, basis, key: basis, revision: basis.revision(),
+            delta: None, project: project.clone(), project_state: None,
+            catalog: None, files_indexed: None,
+        };
+        assert!(matches!(
+            owner_change_result(&request, Ok(confirmed), true),
+            Ok(EngineDto::Index { project: received, .. }) if received == project
+        ));
+        assert!(matches!(
+            owner_change_result(&request, Err(EngineFault::Cancelled), true),
+            Err(EngineFault::IndexUnconfirmed { project: received }) if received == project
+        ));
+        assert!(matches!(
+            owner_change_result(&request, Err(EngineFault::IndexCancelled { project: project.clone() }), true),
+            Err(EngineFault::IndexCancelled { project: received }) if received == project
+        ));
+    }
 
     #[test]
     fn catalog_explore_failure_is_preserved_as_a_typed_fault() {
