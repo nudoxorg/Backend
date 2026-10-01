@@ -11,7 +11,7 @@ use std::{
 use gpui::{AnyElement, App, IntoElement, SharedString, Window};
 use markdown::{ParseOptions, mdast};
 
-use crate::text::node::Span;
+use crate::text::node::{NodeContext, Span};
 
 static MARKDOWN_EXTENSIONS_REVISION: AtomicU64 = AtomicU64::new(1);
 
@@ -54,11 +54,26 @@ pub trait MarkdownPlugin: Send + Sync + 'static {
 pub struct MarkdownParseContext<'a> {
     source: &'a str,
     offset: usize,
+    context: &'a NodeContext,
 }
 
 impl<'a> MarkdownParseContext<'a> {
-    pub(crate) fn new(source: &'a str, offset: usize) -> Self {
-        Self { source, offset }
+    pub(crate) fn new(source: &'a str, context: &'a NodeContext) -> Self {
+        Self {
+            source,
+            offset: context.offset,
+            context,
+        }
+    }
+
+    /// Derive a native inline projection from this document's already parsed
+    /// AST and reference definitions. Invoke only in the block-parser worker.
+    pub fn prepare_inline(
+        &self,
+        children: &[mdast::Node],
+        exact_source: &str,
+    ) -> crate::text::PreparedMarkdown {
+        crate::text::format::markdown::prepare_inline(children, exact_source, self.context)
     }
 
     /// Source text for the Markdown fragment currently being parsed.

@@ -66,7 +66,7 @@ fn readme_extensions() -> &'static MarkdownExtensions {
                 // This parser runs with the parent document on the worker.
                 // Prepare native inline marks once so the heading is complete
                 // in the parent's first published layout, without a child task.
-                let prepared = PreparedMarkdown::parse(inline.as_str()).ok()?;
+                let prepared = context.prepare_inline(&heading.children, inline.as_str());
                 Some(
                     MarkdownNode::new(
                         "readme-heading-anchor",

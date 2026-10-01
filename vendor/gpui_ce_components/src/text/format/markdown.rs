@@ -20,6 +20,31 @@ pub(crate) fn parse(source: &str, cx: &mut NodeContext) -> Result<ParsedDocument
         .map_err(|e| e.to_string().into())
 }
 
+pub(crate) fn prepare_inline(
+    children: &[mdast::Node],
+    source: &str,
+    context: &NodeContext,
+) -> crate::text::state::PreparedMarkdown {
+    let mut node_cx = context.clone();
+    let mut paragraph = Paragraph::default();
+    for child in children {
+        parse_paragraph(&mut paragraph, child, &mut node_cx);
+    }
+    // This derived projection stores the exact inline source as its own
+    // document; its containing block span must be relative to that source.
+    paragraph.span = Some(Span {
+        start: 0,
+        end: source.len(),
+    });
+    crate::text::state::PreparedMarkdown::from_content(crate::text::state::ParsedContent {
+        document: ParsedDocument {
+            source: source.to_string().into(),
+            blocks: Arc::new(vec![BlockNode::Paragraph(paragraph)]),
+        },
+        node_cx,
+    })
+}
+
 fn parse_table_row(table: &mut Table, node: &mdast::TableRow, cx: &mut NodeContext) {
     let mut row = TableRow::default();
     node.children.iter().for_each(|c| {
@@ -300,6 +325,29 @@ fn ast_to_document(source: &str, root: mdast::Node, cx: &mut NodeContext) -> Par
         _ => panic!("expected root node"),
     };
 
+    fn references(node: &mdast::Node, context: &mut NodeContext) {
+        if let Node::Definition(def) = node {
+            context.add_ref(
+                def.identifier.clone().into(),
+                LinkMark {
+                    url: def.url.clone().into(),
+                    identifier: Some(def.identifier.clone().into()),
+                    title: def.title.clone().map(Into::into),
+                },
+            );
+        }
+        if let Some(children) = node.children() {
+            for child in children {
+                references(child, context);
+            }
+        }
+    }
+    // References may occur after a custom heading, including in nested blocks.
+    // Publish their authority to every inline projection before conversion.
+    for child in &root.children {
+        references(child, cx);
+    }
+
     let blocks = root
         .children
         .into_iter()
@@ -322,7 +370,7 @@ fn new_span(pos: Option<markdown::unist::Position>, cx: &NodeContext) -> Option<
 
 fn ast_to_node(source: &str, value: mdast::Node, cx: &mut NodeContext) -> BlockNode {
     let span = new_span(value.position().cloned(), cx);
-    let parse_cx = MarkdownParseContext::new(source, cx.offset);
+    let parse_cx = MarkdownParseContext::new(source, cx);
     if let Some(mut node) = cx.markdown_extensions.parse_block(&value, &parse_cx) {
         node.set_span(span);
         return BlockNode::Custom(node);

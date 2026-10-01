@@ -485,7 +485,15 @@ impl Element for TextView {
             let prepared = self.prepared.clone();
 
             let state = window.use_keyed_state(
-                SharedString::from(format!("{}/state", self.id)),
+                SharedString::from(format!(
+                    "{}/state/{}",
+                    self.id,
+                    if self.prepared.is_some() {
+                        "prepared"
+                    } else {
+                        "live"
+                    }
+                )),
                 cx,
                 move |_, cx| {
                     if let Some(prepared) = prepared {
@@ -691,11 +699,52 @@ mod tests {
     use super::{TextView, TextViewPlugin};
     use crate::text::{TableData, TextViewState, TextViewStyle};
     use gpui::{
-        AppContext as _, Bounds, ClickEvent, Context, Entity, InteractiveElement as _, IntoElement,
-        Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Overflow, ParentElement as _, Pixels,
-        Render, SharedString, StyleRefinement, Styled as _, TestAppContext, VisualTestContext,
-        Window, div, point, px,
+        AppContext as _, Bounds, ClickEvent, Context, Element as _, Entity,
+        InteractiveElement as _, IntoElement, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent,
+        Overflow, ParentElement as _, Pixels, Render, SharedString, StyleRefinement, Styled as _,
+        TestAppContext, VisualTestContext, Window, div, point, px,
     };
+
+    #[gpui::test]
+    fn same_element_id_switches_between_live_and_prepared_without_disabling_parser(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::text::PreparedMarkdown;
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|_, cx| TextViewTestRoot::new("host", cx));
+        let cx: &mut VisualTestContext = cx;
+        let prepared = PreparedMarkdown::parse("prepared heading").unwrap();
+        for prepared_first in [false, true] {
+            cx.update(|window, cx| {
+                let id = if prepared_first {
+                    "switch-prepared-first"
+                } else {
+                    "switch-live-first"
+                };
+                let mut live = TextView::markdown(id, "first live");
+                let mut fixed = TextView::prepared_markdown(id, prepared.clone());
+                if prepared_first {
+                    fixed.request_layout(None, None, window, cx);
+                    live.request_layout(None, None, window, cx);
+                } else {
+                    live.request_layout(None, None, window, cx);
+                    fixed.request_layout(None, None, window, cx);
+                }
+                let live_state = live.state.clone().unwrap();
+                let fixed_state = fixed.state.clone().unwrap();
+                assert_ne!(live_state.entity_id(), fixed_state.entity_id());
+                assert_eq!(fixed_state.read(cx).source().as_str(), "prepared heading");
+                assert_eq!(live_state.read(cx).source().as_str(), "first live");
+                let mut resumed = TextView::markdown(id, "changed live");
+                resumed.request_layout(None, None, window, cx);
+                assert_eq!(
+                    resumed.state.as_ref().unwrap().entity_id(),
+                    live_state.entity_id()
+                );
+                assert_eq!(live_state.read(cx).source().as_str(), "changed live");
+            });
+        }
+    }
 
     struct TextViewTestRoot {
         text_view: Entity<TextViewState>,

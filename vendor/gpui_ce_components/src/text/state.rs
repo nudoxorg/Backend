@@ -88,6 +88,10 @@ pub(super) struct LineSpan {
 pub struct PreparedMarkdown(Arc<ParsedContent>);
 
 impl PreparedMarkdown {
+    pub(crate) fn from_content(content: ParsedContent) -> Self {
+        Self(Arc::new(content))
+    }
+
     /// Parse a standalone fragment with the component's default Markdown rules.
     pub fn parse(source: &str) -> Result<Self, SharedString> {
         let mut node_cx = NodeContext::default();
@@ -278,7 +282,9 @@ impl TextViewState {
             return;
         }
         self.prepared_snapshot = Some(prepared.clone());
-        if self.text == prepared.0.document.source.as_str() {
+        if self.text == prepared.0.document.source.as_str()
+            && self.parsed_content.node_cx.link_refs == prepared.0.node_cx.link_refs
+        {
             return;
         }
         self.text = prepared.0.document.source.to_string();
@@ -951,6 +957,53 @@ mod tests {
     use super::*;
     use crate::text::MarkdownNode;
     use gpui::TestAppContext;
+
+    #[test]
+    fn prepared_heading_resolves_parent_reference_definitions_and_preserves_exact_source() {
+        let extensions = Arc::new(MarkdownExtensions::default().block_parser(|node, context| {
+            let markdown::mdast::Node::Heading(heading) = node else {
+                return None;
+            };
+            Some(MarkdownNode::new(
+                "derived",
+                context.prepare_inline(&heading.children, "[Guide][id]"),
+            ))
+        }));
+        let content = parse_content(
+            TextViewFormat::Markdown,
+            ParsedContent::default(),
+            &UpdateOptions {
+                revision: 1,
+                pending_text: "## [Guide][id]\n\n[id]: src/lib.rs#L7".into(),
+                append: false,
+                mode: ParseMode::Replace,
+                markdown_extensions: extensions,
+            },
+        )
+        .unwrap();
+        let node::BlockNode::Custom(custom) = &content.document.blocks[0] else {
+            panic!("heading missing");
+        };
+        let projection = custom.data::<PreparedMarkdown>().unwrap();
+        assert_eq!(projection.0.document.text().trim(), "Guide");
+        assert_eq!(projection.source().as_str(), "[Guide][id]");
+        let reference = projection.0.node_cx.link_refs.get("id").unwrap();
+        assert_eq!(reference.url.as_str(), "src/lib.rs#L7");
+        let node::BlockNode::Paragraph(paragraph) = &projection.0.document.blocks[0] else {
+            panic!("inline missing");
+        };
+        assert!(
+            paragraph
+                .children
+                .iter()
+                .flat_map(|run| &run.marks)
+                .any(|(_, mark)| {
+                    mark.link
+                        .as_ref()
+                        .is_some_and(|link| link.identifier.as_deref() == Some("id"))
+                })
+        );
+    }
 
     #[gpui::test]
     fn prepared_heading_is_complete_before_executor_runs_and_keeps_native_links_and_copy(
