@@ -81,6 +81,7 @@ type Select = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 pub struct Seg {
     id: ElementId,
     choices: Vec<Choice>,
+    aria_label: Option<SharedString>,
     style: SegStyle,
     art: bool,
     selected: usize,
@@ -96,6 +97,7 @@ pub fn seg(id: impl Into<ElementId>, measure: &Measure) -> Seg {
     Seg {
         id: id.into(),
         choices: Vec::new(),
+        aria_label: None,
         style: SegStyle::Stones,
         art: false,
         selected: 0,
@@ -107,6 +109,13 @@ pub fn seg(id: impl Into<ElementId>, measure: &Measure) -> Seg {
 }
 
 impl Seg {
+    /// Names the setting represented by this radio group.
+    #[must_use]
+    pub fn aria_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.aria_label = Some(label.into());
+        self
+    }
+
     /// Adds a worded choice.
     #[must_use]
     pub fn label(mut self, label: impl Into<SharedString>) -> Self {
@@ -344,12 +353,12 @@ impl RenderOnce for Seg {
         let id = self.id.clone();
         let count = self.choices.len().max(1);
         let selected = self.selected.min(count - 1);
-        let group_label = self
+        let group_label = self.aria_label.clone().unwrap_or_else(|| self
             .choices
             .iter()
             .map(|choice| choice.name.to_string())
             .collect::<Vec<_>>()
-            .join(", ");
+            .join(", ").into());
 
         let well = self.style == SegStyle::Well;
         let (item_h, label_role, spread, gap_px) = if well {
@@ -534,10 +543,12 @@ impl RenderOnce for Seg {
                     .into_any_element(),
             };
             let mut item = div()
-                .id(("choice", index))
+                .id(ElementId::NamedChild(Arc::new(id.clone()), choice.name.clone()))
                 .role(gpui::Role::RadioButton)
                 .aria_label(choice.name.clone())
-                .aria_selected(index == selected);
+                .aria_selected(index == selected)
+                .aria_toggled(if index == selected { gpui::Toggled::True } else { gpui::Toggled::False })
+                .aria_disabled(!active);
             if index == selected {
                 item = item.aria_active_descendant();
             }
@@ -556,6 +567,11 @@ impl RenderOnce for Seg {
                 item = item.child(key_badge_at(key, &motion, &key_id, &measure, active));
             }
             if active {
+                item = if index == selected {
+                    item.track_focus(&touch.focus).tab_index(0)
+                } else {
+                    item.focusable().tab_index(-1)
+                };
                 let entity = touch.entity.clone();
                 item = item.on_hover(move |inside, _window, cx| {
                     let now = entity.read(cx).hot_item;
@@ -566,7 +582,19 @@ impl RenderOnce for Seg {
                     }
                 });
                 if let Some(select) = self.on_select.clone() {
-                    item = item.on_click(move |_, window, cx| select(index, window, cx));
+                    let accessible_select = select.clone();
+                    item = item
+                        .on_a11y_action(gpui::AccessibleAction::Click, move |_, window, cx| accessible_select(index, window, cx))
+                        .on_key_down({
+                            let select = select.clone();
+                            move |event, window, cx| {
+                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                    select(index, window, cx);
+                                    cx.stop_propagation();
+                                }
+                            }
+                        })
+                        .on_click(move |_, window, cx| select(index, window, cx));
                 }
             }
             row = row.child(item);
@@ -599,6 +627,7 @@ impl RenderOnce for Seg {
             .child(row)
             .id(id)
             .role(gpui::Role::RadioGroup)
+            .aria_disabled(!active)
             .opacity(if self.disabled { 0.42 } else { 1.0 });
         if !group_label.is_empty() {
             well = well.aria_label(group_label);
@@ -606,9 +635,7 @@ impl RenderOnce for Seg {
         let well = if active {
             let entity = touch.entity.clone();
             let select = self.on_select.clone();
-            well.track_focus(&touch.focus)
-                .tab_index(0)
-                .cursor_pointer()
+            well.cursor_pointer()
                 .on_mouse_down(MouseButton::Left, {
                     let entity = entity.clone();
                     move |_, _window, cx| set_pressed(&entity, true, cx)
@@ -627,8 +654,8 @@ impl RenderOnce for Seg {
                 })
                 .on_key_down(move |event: &KeyDownEvent, window, cx| {
                     let next = match event.keystroke.key.as_str() {
-                        "left" => Some(selected.saturating_sub(1)),
-                        "right" => Some((selected + 1).min(count - 1)),
+                        "left" | "up" => Some(selected.saturating_sub(1)),
+                        "right" | "down" => Some((selected + 1).min(count - 1)),
                         "home" => Some(0),
                         "end" => Some(count - 1),
                         _ => None,

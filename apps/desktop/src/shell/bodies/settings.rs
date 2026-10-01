@@ -16,7 +16,7 @@ use facet::controls::Swatch;
 use facet::icons::{Kind, KindSize, kind_mark};
 use facet::tokens::ty;
 use facet::{Measure, Palette, Space};
-use gpui::{AnyElement, Context, IntoElement, ParentElement, Styled, Window, div, px};
+use gpui::{AnyElement, Context, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled, Window, div, px};
 use std::path::{Path, PathBuf};
 
 pub(super) fn body(
@@ -45,6 +45,8 @@ fn title(words: &str, ctx: &mut Ctx<'_>) -> Leaf {
     let said = ctx.say(words.to_owned());
     Leaf::new(
         text(ty::DISPLAY, &ctx.measure, ctx.palette.ink0)
+            .id(format!("settings-heading-{words}"))
+            .role(gpui::Role::Heading).aria_label(words.to_owned()).aria_level(1)
             .pb(ctx.measure.space(Space::Base))
             .child(said),
     )
@@ -70,6 +72,7 @@ fn appearance(
         },
         &measure,
     )
+    .aria_label("Theme").disabled(!ctx.active)
     .on_select(move |index, _, cx| {
         let appearance = match index {
             0 => AppearancePreference::System,
@@ -88,7 +91,7 @@ fn appearance(
     );
     leaves.push(setting("Theme", theme.into_any_element(), ctx));
     let links = ctx.links.clone();
-    let contrast = facet::controls::seg("set-contrast", &measure)
+    let contrast = facet::controls::seg("set-contrast", &measure).aria_label("Contrast").disabled(!ctx.active)
         .label("Normal")
         .label("High")
         .selected(usize::from(settings.contrast == ContrastPreference::High))
@@ -111,6 +114,7 @@ fn appearance(
         },
         &measure,
     )
+    .aria_label("Density").disabled(!ctx.active)
     .on_select(move |index, _, cx| {
         let density = match index {
             0 => DensityPreference::Comfortable,
@@ -127,7 +131,7 @@ fn appearance(
         .position(|percent| *percent == current_percent)
         .unwrap_or(2);
     let links = ctx.links.clone();
-    let mut text_size = facet::controls::seg("set-text-size", &measure);
+    let mut text_size = facet::controls::seg("set-text-size", &measure).aria_label("Text size").disabled(!ctx.active);
     for percent in ZoomPreference::LADDER {
         text_size = text_size.label(format!("{percent}%"));
     }
@@ -148,7 +152,7 @@ fn appearance(
     let text_note = ctx.say("Relative to the operating system’s text scale; remembered per display.");
     leaves.push(Leaf::new(quiet(text_note, &measure, palette)));
     let links = ctx.links.clone();
-    let motion = facet::controls::seg("set-motion", &measure)
+    let motion = facet::controls::seg("set-motion", &measure).aria_label("Motion").disabled(!ctx.active)
         .label("System")
         .label("Full")
         .label("Reduced")
@@ -173,9 +177,12 @@ fn appearance(
 fn setting(name: &str, control: AnyElement, ctx: &mut Ctx<'_>) -> Leaf {
     let measure = ctx.measure;
     let palette = ctx.palette;
-    let name = ctx.say(name.to_owned());
+    let label = name.to_owned();
+    let name = ctx.say(label.clone());
     Leaf::new(
         div()
+            .id(format!("settings-row-{label}"))
+            .role(gpui::Role::Group).aria_label(label)
             .flex()
             .flex_wrap()
             .items_center()
@@ -386,7 +393,7 @@ fn registry(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
             "settings-copy-registry-root",
             "Copy setup template",
             &measure,
-        )
+        ).disabled(!ctx.active)
         .ghost()
         .on_click(move |_, cx| {
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(example.clone()))
@@ -639,7 +646,7 @@ fn connections(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     leaves.push(Leaf::new(quiet(mode, &measure, palette)));
     let links = ctx.links.clone();
     let testing = snapshot.settings().connection == ConnectionStatus::Testing;
-    let probe = facet::controls::button("settings-test-connection", "Test connection", &measure)
+    let probe = facet::controls::button("settings-test-connection", "Test connection", &measure).disabled(!ctx.active)
         .primary()
         .busy(testing)
         .on_click(move |_, cx| links.dispatch(Intent::TestConnection, cx));
@@ -703,7 +710,7 @@ fn agents(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
         .into_any_element(),
         ctx,
     ));
-    let recheck = facet::controls::button("settings-recheck-mcp", "Check again", &measure)
+    let recheck = facet::controls::button("settings-recheck-mcp", "Check again", &measure).disabled(!ctx.active)
         .ghost()
         .on_click(|_, cx| cx.refresh_windows());
     leaves.push(setting("Discovery", recheck.into_any_element(), ctx));
@@ -734,7 +741,7 @@ fn agents(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     leaves.push(Leaf::new(
         text(ty::MONO_SMALL, &measure, palette.ink1).child(shown),
     ));
-    let copy = facet::controls::button("settings-copy-mcp-config", "Copy MCP setup", &measure)
+    let copy = facet::controls::button("settings-copy-mcp-config", "Copy MCP setup", &measure).disabled(!ctx.active)
         .ghost()
         .on_click(move |_, cx| {
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(config.clone()))
@@ -771,7 +778,7 @@ fn privacy(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     leaves.push(Leaf::new(quiet(mode_note, &measure, palette)));
 
     let links = ctx.links.clone();
-    let network = facet::controls::seg("set-privacy", &measure)
+    let network = facet::controls::seg("set-privacy", &measure).aria_label("Network policy").disabled(!ctx.active)
         .label("Local only")
         .label("Registry metadata")
         .selected(usize::from(settings.privacy == PrivacyPreference::RegistryMetadata))
@@ -788,7 +795,7 @@ fn privacy(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     leaves.push(setting("Network policy", network.into_any_element(), ctx));
 
     let links = ctx.links.clone();
-    let advisories = facet::controls::seg("set-advisories", &measure)
+    let advisories = facet::controls::seg("set-advisories", &measure).aria_label("Advisory refresh").disabled(!ctx.active)
         .label("Refresh feeds")
         .label("Pause feeds")
         .selected(usize::from(!settings.advisories))
@@ -802,7 +809,7 @@ fn privacy(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     ));
 
     let links = ctx.links.clone();
-    let cache = facet::controls::seg("set-registry-cache", &measure)
+    let cache = facet::controls::seg("set-registry-cache", &measure).aria_label("Registry result cache").disabled(!ctx.active)
         .label("Reuse results")
         .label("Always refresh")
         .selected(usize::from(!settings.cache_enabled))
@@ -817,14 +824,41 @@ fn privacy(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
 
     let links = ctx.links.clone();
     let decrement = facet::controls::button("cache-age-down", "−", &measure)
+        .aria_label("Decrease maximum reusable age").disabled(!ctx.active || settings.cache_days <= 1)
         .ghost()
         .on_click(move |_, cx| links.dispatch(Intent::SetCacheDays { up: false }, cx));
     let links = ctx.links.clone();
     let increment = facet::controls::button("cache-age-up", "+", &measure)
+        .aria_label("Increase maximum reusable age").disabled(!ctx.active || settings.cache_days >= 90)
         .ghost()
         .on_click(move |_, cx| links.dispatch(Intent::SetCacheDays { up: true }, cx));
     let age = ctx.say(format!("{} days", settings.cache_days));
-    let age_control = div()
+    let age_down = ctx.links.clone();
+    let age_up = ctx.links.clone();
+    let age_keys = ctx.links.clone();
+    let active = ctx.active;
+    let days = settings.cache_days;
+    let mut age_control = div()
+        .id("cache-age").role(gpui::Role::SpinButton).aria_label("Maximum reusable age")
+        .aria_value(format!("{days} days"))
+        .aria_numeric_value(f64::from(days)).aria_min_numeric_value(1.0).aria_max_numeric_value(90.0)
+        .aria_description("Available ages: 1, 7, 14, 30, 90 days. Use Up and Down to change.")
+        .aria_disabled(!active);
+    if active {
+        age_control = age_control.focusable().tab_index(0)
+            .on_key_down(move |event, _, cx| {
+                let up = match event.keystroke.key.as_str() { "up" => true, "down" => false, _ => return };
+                if (up && days < 90) || (!up && days > 1) { age_keys.dispatch(Intent::SetCacheDays { up }, cx); }
+                cx.stop_propagation();
+            });
+        if days > 1 {
+            age_control = age_control.on_a11y_action(gpui::AccessibleAction::Decrement, move |_, _, cx| age_down.dispatch(Intent::SetCacheDays { up: false }, cx));
+        }
+        if days < 90 {
+            age_control = age_control.on_a11y_action(gpui::AccessibleAction::Increment, move |_, _, cx| age_up.dispatch(Intent::SetCacheDays { up: true }, cx));
+        }
+    }
+    let age_control = age_control
         .flex()
         .items_center()
         .gap(measure.space(Space::Base))
