@@ -1,9 +1,79 @@
 workspace_root="$(@git@ rev-parse --show-toplevel 2>/dev/null || pwd -P)"
-cache_home="${XDG_CACHE_HOME:-$HOME/.cache}"
-cache_root="${NUDOX_BUILD_CACHE_ROOT:-$cache_home/nudox/cargo-1.97}"
-slot_count="${NUDOX_CARGO_BUILD_SLOTS:-4}"
-explicit_target_dir="${CARGO_TARGET_DIR:-}"
+invoking_workspace_root="$workspace_root"
+invoking_default_target_dir="$invoking_workspace_root/.local/target"
+target_dir_was_workspace_default=false
+if [ "${CARGO_TARGET_DIR:-}" = "$invoking_default_target_dir" ] \
+  && [ ! -L "$invoking_workspace_root/.local" ] \
+  && [ ! -L "$invoking_default_target_dir" ]; then
+  target_dir_was_workspace_default=true
+fi
+
+# Cargo accepts --manifest-path independently of the caller's cwd. Make the
+# manifest's actual worktree the source, cache, and default-target identity so
+# two trees cannot share one mutable Cargo graph accidentally.
+manifest_path=""
+manifest_seen=false
+expect_manifest=false
+for argument in "$@"; do
+  if [ "$expect_manifest" = true ]; then
+    if [ "$manifest_seen" = true ] || [ -z "$argument" ]; then
+      echo "nudox cargo: invalid or repeated --manifest-path" >&2
+      exit 64
+    fi
+    manifest_path="$argument"
+    manifest_seen=true
+    expect_manifest=false
+    continue
+  fi
+  case "$argument" in
+    --) break ;;
+    --manifest-path)
+      expect_manifest=true
+      ;;
+    --manifest-path=*)
+      if [ "$manifest_seen" = true ] || [ -z "${argument#--manifest-path=}" ]; then
+        echo "nudox cargo: invalid or repeated --manifest-path" >&2
+        exit 64
+      fi
+      manifest_path="${argument#--manifest-path=}"
+      manifest_seen=true
+      ;;
+  esac
+done
+if [ "$expect_manifest" = true ]; then
+  echo "nudox cargo: --manifest-path requires a value" >&2
+  exit 64
+fi
+if [ -n "$manifest_path" ]; then
+  case "$manifest_path" in
+    /*) manifest_absolute="$manifest_path" ;;
+    *) manifest_absolute="$PWD/$manifest_path" ;;
+  esac
+  case "$manifest_absolute" in
+    */*) manifest_directory="${manifest_absolute%/*}" ;;
+    *) manifest_directory="$PWD" ;;
+  esac
+  [ -n "$manifest_directory" ] || manifest_directory="/"
+  if [ ! -d "$manifest_directory" ]; then
+    echo "nudox cargo: manifest directory does not exist: $manifest_directory" >&2
+    exit 64
+  fi
+  manifest_root="$(@git@ -C "$manifest_directory" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -n "$manifest_root" ]; then
+    workspace_root="$manifest_root"
+  else
+    workspace_root="$(CDPATH= cd -P "$manifest_directory" 2>/dev/null && pwd -P)" || {
+      echo "nudox cargo: unable to resolve the manifest directory" >&2
+      exit 64
+    }
+  fi
+fi
+
+if [ "$target_dir_was_workspace_default" = true ]; then
+  export CARGO_TARGET_DIR="$workspace_root/.local/target"
+fi
 default_target_dir="$workspace_root/.local/target"
+explicit_target_dir="${CARGO_TARGET_DIR:-}"
 # The Nix shell exports this exact path before invoking Cargo. Treat that
 # canonical in-worktree location as the wrapper-managed default even though it
 # arrives through the environment; role-specific or caller-chosen paths remain
@@ -13,6 +83,10 @@ if [ "$explicit_target_dir" = "$default_target_dir" ] \
   && [ ! -L "$default_target_dir" ]; then
   explicit_target_dir=""
 fi
+
+cache_home="${XDG_CACHE_HOME:-$HOME/.cache}"
+cache_root="${NUDOX_BUILD_CACHE_ROOT:-$cache_home/nudox/cargo-1.97}"
+slot_count="${NUDOX_CARGO_BUILD_SLOTS:-4}"
 
 case "$slot_count" in
   ""|*[!0-9]*)
@@ -76,7 +150,7 @@ export SCCACHE_DIR="${SCCACHE_DIR:-$cache_root/sccache}"
 export SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE:-8G}"
 export SCCACHE_CLIENT_SIDE="${SCCACHE_CLIENT_SIDE:-1}"
 export SCCACHE_SERVER_UDS="${SCCACHE_SERVER_UDS:-$cache_root/sccache.sock}"
-worktree_lines="$(@git@ worktree list --porcelain 2>/dev/null || true)"
+worktree_lines="$(@git@ -C "$workspace_root" worktree list --porcelain 2>/dev/null || true)"
 worktree_bases="$(printf '%s\n' "$worktree_lines" | sed -n 's/^worktree //p' | paste -sd: -)"
 export SCCACHE_BASEDIRS="${SCCACHE_BASEDIRS:-${worktree_bases:-$workspace_root}}"
 
@@ -147,6 +221,85 @@ fi
 # must not change merely because the host scheduler grants another permit.
 explicit_build_dir="${CARGO_BUILD_BUILD_DIR:-}"
 explicit_graph_slot_count=4
+
+# Explicit roots and target paths remain exact Cargo inputs, but they may not
+# alias one of the wrapper's pooled intermediate graphs. Resolve symlinked
+# parents for this safety check without creating caller-owned directories.
+canonical_path_for_guard() {
+  _canonical_input="$1"
+  _canonical_newline='
+'
+  case "$_canonical_input" in
+    *"$_canonical_newline"*) return 1 ;;
+  esac
+  case "$_canonical_input" in
+    /*) _canonical_rest="${_canonical_input#/}" ;;
+    *) _canonical_rest="${PWD}/${_canonical_input}" ; _canonical_rest="${_canonical_rest#/}" ;;
+  esac
+  _canonical_current="/"
+  while [ -n "$_canonical_rest" ]; do
+    case "$_canonical_rest" in
+      */*)
+        _canonical_component="${_canonical_rest%%/*}"
+        _canonical_rest="${_canonical_rest#*/}"
+        ;;
+      *)
+        _canonical_component="$_canonical_rest"
+        _canonical_rest=""
+        ;;
+    esac
+    case "$_canonical_component" in
+      ""|.) continue ;;
+      ..)
+        _canonical_current="${_canonical_current%/*}"
+        [ -n "$_canonical_current" ] || _canonical_current="/"
+        ;;
+      *)
+        if [ "$_canonical_current" = / ]; then
+          _canonical_next="/$_canonical_component"
+        else
+          _canonical_next="$_canonical_current/$_canonical_component"
+        fi
+        if [ -d "$_canonical_next" ]; then
+          _canonical_current="$(CDPATH= cd -P "$_canonical_next" 2>/dev/null && pwd -P)" || return 1
+        elif [ -e "$_canonical_next" ] || [ -L "$_canonical_next" ]; then
+          return 1
+        else
+          _canonical_current="$_canonical_next"
+        fi
+        ;;
+    esac
+  done
+  printf '%s\n' "$_canonical_current"
+}
+
+if [ -n "$explicit_build_dir" ] || [ -n "$explicit_target_dir" ]; then
+  pooled_build_root="$(canonical_path_for_guard "$cache_root/build")" || {
+    echo "nudox cargo: cannot safely resolve pooled build root" >&2
+    exit 64
+  }
+  candidate=0
+  while [ "$candidate" -lt "$slot_count" ]; do
+    pooled_slot="$(canonical_path_for_guard "$pooled_build_root/slot-$candidate")" || {
+      echo "nudox cargo: cannot safely resolve pooled build slot" >&2
+      exit 64
+    }
+    for explicit_path in "$explicit_build_dir" "$explicit_target_dir"; do
+      [ -n "$explicit_path" ] || continue
+      explicit_path_canonical="$(canonical_path_for_guard "$explicit_path")" || {
+        echo "nudox cargo: cannot safely resolve explicit build or target directory" >&2
+        exit 64
+      }
+      case "$explicit_path_canonical" in
+        "$pooled_slot"|"$pooled_slot"/*)
+          echo "nudox cargo: explicit build or target directory aliases pooled slot $candidate" >&2
+          exit 64
+          ;;
+      esac
+    done
+    candidate="$((candidate + 1))"
+  done
+fi
 
 # cksum is present in the minimal Nix runtime and the length makes accidental
 # collisions much less likely than using the CRC alone. The key names only

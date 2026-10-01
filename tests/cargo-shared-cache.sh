@@ -38,9 +38,17 @@ assert_file_lines() {
 mkdir -p "$test_root/bin" "$test_root/roots/a" "$test_root/roots/b"
 
 printf '%s\n' '#!/bin/sh' \
-'if [ "${1:-}" = -C ]; then shift 2; fi' \
+'git_directory=""' \
+'if [ "${1:-}" = -C ]; then git_directory="$2"; shift 2; fi' \
 'if [ "${1:-}" = rev-parse ] && [ "${2:-}" = --show-toplevel ]; then' \
-'  printf "%s\\n" "$NUDOX_TEST_WORKTREE"' \
+'  if [ -n "$git_directory" ] && [ -n "${NUDOX_TEST_MANIFEST_WORKTREE:-}" ]; then' \
+'    case "$git_directory" in' \
+'      "$NUDOX_TEST_MANIFEST_WORKTREE"|"$NUDOX_TEST_MANIFEST_WORKTREE"/*) printf "%s\\n" "$NUDOX_TEST_MANIFEST_WORKTREE" ;;' \
+'      *) printf "%s\\n" "${NUDOX_TEST_WORKTREE:-}" ;;' \
+'    esac' \
+'  else' \
+'    printf "%s\\n" "${NUDOX_TEST_WORKTREE:-}"' \
+'  fi' \
 '  exit 0' \
 'fi' \
 'if [ "${1:-}" = rev-parse ] && [ "${2:-}" = HEAD ]; then printf "0123456789abcdef0123456789abcdef01234567\\n"; exit 0; fi' \
@@ -286,6 +294,82 @@ NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$metadata_log" \
 assert_file_lines "$metadata_log" 1
 metadata_dir="$(cut -d '|' -f 2 "$metadata_log")"
 [ -z "$metadata_dir" ] || fail "metadata unexpectedly leased $metadata_dir"
+
+# Cargo's manifest can name a different worktree from the caller's cwd. When
+# the shell supplied the caller worktree's ordinary default target, redirect
+# only that managed default to the manifest worktree. Its graph, target stamp,
+# and affinity are then keyed to the actual Cargo source tree.
+manifest_invoking_root="$test_root/roots/manifest-invoker"
+manifest_workspace_root="$test_root/roots/manifest-source"
+manifest_directory="$manifest_workspace_root/crates/demo"
+mkdir -p "$manifest_invoking_root/.local/target" "$manifest_directory"
+: > "$manifest_directory/Cargo.toml"
+manifest_log="$test_root/manifest-default.log"
+NUDOX_TEST_WORKTREE="$manifest_invoking_root" \
+  NUDOX_TEST_MANIFEST_WORKTREE="$manifest_workspace_root" \
+  NUDOX_TEST_LOG="$manifest_log" NUDOX_BUILD_CACHE_ROOT="$test_root/manifest-cache" \
+  NUDOX_CARGO_BUILD_SLOTS=1 CARGO_TARGET_DIR="$manifest_invoking_root/.local/target" \
+  SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+  "$test_root/wrapper" build --manifest-path "$manifest_directory/Cargo.toml" --locked
+manifest_default_target="$manifest_workspace_root/.local/target"
+assert_eq "$manifest_default_target" "$(cut -d '|' -f 3 "$manifest_log")"
+manifest_default_build="$(cut -d '|' -f 2 "$manifest_log")"
+assert_eq "$manifest_workspace_root" "$(cat "$manifest_default_build/.nudox-worktree-root")"
+assert_eq "$manifest_workspace_root" "$(cat "$manifest_default_target/.nudox-worktree-root")"
+assert_eq "build --manifest-path $manifest_directory/Cargo.toml --locked" \
+  "$(cut -d '|' -f 4 "$manifest_log")"
+
+# Caller-selected paths stay exact for a cross-worktree manifest invocation.
+# The explicit role receives a manifest-owned subgraph and target stamp, while
+# the pooled lane's affinity and prior graph remain untouched.
+manifest_explicit_cache="$test_root/manifest-explicit-cache"
+manifest_explicit_log="$test_root/manifest-explicit.log"
+manifest_explicit_build="$test_root/manifest-role"
+manifest_explicit_target="$test_root/manifest-target"
+mkdir -p "$manifest_explicit_cache/build/slot-0" "$manifest_explicit_cache/affinity"
+printf '%s\n' "$test_root/roots/a" > "$manifest_explicit_cache/affinity/slot-0.owner"
+printf 'warm pooled graph\n' > "$manifest_explicit_cache/build/slot-0/preserved.rmeta"
+NUDOX_TEST_WORKTREE="$manifest_invoking_root" \
+  NUDOX_TEST_MANIFEST_WORKTREE="$manifest_workspace_root" \
+  NUDOX_TEST_LOG="$manifest_explicit_log" NUDOX_BUILD_CACHE_ROOT="$manifest_explicit_cache" \
+  NUDOX_CARGO_BUILD_SLOTS=1 CARGO_BUILD_BUILD_DIR="$manifest_explicit_build" \
+  CARGO_TARGET_DIR="$manifest_explicit_target" SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+  "$test_root/wrapper" check --manifest-path="$manifest_directory/Cargo.toml" --offline
+manifest_explicit_graph="$manifest_explicit_build/.nudox-cargo/slot-0"
+assert_eq "$manifest_explicit_graph" "$(cut -d '|' -f 2 "$manifest_explicit_log")"
+assert_eq "$manifest_explicit_target" "$(cut -d '|' -f 3 "$manifest_explicit_log")"
+assert_eq "$manifest_workspace_root" "$(cat "$manifest_explicit_graph/.nudox-worktree-root")"
+assert_eq "$manifest_workspace_root" "$(cat "$manifest_explicit_target/.nudox-worktree-root")"
+assert_eq "$test_root/roots/a" "$(cat "$manifest_explicit_cache/affinity/slot-0.owner")"
+assert_eq 'warm pooled graph' "$(cat "$manifest_explicit_cache/build/slot-0/preserved.rmeta")"
+
+# An explicit build role or target that resolves through a symlink into any
+# pooled Cargo slot is refused before either caller path or pooled graph is
+# mutated. This guards the no-overflow pool invariant even under path aliases.
+pooled_alias_cache="$test_root/pooled-alias-cache"
+pooled_alias_build_log="$test_root/pooled-alias-build.log"
+pooled_alias_target_log="$test_root/pooled-alias-target.log"
+mkdir -p "$pooled_alias_cache/build" "$test_root/pooled-build-alias" "$test_root/pooled-target-alias"
+ln -s "$pooled_alias_cache/build" "$test_root/pooled-build-alias/cache"
+ln -s "$pooled_alias_cache/build" "$test_root/pooled-target-alias/cache"
+if NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$pooled_alias_build_log" \
+  NUDOX_BUILD_CACHE_ROOT="$pooled_alias_cache" NUDOX_CARGO_BUILD_SLOTS=2 \
+  CARGO_BUILD_BUILD_DIR="$test_root/pooled-build-alias/cache/slot-1" \
+  SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+  "$test_root/wrapper" build; then
+  fail "explicit build role aliasing pooled slot was accepted"
+fi
+if NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$pooled_alias_target_log" \
+  NUDOX_BUILD_CACHE_ROOT="$pooled_alias_cache" NUDOX_CARGO_BUILD_SLOTS=2 \
+  CARGO_TARGET_DIR="$test_root/pooled-target-alias/cache/slot-1" \
+  SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+  "$test_root/wrapper" build; then
+  fail "explicit target aliasing pooled slot was accepted"
+fi
+[ ! -e "$pooled_alias_build_log" ] || fail "pooled build-role alias reached Cargo"
+[ ! -e "$pooled_alias_target_log" ] || fail "pooled target alias reached Cargo"
+[ ! -e "$pooled_alias_cache/build/slot-1/.nudox-worktree-root" ] \
+  || fail "pooled slot alias mutated the pooled graph"
 
 # Two compiling commands from one worktree serialize onto one remembered warm
 # lane. The second invocation must not take another slot or overflow path.
