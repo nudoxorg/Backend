@@ -1043,7 +1043,7 @@ pub(crate) fn open_value<T>(
         ResourceTerminal::Complete
             if resource
                 .value_root()
-                .is_some_and(|at| at.authority() == root.authority()) =>
+                .is_some_and(|at| at.authority() == root.authority()) => {
             Ok(resource.loaded_value())
         }
         ResourceTerminal::Complete => {
