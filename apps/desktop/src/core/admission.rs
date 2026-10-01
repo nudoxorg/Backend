@@ -45,7 +45,7 @@ pub fn admit_resource<T>(resource: &Resource<T>, current: VersionedRoot, owner_s
     }
     let reason = if !owner_serving {
         Some(ReadHoldReason::OwnerUnavailable)
-    } else if value.is_some() && !resource.value_root().is_some_and(|root| root.same_authority(current)) {
+    } else if value.is_some() && (current.is_unserved() || !resource.value_root().is_some_and(|root| root.same_authority(current))) {
         Some(ReadHoldReason::AuthorityChanged)
     } else if matches!(resource.terminal(), ResourceTerminal::Partial) || resource.activity() != Activity::Rest {
         Some(ReadHoldReason::Reading)
@@ -83,6 +83,8 @@ mod tests {
             assert_eq!(admission.retained_value(), Some(&7));
             assert!(matches!(admission, ResourceAdmission::Retained { reason, .. } if reason == expected));
         }
+        let unserved = Resource::loaded_at(7_u32, VersionedRoot::unserved());
+        assert!(!admit_resource(&unserved, VersionedRoot::unserved(), true).allows_actions(), "matching unserved placeholders are not producer authority");
         let partial = Resource::partial_at(7_u32, root(1)).resting();
         assert!(matches!(admit_resource(&partial, root(1), true), ResourceAdmission::Retained { reason: ReadHoldReason::Reading, .. }));
         assert!(!admit_resource(&partial, root(1), true).allows_actions(), "stopped intermediate bytes are never a completed reading");
