@@ -22,19 +22,23 @@
 //! - **Visible.** [`in_flight`] counts every flight of every memo in the
 //!   process, so a harness can wait for none before it captures.
 //!
-//! A value is shared as an `Arc`; the work is a pure `Fn(&K, &Cancellation) -> V`.
+//! A value is shared as an `Arc`; work may be synchronous or awaitable, and
+//! always runs on the background executor under the same bounded lifecycle.
 
 use gpui::{App, Context, EntityId};
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
+use std::future::Future;
 use std::hash::Hash;
 use std::num::NonZeroUsize;
 use std::panic::AssertUnwindSafe;
+use std::pin::Pin;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
 static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
@@ -140,7 +144,8 @@ struct Inner<K, V> {
 }
 
 /// The work a memo does for one key: pure, and safe to run on any thread.
-type Work<K, V> = dyn Fn(&K, &Cancellation) -> V + Send + Sync;
+type Work<K, V> =
+    dyn Fn(K, Cancellation) -> Pin<Box<dyn Future<Output = V> + Send + 'static>> + Send + Sync;
 
 /// Cooperative cancellation for off-thread reads.
 #[derive(Clone, Debug, Default)]
@@ -195,6 +200,26 @@ where
         capacity: NonZeroUsize,
         work: impl Fn(&K, &Cancellation) -> V + Send + Sync + 'static,
     ) -> Self {
+        let work = Arc::new(work);
+        Self::new_cancellable_async(capacity, move |key, cancellation| {
+            let work = Arc::clone(&work);
+            async move { work(&key, &cancellation) }
+        })
+    }
+
+    /// As [`Memo::new_cancellable`], with work that may yield while waiting
+    /// for asynchronous inputs. It uses the same capacity, cancellation,
+    /// panic, and targeted-notification path as synchronous work.
+    pub(crate) fn new_cancellable_async<Fut>(
+        capacity: NonZeroUsize,
+        work: impl Fn(K, Cancellation) -> Fut + Send + Sync + 'static,
+    ) -> Self
+    where
+        Fut: Future<Output = V> + Send + 'static,
+    {
+        let work = move |key, cancellation| {
+            Box::pin(work(key, cancellation)) as Pin<Box<dyn Future<Output = V> + Send + 'static>>
+        };
         Self {
             shared: Rc::new(Shared {
                 inner: RefCell::new(Inner {
@@ -376,8 +401,10 @@ where
         let owned = key.clone();
         let work_cancellation = cancellation.clone();
         let task = cx.background_executor().spawn(async move {
-            std::panic::catch_unwind(AssertUnwindSafe(|| work(&owned, &work_cancellation)))
-                .map_err(|panic| Fault::Panicked(describe(panic.as_ref())))
+            let future =
+                std::panic::catch_unwind(AssertUnwindSafe(|| work(owned, work_cancellation)))
+                    .map_err(|panic| Fault::Panicked(describe(panic.as_ref())))?;
+            catch_future(future).await
         });
         let shared = Rc::downgrade(&self.shared);
         cx.spawn(async move |cx| {
@@ -388,6 +415,20 @@ where
         })
         .detach();
     }
+}
+
+/// Polls an async work future while translating a panic from any poll into
+/// the same typed failure used for synchronous Memo work.
+async fn catch_future<F: Future>(future: F) -> Result<F::Output, Fault> {
+    let mut future = Box::pin(future);
+    std::future::poll_fn(move |cx| {
+        match std::panic::catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(cx))) {
+            Ok(Poll::Pending) => Poll::Pending,
+            Ok(Poll::Ready(value)) => Poll::Ready(Ok(value)),
+            Err(panic) => Poll::Ready(Err(Fault::Panicked(describe(panic.as_ref())))),
+        }
+    })
+    .await
 }
 
 impl<K: Clone + Eq + Hash, V> Inner<K, V> {

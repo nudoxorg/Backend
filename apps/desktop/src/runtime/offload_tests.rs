@@ -250,6 +250,43 @@ fn a_panic_becomes_a_typed_fault_and_the_next_key_still_works(cx: &mut TestAppCo
 }
 
 #[gpui::test]
+fn async_work_can_yield_and_poll_panics_still_become_typed_faults(cx: &mut TestAppContext) {
+    let (release, wait) = async_channel::bounded::<()>(1);
+    let entered = Arc::new(AtomicBool::new(false));
+    let work_entered = Arc::clone(&entered);
+    let memo = Memo::new_cancellable_async(slots(1), move |_key, cancellation| {
+        let wait = wait.clone();
+        let entered = Arc::clone(&work_entered);
+        async move {
+            entered.store(true, Ordering::SeqCst);
+            wait.recv().await.expect("test releases async work");
+            assert!(!cancellation.is_cancelled());
+            panic!("async work after yielding")
+        }
+    });
+
+    assert!(matches!(
+        cx.update(|cx| memo.ask(&7, Asker::Everyone, cx)),
+        Answer::Reading
+    ));
+    cx.run_until_parked();
+    assert!(
+        entered.load(Ordering::SeqCst),
+        "the background future was polled"
+    );
+    assert_eq!(memo.reading(), 1, "yielded work keeps its bounded slot");
+    assert_eq!(memo.len(), 1, "yielded work remains tracked");
+
+    release.try_send(()).expect("release async work");
+    cx.run_until_parked();
+    assert!(matches!(
+        cx.update(|cx| memo.ask(&7, Asker::Everyone, cx)),
+        Answer::Failed(Fault::Panicked(message)) if message.as_ref() == "async work after yielding"
+    ));
+    assert_eq!(memo.reading(), 0, "a panic after a yield closes the flight");
+}
+
+#[gpui::test]
 fn the_flight_is_counted_until_the_value_is_announced(cx: &mut TestAppContext) {
     let memo = Memo::new(slots(4), upper(&Arc::new(AtomicU32::new(0))));
     cx.update(|cx| memo.ask(&6, Asker::Everyone, cx));

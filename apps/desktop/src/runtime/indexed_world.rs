@@ -21,9 +21,9 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(test)]
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 #[cfg(test)]
-use std::sync::{Condvar, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const WORLD_READS: usize = 4;
 const MAX_PACKAGES: usize = 64;
@@ -249,29 +249,38 @@ struct Reads(Memo<Key, Result<Arc<Projection>, Arc<str>>>);
 impl Global for Reads {}
 
 #[cfg(test)]
-#[derive(Default)]
 pub(crate) struct TestProjectionGate {
     state: Mutex<(bool, bool)>, // entered, released
-    wake: Condvar,
+    release_sender: async_channel::Sender<()>,
+    release_receiver: async_channel::Receiver<()>,
+}
+
+#[cfg(test)]
+impl Default for TestProjectionGate {
+    fn default() -> Self {
+        let (release_sender, release_receiver) = async_channel::bounded(1);
+        Self {
+            state: Mutex::new((false, false)),
+            release_sender,
+            release_receiver,
+        }
+    }
 }
 
 #[cfg(test)]
 impl TestProjectionGate {
-    pub(crate) fn wait_for_read(&self, cancellation: &Cancellation) -> Result<(), Arc<str>> {
+    pub(crate) async fn wait_for_read(&self, cancellation: &Cancellation) -> Result<(), Arc<str>> {
         let mut state = self.state.lock().expect("projection gate");
         state.0 = true;
-        self.wake.notify_all();
-        while !state.1 {
-            if cancellation.is_cancelled() {
-                return Err(Arc::from("the synthetic graph read was superseded"));
-            }
-            let (next, _) = self
-                .wake
-                .wait_timeout(state, std::time::Duration::from_millis(10))
-                .expect("projection gate");
-            state = next;
+        let already_released = state.1;
+        drop(state);
+        if !already_released {
+            self.release_receiver
+                .recv()
+                .await
+                .map_err(|_| Arc::<str>::from("the synthetic graph read gate closed"))?;
         }
-        Ok(())
+        ensure_active(cancellation)
     }
 
     pub(crate) fn entered(&self) -> bool {
@@ -280,7 +289,7 @@ impl TestProjectionGate {
 
     pub(crate) fn release(&self) {
         self.state.lock().expect("projection gate").1 = true;
-        self.wake.notify_all();
+        let _ = self.release_sender.try_send(());
     }
 }
 
@@ -303,9 +312,9 @@ static NEXT_TEST_PROJECTION: AtomicU64 = AtomicU64::new(1);
 
 impl Reads {
     fn new() -> Self {
-        Self(Memo::new_cancellable(
+        Self(Memo::new_cancellable_async(
             NonZeroUsize::new(WORLD_READS).expect("positive capacity"),
-            read,
+            |key, cancellation| async move { read(&key, &cancellation).await },
         ))
     }
 }
@@ -392,29 +401,15 @@ pub(crate) fn get<T: 'static>(key: &Key, cx: &mut Context<T>) -> State {
     }
 }
 
-fn read(key: &Key, cancellation: &Cancellation) -> Result<Arc<Projection>, Arc<str>> {
+async fn read(key: &Key, cancellation: &Cancellation) -> Result<Arc<Projection>, Arc<str>> {
     ensure_active(cancellation)?;
     #[cfg(test)]
     if let OwnerIdentity::Synthetic(id) = &key.owner {
-        let synthetic = key
-            .synthetic
-            .as_ref()
-            .filter(|projection| projection.id == *id && projection.root == key.root)
-            .ok_or_else(|| Arc::<str>::from("the synthetic graph owner changed before its read"))?;
-        if let Some(gate) = &synthetic.gate {
-            gate.wait_for_read(cancellation)?;
-        }
-        ensure_active(cancellation)?;
-        let world = Arc::clone(&synthetic.world);
-        let layout = facet::graph::layout::layout_of(&world);
-        let scene = Arc::new(facet::graph::scene::Scene::new(Arc::clone(&world), layout));
-        return Ok(Arc::new(Projection {
-            world,
-            scene,
-            identities: Arc::clone(&synthetic.identities),
-            coverage: Coverage::default(),
-            origin: Origin::SyntheticFixture(Arc::clone(&synthetic.label)),
-        }));
+        let id = *id;
+        let root = key.root.clone();
+        let synthetic = key.synthetic.clone();
+        let cancellation = cancellation.clone();
+        return read_synthetic(synthetic, id, root, cancellation).await;
     }
     let endpoint = match &key.owner {
         OwnerIdentity::Indexed(endpoint) => endpoint,
@@ -790,6 +785,32 @@ fn read(key: &Key, cancellation: &Cancellation) -> Result<Arc<Projection>, Arc<s
         identities,
         coverage,
         origin: Origin::IndexedOwner,
+    }))
+}
+
+#[cfg(test)]
+async fn read_synthetic(
+    synthetic: Option<Arc<TestProjection>>,
+    id: u64,
+    root: VersionedRoot,
+    cancellation: Cancellation,
+) -> Result<Arc<Projection>, Arc<str>> {
+    let synthetic = synthetic
+        .filter(|projection| projection.id == id && projection.root == root)
+        .ok_or_else(|| Arc::<str>::from("the synthetic graph owner changed before its read"))?;
+    if let Some(gate) = &synthetic.gate {
+        gate.wait_for_read(&cancellation).await?;
+    }
+    ensure_active(&cancellation)?;
+    let world = Arc::clone(&synthetic.world);
+    let layout = facet::graph::layout::layout_of(&world);
+    let scene = Arc::new(facet::graph::scene::Scene::new(Arc::clone(&world), layout));
+    Ok(Arc::new(Projection {
+        world,
+        scene,
+        identities: Arc::clone(&synthetic.identities),
+        coverage: Coverage::default(),
+        origin: Origin::SyntheticFixture(Arc::clone(&synthetic.label)),
     }))
 }
 
