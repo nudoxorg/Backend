@@ -780,12 +780,19 @@ impl Shell {
         } else {
             zones[(at + zones.len() - 1) % zones.len()]
         };
-        self.set_zone(next, cx);
+        self.take_zone(next, window, cx);
+    }
+
+    /// A custom navigation zone shares the shell's persistent native focus
+    /// owner. A clicked row can disappear as it changes the list; that must
+    /// not leave keyboard dispatch attached to the retired row.
+    pub(crate) fn take_zone(&mut self, zone: Zone, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_zone(zone, cx);
         self.focus.focus(window, cx);
     }
 
-    /// The zone takes the keyboard (Tab, or a click in the sidebar).
-    pub(crate) fn set_zone(&mut self, zone: Zone, cx: &mut Context<Self>) {
+    /// Updates the active targets inside the persistent keyboard owner.
+    fn set_zone(&mut self, zone: Zone, cx: &mut Context<Self>) {
         if zone == self.zone {
             return;
         }

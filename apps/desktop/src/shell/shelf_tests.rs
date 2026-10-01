@@ -510,6 +510,12 @@ fn choosing_one_of_your_crates_narrows_contents_to_what_it_uses_and_esc_clears_i
     let said = self::said(&mut rig);
     assert!(said.iter().any(|text| text == "only what") && said.iter().any(|text| text == "uses"), "the narrowing says so: {said:#?}");
     assert_eq!(rig.route(), toml(), "narrowing is browsing");
+    rig.cx.update(|window, _| {
+        assert!(
+            window.context_stack().iter().any(|context| context.contains(super::keys::CONTEXT)),
+            "replacing a clicked row preserves the shell keyboard owner"
+        );
+    });
     rig.keys("escape");
     let said = self::said(&mut rig);
     assert!(!said.iter().any(|text| text == "only what"), "Esc lets it go: {said:#?}");

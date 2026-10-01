@@ -18,7 +18,7 @@ use facet::tokens::ty;
 use facet::{ActiveFacet as _, Measure, Palette, Space};
 use gpui::{
     AnyElement, ClickEvent, Context, Hsla, InteractiveElement, IntoElement, ParentElement,
-    ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, Transformation, div, px,
+    ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, Transformation, Window, div, px,
     radians, uniform_list,
 };
 use std::f32::consts::{FRAC_PI_2, PI};
@@ -37,9 +37,11 @@ impl Shelf {
     /// A click in the sidebar gives it the keyboard. Deferred: the shell
     /// re-renders the zone it leaves and the zone it enters, and this shelf
     /// is being updated by the click that asks.
-    fn take_keyboard(&self, cx: &mut Context<Self>) {
+    fn take_keyboard(&self, window: &Window, cx: &mut Context<Self>) {
         let links = self.links.clone();
-        cx.defer(move |cx| links.shell(cx, |shell, cx| shell.set_zone(Zone::Shelf, cx)));
+        window.defer(cx, move |window, cx| {
+            links.shell(cx, |shell, cx| shell.take_zone(Zone::Shelf, window, cx));
+        });
     }
 
     /// The full column, drawn at its resting width.
@@ -240,8 +242,8 @@ impl Shelf {
                             .flex_none()
                             .child(hold::cap(card)),
                     )
-                    .on_click(cx.listener(move |shelf, _: &ClickEvent, _, cx| {
-                        shelf.take_keyboard(cx);
+                    .on_click(cx.listener(move |shelf, _: &ClickEvent, window, cx| {
+                        shelf.take_keyboard(window, cx);
                         let links = shelf.links.clone();
                         cx.defer(move |cx| links.shell(cx, |shell, cx| shell.hand_card(card, cx)));
                     })),
@@ -321,8 +323,8 @@ impl Shelf {
                     .with_transformation(Transformation::rotate(radians(PI))),
             )
             .child(text(ty::SMALL, measure, palette.ink2).child(step.label.clone()))
-            .on_click(cx.listener(move |shelf, _: &ClickEvent, _, cx| {
-                shelf.take_keyboard(cx);
+            .on_click(cx.listener(move |shelf, _: &ClickEvent, window, cx| {
+                shelf.take_keyboard(window, cx);
                 match &does {
                     StepDoes::Pop => {
                         shelf.step_out(cx);
@@ -485,8 +487,8 @@ impl Shelf {
             // A tab is a control a person points at (the keyboard reaches
             // lenses by their `G` chords, not by walking): published as a
             // target, not a stop on the walk.
-            let tab = tab.on_click(cx.listener(move |shelf, _: &ClickEvent, _, cx| {
-                shelf.take_keyboard(cx);
+            let tab = tab.on_click(cx.listener(move |shelf, _: &ClickEvent, window, cx| {
+                shelf.take_keyboard(window, cx);
                 shelf.perform(&Do::Lens(lens), cx);
             }));
             bar = bar.child(
@@ -714,7 +716,7 @@ impl Shelf {
             let opens = item.source.clone().filter(|_| !item.current);
             element =
                 element.on_click(cx.listener(move |shelf, event: &ClickEvent, window, cx| {
-                    shelf.take_keyboard(cx);
+                    shelf.take_keyboard(window, cx);
                     shelf.targets.focus(id.clone());
                     // A double-click scopes into the row: browsing, not going.
                     if event.click_count() >= 2
@@ -779,9 +781,9 @@ impl Shelf {
             .justify_center()
             .cursor_pointer()
             .child(icon)
-            .on_click(cx.listener(move |shelf, _: &ClickEvent, _, cx| {
+            .on_click(cx.listener(move |shelf, _: &ClickEvent, window, cx| {
                 cx.stop_propagation();
-                shelf.take_keyboard(cx);
+                shelf.take_keyboard(window, cx);
                 shelf.flip(id.clone(), cx);
             }))
             .into_any_element()
