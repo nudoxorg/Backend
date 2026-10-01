@@ -4,7 +4,7 @@ use crate::{ClientError, MAX_FRAME};
 use backend_engine::cluster_transport::{
     Endpoint, EndpointAddr, RemoteIndexCapability, RemoteIndexChannel, RemoteIndexOutcome,
     RemoteIndexRequest, RemoteIndexSession, RemoteIndexSessionHello, SecretKey, TransportError,
-    bind_direct, connect_remote_index, remote_index_now,
+    accept_remote_index, bind_direct, connect_remote_index, remote_index_now,
 };
 use backend_replication::{
     AdaptiveIrResidency, ByteRange, DurableSemanticRangeStore, FileSemanticRangeStore,
@@ -1212,7 +1212,7 @@ impl LocalSemanticRangeTransport {
             return Ok(());
         }
         if let Some(remote) = self.remote.as_mut() {
-            remote.reconnect()?;
+            remote.reconnect_until(Instant::now() + crate::CLIENT_REQUEST_TIMEOUT)?;
             self.frames_on_connection = 0;
             return Ok(());
         }
