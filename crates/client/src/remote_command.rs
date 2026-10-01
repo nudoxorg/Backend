@@ -701,7 +701,7 @@ mod tests {
         let source_bytes = source.to_bytes();
         let producer = [0x41; 32];
         let cursor = Cursor::for_view_root(root);
-        WireCertificate::new()
+        let mut certificate = WireCertificate::new()
             .with_claim(WireClaim::KeyBytes {
                 schema: WireSchema::ViewRecipe,
                 id: encode_id(root.recipe().as_bytes()),
@@ -761,7 +761,18 @@ mod tests {
                 schema: cursor.schema(),
                 root: encode_id(cursor.root().as_bytes()),
                 sequence: cursor.sequence(),
-            })
+            });
+        if root.root() != root.basis().root {
+            certificate = certificate.with_claim(WireClaim::Root {
+                schema: WireSchema::ViewRelation,
+                id: encode_id(root.basis().root.as_bytes()),
+                canonical: backend_version::canonical_empty::<backend_library::ViewRelation>()
+                    .as_bytes()
+                    .to_vec()
+                    .into_boxed_slice(),
+            });
+        }
+        certificate
     }
 
     fn product_capability(
