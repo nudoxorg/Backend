@@ -1125,9 +1125,10 @@ mod tests {
     }
 
     #[test]
-    fn mutated_invalid_line_range_never_publishes_duplicate_row_ids() {
+    fn final_representable_line_never_wraps_into_a_duplicate() {
         let boundary = SourceText::new(Arc::from("last"), u32::MAX, SourceOrigin::Excerpt, true)
             .expect("one final line is representable");
+        assert_eq!(boundary.first_line(), u32::MAX);
         let last = SourcePage::at(
             &boundary,
             SourceCursor {
@@ -1139,16 +1140,13 @@ mod tests {
         assert_eq!(last.lines[0].number, u32::MAX);
         assert!(last.next.is_none());
 
-        let mut source = text("one\ntwo".to_owned());
-        for invalid_first in [0, u32::MAX] {
-            source.first_line = invalid_first;
-            assert!(source.line_range().is_none());
+        for outside in [0, u32::MAX - 1] {
             let cursor = SourceCursor {
-                line: invalid_first,
+                line: outside,
                 byte: 0,
             };
-            assert!(SourcePage::at(&source, cursor).lines.is_empty());
-            assert!(previous_cursor(&source, cursor).is_none());
+            assert!(SourcePage::at(&boundary, cursor).lines.is_empty());
+            assert!(previous_cursor(&boundary, cursor).is_none());
         }
     }
 

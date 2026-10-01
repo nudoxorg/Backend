@@ -3237,7 +3237,7 @@ mod tests {
         let view = source_view(&coordinate, &document, Some(file), Some("/fixture/page.rs"), &uses, Some(&outline));
         let text = view.text.known().expect("source text");
         assert_eq!(text.origin, SourceOrigin::LocalFile);
-        assert_eq!(text.first_line, 1);
+        assert_eq!(text.first_line(), 1);
         assert_eq!(text.text(), file);
         let verified_start = u32::try_from(file.find("pub fn render").expect("excerpt start"))
             .expect("source offset");
@@ -3282,7 +3282,7 @@ mod tests {
         let text = view.text.known().expect("excerpt text");
         assert_eq!(text.origin, SourceOrigin::Excerpt);
         assert!(view.editor_path.known().is_none());
-        assert_eq!(text.first_line, 3);
+        assert_eq!(text.first_line(), 3);
         assert_eq!(view.uses.gap().map(|gap| gap.reason), Some(GapReason::NotServed));
     }
 

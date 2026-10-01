@@ -44,7 +44,7 @@ impl SourcePage {
         }
         let Some(first_index) = cursor
             .line
-            .checked_sub(source.first_line)
+            .checked_sub(source.first_line())
             .and_then(|index| usize::try_from(index).ok())
         else {
             return Self {
@@ -148,7 +148,7 @@ pub(super) fn previous_cursor(source: &SourceText, cursor: SourceCursor) -> Opti
             byte,
         });
     }
-    let before = cursor.line.checked_sub(source.first_line)? as usize;
+    let before = cursor.line.checked_sub(source.first_line())? as usize;
     if before == 0 {
         return None;
     }
@@ -165,7 +165,7 @@ pub(super) fn previous_cursor(source: &SourceText, cursor: SourceCursor) -> Opti
                     byte += 1;
                 }
                 let number = source
-                    .first_line
+                    .first_line()
                     .checked_add(u32::try_from(first_index + index).ok()?)?;
                 return Some(SourceCursor { line: number, byte });
             }
@@ -176,7 +176,7 @@ pub(super) fn previous_cursor(source: &SourceText, cursor: SourceCursor) -> Opti
         }
         used = used.saturating_add(line.len()).saturating_add(1);
         let number = source
-            .first_line
+            .first_line()
             .checked_add(u32::try_from(first_index + index).ok()?)?;
         start = Some(SourceCursor {
             line: number,
@@ -187,13 +187,13 @@ pub(super) fn previous_cursor(source: &SourceText, cursor: SourceCursor) -> Opti
 }
 
 pub(super) fn initial_cursor(source: &SourceText, line: u32, context: u32) -> SourceCursor {
-    let target = line.max(source.first_line);
+    let target = line.max(source.first_line());
     let Some(target_index) = target
-        .checked_sub(source.first_line)
+        .checked_sub(source.first_line())
         .map(|index| index as usize)
     else {
         return SourceCursor {
-            line: source.first_line,
+            line: source.first_line(),
             byte: 0,
         };
     };
@@ -211,7 +211,7 @@ pub(super) fn initial_cursor(source: &SourceText, line: u32, context: u32) -> So
         bytes += line.len() + 1;
         let Some(number) = u32::try_from(first_index + index)
             .ok()
-            .and_then(|index| source.first_line.checked_add(index))
+            .and_then(|index| source.first_line().checked_add(index))
         else {
             break;
         };

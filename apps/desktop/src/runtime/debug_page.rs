@@ -347,9 +347,9 @@ pub fn source_text(view: &SourceView) -> String {
     let _ = writeln!(out, "  uses elsewhere: {}", view.uses_elsewhere.len());
     match &view.text {
         Known::Known(text) => {
-            let _ = writeln!(out, "  text ({:?}, from line {}):", text.origin, text.first_line);
+            let _ = writeln!(out, "  text ({:?}, from line {}):", text.origin, text.first_line());
             for (offset, line) in text.text().lines().enumerate().take(40) {
-                let _ = writeln!(out, "    {:>5} │ {line}", text.first_line as usize + offset);
+                let _ = writeln!(out, "    {:>5} │ {line}", text.first_line() as usize + offset);
             }
         }
         Known::Unknown(missing) => {

@@ -75,7 +75,7 @@ pub struct SourceText {
     #[serde(skip)]
     coverage: SourceCoverage,
     /// One-based line of the text's first byte.
-    pub first_line: u32,
+    first_line: u32,
     /// Where the text came from.
     pub origin: SourceOrigin,
     /// Whether the producer's declaration excerpt is complete.
@@ -159,6 +159,12 @@ impl SourceText {
         &self.text
     }
 
+    /// Returns the validated one-based line of the text's first byte.
+    #[must_use]
+    pub const fn first_line(&self) -> u32 {
+        self.first_line
+    }
+
     /// Returns the source-match evidence established by the read worker.
     #[must_use]
     pub const fn coverage(&self) -> SourceCoverage {
@@ -187,8 +193,8 @@ impl SourceText {
     }
 
     /// The checked one-based range represented by this text, if nonempty.
-    /// A caller that mutates the public `first_line` can invalidate it; the
-    /// reader must check again before publishing line IDs.
+    /// The constructor and deserializer establish this invariant before
+    /// admitting the immutable line origin.
     #[must_use]
     pub fn line_range(&self) -> Option<LineSpan> {
         checked_line_range(self.first_line, self.line_index.line_count)
