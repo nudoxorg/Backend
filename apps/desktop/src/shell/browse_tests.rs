@@ -31,35 +31,44 @@ fn library_release_actions_keep_exact_source_and_row_keys_survive_reorder() {
     let first = PackageRef::parse("pkg:cargo/shared@1.0.0").expect("crates.io release");
     let alternate = PackageRef::parse("pkg:cargo/shared@1.0.0?repository_url=https%3A%2F%2Fregistry.example%2Findex")
         .expect("alternate registry release");
-    let make = |package: PackageRef| TreeRoleLinks {
+    let make = |packages: &[PackageRef]| TreeRoleLinks {
         role: RoleId::Formats,
         rows: vec![TreeRowLinks {
             name: "shared".into(),
-            releases: vec![TreeReleaseLink {
+            key: "shared-exact-row".into(),
+            releases: packages.iter().cloned().map(|package| TreeReleaseLink {
                 version: "1.0.0".into(),
+                key: package.as_str().into(),
                 destination: TreeDestination::Open(package),
                 source_detail: None,
-            }].into(),
+            }).collect::<Vec<_>>().into(),
         }].into(),
     };
-    let roles = [make(first.clone()), make(alternate.clone())];
-    assert_eq!(super::typed_library_release(&roles, ReleaseHandle::new(0, 0, 0)), Some(&first));
-    assert_eq!(super::typed_library_release(&roles, ReleaseHandle::new(1, 0, 0)), Some(&alternate));
-    assert_eq!(super::typed_library_release(&roles, ReleaseHandle::new(2, 0, 0)), None);
+    let original = [make(&[first.clone(), alternate.clone()])];
+    let reversed = [make(&[alternate.clone(), first.clone()])];
+    let old_first = ReleaseHandle::identified(0, 0, 0, "formats", "shared-exact-row", first.as_str());
+    let new_first = ReleaseHandle::identified(0, 0, 1, "formats", "shared-exact-row", first.as_str());
+    assert_eq!(super::typed_library_release(&original, &old_first), Some(&first));
+    assert_eq!(super::typed_library_release(&reversed, &old_first), None,
+        "an old position cannot navigate to another source after reorder");
+    assert_eq!(super::typed_library_release(&reversed, &new_first), Some(&first));
+    let alternate_at_zero = ReleaseHandle::identified(0, 0, 0, "formats", "shared-exact-row", alternate.as_str());
+    assert_eq!(super::typed_library_release(&reversed, &alternate_at_zero), Some(&alternate));
 
     let row = backend_present::RowReading {
         name: "shared".to_owned(),
         at_rest: None,
         evidence: String::new(),
         description: None,
-        versions: vec!["1.0.0".to_owned()].into_boxed_slice(),
-        sources: vec![None].into_boxed_slice(),
-        origins: vec![backend_library::browse::PackageOrigin::Unresolved { source: None }].into_boxed_slice(),
+        versions: vec!["1.0.0".to_owned(), "1.0.0".to_owned()].into_boxed_slice(),
+        sources: vec![Some(first.reference().clone()), Some(alternate.reference().clone())].into_boxed_slice(),
+        origins: vec![backend_library::browse::PackageOrigin::Unresolved { source: None }; 2].into_boxed_slice(),
     };
-    let first_key = crate::runtime::browse_reads::row_key(&row, roles[0].rows.first());
-    let alternate_key = crate::runtime::browse_reads::row_key(&row, roles[1].rows.first());
-    assert_ne!(first_key, alternate_key, "the same display version at another registry must not inherit disclosure or focus");
-    assert_eq!(first_key, crate::runtime::browse_reads::row_key(&row, roles[0].rows.first()), "reordering unrelated rows does not change identity");
+    let original_key = crate::runtime::browse_reads::row_key(&row, original[0].rows.first());
+    let reversed_key = crate::runtime::browse_reads::row_key(&row, reversed[0].rows.first());
+    assert_eq!(original_key, reversed_key, "reordering two distinct same-version sources preserves disclosure identity");
+    assert_ne!(original_key, crate::runtime::browse_reads::row_key(&row, make(&[first]).rows.first()),
+        "removing a source changes the row identity");
 }
 
 fn repository() -> PathBuf {

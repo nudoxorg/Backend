@@ -81,7 +81,7 @@ fn open_library_package_action(tree: Arc<TreeModel>, ctx: &Ctx<'_>) -> Rc<dyn Fn
     let state = Rc::clone(&ctx.library_state);
     let place_key = ctx.place_key;
     Rc::new(move |handle, _, cx| {
-        let Some(package) = typed_library_release(&tree.links, handle) else { return; };
+        let Some(package) = typed_library_release(&tree.links, &handle) else { return; };
         if let Some(route) = package_route(package) {
             state.borrow_mut().remember_open(handle, place_key);
             links.dispatch(Intent::Navigate(route), cx);
@@ -89,9 +89,13 @@ fn open_library_package_action(tree: Arc<TreeModel>, ctx: &Ctx<'_>) -> Rc<dyn Fn
     })
 }
 
-fn typed_library_release(roles: &[TreeRoleLinks], handle: ReleaseHandle) -> Option<&PackageRef> {
+fn typed_library_release(roles: &[TreeRoleLinks], handle: &ReleaseHandle) -> Option<&PackageRef> {
     let (role, row, release) = handle.positions();
-    match &roles.get(role)?.rows.get(row)?.releases.get(release)?.destination {
+    let (role_key, row_key, release_key) = handle.keys();
+    let role = roles.get(role).filter(|role| role.role.as_str() == role_key)?;
+    let row = role.rows.get(row).filter(|row| row.key.as_ref() == row_key)?;
+    let release = row.releases.get(release).filter(|release| release.key.as_ref() == release_key)?;
+    match &release.destination {
         TreeDestination::Open(package) => Some(package),
         TreeDestination::Unavailable(_) => None,
     }
