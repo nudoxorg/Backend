@@ -64,6 +64,18 @@ impl PartialEq for ReleaseHandle {
 
 impl Eq for ReleaseHandle {}
 
+impl PartialOrd for ReleaseHandle {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ReleaseHandle {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.keys().cmp(&other.keys())
+    }
+}
+
 impl std::hash::Hash for ReleaseHandle {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         std::hash::Hash::hash(&self.identity, state);
@@ -371,7 +383,9 @@ mod state_tests {
         let after = ReleaseHandle::identified(2, 7, 1, "formats", "shared", "registry-a");
         let sibling = ReleaseHandle::identified(0, 4, 0, "formats", "shared", "registry-b");
         assert_eq!(before, after);
+        assert_eq!(before.cmp(&after), std::cmp::Ordering::Equal);
         assert_ne!(before, sibling);
+        assert!(before < sibling);
         let digest = |handle: &ReleaseHandle| {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             handle.hash(&mut hasher);
