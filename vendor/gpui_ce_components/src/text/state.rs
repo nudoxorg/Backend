@@ -768,6 +768,8 @@ pub(crate) struct ParsedContent {
 struct UpdateFuture {
     format: TextViewFormat,
     content: ParsedContent,
+    logical_source: String,
+    basis_checked: bool,
     rx: Pin<Box<Publications<UpdateOptions>>>,
     tx_result: Publisher<ParsedUpdate>,
 }
@@ -781,8 +783,40 @@ impl UpdateFuture {
         Self {
             format,
             content: Default::default(),
+            logical_source: String::new(),
+            basis_checked: true,
             rx: Box::pin(rx),
             tx_result,
+        }
+    }
+    fn apply(&mut self, options: UpdateOptions) -> ParsedUpdate {
+        if options.append {
+            self.logical_source.push_str(&options.pending_text);
+        } else {
+            self.logical_source.clone_from(&options.pending_text);
+        }
+        let recover = options.append && !self.basis_checked;
+        let res = if recover {
+            let complete = UpdateOptions {
+                append: false,
+                pending_text: self.logical_source.clone(),
+                mode: ParseMode::Replace,
+                ..options.clone()
+            };
+            parse_content(self.format, ParsedContent::default(), &complete)
+        } else {
+            parse_content(self.format, self.content.clone(), &options)
+        };
+        self.basis_checked = res.is_ok();
+        if let Ok(content) = &res {
+            self.content = content.clone();
+        }
+        ParsedUpdate {
+            revision: options.revision,
+            full_parse: !options.append || recover,
+            selection_compatible: !recover && options.mode == ParseMode::Compatible,
+            baseline_ack: options.mode == ParseMode::BaselineAck,
+            result: res,
         }
     }
 }
@@ -793,17 +827,8 @@ impl Future for UpdateFuture {
     fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         match self.rx.as_mut().poll_next(cx) {
             Poll::Ready(Some(options)) => {
-                let res = parse_content(self.format, self.content.clone(), &options);
-                if let Ok(content) = &res {
-                    self.content = content.clone();
-                }
-                _ = self.tx_result.try_send(ParsedUpdate {
-                    revision: options.revision,
-                    full_parse: !options.append,
-                    selection_compatible: options.mode == ParseMode::Compatible,
-                    baseline_ack: options.mode == ParseMode::BaselineAck,
-                    result: res,
-                });
+                let parsed = self.apply(options);
+                _ = self.tx_result.try_send(parsed);
                 // One parse per poll; a concurrent publisher cannot keep
                 // this worker occupied indefinitely.
                 cx.waker().wake_by_ref();
@@ -1392,6 +1417,40 @@ mod tests {
         assert_eq!(options.pending_text, "new text");
         assert!(!options.append);
         assert_eq!(options.mode, ParseMode::Replace);
+    }
+
+    #[test]
+    fn failed_mdx_basis_recovers_true_logical_source_on_later_append() {
+        let extensions = Arc::new(MarkdownExtensions::default().mdx());
+        for (initial, failed, failed_append, expected) in [
+            ("A", "{invalid", false, "{invalid}"),
+            ("", "{invalid", false, "{invalid}"),
+            ("A", "\n{invalid", true, "A\n{invalid}"),
+        ] {
+            let (_, rx) = pending_update::channel(UpdateOptions::merge);
+            let (tx_result, _) = pending_update::channel(ParsedUpdate::merge);
+            let mut worker = UpdateFuture::new(TextViewFormat::Markdown, rx, tx_result);
+            let options = |revision, text: &str, append| UpdateOptions {
+                revision,
+                pending_text: text.into(),
+                append,
+                mode: if append {
+                    ParseMode::Compatible
+                } else {
+                    ParseMode::Replace
+                },
+                markdown_extensions: extensions.clone(),
+            };
+            assert!(worker.apply(options(1, initial, false)).result.is_ok());
+            let failed = worker.apply(options(2, failed, failed_append));
+            assert!(failed.result.is_err());
+            assert!(!worker.basis_checked);
+            let repaired = worker.apply(options(3, "}", true));
+            assert!(repaired.full_parse);
+            assert!(!repaired.selection_compatible);
+            assert_eq!(repaired.result.unwrap().document.source.as_str(), expected);
+            assert!(worker.basis_checked);
+        }
     }
 
     #[test]
