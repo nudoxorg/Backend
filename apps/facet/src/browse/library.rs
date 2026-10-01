@@ -29,7 +29,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 /// One source-backed release that a dependency row can offer.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReleaseLink {
     /// Stable identity of this exact release within its dependency row.
     pub key: SharedString,
@@ -80,7 +80,7 @@ pub enum Tone {
 }
 
 /// One advisory that affects the tree.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Alert {
     /// "bincode 1.3.3 is unmaintained".
     pub title: SharedString,
@@ -93,7 +93,7 @@ pub struct Alert {
 }
 
 /// One direct dependency.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Row {
     /// Exact stable row identity; never its current ordinal.
     pub key: SharedString,
@@ -110,7 +110,7 @@ pub struct Row {
 }
 
 /// One role and its dependencies.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Role {
     /// Stable role identity; never its current ordinal.
     pub key: SharedString,
@@ -125,7 +125,7 @@ pub struct Role {
 }
 
 /// A package present at more than one version.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Twice {
     /// Package name.
     pub name: SharedString,
@@ -138,7 +138,7 @@ pub struct Twice {
 }
 
 /// Everything the Library shows.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Model {
     /// The project's name.
     pub name: SharedString,

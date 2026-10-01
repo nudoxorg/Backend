@@ -8,7 +8,7 @@ use crate::model::pages::{PageKey, PackageRef, SearchQuery, SymbolRef};
 use crate::navigation::{BrowseRoute, CompareSet, Intent, OrbitRoute, Route, View};
 use crate::shell::kit::{package_route, symbol_route, symbol_view_route};
 use crate::shell::reader::Reader;
-use facet::browse::{Alert, AlertTone, LibraryActions, LibraryModel, LibraryReleaseLink, LibraryRole, LibraryRow, Twice, library};
+use facet::browse::{LibraryActions, LibraryModel, library};
 use facet::browse::library::ReleaseHandle;
 use gpui::{Context, SharedString};
 use std::sync::Arc;
@@ -45,7 +45,7 @@ pub(super) fn body(route: &BrowseRoute, store: &Pages, ctx: &mut Ctx<'_>, cx: &m
     match shown(&resource) {
         Shown::Ready(BrowseValue::Tree(tree)) => {
             let model = library_model(tree, ctx);
-            vec![Leaf::new(library("library", Arc::new(model), LibraryActions { open_package: open_library_package_action(Arc::clone(tree), ctx) }, &ctx.measure))]
+            vec![Leaf::new(library("library", model, LibraryActions { open_package: open_library_package_action(Arc::clone(tree), ctx) }, &ctx.measure))]
         }
         Shown::Ready(BrowseValue::Compare(compare)) => {
             let model = Arc::clone(&compare.prepared);
@@ -135,167 +135,28 @@ fn compare_actions(route: &BrowseRoute, ctx: &Ctx<'_>, cx: &mut Context<Reader>)
     }
 }
 
-/// A path may wrap between hops, never inside one: `toml 1.1.5` stays whole.
-fn unbroken_hops(path: &str) -> SharedString {
-    path.split(" → ")
-        .map(|hop| hop.replace(' ', "\u{a0}"))
-        .collect::<Vec<_>>()
-        .join(" → ")
-        .into()
-}
-
-fn key_part(into: &mut String, part: &str) {
-    use std::fmt::Write as _;
-    let _ = write!(into, "{}:", part.len());
-    into.push_str(part);
-}
-
-/// Exact release source, including registry authority, participates in the
-/// element key. A reorder never lends another release its focus or disclosure.
-fn release_key(version: &str, destination: Option<&TreeDestination>) -> SharedString {
-    let mut key = String::new();
-    key_part(&mut key, version);
-    match destination {
-        Some(TreeDestination::Open(package)) => key_part(&mut key, package.as_str()),
-        Some(TreeDestination::Unavailable(reason)) => key_part(&mut key, reason),
-        None => key_part(&mut key, "unresolved"),
+/// Record the small set of words actually in the initial Library viewport.
+/// The full prepared model is immutable and was built by the read worker.
+fn library_model(tree: &TreeModel, ctx: &mut Ctx<'_>) -> Arc<LibraryModel> {
+    let model = &tree.prepared;
+    ctx.say(model.name.clone());
+    ctx.say(model.lede.clone());
+    if let Some(note) = &model.note { ctx.say(note.clone()); }
+    for alert in model.alerts.iter().take(8) { ctx.say(alert.title.clone()); }
+    for fact in &model.facts { ctx.say(fact.clone()); }
+    for role in &model.roles {
+        ctx.say(role.label.clone());
+        if let Some(serving) = &role.serving { ctx.say(serving.clone()); }
+        for row in role.rows.iter().take(6) {
+            ctx.say(row.name.clone());
+            if let Some(rest) = &row.at_rest { ctx.say(rest.clone()); }
+        }
     }
-    key.into()
-}
-
-fn row_key(row: &backend_present::RowReading, links: Option<&crate::model::browse::TreeRowLinks>) -> SharedString {
-    let mut key = String::new();
-    key_part(&mut key, &row.name);
-    for (at, version) in row.versions.iter().enumerate() {
-        let destination = links.and_then(|links| links.releases.get(at))
-            .filter(|release| release.version.as_ref() == version)
-            .map(|release| &release.destination);
-        key_part(&mut key, release_key(version, destination).as_ref());
+    if let Some((heading, caption)) = &model.twice_heading {
+        ctx.say(heading.clone());
+        ctx.say(caption.clone());
     }
-    key.into()
-}
-
-/// The facet model of one tree, every sentence recorded as said.
-fn library_model(tree: &TreeModel, ctx: &mut Ctx<'_>) -> LibraryModel {
-    let reading = &tree.reading;
-    let mut say = |text: &str| -> SharedString { ctx.say(text.to_owned()) };
-    let alerts = reading
-        .alerts
-        .iter()
-        .map(|alert| {
-            let tone = if alert.title.ends_with("is unmaintained") || alert.title.ends_with("has a notice") {
-                AlertTone::Warn
-            } else {
-                AlertTone::Fault
-            };
-            let advisory = match &alert.summary {
-                Some(summary) => format!("{} · {summary}", alert.id),
-                None => alert.id.clone(),
-            };
-            // The card's lines are not on screen until it opens: not said.
-            Alert { title: say(&alert.title), advisory: advisory.into(), path: unbroken_hops(&alert.why), tone }
-        })
-        .collect();
-    let mut facts = Vec::new();
-    if let Some(twice) = &reading.twice_line {
-        facts.push(say(twice));
-    }
-    facts.push(say(&reading.health));
-    let roles = reading
-        .roles
-        .iter()
-        .enumerate()
-        .map(|(role_at, role)| LibraryRole {
-            key: role.id.as_str().into(),
-            label: say(role.label),
-            serving: role.serving.as_deref().map(&mut say),
-            rows: role
-                .rows
-                .iter()
-                .enumerate()
-                .map(|(row_at, row)| LibraryRow {
-                    key: row_key(row, tree.links.get(role_at)
-                        .filter(|links| links.role == role.id)
-                        .and_then(|links| links.rows.get(row_at))
-                        .filter(|links| links.name.as_ref() == row.name)),
-                    name: say(&row.name),
-                    at_rest: row.at_rest.as_deref().map(&mut say),
-                    why: row.evidence.clone().into(),
-                    about: row.description.clone().map(SharedString::from),
-                    releases: row.versions.iter().enumerate().map(|(version_at, version)| {
-                        let destination = tree.links.get(role_at)
-                            .filter(|links| links.role == role.id)
-                            .and_then(|links| links.rows.get(row_at))
-                            .filter(|links| links.name.as_ref() == row.name)
-                            .and_then(|links| links.releases.get(version_at))
-                            .filter(|link| link.version.as_ref() == version);
-                        let key = release_key(version, destination.map(|link| &link.destination));
-                        // Two unresolved copies can have identical visible
-                        // version/reason text. They have no action to lend;
-                        // disambiguate only those element ids.
-                        let key = if matches!(destination.map(|link| &link.destination), Some(TreeDestination::Open(_))) {
-                            key
-                        } else {
-                            format!("{key}#{version_at}").into()
-                        };
-                        match destination.map(|link| &link.destination) {
-                            Some(TreeDestination::Open(_package)) => LibraryReleaseLink {
-                                key,
-                                version: version.clone().into(),
-                                target: Some(ReleaseHandle::new(role_at, row_at, version_at)),
-                                unavailable: None,
-                            },
-                            Some(TreeDestination::Unavailable(reason)) => LibraryReleaseLink {
-                                key,
-                                version: version.clone().into(),
-                                target: None,
-                                unavailable: Some(reason.to_string().into()),
-                            },
-                            None => LibraryReleaseLink {
-                                key,
-                                version: version.clone().into(),
-                                target: None,
-                                unavailable: Some("The source for this release was not resolved.".into()),
-                            },
-                        }
-                    }).collect(),
-                })
-                .collect(),
-            brings: role.brings.as_deref().map(&mut say),
-        })
-        .collect();
-    // Yours first, then the shortest path in, then by name: what you can act on leads.
-    let mut twice = reading.twice.iter().collect::<Vec<_>>();
-    twice.sort_by_key(|twice| {
-        let yours = twice.copies.iter().any(|(_, yours)| *yours);
-        let shortest = twice.paths.iter().map(|path| path.matches(" → ").count()).min().unwrap_or(usize::MAX);
-        (!yours, shortest, twice.name.clone())
-    });
-    // Paths and verdicts unfold on a click: they are not said at rest.
-    let twice = twice
-        .into_iter()
-        .enumerate()
-        .map(|(at, twice)| {
-            let shown = at < facet::browse::TWICE_AT_REST;
-            let mut said = |text: &str| if shown { say(text) } else { SharedString::from(text.to_owned()) };
-            Twice {
-            name: said(&twice.name),
-            copies: twice.copies.iter().map(|(version, yours)| (said(version), *yours)).collect(),
-            paths: twice.paths.iter().map(|path| unbroken_hops(path)).collect(),
-            verdict: twice.verdict.clone().into(),
-        }})
-        .collect::<Vec<_>>();
-    LibraryModel {
-        name: say(&reading.name),
-        lede: say(&reading.lede),
-        lede_tip: reading.elsewhere.clone().map(SharedString::from),
-        note: reading.source_note.as_deref().map(&mut say),
-        alerts,
-        facts,
-        roles,
-        twice_heading: reading.twice_heading.as_ref().map(|(title, caption)| (say(title), say(caption))),
-        twice,
-    }
+    Arc::clone(model)
 }
 
 #[cfg(test)]

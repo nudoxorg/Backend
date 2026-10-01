@@ -9,7 +9,174 @@ use crate::model::browse::{
 use crate::model::pages::{PackageRef, PageValue, ReadFailure};
 use backend_library::{ProductText, SurfaceCommand, SurfaceReply};
 use backend_present::Engine;
+use facet::browse::{Alert, AlertTone, LibraryModel, LibraryReleaseLink, LibraryRole, LibraryRow, Twice};
+use facet::browse::library::ReleaseHandle;
+use gpui::SharedString;
 use std::sync::Arc;
+
+/// A path may wrap between hops, never inside one: `toml 1.1.5` stays whole.
+fn unbroken_hops(path: &str) -> SharedString {
+    path.split(" → ")
+        .map(|hop| hop.replace(' ', "\u{a0}"))
+        .collect::<Vec<_>>()
+        .join(" → ")
+        .into()
+}
+
+fn key_part(into: &mut String, part: &str) {
+    use std::fmt::Write as _;
+    let _ = write!(into, "{}:", part.len());
+    into.push_str(part);
+}
+
+/// Exact release source, including registry authority, participates in the
+/// element key. A reorder never lends another release its focus or disclosure.
+fn release_key(version: &str, destination: Option<&TreeDestination>) -> SharedString {
+    let mut key = String::new();
+    key_part(&mut key, version);
+    match destination {
+        Some(TreeDestination::Open(package)) => key_part(&mut key, package.as_str()),
+        Some(TreeDestination::Unavailable(reason)) => key_part(&mut key, reason),
+        None => key_part(&mut key, "unresolved"),
+    }
+    key.into()
+}
+
+pub(crate) fn row_key(row: &backend_present::RowReading, links: Option<&crate::model::browse::TreeRowLinks>) -> SharedString {
+    let mut key = String::new();
+    key_part(&mut key, &row.name);
+    for (at, version) in row.versions.iter().enumerate() {
+        let destination = links.and_then(|links| links.releases.get(at))
+            .filter(|release| release.version.as_ref() == version)
+            .map(|release| &release.destination);
+        key_part(&mut key, release_key(version, destination).as_ref());
+    }
+    key.into()
+}
+
+/// Convert the owner's already admitted tree on the read worker. Render
+/// callbacks only borrow the result, even when the project has many packages.
+fn prepared_library_model(reading: &backend_present::TreeReading, links: &[TreeRoleLinks]) -> LibraryModel {
+    let mut say = |text: &str| -> SharedString { text.to_owned().into() };
+    let alerts = reading
+        .alerts
+        .iter()
+        .map(|alert| {
+            let tone = if alert.title.ends_with("is unmaintained") || alert.title.ends_with("has a notice") {
+                AlertTone::Warn
+            } else {
+                AlertTone::Fault
+            };
+            let advisory = match &alert.summary {
+                Some(summary) => format!("{} · {summary}", alert.id),
+                None => alert.id.clone(),
+            };
+            // The card's lines are not on screen until it opens: not said.
+            Alert { title: say(&alert.title), advisory: advisory.into(), path: unbroken_hops(&alert.why), tone }
+        })
+        .collect();
+    let mut facts = Vec::new();
+    if let Some(twice) = &reading.twice_line {
+        facts.push(say(twice));
+    }
+    facts.push(say(&reading.health));
+    let roles = reading
+        .roles
+        .iter()
+        .enumerate()
+        .map(|(role_at, role)| LibraryRole {
+            key: role.id.as_str().into(),
+            label: say(role.label),
+            serving: role.serving.as_deref().map(&mut say),
+            rows: role
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(row_at, row)| LibraryRow {
+                    key: row_key(row, links.get(role_at)
+                        .filter(|links| links.role == role.id)
+                        .and_then(|links| links.rows.get(row_at))
+                        .filter(|links| links.name.as_ref() == row.name)),
+                    name: say(&row.name),
+                    at_rest: row.at_rest.as_deref().map(&mut say),
+                    why: row.evidence.clone().into(),
+                    about: row.description.clone().map(SharedString::from),
+                    releases: row.versions.iter().enumerate().map(|(version_at, version)| {
+                        let destination = links.get(role_at)
+                            .filter(|links| links.role == role.id)
+                            .and_then(|links| links.rows.get(row_at))
+                            .filter(|links| links.name.as_ref() == row.name)
+                            .and_then(|links| links.releases.get(version_at))
+                            .filter(|link| link.version.as_ref() == version);
+                        let key = release_key(version, destination.map(|link| &link.destination));
+                        // Two unresolved copies can have identical visible
+                        // version/reason text. They have no action to lend;
+                        // disambiguate only those element ids.
+                        let key = if matches!(destination.map(|link| &link.destination), Some(TreeDestination::Open(_))) {
+                            key
+                        } else {
+                            format!("{key}#{version_at}").into()
+                        };
+                        match destination.map(|link| &link.destination) {
+                            Some(TreeDestination::Open(_package)) => LibraryReleaseLink {
+                                key,
+                                version: version.clone().into(),
+                                target: Some(ReleaseHandle::new(role_at, row_at, version_at)),
+                                unavailable: None,
+                            },
+                            Some(TreeDestination::Unavailable(reason)) => LibraryReleaseLink {
+                                key,
+                                version: version.clone().into(),
+                                target: None,
+                                unavailable: Some(reason.to_string().into()),
+                            },
+                            None => LibraryReleaseLink {
+                                key,
+                                version: version.clone().into(),
+                                target: None,
+                                unavailable: Some("The source for this release was not resolved.".into()),
+                            },
+                        }
+                    }).collect(),
+                })
+                .collect(),
+            brings: role.brings.as_deref().map(&mut say),
+        })
+        .collect();
+    // Yours first, then the shortest path in, then by name: what you can act on leads.
+    let mut twice = reading.twice.iter().collect::<Vec<_>>();
+    twice.sort_by_key(|twice| {
+        let yours = twice.copies.iter().any(|(_, yours)| *yours);
+        let shortest = twice.paths.iter().map(|path| path.matches(" → ").count()).min().unwrap_or(usize::MAX);
+        (!yours, shortest, twice.name.clone())
+    });
+    // Paths and verdicts unfold on a click: they are not said at rest.
+    let twice = twice
+        .into_iter()
+        .enumerate()
+        .map(|(at, twice)| {
+            let shown = at < facet::browse::TWICE_AT_REST;
+            let mut said = |text: &str| if shown { say(text) } else { SharedString::from(text.to_owned()) };
+            Twice {
+            name: said(&twice.name),
+            copies: twice.copies.iter().map(|(version, yours)| (said(version), *yours)).collect(),
+            paths: twice.paths.iter().map(|path| unbroken_hops(path)).collect(),
+            verdict: twice.verdict.clone().into(),
+        }})
+        .collect::<Vec<_>>();
+    LibraryModel {
+        name: say(&reading.name),
+        lede: say(&reading.lede),
+        lede_tip: reading.elsewhere.clone().map(SharedString::from),
+        note: reading.source_note.as_deref().map(&mut say),
+        alerts,
+        facts,
+        roles,
+        twice_heading: reading.twice_heading.as_ref().map(|(title, caption)| (say(title), say(caption))),
+        twice,
+    }
+}
+
 
 /// Reads one browsing resource.
 ///
@@ -56,10 +223,12 @@ pub fn tree_model(tree: &backend_library::browse::ProjectTree) -> TreeModel {
             }).collect::<Vec<_>>().into(),
         }).collect::<Vec<_>>().into(),
     }).collect::<Vec<_>>().into();
+    let prepared = Arc::new(prepared_library_model(&reading, &links));
     TreeModel {
         root: Arc::from(tree.root.as_str()),
         reading,
         links,
+        prepared,
     }
 }
 

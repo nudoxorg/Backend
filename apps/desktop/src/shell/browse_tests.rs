@@ -54,10 +54,10 @@ fn library_release_actions_keep_exact_source_and_row_keys_survive_reorder() {
         versions: vec!["1.0.0".to_owned()].into_boxed_slice(),
         sources: vec![None].into_boxed_slice(),
     };
-    let first_key = super::row_key(&row, roles[0].rows.first());
-    let alternate_key = super::row_key(&row, roles[1].rows.first());
+    let first_key = crate::runtime::browse_reads::row_key(&row, roles[0].rows.first());
+    let alternate_key = crate::runtime::browse_reads::row_key(&row, roles[1].rows.first());
     assert_ne!(first_key, alternate_key, "the same display version at another registry must not inherit disclosure or focus");
-    assert_eq!(first_key, super::row_key(&row, roles[0].rows.first()), "reordering unrelated rows does not change identity");
+    assert_eq!(first_key, crate::runtime::browse_reads::row_key(&row, roles[0].rows.first()), "reordering unrelated rows does not change identity");
 }
 
 fn repository() -> PathBuf {

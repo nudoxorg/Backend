@@ -143,6 +143,9 @@ pub struct TreeModel {
     /// Exact release destinations prepared by the read worker, aligned with
     /// `reading.roles`; source gaps remain explicit per release.
     pub links: Arc<[TreeRoleLinks]>,
+    /// UI-ready words and stable action keys prepared once on the read lane.
+    /// Drawing the page only borrows this model; it never rescans the tree.
+    pub prepared: Arc<facet::browse::LibraryModel>,
 }
 
 /// Destinations for the rows of one derived role.
