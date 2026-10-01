@@ -975,9 +975,9 @@ impl Flights {
             let mut store = self.store.borrow_mut();
             let state = store.entry(key.clone()).or_insert(State::Still(target));
             if let Some(travel) = travel {
-                step_with(state, target, now, reduced_in, self.pacing, Some(travel))
+                step_with(state, target, now, reduced, self.pacing, Some(travel))
             } else {
-                step(state, target, now, reduced_in, self.pacing)
+                step(state, target, now, reduced, self.pacing)
             }
         };
         if shot.live {
@@ -1136,7 +1136,7 @@ fn step(
     reduced: bool,
     pacing: Pacing,
 ) -> (Shot, Option<Trip>) {
-    step_with(state, target, now, reduced_in, pacing, None)
+    step_with(state, target, now, reduced, pacing, None)
 }
 
 fn step_with(
