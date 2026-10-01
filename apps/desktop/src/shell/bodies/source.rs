@@ -482,12 +482,13 @@ fn code(
             let recall = ctx.targets.recall();
             let leaving = leaving.clone();
             let destination = target_route.clone();
+            let target_id = id.clone();
             let target = Target {
                 id: id.clone(),
                 label: label.clone(),
                 act: Rc::new(move |_, app| {
-                    recall.focus(id.clone());
-                    recall.remember_leave(leaving.clone(), id.clone());
+                    recall.focus(target_id.clone());
+                    recall.remember_leave(leaving.clone(), target_id.clone());
                     links.dispatch(Intent::Navigate(destination.clone()), app);
                 }),
                 peek: Some(PageKey::Symbol(symbol.clone())),
