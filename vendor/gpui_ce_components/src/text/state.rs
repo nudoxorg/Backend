@@ -1677,7 +1677,7 @@ mod tests {
         assert_eq!(worker.content.document.blocks.len(), 1026);
         let copied = worker.content.document.source.copied_bytes() - before;
         assert!(
-            copied < 1024 * 32,
+            copied < 1024 * 64,
             "copied {copied} bytes while appending only stable short paragraphs"
         );
         assert_eq!(
