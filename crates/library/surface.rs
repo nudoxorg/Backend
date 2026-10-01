@@ -1006,6 +1006,13 @@ pub enum SurfaceCommand {
         /// Canonical package-relative path.
         path: crate::CargoPackageSourcePathV1,
     },
+    /// List bounded source and documentation file addresses under an exact
+    /// currently observed Cargo source receipt. Every listed path needs its
+    /// own `CargoPackageSourceFile` read before displaying bytes.
+    CargoPackageSourceInventory {
+        /// Exact source-qualified package reference from a current tree row.
+        package: PackageReference,
+    },
     /// Start indexing one local project without waiting for compilation.
     IndexStart {
         /// Local project directory or pinned package coordinate.
@@ -1071,6 +1078,7 @@ impl SurfaceCommand {
             Self::TreeClose { .. } => CommandId::TreeClose,
             Self::ProjectTree { .. } => CommandId::ProjectTree,
             Self::CargoPackageSourceFile { .. } => CommandId::CargoPackageSourceFile,
+            Self::CargoPackageSourceInventory { .. } => CommandId::CargoPackageSourceInventory,
             Self::IndexStart { .. } => CommandId::IndexStart,
             Self::IndexAwait { .. } => CommandId::IndexAwait,
             Self::IndexProgress { .. } => CommandId::IndexProgress,
@@ -1108,6 +1116,12 @@ impl SurfaceCommand {
                 if crate::CargoPackageSourceAuthorityV1::digest_from_package_reference(package)
                     .is_none()
                     || !path.has_admissible_shape() =>
+            {
+                Err(ProductAdmissionError::CargoSourceShape)
+            }
+            Self::CargoPackageSourceInventory { package }
+                if crate::CargoPackageSourceAuthorityV1::digest_from_package_reference(package)
+                    .is_none() =>
             {
                 Err(ProductAdmissionError::CargoSourceShape)
             }
@@ -2384,6 +2398,8 @@ pub enum SurfaceReply {
     ProjectTree(Box<crate::browse::ProjectTree>),
     /// One source-file read under exact Cargo source authority.
     CargoPackageSourceFile(crate::CargoPackageSourceFileResultV1),
+    /// Bounded source-file addresses under exact Cargo source authority.
+    CargoPackageSourceInventory(crate::CargoPackageSourceInventoryResultV1),
     /// Each advisory source after a refresh.
     AdvisoryRefreshed(Box<[crate::browse::AdvisorySourceState]>),
 }
@@ -2432,6 +2448,7 @@ impl SurfaceReply {
             Self::TreeClosed(_) => CommandId::TreeClose,
             Self::ProjectTree(_) => CommandId::ProjectTree,
             Self::CargoPackageSourceFile(_) => CommandId::CargoPackageSourceFile,
+            Self::CargoPackageSourceInventory(_) => CommandId::CargoPackageSourceInventory,
             Self::AdvisoryRefreshed(_) => CommandId::AdvisoryRefresh,
         }
     }
@@ -2519,6 +2536,9 @@ impl SurfaceReply {
             Self::Tree(v) => v.len(),
             Self::AdvisoryRefreshed(v) => v.len(),
             Self::CargoPackageSourceFile(result) if !result.has_admissible_shape() => {
+                return Err(ProductAdmissionError::CargoSourceShape);
+            }
+            Self::CargoPackageSourceInventory(result) if !result.has_admissible_shape() => {
                 return Err(ProductAdmissionError::CargoSourceShape);
             }
             Self::ProjectTree(tree)
@@ -2738,6 +2758,9 @@ impl SurfaceReply {
             Self::TreeOpened(record) => tree_node_record_bound(record),
             Self::ProjectTree(tree) => serde_json::to_vec(tree).map_or(0, |bytes| bytes.len()),
             Self::CargoPackageSourceFile(result) => {
+                serde_json::to_vec(result).map_or(0, |bytes| bytes.len())
+            }
+            Self::CargoPackageSourceInventory(result) => {
                 serde_json::to_vec(result).map_or(0, |bytes| bytes.len())
             }
             Self::AdvisoryRefreshed(states) => {

@@ -18,10 +18,14 @@ use backend_library::browse::{
 };
 use backend_library::{
     CargoPackageSourceAuthorityFailureV1, CargoPackageSourceAuthorityStateV1,
-    CargoPackageSourceAuthorityV1, CargoPackageSourceFileResultV1, CargoPackageSourcePathV1,
-    CargoPackageSourceReadFailureV1, CargoPackageSourceSemanticStatusV1, PackageReference,
+    CargoPackageSourceAuthorityV1, CargoPackageSourceFileResultV1,
+    CargoPackageSourceInventoryCoverageV1, CargoPackageSourceInventoryFailureV1,
+    CargoPackageSourceInventoryGapV1, CargoPackageSourceInventoryResultV1,
+    CargoPackageSourceInventoryV1, CargoPackageSourcePathV1, CargoPackageSourceReadFailureV1,
+    CargoPackageSourceSemanticStatusV1, MAX_CARGO_PACKAGE_SOURCE_INVENTORY_PATHS,
+    MAX_CARGO_PACKAGE_SOURCE_INVENTORY_SCAN_ENTRIES, PackageReference,
 };
-use backend_platform::directory::DirectoryCapability;
+use backend_platform::directory::{DirectoryCapability, EntryKind};
 use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -39,6 +43,8 @@ const MAX_CARGO_OBSERVATION_TOTAL_BYTES: usize = 256 * 1024 * 1024;
 const MAX_CARGO_CONFIG_BYTES: usize = 1024 * 1024;
 const MAX_CARGO_CONFIG_INPUTS: usize = 256;
 const MAX_CARGO_CONFIG_DEPTH: usize = 16;
+const MAX_SOURCE_DIRECTORY_ENTRIES: usize = 2_048;
+const MAX_SOURCE_DIRECTORY_DEPTH: usize = 32;
 
 /// The last tree input read from Cargo, and the file bytes it was read from.
 #[derive(Default)]
@@ -196,6 +202,111 @@ impl BrowseCache {
         }
     }
 
+    /// Lists a bounded set of path addresses from the currently revalidated
+    /// Cargo package observation. Each path remains a hint and must be read
+    /// separately through [`Self::source_file`].
+    pub(super) fn source_inventory(
+        &mut self,
+        package: PackageReference,
+    ) -> CargoPackageSourceInventoryResultV1 {
+        if CargoPackageSourceAuthorityV1::digest_from_package_reference(&package).is_none() {
+            return unavailable_source_inventory(
+                Some(package),
+                CargoPackageSourceInventoryFailureV1::AuthorityUnavailable,
+            );
+        }
+        let Some(workspace) = self.entry.as_ref().map(|entry| entry.workspace.clone()) else {
+            return unavailable_source_inventory(
+                Some(package),
+                CargoPackageSourceInventoryFailureV1::AuthorityUnavailable,
+            );
+        };
+        let input = match self.input(&workspace) {
+            Ok(input) => input,
+            Err(_) => {
+                return unavailable_source_inventory(
+                    Some(package),
+                    CargoPackageSourceInventoryFailureV1::AuthorityUnavailable,
+                );
+            }
+        };
+        let Some(package_row) = input.packages.iter().find(|row| {
+            matches!(
+                &row.source_authority,
+                CargoPackageSourceAuthorityStateV1::Admitted(authority)
+                    if authority.matches_package_reference(&package)
+            )
+        }) else {
+            return CargoPackageSourceInventoryResultV1::Stale { package };
+        };
+        let CargoPackageSourceAuthorityStateV1::Admitted(authority) = &package_row.source_authority
+        else {
+            unreachable!("the predicate admitted only source authority rows")
+        };
+        let Some(package_root) = package_row.source_root.as_deref() else {
+            return unavailable_source_inventory(
+                Some(package),
+                CargoPackageSourceInventoryFailureV1::PackageRootUnavailable,
+            );
+        };
+        if !authority.has_admissible_shape()
+            || !authority.matches_package_root_path(package_root)
+            || !authority.matches_workspace_root_path(Path::new(&input.root))
+        {
+            return unavailable_source_inventory(
+                Some(package),
+                CargoPackageSourceInventoryFailureV1::AuthorityUnavailable,
+            );
+        }
+        let authority = authority.clone();
+        let first = match source_inventory_under(package_root) {
+            Ok(inventory) => inventory,
+            Err(reason) => {
+                return unavailable_source_inventory(Some(package), reason);
+            }
+        };
+        // Directory names can change independently of Cargo metadata. Require
+        // two identical no-follow enumerations before returning address hints.
+        let second = match source_inventory_under(package_root) {
+            Ok(inventory) => inventory,
+            Err(reason) => {
+                return unavailable_source_inventory(Some(package), reason);
+            }
+        };
+        if first != second {
+            return CargoPackageSourceInventoryResultV1::Stale { package };
+        }
+
+        // Recheck the Cargo metadata, config, and tool-selection witness after
+        // walking. A route is useful only while its exact source authority is
+        // still present in the owner's current observation.
+        let current = match self.input(&workspace) {
+            Ok(input) => input,
+            Err(_) => {
+                return unavailable_source_inventory(
+                    Some(package),
+                    CargoPackageSourceInventoryFailureV1::AuthorityUnavailable,
+                );
+            }
+        };
+        let still_current = current.packages.iter().any(|row| {
+            matches!(
+                &row.source_authority,
+                CargoPackageSourceAuthorityStateV1::Admitted(current)
+                    if current.authority_digest() == authority.authority_digest()
+            )
+        });
+        if !still_current {
+            return CargoPackageSourceInventoryResultV1::Stale { package };
+        }
+        CargoPackageSourceInventoryResultV1::Listed(CargoPackageSourceInventoryV1 {
+            package,
+            authority,
+            paths: first.paths.into_boxed_slice(),
+            coverage: first.coverage,
+        })
+    }
+
     fn input(&mut self, root: &Path) -> Result<TreeInput, String> {
         let workspace = workspace_root(root)?
             .ok_or_else(|| {
@@ -236,12 +347,151 @@ fn unavailable_source_file(
     CargoPackageSourceFileResultV1::Unavailable { package, reason }
 }
 
+fn unavailable_source_inventory(
+    package: Option<PackageReference>,
+    reason: CargoPackageSourceInventoryFailureV1,
+) -> CargoPackageSourceInventoryResultV1 {
+    CargoPackageSourceInventoryResultV1::Unavailable { package, reason }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SourceInventoryScan {
+    paths: Vec<CargoPackageSourcePathV1>,
+    coverage: CargoPackageSourceInventoryCoverageV1,
+}
+
+fn source_inventory_under(
+    package_root: &Path,
+) -> Result<SourceInventoryScan, CargoPackageSourceInventoryFailureV1> {
+    let root = DirectoryCapability::open_read_only_source(package_root)
+        .map_err(|_| CargoPackageSourceInventoryFailureV1::DirectoryUnavailable)?;
+    let mut scan = SourceInventoryScan {
+        paths: Vec::new(),
+        coverage: CargoPackageSourceInventoryCoverageV1::Complete,
+    };
+    let mut visited = 0_usize;
+    walk_source_inventory(&root, "", 0, &mut visited, &mut scan);
+    scan.paths.sort();
+    scan.paths.dedup();
+    Ok(scan)
+}
+
+fn walk_source_inventory(
+    directory: &DirectoryCapability,
+    relative_directory: &str,
+    depth: usize,
+    visited: &mut usize,
+    scan: &mut SourceInventoryScan,
+) {
+    if !matches!(
+        scan.coverage,
+        CargoPackageSourceInventoryCoverageV1::Complete
+    ) {
+        return;
+    }
+    if depth >= MAX_SOURCE_DIRECTORY_DEPTH {
+        scan.coverage = CargoPackageSourceInventoryCoverageV1::Partial {
+            reason: CargoPackageSourceInventoryGapV1::DepthLimit,
+        };
+        return;
+    }
+    let entries = match directory.entries(MAX_SOURCE_DIRECTORY_ENTRIES) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
+            scan.coverage = CargoPackageSourceInventoryCoverageV1::Partial {
+                reason: CargoPackageSourceInventoryGapV1::DirectoryEntryLimit,
+            };
+            return;
+        }
+        Err(_) => {
+            scan.coverage = CargoPackageSourceInventoryCoverageV1::Partial {
+                reason: CargoPackageSourceInventoryGapV1::DirectoryUnavailable,
+            };
+            return;
+        }
+    };
+    for entry in entries {
+        if *visited >= MAX_CARGO_PACKAGE_SOURCE_INVENTORY_SCAN_ENTRIES {
+            scan.coverage = CargoPackageSourceInventoryCoverageV1::Partial {
+                reason: CargoPackageSourceInventoryGapV1::ScanEntryLimit,
+            };
+            return;
+        }
+        *visited += 1;
+        let Some(name) = entry.name.to_str() else {
+            scan.coverage = CargoPackageSourceInventoryCoverageV1::Partial {
+                reason: CargoPackageSourceInventoryGapV1::UnaddressablePath,
+            };
+            return;
+        };
+        if is_internal_source_segment(name) {
+            continue;
+        }
+        let path = if relative_directory.is_empty() {
+            name.to_owned()
+        } else {
+            format!("{relative_directory}/{name}")
+        };
+        match entry.kind {
+            EntryKind::Link | EntryKind::Special => continue,
+            EntryKind::Directory => {
+                if path.len() > backend_library::MAX_CARGO_PACKAGE_SOURCE_PATH_BYTES {
+                    scan.coverage = CargoPackageSourceInventoryCoverageV1::Partial {
+                        reason: CargoPackageSourceInventoryGapV1::UnaddressablePath,
+                    };
+                    return;
+                }
+                let child = match directory.open_dir(name) {
+                    Ok(child) => child,
+                    Err(_) => {
+                        scan.coverage = CargoPackageSourceInventoryCoverageV1::Partial {
+                            reason: CargoPackageSourceInventoryGapV1::DirectoryUnavailable,
+                        };
+                        return;
+                    }
+                };
+                walk_source_inventory(&child, &path, depth.saturating_add(1), visited, scan);
+                if !matches!(
+                    scan.coverage,
+                    CargoPackageSourceInventoryCoverageV1::Complete
+                ) {
+                    return;
+                }
+            }
+            EntryKind::File => {
+                if !supported_source_path(&path) {
+                    continue;
+                }
+                let path = match CargoPackageSourcePathV1::new(path) {
+                    Ok(path) => path,
+                    Err(_) => {
+                        scan.coverage = CargoPackageSourceInventoryCoverageV1::Partial {
+                            reason: CargoPackageSourceInventoryGapV1::UnaddressablePath,
+                        };
+                        return;
+                    }
+                };
+                if scan.paths.len() == MAX_CARGO_PACKAGE_SOURCE_INVENTORY_PATHS {
+                    scan.coverage = CargoPackageSourceInventoryCoverageV1::Truncated {
+                        limit: u16::try_from(MAX_CARGO_PACKAGE_SOURCE_INVENTORY_PATHS)
+                            .unwrap_or(u16::MAX),
+                    };
+                    return;
+                }
+                scan.paths.push(path);
+            }
+        }
+    }
+}
+
+fn is_internal_source_segment(segment: &str) -> bool {
+    [".git", ".hg", ".svn", ".cargo", "target", "build"]
+        .iter()
+        .any(|internal| segment.eq_ignore_ascii_case(internal))
+}
+
 fn supported_source_path(path: &str) -> bool {
-    if path.split('/').any(|segment| {
-        [".git", ".hg", ".svn", ".cargo", "target", "build"]
-            .iter()
-            .any(|internal| segment.eq_ignore_ascii_case(internal))
-    }) {
+    if path.split('/').any(is_internal_source_segment) {
         return false;
     }
     let name = path.rsplit('/').next().unwrap_or(path);
@@ -1146,6 +1396,85 @@ mod tests {
         );
         assert!(CargoPackageSourcePathV1::new(".git/config").is_err());
         assert!(CargoPackageSourcePathV1::new("target/generated.rs").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cargo_source_inventory_is_sorted_bounded_and_skips_internal_or_linked_paths() {
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let scratch = Scratch(std::env::temp_dir().join(format!(
+            "backend-cargo-source-inventory-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        )));
+        let package = scratch.0.join("package");
+        std::fs::create_dir_all(package.join("src")).expect("source directory");
+        std::fs::create_dir_all(package.join("target")).expect("target directory");
+        std::fs::create_dir_all(package.join(".git")).expect("git directory");
+        std::fs::write(package.join("Cargo.toml"), "[package]\n").expect("manifest");
+        std::fs::write(package.join("README.md"), "docs\n").expect("readme");
+        std::fs::write(package.join("src/lib.rs"), "pub fn local() {}\n").expect("source");
+        std::fs::write(package.join("target/generated.rs"), "generated\n")
+            .expect("generated source");
+        std::fs::write(package.join(".git/config"), "internal\n").expect("git internals");
+        let outside = scratch.0.join("outside");
+        std::fs::create_dir_all(&outside).expect("outside");
+        std::fs::write(outside.join("linked.rs"), "outside\n").expect("outside source");
+        std::os::unix::fs::symlink(&outside, package.join("linked-dir")).expect("linked directory");
+        std::os::unix::fs::symlink(outside.join("linked.rs"), package.join("linked.rs"))
+            .expect("linked file");
+
+        let scan = source_inventory_under(&package).expect("inventory scan");
+        let paths = scan
+            .paths
+            .iter()
+            .map(CargoPackageSourcePathV1::as_str)
+            .collect::<Vec<_>>();
+        assert_eq!(paths, ["Cargo.toml", "README.md", "src/lib.rs"]);
+        assert_eq!(
+            scan.coverage,
+            CargoPackageSourceInventoryCoverageV1::Complete
+        );
+    }
+
+    #[test]
+    fn cargo_source_inventory_reports_the_fixed_path_cap() {
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let package = std::env::temp_dir().join(format!(
+            "backend-cargo-source-inventory-cap-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let scratch = Scratch(package.clone());
+        std::fs::create_dir_all(&package).expect("package");
+        for number in 0..=MAX_CARGO_PACKAGE_SOURCE_INVENTORY_PATHS {
+            std::fs::write(package.join(format!("source-{number:04}.rs")), "")
+                .expect("source file");
+        }
+        let scan = source_inventory_under(&package).expect("inventory scan");
+        assert_eq!(scan.paths.len(), MAX_CARGO_PACKAGE_SOURCE_INVENTORY_PATHS);
+        assert_eq!(
+            scan.coverage,
+            CargoPackageSourceInventoryCoverageV1::Truncated {
+                limit: MAX_CARGO_PACKAGE_SOURCE_INVENTORY_PATHS as u16,
+            }
+        );
     }
 
     #[test]

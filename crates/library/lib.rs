@@ -95,11 +95,14 @@ pub use cargo_profile::{
 pub use cargo_source::{
     CARGO_PACKAGE_SOURCE_AUTHORITY_SCHEMA, CargoPackageRootIdentityV1,
     CargoPackageSourceAuthorityFailureV1, CargoPackageSourceAuthorityStateV1,
-    CargoPackageSourceAuthorityV1, CargoPackageSourceFileResultV1, CargoPackageSourcePathV1,
-    CargoPackageSourceReadFailureV1, CargoPackageSourceSemanticStatusV1, CargoPackageSourceV1,
-    CargoRegistrySourceSchemeV1, MAX_CARGO_PACKAGE_SOURCE_FILE_BYTES,
-    MAX_CARGO_PACKAGE_SOURCE_PATH_BYTES, MAX_CARGO_SOURCE_COORDINATE_BYTES,
-    MAX_CARGO_SOURCE_DETAIL_BYTES,
+    CargoPackageSourceAuthorityV1, CargoPackageSourceFileResultV1,
+    CargoPackageSourceInventoryCoverageV1, CargoPackageSourceInventoryFailureV1,
+    CargoPackageSourceInventoryGapV1, CargoPackageSourceInventoryResultV1,
+    CargoPackageSourceInventoryV1, CargoPackageSourcePathV1, CargoPackageSourceReadFailureV1,
+    CargoPackageSourceSemanticStatusV1, CargoPackageSourceV1, CargoRegistrySourceSchemeV1,
+    MAX_CARGO_PACKAGE_SOURCE_FILE_BYTES, MAX_CARGO_PACKAGE_SOURCE_INVENTORY_PATHS,
+    MAX_CARGO_PACKAGE_SOURCE_INVENTORY_SCAN_ENTRIES, MAX_CARGO_PACKAGE_SOURCE_PATH_BYTES,
+    MAX_CARGO_SOURCE_COORDINATE_BYTES, MAX_CARGO_SOURCE_DETAIL_BYTES,
 };
 pub use catalog::{Library, RankedSearchSnapshot};
 pub use command::ReferenceFact;
