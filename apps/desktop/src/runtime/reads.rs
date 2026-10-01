@@ -863,6 +863,39 @@ fn check(cancel: &CancellationToken) -> Result<(), ReadFailure> {
     }
 }
 
+/// A local alternate-release route carries its original registry root in
+/// the page key. Verify both manifests and both memberships on this worker
+/// before any page fact can be staged or returned. A lexical sibling path is
+/// only a candidate; it never becomes authority by itself.
+fn verify_release_origin(origin: Option<&str>, viewed: &PackageRef) -> Result<(), ReadFailure> {
+    let Some(origin) = origin else {
+        // A directly opened registry tree still needs its own manifest proof.
+        // Its lexical cache stem is only a candidate for the page read.
+        if viewed.registry_shape().is_some() && viewed.verify_registry_manifest().is_none() {
+            return Err(ReadFailure::Fault(ErrorValue::new(
+                FaultCode::Missing,
+                "This Cargo source tree no longer matches its registry manifest",
+            )));
+        }
+        return Ok(());
+    };
+    let refused = || ReadFailure::Fault(ErrorValue::new(
+        FaultCode::Missing,
+        "This release could not be verified against its pinned Cargo source and local registry authority",
+    ));
+    let pinned = PackageRef::parse(origin).map_err(|_| refused())?;
+    let pinned_release = pinned.verify_registry_manifest().ok_or_else(refused)?;
+    let viewed_release = viewed.verify_registry_manifest().ok_or_else(refused)?;
+    if pinned_release.name != viewed_release.name { return Err(refused()); }
+    let composition = crate::host::registry::composed().ok_or_else(refused)?;
+    if composition.source.release_of(Path::new(pinned.as_str())) != Some(pinned_release)
+        || composition.source.release_of(Path::new(viewed.as_str())) != Some(viewed_release)
+    {
+        return Err(refused());
+    }
+    Ok(())
+}
+
 fn document(
     engine: &mut dyn Engine,
     probe: Probe<'_>,
@@ -1045,6 +1078,8 @@ fn compose_symbol(
     symbol: &SymbolRef,
     context: &ReadContext<'_>,
 ) -> Result<PageValue, ReadFailure> {
+    let package = symbol.package().ok_or_else(|| shape("symbol package"))?;
+    verify_release_origin(symbol.release_origin(), &package)?;
     let document = document(engine, Probe::Document(symbol.as_str()))?;
     check(context.cancel)?;
     let related = neighbourhood(engine, symbol, context);
@@ -1120,6 +1155,8 @@ fn compose_source(
     symbol: &SymbolRef,
     context: &ReadContext<'_>,
 ) -> Result<PageValue, ReadFailure> {
+    let package = symbol.package().ok_or_else(|| shape("source package"))?;
+    verify_release_origin(symbol.release_origin(), &package)?;
     let document = document(engine, Probe::Source(symbol.as_str()))?;
     check(context.cancel)?;
     let package = symbol.package();
@@ -1150,6 +1187,7 @@ fn compose_package(
     package: &PackageRef,
     context: &ReadContext<'_>,
 ) -> Result<PageValue, ReadFailure> {
+    verify_release_origin(package.release_origin(), package)?;
     // An alternate-release route is derived without filesystem work on the
     // UI lane. Verify the tree here, on the read worker, and report the
     // missing release instead of painting the pinned package's facts.
@@ -1370,6 +1408,25 @@ mod tests {
             ready_capabilities: Arc::from([]),
             missing_capabilities: Arc::from([]),
         }
+    }
+
+    #[test]
+    fn alternate_release_refuses_a_sibling_when_the_original_manifest_disagrees() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let scratch = std::env::temp_dir().join(format!("nudox-release-origin-{}-{nonce}", std::process::id()));
+        let source = scratch.join("registry/src/index.test-0");
+        let original = source.join("fake-1.0.0");
+        std::fs::create_dir_all(&original).expect("original tree");
+        std::fs::write(original.join("Cargo.toml"), b"[package]\nname = \"other\"\nversion = \"1.0.0\"\n").expect("misnamed manifest");
+        let viewed = PackageRef::parse(source.join("fake-2.0.0").to_str().expect("UTF-8")).expect("candidate");
+        assert!(matches!(
+            verify_release_origin(Some(original.to_str().expect("UTF-8")), &viewed),
+            Err(ReadFailure::Fault(error)) if error.code() == FaultCode::Missing
+        ));
+        std::fs::remove_dir_all(&scratch).expect("remove scratch");
     }
 
     #[test]
