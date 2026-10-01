@@ -15,6 +15,7 @@ mod orbit;
 mod package;
 mod settings;
 mod source;
+pub(crate) use source::paging::PagingState;
 mod state;
 mod symbol;
 

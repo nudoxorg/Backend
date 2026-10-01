@@ -2,6 +2,13 @@
 //! lines numbered (the declaration's numbers lit mint), and the
 //! declaration's one sentence and callers in the margin.
 
+pub(crate) mod paging;
+
+use paging::{
+    MAX_SOURCE_BYTES, MAX_SOURCE_LINE_BYTES, MAX_SOURCE_LINES, SourceCursor, SourcePage,
+    initial_cursor, previous_cursor, verified_link,
+};
+
 use super::state::{Shown, not_ready, shown};
 use super::{Ctx, Leaf};
 use crate::model::pages::{
@@ -24,225 +31,9 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-/// Bounded source pages keep wrapping, syntax work and keyboard targets small
-/// while every byte remains reachable, including a long minified line.
 const CONTEXT_BEFORE: u32 = 24;
-const MAX_SOURCE_LINES: usize = 64;
-const MAX_SOURCE_BYTES: usize = 8 * 1024;
-const MAX_SOURCE_LINE_BYTES: usize = 2 * 1024;
 const MAX_PAGE_REFERENCES: usize = 32;
-const MAX_PAGE_HISTORY: usize = 128;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct SourceCursor {
-    line: u32,
-    byte: usize,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct VisibleLine {
-    number: u32,
-    span: ByteSpan,
-    continued: bool,
-    more_in_line: bool,
-}
-
-struct SourcePage {
-    lines: Vec<VisibleLine>,
-    next: Option<SourceCursor>,
-}
-
-impl SourcePage {
-    fn at(source: &SourceText, cursor: SourceCursor) -> Self {
-        let Some(first_index) = cursor
-            .line
-            .checked_sub(source.first_line)
-            .and_then(|index| usize::try_from(index).ok())
-        else {
-            return Self {
-                lines: Vec::new(),
-                next: None,
-            };
-        };
-        let spans = source.line_spans_in(first_index, MAX_SOURCE_LINES);
-        let mut lines = Vec::with_capacity(spans.len());
-        let mut used = 0_usize;
-        let mut next = None;
-        for (index, full_span) in spans.into_iter().enumerate() {
-            let number = cursor
-                .line
-                .saturating_add(u32::try_from(index).unwrap_or(u32::MAX));
-            let Some(full) = source.text().get(full_span.range()) else {
-                break;
-            };
-            let offset = if index == 0 {
-                cursor.byte.min(full.len())
-            } else {
-                0
-            };
-            let Some(rest) = full.get(offset..) else {
-                break;
-            };
-            let allowed = MAX_SOURCE_BYTES
-                .saturating_sub(used)
-                .min(MAX_SOURCE_LINE_BYTES);
-            let visible = utf8_prefix(rest, allowed);
-            if visible.is_empty() && !rest.is_empty() {
-                next = Some(SourceCursor {
-                    line: number,
-                    byte: offset,
-                });
-                break;
-            }
-            let start = full_span.start as usize + offset;
-            let end = start.saturating_add(visible.len());
-            let (Ok(start_byte), Ok(end_byte)) = (u32::try_from(start), u32::try_from(end)) else {
-                break;
-            };
-            let more_in_line = visible.len() < rest.len();
-            lines.push(VisibleLine {
-                number,
-                span: ByteSpan {
-                    start: start_byte,
-                    end: end_byte,
-                },
-                continued: offset > 0,
-                more_in_line,
-            });
-            used = used.saturating_add(visible.len()).saturating_add(1);
-            if more_in_line {
-                next = Some(SourceCursor {
-                    line: number,
-                    byte: offset + visible.len(),
-                });
-                break;
-            }
-            if used >= MAX_SOURCE_BYTES || lines.len() >= MAX_SOURCE_LINES {
-                let next_line = number.saturating_add(1);
-                if usize::try_from(next_line.saturating_sub(source.first_line))
-                    .is_ok_and(|index| index < source.line_count())
-                {
-                    next = Some(SourceCursor {
-                        line: next_line,
-                        byte: 0,
-                    });
-                }
-                break;
-            }
-        }
-        if next.is_none() {
-            let following = lines.last().map(|line| line.number.saturating_add(1));
-            if let Some(line) = following.filter(|line| {
-                usize::try_from(line.saturating_sub(source.first_line))
-                    .is_ok_and(|index| index < source.line_count())
-            }) {
-                next = Some(SourceCursor { line, byte: 0 });
-            }
-        }
-        Self { lines, next }
-    }
-}
-
-fn previous_cursor(source: &SourceText, cursor: SourceCursor) -> Option<SourceCursor> {
-    if cursor.byte > 0 {
-        let span = source.line_span(cursor.line)?;
-        let line = source.text().get(span.range())?;
-        let mut byte = cursor
-            .byte
-            .min(line.len())
-            .saturating_sub(MAX_SOURCE_LINE_BYTES);
-        while !line.is_char_boundary(byte) {
-            byte += 1;
-        }
-        return Some(SourceCursor {
-            line: cursor.line,
-            byte,
-        });
-    }
-    let before = cursor.line.checked_sub(source.first_line)? as usize;
-    if before == 0 {
-        return None;
-    }
-    let first_index = before.saturating_sub(MAX_SOURCE_LINES);
-    let spans = source.line_spans_in(first_index, before - first_index);
-    let mut used = 0_usize;
-    let mut start = None;
-    for (index, span) in spans.iter().enumerate().rev() {
-        let line = source.text().get(span.range())?;
-        if line.len() > MAX_SOURCE_LINE_BYTES {
-            if start.is_none() {
-                let mut byte = line.len().saturating_sub(MAX_SOURCE_LINE_BYTES);
-                while !line.is_char_boundary(byte) {
-                    byte += 1;
-                }
-                let number = source
-                    .first_line
-                    .saturating_add(u32::try_from(first_index + index).ok()?);
-                return Some(SourceCursor { line: number, byte });
-            }
-            break;
-        }
-        if used.saturating_add(line.len()).saturating_add(1) > MAX_SOURCE_BYTES {
-            break;
-        }
-        used = used.saturating_add(line.len()).saturating_add(1);
-        let number = source
-            .first_line
-            .saturating_add(u32::try_from(first_index + index).ok()?);
-        start = Some(SourceCursor {
-            line: number,
-            byte: 0,
-        });
-    }
-    start
-}
-
-fn initial_cursor(source: &SourceText, line: u32, context: u32) -> SourceCursor {
-    let target = line.max(source.first_line);
-    let Some(target_index) = target
-        .checked_sub(source.first_line)
-        .map(|index| index as usize)
-    else {
-        return SourceCursor {
-            line: source.first_line,
-            byte: 0,
-        };
-    };
-    let first_index = target_index.saturating_sub(context as usize);
-    let spans = source.line_spans_in(first_index, target_index - first_index);
-    let mut start = target;
-    let mut bytes = 0_usize;
-    for (index, span) in spans.iter().enumerate().rev() {
-        let Some(line) = source.text().get(span.range()) else {
-            break;
-        };
-        if line.len() > MAX_SOURCE_LINE_BYTES || bytes + line.len() + 1 > MAX_SOURCE_BYTES / 4 {
-            break;
-        }
-        bytes += line.len() + 1;
-        start = source
-            .first_line
-            .saturating_add(u32::try_from(first_index + index).unwrap_or(u32::MAX));
-    }
-    SourceCursor {
-        line: start,
-        byte: 0,
-    }
-}
-
-fn verified_link(coverage: SourceCoverage, identifier: ByteSpan, visible: ByteSpan) -> bool {
-    let within = identifier.start >= visible.start
-        && identifier.end <= visible.end
-        && identifier.start < identifier.end;
-    within
-        && match coverage {
-            SourceCoverage::CapturedExcerpt => true,
-            SourceCoverage::LiveFileExcerptVerified { bytes } => {
-                identifier.start >= bytes.start && identifier.end <= bytes.end
-            }
-            SourceCoverage::Unverified => false,
-        }
-}
+const MAX_PAGE_HISTORY: usize = 64;
 
 struct Pager {
     cursor: SourceCursor,
@@ -698,7 +489,7 @@ fn code(
             let requested = requested_line == Some(number);
             let copy_gutter = copy_line.clone();
             let line_number = div()
-                .id(format!("source-copy-line-{number}"))
+                .id(format!("source-copy-line-{number}-{piece_index}"))
                 .flex_none()
                 .w(number_width)
                 .flex()
@@ -1089,14 +880,6 @@ fn pager_controls(
         );
     }
     controls.into_any_element()
-}
-
-fn utf8_prefix(text: &str, max_bytes: usize) -> &str {
-    let mut end = text.len().min(max_bytes);
-    while !text.is_char_boundary(end) {
-        end = end.saturating_sub(1);
-    }
-    &text[..end]
 }
 
 /// The producer's language is authoritative. JavaScript is the TypeScript
