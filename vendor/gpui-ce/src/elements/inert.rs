@@ -265,6 +265,7 @@ mod tests {
                 .child(
                     div()
                         .id("active-sibling")
+                        .debug_selector(|| "active-sibling".to_string())
                         .w(px(100.))
                         .h(px(60.))
                         .track_focus(&self.sibling_focus)
@@ -767,6 +768,14 @@ mod tests {
                 None,
                 "the disabled pane does not name an interactive descendant"
             );
+            let sibling = tree
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some("active sibling"))
+                .map(|(_, node)| node)
+                .unwrap();
+            assert!(!sibling.is_disabled());
+            assert!(sibling.supports_action(accesskit::Action::Click));
 
             let synthetic = tree
                 .nodes
@@ -819,6 +828,8 @@ mod tests {
             assert!(sibling_focus.is_focused(window));
             assert!(!focus.is_focused(window));
         });
+        let sibling_bounds = cx.debug_bounds("active-sibling").unwrap();
+        assert!(sibling_bounds.contains(&point(px(150.), px(20.))));
         cx.simulate_click(point(px(150.), px(20.)), Default::default());
         assert_eq!(events.sibling_clicks.get(), 1);
 
