@@ -687,8 +687,20 @@ enum FrameCallbackOwner {
 #[derive(Clone)]
 struct ElementOwnerPathArena(
     Rc<RefCell<ElementOwnerPathNodes>>,
-    Rc<RefCell<ElementOwnerPathWork>>,
+    ElementOwnerPathOperations,
 );
+
+// Traversal work is useful in tests and the test-support diagnostics, but it is not part of
+// owner identity or capture correctness. Keep its shared counter completely out of optimized
+// production builds: ElementOwnerPath handles still clone the arena they need, while this second
+// field becomes a zero-sized value.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Default)]
+pub(crate) struct ElementOwnerPathOperations(Rc<RefCell<ElementOwnerPathWork>>);
+
+#[cfg(not(any(test, feature = "test-support")))]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ElementOwnerPathOperations;
 
 #[derive(Default)]
 struct ElementOwnerPathNodes {
@@ -713,7 +725,7 @@ pub(crate) struct ElementOwnerPathWork {
 
 impl Default for ElementOwnerPathArena {
     fn default() -> Self {
-        Self::with_operations(Rc::new(RefCell::new(ElementOwnerPathWork::default())))
+        Self::with_operations(ElementOwnerPathOperations::default())
     }
 }
 
@@ -739,7 +751,7 @@ struct ElementOwnerSegment {
 const MAX_ELEMENT_OWNER_PATH_DEPTH: usize = 128;
 
 impl ElementOwnerPathArena {
-    fn with_operations(operations: Rc<RefCell<ElementOwnerPathWork>>) -> Self {
+    fn with_operations(operations: ElementOwnerPathOperations) -> Self {
         Self(
             Rc::new(RefCell::new(ElementOwnerPathNodes {
                 work: ElementOwnerPathWork {
@@ -754,7 +766,7 @@ impl ElementOwnerPathArena {
 
     fn work(&self) -> ElementOwnerPathWork {
         let mut work = self.0.borrow().work;
-        let operations = self.1.borrow();
+        let operations = self.1.snapshot();
         work.path_equality_segments = operations.path_equality_segments;
         work.path_hash_segments = operations.path_hash_segments;
         work.capture_owner_candidates = operations.capture_owner_candidates;
@@ -765,24 +777,28 @@ impl ElementOwnerPathArena {
         self.0.borrow_mut().work.cached_handles_reused += 1;
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     fn record_path_equality_segments(&self, count: usize) {
-        self.1.borrow_mut().path_equality_segments += count;
+        self.1.record_path_equality_segments(count);
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     fn record_path_hash_segments(&self, count: usize) {
-        self.1.borrow_mut().path_hash_segments += count;
+        self.1.record_path_hash_segments(count);
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     fn record_capture_owner_candidates(&self, count: usize) {
-        self.1.borrow_mut().capture_owner_candidates += count;
+        self.1.record_capture_owner_candidates(count);
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     fn reset_operation_work(&self) {
-        let mut work = self.1.borrow_mut();
-        work.path_equality_segments = 0;
-        work.path_hash_segments = 0;
-        work.capture_owner_candidates = 0;
+        self.1.reset();
     }
+
+    #[cfg(not(any(test, feature = "test-support")))]
+    fn reset_operation_work(&self) {}
 
     fn reset_or_replace(&mut self) {
         if Rc::strong_count(&self.0) == 1 {
@@ -796,6 +812,39 @@ impl ElementOwnerPathArena {
             let operations = self.1.clone();
             *self = Self::with_operations(operations);
         }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl ElementOwnerPathOperations {
+    fn snapshot(&self) -> ElementOwnerPathWork {
+        *self.0.borrow()
+    }
+
+    fn reset(&self) {
+        let mut work = self.0.borrow_mut();
+        work.path_equality_segments = 0;
+        work.path_hash_segments = 0;
+        work.capture_owner_candidates = 0;
+    }
+
+    fn record_path_equality_segments(&self, count: usize) {
+        self.0.borrow_mut().path_equality_segments += count;
+    }
+
+    fn record_path_hash_segments(&self, count: usize) {
+        self.0.borrow_mut().path_hash_segments += count;
+    }
+
+    fn record_capture_owner_candidates(&self, count: usize) {
+        self.0.borrow_mut().capture_owner_candidates += count;
+    }
+}
+
+#[cfg(not(any(test, feature = "test-support")))]
+impl ElementOwnerPathOperations {
+    fn snapshot(&self) -> ElementOwnerPathWork {
+        ElementOwnerPathWork::default()
     }
 }
 
@@ -856,10 +905,12 @@ impl ElementOwnerPath {
         let right_nodes = other.arena.0.borrow();
         let mut left_index = self.index;
         let mut right_index = other.index;
+        #[cfg(any(test, feature = "test-support"))]
         let mut compared_segments = 0;
         let same_owner = loop {
             let left = &left_nodes.nodes[left_index];
             let right = &right_nodes.nodes[right_index];
+            #[cfg(any(test, feature = "test-support"))]
             compared_segments += 1;
             if left.depth != right.depth || !Self::same_segment(&left.segment, &right.segment) {
                 break false;
@@ -873,9 +924,11 @@ impl ElementOwnerPath {
                 _ => break false,
             }
         };
+        #[cfg(any(test, feature = "test-support"))]
         let compared_segments = compared_segments.saturating_mul(2);
         drop(right_nodes);
         drop(left_nodes);
+        #[cfg(any(test, feature = "test-support"))]
         self.arena.record_path_equality_segments(compared_segments);
         same_owner
     }
@@ -886,6 +939,7 @@ impl ElementOwnerPath {
     fn is_within_inert_boundary(&self, boundary: &Self) -> bool {
         let owner_nodes = self.arena.0.borrow();
         let boundary_nodes = boundary.arena.0.borrow();
+        #[cfg(any(test, feature = "test-support"))]
         let mut visited_segments = 0;
         let is_within = if self.depth < boundary.depth {
             false
@@ -893,7 +947,10 @@ impl ElementOwnerPath {
             let mut owner_index = self.index;
             let mut reaches_boundary_depth = true;
             while owner_nodes.nodes[owner_index].depth > boundary.depth {
-                visited_segments += 1;
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    visited_segments += 1;
+                }
                 let Some(parent) = owner_nodes.nodes[owner_index].parent else {
                     reaches_boundary_depth = false;
                     break;
@@ -908,7 +965,10 @@ impl ElementOwnerPath {
                 loop {
                     let left = &owner_nodes.nodes[left_index];
                     let right = &boundary_nodes.nodes[right_index];
-                    visited_segments += 2;
+                    #[cfg(any(test, feature = "test-support"))]
+                    {
+                        visited_segments += 2;
+                    }
                     if left.depth != right.depth
                         || !Self::same_segment(&left.segment, &right.segment)
                     {
@@ -927,6 +987,7 @@ impl ElementOwnerPath {
         };
         drop(boundary_nodes);
         drop(owner_nodes);
+        #[cfg(any(test, feature = "test-support"))]
         self.arena.record_path_equality_segments(visited_segments);
         is_within
     }
@@ -954,12 +1015,16 @@ impl Hash for ElementOwnerPath {
             nodes: &[ElementOwnerNode],
             index: usize,
             state: &mut H,
-            segments_hashed: &mut usize,
+            #[cfg(any(test, feature = "test-support"))] segments_hashed: &mut usize,
         ) {
             let node = &nodes[index];
             if let Some(parent) = node.parent {
+                #[cfg(any(test, feature = "test-support"))]
                 hash_node(nodes, parent, state, segments_hashed);
+                #[cfg(not(any(test, feature = "test-support")))]
+                hash_node(nodes, parent, state);
             }
+            #[cfg(any(test, feature = "test-support"))]
             *segments_hashed += 1;
             match &node.segment.element_id {
                 Some(element_id) => {
@@ -973,12 +1038,19 @@ impl Hash for ElementOwnerPath {
             }
         }
 
+        #[cfg(any(test, feature = "test-support"))]
         let segments_hashed = {
             let nodes = self.arena.0.borrow();
             let mut segments_hashed = 0;
             hash_node(&nodes.nodes, self.index, state, &mut segments_hashed);
             segments_hashed
         };
+        #[cfg(not(any(test, feature = "test-support")))]
+        {
+            let nodes = self.arena.0.borrow();
+            hash_node(&nodes.nodes, self.index, state);
+        }
+        #[cfg(any(test, feature = "test-support"))]
         self.arena.record_path_hash_segments(segments_hashed);
     }
 }
@@ -1163,7 +1235,7 @@ mod element_owner_path_tests {
 
     #[test]
     fn path_traversal_work_is_aggregated_across_frame_arenas() {
-        let operations = Rc::new(RefCell::new(ElementOwnerPathWork::default()));
+        let operations = ElementOwnerPathOperations::default();
         let prior = ElementOwnerPathArena::with_operations(operations.clone());
         let current = ElementOwnerPathArena::with_operations(operations);
         let prior_root = child(&prior, None, 0, Some("root"));
@@ -1186,18 +1258,18 @@ mod element_owner_path_tests {
         let second = HitboxOwner::Tracked(owner.clone());
         let unrelated = HitboxOwner::Tracked(child(&arena, None, 1, Some("other")));
 
-        let (unique, scanned) = unique_hitbox_for_owner([(HitboxId(1), &first)], &owner);
+        let unique = unique_hitbox_for_owner([(HitboxId(1), &first)], &owner);
         assert_eq!(unique, Some(HitboxId(1)));
-        assert_eq!(scanned, 1);
+        assert_eq!(arena.work().capture_owner_candidates, 1);
 
-        let (ambiguous, scanned) =
+        let ambiguous =
             unique_hitbox_for_owner([(HitboxId(1), &first), (HitboxId(2), &second)], &owner);
         assert_eq!(ambiguous, None);
-        assert_eq!(scanned, 2);
+        assert_eq!(arena.work().capture_owner_candidates, 3);
 
-        let (missing, scanned) = unique_hitbox_for_owner([(HitboxId(3), &unrelated)], &owner);
+        let missing = unique_hitbox_for_owner([(HitboxId(3), &unrelated)], &owner);
         assert_eq!(missing, None);
-        assert_eq!(scanned, 1);
+        assert_eq!(arena.work().capture_owner_candidates, 4);
     }
 
     #[test]
@@ -1298,19 +1370,25 @@ fn pointer_capture_owner(
 fn unique_hitbox_for_owner<'a>(
     hitbox_owners: impl IntoIterator<Item = (HitboxId, &'a HitboxOwner)>,
     owner: &ElementOwnerPath,
-) -> (Option<HitboxId>, usize) {
+) -> Option<HitboxId> {
     let mut candidate = None;
+    #[cfg(any(test, feature = "test-support"))]
     let mut scanned = 0;
     for (hitbox_id, hitbox_owner) in hitbox_owners {
+        #[cfg(any(test, feature = "test-support"))]
         scanned += 1;
         if matches!(hitbox_owner, HitboxOwner::Tracked(current) if current.same_owner(owner)) {
             if candidate.is_some() {
-                return (None, scanned);
+                #[cfg(any(test, feature = "test-support"))]
+                owner.arena.record_capture_owner_candidates(scanned);
+                return None;
             }
             candidate = Some(hitbox_id);
         }
     }
-    (candidate, scanned)
+    #[cfg(any(test, feature = "test-support"))]
+    owner.arena.record_capture_owner_candidates(scanned);
+    candidate
 }
 
 #[derive(Clone)]
@@ -1710,7 +1788,7 @@ impl Drop for InertSubtreeScope {
 impl Frame {
     pub(crate) fn new(
         dispatch_tree: DispatchTree,
-        owner_path_operations: Rc<RefCell<ElementOwnerPathWork>>,
+        owner_path_operations: ElementOwnerPathOperations,
     ) -> Self {
         Frame {
             focus: None,
@@ -2662,7 +2740,7 @@ impl Window {
         }
 
         platform_window.map_window().unwrap();
-        let element_owner_path_operations = Rc::new(RefCell::new(ElementOwnerPathWork::default()));
+        let element_owner_path_operations = ElementOwnerPathOperations::default();
 
         Ok(Window {
             handle,
@@ -3919,7 +3997,7 @@ impl Window {
                 // Hitbox IDs are regenerated on a normal active draw. Rebind only if this exact
                 // structural owner has one current hitbox; zero or multiple candidates mean that
                 // the old capture cannot be routed without guessing.
-                let (candidate, candidates_scanned) = unique_hitbox_for_owner(
+                let candidate = unique_hitbox_for_owner(
                     self.next_frame
                         .hitboxes
                         .iter()
@@ -3927,9 +4005,6 @@ impl Window {
                         .zip(&self.next_frame.hitbox_owners),
                     owner,
                 );
-                self.next_frame
-                    .owner_path_arena
-                    .record_capture_owner_candidates(candidates_scanned);
                 if let Some(candidate) = candidate {
                     self.captured_hitbox = Some(candidate);
                 } else {
