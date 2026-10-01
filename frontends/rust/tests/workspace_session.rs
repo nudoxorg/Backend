@@ -418,6 +418,147 @@ fn workspace_lane_applies_selected_editor_buffers_and_discards_failed_transactio
     outcome
 }
 
+#[test]
+fn production_session_overlay_keeps_backend_present_unconditional_module_owned()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Exercise the whole package source frontier used by the live desktop
+    // path. `assemble.rs` remains an ordinary module reached from the crate's
+    // unconditional `mod assemble;` declaration in `lib.rs`.
+    let repository_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("Rust frontend manifest is not nested in the workspace")?;
+    let package_root = repository_root.join("crates/present");
+    let manifest = fs::read_to_string(package_root.join("Cargo.toml"))?;
+    assert!(!manifest.lines().any(|line| line.trim() == "[features]"));
+    let root_source = fs::read_to_string(package_root.join("lib.rs"))?;
+    assert!(
+        root_source
+            .lines()
+            .any(|line| line.trim() == "mod assemble;")
+    );
+    let assemble_source = fs::read_to_string(package_root.join("assemble.rs"))?;
+
+    fn collect_rust_sources(
+        package_root: &Path,
+        directory: &Path,
+        rows: &mut Vec<(PathBuf, String)>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            let path = entry.path();
+            if kind.is_dir() {
+                collect_rust_sources(package_root, &path, rows)?;
+            } else if kind.is_file() && path.extension().is_some_and(|extension| extension == "rs")
+            {
+                rows.push((
+                    path.strip_prefix(package_root)?.to_path_buf(),
+                    fs::read_to_string(path)?,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    let mut source_rows = Vec::new();
+    collect_rust_sources(&package_root, &package_root, &mut source_rows)?;
+    source_rows.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    assert!(
+        source_rows.len() > 2,
+        "fixture must cover the full package frontier"
+    );
+    assert!(
+        source_rows.iter().any(|(path, source)| {
+            path == Path::new("assemble.rs") && source == &assemble_source
+        })
+    );
+    assert!(
+        source_rows
+            .iter()
+            .any(|(path, source)| path == Path::new("lib.rs") && source == &root_source)
+    );
+    let source_paths = source_rows
+        .iter()
+        .map(|(path, _)| path.clone())
+        .collect::<Vec<_>>();
+    let files = source_rows
+        .iter()
+        .map(|(path, source)| RustWorkspaceFile {
+            relative_path: path,
+            source,
+        })
+        .collect::<Vec<_>>();
+
+    let toolchain = RustToolchain::discover(rustc_path())?;
+    let features = RustFeatureControl {
+        all_features: true,
+        no_default_features: false,
+        features: &[],
+    };
+    let key = RustWorkspaceSessionKey::new(
+        &package_root,
+        &toolchain,
+        RustEdition::Rust2024,
+        Stage::LowerIr,
+        features,
+        None,
+        None,
+        None,
+        [0x51; 32],
+        &source_paths,
+    )?;
+    let cancelled = AtomicBool::new(false);
+    let control = RustAnalysisControl {
+        cancelled: &cancelled,
+        maximum_source_bytes: SourceByteLimit::from(64 * 1024 * 1024),
+        deadline: Instant::now() + Duration::from_secs(300),
+    };
+    let mut lane = RustWorkspaceSessionLane::default();
+    let mut observer = RecordingReadFrontier::default();
+    let (lease, _) = lane.begin_with_read_frontier_observer(key, &files, control, &mut observer)?;
+    assert_eq!(observer.editor_buffers.len(), source_rows.len());
+    for (path, source) in &source_rows {
+        assert_eq!(
+            observer.editor_buffers.get(path).map(Vec::as_slice),
+            Some(source.as_bytes()),
+            "selected editor buffer must match the complete package frontier: {}",
+            path.display()
+        );
+    }
+    let admitted = lease.workspace().analyze_source(
+        package_root.join("assemble.rs"),
+        assemble_source.as_bytes(),
+        control,
+        |authority| {
+            let has_page_lowering_entry = authority.declarations().any(|declaration| {
+                authority
+                    .declaration_name(&declaration)
+                    .ok()
+                    .and_then(|span| authority.source_at(span).ok())
+                    == Some(b"page_from_document")
+            });
+            Ok((authority.source_scope, has_page_lowering_entry))
+        },
+    )?;
+    assert_eq!(
+        admitted.0,
+        backend_frontend_rust::legacy::RustSourceScope::CargoModule
+    );
+    assert!(
+        admitted.1,
+        "HIR lowering must see the unconditional module's declarations"
+    );
+    assert!(
+        observer
+            .editor_buffers
+            .get(Path::new("assemble.rs"))
+            .is_some_and(|source| source.as_slice() == assemble_source.as_bytes())
+    );
+    lease.commit();
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn workspace_overlay_preserves_symlinked_module_vfs_identity()

@@ -3520,8 +3520,14 @@ mod tests {
             ToolchainSelection::ResolvedNative(toolchain),
             PackageAuthorityError::RustProject(RustAuthorityError::DetachedSource {
                 path: Path::new("/cache/toml-0.8.23/examples/decode.rs").to_path_buf(),
-                active_hir_roots:
-                    backend_frontend_rust::legacy::RustActiveHirRootInventory::default(),
+                active_hir_roots: backend_frontend_rust::legacy::RustActiveHirRootInventory {
+                    package_crate_count: 4,
+                    package_relative_roots: Box::new([
+                        Path::new("src/lib.rs").to_path_buf(),
+                        Path::new("src/bin/tool.rs").to_path_buf(),
+                    ]),
+                    omitted_package_crates: 2,
+                },
             }),
         );
         let CompilerTerminal::Compile {
@@ -3540,10 +3546,9 @@ mod tests {
         assert_eq!(class, AuthorityDiagnosticClass::SourceScope);
         assert!(!diagnostic.truncated);
         let message = &diagnostic.bytes[..diagnostic.byte_len];
-        assert_eq!(
-            message,
-            b"selected Rust source is cfg-inactive or detached from every active Cargo target."
-        );
+        assert!(message.starts_with(
+            b"selected Rust source is cfg-inactive or detached from every active Cargo target; active package HIR roots: 4 [src/lib.rs, src/bin/tool.rs] (+2 omitted)"
+        ));
         assert!(
             !message
                 .windows(b"/cache/".len())

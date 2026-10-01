@@ -1001,9 +1001,47 @@ pub(crate) fn rust_authority_diagnostic<'diagnostic>(
         RustError::SourceNotLoaded { .. } => {
             let _ = message.write_str("rust-analyzer did not load the selected Cargo source.");
         }
-        RustError::DetachedSource { .. } => {
-            let _ = message.write_str(
-                "selected Rust source is cfg-inactive or detached from every active Cargo target.",
+        RustError::DetachedSource {
+            active_hir_roots, ..
+        } => {
+            let _ = write!(
+                message,
+                "selected Rust source is cfg-inactive or detached from every active Cargo target; active package HIR roots: {} [",
+                active_hir_roots.package_crate_count,
+            );
+            let displayed_roots = active_hir_roots.package_relative_roots.len().min(2);
+            for (index, root) in active_hir_roots
+                .package_relative_roots
+                .iter()
+                .take(displayed_roots)
+                .enumerate()
+            {
+                if index != 0 {
+                    let _ = message.write_str(", ");
+                }
+                // These roots are already package-relative and the inventory is
+                // capped by the Rust frontend. Keep the public diagnostic useful
+                // without ever rendering the absolute selected source path.
+                let display = root.to_string_lossy();
+                let prefix_bytes = display
+                    .char_indices()
+                    .take_while(|(index, character)| {
+                        index.saturating_add(character.len_utf8()) <= 28
+                    })
+                    .map(|(index, character)| index + character.len_utf8())
+                    .last()
+                    .unwrap_or(0);
+                let _ = message.write_str(&display[..prefix_bytes]);
+                if prefix_bytes < display.len() {
+                    let _ = message.write_str("…");
+                }
+            }
+            let _ = write!(
+                message,
+                "] (+{} omitted)",
+                active_hir_roots
+                    .package_crate_count
+                    .saturating_sub(displayed_roots)
             );
         }
         RustError::AmbiguousSourceOwner { .. } => {

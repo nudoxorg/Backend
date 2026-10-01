@@ -1205,7 +1205,7 @@ pub struct RustWorkspaceSessionStats {
     pub workspace_reuse_disabled_requests: u64,
     /// Source texts changed in the rust-analyzer database.
     pub source_updates: u64,
-    /// New source paths added to this operation's RA VFS and source root.
+    /// Source paths newly inserted into a local SourceRoot, including VFS-visible unrooted files.
     pub overlay_sources_added: u64,
     /// Explicit editor tombstone paths removed from RA; omission currently never removes paths.
     pub overlay_sources_removed: u64,
@@ -2034,10 +2034,18 @@ impl RustWorkspace {
                 });
             }
 
+            let owner = match self.source_owner_entry(selected_file_id, selected.path, control) {
+                Ok(owner) => owner.krate,
+                // The selected compiler frontier can contain cfg-inactive Rust
+                // files. They still receive exact VFS/source binding above, but
+                // only active Cargo-owned files have a crate cfg context from
+                // which Rustdoc include attributes can be expanded. Skipping
+                // this preload does not grant source ownership: analyze_source
+                // continues to reject a detached file.
+                Err(RustAuthorityError::DetachedSource { .. }) => continue,
+                Err(error) => return Err(error),
+            };
             let semantics = Semantics::new(&self.database);
-            let owner = self
-                .source_owner_entry(selected_file_id, selected.path, control)?
-                .krate;
             let edition = owner.edition(&self.database);
             let source_file = EditionedFileId::new(&self.database, selected_file_id, edition);
             let parsed = semantics.parse(source_file);
@@ -2457,11 +2465,52 @@ impl RustWorkspace {
                         .database
                         .file_source_root(file_id)
                         .source_root_id(&self.database);
-                    if !local_roots.contains(&source_root) {
+                    let present_in_source_root = self
+                        .database
+                        .source_root(source_root)
+                        .source_root(&self.database)
+                        .path_for_file(&file_id)
+                        .is_some();
+                    if present_in_source_root && !local_roots.contains(&source_root) {
                         return Err(RustAuthorityError::SessionSourceRootAmbiguous);
                     }
-                    selected_source_roots.insert(source_root);
-                    (file_id, false)
+                    let belongs_to_local_root = present_in_source_root;
+                    if belongs_to_local_root {
+                        selected_source_roots.insert(source_root);
+                        (file_id, false)
+                    } else {
+                        // VFS identity alone does not prove that the FileId is
+                        // indexed in an active local SourceRoot. A file can be
+                        // visible in the VFS while its path is absent from the
+                        // RootDatabase FileSet (notably after a session source
+                        // overlay). Re-home that exact existing identity into
+                        // the unambiguous package-local root before rebuilding
+                        // DefMaps; treating it as already admitted leaves an
+                        // unconditional `mod` invisible to HIR.
+                        if local_roots_by_directory.is_none() {
+                            local_roots_by_directory =
+                                Some(self.local_source_roots_by_directory(&local_roots, control)?);
+                        }
+                        let source_root = Self::source_root_for_new_file(
+                            &self.root,
+                            &requested_path,
+                            local_roots_by_directory
+                                .as_mut()
+                                .expect("local source-root index was initialized"),
+                        )?;
+                        selected_source_roots.insert(source_root);
+                        added_ids.push((source_root, file_id, vfs_path.clone()));
+                        if let Some(parent) = requested_path.parent() {
+                            local_roots_by_directory
+                                .as_mut()
+                                .expect("local source-root index was initialized")
+                                .entry(parent.to_path_buf())
+                                .or_default()
+                                .insert(source_root);
+                        }
+                        added = added.saturating_add(1);
+                        (file_id, true)
+                    }
                 } else {
                     if local_roots_by_directory.is_none() {
                         local_roots_by_directory =
