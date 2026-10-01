@@ -511,3 +511,25 @@ Whole-file source paging, durable Back/focus restoration, interrupted Page/Code 
 The compiler/history integration still needs the exact remote invocation transport, complete selected/dependency/source association, bounded production runner and shared lower proof validator. Configuration/runner unit passes are not the previously unexecuted whole owner regression. No benchmark or deployment readiness claim follows from these scoped suites. Machine-wide builds remain capped at four with one compiler job per lane.
 
 Evidence and retained failures are copied into `.local/readiness/evidence/20261001-gui-state-and-live-gates/`; the expanded manifest SHA-256 is `26b5ebeb0e4812df7bfee05b10e43d8544c0558cd1e9eb674abdcb50258f5b75`.
+
+### Continuation evidence — 2026-10-01, current GUI gates
+
+The primary worktree contains reviewed workspace-policy, shared async Memo, cache-policy and motion changes through `fd953fa7ca`. Canonical remains `f9c158af0dfc229c4567bf5cd725c5c0828043fa`. The goal and full readiness gate remain open; no current-source GUI product acceptance or all-language ingest claim follows from these changes.
+
+| Frozen source and gate | Actual result | Limit |
+| --- | --- | --- |
+| `53e52c1a2`, complete desktop shell | 304 passed, 24 failed, 3 ignored | The 24 failures are blockers, not an assumed baseline. |
+| `2c65063267`, shell motion, caption layout, model persistence | Six motion tests, one phone/200% caption test, and fifteen persistence tests passed | Native fixture/model coverage does not prove live ingest or real cold restart. |
+| `0ba1ed9cc`, Rust workspace-session integration | Five tests passed | Exact frontend suite, not desktop/local-service acceptance. |
+| `5f4c75a08`, complete desktop shell attempt | Four tests passed before a later cross-package outline test hung; root sampled and terminated the specific child | The stack identifies a blocking fixture condition variable on GPUI's test dispatcher. The common Memo now accepts awaitable work; its late-success regression and composed gate still need execution. |
+| `364b29a370`, registry suite | Compile failed on the cache-policy service borrow | Preserved before the small borrow correction. |
+| `fd01d5e81`, registry suite | 29 passed, one failed | The cold bounded cache lookup incorrectly reused the current network epoch instead of the alternate mode. `fd953fa7ca` fixes the expression; the unchanged failure oracle must pass. |
+| `479959027`, complete lower library | 190 passed, zero failed, one ignored | Isolated lower library only. Engine writer/custody and GUI composition remain unverified. The earlier 189/one failure is retained. |
+
+The actual live owner capture on `50d2c0b` now propagates Online metadata policy into the Rust workspace opener. Its targeted policy regression passes. The full two-project live run still refuses Rust source admission before drawing any capture, after metadata resolves; the public error currently collapses several internal admission variants. This is a retained end-to-end failure with zero PNGs, not a screenshot acceptance. Exact internal diagnosis and a successful live run are required next.
+
+The independent source reviews also leave these concrete gates open: corrected native inert subtrees must preserve unrelated pointer capture; selected-page retention must release terminal and incompatible-authority content and restore exact focus only after settlement; Cargo source receipts need coherent manifest/config/tool/environment witnesses and bounded held reads; Library release focus must follow exact source identity across actual reorder; paged manifest admission must compare a loaded child's exact commitment to its parent, not just matching range/count anchors. New source-only tests do not clear any of these gates.
+
+Repeat-safe indexing has a further crash window: semantic publication and terminal-operation persistence currently happen in separate writes. A restart-Failed receipt cannot be safely upgraded by package presence or absence. The planned publication receipt must share the authoritative snapshot transaction, bind the exact operation, and retain its immutable referenced roots through subsequent publications. Until that proof is implemented and tested, ambiguous Failed attempts remain blocked from fresh submission.
+
+The expanded local evidence manifest contains 57 records with SHA-256 `ceb8183cce30b2f091ae85fb5c6d6fba46733019b060f4dff9f20429aecb82c2`; previous manifests are archived by digest. It includes actual failures, compiler/toolchain receipts and synthetic model pixels, with scope stated per record. Later live policy runs have their own immutable attempt directories pending bundle consolidation. Obsolete capture-adapter executables were removed with hashes recorded, preserving source, active artifacts, libraries and test evidence. Machine-wide Cargo remains capped at four, including metadata subprocesses.
