@@ -3338,7 +3338,8 @@ fn process_peak_rss_bytes() -> Option<u64> {
         .find_map(|line| line.strip_prefix("VmHWM:"))?
         .split_whitespace()
         .next()?
-        .parse::<u64>()?;
+        .parse::<u64>()
+        .ok()?;
     kilobytes.checked_mul(1024)
 }
 
