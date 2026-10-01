@@ -1,6 +1,6 @@
 //! Loader, reader, and README projection tests over real fixture folders.
 
-use super::cargo::{CargoDependency, CargoMetadata, CargoPackage};
+use super::cargo::{CargoDependency, CargoMetadata, CargoPackage, bounded_output};
 use super::{
     CargoFailure, DependencyKind, LocalPackage, LocalPackageLoader, LocalPackageSource,
     ReadmeBlock, active_project, origin_url, readme,
@@ -815,6 +815,53 @@ fn fake_cargo(scratch: &Scratch, body: &str) -> Result<PathBuf, String> {
     fs::write(&path, format!("#!/bin/sh\n{body}\n")).map_err(text)?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).map_err(text)?;
     Ok(path)
+}
+
+#[cfg(unix)]
+#[test]
+fn cargo_output_returns_at_normal_eof_with_exact_budget() -> Outcome {
+    let scratch = workspace_fixture("normal-eof")?;
+    let program = fake_cargo(&scratch, "printf 'ok'")?;
+    let bytes = bounded_output(
+        std::process::Command::new(program),
+        Duration::from_secs(1),
+        2,
+    )
+    .map_err(|failure| format!("normal child failed: {failure:?}"))?;
+    assert_eq!(bytes, b"ok");
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn cargo_exit_with_inherited_stdout_retires_descendant_at_deadline() -> Outcome {
+    let scratch = workspace_fixture("inherited-stdout")?;
+    let marker = scratch.0.join("descendant-escaped");
+    let program = fake_cargo(
+        &scratch,
+        &format!(
+            "(sleep 1; printf leaked > '{}') &\nexit 0",
+            marker.display()
+        ),
+    )?;
+    let started = Instant::now();
+    let result = bounded_output(
+        std::process::Command::new(program),
+        Duration::from_millis(200),
+        64,
+    );
+    assert_eq!(result, Err(CargoFailure::Timeout));
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the inherited pipe held the worker: {:?}",
+        started.elapsed()
+    );
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(
+        !marker.exists(),
+        "the timed-out child's descendant was not retired"
+    );
+    Ok(())
 }
 
 #[cfg(unix)]

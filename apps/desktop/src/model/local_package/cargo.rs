@@ -9,13 +9,12 @@ use super::{
     readme,
 };
 use crate::core::LocalProjectId;
+use backend_platform::child_output;
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::io::Read as _;
 use std::path::Path;
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// The stable subset of `cargo metadata --format-version 1` the dossier uses.
@@ -112,87 +111,80 @@ pub(super) fn bounded_output(
     timeout: Duration,
     max_output: usize,
 ) -> Result<Vec<u8>, CargoFailure> {
+    #[cfg(target_os = "macos")]
+    backend_platform::macos_process::configure_process_session(&mut command);
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0);
+    }
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .map_err(|_| CargoFailure::Spawn)?;
-    let Some(stdout) = child.stdout.take() else {
-        stop(&mut child);
+    let Some(mut stdout) = child.stdout.take() else {
+        child_output::stop(&mut child);
         return Err(CargoFailure::Spawn);
     };
-    // One byte past the bound proves overflow without buffering the excess.
-    let cap = u64::try_from(max_output)
-        .unwrap_or(u64::MAX)
-        .saturating_add(1);
-    let overflowed = Arc::new(AtomicBool::new(false));
-    let reader_overflowed = Arc::clone(&overflowed);
-    let reader = std::thread::Builder::new()
-        .name("nudox-cargo-metadata".to_owned())
-        .spawn(move || {
-            let mut bytes = Vec::new();
-            let read = stdout.take(cap).read_to_end(&mut bytes);
-            if bytes.len() > max_output {
-                reader_overflowed.store(true, Ordering::Release);
-            }
-            read.map(|_| bytes)
-        });
-    let Ok(reader) = reader else {
-        stop(&mut child);
+    if child_output::configure(&stdout).is_err() {
+        child_output::stop(&mut child);
         return Err(CargoFailure::Spawn);
-    };
-    // On timeout or overflow the reader is detached, not joined: a
-    // grandchild that inherited the pipe could otherwise hold this worker.
-    let status = wait(&mut child, &overflowed, timeout)?;
-    let bytes = reader
-        .join()
-        .map_err(|_| CargoFailure::Decode)?
-        .map_err(|_| CargoFailure::Decode)?;
-    if bytes.len() > max_output {
-        return Err(CargoFailure::OutputLimit);
     }
-    if !status.success() {
-        return Err(CargoFailure::Status);
-    }
-    Ok(bytes)
-}
-
-/// Polls the child until it exits, the deadline passes, or the reader has
-/// seen more than the output bound (a child blocked writing into a pipe
-/// nobody drains would otherwise only be stopped by the deadline).
-fn wait(
-    child: &mut Child,
-    overflowed: &AtomicBool,
-    timeout: Duration,
-) -> Result<ExitStatus, CargoFailure> {
     let deadline = Instant::now() + timeout;
+    let cap = max_output.saturating_add(1);
+    let mut bytes = Vec::new();
+    let mut scratch = [0_u8; 8 * 1024];
+    let mut eof = false;
     loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Ok(status),
-            Ok(None) => {}
-            Err(_) => {
-                stop(child);
-                return Err(CargoFailure::Spawn);
+        let mut progressed = false;
+        if !eof {
+            // One byte beyond the admitted output budget proves overflow.
+            let take = cap.saturating_sub(bytes.len()).max(1).min(scratch.len());
+            match child_output::read_available(&mut stdout, &mut scratch[..take]) {
+                Ok(Some(0)) => eof = true,
+                Ok(Some(count)) => {
+                    bytes.extend_from_slice(&scratch[..count]);
+                    if bytes.len() > max_output {
+                        child_output::stop(&mut child);
+                        return Err(CargoFailure::OutputLimit);
+                    }
+                    progressed = true;
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    child_output::stop(&mut child);
+                    return Err(CargoFailure::Decode);
+                }
             }
         }
-        if overflowed.load(Ordering::Acquire) {
-            stop(child);
-            return Err(CargoFailure::OutputLimit);
+        // A descendant can retain stdout after the leader exits. Do not reap
+        // the leader before EOF: macOS process-group retirement needs its PID
+        // pinned while the deadline is enforced on that inherited pipe.
+        if eof {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    return if status.success() {
+                        Ok(bytes)
+                    } else {
+                        Err(CargoFailure::Status)
+                    };
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    child_output::stop(&mut child);
+                    return Err(CargoFailure::Spawn);
+                }
+            }
         }
         if Instant::now() >= deadline {
-            stop(child);
+            child_output::stop(&mut child);
             return Err(CargoFailure::Timeout);
         }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
-
-fn stop(child: &mut Child) {
-    // Kill fails only when the child was already reaped; then there is
-    // nothing left to wait for.
-    if child.kill().is_ok() {
-        let _reaped = child.wait();
+        if !progressed {
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 }
 
