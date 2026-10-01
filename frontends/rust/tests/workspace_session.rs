@@ -339,7 +339,13 @@ fn workspace_lane_applies_selected_editor_buffers_and_discards_failed_transactio
             );
             let lease = lane.begin(key_for(&current)?, &current, control())?;
             assert!(
-                nested_module_resolves(lease.workspace(), &root, renamed_root_source, control(),)?,
+                named_path_resolves(
+                    lease.workspace(),
+                    &root,
+                    renamed_root_source,
+                    "baz::value",
+                    control(),
+                )?,
                 "a renamed module buffer must resolve at its selected lexical path"
             );
             assert!(!root.join("src/foo/baz.rs").exists());
@@ -574,8 +580,11 @@ fn workspace_overlay_preserves_symlinked_module_vfs_identity()
         root.join("Cargo.toml"),
         "[package]\nname = \"symlink_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
     )?;
-    let root_source =
-        "#[path = \"alias.rs\"] mod alias;\npub fn value() -> u8 { alias::value() }\n";
+    let root_source = concat!(
+        "#[path = \"alias.rs\"] mod alias;\n",
+        "#[path = \"real.rs\"] mod physical;\n",
+        "pub fn value() -> u8 { alias::value().wrapping_add(physical::physical_value()) }\n",
+    );
     let disk_target = "pub fn value() -> u8 { 1 }\n";
     let editor_buffer = "pub fn value() -> u8 { 9 }\n";
     let editor_target = "pub fn physical_value() -> u8 { 7 }\n";
