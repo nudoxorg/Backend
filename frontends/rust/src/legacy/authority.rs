@@ -1097,7 +1097,8 @@ fn resolve_absolute_source_path(
 impl RustWorkspaceSessionKey {
     /// Creates a key from the exact authority, environment, target, and current source path set.
     ///
-    /// Paths are relative to `root` and must be normalized and strictly ordered.
+    /// Paths are relative to `root` and must use normalized UTF-8 slash-separated spelling,
+    /// ordered strictly by that spelling's bytes.
     pub fn new(
         root: impl AsRef<Path>,
         toolchain: &RustToolchain,
@@ -1118,11 +1119,13 @@ impl RustWorkspaceSessionKey {
                 maximum: MAX_RUST_WORKSPACE_SESSION_SOURCES,
             });
         }
-        let mut previous: Option<&Path> = None;
+        let mut previous: Option<&str> = None;
         let mut canonical_source_paths = Vec::with_capacity(source_paths.len());
         for path in source_paths {
+            let spelling = path.to_str();
             if !is_normalized_relative_path(path)
-                || previous.is_some_and(|previous| previous >= path.as_path())
+                || spelling
+                    .is_some_and(|spelling| previous.is_some_and(|previous| previous >= spelling))
             {
                 return Err(RustAuthorityError::SessionSourcePath { path: path.clone() });
             }
@@ -1144,7 +1147,7 @@ impl RustWorkspaceSessionKey {
                 });
             }
             canonical_source_paths.push(canonical);
-            previous = Some(path);
+            previous = spelling;
         }
         let mut selected_features = features
             .features

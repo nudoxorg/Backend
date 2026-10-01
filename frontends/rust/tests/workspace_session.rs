@@ -18,6 +18,71 @@ use ra_ap_syntax::AstNode;
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+#[test]
+fn workspace_session_key_orders_normalized_paths_by_spelling()
+-> Result<(), Box<dyn std::error::Error>> {
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!(
+        "backend-rust-workspace-path-order-{nonce}-{sequence}"
+    ));
+    fs::create_dir_all(root.join("src/server/waiter"))?;
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"path_order_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )?;
+    fs::write(root.join("src/server/waiter.rs"), "")?;
+    fs::write(root.join("src/server/waiter/tests.rs"), "")?;
+
+    let outcome = (|| {
+        let toolchain = RustToolchain::discover(rustc_path())?;
+        let make_key = |source_paths: &[PathBuf]| {
+            RustWorkspaceSessionKey::new(
+                &root,
+                &toolchain,
+                RustEdition::Rust2024,
+                Stage::LowerIr,
+                RustFeatureControl::default(),
+                RustCargoMetadataPolicy::Offline,
+                None,
+                None,
+                None,
+                [0x72; 32],
+                source_paths,
+            )
+        };
+
+        let spelling_order = [
+            PathBuf::from("src/server/waiter.rs"),
+            PathBuf::from("src/server/waiter/tests.rs"),
+        ];
+        let key = make_key(&spelling_order)?;
+        assert_eq!(key.source_paths(), &spelling_order);
+
+        let reversed = [spelling_order[1].clone(), spelling_order[0].clone()];
+        assert!(matches!(
+            make_key(&reversed),
+            Err(RustAuthorityError::SessionSourcePath { .. })
+        ));
+
+        let duplicate = [spelling_order[0].clone(), spelling_order[0].clone()];
+        assert!(matches!(
+            make_key(&duplicate),
+            Err(RustAuthorityError::SessionSourcePath { .. })
+        ));
+
+        let non_normalized = [PathBuf::from("src/server/../server/waiter.rs")];
+        assert!(matches!(
+            make_key(&non_normalized),
+            Err(RustAuthorityError::SessionSourcePath { .. })
+        ));
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })();
+
+    let _ = fs::remove_dir_all(&root);
+    outcome
+}
+
 #[cfg(unix)]
 #[test]
 fn workspace_lane_preserves_the_selected_cargo_metadata_policy()
@@ -586,7 +651,12 @@ fn production_session_overlay_keeps_backend_present_unconditional_module_owned()
 
     let mut source_rows = Vec::new();
     collect_rust_sources(&package_root, &package_root, &mut source_rows)?;
-    source_rows.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    source_rows.sort_unstable_by(|left, right| {
+        left.0
+            .to_str()
+            .expect("workspace source paths use UTF-8")
+            .cmp(right.0.to_str().expect("workspace source paths use UTF-8"))
+    });
     assert!(
         source_rows.len() > 2,
         "fixture must cover the full package frontier"
