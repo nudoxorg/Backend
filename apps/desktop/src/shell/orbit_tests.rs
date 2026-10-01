@@ -69,6 +69,7 @@ impl PageReader for Growing {
                     package: PackageRef::parse(&format!("/cache/src/{name}")).expect("a package"),
                     name: Arc::from(*name),
                     readiness: Readiness::Ready,
+                    verified_registry_release: None,
                 })
                 .collect::<Vec<_>>();
             return Ok(PageValue::Orbit(OrbitModel {

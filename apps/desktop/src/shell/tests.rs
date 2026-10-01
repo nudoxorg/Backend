@@ -231,6 +231,7 @@ impl PageReader for Fixture {
                     package: package(),
                     name: Arc::from("present"),
                     readiness: Readiness::Ready,
+                    verified_registry_release: None,
                 }])),
                 projects: Known::Known(Arc::from([])),
                 explore: Known::Unknown(unknown(GapReason::NotServed)),

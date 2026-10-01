@@ -4,6 +4,56 @@ use super::common::{Known, PackageRef};
 use super::package::PackageRecord;
 use std::sync::Arc;
 
+/// An exact Cargo package URL admitted from one local registry tree by the
+/// active registry source. This is an in-process read receipt, not a fact
+/// that may survive serialization: a new composition must re-admit it.
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct VerifiedRegistryRelease {
+    package: PackageRef,
+    authority: Arc<str>,
+    generation: u64,
+}
+
+impl std::fmt::Debug for VerifiedRegistryRelease {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("VerifiedRegistryRelease")
+            .field("package", &self.package)
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+
+impl VerifiedRegistryRelease {
+    /// Records the owner worker's manifest and registry-source checks.
+    #[must_use]
+    pub(crate) fn from_checked_release(
+        package: PackageRef,
+        authority: Arc<str>,
+        generation: u64,
+    ) -> Self {
+        Self {
+            package,
+            authority,
+            generation,
+        }
+    }
+
+    /// Whether this proof names the resolver's exact purl under the current
+    /// registry composition.
+    #[must_use]
+    pub(crate) fn matches(
+        &self,
+        package: &PackageRef,
+        authority: &str,
+        generation: u64,
+    ) -> bool {
+        self.package == *package
+            && self.authority.as_ref() == authority
+            && self.generation == generation
+    }
+}
+
 /// Readiness of one indexed package on the shelf, as its row says.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub enum Readiness {
@@ -24,6 +74,11 @@ pub struct IndexedPackage {
     pub name: Arc<str>,
     /// Readiness the owner published.
     pub readiness: Readiness,
+    /// Exact registry identity of a verified local tree, admitted on the
+    /// Orbit read worker. It is intentionally not persisted: after a restart
+    /// or composition change, the source must be checked again.
+    #[serde(skip)]
+    pub(crate) verified_registry_release: Option<VerifiedRegistryRelease>,
 }
 
 /// One project (a named group of pinned packages).

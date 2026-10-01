@@ -16,7 +16,7 @@ use facet::data::release::{
     Change, Crate, RegistryFact as FacetRegistryFact, ReleaseDiff, Severity, SourceAvailability,
     Version, What,
 };
-use gpui::{Context, Global};
+use gpui::{App, Context, Global};
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
@@ -54,6 +54,36 @@ struct ReleaseReads(Memo<ReleaseKey, Result<Arc<ReleaseData>, Arc<str>>>);
 
 impl Global for ReleaseReads {}
 
+/// Desktop UI tests can seed a clearly test-only exact package response. The
+/// production reader never consults this global; it is absent from release
+/// builds and keeps old display fixtures out of the owner-backed path.
+#[cfg(test)]
+#[derive(Default)]
+struct TestReleaseReads(HashMap<PackageRef, Arc<ReleaseData>>);
+
+#[cfg(test)]
+impl Global for TestReleaseReads {}
+
+/// Installs explicit local release data for a UI test, keyed by the exact
+/// pinned package URL the test page reads.
+#[cfg(test)]
+pub(crate) fn install_test_fixtures(crates: &[Crate], cx: &mut App) {
+    let mut fixtures = HashMap::new();
+    for krate in crates {
+        let Ok(package) = PackageRef::parse(&format!("pkg:cargo/{}@{}", krate.name, krate.pinned)) else {
+            continue;
+        };
+        fixtures.insert(
+            package,
+            Arc::new(ReleaseData {
+                krate: Arc::new(krate.clone()),
+                note: None,
+            }),
+        );
+    }
+    cx.set_global(TestReleaseReads(fixtures));
+}
+
 impl ReleaseReads {
     fn new() -> Self {
         Self(Memo::new_cancellable(
@@ -82,6 +112,13 @@ pub(crate) fn get<T: 'static>(
     compare_to: Option<&str>,
     cx: &mut Context<T>,
 ) -> Read {
+    #[cfg(test)]
+    if let Some(data) = cx
+        .try_global::<TestReleaseReads>()
+        .and_then(|fixtures| fixtures.0.get(package))
+    {
+        return Read::Ready(Arc::clone(data));
+    }
     let Some(composition) = crate::host::registry::composed() else {
         return Read::Unavailable(Arc::from("the local registry reader is not ready yet"));
     };

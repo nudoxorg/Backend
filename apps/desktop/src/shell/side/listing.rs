@@ -1078,6 +1078,7 @@ mod tests {
             name: package.display_name().into(),
             package,
             readiness: crate::model::pages::Readiness::Ready,
+            verified_registry_release: None,
         }
     }
 

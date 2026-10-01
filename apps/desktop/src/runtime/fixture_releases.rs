@@ -79,7 +79,9 @@ pub(crate) fn spelled(release: &Crate, version: &str) -> Option<gpui::SharedStri
 #[cfg(test)]
 pub(crate) fn install(cx: &mut App) {
     let releases = Releases::parsing();
-    releases.0.seed(Fixture::Releases, facet::data::release::fixture::crates());
+    let fixtures = facet::data::release::fixture::crates();
+    releases.0.seed(Fixture::Releases, fixtures);
+    crate::runtime::releases::install_test_fixtures(fixtures, cx);
     cx.set_global(releases);
 }
 

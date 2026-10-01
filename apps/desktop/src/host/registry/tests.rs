@@ -255,6 +255,11 @@ fn repeated_release_trees_are_not_chosen_by_directory_order() {
         panic!("expected ambiguity, got {error:?}")
     };
     assert_eq!(paths.len(), 2);
+    assert_eq!(
+        source.package_identity_of(&home.join("registry/src/index.crates.io-a/tiny-crate-1.2.3")),
+        None,
+        "duplicate source roots cannot mint one package identity"
+    );
     assert!(matches!(
         source.availability(&release),
         Availability::Ambiguous { indexes } if indexes.len() == 2
@@ -267,6 +272,55 @@ fn repeated_release_trees_are_not_chosen_by_directory_order() {
             .as_str()
     );
     std::fs::remove_dir_all(source.home).expect("remove temporary registry");
+}
+
+#[test]
+fn only_a_uniquely_admitted_crates_io_tree_gets_an_unqualified_package_identity() {
+    let home = scratch("identity-home");
+    let release = release("tiny-crate", "1.2.3");
+    let tree = home
+        .join("registry/src/index.crates.io-test")
+        .join(release.stem());
+    std::fs::create_dir_all(&tree).expect("registry source tree");
+    std::fs::write(
+        tree.join("Cargo.toml"),
+        b"[package]\nname = \"tiny-crate\"\nversion = \"1.2.3\"\n",
+    )
+    .expect("manifest");
+    let source = CargoCache::at(home.clone(), scratch("identity-unpacked"));
+    let identity = source
+        .package_identity_of(&tree)
+        .expect("the exact crates.io source identity is supported");
+    assert_eq!(identity.release, release);
+    assert_eq!(
+        identity.package.as_str(),
+        "pkg:cargo/tiny-crate@1.2.3",
+        "crates.io has its canonical unqualified package URL"
+    );
+    std::fs::remove_dir_all(home).expect("remove crates.io fixture");
+
+    let custom_home = scratch("custom-identity-home");
+    let custom_index = custom_home.join("registry/src/index.private.test");
+    let custom_tree = custom_index.join(release.stem());
+    std::fs::create_dir_all(&custom_tree).expect("custom registry source tree");
+    std::fs::write(
+        custom_tree.join("Cargo.toml"),
+        b"[package]\nname = \"tiny-crate\"\nversion = \"1.2.3\"\n",
+    )
+    .expect("manifest");
+    let custom = CargoCache {
+        home: custom_home,
+        source_root: Some(custom_index),
+        unpacked: scratch("custom-identity-unpacked"),
+    };
+    assert_eq!(custom.release_of(&custom_tree), Some(release));
+    assert_eq!(
+        custom.package_identity_of(&custom_tree),
+        None,
+        "this source cannot invent a qualified URL for an arbitrary custom index"
+    );
+    std::fs::remove_dir_all(home).expect("remove temporary registry");
+    std::fs::remove_dir_all(custom_home).expect("remove custom registry");
 }
 
 #[test]
@@ -378,6 +432,11 @@ fn an_archive_unpacks_to_exactly_the_files_cargo_unpacked() {
         Some(anyhow.clone()),
         "an unpacked tree is known as its release"
     );
+    let identity = source_cache
+        .package_identity_of(&tree.root)
+        .expect("the verified app cache keeps its unique crates.io identity");
+    assert_eq!(identity.release, anyhow);
+    assert_eq!(identity.package.as_str(), anyhow.purl());
     let cargo = source().cargo_tree(&anyhow).expect("cargo unpacked it too");
     let mut theirs = files(&cargo);
     theirs.remove(Path::new(".cargo-ok"));

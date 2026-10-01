@@ -21,6 +21,7 @@ use crate::model::pages::{
     SourceSite, SourceText, SourceView, Standing, SymbolLink, SymbolPage, SymbolRef, TokenClass,
     TreeNode, TreeOpener, TreeSubject, VersionEntry,
 };
+use crate::model::pages::VerifiedRegistryRelease;
 use backend_client::ClientError;
 use backend_library::{
     DeclarationKind, Document, Fragment, GraphEdgeKind, GraphNodeId, GraphRelation, HealthReport,
@@ -2239,6 +2240,9 @@ pub fn search_rows(
 pub struct OrbitInputs<'a> {
     /// `packages` reply rows (the shelf).
     pub packages: Result<&'a [Row], &'a ClientError>,
+    /// Worker-admitted exact identities for local rows that belong to the
+    /// active registry source. Other local paths have no registry proof.
+    pub(crate) verified_registry_releases: &'a HashMap<PackageRef, VerifiedRegistryRelease>,
     /// `projects` surface reply.
     pub projects: Result<&'a SurfaceReply, &'a ClientError>,
     /// `explore` surface reply.
@@ -2275,6 +2279,10 @@ pub fn orbit_model(inputs: &OrbitInputs<'_>) -> OrbitModel {
                     let package = PackageRef::parse(&row.label).ok()?;
                     Some(IndexedPackage {
                         name: Arc::from(package.display_name()),
+                        verified_registry_release: inputs
+                            .verified_registry_releases
+                            .get(&package)
+                            .cloned(),
                         readiness: match row.state {
                             backend_library::RowState::Ready => Readiness::Ready,
                             backend_library::RowState::Loading => Readiness::Indexing,

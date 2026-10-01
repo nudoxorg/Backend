@@ -216,8 +216,8 @@ impl PackageRef {
     /// The registry release a previously verified local root is, as
     /// `(name, version)`, when it is a registry package's unpacked source: cargo's
     /// cache (`…/registry/src/index.…/NAME-VERSION`) or this app's own
-    /// (`…/registry-sources/NAME-VERSION/NAME-VERSION`). The tree is named
-    /// `{name}-{version}` after its manifest. This lookup is memory-only so
+    /// (`…/registry-sources/AUTHORITY/NAME-VERSION/CHECKSUM/NAME-VERSION`). The
+    /// tree is named `{name}-{version}` after its manifest. This lookup is memory-only so
     /// UI rendering never opens or parses a manifest. A read worker admits
     /// the root with [`Self::verify_registry_manifest`] first.
     #[must_use]
@@ -239,8 +239,15 @@ impl PackageRef {
         let parent_name = parent.file_name()?.to_str()?;
         let in_cargo = parent_name.starts_with("index.")
             && parent.parent().is_some_and(|src| src.ends_with("registry/src"));
-        let in_app = parent_name == stem
-            && parent.parent().is_some_and(|dir| dir.file_name().is_some_and(|name| name == "registry-sources"));
+        let in_app = (parent_name == stem
+            && parent.parent().is_some_and(|dir| dir.file_name().is_some_and(|name| name == "registry-sources")))
+            || parent.parent().is_some_and(|release_dir| {
+                release_dir.file_name().is_some_and(|name| name == stem)
+                    && release_dir
+                        .parent()
+                        .and_then(std::path::Path::parent)
+                        .is_some_and(|registry| registry.file_name().is_some_and(|name| name == "registry-sources"))
+            });
         if !(in_cargo || in_app) {
             return None;
         }

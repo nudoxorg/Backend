@@ -20,6 +20,7 @@
 pub(crate) use crate::model::release::{
     Availability, CrateName, Published, RegistryFact, Release, Version,
 };
+use crate::model::pages::PackageRef;
 use facet::marks::semver;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -168,6 +169,13 @@ pub(crate) trait RegistrySource: Send + Sync {
     /// The release `root` is, when it is one of this source's trees.
     fn release_of(&self, root: &Path) -> Option<Release>;
 
+    /// Exact package identity for one source-admitted tree. Implementations
+    /// must preserve registry origin in the package URL; sources that cannot
+    /// establish it leave the identity unavailable.
+    fn package_identity_of(&self, _root: &Path) -> Option<RegistryPackageIdentity> {
+        None
+    }
+
     /// The release's tree, unpacking its archive when that is all there is.
     ///
     /// # Errors
@@ -187,6 +195,15 @@ pub(crate) trait RegistrySource: Send + Sync {
             | Availability::Ambiguous { .. } => None,
         }
     }
+}
+
+/// A release identity tied to the source that admitted its exact tree.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RegistryPackageIdentity {
+    /// Name and version verified against the local manifest.
+    pub(crate) release: Release,
+    /// Full package URL including its registry qualifier when required.
+    pub(crate) package: PackageRef,
 }
 
 /// The local Cargo cache, and a private directory of this app's own for
@@ -705,6 +722,31 @@ impl RegistrySource for CargoCache {
             }
             _ => None,
         }
+    }
+
+    fn package_identity_of(&self, root: &Path) -> Option<RegistryPackageIdentity> {
+        let root = root.canonicalize().ok()?;
+        let release = self.release_of(&root)?;
+        let is_crates_io_tree = root
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|name| name.to_string_lossy().starts_with("index.crates.io-"));
+        // App-owned extracted trees do not carry an index directory in their
+        // path. They are attributable only while the current crates.io index
+        // supplies the unique checksum that admitted this exact cache tree.
+        let is_current_app_tree = self
+            .unique_release_checksum(&release)
+            .and_then(|checksum| self.own_tree(&release, &checksum))
+            .and_then(|tree| tree.canonicalize().ok())
+            .is_some_and(|tree| tree == root);
+        if !(is_crates_io_tree || is_current_app_tree) {
+            // This CargoCache implementation cannot derive a stable source
+            // URL for an arbitrary custom index. It must not flatten that
+            // origin to an unqualified `pkg:cargo/name@version` identity.
+            return None;
+        }
+        let package = PackageRef::parse(&release.purl()).ok()?;
+        Some(RegistryPackageIdentity { release, package })
     }
 
     fn resolve(&self, release: &Release) -> Result<SourceTree, SourceError> {

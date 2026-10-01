@@ -27,6 +27,7 @@ pub use common::{
 pub use health::{FaultProgress, HealthModel, IngestModel, LanguageProgress, MissingCapability};
 pub use key::{PageKey, SearchQuery};
 pub use lines::{Resolution, UseLine};
+pub(crate) use orbit::VerifiedRegistryRelease;
 pub use orbit::{
     IndexedPackage, OrbitModel, OrbitProject, Readiness, TreeNode, TreeOpener, TreeSubject,
 };

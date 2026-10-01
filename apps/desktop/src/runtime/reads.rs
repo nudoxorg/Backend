@@ -25,10 +25,11 @@ use super::liveness::{report_if_dead, transport_break};
 use super::page_mapping::{self, OutlineIndex, PackageInputs, SymbolInputs};
 use super::wake::{WakeReceiver, WakeSender, wake_channel};
 use crate::core::{ErrorValue, FaultCode, LocalProjectId};
+use crate::host::registry::{RegistryPackageIdentity, RegistrySource};
 use crate::model::local_package::LocalPackageLoader;
 use crate::model::pages::{
     Gap, GapReason, Generation, PackageRef, PageKey, PageValue, ReadFailure, SearchContinuation,
-    SearchQuery, SymbolRef,
+    SearchQuery, SymbolRef, VerifiedRegistryRelease,
 };
 use backend_client::{ClientError, Session};
 use backend_library::{
@@ -56,6 +57,10 @@ const EXPLORE_LIMIT: u16 = 64;
 /// own fixed worker slots; a burst of distinct hover targets cannot grow the
 /// queue or its keyed page slots without bound.
 const MAX_QUEUED_READS: usize = 64;
+/// Maximum local Cargo-shaped roots for which one Orbit read admits registry
+/// identity. Above this bound it grants no partial proof, since an unseen row
+/// could make the exact release ambiguous.
+const MAX_REGISTRY_ROOTS_PER_ORBIT: usize = 2_048;
 
 /// What one job reads.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1607,9 +1612,20 @@ fn compose_orbit(
     if let (Err(error), Err(_), Err(_), Err(_)) = (&packages, &projects, &explore, &tree) {
         return Err(failure(error));
     }
+    let verified_registry_releases = match (
+        packages.as_ref().ok(),
+        crate::host::registry::composed(),
+    ) {
+        (Some(snapshot), Some(composition)) => {
+            verified_registry_releases(snapshot.root.rows(), &composition, context.cancel)?
+        }
+        _ => std::collections::HashMap::new(),
+    };
+    check(context.cancel)?;
     Ok(PageValue::Orbit(page_mapping::orbit_model(
         &page_mapping::OrbitInputs {
             packages: packages.as_ref().map(|snapshot| snapshot.root.rows()),
+            verified_registry_releases: &verified_registry_releases,
             projects: projects.as_ref(),
             explore: explore.as_ref(),
             tree: tree.as_ref(),
@@ -1617,15 +1633,266 @@ fn compose_orbit(
     )))
 }
 
+/// Admits exact package identities for local registry trees while this
+/// worker still has access to the manifests and the selected registry source.
+/// A manifest-shaped directory alone is not a registry membership fact.
+fn verified_registry_releases(
+    rows: &[Row],
+    composition: &crate::host::registry::Composition,
+    cancel: &CancellationToken,
+) -> Result<std::collections::HashMap<PackageRef, VerifiedRegistryRelease>, ReadFailure> {
+    let mut admitted = std::collections::HashMap::new();
+    let mut registry_roots = 0;
+    for (index, row) in rows.iter().enumerate() {
+        if index % 64 == 0 {
+            check(cancel)?;
+        }
+        if !matches!(&row.id, backend_library::RowId::Package(_)) {
+            continue;
+        }
+        let Ok(root) = PackageRef::parse(&row.label) else {
+            continue;
+        };
+        if !root.is_local() || root.registry_shape().is_none() {
+            continue;
+        }
+        registry_roots += 1;
+        if registry_roots > MAX_REGISTRY_ROOTS_PER_ORBIT {
+            return Ok(std::collections::HashMap::new());
+        }
+        // Ask the current source for an origin-preserving identity for this
+        // exact root. A source unable to represent its origin in a package
+        // URL cannot grant a dependency destination. The manifest confirms
+        // the identity's name and version; neither path spelling nor
+        // Cargo.toml alone is authority.
+        let Some(identity) = composition
+            .source
+            .package_identity_of(Path::new(root.as_str()))
+        else {
+            continue;
+        };
+        if root.verify_registry_manifest().as_ref() != Some(&identity.release) {
+            continue;
+        }
+        admitted.insert(
+            root,
+            VerifiedRegistryRelease::from_checked_release(
+                identity.package,
+                Arc::clone(&composition.authority),
+                composition.generation.0,
+            ),
+        );
+    }
+    Ok(admitted)
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::host::registry::{
+        Availability, CrateName, Published, RegistryPackageIdentity, SourceError, SourceTree,
+    };
+    use crate::model::release::Release;
     use crate::model::ServiceMode;
     use crate::model::pages::{HealthModel, IngestModel};
     use crate::runtime::owner::{OwnerFault, OwnerGate, OwnerState};
+    use backend_library::{Basis, Row, RowId, object_version, package_key, view_state_root};
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
+
+    struct ExactRegistryTree {
+        root: PathBuf,
+        release: Release,
+    }
+
+    impl RegistrySource for ExactRegistryTree {
+        fn releases(&self, _: &CrateName) -> Vec<Published> {
+            Vec::new()
+        }
+
+        fn offline(&self, _: &str, _: usize) -> Vec<Release> {
+            Vec::new()
+        }
+
+        fn availability(&self, release: &Release) -> Availability {
+            if release == &self.release {
+                Availability::Unpacked(self.root.clone())
+            } else {
+                Availability::Download
+            }
+        }
+
+        fn release_of(&self, root: &Path) -> Option<Release> {
+            root.canonicalize()
+                .is_ok_and(|root| root == self.root)
+                .then(|| self.release.clone())
+        }
+
+        fn package_identity_of(&self, root: &Path) -> Option<RegistryPackageIdentity> {
+            let release = self.release_of(root)?;
+            let package = PackageRef::parse(&format!(
+                "{}?repository_url=https%3A%2F%2Fregistry.example.test%2Findex",
+                release.purl()
+            ))
+            .ok()?;
+            Some(RegistryPackageIdentity { release, package })
+        }
+
+        fn resolve(&self, release: &Release) -> Result<SourceTree, SourceError> {
+            Err(SourceError::NeedsDownload(release.clone()))
+        }
+    }
+
+    fn package_row(label: &str) -> Row {
+        Row::new(
+            RowId::Package(package_key(label)),
+            Basis::new(view_state_root(&[]), object_version(b"orbit-registry-proof")),
+            label,
+        )
+    }
+
+    /// The Orbit worker binds a local tree to the selected registry source
+    /// only after both its manifest and that source's exact root membership
+    /// agree. A similarly named local directory remains unproved.
+    #[test]
+    fn orbit_registry_identity_requires_the_exact_verified_manifest_and_source_root() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+
+        let base = std::env::temp_dir().join(format!(
+            "nudox-orbit-registry-proof-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
+        ));
+        let root = base
+            .join("registry")
+            .join("src")
+            .join("index.test")
+            .join("toml-0.8.23");
+        std::fs::create_dir_all(&root).expect("registry source root");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"toml\"\nversion = \"0.8.23\"\n",
+        )
+        .expect("manifest");
+        let other = base.join("workspace").join("toml-0.8.23");
+        std::fs::create_dir_all(&other).expect("other local root");
+        std::fs::write(
+            other.join("Cargo.toml"),
+            "[package]\nname = \"toml\"\nversion = \"0.8.23\"\n",
+        )
+        .expect("other manifest");
+
+        let release = Release::new("toml", "0.8.23").expect("release");
+        let source = Arc::new(ExactRegistryTree {
+            root: root.canonicalize().expect("canonical source"),
+            release: release.clone(),
+        });
+        let composition = crate::host::registry::Composition {
+            endpoint: base.join("owner.sock"),
+            source,
+            authority: Arc::from("opaque-test-authority"),
+            generation: crate::host::registry::CompositionGeneration(43),
+            refusals: None,
+        };
+        let indexed = verified_registry_releases(
+            &[
+                package_row(root.to_str().expect("source path")),
+                package_row(other.to_str().expect("other path")),
+            ],
+            &composition,
+            &CancellationToken::new(),
+        )
+        .expect("the fixture is not cancelled");
+        let proof = indexed
+            .get(&PackageRef::parse(root.to_str().expect("source path")).expect("package"))
+            .expect("the exact registry member has a proof");
+        let purl = PackageRef::parse(&format!(
+            "{}?repository_url=https%3A%2F%2Fregistry.example.test%2Findex",
+            release.purl()
+        ))
+        .expect("origin-qualified exact purl");
+        assert!(proof.matches(&purl, "opaque-test-authority", 43));
+        assert!(
+            !proof.matches(
+                &PackageRef::parse(&release.purl()).expect("unqualified coordinate"),
+                "opaque-test-authority",
+                43,
+            ),
+            "the registry origin is part of the dependency identity"
+        );
+        assert!(
+            !proof.matches(
+                &PackageRef::parse(&format!(
+                    "{}?repository_url=https%3A%2F%2Fother.example%2Findex",
+                    release.purl()
+                ))
+                .expect("other qualified origin"),
+                "opaque-test-authority",
+                43,
+            ),
+            "equal name and version from another origin cannot reuse this proof"
+        );
+        assert!(!proof.matches(&purl, "different-authority", 43));
+        assert!(!proof.matches(&purl, "opaque-test-authority", 44));
+        assert!(
+            !indexed.contains_key(
+                &PackageRef::parse(other.to_str().expect("other path")).expect("package")
+            ),
+            "a matching manifest outside the selected registry source has no proof"
+        );
+
+        // The app's own cache nests the release tree below its authority and
+        // checksum. It is still a registry root, but only the selected source
+        // may attest it.
+        let app_root = base
+            .join("registry-sources")
+            .join("authority-digest")
+            .join("toml-0.8.23")
+            .join("checksum")
+            .join("toml-0.8.23");
+        std::fs::create_dir_all(&app_root).expect("app-owned registry source root");
+        std::fs::write(
+            app_root.join("Cargo.toml"),
+            "[package]\nname = \"toml\"\nversion = \"0.8.23\"\n",
+        )
+        .expect("app-owned manifest");
+        let app_source = Arc::new(ExactRegistryTree {
+            root: app_root.canonicalize().expect("canonical app source"),
+            release: release.clone(),
+        });
+        let app_composition = crate::host::registry::Composition {
+            endpoint: base.join("owner.sock"),
+            source: app_source,
+            authority: Arc::from("opaque-test-authority"),
+            generation: crate::host::registry::CompositionGeneration(44),
+            refusals: None,
+        };
+        let app_indexed = verified_registry_releases(
+            &[package_row(app_root.to_str().expect("app source path"))],
+            &app_composition,
+            &CancellationToken::new(),
+        )
+        .expect("the fixture is not cancelled");
+        let app_package = PackageRef::parse(app_root.to_str().expect("app source path"))
+            .expect("app package");
+        assert!(
+            app_indexed
+                .get(&app_package)
+                .is_some_and(|proof| proof.matches(&purl, "opaque-test-authority", 44)),
+            "the exact app-owned cache layout can be admitted by its current registry source"
+        );
+
+        std::fs::remove_dir_all(base).expect("remove source fixture");
+        assert!(
+            PackageRef::parse(root.to_str().expect("source path"))
+                .expect("package")
+                .verify_registry_manifest()
+                .is_none(),
+            "removing the source also evicts its memory-only manifest admission"
+        );
+    }
 
     #[test]
     fn closing_the_read_pool_wakes_a_page_waiting_for_owner_startup() {

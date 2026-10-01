@@ -31,6 +31,37 @@ use gpui::{
 use std::rc::Rc;
 use std::sync::Arc;
 
+#[cfg(test)]
+thread_local! {
+    static TEST_REGISTRY_BINDING: std::cell::RefCell<Option<(Arc<str>, u64)>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) struct RegistryBindingTestGuard(Option<(Arc<str>, u64)>);
+
+#[cfg(test)]
+impl Drop for RegistryBindingTestGuard {
+    fn drop(&mut self) {
+        TEST_REGISTRY_BINDING.with(|binding| {
+            *binding.borrow_mut() = self.0.take();
+        });
+    }
+}
+
+/// A shell test's typed worker receipt must be checked against one explicit
+/// authority and generation, without mutating process-global registry state.
+#[cfg(test)]
+pub(super) fn use_registry_binding_for_test(
+    authority: impl Into<Arc<str>>,
+    generation: u64,
+) -> RegistryBindingTestGuard {
+    let previous = TEST_REGISTRY_BINDING.with(|binding| {
+        binding
+            .replace(Some((authority.into(), generation)))
+    });
+    RegistryBindingTestGuard(previous)
+}
+
 mod data;
 mod fluid;
 mod folio;
@@ -570,11 +601,44 @@ fn in_the_library<'a>(
     dependency: &Dependency,
     indexed: &'a [crate::model::pages::IndexedPackage],
 ) -> Option<&'a PackageRef> {
+    #[cfg(test)]
+    if let Some((authority, generation)) = TEST_REGISTRY_BINDING.with(|binding| binding.borrow().clone()) {
+        return in_the_library_for(dependency, indexed, authority.as_ref(), generation);
+    }
+    let composition = crate::host::registry::composed()?;
+    in_the_library_for(
+        dependency,
+        indexed,
+        composition.authority.as_ref(),
+        composition.generation.0,
+    )
+}
+
+/// Resolves only a unique worker-verified local tree whose full package URL
+/// and registry composition match the current provider. A local path, label,
+/// name, or version by itself cannot establish a destination.
+fn in_the_library_for<'a>(
+    dependency: &Dependency,
+    indexed: &'a [crate::model::pages::IndexedPackage],
+    authority: &str,
+    generation: u64,
+) -> Option<&'a PackageRef> {
     let resolved = dependency.resolved.as_ref()?;
-    indexed
-        .iter()
-        .find(|candidate| &candidate.package == resolved)
-        .map(|candidate| &candidate.package)
+    let mut found = None;
+    for candidate in indexed {
+        let matches = candidate
+            .verified_registry_release
+            .as_ref()
+            .is_some_and(|proof| proof.matches(resolved, authority, generation));
+        if !matches {
+            continue;
+        }
+        if found.is_some() {
+            return None;
+        }
+        found = Some(&candidate.package);
+    }
+    found
 }
 
 /// Follows a dependency mark's link to the package it names; the page is

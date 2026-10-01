@@ -642,9 +642,9 @@ fn the_page_holds_together_at_every_width(cx: &mut TestAppContext) {
 
 // ------------------------------------------------------------------ releases
 
-/// A crate named like one the registry's index cache knows (`toml`), so its
-/// releases can be read the way the page reads them.
-fn krate_named_toml() -> PathBuf {
+/// A local crate whose manifest happens to use registry-looking coordinates.
+/// The path, rather than its name and version, remains its package identity.
+fn local_toml_named_root() -> PathBuf {
     static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -661,6 +661,63 @@ fn krate_named_toml() -> PathBuf {
     dir
 }
 
+fn route_for_package(package: &PackageRef) -> crate::navigation::Route {
+    crate::navigation::Route::Package(crate::navigation::PackageRoute {
+        project: None,
+        package: crate::core::PackageId::new(package.as_str()).expect("package route"),
+        lane: crate::navigation::PackageLane::Overview,
+        selected: None,
+        at: None,
+    })
+}
+
+struct PackageAtRequest;
+
+impl crate::runtime::reads::PageReader for PackageAtRequest {
+    fn read(
+        &mut self,
+        request: &crate::runtime::reads::ReadRequest,
+        context: &crate::runtime::reads::ReadContext<'_>,
+    ) -> Result<crate::model::pages::PageValue, crate::model::pages::ReadFailure> {
+        let crate::runtime::reads::ReadRequest::Package(package) = request else {
+            return crate::shell::tests::Fixture.read(request, context);
+        };
+        let mut about = dossier();
+        about.package = package.clone();
+        Ok(crate::model::pages::PageValue::Package(about))
+    }
+}
+
+struct RegistryPackagePage;
+
+impl crate::runtime::reads::PageReader for RegistryPackagePage {
+    fn read(
+        &mut self,
+        request: &crate::runtime::reads::ReadRequest,
+        context: &crate::runtime::reads::ReadContext<'_>,
+    ) -> Result<crate::model::pages::PageValue, crate::model::pages::ReadFailure> {
+        let crate::runtime::reads::ReadRequest::Package(package) = request else {
+            return crate::shell::tests::Fixture.read(request, context);
+        };
+        let mut about = dossier();
+        about.package = package.clone();
+        let name = package.display_name().to_owned();
+        let entry = |version: &str| crate::model::pages::VersionEntry {
+            package: PackageRef::parse(&format!("pkg:cargo/{name}@{version}"))
+                .expect("release package"),
+            version: Arc::from(version),
+            standing: crate::model::pages::Standing::Available,
+            current: package.version() == Some(version),
+        };
+        about.versions = crate::model::pages::Known::Known(Arc::from([
+            entry("1.1.6"),
+            entry("1.0.0"),
+            entry("0.8.23"),
+        ]));
+        Ok(crate::model::pages::PageValue::Package(about))
+    }
+}
+
 /// The years of the ticker's axis, as painted.
 fn years(ledger: &Ledger) -> Vec<String> {
     ledger
@@ -673,29 +730,30 @@ fn years(ledger: &Ledger) -> Vec<String> {
         .collect()
 }
 
-/// A package the library indexed from an unpacked registry directory has no
-/// version list in its dossier (a local root); the registry's own index
-/// cache still dates its releases, and the page reads them from there.
+/// A local package whose manifest says `toml 0.8.23` is not a registry
+/// package. A registry cache with that release cannot supply its ticker by
+/// manifest name and version alone.
 #[gpui::test]
-fn a_local_root_gets_its_release_ticker_from_the_registry_cache(cx: &mut TestAppContext) {
-    if crate::model::source_facts::registry::releases("toml").len() < 2 {
-        return;
-    }
-    let mut rig = rig(cx, None, 1440.0, 900.0);
-    let facts = source_facts::read(&krate_named_toml(), &std::collections::HashMap::new(), None)
-        .expect("the crate reads");
-    let package = package();
+fn a_local_root_does_not_borrow_a_registry_ticker_by_manifest_identity(cx: &mut TestAppContext) {
+    let dir = local_toml_named_root();
+    let package = PackageRef::parse(dir.to_str().expect("local path")).expect("local package");
+    let route = route_for_package(&package);
+    let pool = crate::runtime::reads::ReadPool::start(1, |_| PackageAtRequest).expect("pool");
+    let mut rig = crate::shell::tests::rig_with_reads(cx, Some(route), 1440.0, 900.0, pool);
+    let facts = source_facts::read(&dir, &std::collections::HashMap::new(), None)
+        .expect("the local source reads");
     rig.cx.update(|_, cx| {
         facet::probe::enable(cx);
         source_facts::install(&package, Reading::Ready(Arc::new(facts)), cx);
+        crate::runtime::fixture_releases::install(cx);
     });
-    rig.go(Intent::Navigate(package_route()));
     let ledger = painted(&mut rig);
     assert!(
-        years(&ledger).len() >= 3,
-        "the ticker's axis is dated: {:?}",
+        years(&ledger).is_empty(),
+        "a local manifest cannot borrow registry years: {:?}",
         ledger.texts.iter().map(|t| &t.key).collect::<Vec<_>>()
     );
+    assert!(!has(&ledger, "pkg-release-"), "there is no registry release door");
     assert!(
         !ledger
             .targets
@@ -705,12 +763,20 @@ fn a_local_root_gets_its_release_ticker_from_the_registry_cache(cx: &mut TestApp
     );
 }
 
-/// Reading another release says so and offers the way out, on a page whose
-/// releases are unknown (no ticker): the banner is not the ticker's.
+/// Reading an exact registry package at another release says so even when the
+/// local owner has no release-history response; the banner is not the ticker's.
 #[gpui::test]
 fn the_past_says_so_and_offers_the_way_back_with_or_without_a_ticker(cx: &mut TestAppContext) {
-    let mut rig = rig(cx, Some(package_route()), 1440.0, 900.0);
-    install(&mut rig);
+    let pinned = PackageRef::parse("pkg:cargo/toml@0.8.23").expect("pinned package");
+    let pool = crate::runtime::reads::ReadPool::start(1, |_| PackageAtRequest).expect("pool");
+    let mut rig = crate::shell::tests::rig_with_reads(
+        cx,
+        Some(route_for_package(&pinned)),
+        1440.0,
+        900.0,
+        pool,
+    );
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
     rig.go(Intent::SetRelease(Some(
         crate::navigation::ReleaseId::new("0.3.0").expect("release"),
     )));
@@ -926,22 +992,23 @@ fn escape_folds_the_open_module_first(cx: &mut TestAppContext) {
     assert_eq!(rig.route(), package_route(), "Esc folded; it did not leave");
 }
 
-/// The ticker's pin, the newest release and the ones that broke the API are
-/// doors: Enter travels to a release, and the way back is the banner's button.
+/// The release history's pin and newest entry are doors: Enter travels to the
+/// selected exact release, and the page says which one it is reading.
 #[gpui::test]
 fn the_releases_are_doors_and_enter_travels_to_one(cx: &mut TestAppContext) {
-    if crate::model::source_facts::registry::releases("toml").len() < 2 {
-        return;
-    }
-    let mut rig = rig(cx, None, 1440.0, 900.0);
-    let facts = source_facts::read(&krate_named_toml(), &std::collections::HashMap::new(), None)
-        .expect("the crate reads");
-    let package = package();
+    let package = PackageRef::parse("pkg:cargo/toml@0.8.23").expect("pinned package");
+    let pool = crate::runtime::reads::ReadPool::start(1, |_| RegistryPackagePage).expect("pool");
+    let mut rig = crate::shell::tests::rig_with_reads(
+        cx,
+        Some(route_for_package(&package)),
+        1440.0,
+        900.0,
+        pool,
+    );
     rig.cx.update(|_, cx| {
+        crate::runtime::fixture_releases::install(cx);
         facet::probe::enable(cx);
-        source_facts::install(&package, Reading::Ready(Arc::new(facts)), cx);
     });
-    rig.go(Intent::Navigate(package_route()));
     let _ = painted(&mut rig);
     walk_to(&mut rig, "pkg-release-newest", 40);
     rig.keys("enter");
@@ -1287,13 +1354,23 @@ fn a_crate_whose_modules_are_private_says_its_names_are_all_at_the_root(cx: &mut
 fn a_dependency_links_to_the_release_the_library_holds() {
     use crate::model::pages::{Dependency, DependencyScope, IndexedPackage, Readiness};
     let home = std::env::var("HOME").unwrap_or_default();
-    let tree = |name: &str| IndexedPackage {
-        package: PackageRef::parse(&format!(
-            "{home}/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/{name}"
-        ))
-        .expect("a tree"),
-        name: Arc::from(name),
-        readiness: Readiness::Ready,
+    let tree = |name: &str| {
+        let release = crate::model::release::Release::from_stem(name).expect("release stem");
+        IndexedPackage {
+            package: PackageRef::parse(&format!(
+                "{home}/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/{name}"
+            ))
+            .expect("a tree"),
+            name: Arc::from(name),
+            readiness: Readiness::Ready,
+            verified_registry_release: Some(
+                crate::model::pages::VerifiedRegistryRelease::from_checked_release(
+                    PackageRef::parse(&release.purl()).expect("exact registry package"),
+                    Arc::from("test-authority"),
+                    7,
+                ),
+            ),
+        }
     };
     // Trees this machine's cargo cache holds (the journeys read the same).
     let library = [
@@ -1309,7 +1386,7 @@ fn a_dependency_links_to_the_release_the_library_holds() {
         resolved: resolved.map(|purl| PackageRef::parse(purl).expect("a purl")),
     };
     let linked = |dependency: &Dependency| {
-        super::in_the_library(dependency, &library).map(|package| {
+        super::in_the_library_for(dependency, &library, "test-authority", 7).map(|package| {
             package
                 .as_str()
                 .rsplit('/')
@@ -1334,6 +1411,15 @@ fn a_dependency_links_to_the_release_the_library_holds() {
         "same display name/version from another ecosystem is not the resolved Cargo package"
     );
     assert_eq!(
+        linked(&wants(
+            "toml",
+            "0.5",
+            Some("pkg:cargo/toml@0.5.11?repository_url=https%3A%2F%2Fother.example"),
+        )),
+        None,
+        "a qualified package from another registry origin cannot alias this unqualified release"
+    );
+    assert_eq!(
         linked(&wants("serde", "1", None)),
         None,
         "a unique display name without resolver evidence is unresolved"
@@ -1343,12 +1429,64 @@ fn a_dependency_links_to_the_release_the_library_holds() {
         None,
         "a package the library does not hold has no link here"
     );
+    assert_eq!(
+        super::in_the_library_for(
+            &wants("toml", "0.5", Some("pkg:cargo/toml@0.5.11")),
+            &library,
+            "another-authority",
+            7,
+        ),
+        None,
+        "a proof from a previous registry authority cannot be reused"
+    );
+    assert_eq!(
+        super::in_the_library_for(
+            &wants("toml", "0.5", Some("pkg:cargo/toml@0.5.11")),
+            &library,
+            "test-authority",
+            8,
+        ),
+        None,
+        "a proof from a replaced registry composition cannot be reused"
+    );
+    let duplicate = [tree("toml-0.5.11"), tree("toml-0.5.11")];
+    assert_eq!(
+        super::in_the_library_for(
+            &wants("toml", "0.5", Some("pkg:cargo/toml@0.5.11")),
+            &duplicate,
+            "test-authority",
+            7,
+        ),
+        None,
+        "two exact candidate roots are ambiguous"
+    );
 }
 
-/// Serves the fixture dossier naming two dependencies: `serde`, whose
-/// release the resolver chose (it has a place to go), and `winnow`, which
-/// nothing resolved (it has none).
-struct Depends;
+/// A test-only owner receipt for one exact registry tree. This keeps the
+/// keyboard journey positive without teaching production to infer authority
+/// from a dependency's display name or version.
+fn serde_registry_tree() -> crate::model::pages::IndexedPackage {
+    use crate::model::pages::{IndexedPackage, Readiness, VerifiedRegistryRelease};
+    let package = PackageRef::parse("/fixture/registry/src/index.test/serde-1.0.229")
+        .expect("local registry tree");
+    let release = PackageRef::parse("pkg:cargo/serde@1.0.229").expect("exact release");
+    IndexedPackage {
+        package,
+        name: Arc::from("serde"),
+        readiness: Readiness::Ready,
+        verified_registry_release: Some(VerifiedRegistryRelease::from_checked_release(
+            release,
+            Arc::from("test-authority"),
+            7,
+        )),
+    }
+}
+
+/// Serves the fixture dossier and one exact worker-admitted registry tree:
+/// `serde`, whose release the resolver chose, and unresolved `winnow`.
+struct Depends {
+    indexed: crate::model::pages::IndexedPackage,
+}
 
 impl crate::runtime::reads::PageReader for Depends {
     fn read(
@@ -1357,6 +1495,20 @@ impl crate::runtime::reads::PageReader for Depends {
         context: &crate::runtime::reads::ReadContext<'_>,
     ) -> Result<crate::model::pages::PageValue, crate::model::pages::ReadFailure> {
         use crate::model::pages::{Dependency, DependencyScope, Known, PageValue};
+        if matches!(request, crate::runtime::reads::ReadRequest::Orbit) {
+            return Ok(PageValue::Orbit(crate::model::pages::OrbitModel {
+                indexed: Known::Known(Arc::from([self.indexed.clone()])),
+                projects: Known::Known(Arc::from([])),
+                explore: Known::Unknown(crate::model::pages::Gap::new(
+                    crate::model::pages::GapReason::NotServed,
+                    "",
+                )),
+                tree: Known::Unknown(crate::model::pages::Gap::new(
+                    crate::model::pages::GapReason::NotServed,
+                    "",
+                )),
+            }));
+        }
         let crate::runtime::reads::ReadRequest::Package(package) = request else {
             return crate::shell::tests::Fixture.read(request, context);
         };
@@ -1385,7 +1537,13 @@ impl crate::runtime::reads::PageReader for Depends {
 /// to go is not a door (dead end #15).
 #[gpui::test]
 fn a_dependency_that_goes_somewhere_is_a_door_and_back_stands_on_it(cx: &mut TestAppContext) {
-    let pool = crate::runtime::reads::ReadPool::start(1, |_| Depends).expect("pool");
+    let _registry = super::use_registry_binding_for_test("test-authority", 7);
+    let indexed = serde_registry_tree();
+    let expected_destination = indexed.package.as_str().to_owned();
+    let pool = crate::runtime::reads::ReadPool::start(1, move |_| Depends {
+        indexed: indexed.clone(),
+    })
+    .expect("pool");
     let mut rig =
         crate::shell::tests::rig_with_reads(cx, Some(package_route()), 1440.0, 900.0, pool);
     rig.cx.update(|_, cx| facet::probe::enable(cx));
@@ -1421,8 +1579,8 @@ fn a_dependency_that_goes_somewhere_is_a_door_and_back_stands_on_it(cx: &mut Tes
     rig.keys("enter");
     let opened = rig.route();
     assert!(
-        format!("{opened:?}").contains("serde@1.0.229"),
-        "Enter opened the release the resolver chose: {opened:?}"
+        format!("{opened:?}").contains(&expected_destination),
+        "Enter opened the exact indexed tree admitted by the test receipt: {opened:?}"
     );
     rig.keys("cmd-[");
     assert_eq!(rig.route(), package_route(), "⌘[ came back");
@@ -1438,7 +1596,12 @@ fn a_dependency_that_goes_somewhere_is_a_door_and_back_stands_on_it(cx: &mut Tes
 /// last stood on the other page (J1 saw it step from a stale place).
 #[gpui::test]
 fn after_back_the_focus_bevel_comes_back_on_the_door_not_flying_in(cx: &mut TestAppContext) {
-    let pool = crate::runtime::reads::ReadPool::start(1, |_| Depends).expect("pool");
+    let _registry = super::use_registry_binding_for_test("test-authority", 7);
+    let indexed = serde_registry_tree();
+    let pool = crate::runtime::reads::ReadPool::start(1, move |_| Depends {
+        indexed: indexed.clone(),
+    })
+    .expect("pool");
     let mut rig =
         crate::shell::tests::rig_with_reads(cx, Some(package_route()), 1440.0, 900.0, pool);
     rig.cx.update(|_, cx| facet::probe::enable(cx));
