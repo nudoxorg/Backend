@@ -239,3 +239,89 @@ fn repeated_route_reversal_survives_large_text_resize_and_stops_requesting_frame
     }
     assert_eq!(rig.cx.update(|_, cx| facet::motion::frames_requested(cx)), requested, "settled motion requests no idle frames");
 }
+
+
+/// Native shell fixture coverage: hold an uncached read at the owner boundary.
+/// The previous body is visible but cannot register targets or activate links;
+/// resize and preference wakes must not turn its internal motion back on.
+/// Live owner/screenshots remain a separate product acceptance gate.
+#[gpui::test]
+fn pending_destination_keeps_one_inert_page_then_back_restores_real_focus(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, px, size};
+    let a = page_route("RelationLabel");
+    let b = page_route("KindGlyph");
+    let mut rig = rig(cx, Some(a.clone()), 1440.0, 900.0);
+    let (leave, click) = rig.shell.read_with(rig.cx, |shell, cx| {
+        shell.reader_targets(cx).placed().into_iter()
+            .find(|(_, bounds)| bounds.center().x > px(300.0) && bounds.center().y > px(120.0) && bounds.center().y < px(800.0))
+            .map(|(target, bounds)| (target.id, bounds.center()))
+    }).expect("fixture page has a visible native target");
+    rig.shell.update(rig.cx, |shell, cx| {
+        let targets = shell.reader_targets(cx);
+        targets.focus(leave.clone());
+        targets.remember_leave(a.clone(), leave.clone());
+    });
+    rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
+    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(b.clone()), cx));
+    rig.frame(0);
+    assert_eq!(rig.route(), b);
+    assert!(rig.said().iter().any(|line| line.contains("Opening") && line.contains("KindGlyph") && line.contains("previous page") && line.contains("RelationLabel")));
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx).placed()).is_empty(), "retained body cannot publish stale keyboard targets");
+    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx).1), None);
+    rig.cx.simulate_click(click, Modifiers::default());
+    rig.frame(0);
+    assert_eq!(rig.route(), b, "a visible prior link is natively inert");
+    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    rig.cx.simulate_resize(size(px(640.0), px(480.0)));
+    for intent in [Intent::ZoomTo { display, percent: 200 }, Intent::SetMotion(MotionPreference::Reduced), Intent::SetMotion(MotionPreference::Full)] {
+        rig.graph.root.update(rig.cx, |root, cx| root.queue(intent, cx));
+        rig.frame(700);
+    }
+    for _ in 0..4 { rig.frame(700); }
+    let requested = rig.cx.update(|_, cx| facet::motion::frames_requested(cx));
+    rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
+    rig.repaint();
+    for _ in 0..4 { rig.frame(250); }
+    assert_eq!(rig.cx.update(|_, cx| facet::motion::frames_requested(cx)), requested, "a pending retained body stays still through owner/repaint wakes");
+    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Back, cx));
+    rig.frame(0);
+    rig.settle();
+    assert_eq!(rig.route(), a);
+    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx).1), Some(leave));
+    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx)), 1);
+    assert!(!rig.said().iter().any(|line| line.contains("previous page:")));
+    rig.graph.store.update(rig.cx, |store, cx| store.owner_ready(cx));
+    rig.settle();
+    assert_eq!(rig.route(), a, "the obsolete B completion cannot replace Back's page");
+}
+
+/// A→B→C discards the never-painted B. A terminal destination failure releases
+/// the single predecessor and exposes the current fault; late B replies cannot
+/// cover it. The fixture owner boundary makes both orderings deterministic.
+#[gpui::test]
+fn superseded_pending_page_releases_on_failure_and_late_reads_cannot_replace_destination(cx: &mut TestAppContext) {
+    let a = page_route("RelationLabel");
+    let b = page_route("KindGlyph");
+    let c = page_route("RelationDirection");
+    let mut rig = rig(cx, Some(a), 1440.0, 900.0);
+    rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
+    for route in [b, c.clone()] {
+        rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(route), cx));
+        rig.frame(0);
+    }
+    assert_eq!(rig.route(), c);
+    assert!(rig.said().iter().any(|line| line.contains("Opening") && line.contains("RelationDirection") && line.contains("previous page") && line.contains("RelationLabel")));
+    rig.graph.store.update(rig.cx, |store, cx| store.owner_failed(&crate::runtime::owner::OwnerFault::Lost("retention fixture failure".into()), cx));
+    rig.frame(0);
+    assert!(!rig.said().iter().any(|line| line.contains("previous page:")), "terminal fault releases prior body immediately");
+    assert!(rig.said().iter().any(|line| line.contains("retention fixture failure")), "the exact terminal destination is exposed");
+    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx)), 1);
+    rig.graph.store.update(rig.cx, |store, cx| {
+        store.owner_ready(cx);
+        for key in super::reader::reader_keys(&store.snapshot()) { store.retry(key, cx); }
+    });
+    rig.settle();
+    assert_eq!(rig.route(), c);
+    assert!(rig.said().iter().any(|line| line.as_str() == "RelationDirection"));
+    assert!(!rig.said().iter().any(|line| line.as_str() == "KindGlyph"));
+}
