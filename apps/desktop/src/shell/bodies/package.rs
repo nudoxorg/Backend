@@ -705,8 +705,8 @@ fn readme(
                     .on_click(move |_: &ClickEvent, window, app| act(window, app));
                 column = column.child(ctx.targets.track(id, row));
             }
-            if headings.len() > plan.shown_headings() {
-                let remaining = headings.len() - plan.shown_headings();
+            if plan.total_headings() > plan.shown_headings() {
+                let remaining = plan.total_headings() - plan.shown_headings();
                 let id: SharedString = "readme-heading-more".into();
                 let show_plan = Rc::clone(&plan);
                 let act = Rc::new(move |window: &mut Window, _: &mut App| {
@@ -731,6 +731,13 @@ fn readme(
                     )
                     .on_click(move |_: &ClickEvent, window, app| act(window, app));
                 column = column.child(ctx.targets.track(id, row));
+            }
+            if headings.len() > plan.total_headings() {
+                column = column.child(quiet(
+                    "Only the first 512 headings are available in this page index.",
+                    &measure,
+                    palette,
+                ));
             }
         }
         if let Some(readme_links) = &readme_links
@@ -803,8 +810,8 @@ fn readme(
                 let row = row.on_click(move |_: &ClickEvent, window, app| act(window, app));
                 column = column.child(ctx.targets.track(id, row));
             }
-            if readme_links.len() > plan.shown_links() {
-                let remaining = readme_links.len() - plan.shown_links();
+            if plan.total_links() > plan.shown_links() {
+                let remaining = plan.total_links() - plan.shown_links();
                 let id: SharedString = "readme-link-more".into();
                 let show_plan = Rc::clone(&plan);
                 let act = Rc::new(move |window: &mut Window, _: &mut App| {
@@ -829,6 +836,13 @@ fn readme(
                     )
                     .on_click(move |_: &ClickEvent, window, app| act(window, app));
                 column = column.child(ctx.targets.track(id, row));
+            }
+            if readme_links.len() > plan.total_links() {
+                column = column.child(quiet(
+                    "Only the first 512 links are available in this page index.",
+                    &measure,
+                    palette,
+                ));
             }
         }
         return Some(Leaf::new(column));

@@ -15,6 +15,8 @@ use std::sync::Arc;
 
 const UNINDEXED: &str = "This README link was not included in the available link index.";
 const UNAVAILABLE: &str = "This link has no verified destination in this package.";
+const MAX_INDEXED_LINKS: usize = 512;
+const MAX_INDEXED_HEADINGS: usize = 512;
 
 #[derive(Clone, Debug)]
 pub(super) enum Outcome {
@@ -128,12 +130,12 @@ impl Plan {
     ) -> Self {
         let by_heading: HashMap<_, _> = headings
             .iter()
-            .flat_map(|headings| headings.iter())
+            .flat_map(|headings| headings.iter().take(MAX_INDEXED_HEADINGS))
             .map(|heading| (Arc::clone(&heading.slug), heading.clone()))
             .collect();
         let candidates: Vec<_> = links
             .iter()
-            .flat_map(|links| links.iter())
+            .flat_map(|links| links.iter().take(MAX_INDEXED_LINKS))
             .map(|link| candidate(link.destination.as_ref(), Some(link), &package))
             .collect();
         let mut files = HashMap::new();
@@ -160,7 +162,7 @@ impl Plan {
             .collect();
         let by_destination = links
             .iter()
-            .flat_map(|links| links.iter())
+            .flat_map(|links| links.iter().take(MAX_INDEXED_LINKS))
             .zip(outcomes.iter())
             .map(|(link, outcome)| (Arc::clone(&link.destination), outcome.clone()))
             .collect();
@@ -204,6 +206,7 @@ impl Plan {
             .links
             .as_ref()?
             .iter()
+            .take(MAX_INDEXED_LINKS)
             .position(|link| link.destination.as_ref() == destination)?;
         self.shown_links
             .set(self.shown_links.get().max(index.saturating_add(1)));
@@ -212,6 +215,10 @@ impl Plan {
 
     pub(super) fn shown_links(&self) -> usize {
         self.shown_links.get()
+    }
+
+    pub(super) fn total_links(&self) -> usize {
+        self.outcomes.len()
     }
 
     pub(super) fn show_more_links(&self) {
@@ -227,8 +234,14 @@ impl Plan {
         self.shown_headings.get()
     }
 
+    pub(super) fn total_headings(&self) -> usize {
+        self.headings
+            .as_ref()
+            .map_or(0, |headings| headings.len().min(MAX_INDEXED_HEADINGS))
+    }
+
     pub(super) fn show_more_headings(&self) {
-        let total = self.headings.as_ref().map_or(0, |headings| headings.len());
+        let total = self.total_headings();
         self.shown_headings
             .set(self.shown_headings.get().saturating_add(32).min(total));
     }
