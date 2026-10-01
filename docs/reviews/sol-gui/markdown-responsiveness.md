@@ -11,9 +11,12 @@ state receives the configured extensions before its first publication, removing
 the initial default parse followed by a custom-heading reparse. Until that first
 parse arrives the Markdown view is empty; no default-extension content is painted.
 
-One pending update slot coalesces complete replacements and preserves ordered
+One pending input slot and one pending completed-result slot coalesce complete
+publications; the input slot preserves ordered
 append text using the existing update reducer. The worker holds at most one
-current parse and one pending publication. New complete snapshots supersede
+current parse and one pending input publication. The busy UI retains one pending
+completed result, with incompatible selection requirements carried across skipped
+results (synchronous baseline acknowledgements are already applied). New complete snapshots supersede
 queued old snapshots. Append deltas after a snapshot are concatenated in order;
 append-only publications continue the worker's previous document and reuse its
 stable prefix blocks. The worker yields after each parse. Exact source revision
@@ -32,7 +35,13 @@ The current owner supplies bounded complete README content (512 KiB), not a
 streaming producer. This change improves that real flow and retains the existing
 component append API; it does not introduce a streaming endpoint or claim that
 all Markdown reference definitions can be resolved by suffix-only append parsing.
-A future owner stream needs an explicit admission bound and revision protocol.
+These are bounds on publication count, not cumulative source bytes. The generic
+component append API preserves its existing unrestricted byte semantics: merging
+ordered deltas can grow the single payload with the actual document. The desktop
+producer's existing 512 KiB admission bounds complete snapshots; this slice adds
+no new byte-limit contract to the vendor API. A future owner stream needs an
+explicit cumulative byte admission bound and revision protocol before storage
+bounds can be claimed for it.
 
 Added source tests cover deferred parsing even for small Unicode headings,
 custom-heading AST and exact local link destinations, unchanged-source/options

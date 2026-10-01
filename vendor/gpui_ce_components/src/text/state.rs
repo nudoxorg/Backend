@@ -1,4 +1,4 @@
-use futures::Stream as _;
+use futures::{Stream as _, StreamExt as _};
 use std::{
     ops::RangeInclusive,
     pin::Pin,
@@ -14,7 +14,6 @@ use gpui::{
 
 use crate::{
     ElementExt,
-    async_util::{Sender, unbounded},
     input::{self, SelectAll},
     scroll::AutoScroll,
     text::{
@@ -153,10 +152,10 @@ impl TextViewState {
         let selection_adapter = TextViewSelectionAdapter::new(cx.entity().downgrade(), cx);
 
         let (tx, rx) = pending_update::channel(UpdateOptions::merge);
-        let (tx_result, rx_result) = unbounded::<ParsedUpdate>();
+        let (tx_result, mut rx_result) = pending_update::channel(ParsedUpdate::merge);
         let _receive_task = cx.spawn({
             async move |weak_self, cx| {
-                while let Ok(parsed_update) = rx_result.recv().await {
+                while let Some(parsed_update) = rx_result.next().await {
                     _ = weak_self.update(cx, |state, cx| {
                         state.accept_parsed_update(parsed_update, cx);
                     });
@@ -683,14 +682,14 @@ struct UpdateFuture {
     format: TextViewFormat,
     content: ParsedContent,
     rx: Pin<Box<Publications<UpdateOptions>>>,
-    tx_result: Sender<ParsedUpdate>,
+    tx_result: Publisher<ParsedUpdate>,
 }
 
 impl UpdateFuture {
     fn new(
         format: TextViewFormat,
         rx: Publications<UpdateOptions>,
-        tx_result: Sender<ParsedUpdate>,
+        tx_result: Publisher<ParsedUpdate>,
     ) -> Self {
         Self {
             format,
@@ -758,6 +757,18 @@ struct ParsedUpdate {
     selection_compatible: bool,
     baseline_ack: bool,
     result: Result<ParsedContent, SharedString>,
+}
+
+impl ParsedUpdate {
+    fn merge(&mut self, mut next: Self) {
+        // Each success is a complete cumulative document, so its content can
+        // supersede the pending result. A skipped incompatible replacement
+        // must still reset selection when its later appended result paints.
+        // Baseline acknowledgements are already installed synchronously and
+        // must not invalidate a selection made after that installation.
+        next.selection_compatible &= self.baseline_ack || self.selection_compatible;
+        *self = next;
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1219,6 +1230,57 @@ mod tests {
         assert_eq!(options.pending_text, "new text");
         assert!(!options.append);
         assert_eq!(options.mode, ParseMode::Replace);
+    }
+
+    #[test]
+    fn pending_completed_results_keep_latest_document_and_required_selection_reset() {
+        let (tx, rx) = pending_update::channel(ParsedUpdate::merge);
+        let parsed = |revision, source: &str, append_compatible, baseline_ack| ParsedUpdate {
+            revision,
+            full_parse: !append_compatible,
+            selection_compatible: append_compatible,
+            baseline_ack,
+            result: parse_content(
+                TextViewFormat::Markdown,
+                ParsedContent::default(),
+                &UpdateOptions {
+                    revision,
+                    pending_text: source.into(),
+                    append: false,
+                    mode: ParseMode::Replace,
+                    markdown_extensions: Arc::default(),
+                },
+            ),
+        };
+        // The UI is busy while a replacement and two subsequent appended
+        // publications complete. It must receive only the cumulative third.
+        tx.try_send(parsed(1, "replacement", false, false)).unwrap();
+        tx.try_send(parsed(2, "replacement α", true, false))
+            .unwrap();
+        tx.try_send(parsed(3, "replacement α β", true, false))
+            .unwrap();
+        let ready = rx.try_recv().unwrap();
+        assert_eq!(ready.revision, 3);
+        assert_eq!(
+            ready.result.unwrap().document.text().trim(),
+            "replacement α β"
+        );
+        assert!(
+            !ready.selection_compatible,
+            "skipped replacement still requires reset"
+        );
+        assert!(rx.try_recv().is_err());
+
+        tx.try_send(parsed(4, "sync baseline", false, true))
+            .unwrap();
+        tx.try_send(parsed(5, "sync baseline appended", true, false))
+            .unwrap();
+        let ready = rx.try_recv().unwrap();
+        assert!(
+            ready.selection_compatible,
+            "already installed baseline must preserve new selection"
+        );
+        assert!(!ready.baseline_ack);
     }
 
     #[test]
