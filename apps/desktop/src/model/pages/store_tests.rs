@@ -11,12 +11,48 @@
 
 use super::*;
 use crate::core::{FaultCode, ResourceTerminal};
-use crate::model::pages::{ByteSpan, Known, SearchQuery, SourceCoverage, SourceText};
+use crate::model::pages::{ByteSpan, CargoSourceKey, CargoSourcePage, Known, SearchQuery, SourceCoverage, SourceOrigin, SourceText};
 use crate::runtime::reads::{OutlineCache, PageReader, ReadContext, ReadRequest};
 use crate::shell::tests::{Fixture, PACKAGE, symbol};
 
 fn root() -> VersionedRoot {
     VersionedRoot::synthetic(backend_library::view_state_root(&[("store".to_owned(), "tests".to_owned())]), 1)
+}
+
+#[test]
+fn cargo_file_slots_keep_exact_authority_and_drop_stale_landings() {
+    let file = crate::navigation::CargoSourcePath::new("Cargo.toml").expect("relative file");
+    let qualified = |digit: char| PackageRef::parse(&format!(
+        "pkg:cargo/demo@1.0.0?cargo-authority={}", digit.to_string().repeat(64)
+    )).expect("qualified package");
+    let first = CargoSourceKey { package: qualified('a'), file: file.clone() };
+    let second = CargoSourceKey { package: qualified('b'), file };
+    let mut store = PageStore::default();
+    let first_key = PageKey::CargoSource(first.clone());
+    let second_key = PageKey::CargoSource(second.clone());
+    let stale = store.begin(&first_key, root()).expect("first owner read");
+    let second_generation = store.begin(&second_key, root()).expect("other authority read");
+    let source = SourceText::new(Arc::from("[package]\nname = \"demo\"\n"), 1, SourceOrigin::LocalFile, true)
+        .expect("valid source");
+    let page = |key: &CargoSourceKey| CargoSourcePage {
+        package: key.package.clone(), file: key.file.clone(), source: source.clone(),
+        content_digest: [7; 32], source_revision: [9; 32],
+    };
+    assert_eq!(store.land(&second_key, second_generation, Ok(PageValue::CargoSource(page(&second)))), Landing::Applied);
+    assert!(store.cargo_source(&first).loaded_value().is_none());
+    assert_eq!(store.land(&first_key, stale, Ok(PageValue::CargoSource(page(&first)))), Landing::Applied);
+    let newer = store.begin_forced(&first_key, root()).expect("new read");
+    assert_eq!(store.land(&first_key, stale, Ok(PageValue::CargoSource(page(&first)))), Landing::Superseded);
+    assert_eq!(store.land(&first_key, newer, Ok(PageValue::CargoSource(page(&first)))), Landing::Unchanged);
+    assert_ne!(first, second);
+
+    let lost = store.begin_forced(&first_key, root()).expect("owner revalidation");
+    assert_eq!(store.land(&first_key, lost, Err(ReadFailure::Fault(ErrorValue::new(FaultCode::Missing, "source authority changed")))), Landing::Applied);
+    assert!(store.cargo_source(&first).loaded_value().is_none(), "a stale file cannot remain visible as current source");
+    assert!(store.cargo_source(&second).is_loaded());
+    store.revoke_all_cargo_sources();
+    assert!(store.cargo_source(&second).loaded_value().is_none(), "owner restart revokes every retained file");
+    assert!(store.begin(&second_key, root()).is_some(), "the same indexed root must still recheck Cargo file bytes");
 }
 
 /// What the fixture owner answers for `request`.

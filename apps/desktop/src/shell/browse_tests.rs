@@ -38,6 +38,7 @@ fn library_release_actions_keep_exact_source_and_row_keys_survive_reorder() {
             releases: vec![TreeReleaseLink {
                 version: "1.0.0".into(),
                 destination: TreeDestination::Open(package),
+                source_detail: None,
             }].into(),
         }].into(),
     };

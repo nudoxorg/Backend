@@ -478,7 +478,7 @@ impl SectionKey {
             PageKey::Source(symbol) => Some(Self::Source(AddressClaim::symbol(symbol))),
             PageKey::Package(package) => Some(Self::Package(AddressClaim::package(package))),
             PageKey::Orbit => Some(Self::Orbit),
-            PageKey::Search(_) | PageKey::Health | PageKey::Browse(_) => None,
+            PageKey::CargoSource(_) | PageKey::Search(_) | PageKey::Health | PageKey::Browse(_) => None,
         }
     }
 }
@@ -705,7 +705,7 @@ fn entry(key: &PageKey, body: &[u8]) -> Result<SeedEntry, serde_json::Error> {
         PageKey::Orbit => SeedEntry::Orbit(serde_json::from_slice(body)?),
         // Only kept families reach this decoder. No table claim is parsed
         // into a SymbolRef, PackageRef or any producer capability.
-        PageKey::Search(_) | PageKey::Health | PageKey::Browse(_) => {
+        PageKey::CargoSource(_) | PageKey::Search(_) | PageKey::Health | PageKey::Browse(_) => {
             return Err(<serde_json::Error as serde::de::Error>::custom(
                 "unkept snapshot family",
             ));

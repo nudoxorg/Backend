@@ -404,7 +404,7 @@ pub(crate) struct Reader {
     reveal: Rc<Cell<bool>>,
     /// Initial source-line focus, latched once per exact place and resource
     /// revision so ordinary frames never steal focus back from the user.
-    source_focus_applied: Rc<Cell<Option<(u64, u32, Option<crate::core::VersionedRoot>)>>>,
+    source_focus_applied: Rc<Cell<Option<(u64, u32, Option<SourceGeneration>)>>>,
     /// What the last frame was laid out for: width, height, text scale,
     /// density. A change is a reflow.
     laid_out: Option<(Pixels, Pixels, f32, facet::Density)>,
@@ -1330,6 +1330,7 @@ fn content_loaded(store: &DataStore, keys: &[PageKey]) -> bool {
         PageKey::Package(package) => store.package(package).is_loaded(),
         PageKey::Orbit => store.orbit().is_loaded(),
         PageKey::Source(symbol) => store.source(symbol).is_loaded(),
+        PageKey::CargoSource(file) => store.cargo_source(file).is_loaded(),
         PageKey::Health | PageKey::Browse(_) | PageKey::Search(_) => true,
     })
 }
@@ -1460,6 +1461,14 @@ mod library_state_memory_tests {
     }
 }
 
+/// Source pager identity. Cargo file contents can change without advancing
+/// the indexed view root, so their independent owner-verified digest is used.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SourceGeneration {
+    Indexed(crate::core::VersionedRoot),
+    Cargo([u8; 32]),
+}
+
 #[derive(Default)]
 struct SourcePagingMemory {
     entries: Vec<SourcePagingEntry>,
@@ -1469,7 +1478,7 @@ impl SourcePagingMemory {
     fn for_route(
         &mut self,
         route: &Route,
-        revision: Option<crate::core::VersionedRoot>,
+        revision: Option<SourceGeneration>,
         active: bool,
     ) -> Rc<RefCell<Option<bodies::PagingState>>> {
         if let Some(index) = self.entries.iter().position(|entry| {
@@ -1501,13 +1510,13 @@ impl SourcePagingMemory {
 
 struct SourcePagingEntry {
     route: Route,
-    revision: Option<crate::core::VersionedRoot>,
+    revision: Option<SourceGeneration>,
     state: Rc<RefCell<Option<bodies::PagingState>>>,
 }
 
 #[cfg(test)]
 mod source_paging_memory_tests {
-    use super::{SourcePagingMemory, MAX_SOURCE_PAGING_MEMORY};
+    use super::{SourceGeneration, SourcePagingMemory, MAX_SOURCE_PAGING_MEMORY};
     use crate::core::VersionedRoot;
     use crate::navigation::{Route, View};
     use crate::shell::tests::view_route;
@@ -1522,17 +1531,31 @@ mod source_paging_memory_tests {
             backend_library::view_state_root(&[("paging".to_owned(), "replacement".to_owned())]),
             5,
         );
-        let saved = memory.for_route(&route, Some(first_root), true);
-        let revisit = memory.for_route(&route, Some(first_root), true);
+        let saved = memory.for_route(&route, Some(SourceGeneration::Indexed(first_root)), true);
+        let revisit = memory.for_route(&route, Some(SourceGeneration::Indexed(first_root)), true);
         assert!(Rc::ptr_eq(&saved, &revisit));
-        assert!(!Rc::ptr_eq(&saved, &memory.for_route(&route, Some(changed_root), true)));
+        assert!(!Rc::ptr_eq(&saved, &memory.for_route(&route, Some(SourceGeneration::Indexed(changed_root)), true)));
 
         let Route::Symbol(mut different_line) = route.clone() else { unreachable!() };
         different_line.line = Some(42);
         assert!(!Rc::ptr_eq(
             &saved,
-            &memory.for_route(&Route::Symbol(different_line), Some(first_root), true),
+            &memory.for_route(&Route::Symbol(different_line), Some(SourceGeneration::Indexed(first_root)), true),
         ));
+    }
+
+    #[test]
+    fn cargo_file_pager_follows_verified_content_not_index_root() {
+        use crate::navigation::{CargoSourcePath, CargoSourceRoute};
+        let mut memory = SourcePagingMemory::default();
+        let package = crate::core::PackageId::new(
+            "pkg:cargo/demo@1.0.0?cargo-authority=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ).expect("authority address");
+        let file = CargoSourcePath::new("src/lib.rs").expect("file");
+        let route = Route::CargoSource(CargoSourceRoute::new(package, file, Some(77)).expect("route"));
+        let original = memory.for_route(&route, Some(SourceGeneration::Cargo([1; 32])), true);
+        assert!(Rc::ptr_eq(&original, &memory.for_route(&route, Some(SourceGeneration::Cargo([1; 32])), true)));
+        assert!(!Rc::ptr_eq(&original, &memory.for_route(&route, Some(SourceGeneration::Cargo([2; 32])), true)));
     }
 
     #[test]
@@ -1675,9 +1698,14 @@ impl Reader {
         let mut hero = Vec::new();
         let mut scratch_hover = HoverIntent::default();
         let mut hover = if current { std::mem::take(&mut self.hover) } else { HoverIntent::default() };
-        let source_generation = route_symbol(&place.route)
-            .and_then(|symbol| pages.source(&symbol).value_root());
-        let source_paging = if matches!(&place.route, Route::Symbol(symbol) if symbol.view == View::Code) {
+        let source_generation = match &place.route {
+            Route::CargoSource(file) => crate::model::pages::PackageRef::parse(file.package.as_str())
+                .ok()
+                .and_then(|package| pages.cargo_source(&crate::model::pages::CargoSourceKey { package, file: file.file.clone() }).loaded_value().map(|page| SourceGeneration::Cargo(page.content_digest))),
+            _ => route_symbol(&place.route).and_then(|symbol| pages.source(&symbol).value_root().map(SourceGeneration::Indexed)),
+        };
+        let source_paging = if matches!(&place.route, Route::Symbol(symbol) if symbol.view == View::Code)
+            || matches!(&place.route, Route::CargoSource(_)) {
             self.source_paging.for_route(&place.route, source_generation, current)
         } else {
             Rc::clone(&self.empty_source_paging)
@@ -1746,6 +1774,11 @@ fn place_keys(route: &Route, overlay: Option<Overlay>) -> Vec<PageKey> {
         Route::Orbit(_) => vec![PageKey::Orbit, PageKey::Health],
         Route::World => Vec::new(),
         Route::Package(_) => route_package(route).map(PageKey::Package).into_iter().collect(),
+        Route::CargoSource(file) => crate::model::pages::PackageRef::parse(file.package.as_str())
+            .ok()
+            .map(|package| PageKey::CargoSource(crate::model::pages::CargoSourceKey { package, file: file.file.clone() }))
+            .into_iter()
+            .collect(),
         Route::Symbol(symbol) => match symbol.view {
             View::Page | View::Graph => route_symbol(route).map(PageKey::Symbol).into_iter().collect(),
             View::Code => route_symbol(route)

@@ -33,7 +33,7 @@ use crate::model::AppSnapshot;
 use crate::navigation::{Overlay, Route, View};
 use crate::core::Resource;
 use crate::model::pages::{
-    HealthModel, OrbitModel, PackageDossier, PackageRef, PageKey, SourceView, SymbolPage, SymbolRef,
+    CargoSourceKey, CargoSourcePage, HealthModel, OrbitModel, PackageDossier, PackageRef, PageKey, SourceView, SymbolPage, SymbolRef,
 };
 use crate::runtime::store::DataStore;
 use std::collections::BTreeMap;
@@ -111,11 +111,11 @@ pub(crate) struct Ctx<'a> {
     /// One-time initial focus for the exact arriving place, requested line,
     /// and source revision. It is deliberately separate from live keyboard
     /// focus so later user navigation is never pulled back on rerender.
-    pub source_focus_applied: std::rc::Rc<std::cell::Cell<Option<(u64, u32, Option<crate::core::VersionedRoot>)>>>,
+    pub source_focus_applied: std::rc::Rc<std::cell::Cell<Option<(u64, u32, Option<crate::shell::reader::SourceGeneration>)>>>,
     /// Exact Reader place whose content this body represents.
     pub place_key: u64,
-    /// Owner revision of the source resource, when available.
-    pub source_generation: Option<crate::core::VersionedRoot>,
+    /// Exact indexed-source revision or owner-verified Cargo file digest.
+    pub source_generation: Option<crate::shell::reader::SourceGeneration>,
     /// Source cursor/history retained by Reader across page body unmounts.
     pub source_paging: std::rc::Rc<std::cell::RefCell<Option<PagingState>>>,
     /// Exact tree disclosure and virtual-list scroll state retained across Back.
@@ -194,6 +194,7 @@ impl Lens {
 pub(crate) struct Pages {
     symbols: BTreeMap<SymbolRef, Resource<SymbolPage>>,
     sources: BTreeMap<SymbolRef, Resource<SourceView>>,
+    cargo_sources: BTreeMap<CargoSourceKey, Resource<CargoSourcePage>>,
     packages: BTreeMap<PackageRef, Resource<PackageDossier>>,
     orbit: Option<Resource<OrbitModel>>,
     health: Option<Resource<HealthModel>>,
@@ -211,6 +212,9 @@ impl Pages {
                 }
                 PageKey::Source(symbol) => {
                     pages.sources.insert(symbol.clone(), store.source(symbol));
+                }
+                PageKey::CargoSource(file) => {
+                    pages.cargo_sources.insert(file.clone(), store.cargo_source(file));
                 }
                 PageKey::Package(package) => {
                     pages.packages.insert(package.clone(), store.package(package));
@@ -232,6 +236,10 @@ impl Pages {
 
     pub(crate) fn source(&self, symbol: &SymbolRef) -> Resource<SourceView> {
         self.sources.get(symbol).cloned().unwrap_or_else(Resource::not_yet)
+    }
+
+    pub(crate) fn cargo_source(&self, file: &CargoSourceKey) -> Resource<CargoSourcePage> {
+        self.cargo_sources.get(file).cloned().unwrap_or_else(Resource::not_yet)
     }
 
     pub(crate) fn package(&self, package: &PackageRef) -> Resource<PackageDossier> {
@@ -271,6 +279,7 @@ pub(crate) fn build(
         Route::Orbit(crate::navigation::OrbitRoute::Browse(browse)) => browse::body(browse, store, ctx, cx),
         Route::Orbit(_) => orbit::body(snapshot, store, ctx, hover, cx),
         Route::Package(_) => package::body(route, snapshot, store, ctx, hover, cx),
+        Route::CargoSource(file) => source::cargo_body(file, store, ctx, window, cx),
         Route::Symbol(symbol) => match symbol.view {
             View::Page => symbol::body(route, symbol, store, ctx, hover, cx),
             View::Code => source::body(route, symbol, store, ctx, window, cx),

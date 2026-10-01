@@ -462,6 +462,9 @@ pub fn render_text(store: &DataStore) -> String {
         let text = match &key {
             PageKey::Symbol(symbol) => section(&store.symbol(symbol), symbol_text),
             PageKey::Source(symbol) => section(&store.source(symbol), source_text),
+            PageKey::CargoSource(file) => section(&store.cargo_source(file), |page| {
+                format!("{} · {} bytes · no indexed symbol links", page.file.as_str(), page.source.text().len())
+            }),
             PageKey::Package(package) => section(&store.package(package), package_text),
             PageKey::Search(query) => section(&store.search(query), search_text),
             PageKey::Orbit => section(&store.orbit(), orbit_text),

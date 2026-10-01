@@ -208,6 +208,7 @@ fn place_words(route: &Route) -> String {
         }
         Route::Package(package) => crate::model::pages::PackageRef::parse(package.package.as_str())
             .map_or_else(|_| package.package.as_str().to_owned(), |package| package.display_name().to_owned()),
+        Route::CargoSource(file) => file.file.as_str().to_owned(),
         Route::Orbit(_) => "Orbit".to_owned(),
         Route::World => "Graph".to_owned(),
     }
@@ -744,6 +745,6 @@ fn view_of(route: &Route) -> Option<View> {
     match route {
         Route::Symbol(route) => Some(route.view),
         Route::World => Some(View::Graph),
-        Route::Orbit(_) | Route::Package(_) => None,
+        Route::CargoSource(_) | Route::Orbit(_) | Route::Package(_) => None,
     }
 }

@@ -182,25 +182,31 @@ impl PackageRef {
     /// The version this reference pins, when it is a registry release.
     #[must_use]
     pub fn version(&self) -> Option<&str> {
-        if self.is_local() {
-            return None;
+        match &self.reference {
+            backend_library::PackageReference::Purl(purl) => Some(purl.version()),
+            backend_library::PackageReference::Local(_) => None,
         }
-        let text = self.as_str();
-        let at = text.rfind('@')?;
-        let version = &text[at + 1..];
-        let version = version.split(['?', '#']).next().unwrap_or(version);
-        (!version.is_empty()).then_some(version)
     }
 
     /// The same package at another release, when it is a registry release
     /// (a local project has one state: `None`).
     #[must_use]
     pub fn at(&self, version: &str) -> Option<Self> {
-        let pinned = self.version()?;
-        let text = self.as_str();
-        let at = text.rfind('@')?;
-        let rest = &text[at + 1 + pinned.len()..];
-        Self::parse(&format!("{}@{version}{rest}", &text[..at])).ok()
+        let backend_library::PackageReference::Purl(purl) = &self.reference else {
+            return None;
+        };
+        // A Cargo source authority is a digest of one observed package at
+        // one version. Reusing it with another version would mint a false
+        // address; only the owner may issue another receipt.
+        if purl.qualifiers().is_some_and(|qualifiers| qualifiers.split('&').any(|item| item.starts_with("cargo-authority="))) {
+            return None;
+        }
+        let text = purl.as_str();
+        let address = text.split(['?', '#']).next()?;
+        let at = address.rfind('@')?;
+        (address.get(at + 1..) == Some(purl.version()))
+            .then(|| Self::parse(&format!("{}@{version}{}", &address[..at], &text[address.len()..])).ok())
+            .flatten()
     }
 
     /// The registry release this package is: a purl's, or a registry tree's
@@ -283,16 +289,16 @@ impl PackageRef {
         if let Some((name, _)) = self.registry_release() {
             return name;
         }
-        let text = self.as_str();
-        if self.is_local() {
-            return text
-                .trim_end_matches(['/', '\\'])
-                .rsplit(['/', '\\'])
-                .next()
-                .unwrap_or(text);
+        match &self.reference {
+            backend_library::PackageReference::Purl(purl) => purl.name(),
+            backend_library::PackageReference::Local(_) => {
+                let text = self.as_str();
+                text.trim_end_matches(['/', '\\'])
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .unwrap_or(text)
+            }
         }
-        let without_version = text.split('@').next().unwrap_or(text);
-        without_version.rsplit('/').next().unwrap_or(without_version)
     }
 }
 
@@ -321,6 +327,31 @@ fn forget_manifest(root: &std::path::Path) {
 impl fmt::Display for PackageRef {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
+    }
+}
+
+#[cfg(test)]
+mod cargo_source_identity_tests {
+    use super::PackageRef;
+
+    #[test]
+    fn authority_qualified_package_never_synthesizes_another_version() {
+        let package = PackageRef::parse(
+            "pkg:cargo/demo@1.0.0?cargo-authority=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ).expect("qualified package");
+        assert_eq!(package.version(), Some("1.0.0"));
+        assert_eq!(package.display_name(), "demo");
+        assert!(package.at("2.0.0").is_none(), "only the owner can issue a new source receipt");
+    }
+
+    #[test]
+    fn qualifier_text_with_at_does_not_change_typed_version() {
+        let package = PackageRef::parse(
+            "pkg:cargo/demo@1.0.0?repository_url=https%3A%2F%2Fexample.test%2Fuser%40host",
+        ).expect("qualified package");
+        assert_eq!(package.version(), Some("1.0.0"));
+        assert_eq!(package.at("2.0.0").expect("same authority at next version").as_str(),
+            "pkg:cargo/demo@2.0.0?repository_url=https%3A%2F%2Fexample.test%2Fuser%40host");
     }
 }
 

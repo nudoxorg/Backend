@@ -671,6 +671,7 @@ fn pin_of(route: &Route, dossier: &PackageDossier) -> Option<String> {
     let routed = match route {
         Route::Package(route) => PackageRef::parse(route.package.as_str()).ok(),
         Route::Symbol(route) => PackageRef::parse(route.package.as_str()).ok(),
+        Route::CargoSource(route) => PackageRef::parse(route.package.as_str()).ok(),
         Route::Orbit(_) | Route::World => None,
     };
     routed

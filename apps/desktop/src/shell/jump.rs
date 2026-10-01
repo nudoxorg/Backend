@@ -83,6 +83,7 @@ fn pinned_release(route: &Route, store: &DataStore) -> Option<String> {
     let package = match route {
         Route::Package(route) => PackageRef::parse(route.package.as_str()).ok()?,
         Route::Symbol(route) => PackageRef::parse(route.package.as_str()).ok()?,
+        Route::CargoSource(route) => PackageRef::parse(route.package.as_str()).ok()?,
         Route::Orbit(_) | Route::World => return None,
     };
     let current = store.package(&package).loaded_value().and_then(|dossier| {
@@ -164,6 +165,12 @@ pub(crate) fn segments(route: &Route, store: &DataStore) -> Vec<Segment> {
         }
         Route::Package(package) => PackageRef::parse(package.package.as_str())
             .map(|package| vec![Segment { name: package.display_name().to_owned().into(), route: Some(route.clone()), quiet: false }])
+            .unwrap_or_default(),
+        Route::CargoSource(file) => PackageRef::parse(file.package.as_str())
+            .map(|package| vec![
+                Segment { name: package.display_name().to_owned().into(), route: Some(Route::Package(file.package_route())), quiet: false },
+                Segment { name: file.file.as_str().to_owned().into(), route: Some(route.clone()), quiet: false },
+            ])
             .unwrap_or_default(),
         Route::Orbit(_) | Route::World => Vec::new(),
     }
@@ -253,6 +260,11 @@ fn route_here(route: &Route, store: &DataStore) -> Here {
                     .into(),
             }
         }
+        Route::CargoSource(route) => Here {
+            mark: Mark::Kind(Kind::Unknown),
+            name: route.file.as_str().to_owned().into(),
+            path: "Cargo source".into(),
+        },
         Route::Symbol(route) => symbol_here(route.id.as_str(), store, route.view),
     }
 }
@@ -366,6 +378,13 @@ pub(crate) fn address_parts(snapshot: &AppSnapshot) -> Address {
             PackageRef::parse(route.package.as_str())
                 .map_or_else(|_| route.package.as_str().to_owned(), |package| package.display_name().to_owned()),
         ),
+        Route::CargoSource(route) => {
+            let package = PackageRef::parse(route.package.as_str()).ok();
+            let name = route.file.as_str().to_owned();
+            let mut address = place(&[package.as_ref().map_or("Cargo", PackageRef::display_name)], name);
+            if let Some(line) = route.line { address.name.push_str(&format!("#L{line}")); }
+            address
+        }
         Route::Symbol(route) => {
             let mut address = symbol_parts(route.id.as_str());
             match route.view {

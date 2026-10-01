@@ -18,6 +18,7 @@ pub use history::{MAX_ROUTE_HISTORY, RouteHistory};
 pub use intent::{Effect, EngineCommand, FolderPickerOutcome, Intent, Reduction, RequestId};
 pub use reducer::reduce;
 pub use route::{
-    Coordinate, CoordinateError, OrbitRoute, Overlay, PackageLane, PackageRoute, ReleaseId, Route,
-    RouteDepth, RouteKey, Selection, SettingsPage, SymbolRoute, View,
+    CargoSourcePath, CargoSourceRoute, Coordinate, CoordinateError, OrbitRoute, Overlay,
+    PackageLane, PackageRoute, ReleaseId, Route, RouteDepth, RouteKey, Selection, SettingsPage,
+    SymbolRoute, View,
 };

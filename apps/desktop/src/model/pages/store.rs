@@ -11,8 +11,9 @@
 //! drives it from the UI thread.
 
 use super::common::{PackageRef, SymbolRef};
+use super::cargo_source::CargoSourcePage;
 use super::health::HealthModel;
-use super::key::{PageKey, SearchQuery};
+use super::key::{CargoSourceKey, PageKey, SearchQuery};
 use super::orbit::OrbitModel;
 use super::package::PackageDossier;
 use super::search::SearchPage;
@@ -29,6 +30,8 @@ pub enum PageValue {
     Symbol(SymbolPage),
     /// A source view.
     Source(SourceView),
+    /// A current owner-verified Cargo file, without semantic-index coverage.
+    CargoSource(CargoSourcePage),
     /// A package dossier.
     Package(PackageDossier),
     /// The first page of a search.
@@ -61,6 +64,7 @@ macro_rules! family_of {
 family_of! {
     symbol: Symbol(SymbolPage),
     source: Source(SourceView),
+    cargo_source: CargoSource(CargoSourcePage),
     package: Package(PackageDossier),
     orbit: Orbit(OrbitModel),
     health: Health(HealthModel),
@@ -421,6 +425,28 @@ impl<K: Ord + Clone, T> Slots<K, T> {
         Landing::Applied
     }
 
+    /// A current-file capability cannot keep old bytes after its owner says
+    /// the authority or file is gone, or its check was cancelled. Other
+    /// families may retain a last-good value; this one must revoke it.
+    fn land_strict(
+        &mut self,
+        key: &K,
+        generation: Generation,
+        result: Result<T, ReadFailure>,
+    ) -> Landing
+    where
+        T: PartialEq,
+    {
+        if result.is_err() {
+            if let Some(slot) = self.map.get_mut(key)
+                && matches!(slot.fetch, Fetch::Running { generation: running, .. } if running == generation)
+            {
+                slot.resource = Resource::not_yet();
+            }
+        }
+        self.land(key, generation, result, replace)
+    }
+
     /// Publishes a useful partial value while the same generation keeps
     /// reading. An older or cancelled generation cannot paint over a newer
     /// route. Quiet snapshot revalidation keeps its already complete page.
@@ -488,6 +514,8 @@ pub struct Capacity {
     pub symbols: usize,
     /// Source views.
     pub sources: usize,
+    /// Owner-revalidated Cargo source files.
+    pub cargo_sources: usize,
     /// Package dossiers.
     pub packages: usize,
     /// Search queries.
@@ -499,6 +527,7 @@ impl Default for Capacity {
         Self {
             symbols: 64,
             sources: 32,
+            cargo_sources: 16,
             packages: 16,
             searches: 16,
         }
@@ -510,6 +539,7 @@ impl Default for Capacity {
 pub struct PageStore {
     symbols: Slots<SymbolRef, SymbolPage>,
     sources: Slots<SymbolRef, SourceView>,
+    cargo_sources: Slots<CargoSourceKey, CargoSourcePage>,
     packages: Slots<PackageRef, PackageDossier>,
     searches: Slots<SearchQuery, SearchPage>,
     orbit: Slots<(), OrbitModel>,
@@ -536,6 +566,11 @@ macro_rules! dispatch {
             PageKey::Source(symbol) => {
                 let $slots = &mut $store.sources;
                 let $k = symbol;
+                $body
+            }
+            PageKey::CargoSource(file) => {
+                let $slots = &mut $store.cargo_sources;
+                let $k = file;
                 $body
             }
             PageKey::Package(package) => {
@@ -580,6 +615,11 @@ macro_rules! dispatch_ref {
                 let $k = symbol;
                 $body
             }
+            PageKey::CargoSource(file) => {
+                let $slots = &$store.cargo_sources;
+                let $k = file;
+                $body
+            }
             PageKey::Package(package) => {
                 let $slots = &$store.packages;
                 let $k = package;
@@ -616,6 +656,7 @@ impl PageStore {
         Self {
             symbols: Slots::new(capacity.symbols),
             sources: Slots::new(capacity.sources),
+            cargo_sources: Slots::new(capacity.cargo_sources),
             packages: Slots::new(capacity.packages),
             searches: Slots::new(capacity.searches),
             orbit: Slots::new(1),
@@ -698,6 +739,7 @@ impl PageStore {
         match key {
             PageKey::Symbol(symbol) => self.symbols.land(symbol, generation, take(result, PageValue::symbol), replace),
             PageKey::Source(symbol) => self.sources.land(symbol, generation, take(result, PageValue::source), replace),
+            PageKey::CargoSource(file) => self.cargo_sources.land_strict(file, generation, take(result, PageValue::cargo_source)),
             PageKey::Package(package) => self.packages.land(package, generation, take(result, PageValue::package), replace),
             PageKey::Search(query) => {
                 let append = matches!(result, Ok(PageValue::SearchMore(_)));
@@ -718,7 +760,7 @@ impl PageStore {
             PageKey::Symbol(symbol) => match value.symbol() { Some(value) => self.symbols.stage(symbol, generation, value), None => Landing::Superseded },
             PageKey::Package(package) => match value.package() { Some(value) => self.packages.stage(package, generation, value), None => Landing::Superseded },
             PageKey::Orbit => match value.orbit() { Some(value) => self.orbit.stage(&(), generation, value), None => Landing::Superseded },
-            PageKey::Source(_) | PageKey::Search(_) | PageKey::Health | PageKey::Browse(_) => Landing::Superseded,
+            PageKey::Source(_) | PageKey::CargoSource(_) | PageKey::Search(_) | PageKey::Health | PageKey::Browse(_) => Landing::Superseded,
         }
     }
 
@@ -745,6 +787,7 @@ impl PageStore {
         match key {
             PageKey::Symbol(symbol) => self.symbols.map.contains_key(symbol),
             PageKey::Source(symbol) => self.sources.map.contains_key(symbol),
+            PageKey::CargoSource(file) => self.cargo_sources.map.contains_key(file),
             PageKey::Package(package) => self.packages.map.contains_key(package),
             PageKey::Search(query) => self.searches.map.contains_key(query),
             PageKey::Orbit => self.orbit.map.contains_key(&()),
@@ -763,6 +806,31 @@ impl PageStore {
     #[must_use]
     pub fn source(&self, symbol: &SymbolRef) -> Resource<SourceView> {
         self.sources.get(symbol)
+    }
+
+    /// Returns an owner-revalidated Cargo source file resource.
+    #[must_use]
+    pub fn cargo_source(&self, file: &CargoSourceKey) -> Resource<CargoSourcePage> {
+        self.cargo_sources.get(file)
+    }
+
+    /// Drops current-file bytes when their owner is left or restarted. The
+    /// address and slot remain so the next focused read can be retried.
+    pub fn revoke_cargo_source(&mut self, file: &CargoSourceKey) {
+        if let Some(slot) = self.cargo_sources.map.get_mut(file) {
+            slot.resource = Resource::not_yet();
+            slot.asked_at = None;
+            slot.revision = slot.revision.next();
+        }
+    }
+
+    /// A new owner attachment must revalidate every retained file receipt.
+    pub fn revoke_all_cargo_sources(&mut self) {
+        for slot in self.cargo_sources.map.values_mut() {
+            slot.resource = Resource::not_yet();
+            slot.asked_at = None;
+            slot.revision = slot.revision.next();
+        }
     }
 
     /// Returns the package dossier resource.
@@ -808,6 +876,7 @@ impl PageStore {
         keys.extend(self.packages.map.keys().cloned().map(PageKey::Package));
         keys.extend(self.symbols.map.keys().cloned().map(PageKey::Symbol));
         keys.extend(self.sources.map.keys().cloned().map(PageKey::Source));
+        keys.extend(self.cargo_sources.map.keys().cloned().map(PageKey::CargoSource));
         keys.extend(self.searches.map.keys().cloned().map(PageKey::Search));
         keys.extend(self.browse.map.keys().cloned().map(PageKey::Browse));
         keys
@@ -819,6 +888,7 @@ impl PageStore {
         match key {
             PageKey::Symbol(symbol) => self.symbols.get(symbol).activity(),
             PageKey::Source(symbol) => self.sources.get(symbol).activity(),
+            PageKey::CargoSource(file) => self.cargo_sources.get(file).activity(),
             PageKey::Package(package) => self.packages.get(package).activity(),
             PageKey::Search(query) => self.searches.get(query).activity(),
             PageKey::Orbit => self.orbit.get(&()).activity(),

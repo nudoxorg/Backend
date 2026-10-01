@@ -7,7 +7,7 @@ use super::workspace::{
     ZoomPreference, WindowSize, WorkspaceProject, WorkspaceState,
 };
 use crate::core::ids::LocalProjectId;
-use crate::navigation::{BrowseRoute, CompareSet, Coordinate, Overlay, PackageLane, ReleaseId, Route, SettingsPage, View};
+use crate::navigation::{BrowseRoute, CargoSourcePath, CargoSourceRoute, CompareSet, Coordinate, Overlay, PackageLane, ReleaseId, Route, SettingsPage, View};
 use backend_platform::durable;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -411,6 +411,15 @@ pub enum PersistedRoute {
         #[serde(default)]
         line: Option<u32>,
     },
+    /// A Cargo source file address; cold reload must ask the owner again.
+    CargoSource {
+        /// Full source-qualified package coordinate, including authority digest.
+        package: String,
+        /// Canonical package-relative file spelling.
+        file: String,
+        /// One-based line to reveal after revalidation.
+        line: Option<u32>,
+    },
     /// The whole dependency graph.
     World,
     /// A declaration page route (older files; read as a page view).
@@ -504,6 +513,11 @@ fn persist_route(route: &Route) -> PersistedRoute {
             id: route.id.as_str().to_owned(),
             at: route.at.as_ref().map(|at| at.persisted_wire().to_owned()),
             view: route.view.as_str().to_owned(),
+            line: route.line,
+        },
+        Route::CargoSource(route) => PersistedRoute::CargoSource {
+            package: route.package.as_str().to_owned(),
+            file: route.file.as_str().to_owned(),
             line: route.line,
         },
         Route::World => PersistedRoute::World,
@@ -993,6 +1007,14 @@ impl PersistentState {
                 View::parse(view).unwrap_or_default(),
                 *line,
             ),
+            PersistedRoute::CargoSource { package, file, line } => {
+                crate::core::PackageId::new(package)
+                    .ok()
+                    .zip(CargoSourcePath::new(file))
+                    .and_then(|(package, file)| CargoSourceRoute::new(package, file, *line))
+                    .map(Route::CargoSource)
+                    .unwrap_or(Route::Orbit(crate::navigation::OrbitRoute::Home))
+            }
         };
         let pending_selection = state.selected_claim.as_ref().and_then(|claim| {
             if claim.route != state.route || persist_route(&route) != state.route
@@ -1006,7 +1028,7 @@ impl PersistentState {
                     root: backend_library::decode_id(&claim.root).ok()?,
                     object: backend_library::decode_id(&claim.object).ok()?,
                 }),
-                Route::Orbit(_) | Route::World => None,
+                Route::CargoSource(_) | Route::Orbit(_) | Route::World => None,
             }
         });
         let hand = crate::model::hand::Hand::of(state.hand.iter().filter_map(|held| {
@@ -1641,6 +1663,33 @@ mod tests {
             assert_eq!(reopened.route, route);
             assert_eq!(reopened.overlay, Some(Overlay::Settings(SettingsPage::Help)));
         }
+    }
+
+    #[test]
+    fn cargo_source_cold_address_keeps_authority_but_cannot_mint_file_proof() {
+        let snapshot = AppSnapshot::empty(crate::core::VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("persistence".to_owned(), "cargo-source".to_owned())]),
+            1,
+        ));
+        let package = crate::core::PackageId::new(
+            "pkg:cargo/demo@1.2.3?cargo-authority=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ).expect("qualified package");
+        let file = CargoSourcePath::new("src/lib.rs").expect("relative file");
+        let route = Route::CargoSource(CargoSourceRoute::new(package, file, Some(43)).expect("source address"));
+        let wire = PersistentState::project(&snapshot.with_session(SessionState { route: route.clone(), ..SessionState::default() }));
+        let bytes = serde_json::to_vec(&wire).expect("serialize address");
+        let decoded: PersistedDesktopState = serde_json::from_slice(&bytes).expect("decode address");
+        let restored = PersistentState::at("unused").cold_reload(&decoded);
+        assert_eq!(restored.route, route);
+        assert_eq!(crate::runtime::store::route_keys(&restored.route).len(), 1, "cold address requires a fresh owner read");
+
+        let mut forged = decoded;
+        forged.route = PersistedRoute::CargoSource {
+            package: "pkg:cargo/demo@1.2.3".to_owned(),
+            file: "../secret".to_owned(),
+            line: Some(0),
+        };
+        assert!(matches!(PersistentState::at("unused").cold_reload(&forged).route, Route::Orbit(_)));
     }
 
     /// Quitting while the query previews a result reopens where you were,

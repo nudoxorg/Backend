@@ -78,6 +78,7 @@ impl Place {
         let book = match route {
             Route::Package(route) => Some(route.package.as_str().to_owned().into()),
             Route::Symbol(route) => Some(route.package.as_str().to_owned().into()),
+            Route::CargoSource(route) => Some(route.package.as_str().to_owned().into()),
             Route::Orbit(_) | Route::World => None,
         };
         Self {
@@ -341,6 +342,7 @@ impl Shelf {
         let pinned = match route {
             Route::Package(route) => PackageRef::parse(route.package.as_str()).ok(),
             Route::Symbol(route) => PackageRef::parse(route.package.as_str()).ok(),
+            Route::CargoSource(route) => PackageRef::parse(route.package.as_str()).ok(),
             Route::Orbit(_) | Route::World => None,
         }
         .filter(|routed| scope::book_of(routed) == scope::book_of(package))

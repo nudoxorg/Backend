@@ -267,6 +267,7 @@ fn route_package(route: &Route) -> Option<&str> {
     match route {
         Route::Package(route) => Some(route.package.as_str()),
         Route::Symbol(route) => Some(route.package.as_str()),
+        Route::CargoSource(route) => Some(route.package.as_str()),
         Route::Orbit(_) | Route::World => None,
     }
 }

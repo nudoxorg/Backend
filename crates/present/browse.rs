@@ -6,10 +6,10 @@
 
 use backend_library::browse::{
     DirectDependency, Duplicate, LockedInactiveCoverage, LockfileGraphCoverage,
-    LockfileWorkspaceMembership, MemberEdge, PackageOrigin, ProjectTree, RoleEvidence, RoleId,
+    LockfileWorkspaceMembership, MemberEdge, ProjectTree, RoleEvidence, RoleId,
     TreeAdvisory, TreeSource, WhyHop,
 };
-use backend_library::{AdvisoryCoverage, AdvisoryStatus, FreshnessState};
+use backend_library::{AdvisoryCoverage, AdvisoryStatus, FreshnessState, PackageReference};
 use std::collections::BTreeMap;
 
 /// A whole tree, in words.
@@ -84,9 +84,9 @@ pub struct RowReading {
     pub description: Option<String>,
     /// The versions your members resolve it to.
     pub versions: Box<[String]>,
-    /// The source of each exact resolved release, in `versions` order. `None`
-    /// means the tree cannot identify a unique source for that release.
-    pub sources: Box<[Option<PackageOrigin>]>,
+    /// Exact owner-issued source reference for each resolved release, in
+    /// `versions` order. Equal version text may still name distinct sources.
+    pub sources: Box<[Option<PackageReference>]>,
 }
 
 /// A package present more than once.
@@ -207,7 +207,7 @@ pub fn read_tree(tree: &ProjectTree) -> TreeReading {
                 id: role,
                 label: role_label(role),
                 serving: serving(&direct),
-                rows: direct.iter().map(|dependency| row(dependency, tree, &twice_by_name)).collect(),
+                rows: direct.iter().map(|dependency| row(dependency, &twice_by_name)).collect(),
                 brings: (brought > 0).then(|| {
                     format!(
                         "and {} {} with them",
@@ -355,7 +355,7 @@ fn serving(direct: &[&DirectDependency]) -> Option<String> {
     (!names.is_empty()).then(|| format!("for {}", and_list(&names)))
 }
 
-fn row(dependency: &DirectDependency, tree: &ProjectTree, twice: &BTreeMap<&str, &Duplicate>) -> RowReading {
+fn row(dependency: &DirectDependency, twice: &BTreeMap<&str, &Duplicate>) -> RowReading {
     let used_by = members_list(&dependency.by);
     let evidence = match &dependency.evidence {
         RoleEvidence::DevOnly => format!("only a dev-dependency of {used_by}"),
@@ -388,13 +388,7 @@ fn row(dependency: &DirectDependency, tree: &ProjectTree, twice: &BTreeMap<&str,
         evidence,
         description: dependency.description.clone(),
         versions: dependency.versions.clone(),
-        sources: dependency.versions.iter().map(|version| {
-            let mut exact = tree.packages.iter().filter(|package| package.name == dependency.name && package.version == version.as_str());
-            match (exact.next(), exact.next()) {
-                (Some(package), None) => Some(package.origin.clone()),
-                _ => None,
-            }
-        }).collect(),
+        sources: dependency.package_references.clone(),
     }
 }
 

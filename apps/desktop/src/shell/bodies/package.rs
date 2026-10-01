@@ -12,7 +12,7 @@ use crate::model::local_package::{ActiveProject, ReadmeBlock, active_project};
 use crate::model::pages::{
     Dependency, DependencyScope, PackageDossier, PackageRef, PageKey, RecordSource,
 };
-use crate::navigation::{Intent, Route};
+use crate::navigation::{CargoSourcePath, CargoSourceRoute, Intent, Route};
 use crate::shell::focus::Target;
 use crate::shell::kit::{HoverIntent, package_route, quiet, text};
 use crate::shell::markdown::FollowMarkdownLink;
@@ -61,13 +61,17 @@ pub(super) fn body(
     let dossier = match shown(&resource) {
         Shown::Ready(dossier) => dossier.clone(),
         other => {
-            return not_ready(
+            let mut leaves = not_ready(
                 &other,
                 &PageKey::Package(package.clone()),
                 package.display_name(),
                 ctx,
                 cx,
             );
+            if let Some(offer) = cargo_manifest_offer(&package, place, ctx) {
+                leaves.push(offer);
+            }
+            return leaves;
         }
     };
     // The reader's own workspace project, not the package whose page is
@@ -246,6 +250,9 @@ pub(super) fn body(
     // Centred on the reading column it overflows.
     let overshoot = (measure.width() - ctx.measure.width()).max(px(0.0));
     let mut leaves = vec![Leaf::new(div().ml(-(overshoot * 0.5)).child(folio))];
+    if let Some(offer) = cargo_manifest_offer(&package, place, ctx) {
+        leaves.push(offer);
+    }
     // A registry release the owner has not indexed offers to be added (W-Acquire).
     if let Some(offer) =
         crate::shell::acquire::page_offer(&dossier, ctx.links, cx.entity_id(), &ctx.measure, cx)
@@ -256,6 +263,38 @@ pub(super) fn body(
         leaves.push(leaf);
     }
     leaves
+}
+
+/// Cargo metadata observed the manifest path for this exact qualified source
+/// receipt. The address is still inert until the owner revalidates it on read.
+fn cargo_manifest_offer(package: &PackageRef, place: &Route, ctx: &mut Ctx<'_>) -> Option<Leaf> {
+    let package_id = crate::core::PackageId::new(package.as_str()).ok()?;
+    let file = CargoSourcePath::new("Cargo.toml")?;
+    let route = Route::CargoSource(CargoSourceRoute::new(package_id, file, None)?);
+    let id: SharedString = "cargo-source-open-manifest".into();
+    let leaving = place.clone();
+    let recall = ctx.targets.recall();
+    let links = ctx.links.clone();
+    let act: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
+        recall.focus(id.clone());
+        recall.remember_leave(leaving.clone(), id.clone());
+        links.dispatch(Intent::Navigate(route.clone()), app);
+    });
+    let id: SharedString = "cargo-source-open-manifest".into();
+    ctx.targets.push(Target {
+        id: id.clone(),
+        label: "Open current Cargo.toml source file".into(),
+        act: act.clone(),
+        peek: None,
+        source: None,
+    });
+    Some(Leaf::new(ctx.targets.track(
+        id.clone(),
+        facet::controls::button(id, "Open Cargo.toml", &ctx.measure)
+            .ghost()
+            .size(facet::Control::Small)
+            .on_click(move |window, app| act(window, app)),
+    )))
 }
 
 /// The measure of the page: the room the reader gives it this frame (the
@@ -977,6 +1016,8 @@ fn route_page_key(route: &Route) -> Option<crate::model::pages::PageKey> {
                     crate::model::pages::PageKey::Symbol(symbol)
                 }
             }),
+        Route::CargoSource(route) => PackageRef::parse(route.package.as_str()).ok()
+            .map(|package| crate::model::pages::PageKey::CargoSource(crate::model::pages::CargoSourceKey { package, file: route.file.clone() })),
         Route::Orbit(_) | Route::World => None,
     }
 }

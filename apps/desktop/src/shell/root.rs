@@ -867,6 +867,7 @@ impl Shell {
         let package = kit::package_of(&symbol).or_else(|| match snapshot.route() {
             Route::Symbol(route) => Some(route.package.as_str().to_owned()),
             Route::Package(route) => Some(route.package.as_str().to_owned()),
+            Route::CargoSource(route) => Some(route.package.as_str().to_owned()),
             Route::Orbit(_) | Route::World => None,
         });
         if let Some(route) = package.and_then(|package| kit::symbol_view_route(&package, &symbol, View::Code, line)) {
@@ -892,6 +893,7 @@ impl Shell {
             Route::Symbol(route) if route.view == View::Graph => Intent::Navigate(snapshot.route().with_view(View::Page).expect("symbol view")),
             Route::Symbol(_) => Intent::SetView(View::Graph),
             Route::World => Intent::Back,
+            Route::CargoSource(_) => return,
             Route::Orbit(_) | Route::Package(_) => {
                 self.reader.update(cx, |reader, cx| reader.reset_world(cx));
                 Intent::Navigate(Route::World)
@@ -1057,6 +1059,7 @@ impl Shell {
         let (package, id) = match snapshot.route() {
             Route::Symbol(route) => (route.package.clone(), Some(route.id.clone())),
             Route::Package(route) => (route.package.clone(), None),
+            Route::CargoSource(route) => (route.package.clone(), None),
             Route::Orbit(_) | Route::World => return,
         };
         if let Some(id) = &id
@@ -1076,7 +1079,7 @@ impl Shell {
         let package = match self.links.snapshot(cx).route() {
             Route::Package(route) => route.package.clone(),
             Route::Symbol(route) if route.view != View::Graph => route.package.clone(),
-            Route::Symbol(_) | Route::Orbit(_) | Route::World => return,
+            Route::CargoSource(_) | Route::Symbol(_) | Route::Orbit(_) | Route::World => return,
         };
         self.links.dispatch(Intent::Tour(package), cx);
     }

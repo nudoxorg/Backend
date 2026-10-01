@@ -225,6 +225,12 @@ impl PageReader for Fixture {
                     uses_elsewhere: Arc::from([]),
                 })
             }
+            ReadRequest::CargoSource(_) => {
+                return Err(ReadFailure::Unavailable(
+                    crate::core::UnavailableReason::Unsupported,
+                    Arc::from("fixture has no owner-admitted Cargo source authority"),
+                ));
+            }
             ReadRequest::Package(_) => PageValue::Package(dossier()),
             ReadRequest::Orbit => PageValue::Orbit(OrbitModel {
                 indexed: Known::Known(Arc::from([IndexedPackage {

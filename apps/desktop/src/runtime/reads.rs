@@ -27,11 +27,13 @@ use super::wake::{WakeReceiver, WakeSender, wake_channel};
 use crate::core::{ErrorValue, FaultCode, LocalProjectId};
 use crate::model::local_package::LocalPackageLoader;
 use crate::model::pages::{
-    Gap, GapReason, Generation, PackageRef, PageKey, PageValue, ReadFailure, SearchContinuation,
+    CargoSourceKey, CargoSourcePage, Gap, GapReason, Generation, PackageRef, PageKey, PageValue, ReadFailure, SearchContinuation,
     SearchQuery, SymbolRef,
 };
 use backend_client::{ClientError, Session};
 use backend_library::{
+    CargoPackageSourceFileResultV1, CargoPackageSourcePathV1, CargoPackageSourceReadFailureV1,
+    CargoPackageSourceSemanticStatusV1,
     CommandFailure, CommandReply, HealthReport, PageContinuation, PageTerminal, ProductText,
     ReplyDto, Row, SurfaceCommand, SurfaceReply, ViewSnapshot, ViewStateRoot,
 };
@@ -64,6 +66,8 @@ pub enum ReadRequest {
     Symbol(SymbolRef),
     /// A declaration's source view.
     Source(SymbolRef),
+    /// A package-relative file under exact Cargo source authority.
+    CargoSource(CargoSourceKey),
     /// A package dossier.
     Package(PackageRef),
     /// The first page of a search.
@@ -90,6 +94,7 @@ impl ReadRequest {
         match key {
             PageKey::Symbol(symbol) => Self::Symbol(symbol.clone()),
             PageKey::Source(symbol) => Self::Source(symbol.clone()),
+            PageKey::CargoSource(file) => Self::CargoSource(file.clone()),
             PageKey::Package(package) => Self::Package(package.clone()),
             PageKey::Search(query) => Self::Search(query.clone()),
             PageKey::Orbit => Self::Orbit,
@@ -820,6 +825,7 @@ pub(crate) const fn read_only(command: &SurfaceCommand) -> bool {
             | SurfaceCommand::Projects
             | SurfaceCommand::Tree
             | SurfaceCommand::ProjectTree { .. }
+            | SurfaceCommand::CargoPackageSourceFile { .. }
     )
 }
 
@@ -941,6 +947,7 @@ impl<E: ReadEngine> PageReader for SessionReader<E> {
         let result = (|| match request {
             ReadRequest::Symbol(symbol) => compose_symbol(&mut self.engine, symbol, context),
             ReadRequest::Source(symbol) => compose_source(&mut self.engine, symbol, context),
+            ReadRequest::CargoSource(file) => compose_cargo_source(&mut self.engine, file, context),
             ReadRequest::Package(package) => {
                 compose_package(&mut self.engine, &self.loader, package, context)
             }
@@ -1399,6 +1406,98 @@ fn compose_source(
     )))
 }
 
+/// Reads current bytes only through the owner's Cargo metadata receipt.
+/// A digest-qualified route is an address; this reply establishes fresh
+/// root/file evidence but explicitly does not establish semantic indexing.
+fn compose_cargo_source(
+    engine: &mut dyn Engine,
+    key: &CargoSourceKey,
+    context: &ReadContext<'_>,
+) -> Result<PageValue, ReadFailure> {
+    check(context.cancel)?;
+    let path = CargoPackageSourcePathV1::new(key.file.as_str()).map_err(|_| {
+        ReadFailure::Fault(ErrorValue::new(FaultCode::Protocol, "invalid Cargo source file address"))
+    })?;
+    let reply = engine
+        .surface(SurfaceCommand::CargoPackageSourceFile {
+            package: key.package.reference().clone(),
+            path,
+        })
+        .map_err(|error| failure(&error))?;
+    check(context.cancel)?;
+    let SurfaceReply::CargoPackageSourceFile(result) = reply else {
+        return Err(shape("Cargo source file"));
+    };
+    cargo_source_page(key, result)
+}
+
+/// Admits only exact owner replies and prepares the immutable line index on
+/// the read worker. Kept separate from transport for focused proof tests.
+fn cargo_source_page(
+    key: &CargoSourceKey,
+    result: CargoPackageSourceFileResultV1,
+) -> Result<PageValue, ReadFailure> {
+    if !result.has_admissible_shape() {
+        return Err(shape("Cargo source file proof"));
+    }
+    match result {
+        CargoPackageSourceFileResultV1::Read {
+            package, authority, path, content_digest, contents,
+            semantic: CargoPackageSourceSemanticStatusV1::NotIndexed,
+        } if package == *key.package.reference()
+            && path.as_str() == key.file.as_str()
+            && authority.matches_package_reference(&package) => {
+                let text = crate::model::pages::SourceText::new(
+                    Arc::from(contents),
+                    1,
+                    crate::model::pages::SourceOrigin::LocalFile,
+                    true,
+                )
+                .map_err(|_| shape("Cargo source line range"))?;
+                Ok(PageValue::CargoSource(CargoSourcePage {
+                    package: key.package.clone(),
+                    file: key.file.clone(),
+                    source: text,
+                    content_digest,
+                    source_revision: authority.source_revision(),
+                }))
+        }
+        CargoPackageSourceFileResultV1::Stale { package }
+            if package == *key.package.reference() => Err(ReadFailure::Fault(ErrorValue::new(
+                FaultCode::Missing,
+                "The Cargo source changed. Reopen the project tree to get its current files.",
+            ))),
+        CargoPackageSourceFileResultV1::Unavailable { package, reason }
+            if package.as_ref().is_none_or(|package| package == key.package.reference()) => {
+                let (code, message) = cargo_source_failure(reason);
+                Err(ReadFailure::Fault(ErrorValue::new(code, message)))
+            }
+        _ => Err(shape("Cargo source address mismatch")),
+    }
+}
+
+fn cargo_source_failure(reason: CargoPackageSourceReadFailureV1) -> (FaultCode, &'static str) {
+    use CargoPackageSourceReadFailureV1 as Reason;
+    match reason {
+        Reason::InvalidPackageReference | Reason::InvalidRelativePath =>
+            (FaultCode::Protocol, "This Cargo source address is invalid."),
+        Reason::AuthorityUnavailable =>
+            (FaultCode::Missing, "This Cargo package has no current source receipt. Reopen its project tree."),
+        Reason::StaleAuthority =>
+            (FaultCode::Missing, "The Cargo source changed. Reopen its project tree."),
+        Reason::PackageRootUnavailable =>
+            (FaultCode::Missing, "The admitted Cargo source folder is no longer available."),
+        Reason::UnsupportedFileKind =>
+            (FaultCode::Unsupported, "This file kind is not available in the Cargo source reader."),
+        Reason::FileUnavailable =>
+            (FaultCode::Missing, "This source file is absent or cannot be read safely."),
+        Reason::FileTooLarge =>
+            (FaultCode::Unsupported, "This source file is too large for the bounded reader."),
+        Reason::NotUtf8Text =>
+            (FaultCode::Unsupported, "This source file is not UTF-8 text."),
+    }
+}
+
 fn compose_package(
     engine: &mut dyn Engine,
     loader: &LocalPackageLoader,
@@ -1626,6 +1725,47 @@ mod tests {
     use crate::runtime::owner::{OwnerFault, OwnerGate, OwnerState};
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn cargo_source_reply_requires_current_exact_file_proof_and_marks_semantics_unindexed() {
+        use backend_library::CargoPackageSourceAuthorityStateV1;
+        const METADATA: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../crates/library/browse/fixtures/tree-2026-09-27/metadata.json"));
+        let input = backend_library::browse::metadata_input(METADATA, "aarch64-apple-darwin", None)
+            .expect("Cargo metadata fixture");
+        let row = input.packages.iter().find(|row| row.name == "serde" && row.version == "1.0.219")
+            .expect("resolved package");
+        let CargoPackageSourceAuthorityStateV1::Admitted(authority) = &row.source_authority
+            else { panic!("resolved metadata must carry exact authority") };
+        let reference = authority.package_reference().expect("qualified package");
+        let path = CargoPackageSourcePathV1::new("Cargo.toml").expect("relative file");
+        let key = CargoSourceKey {
+            package: PackageRef::from_reference(reference.clone()),
+            file: crate::navigation::CargoSourcePath::new(path.as_str()).expect("GUI path"),
+        };
+        let contents: Box<str> = "[package]\nname = \"serde\"\n".into();
+        let digest = *blake3::hash(contents.as_bytes()).as_bytes();
+        let reply = CargoPackageSourceFileResultV1::Read {
+            package: reference.clone(), authority: authority.clone(), path: path.clone(),
+            content_digest: digest, contents: contents.clone(),
+            semantic: CargoPackageSourceSemanticStatusV1::NotIndexed,
+        };
+        let PageValue::CargoSource(page) = cargo_source_page(&key, reply).expect("verified reply")
+            else { panic!("Cargo file page") };
+        assert_eq!(page.package, key.package);
+        assert_eq!(page.file, key.file);
+        assert_eq!(page.content_digest, digest);
+        assert_eq!(page.source.text(), contents.as_ref());
+        assert_eq!(page.source.coverage(), crate::model::pages::SourceCoverage::Unverified);
+
+        let forged = CargoPackageSourceFileResultV1::Read {
+            package: reference.clone(), authority: authority.clone(), path: path.clone(),
+            content_digest: [0; 32], contents,
+            semantic: CargoPackageSourceSemanticStatusV1::NotIndexed,
+        };
+        assert!(cargo_source_page(&key, forged).is_err(), "a display address cannot authenticate file bytes");
+        assert!(matches!(cargo_source_page(&key, CargoPackageSourceFileResultV1::Stale { package: reference }),
+            Err(ReadFailure::Fault(error)) if error.code() == FaultCode::Missing));
+    }
 
     #[test]
     fn closing_the_read_pool_wakes_a_page_waiting_for_owner_startup() {

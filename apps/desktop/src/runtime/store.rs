@@ -243,6 +243,7 @@ pub fn route_package(route: &Route) -> Option<PackageRef> {
     let (package, at) = match route {
         Route::Package(route) => (&route.package, &route.at),
         Route::Symbol(route) => (&route.package, &route.at),
+        Route::CargoSource(route) => return PackageRef::parse(route.package.as_str()).ok(),
         Route::Orbit(_) | Route::World => return None,
     };
     let pinned = PackageRef::parse(package.as_str()).ok()?;
@@ -337,6 +338,14 @@ pub fn route_keys(route: &Route) -> Vec<PageKey> {
         Route::World => vec![PageKey::Orbit],
         Route::Package(_) => route_package(route)
             .map(PageKey::Package)
+            .into_iter()
+            .collect(),
+        Route::CargoSource(route) => PackageRef::parse(route.package.as_str())
+            .ok()
+            .map(|package| PageKey::CargoSource(crate::model::pages::CargoSourceKey {
+                package,
+                file: route.file.clone(),
+            }))
             .into_iter()
             .collect(),
         Route::Symbol(symbol) => route_symbol(route)
@@ -661,6 +670,7 @@ impl DataStore {
     /// round trip and are dropped on landing), and the new keys are ensured.
     pub fn focus(&mut self, keys: Vec<PageKey>, cx: &mut Context<Self>) {
         let next = keys.iter().cloned().collect::<BTreeSet<_>>();
+        let previous = self.focused.clone();
         let dropped = self.focused.difference(&next).cloned().collect::<Vec<_>>();
         self.owner.retain_held(|key| next.contains(key));
         self.focused = next;
@@ -671,7 +681,20 @@ impl DataStore {
             self.cancel_key(&key, cx);
         }
         for key in keys {
-            self.ensure(key, cx);
+            if matches!(key, PageKey::CargoSource(_))
+                && !previous.contains(&key)
+                && self.pages.contains(&key)
+            {
+                // A file page is a current source capability, not a durable
+                // snapshot. Back/Forward after leaving must revalidate even
+                // when the global index root has not changed.
+                if let PageKey::CargoSource(file) = &key {
+                    self.pages.revoke_cargo_source(file);
+                }
+                self.retry(key, cx);
+            } else {
+                self.ensure(key, cx);
+            }
         }
     }
 
@@ -870,6 +893,7 @@ impl DataStore {
         // from the lost owner must not land after Retry, even at the same
         // producer root. Quiet snapshot reads keep their last painted value.
         self.revoke_inflight(cx);
+        self.pages.revoke_all_cargo_sources();
         let mut keys = self.owner.failed(fault.clone());
         keys.extend(self.focused.iter().cloned());
         for key in keys {
@@ -916,6 +940,13 @@ impl DataStore {
 
     /// The owner is starting (again): pages asked from now on are held.
     pub(crate) fn owner_starting(&mut self, cx: &mut Context<Self>) {
+        let cargo_reads = self.pages.keys().into_iter()
+            .filter(|key| matches!(key, PageKey::CargoSource(_)) && self.pages.inflight(key).is_some())
+            .collect::<Vec<_>>();
+        for key in cargo_reads {
+            self.cancel_key(&key, cx);
+        }
+        self.pages.revoke_all_cargo_sources();
         if self.owner.attachment_changed() {
             self.revoke_inflight(cx);
         }
@@ -1030,6 +1061,12 @@ impl DataStore {
     #[must_use]
     pub fn source(&self, symbol: &SymbolRef) -> Resource<SourceView> {
         self.pages.source(symbol)
+    }
+
+    /// Returns a current Cargo source file read under the owner receipt.
+    #[must_use]
+    pub fn cargo_source(&self, file: &crate::model::pages::CargoSourceKey) -> Resource<crate::model::pages::CargoSourcePage> {
+        self.pages.cargo_source(file)
     }
 
     /// Returns the package dossier.

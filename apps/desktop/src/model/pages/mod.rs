@@ -8,6 +8,7 @@
 //! the engine may not know is a [`common::Known`] with a typed gap.
 
 pub mod common;
+pub mod cargo_source;
 pub mod health;
 pub mod key;
 pub mod lines;
@@ -24,8 +25,9 @@ pub use common::{
     ByteSpan, DeclFacts, DeclRef, Deprecation, Derivation, Gap, GapReason, KeyError, KindFamily,
     Known, LineSpan, PackageRef, Provenance, RowKey, SymbolRef, confidence_name, link_name,
 };
+pub use cargo_source::CargoSourcePage;
 pub use health::{FaultProgress, HealthModel, IngestModel, LanguageProgress, MissingCapability};
-pub use key::{PageKey, SearchQuery};
+pub use key::{CargoSourceKey, PageKey, SearchQuery};
 pub use lines::{Resolution, UseLine};
 pub use orbit::{
     IndexedPackage, OrbitModel, OrbitProject, Readiness, TreeNode, TreeOpener, TreeSubject,

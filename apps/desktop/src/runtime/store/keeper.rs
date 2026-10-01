@@ -120,7 +120,7 @@ impl SnapshotKeeper {
                 PageKey::Package(package) => at(&pages.package(package), root)
                     .map(|dossier| SeedEntry::Package(package.clone(), dossier)),
                 PageKey::Orbit => at(&pages.orbit(), root).map(SeedEntry::Orbit),
-                PageKey::Search(_) | PageKey::Health | PageKey::Browse(_) => None,
+                PageKey::CargoSource(_) | PageKey::Search(_) | PageKey::Health | PageKey::Browse(_) => None,
             }
         };
         let kept = kept_keys(snapshot.route())
@@ -187,7 +187,7 @@ fn confirm_index_pages(pages: &mut PageStore, root: VersionedRoot) -> usize {
 
 fn requires_worker_verification(key: &PageKey) -> bool {
     match key {
-        PageKey::Source(_) => true,
+        PageKey::Source(_) | PageKey::CargoSource(_) => true,
         PageKey::Symbol(symbol) => symbol.release_origin().is_some(),
         PageKey::Package(package) => package.release_origin().is_some(),
         PageKey::Orbit | PageKey::Search(_) | PageKey::Health | PageKey::Browse(_) => false,
