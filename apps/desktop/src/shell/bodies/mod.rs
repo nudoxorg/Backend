@@ -116,6 +116,8 @@ pub(crate) struct Ctx<'a> {
     pub place_key: u64,
     /// Owner revision of the source resource, when available.
     pub source_generation: Option<crate::core::VersionedRoot>,
+    /// Source cursor/history retained by Reader across page body unmounts.
+    pub source_paging: std::rc::Rc<std::cell::RefCell<Option<PagingState>>>,
     /// The page's lens (tab) for declaration pages.
     pub lens: Lens,
     /// The text each body renders, recorded for content assertions.
