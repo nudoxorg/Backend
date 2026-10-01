@@ -514,9 +514,7 @@ impl EmbeddingCacheFile {
             checkpoint()?;
             for (identity, _) in eviction {
                 checkpoint()?;
-                if projected_bytes <= MAX_CACHE_BYTES - entry_bytes
-                    && projected_entries < MAX_CACHE_ENTRIES
-                {
+                if projected_bytes <= MAX_CACHE_BYTES && projected_entries <= MAX_CACHE_ENTRIES {
                     break;
                 }
                 let Some(entry) = self.entries.remove(&identity) else {
@@ -538,8 +536,7 @@ impl EmbeddingCacheFile {
                 projected_entries = projected_entries.saturating_sub(1);
             }
         }
-        if projected_bytes > MAX_CACHE_BYTES - entry_bytes || projected_entries >= MAX_CACHE_ENTRIES
-        {
+        if projected_bytes > MAX_CACHE_BYTES || projected_entries > MAX_CACHE_ENTRIES {
             return Ok(());
         }
 

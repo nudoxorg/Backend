@@ -216,15 +216,23 @@ impl ExecutableIdentity {
         }
         file.seek(SeekFrom::Start(0))
             .map_err(|_| ProcessError::Io)?;
+        let payload_length =
+            usize::try_from(before.len()).map_err(|_| ProcessError::ExecutableLimit)?;
+        let encoded_length = payload_length
+            .checked_add(std::mem::size_of::<u64>())
+            .ok_or(ProcessError::ExecutableLimit)?;
         let mut hasher = backend_version::ObjectVersionHasher::new(
             backend_version::SchemaIdentity::new(
                 crate::ToolchainSchema::DOMAIN,
                 crate::ToolchainSchema::TYPE,
                 crate::ToolchainSchema::VERSION,
             ),
-            usize::try_from(before.len()).map_err(|_| ProcessError::ExecutableLimit)?,
+            encoded_length,
         )
         .map_err(|_| ProcessError::ExecutableLimit)?;
+        hasher
+            .update(&before.len().to_be_bytes())
+            .map_err(|_| ProcessError::ExecutableDrift)?;
         let mut scratch = [0_u8; 64 * 1024];
         let mut remaining = before.len();
         while remaining > 0 {
@@ -780,15 +788,23 @@ fn toolchain_digest_until<C: CancellationObserver + ?Sized>(
     cancellation: &C,
     deadline: std::time::Instant,
 ) -> Result<ToolchainId, ProcessError> {
+    let payload_length = u64::try_from(bytes.len()).map_err(|_| ProcessError::ExecutableLimit)?;
+    let encoded_length = bytes
+        .len()
+        .checked_add(std::mem::size_of::<u64>())
+        .ok_or(ProcessError::ExecutableLimit)?;
     let mut hasher = backend_version::ObjectVersionHasher::new(
         backend_version::SchemaIdentity::new(
             crate::ToolchainSchema::DOMAIN,
             crate::ToolchainSchema::TYPE,
             crate::ToolchainSchema::VERSION,
         ),
-        bytes.len(),
+        encoded_length,
     )
     .map_err(|_| ProcessError::ExecutableLimit)?;
+    hasher
+        .update(&payload_length.to_be_bytes())
+        .map_err(|_| ProcessError::ExecutableDrift)?;
     for chunk in bytes.chunks(64 * 1024) {
         process_checkpoint(cancellation, deadline)?;
         hasher
@@ -912,6 +928,22 @@ mod tests {
         fs::create_dir(&directory)?;
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
         Ok(directory)
+    }
+
+    #[test]
+    fn streamed_toolchain_digest_matches_the_canonical_byte_slice_identity() {
+        let cancellation = std::sync::atomic::AtomicBool::new(false);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        for length in [0, 1, 127, 64 * 1024 + 11] {
+            let bytes = (0..length)
+                .map(|index| (index % 251) as u8)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                toolchain_digest_until(&bytes, &cancellation, deadline).expect("streamed digest"),
+                typed_of::<crate::ToolchainSchema>(&bytes),
+                "canonical byte-slice identity at {length} bytes"
+            );
+        }
     }
 
     #[test]
