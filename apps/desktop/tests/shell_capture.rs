@@ -557,6 +557,7 @@ fn capture(
             for lens in ["Contents", "Versions", "Rests on", "Used by"] {
                 clickable("Tab", lens);
             }
+            assert_eq!(named("Heading", "Library, 2 projects · 2 packages").len(), 1);
             assert_eq!(named("TabList", "Library views").len(), 1);
             assert_eq!(named("Tab", "Contents")[0]["aria"]["selected"].as_bool(), Some(true));
             assert!(nodes.len() > 1, "the live shell cannot be a Window-only tree");

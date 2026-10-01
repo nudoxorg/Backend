@@ -71,7 +71,7 @@ pub(super) struct StepOut {
 pub(super) enum Title {
     /// The Library.
     Library {
-        /// "2 projects · 13 packages".
+        /// "2 projects · 13 packages" (including project-owned packages).
         detail: SharedString,
     },
     /// A package: its name and the release the page is about.
@@ -335,9 +335,13 @@ fn library(inputs: &Inputs<'_>) -> Listing {
         .and_then(|model| model.indexed.known())
         .map(|list| beside_your_projects(list, workspace, LibraryOrder::Name));
     let indexed = library.as_deref();
+    // The mounted list omits each project's own package because its project
+    // row already opens it. The title reports the full indexed package count,
+    // as Orbit's arrival sentence does; Contents still counts mounted rows.
     let packages = indexed.map(<[_]>::len);
+    let all_packages = inputs.orbit.and_then(|model| model.indexed.known().map(<[_]>::len));
     let projects = workspace.projects.len();
-    let detail = match packages {
+    let detail = match all_packages {
         Some(packages) => format!(
             "{projects} project{} · {packages} package{}",
             if projects == 1 { "" } else { "s" },
