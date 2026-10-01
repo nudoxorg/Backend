@@ -107,6 +107,8 @@ pub struct Shell {
     around: Surroundings,
     renders: u64,
     frame: Option<Frame>,
+    /// Keeps the native reduced-motion observer installed while this window lives.
+    _reduced_motion: system::ReducedMotionWatch,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -181,6 +183,21 @@ impl Shell {
         });
         // Twins: what a hovered declaration lights elsewhere is drawn above the regions.
         let twins = cx.observe_global::<super::side::twin::Lit>(|_, cx| cx.notify());
+        let reduced_motion = system::watch_reduced_motion();
+        let system_reduced_motion = reduced_motion.initial();
+        let motion_changes = reduced_motion.changes();
+        cx.spawn(async move |shell, cx| {
+            while let Ok(system) = motion_changes.recv().await {
+                if shell.update(cx, |shell, cx| {
+                    if shell.around.system_reduced_motion != system {
+                        shell.around.system_reduced_motion = system;
+                        shell.apply_facet(cx);
+                    }
+                }).is_err() {
+                    break;
+                }
+            }
+        }).detach();
         let mut shell = Self {
             links,
             graph: UiEntityGraph {
@@ -212,10 +229,12 @@ impl Shell {
             around: Surroundings {
                 dark: is_dark(window.appearance()),
                 text: 1.0,
+                system_reduced_motion,
                 display: system::display_key(window, cx),
             },
             renders: 0,
             frame: None,
+            _reduced_motion: reduced_motion,
             _subscriptions: vec![events, appearance, activation, moved, keystrokes, twins],
         };
         shell.apply_facet(cx);

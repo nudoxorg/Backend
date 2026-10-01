@@ -801,7 +801,7 @@ pub fn failure(error: &ClientError) -> ReadFailure {
         ClientError::CommandFailed(_) | ClientError::Protocol(_) | ClientError::IncoherentView => {
             FaultCode::Protocol
         }
-        ClientError::Disconnected(_) | ClientError::Io(_) | ClientError::Transport(_) => {
+        ClientError::Disconnected(_) | ClientError::Io(_) | ClientError::Transport(_) | ClientError::RemoteDeadlineExceeded => {
             FaultCode::Transport
         }
         ClientError::BasisMismatch { .. }
@@ -809,7 +809,10 @@ pub fn failure(error: &ClientError) -> ReadFailure {
         | ClientError::RequestMismatch { .. }
         | ClientError::CursorMismatch
         | ClientError::StaleCursor
-        | ClientError::StaleSelection => FaultCode::Cancelled,
+        | ClientError::StaleSelection
+        | ClientError::StaleRemoteRoot { .. }
+        | ClientError::StaleRemoteCapability
+        | ClientError::RemoteCapabilityRevoked => FaultCode::Cancelled,
     };
     ReadFailure::Fault(ErrorValue::new(code, error.to_string()))
 }

@@ -175,7 +175,7 @@ mod macos_motion {
     impl Drop for Subscription {
         fn drop(&mut self) {
             // SAFETY: this observer token came from this notification center.
-            unsafe { self.center.removeObserver(&self.observer) };
+            unsafe { self.center.removeObserver(self.observer.as_ref()) };
         }
     }
 

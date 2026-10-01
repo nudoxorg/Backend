@@ -1326,6 +1326,7 @@ impl Folio {
             .into_iter()
             .filter_map(|mark| {
                 let index = tick_of(mark)?;
+                let at = facet::folio::ticker::door(ticks, measure, index)?;
                 let travel = travel.clone();
                 let act: Act = Rc::new(move |_, cx| travel(index, cx));
                 let label: SharedString = match mark {
@@ -1338,7 +1339,7 @@ impl Folio {
                 Some(Door {
                     target: PageTarget::Release(mark),
                     label,
-                    at: facet::folio::ticker::door(ticks, measure, index),
+                    at,
                     act,
                 })
             })
