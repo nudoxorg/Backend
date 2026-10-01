@@ -40,6 +40,7 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 /// Largest outline page the owner admits.
 const OUTLINE_PAGE: u16 = 200;
