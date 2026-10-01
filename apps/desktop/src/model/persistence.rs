@@ -12,7 +12,7 @@ use backend_platform::durable;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -516,6 +516,14 @@ pub enum PersistenceRecovery {
         /// Why the canonical path could not be admitted.
         reason: PersistenceRecoveryReason,
     },
+    /// An oversized file could not be admitted into the byte budget; its
+    /// original pathname was left untouched for the next launch or support.
+    RetainedAtSource {
+        /// The original state path, kept without another read.
+        path: PathBuf,
+        /// Why this launch used defaults.
+        reason: PersistenceRecoveryReason,
+    },
 }
 
 impl PersistenceRecovery {
@@ -525,7 +533,7 @@ impl PersistenceRecovery {
     pub fn note(&self) -> Option<super::workspace::Note> {
         match self {
             Self::Current | Self::Missing => None,
-            Self::Preserved { backup, reason } => Some(super::workspace::Note::StateKept {
+            Self::Preserved { backup, reason } | Self::RetainedAtSource { path: backup, reason } => Some(super::workspace::Note::StateKept {
                 backup: Arc::from(backup.display().to_string()),
                 why: Arc::from(reason.to_string()),
             }),
@@ -540,8 +548,9 @@ pub enum PersistenceRecoveryReason {
     Corrupt,
     /// The payload exceeded the bounded desktop-state envelope.
     Oversized {
-        /// Observed byte length.
-        bytes: u64,
+        /// Lower bound established by the bounded read, without restating
+        /// a pathname that another writer could replace.
+        at_least: u64,
         /// Maximum accepted byte length.
         limit: u64,
     },
@@ -558,8 +567,8 @@ impl std::fmt::Display for PersistenceRecoveryReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Corrupt => f.write_str("invalid JSON or state shape"),
-            Self::Oversized { bytes, limit } => {
-                write!(f, "state is {bytes} bytes (limit {limit})")
+            Self::Oversized { at_least, limit } => {
+                write!(f, "state is at least {at_least} bytes (limit {limit})")
             }
             Self::IncompatibleSchema { found, supported } => {
                 write!(f, "schema {found} is incompatible with schema {supported}")
@@ -638,14 +647,14 @@ impl PersistentState {
                 });
             }
             Err(source) if source.kind() == io::ErrorKind::InvalidData => {
-                let bytes = fs::metadata(&self.path)
-                    .map(|metadata| metadata.len())
-                    .unwrap_or(0);
                 let reason = PersistenceRecoveryReason::Oversized {
-                    bytes,
+                    at_least: MAX_STATE_BYTES + 1,
                     limit: MAX_STATE_BYTES,
                 };
-                return self.preserve_and_default(reason);
+                return Ok(PersistenceLoad {
+                    state: PersistedDesktopState::default(),
+                    recovery: PersistenceRecovery::RetainedAtSource { path: self.path.clone(), reason },
+                });
             }
             Err(source) => {
                 return Err(PersistenceError {
@@ -656,10 +665,10 @@ impl PersistentState {
         };
         let value: PersistedDesktopState = match serde_json::from_slice(&bytes) {
             Ok(value) => value,
-            Err(_) => return self.preserve_and_default(PersistenceRecoveryReason::Corrupt),
+            Err(_) => return self.preserve_observed_and_default(&bytes, PersistenceRecoveryReason::Corrupt),
         };
         if value.schema != SCHEMA {
-            return self.preserve_and_default(PersistenceRecoveryReason::IncompatibleSchema {
+            return self.preserve_observed_and_default(&bytes, PersistenceRecoveryReason::IncompatibleSchema {
                 found: value.schema,
                 supported: SCHEMA,
             });
@@ -674,20 +683,12 @@ impl PersistentState {
         })
     }
 
-    fn preserve_and_default(
+    fn preserve_observed_and_default(
         &self,
+        observed: &[u8],
         reason: PersistenceRecoveryReason,
     ) -> Result<PersistenceLoad, PersistenceError> {
-        let backup = recovery_path(&self.path, &reason);
-        durable::replace_file(&self.path, &backup).map_err(|source| PersistenceError {
-            path: self.path.clone(),
-            source,
-        })?;
-        durable::sync_parent(&self.path).map_err(|source| PersistenceError {
-            path: self.path.clone(),
-            source,
-        })?;
-        cleanup_interrupted_temporaries(&self.path).map_err(|source| PersistenceError {
+        let backup = preserve_observed(&self.path, observed, &reason).map_err(|source| PersistenceError {
             path: self.path.clone(),
             source,
         })?;
@@ -711,7 +712,12 @@ impl PersistentState {
                 ),
             });
         }
-        let bytes = serde_json::to_vec_pretty(value).map_err(|error| PersistenceError {
+        let mut bytes = Vec::new();
+        let writer = durable::BoundedWriter::new(&mut bytes, MAX_STATE_BYTES as usize).map_err(|source| PersistenceError {
+            path: self.path.clone(),
+            source,
+        })?;
+        serde_json::to_writer_pretty(writer, value).map_err(|error| PersistenceError {
             path: self.path.clone(),
             source: io::Error::new(io::ErrorKind::InvalidData, error),
         })?;
@@ -1213,16 +1219,36 @@ fn recovery_path(path: &Path, reason: &PersistenceRecoveryReason) -> PathBuf {
             format!("schema-{found}")
         }
     };
+    let sequence = RECOVERY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    parent.join(format!(
+        ".{name}.{label}.{}.{}.preserved",
+        std::process::id(),
+        sequence
+    ))
+}
+
+/// Copies exactly the bytes admitted from the held read into an exclusive
+/// diagnostic. A concurrent atomic save may have replaced `path` by now, so
+/// recovery must never rename or reread that pathname to preserve evidence.
+fn preserve_observed(path: &Path, observed: &[u8], reason: &PersistenceRecoveryReason) -> io::Result<PathBuf> {
+    if observed.len() > MAX_STATE_BYTES as usize {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "observed state exceeds its byte budget"));
+    }
     loop {
-        let sequence = RECOVERY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let candidate = parent.join(format!(
-            ".{name}.{label}.{}.{}.preserved",
-            std::process::id(),
-            sequence
-        ));
-        if !candidate.exists() {
-            return candidate;
+        let backup = recovery_path(path, reason);
+        let mut file = match fs::OpenOptions::new().write(true).create_new(true).open(&backup) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        };
+        if let Err(error) = file.write_all(observed).and_then(|()| file.sync_all()) {
+            drop(file);
+            let _ = fs::remove_file(&backup);
+            return Err(error);
         }
+        drop(file);
+        durable::sync_parent(&backup)?;
+        return Ok(backup);
     }
 }
 
@@ -1526,7 +1552,7 @@ mod tests {
         };
         assert_eq!(reason, PersistenceRecoveryReason::Corrupt);
         assert_eq!(fs::read(backup).expect("preserved bytes"), corrupt);
-        assert!(!path.exists());
+        assert_eq!(fs::read(&path).expect("source untouched"), corrupt);
 
         store
             .save(&admitted.state)
@@ -1561,7 +1587,7 @@ mod tests {
             }
         );
         assert_eq!(fs::read(backup).expect("preserved bytes"), bytes);
-        assert!(!path.exists());
+        assert_eq!(fs::read(&path).expect("source untouched"), bytes);
         assert!(store.save(&future).is_err());
         fs::remove_dir_all(root).expect("cleanup");
     }
@@ -1595,22 +1621,60 @@ mod tests {
         let oversized = vec![b' '; MAX_STATE_BYTES as usize + 1];
         fs::write(&path, &oversized).expect("write oversized fixture");
 
-        let admitted = store.load_recovering().expect("preserve oversized state");
-        let PersistenceRecovery::Preserved { backup, reason } = admitted.recovery else {
-            panic!("oversized state must be preserved");
+        let admitted = store.load_recovering().expect("retain oversized state");
+        let PersistenceRecovery::RetainedAtSource { path: retained, reason } = admitted.recovery else {
+            panic!("oversized state must be retained at its source");
         };
         assert_eq!(
             reason,
             PersistenceRecoveryReason::Oversized {
-                bytes: MAX_STATE_BYTES + 1,
+                at_least: MAX_STATE_BYTES + 1,
                 limit: MAX_STATE_BYTES,
             }
         );
-        assert_eq!(
-            fs::metadata(backup).expect("preserved metadata").len(),
-            MAX_STATE_BYTES + 1
-        );
+        assert_eq!(retained, path);
+        assert_eq!(fs::read(&path).expect("oversized source untouched"), oversized);
         assert_eq!(admitted.state, PersistedDesktopState::default());
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn oversized_save_never_replaces_the_last_admitted_state() {
+        let root = fixture("persistence-write-budget");
+        let path = root.join("desktop.json");
+        let store = PersistentState::at(&path);
+        let current = PersistedDesktopState { reduced_motion: true, ..PersistedDesktopState::default() };
+        store.save(&current).expect("publish current state");
+        let mut oversized = PersistedDesktopState::default();
+        oversized.shelf.push(PersistedShelfItem {
+            local_path: "/tmp/oversized".to_owned(),
+            display_path: None,
+            native_path: None,
+            label: "x".repeat(MAX_STATE_BYTES as usize + 1),
+            phase: PersistedProjectPhase::Ready,
+            progress: None,
+            files_indexed: None,
+            error: None,
+        });
+        assert!(store.save(&oversized).is_err(), "encoding must stop at the same byte budget as reads");
+        assert_eq!(store.load().expect("last admitted state"), current);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn observed_corruption_is_preserved_without_moving_a_concurrent_valid_save() {
+        let root = fixture("persistence-observed-race");
+        let path = root.join("desktop.json");
+        let store = PersistentState::at(&path);
+        let corrupt = br#"{"schema":1,"shelf":["#;
+        fs::write(&path, corrupt).expect("corrupt initial state");
+        let observed = read_bounded(&path).expect("read exact corrupt bytes");
+        let current = PersistedDesktopState { reduced_motion: true, ..PersistedDesktopState::default() };
+        store.save(&current).expect("another writer publishes valid state");
+        let recovered = store.preserve_observed_and_default(&observed, PersistenceRecoveryReason::Corrupt).expect("preserve observed bytes");
+        let PersistenceRecovery::Preserved { backup, .. } = recovered.recovery else { panic!("preserved diagnostic"); };
+        assert_eq!(fs::read(backup).expect("diagnostic bytes"), corrupt);
+        assert_eq!(store.load().expect("concurrent valid canonical"), current);
         fs::remove_dir_all(root).expect("cleanup");
     }
 }

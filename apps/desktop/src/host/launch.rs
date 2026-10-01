@@ -190,10 +190,17 @@ fn restore(paths: &WorkspacePaths) -> Restored {
     let persistence = PersistentState::at(paths.data().join("desktop-state.json"));
     match persistence.load_recovering() {
         Ok(admitted) => {
-            if let PersistenceRecovery::Preserved { backup, reason } = &admitted.recovery {
-                eprintln!("backend-desktop: preserved unadmitted state at {}: {reason}", backup.display());
+            match &admitted.recovery {
+                PersistenceRecovery::Preserved { backup, reason } => {
+                    eprintln!("backend-desktop: preserved unadmitted state at {}: {reason}", backup.display());
+                }
+                PersistenceRecovery::RetainedAtSource { path, reason } => {
+                    eprintln!("backend-desktop: unadmitted state retained at {}: {reason}", path.display());
+                }
+                PersistenceRecovery::Current | PersistenceRecovery::Missing => {}
             }
-            Restored { note: admitted.recovery.note(), state: admitted.state, persistence: Some(persistence) }
+            let may_save = !matches!(&admitted.recovery, PersistenceRecovery::RetainedAtSource { .. });
+            Restored { note: admitted.recovery.note(), state: admitted.state, persistence: may_save.then_some(persistence) }
         }
         Err(error) => {
             eprintln!("backend-desktop: admit desktop state at {}: {error}", persistence.path().display());
