@@ -111,6 +111,8 @@ pub(super) fn bounded_output(
     timeout: Duration,
     max_output: usize,
 ) -> Result<Vec<u8>, CargoFailure> {
+    #[cfg(windows)]
+    return Err(CargoFailure::UnsupportedCapture);
     #[cfg(target_os = "macos")]
     backend_platform::macos_process::configure_process_session(&mut command);
     #[cfg(all(unix, not(target_os = "macos")))]

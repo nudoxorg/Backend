@@ -101,6 +101,8 @@ pub enum LocalPackageSource {
 pub enum CargoFailure {
     /// The loader was configured without a Cargo program.
     Disabled,
+    /// Bounded child capture is not yet available on this platform.
+    UnsupportedCapture,
     /// The Cargo program could not be started.
     Spawn,
     /// Cargo did not finish within the loader's time bound.
