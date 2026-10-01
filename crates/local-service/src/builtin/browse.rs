@@ -31,7 +31,7 @@ use backend_library::{
     PackageReference,
 };
 use backend_platform::directory::{DirectoryCapability, EntryKind};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -1971,8 +1971,8 @@ fn witness_rustc_wrapper_chain(
         .canonicalize()
         .map_err(|_| "Cargo wrapper path cannot be resolved".to_owned())?;
     if resolved.file_name() == Some(std::ffi::OsStr::new("sccache")) {
-        let version = verify_sccache_wrapper(&resolved, workspace)?;
         let binary = tool_executable_witness(&resolved, cached)?;
+        let version = verify_sccache_wrapper(&resolved, workspace)?;
         hasher.update(b"backend.cargo-wrapper.sccache.v1\0");
         hash_tool_role(hasher, role, &resolved, &binary);
         hash_wrapper_version(hasher, &version);
@@ -1989,11 +1989,21 @@ fn witness_rustc_wrapper_chain(
         .canonicalize()
         .map_err(|_| "rustc cache wrapper interpreter cannot be resolved".to_owned())?;
     let interpreter_witness = tool_executable_witness(&interpreter, cached)?;
-    let sccache = sccache
+    if !is_safe_nix_store_sccache_path(&sccache) {
+        return Err("rustc cache wrapper has an unsafe sccache command path".to_owned());
+    }
+    let canonical_sccache = sccache
         .canonicalize()
         .map_err(|_| "rustc cache wrapper sccache path cannot be resolved".to_owned())?;
-    let version = verify_sccache_wrapper(&sccache, workspace)?;
+    if canonical_sccache != sccache || !is_safe_nix_store_sccache_path(&canonical_sccache) {
+        return Err("rustc cache wrapper sccache path is not canonical".to_owned());
+    }
+    let sccache = canonical_sccache;
     let sccache_witness = tool_executable_witness(&sccache, cached)?;
+    if sccache_witness.reuse.is_none() {
+        return Err("rustc cache wrapper sccache is not an immutable Nix-store tool".to_owned());
+    }
+    let version = verify_sccache_wrapper(&sccache, workspace)?;
 
     hasher.update(b"backend.cargo-wrapper.nudox-dependency-cache.v1\0");
     hash_tool_role(hasher, role, &resolved, &script);
@@ -2096,17 +2106,16 @@ fn recognized_nudox_dependency_cache_wrapper(script: &[u8]) -> Option<(PathBuf, 
     {
         return None;
     }
-    let (mut body, shebang) = if script.starts_with(b"#!") {
-        let line_end = script.iter().position(|byte| *byte == b'\n')?;
-        let shebang = std::str::from_utf8(&script[2..line_end]).ok()?.trim();
-        let body = &script[..];
-        (body, PathBuf::from(shebang))
-    } else {
-        return None;
-    };
-    if !shebang.is_absolute() {
+    if !script.starts_with(b"#!") {
         return None;
     }
+    let line_end = script.iter().position(|byte| *byte == b'\n')?;
+    let shebang = std::str::from_utf8(script.get(2..line_end)?).ok()?;
+    let interpreter = PathBuf::from(shebang);
+    if !script.starts_with(b"#!") || !is_supported_nudox_cache_interpreter(&interpreter) {
+        return None;
+    }
+    let mut body = script;
     // `writeShellScript` may prepend its store Bash shebang to a source file
     // that already starts with `#!/bin/sh`; accept that one known generation
     // shape while still requiring the complete tracked source body.
@@ -2124,15 +2133,57 @@ fn recognized_nudox_dependency_cache_wrapper(script: &[u8]) -> Option<(PathBuf, 
     }
     let path_end = body.len() - suffix.len();
     let sccache_bytes = body.get(prefix.len()..path_end)?;
-    if sccache_bytes.is_empty() || sccache_bytes.contains(&b'\n') || sccache_bytes.contains(&b'\r')
-    {
-        return None;
-    }
     let sccache = PathBuf::from(std::str::from_utf8(sccache_bytes).ok()?);
-    if !sccache.is_absolute() {
-        return None;
+    is_safe_nix_store_sccache_path(&sccache).then_some((interpreter, sccache))
+}
+
+fn is_supported_nudox_cache_interpreter(path: &Path) -> bool {
+    if path.to_str() == Some("/bin/sh") {
+        return true;
     }
-    Some((shebang, sccache))
+    let Some(value) = path.to_str() else {
+        return false;
+    };
+    let Some(object_and_tail) = value.strip_prefix("/nix/store/") else {
+        return false;
+    };
+    let mut parts = object_and_tail.split('/');
+    let Some(object) = parts.next() else {
+        return false;
+    };
+    is_safe_nix_store_object_name(object)
+        && object
+            .split_once('-')
+            .is_some_and(|(_, package)| package.starts_with("bash-"))
+        && parts.next() == Some("bin")
+        && parts.next() == Some("bash")
+        && parts.next().is_none()
+}
+
+fn is_safe_nix_store_sccache_path(path: &Path) -> bool {
+    let Some(value) = path.to_str() else {
+        return false;
+    };
+    let Some(object_and_tail) = value.strip_prefix("/nix/store/") else {
+        return false;
+    };
+    let mut parts = object_and_tail.split('/');
+    let Some(object) = parts.next() else {
+        return false;
+    };
+    is_safe_nix_store_object_name(object)
+        && parts.next() == Some("bin")
+        && parts.next() == Some("sccache")
+        && parts.next().is_none()
+}
+
+fn is_safe_nix_store_object_name(name: &str) -> bool {
+    is_nix_store_object_name(name)
+        && name.split_once('-').is_some_and(|(_, package)| {
+            package
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-_.+".contains(&byte))
+        })
 }
 
 fn is_nix_store_object_name(name: &str) -> bool {
@@ -2246,7 +2297,7 @@ fn cargo_build_tool_value(
     workspace: &Path,
     key: &str,
 ) -> Result<Option<CargoConfiguredTool>, String> {
-    let mut values = BTreeSet::new();
+    let mut values = Vec::new();
     for path in cargo_config_paths(workspace)? {
         let Some(bytes) = read_observation_file(&path, MAX_CARGO_CONFIG_BYTES)? else {
             continue;
@@ -2261,17 +2312,38 @@ fn cargo_build_tool_value(
         let Some(configured) = cargo_configured_tool(&path, &document, key)? else {
             continue;
         };
-        values.insert((configured.value, configured.config_path));
+        values.push(configured);
     }
+    let values = collapse_configured_tool_values(workspace, key, values)?;
     if values.len() > 1 {
         return Err(format!(
             "Cargo config declares conflicting build.{key} values"
         ));
     }
-    Ok(values
-        .into_iter()
-        .next()
-        .map(|(value, config_path)| CargoConfiguredTool { value, config_path }))
+    Ok(values.into_values().next())
+}
+
+fn collapse_configured_tool_values(
+    workspace: &Path,
+    key: &str,
+    configured_values: impl IntoIterator<Item = CargoConfiguredTool>,
+) -> Result<BTreeMap<PathBuf, CargoConfiguredTool>, String> {
+    let mut values = BTreeMap::new();
+    for configured in configured_values {
+        // Different config origins remain separately witnessed by the Cargo
+        // input set. They are not a conflict when Cargo resolves them to the
+        // same executable; relative values still use their own origin here.
+        let resolved = resolve_cargo_tool_value(
+            &configured.value,
+            workspace,
+            Some(&configured.config_path),
+            key,
+        )?
+        .canonicalize()
+        .map_err(|_| format!("Cargo-selected {key} executable cannot be canonicalized"))?;
+        values.entry(resolved).or_insert(configured);
+    }
+    Ok(values)
 }
 
 fn cargo_config_build_value<'a>(
@@ -2445,7 +2517,13 @@ fn resolve_cargo_tool_value(
     let resolved = if path.is_absolute() {
         Some(path)
     } else if path.components().count() > 1 || value.contains(std::path::MAIN_SEPARATOR) {
-        let base = config_path.and_then(Path::parent).unwrap_or(workspace);
+        let base = match config_path {
+            Some(config_path) => config_path
+                .parent()
+                .and_then(Path::parent)
+                .ok_or_else(|| "Cargo config path has no relative-path base".to_owned())?,
+            None => workspace,
+        };
         Some(base.join(path))
     } else {
         find_executable_on_path(path.as_os_str(), workspace)
@@ -4118,13 +4196,16 @@ mod tests {
         let nested_config = workspace.join("nested/.cargo/config.toml");
         std::fs::create_dir_all(workspace.join("direct")).expect("direct tool directory");
         std::fs::create_dir_all(workspace.join("nested/.cargo/bin"))
-            .expect("config tool directory");
+            .expect("wrong-origin decoy directory");
+        std::fs::create_dir_all(workspace.join("nested/bin"))
+            .expect("config-origin tool directory");
         std::fs::write(workspace.join("direct/rustc"), b"direct").expect("direct tool");
-        std::fs::write(workspace.join("nested/.cargo/bin/rustc"), b"configured")
-            .expect("configured tool");
+        std::fs::write(workspace.join("nested/.cargo/bin/rustc"), b"wrong-origin")
+            .expect("wrong-origin decoy tool");
+        std::fs::write(workspace.join("nested/bin/rustc"), b"configured").expect("configured tool");
         std::fs::create_dir_all(nested_config.parent().unwrap()).expect("nested config directory");
-        // The path is relative to the config's containing directory, not the
-        // workspace root. Cargo config origin is part of tool resolution.
+        // Cargo paths in a config file are relative to the parent directory
+        // of the directory containing that config: two levels above this file.
         let config_document = "[build]\nrustc = 'bin/rustc'\n"
             .parse::<toml::Value>()
             .expect("nested config contents");
@@ -4159,7 +4240,7 @@ mod tests {
             resolve_effective_tool_value(None, None, Some(&configured), &workspace, "rustc", false)
                 .expect("nested config path")
                 .expect("selected config file tool");
-        assert_eq!(configured_path, workspace.join("nested/.cargo/bin/rustc"));
+        assert_eq!(configured_path, workspace.join("nested/bin/rustc"));
 
         assert_eq!(
             resolve_effective_tool_value(
@@ -4199,6 +4280,45 @@ mod tests {
     }
 
     #[test]
+    fn equal_configured_tool_paths_from_different_origins_are_not_conflicts() {
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let scratch = Scratch(std::env::temp_dir().join(format!(
+            "backend-cargo-tool-origins-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        )));
+        let workspace = scratch.0.join("workspace");
+        std::fs::create_dir_all(workspace.join(".cargo")).expect("outer config dir");
+        std::fs::create_dir_all(workspace.join("nested/.cargo")).expect("nested config dir");
+        std::fs::create_dir_all(workspace.join("shared")).expect("shared tool dir");
+        let tool = workspace.join("shared/rustc");
+        std::fs::write(&tool, b"rustc").expect("shared tool");
+        let outer = CargoConfiguredTool {
+            value: "shared/rustc".to_owned(),
+            config_path: workspace.join(".cargo/config.toml"),
+        };
+        let nested = CargoConfiguredTool {
+            value: "../shared/rustc".to_owned(),
+            config_path: workspace.join("nested/.cargo/config.toml"),
+        };
+        let resolved = collapse_configured_tool_values(&workspace, "rustc", [outer, nested])
+            .expect("same executable from separate witnessed origins");
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(
+            resolved.keys().next(),
+            Some(&tool.canonicalize().expect("canonical tool"))
+        );
+    }
+
+    #[test]
     fn only_known_sccache_identity_and_canonical_nix_store_names_are_admitted() {
         assert!(is_recognized_sccache_version("sccache 0.17.0"));
         assert!(!is_recognized_sccache_version("cache 0.17.0"));
@@ -4232,6 +4352,51 @@ mod tests {
             sccache,
             PathBuf::from("/nix/store/4n5rm7aink6xcsj5df33sf7wm3m387a2-sccache-0.17.0/bin/sccache")
         );
+
+        for suffix in [";id", " $(id)", "$HOME", "`id`", "*", "/../other"] {
+            let mut injected = Vec::new();
+            injected.extend_from_slice(&template[..script]);
+            injected.extend_from_slice(
+                b"/nix/store/4n5rm7aink6xcsj5df33sf7wm3m387a2-sccache-0.17.0/bin/sccache",
+            );
+            injected.extend_from_slice(suffix.as_bytes());
+            injected.extend_from_slice(&template[script + b"@sccache@".len()..]);
+            assert!(
+                recognized_nudox_dependency_cache_wrapper(&injected).is_none(),
+                "unsafe unquoted shell word suffix must be rejected: {suffix}"
+            );
+        }
+
+        let mut with_nix_bash =
+            b"#!/nix/store/4n5rm7aink6xcsj5df33sf7wm3m387a2-bash-5.2/bin/bash\n".to_vec();
+        with_nix_bash.extend_from_slice(template);
+        assert!(recognized_nudox_dependency_cache_wrapper(&with_nix_bash).is_some());
+
+        for shebang in [
+            b"#!/bin/sh -e\n".as_slice(),
+            b"#!/usr/bin/env sh\n".as_slice(),
+            b"#! /bin/sh\n".as_slice(),
+            b"#!/nix/store/4n5rm7aink6xcsj5df33sf7wm3m387a2-bash  -c\n".as_slice(),
+        ] {
+            let mut unsupported = shebang.to_vec();
+            unsupported.extend_from_slice(template);
+            let placeholder = unsupported
+                .windows(b"@sccache@".len())
+                .position(|window| window == b"@sccache@")
+                .expect("template substitution");
+            unsupported.splice(
+                placeholder..placeholder + b"@sccache@".len(),
+                b"/nix/store/4n5rm7aink6xcsj5df33sf7wm3m387a2-sccache-0.17.0/bin/sccache"
+                    .iter()
+                    .copied(),
+            );
+            assert!(
+                recognized_nudox_dependency_cache_wrapper(&unsupported).is_none(),
+                "unsupported shebang must be rejected: {:?}",
+                String::from_utf8_lossy(shebang)
+            );
+        }
+
         generated.extend_from_slice(b"\nexec /tmp/other-rustc \"$@\"\n");
         assert!(recognized_nudox_dependency_cache_wrapper(&generated).is_none());
     }
