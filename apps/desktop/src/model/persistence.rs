@@ -1105,15 +1105,16 @@ impl PersistentState {
                     return None;
                 }
                 let path = id.path();
-                let phase = if path.is_dir() {
-                    match item.phase {
-                        // There is no live request to observe after restart;
-                        // re-admit the folder as a fresh authoritative index.
-                        PersistedProjectPhase::Cancelling => ProjectPhase::Indexing,
-                        phase => phase.into(),
-                    }
-                } else {
+                // Folder disappearance does not prove an in-flight owner
+                // operation stopped. Keep its exact recovery path visible
+                // even when the source is also temporarily unavailable.
+                let interrupted = matches!(item.phase, PersistedProjectPhase::Indexing | PersistedProjectPhase::Cancelling);
+                let phase = if interrupted {
+                    ProjectPhase::Unconfirmed
+                } else if !path.is_dir() {
                     ProjectPhase::Missing
+                } else {
+                    item.phase.into()
                 };
                 let display_path: Arc<str> = item
                     .display_path
@@ -1125,10 +1126,14 @@ impl PersistentState {
                     path: display_path,
                     label: item.label.clone().into(),
                     phase,
-                    progress: item.progress.map(|progress| progress.min(100)),
-                    files_indexed: item.files_indexed,
+                    progress: (!interrupted).then_some(item.progress).flatten().map(|progress| progress.min(100)),
+                    files_indexed: (!interrupted).then_some(item.files_indexed).flatten(),
                     request: None,
-                    error: item.error.clone().map(Into::into),
+                    error: if interrupted {
+                        Some(Arc::from("This index request was interrupted. Check its exact owner operation before starting another."))
+                    } else {
+                        item.error.clone().map(Into::into)
+                    },
                     recent: true,
                 })
             })
@@ -1434,6 +1439,44 @@ mod tests {
             workspace.active.as_ref().map(LocalProjectId::as_str),
             Some("/tmp/nudox-duplicate-project")
         );
+    }
+
+    #[test]
+    fn cold_active_index_and_cancellation_require_exact_reconciliation() {
+        let root = fixture("cold-index-outcome");
+        let state = PersistedDesktopState {
+            shelf: [PersistedProjectPhase::Indexing, PersistedProjectPhase::Cancelling, PersistedProjectPhase::Indexing]
+                .into_iter()
+                .enumerate()
+                .map(|(index, phase)| {
+                    let path = root.join(format!("project-{index}"));
+                    if index != 2 {
+                        fs::create_dir(&path).expect("project directory");
+                    }
+                    PersistedShelfItem {
+                        local_path: path.to_str().expect("fixture UTF-8").to_owned(),
+                        display_path: None,
+                        native_path: None,
+                        label: format!("project-{index}"),
+                        phase,
+                        progress: Some(41),
+                        files_indexed: Some(100),
+                        error: None,
+                    }
+                })
+                .collect(),
+            ..PersistedDesktopState::default()
+        };
+        let workspace = PersistentState::at(root.join("desktop.json")).cold_workspace(&state);
+        assert_eq!(workspace.projects.len(), 3);
+        for project in workspace.projects.iter() {
+            assert_eq!(project.phase, ProjectPhase::Unconfirmed);
+            assert_eq!(project.progress, None);
+            assert_eq!(project.files_indexed, None);
+            assert_eq!(project.request, None);
+            assert!(project.error.as_deref().is_some_and(|message| message.contains("Check its exact owner operation")));
+        }
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]
