@@ -694,6 +694,7 @@ mod tests {
 
     fn owner_certificate(
         root: &ViewRoot,
+        basis_relation: &[u8],
         context: [u8; 32],
         evidence: &[u8],
     ) -> WireCertificate {
@@ -766,10 +767,7 @@ mod tests {
             certificate = certificate.with_claim(WireClaim::Root {
                 schema: WireSchema::ViewRelation,
                 id: encode_id(root.basis().root.as_bytes()),
-                canonical: backend_engine::canonical_empty::<backend_library::ViewRelation>()
-                    .as_bytes()
-                    .to_vec()
-                    .into_boxed_slice(),
+                canonical: basis_relation.to_vec().into_boxed_slice(),
             });
         }
         certificate
@@ -821,6 +819,24 @@ mod tests {
         evidence: Vec<u8>,
         revision: bool,
     ) -> Vec<u8> {
+        let basis_relation = if revision {
+            backend_library::empty_view_relation_preimage()
+        } else {
+            root.canonical_relation_bytes()
+                .expect("canonical query source bytes")
+        };
+        let root = if revision {
+            root
+        } else {
+            let basis = Basis::new(root.root(), root.basis().object);
+            ViewRoot::empty_checked(
+                root.recipe(),
+                basis,
+                Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
+                root.capability().expect("owner source capability"),
+            )
+            .expect("query projection rooted in the admitted source revision")
+        };
         let cursor = Cursor::for_view_root(&root);
         let reply = if revision {
             CommandReply::Revision(RevisionReceipt::new(root.root(), cursor, root.basis().object))
@@ -835,7 +851,7 @@ mod tests {
         };
         serde_json::to_vec(
             &ReplyDto::new(request_id, reply)
-                .with_certificate(owner_certificate(&root, context, &evidence)),
+                .with_certificate(owner_certificate(&root, &basis_relation, context, &evidence)),
         )
         .expect("encode owner reply")
     }
