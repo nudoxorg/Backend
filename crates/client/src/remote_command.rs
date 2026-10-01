@@ -903,6 +903,10 @@ mod tests {
                     .send(owner.id())
                     .expect("send owner address");
                 let serve_sessions = async {
+                    // Keep the streams alive until the client acknowledges the
+                    // final replies through shutdown; dropping a send stream
+                    // immediately after enqueueing its last frame can reset it.
+                    let mut completed_sessions = Vec::with_capacity(3);
                     for session_index in 0..3 {
                         let incoming = tokio::select! {
                             _ = &mut shutdown_receiver => return false,
@@ -993,7 +997,9 @@ mod tests {
                                 }
                             }
                         }
+                        completed_sessions.push(session);
                     }
+                    let _ = (&mut shutdown_receiver).await;
                     true
                 };
                 let completed = tokio::time::timeout(TEST_SERVER_LIFETIME, serve_sessions)
