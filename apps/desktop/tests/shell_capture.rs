@@ -60,7 +60,18 @@ fn serve(projects: &[PathBuf]) -> (backend_desktop::DesktopHost, PathBuf) {
     let primary = projects.first().expect("at least one indexed project");
     let state = PathBuf::from(std::env::var("NUDOX_CAPTURE_STATE").unwrap_or_else(|_| "/tmp/nx-shell-cap".to_owned()));
     let endpoint = PathBuf::from(format!("{}.sock", state.display()));
-    std::fs::create_dir_all(state.join("data")).expect("state dir");
+    // The real owner refuses state beneath a group-readable directory. Keep
+    // the capture fixture subject to that same check, including first boot.
+    let mut private_dir = std::fs::DirBuilder::new();
+    private_dir.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        private_dir.mode(0o700);
+    }
+    private_dir
+        .create(state.join("data"))
+        .expect("private state dir");
     let paths = backend_runtime::WorkspacePaths::discover(
         Some(primary.clone()),
         Some(state.join("data")),
