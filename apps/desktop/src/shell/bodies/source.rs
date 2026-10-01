@@ -4,15 +4,16 @@
 
 pub(crate) mod paging;
 
-use paging::{
-    MAX_SOURCE_BYTES, MAX_SOURCE_LINE_BYTES, MAX_SOURCE_LINES, SourceCursor, SourcePage,
-    initial_cursor, previous_cursor, verified_link,
-};
+#[cfg(test)]
+use paging::{MAX_SOURCE_BYTES, MAX_SOURCE_LINE_BYTES, MAX_SOURCE_LINES, previous_cursor};
+use paging::{PagingState, SourceCursor, SourcePage, initial_cursor, verified_link};
 
 use super::state::{Shown, not_ready, shown};
 use super::{Ctx, Leaf};
+#[cfg(test)]
+use crate::model::pages::ByteSpan;
 use crate::model::pages::{
-    ByteSpan, DocFragment, PageKey, SourceCoverage, SourceOrigin, SourceText, SourceView, SymbolRef,
+    DocFragment, PageKey, SourceCoverage, SourceOrigin, SourceText, SourceView, SymbolRef,
 };
 use crate::navigation::{Intent, Route, SymbolRoute};
 use crate::shell::focus::{Recall, Target};
@@ -26,24 +27,20 @@ use gpui::{
     StyledText, Subscription, Window, div, px,
 };
 use gpui_component::input::{InputEvent, InputState};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
 const CONTEXT_BEFORE: u32 = 24;
 const MAX_PAGE_REFERENCES: usize = 32;
-const MAX_PAGE_HISTORY: usize = 64;
 
 struct Pager {
-    cursor: SourceCursor,
-    back: Vec<SourceCursor>,
-    forward: Vec<SourceCursor>,
+    state: Rc<RefCell<Option<PagingState>>>,
     first: u32,
     last: u32,
     input: Entity<InputState>,
     error: Option<SharedString>,
-    reference_page: usize,
     recall: Recall,
     reveal: Rc<Cell<bool>>,
     _subscription: Subscription,
@@ -51,10 +48,9 @@ struct Pager {
 
 impl Pager {
     fn new(
-        cursor: SourceCursor,
+        state: Rc<RefCell<Option<PagingState>>>,
         first: u32,
         last: u32,
-        reference_page: usize,
         recall: Recall,
         reveal: Rc<Cell<bool>>,
         window: &mut Window,
@@ -71,58 +67,57 @@ impl Pager {
             },
         );
         Self {
-            cursor,
-            back: Vec::new(),
-            forward: Vec::new(),
+            state,
             first,
             last,
             input,
             error: None,
-            reference_page,
             recall,
             reveal,
             _subscription: subscription,
         }
     }
 
-    fn show(&mut self, cursor: SourceCursor, focus: u32, cx: &mut Context<Self>) {
-        self.cursor = cursor;
-        self.back.clear();
-        self.forward.clear();
+    fn focus_line(&mut self, line: u32, cx: &mut Context<Self>) {
         self.error = None;
-        self.reference_page = 0;
         self.recall
-            .focus(crate::shell::reader::source_line_shared_id(focus));
+            .focus(crate::shell::reader::source_line_shared_id(line));
         self.reveal.set(true);
         cx.notify();
     }
 
     fn next(&mut self, fallback: SourceCursor, cx: &mut Context<Self>) {
-        let next = self.forward.pop().unwrap_or(fallback);
-        push_history(&mut self.back, self.cursor);
-        self.cursor = next;
-        self.reference_page = 0;
-        self.recall
-            .focus(crate::shell::reader::source_line_shared_id(next.line));
-        self.reveal.set(true);
-        cx.notify();
+        let line = self
+            .state
+            .borrow_mut()
+            .as_mut()
+            .map(|state| state.next(fallback).line);
+        if let Some(line) = line {
+            self.focus_line(line, cx);
+        }
     }
 
     fn previous(&mut self, fallback: SourceCursor, cx: &mut Context<Self>) {
-        let previous = self.back.pop().unwrap_or(fallback);
-        push_history(&mut self.forward, self.cursor);
-        self.cursor = previous;
-        self.reference_page = 0;
-        self.recall
-            .focus(crate::shell::reader::source_line_shared_id(previous.line));
-        self.reveal.set(true);
-        cx.notify();
+        let line = self
+            .state
+            .borrow_mut()
+            .as_mut()
+            .map(|state| state.previous(fallback).line);
+        if let Some(line) = line {
+            self.focus_line(line, cx);
+        }
     }
 
     fn jump(&mut self, text: &str, cx: &mut Context<Self>) {
         match text.trim().parse::<u32>() {
             Ok(line) if (self.first..=self.last).contains(&line) => {
-                self.show(SourceCursor { line, byte: 0 }, line, cx);
+                let changed = self.state.borrow_mut().as_mut().is_some_and(|state| {
+                    state.jump(line);
+                    true
+                });
+                if changed {
+                    self.focus_line(line, cx);
+                }
             }
             _ => {
                 self.error =
@@ -133,7 +128,9 @@ impl Pager {
     }
 
     fn show_references(&mut self, page: usize, cx: &mut Context<Self>) {
-        self.reference_page = page;
+        if let Some(state) = self.state.borrow_mut().as_mut() {
+            state.reference_page = page;
+        }
         self.recall.focus(format!(
             "source-reference-{}",
             page.saturating_mul(MAX_PAGE_REFERENCES)
@@ -141,13 +138,6 @@ impl Pager {
         self.reveal.set(true);
         cx.notify();
     }
-}
-
-fn push_history(history: &mut Vec<SourceCursor>, cursor: SourceCursor) {
-    if history.len() == MAX_PAGE_HISTORY {
-        history.remove(0);
-    }
-    history.push(cursor);
 }
 
 pub(super) fn body(
@@ -277,21 +267,32 @@ fn code(
         .and_then(|id| id.strip_prefix("source-reference-"))
         .and_then(|index| index.parse::<usize>().ok())
         .map_or(0, |index| index / MAX_PAGE_REFERENCES);
+    let paging = Rc::clone(&ctx.source_paging);
+    {
+        let mut saved = paging.borrow_mut();
+        let state = saved.get_or_insert_with(|| PagingState::new(initial));
+        if restore_target.is_some() && state.restored_focus_place != Some(ctx.place_key) {
+            state.reference_page = restored_reference_page;
+        }
+    }
     let recall = ctx.targets.recall();
     let reveal = Rc::clone(&ctx.reader_reveal);
+    let pager_memory = Rc::clone(&paging);
     let pager = window.use_keyed_state(pager_key, cx, move |window, cx| {
         Pager::new(
-            initial,
+            pager_memory,
             first_line,
             last_line,
-            restored_reference_page,
             recall,
             reveal,
             window,
             cx,
         )
     });
-    let cursor = pager.read(cx).cursor;
+    let cursor = paging
+        .borrow()
+        .as_ref()
+        .map_or(initial, |state| state.cursor);
     let page = SourcePage::at(source, cursor);
     let from = cursor.line;
     let mut shown = String::new();
@@ -631,7 +632,11 @@ fn code(
     if !visible_references.is_empty() {
         let reference_count = visible_references.len();
         let last_reference_page = (reference_count - 1) / MAX_PAGE_REFERENCES;
-        let reference_page = pager.read(cx).reference_page.min(last_reference_page);
+        let reference_page = paging
+            .borrow()
+            .as_ref()
+            .map_or(0, |state| state.reference_page)
+            .min(last_reference_page);
         let reference_start = reference_page * MAX_PAGE_REFERENCES;
         column = column.child(text(ty::MONO_SMALL, &measure, palette.ink3).child(ctx.say(
             format!(
@@ -703,7 +708,16 @@ fn code(
                 source: Some(symbol),
             };
             if restore_target.as_ref() == Some(&id) {
-                ctx.targets.focus(id.clone());
+                let apply = paging.borrow_mut().as_mut().is_some_and(|state| {
+                    if state.restored_focus_place == Some(ctx.place_key) {
+                        return false;
+                    }
+                    state.restored_focus_place = Some(ctx.place_key);
+                    true
+                });
+                if apply {
+                    ctx.targets.focus(id.clone());
+                }
             }
             let act = target.act.clone();
             ctx.targets.push(target);
@@ -774,13 +788,12 @@ fn pager_controls(
         .min_w_0()
         .child(quiet(ctx.say(range), &measure, palette));
 
-    if let Some(previous) = pager
-        .read(cx)
-        .back
-        .last()
-        .copied()
-        .or_else(|| previous_cursor(source, cursor))
-    {
+    let memory = Rc::clone(&pager.read(cx).state);
+    let previous = memory
+        .borrow()
+        .as_ref()
+        .and_then(|state| state.previous_target(source));
+    if let Some(previous) = previous {
         let id: SharedString = format!("source-page-{position}-previous").into();
         let state = pager.clone();
         let act: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
@@ -803,7 +816,11 @@ fn pager_controls(
             ),
         );
     }
-    if let Some(next) = pager.read(cx).forward.last().copied().or(page.next) {
+    let next = memory
+        .borrow()
+        .as_ref()
+        .and_then(|state| state.next_target(page));
+    if let Some(next) = next {
         let id: SharedString = format!("source-page-{position}-next").into();
         let state = pager.clone();
         let act: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
@@ -969,8 +986,12 @@ fn margin(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::panic)]
+
     use super::*;
-    use crate::model::pages::{Known, LineSpan, PageValue, ReadFailure};
+    use crate::model::pages::{
+        IdentifierSpan, Known, LineSpan, PageValue, Provenance, ReadFailure, SymbolLink,
+    };
     use crate::navigation::View;
     use crate::runtime::reads::{PageReader, ReadContext, ReadPool, ReadRequest};
     use gpui::TestAppContext;
@@ -1107,16 +1128,42 @@ mod tests {
             let mut fixture = crate::shell::tests::Fixture;
             let mut value = fixture.read(request, context)?;
             if let PageValue::Source(view) = &mut value {
-                view.text = Known::Known(text(
-                    (1..=600).map(|line| format!("line {line}\n")).collect(),
-                ));
+                let words: String = (1..=600)
+                    .map(|line| {
+                        if line == 565 {
+                            "RelationDirection\n".to_owned()
+                        } else {
+                            format!("line {line}\n")
+                        }
+                    })
+                    .collect();
+                let source = text(words);
+                let span = source.line_span(565).expect("verified reference line");
+                view.text = Known::Known(source.with_verified_local_excerpt(span));
                 view.declaration = Known::Known(LineSpan {
-                    first: 500,
-                    last: 500,
+                    first: 565,
+                    last: 565,
                 });
+                view.identifiers = Known::Known(Arc::from([IdentifierSpan {
+                    span,
+                    link: SymbolLink {
+                        target: crate::shell::tests::symbol("RelationDirection"),
+                        provenance: Provenance::ByName,
+                    },
+                }]));
             }
             Ok(value)
         }
+    }
+
+    fn activate_reader_target(rig: &mut crate::shell::tests::Rig, id: &str) {
+        let target = rig.shell.read_with(rig.cx, |shell, cx| {
+            let targets = shell.reader_targets(cx);
+            targets.focus(id);
+            targets.current().expect("visible source target")
+        });
+        rig.cx.update(|window, cx| (target.act)(window, cx));
+        rig.settle();
     }
 
     #[gpui::test]
@@ -1148,5 +1195,104 @@ mod tests {
             .shell
             .read_with(rig.cx, |shell, cx| shell.focus_state(cx));
         assert_eq!(walked.as_deref(), Some("source-line-501"));
+    }
+
+    #[gpui::test]
+    fn native_jump_next_link_and_back_restore_the_same_page(cx: &mut TestAppContext) {
+        let route = crate::shell::tests::view_route("RelationLabel", View::Code);
+        let pool = ReadPool::start(2, |_| LongSource).expect("source read pool");
+        let mut rig =
+            crate::shell::tests::rig_with_reads(cx, Some(route.clone()), 320.0, 700.0, pool);
+
+        activate_reader_target(&mut rig, "source-jump-field");
+        rig.keys("5 0 0 enter");
+        assert!(
+            rig.said().iter().any(|word| word.contains("Lines 500")),
+            "Enter must jump to the exact line"
+        );
+        activate_reader_target(&mut rig, "source-page-top-next");
+        let later = rig.said();
+        assert!(
+            later.iter().any(|word| word.contains("Lines 564")),
+            "later page missing: {later:#?}"
+        );
+        assert!(
+            later.iter().any(|word| word.contains("RelationDirection")),
+            "verified link line missing: {later:#?}"
+        );
+
+        rig.shell.update(rig.cx, |shell, cx| {
+            shell.set_source_reader_scroll_offset(gpui::point(px(0.0), px(-96.0)), cx)
+        });
+        rig.repaint();
+        let before = rig
+            .shell
+            .read_with(rig.cx, |shell, cx| shell.source_reader_scroll_offset(cx));
+        activate_reader_target(&mut rig, "source-reference-0");
+        assert_ne!(rig.route(), route, "the verified link must navigate");
+        rig.keys("cmd-[");
+        assert_eq!(rig.route(), route);
+        assert!(
+            rig.said().iter().any(|word| word.contains("Lines 564")),
+            "Back reset the source page"
+        );
+        let (_, focus) = rig
+            .shell
+            .read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+        assert_eq!(
+            focus.as_deref(),
+            Some("source-reference-0"),
+            "Back lost the exact link focus"
+        );
+        let restored = rig
+            .shell
+            .read_with(rig.cx, |shell, cx| shell.source_reader_scroll_offset(cx));
+        assert_eq!(
+            restored, before,
+            "Back lost the source page's scroll offset"
+        );
+    }
+
+    struct LongWrappedLine;
+
+    impl PageReader for LongWrappedLine {
+        fn read(
+            &mut self,
+            request: &ReadRequest,
+            context: &ReadContext<'_>,
+        ) -> Result<PageValue, ReadFailure> {
+            let mut fixture = crate::shell::tests::Fixture;
+            let mut value = fixture.read(request, context)?;
+            if let PageValue::Source(view) = &mut value {
+                view.text = Known::Known(text(format!(
+                    "{}{}{}\ntail",
+                    "α".repeat(1_024),
+                    "β".repeat(1_024),
+                    "γ".repeat(1_024)
+                )));
+                view.declaration = Known::Known(LineSpan { first: 1, last: 1 });
+            }
+            Ok(value)
+        }
+    }
+
+    #[gpui::test]
+    fn native_wrapped_line_continues_without_duplicate_row_ids(cx: &mut TestAppContext) {
+        let route = crate::shell::tests::view_route("RelationLabel", View::Code);
+        let pool = ReadPool::start(2, |_| LongWrappedLine).expect("wrapped source pool");
+        let mut rig = crate::shell::tests::rig_with_reads(cx, Some(route), 260.0, 700.0, pool);
+        assert!(
+            rig.said()
+                .iter()
+                .any(|word| word.contains("Line 1 in parts"))
+        );
+        let before = rig.said();
+        activate_reader_target(&mut rig, "source-page-top-next");
+        let after = rig.said();
+        assert_ne!(
+            before, after,
+            "the next page must advance within the same long line"
+        );
+        assert!(after.iter().any(|word| word.contains("Line 1 in parts")));
     }
 }
