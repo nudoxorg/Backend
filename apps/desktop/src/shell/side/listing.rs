@@ -826,11 +826,25 @@ fn rests_on(dossier: &PackageDossier) -> Vec<Row> {
 /// depend on it.
 fn used_by(inputs: &Inputs<'_>, dossier: &PackageDossier) -> Vec<Row> {
     let crates = inputs.book.crates();
-    let dependents = match &dossier.dependents {
-        Known::Known(list) => Some(list),
-        Known::Unknown(gap) if crates.is_empty() => return vec![Row::Note(gap_words(gap))],
-        Known::Unknown(_) => None,
+    let gap = dossier.dependents.gap();
+    let observed = if dossier.observed_dependents.is_empty() {
+        dossier
+            .dependents
+            .known()
+            .map_or(&[][..], AsRef::as_ref)
+    } else {
+        dossier.observed_dependents.as_ref()
     };
+    if observed.is_empty() && crates.is_empty() {
+        if let Some(gap) = gap {
+            let words = if gap.reason == crate::model::pages::GapReason::Unknown {
+                format!("Partial coverage: {}", gap.detail)
+            } else {
+                gap_words(gap).to_string()
+            };
+            return vec![Row::Note(words.into())];
+        }
+    }
     let dependent_row = |record: &crate::model::pages::PackageRecord| {
         let mut item = Item::new(
             RowId::Dependent(record.package.clone()),
@@ -845,9 +859,8 @@ fn used_by(inputs: &Inputs<'_>, dossier: &PackageDossier) -> Vec<Row> {
         });
         Row::Item(item)
     };
-    let (yours, others): (Vec<_>, Vec<_>) = dependents
-        .into_iter()
-        .flat_map(|list| list.iter())
+    let (yours, others): (Vec<_>, Vec<_>) = observed
+        .iter()
         .partition(|record| record.source == RecordSource::LocalManifest);
     let mut rows = Vec::new();
     if !crates.is_empty() || !yours.is_empty() {
@@ -860,6 +873,9 @@ fn used_by(inputs: &Inputs<'_>, dossier: &PackageDossier) -> Vec<Row> {
     if !others.is_empty() {
         rows.push(Row::heading("In the library", others.len()));
         rows.extend(others.iter().map(|record| dependent_row(record)));
+    }
+    if let Some(gap) = gap.filter(|gap| gap.reason == crate::model::pages::GapReason::Unknown) {
+        rows.push(Row::Note(format!("Partial coverage: {}", gap.detail).into()));
     }
     if rows.is_empty() {
         rows.push(Row::Note("Nothing here uses it yet".into()));

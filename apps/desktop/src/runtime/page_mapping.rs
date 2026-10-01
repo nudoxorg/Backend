@@ -1897,18 +1897,39 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
         ) => Known::unknown(GapReason::Unavailable, text.as_str()),
         (_, other) => Known::Unknown(surface_gap(other, "dependencies")),
     };
-    let dependents = match inputs.dependents {
+    let (dependents, observed_dependents) = match inputs.dependents {
         Ok(SurfaceReply::Dependents(backend_library::RegistryMetadata::Recorded(records))) => {
-            Known::Known(records.iter().map(registry_record).collect::<Vec<_>>().into())
+            let observed: Arc<[PackageRecord]> =
+                records.iter().map(registry_record).collect::<Vec<_>>().into();
+            (Known::Known(Arc::clone(&observed)), observed)
         }
-        Ok(SurfaceReply::Dependents(backend_library::RegistryMetadata::NotRecorded(text))) => {
+        Ok(SurfaceReply::Dependents(backend_library::RegistryMetadata::Partial {
+            value: records,
+            reason,
+        })) if !local => {
+            let observed = records
+                .iter()
+                .map(registry_record)
+                .collect::<Vec<_>>()
+                .into();
+            (
+                Known::unknown(GapReason::Unknown, reason.as_str()),
+                observed,
+            )
+        }
+        Ok(SurfaceReply::Dependents(backend_library::RegistryMetadata::Partial { .. })) => (
+            Known::Unknown(local_gap("reverse dependencies")),
+            Arc::from([]),
+        ),
+        Ok(SurfaceReply::Dependents(backend_library::RegistryMetadata::NotRecorded(text))) => (
             if local {
                 Known::Unknown(local_gap("reverse dependencies"))
             } else {
                 Known::unknown(GapReason::NotRecorded, text.as_str())
-            }
-        }
-        other => Known::Unknown(surface_gap(other, "dependents")),
+            },
+            Arc::from([]),
+        ),
+        other => (Known::Unknown(surface_gap(other, "dependents")), Arc::from([])),
     };
     let outline = match &inputs.outline {
         Ok(index) => Known::Known(index.tree()),
@@ -1925,6 +1946,7 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
         versions,
         dependencies,
         dependents,
+        observed_dependents,
         outline,
         readme,
         readme_markdown: match inputs.local {
@@ -2804,6 +2826,34 @@ mod tests {
         assert_eq!(dependents.detail.as_ref(), "the configured feed does not record dependency metadata");
         assert_eq!(dossier.readme.gap().map(|gap| gap.reason), Some(GapReason::NotServed));
         assert_eq!(dossier.outline.gap().map(|gap| gap.detail.as_ref()), Some("outline refused"));
+    }
+
+    #[test]
+    fn partial_reverse_dependencies_keep_observed_rows_without_claiming_completeness() {
+        let package = PackageRef::parse("pkg:cargo/beta@1.0.0").expect("package");
+        let dependents = SurfaceReply::Dependents(backend_library::RegistryMetadata::Partial {
+            value: Box::new([crate::runtime::tests::registry_record("alpha", "2.0.0")]),
+            reason: backend_library::ProductText::from_static(
+                "some registry sources could not be queried",
+            ),
+        });
+        let unavailable = no_semantics();
+        let dossier = package_dossier(&PackageInputs {
+            package: &package,
+            records: Err(&unavailable),
+            versions: Err(&unavailable),
+            dependencies: Err(&unavailable),
+            dependents: Ok(&dependents),
+            outline: Err(Gap::new(GapReason::ReadFailed, "not needed")),
+            local: None,
+        });
+
+        assert!(dossier.dependents.known().is_none());
+        assert_eq!(dossier.observed_dependents.len(), 1);
+        assert_eq!(dossier.observed_dependents[0].name.as_ref(), "alpha");
+        let gap = dossier.dependents.gap().expect("partial coverage gap");
+        assert_eq!(gap.reason, GapReason::Unknown);
+        assert!(gap.detail.contains("some registry sources"));
     }
 
     /// The toml/present package-page bug: a package can be *both* registry-

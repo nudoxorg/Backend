@@ -272,6 +272,22 @@ pub fn package_text(dossier: &PackageDossier) -> String {
     let _ = writeln!(out, "  dependents: {}", known(&dossier.dependents, |dependents| {
         format!("{} packages", dependents.len())
     }));
+    if !dossier.observed_dependents.is_empty()
+        || dossier
+            .dependents
+            .gap()
+            .is_some_and(|gap| gap.reason == crate::model::pages::GapReason::Unknown)
+    {
+        let _ = writeln!(
+            out,
+            "  observed dependents: {} rows{}",
+            dossier.observed_dependents.len(),
+            dossier
+                .dependents
+                .gap()
+                .map_or_else(String::new, |gap| format!(" · incomplete: {}", gap.detail)),
+        );
+    }
     let _ = writeln!(out, "  readme: {}", known(&dossier.readme, |blocks| format!("{} blocks", blocks.len())));
     match &dossier.outline {
         Known::Known(tree) => {

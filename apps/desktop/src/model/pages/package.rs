@@ -17,6 +17,11 @@ pub struct PackageDossier {
     pub dependencies: Known<Arc<[Dependency]>>,
     /// Packages that depend on this one.
     pub dependents: Known<Arc<[PackageRecord]>>,
+    /// Exact reverse-dependency rows the producer observed when coverage is
+    /// incomplete. These rows are useful evidence but do not establish a
+    /// complete `dependents` value.
+    #[serde(default = "no_observed_dependents")]
+    pub observed_dependents: Arc<[PackageRecord]>,
     /// Modules and their items, for the mosaic.
     pub outline: Known<OutlineTree>,
     /// README, as structured blocks.
@@ -31,6 +36,10 @@ pub struct PackageDossier {
     /// Heading identity index matching the Markdown block renderer.
     #[serde(default = "readme_headings_not_captured")]
     pub readme_headings: Known<Arc<[ReadmeHeading]>>,
+}
+
+fn no_observed_dependents() -> Arc<[PackageRecord]> {
+    Arc::from([])
 }
 
 fn readme_source_not_captured() -> Known<Arc<str>> {

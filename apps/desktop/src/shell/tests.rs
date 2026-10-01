@@ -154,6 +154,7 @@ pub(crate) fn dossier() -> PackageDossier {
         versions: Known::Unknown(unknown(GapReason::LocalProject)),
         dependencies: Known::Known(Arc::from([])),
         dependents: Known::Unknown(unknown(GapReason::LocalProject)),
+        observed_dependents: Arc::from([]),
         outline: Known::Known(OutlineTree {
             roots: Arc::from([
                 node("identity", DeclarationKind::Module, vec![node("Identity", DeclarationKind::Struct, vec![])]),
@@ -211,12 +212,12 @@ impl PageReader for Fixture {
                     symbol: decl(&name, DeclarationKind::Enum),
                     file: Known::Known(Arc::from("glyph.rs")),
                     editor_path: Known::unknown(GapReason::NotServed, "fixture has no editor authority"),
-                    text: Known::Known(SourceText {
-                        text: Arc::from(format!("// lead\npub enum {name} {{\n    Typed,\n}}\n// tail\n")),
-                        first_line: 137,
-                        origin: SourceOrigin::LocalFile,
-                        complete: true,
-                    }),
+                    text: Known::Known(SourceText::new(
+                        Arc::from(format!("// lead\npub enum {name} {{\n    Typed,\n}}\n// tail\n")),
+                        137,
+                        SourceOrigin::LocalFile,
+                        true,
+                    )),
                     declaration: Known::Known(LineSpan { first: 138, last: 140 }),
                     identifiers: Known::Known(Arc::from([])),
                     uses: Known::Known(Arc::from([])),

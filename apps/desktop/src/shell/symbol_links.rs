@@ -120,6 +120,7 @@ mod tests {
             versions: unknown(),
             dependencies: unknown(),
             dependents: unknown(),
+            observed_dependents: Arc::from([]),
             outline: Known::Known(OutlineTree {
                 roots: rows.into_iter().map(|decl| OutlineNode { decl, children: Arc::from([]) }).collect::<Vec<_>>().into(),
                 complete,
