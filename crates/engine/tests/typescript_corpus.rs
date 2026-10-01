@@ -7,19 +7,19 @@ use backend_engine::driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile,
 };
-use backend_engine::index_build::{IndexBuildScratch, build};
-use backend_engine::index_publish::{
-    CompilationIndexScratch, encode_index_pack, plan_index_pack, seal_compilation_index,
-};
+use backend_semantic::ir::FragmentView;
+use backend_frontend_typescript::legacy::{Checker, Report};
 use backend_engine::publication::immutable::ImmutableArtifactStore;
 use backend_engine::publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
 };
-use backend_frontend_typescript::legacy::{Checker, Report};
-use backend_semantic::ir::FragmentView;
 use backend_semantic::vocabulary::{LanguageProfile, Stage, TypeScriptSource};
-use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use serde_json::json;
+use backend_engine::index_build::{IndexBuildScratch, build};
+use backend_engine::index_publish::{
+    CompilationIndexScratch, encode_index_pack, plan_index_pack, seal_compilation_index,
+};
+use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use std::{
     fs,
     mem::MaybeUninit,
@@ -30,7 +30,8 @@ use std::{
 
 const PROFILE: LanguageProfile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
 const STAGE: Stage = Stage::LowerIr;
-const GOLDEN: &[u8] = include_bytes!("../../../frontends/typescript/tests/transcripts/golden.json");
+const GOLDEN: &[u8] =
+    include_bytes!("../../../frontends/typescript/tests/transcripts/golden.json");
 /// A later run may be up to 2x slower than the frozen first run before review.
 pub const TYPESCRIPT_CORPUS_REGRESSION_CAP: f64 = 2.0;
 

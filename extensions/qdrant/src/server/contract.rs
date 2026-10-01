@@ -9,12 +9,12 @@ use std::{
 };
 
 use arrayvec::ArrayVec;
+use backend_semantic::ir::EntityId;
+use serde::Serialize;
 use backend_semantic::graph_vector::{
     MAX_VECTOR_DIMENSION, Metric, ModelId, PartitionId, VectorAuthority,
 };
 use backend_semantic::index_vocabulary::{IndexSnapshotId, VectorSegmentId};
-use backend_semantic::ir::EntityId;
-use serde::Serialize;
 
 use super::limits::{DEFAULT_MAX_ATTEMPTS, MAX_QUERY_SEGMENTS};
 

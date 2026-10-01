@@ -50,11 +50,7 @@ pub(crate) enum SourceError {
     /// Its source is not on this machine and this source never downloads.
     NeedsDownload(Release),
     /// The archive on this machine is not the one the registry published.
-    Integrity {
-        release: Release,
-        expected: String,
-        actual: String,
-    },
+    Integrity { release: Release, expected: String, actual: String },
     /// The archive could not be read or unpacked.
     Archive { release: Release, reason: String },
     /// The file system refused.
@@ -64,28 +60,12 @@ pub(crate) enum SourceError {
 impl fmt::Display for SourceError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NeedsDownload(release) => write!(
-                formatter,
-                "{release} is not on this machine; reading it needs a download"
-            ),
-            Self::Integrity {
-                release,
-                expected,
-                actual,
-            } => {
-                write!(
-                    formatter,
-                    "the archive of {release} on this machine is not the published one (sha256 {actual}, the registry says {expected})"
-                )
+            Self::NeedsDownload(release) => write!(formatter, "{release} is not on this machine; reading it needs a download"),
+            Self::Integrity { release, expected, actual } => {
+                write!(formatter, "the archive of {release} on this machine is not the published one (sha256 {actual}, the registry says {expected})")
             }
-            Self::Archive { release, reason } => write!(
-                formatter,
-                "the archive of {release} could not be unpacked: {reason}"
-            ),
-            Self::Io { release, reason } => write!(
-                formatter,
-                "the source of {release} could not be read: {reason}"
-            ),
+            Self::Archive { release, reason } => write!(formatter, "the archive of {release} could not be unpacked: {reason}"),
+            Self::Io { release, reason } => write!(formatter, "the source of {release} could not be read: {reason}"),
         }
     }
 }
@@ -159,18 +139,12 @@ impl CargoCache {
 
     fn cargo_tree(&self, release: &Release) -> Option<PathBuf> {
         let stem = release.stem();
-        self.source_dirs()
-            .into_iter()
-            .map(|dir| dir.join(&stem))
-            .find(|dir| dir.join("Cargo.toml").is_file())
+        self.source_dirs().into_iter().map(|dir| dir.join(&stem)).find(|dir| dir.join("Cargo.toml").is_file())
     }
 
     fn archive(&self, release: &Release) -> Option<PathBuf> {
         let file = format!("{}.crate", release.stem());
-        self.archive_dirs()
-            .into_iter()
-            .map(|dir| dir.join(&file))
-            .find(|file| file.is_file())
+        self.archive_dirs().into_iter().map(|dir| dir.join(&file)).find(|file| file.is_file())
     }
 
     /// Where this app unpacks `release`.
@@ -187,27 +161,17 @@ impl CargoCache {
         if own.join("Cargo.toml").is_file() {
             return Availability::Unpacked(own);
         }
-        self.archive(release)
-            .map_or(Availability::Download, Availability::Archive)
+        self.archive(release).map_or(Availability::Download, Availability::Archive)
     }
 
     /// Every `name-version` stem on this machine: unpacked trees and archives.
     fn stems(&self) -> Vec<String> {
         let mut stems = Vec::new();
         for dir in self.source_dirs() {
-            stems.extend(
-                entries(&dir)
-                    .into_iter()
-                    .filter(|(_, is_dir)| *is_dir)
-                    .map(|(name, _)| name),
-            );
+            stems.extend(entries(&dir).into_iter().filter(|(_, is_dir)| *is_dir).map(|(name, _)| name));
         }
         for dir in self.archive_dirs() {
-            stems.extend(entries(&dir).into_iter().filter_map(|(name, is_dir)| {
-                (!is_dir)
-                    .then(|| name.strip_suffix(".crate").map(str::to_owned))
-                    .flatten()
-            }));
+            stems.extend(entries(&dir).into_iter().filter_map(|(name, is_dir)| (!is_dir).then(|| name.strip_suffix(".crate").map(str::to_owned)).flatten()));
         }
         stems.sort();
         stems.dedup();
@@ -220,10 +184,7 @@ impl RegistrySource for CargoCache {
         let mut out = cargo_home::releases(name.as_str())
             .into_iter()
             .filter_map(|published| {
-                let release = Release {
-                    name: name.clone(),
-                    version: Version::new(&published.version).ok()?,
-                };
+                let release = Release { name: name.clone(), version: Version::new(&published.version).ok()? };
                 Some(Published {
                     availability: self.locate(&release),
                     release,
@@ -234,20 +195,9 @@ impl RegistrySource for CargoCache {
             .collect::<Vec<_>>();
         let prefix = format!("{name}-");
         for stem in self.stems() {
-            let Some(release) = stem
-                .strip_prefix(&prefix)
-                .and_then(|_| Release::from_stem(&stem))
-                .filter(|release| &release.name == name)
-            else {
-                continue;
-            };
+            let Some(release) = stem.strip_prefix(&prefix).and_then(|_| Release::from_stem(&stem)).filter(|release| &release.name == name) else { continue };
             if out.iter().all(|known| known.release != release) {
-                out.push(Published {
-                    availability: self.locate(&release),
-                    release,
-                    date: None,
-                    yanked: false,
-                });
+                out.push(Published { availability: self.locate(&release), release, date: None, yanked: false });
             }
         }
         out.sort_by(|a, b| semver::cmp(a.release.version.as_str(), b.release.version.as_str()));
@@ -260,27 +210,16 @@ impl RegistrySource for CargoCache {
             return Vec::new();
         }
         let mut newest = std::collections::BTreeMap::<CrateName, Version>::new();
-        for release in self
-            .stems()
-            .iter()
-            .filter_map(|stem| Release::from_stem(stem))
-        {
-            if !release.name.as_str().to_lowercase().contains(&query)
-                || !semver::parse(release.version.as_str()).pre.is_empty()
-            {
+        for release in self.stems().iter().filter_map(|stem| Release::from_stem(stem)) {
+            if !release.name.as_str().to_lowercase().contains(&query) || !semver::parse(release.version.as_str()).pre.is_empty() {
                 continue;
             }
-            let keep = newest
-                .get(&release.name)
-                .is_none_or(|known| semver::cmp(known.as_str(), release.version.as_str()).is_lt());
+            let keep = newest.get(&release.name).is_none_or(|known| semver::cmp(known.as_str(), release.version.as_str()).is_lt());
             if keep {
                 newest.insert(release.name, release.version);
             }
         }
-        let mut found = newest
-            .into_iter()
-            .map(|(name, version)| Release { name, version })
-            .collect::<Vec<_>>();
+        let mut found = newest.into_iter().map(|(name, version)| Release { name, version }).collect::<Vec<_>>();
         // An exact name first, then names that start with the query, then the rest.
         found.sort_by_cached_key(|release| {
             let name = release.name.as_str().to_lowercase();
@@ -300,9 +239,7 @@ impl RegistrySource for CargoCache {
             // `resolve` unpacks it here, and the owner lists it by this path.
             Availability::Archive(_) => {
                 let own = self.own_tree(release);
-                Some(self.unpacked.canonicalize().map_or(own, |unpacked| {
-                    unpacked.join(release.stem()).join(release.stem())
-                }))
+                Some(self.unpacked.canonicalize().map_or(own, |unpacked| unpacked.join(release.stem()).join(release.stem())))
             }
             Availability::Download => None,
         }
@@ -312,35 +249,18 @@ impl RegistrySource for CargoCache {
         let root = root.canonicalize().ok()?;
         let parent = root.parent()?;
         let stem = root.file_name()?.to_str()?;
-        let cargo = self
-            .source_dirs()
-            .iter()
-            .any(|dir| dir.canonicalize().is_ok_and(|dir| dir == parent));
-        let own = self
-            .unpacked
-            .canonicalize()
-            .is_ok_and(|unpacked| parent.parent() == Some(unpacked.as_path()))
+        let cargo = self.source_dirs().iter().any(|dir| dir.canonicalize().is_ok_and(|dir| dir == parent));
+        let own = self.unpacked.canonicalize().is_ok_and(|unpacked| parent.parent() == Some(unpacked.as_path()))
             && parent.file_name().and_then(|name| name.to_str()) == Some(stem);
         (cargo || own).then(|| Release::from_stem(stem)).flatten()
     }
 
     fn resolve(&self, release: &Release) -> Result<SourceTree, SourceError> {
-        let io = |error: std::io::Error| SourceError::Io {
-            release: release.clone(),
-            reason: error.to_string(),
-        };
+        let io = |error: std::io::Error| SourceError::Io { release: release.clone(), reason: error.to_string() };
         match self.locate(release) {
             Availability::Unpacked(tree) => {
-                let origin = if tree.starts_with(&self.unpacked) {
-                    Origin::Archive(self.archive(release).unwrap_or_default())
-                } else {
-                    Origin::Cargo
-                };
-                Ok(SourceTree {
-                    release: release.clone(),
-                    root: tree.canonicalize().map_err(io)?,
-                    origin,
-                })
+                let origin = if tree.starts_with(&self.unpacked) { Origin::Archive(self.archive(release).unwrap_or_default()) } else { Origin::Cargo };
+                Ok(SourceTree { release: release.clone(), root: tree.canonicalize().map_err(io)?, origin })
             }
             Availability::Archive(file) => {
                 let checksum = cargo_home::releases(release.name.as_str())
@@ -348,11 +268,7 @@ impl RegistrySource for CargoCache {
                     .find(|published| published.version == release.version.as_str())
                     .and_then(|published| published.checksum);
                 let root = archive::unpack(&file, checksum.as_deref(), release, &self.unpacked)?;
-                Ok(SourceTree {
-                    release: release.clone(),
-                    root: root.canonicalize().map_err(io)?,
-                    origin: Origin::Archive(file),
-                })
+                Ok(SourceTree { release: release.clone(), root: root.canonicalize().map_err(io)?, origin: Origin::Archive(file) })
             }
             Availability::Download => Err(SourceError::NeedsDownload(release.clone())),
         }
@@ -372,16 +288,9 @@ fn index_dirs(dir: &Path) -> Vec<PathBuf> {
 
 /// `dir`'s entries by name, and whether each is a directory.
 fn entries(dir: &Path) -> Vec<(String, bool)> {
-    let Ok(read) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
+    let Ok(read) = std::fs::read_dir(dir) else { return Vec::new() };
     read.filter_map(Result::ok)
-        .filter_map(|entry| {
-            Some((
-                entry.file_name().into_string().ok()?,
-                entry.file_type().ok()?.is_dir(),
-            ))
-        })
+        .filter_map(|entry| Some((entry.file_name().into_string().ok()?, entry.file_type().ok()?.is_dir())))
         .collect()
 }
 
@@ -401,10 +310,7 @@ pub(crate) struct Composition {
 
 impl fmt::Debug for Composition {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("Composition")
-            .field("endpoint", &self.endpoint)
-            .finish_non_exhaustive()
+        formatter.debug_struct("Composition").field("endpoint", &self.endpoint).finish_non_exhaustive()
     }
 }
 
@@ -413,15 +319,9 @@ static COMPOSED: RwLock<Option<Composition>> = RwLock::new(None);
 /// Composes the cargo cache for the owner at `endpoint` whose workspace is
 /// `data` (archives unpack into `data/registry-sources`).
 pub(crate) fn publish(endpoint: &Path, data: &Path) {
-    let Some(source) = CargoCache::from_env(data.join("registry-sources")) else {
-        return;
-    };
+    let Some(source) = CargoCache::from_env(data.join("registry-sources")) else { return };
     let refusals = Some(data.join("registry-sources").join("refusals.json"));
-    install(Composition {
-        endpoint: endpoint.to_path_buf(),
-        source: Arc::new(source),
-        refusals,
-    });
+    install(Composition { endpoint: endpoint.to_path_buf(), source: Arc::new(source), refusals });
 }
 
 /// Installs a composition (tests compose their own).
@@ -431,13 +331,10 @@ pub(crate) fn install(composition: Composition) {
 
 /// The composition, when an owner has started in this process.
 pub(crate) fn composed() -> Option<Composition> {
-    COMPOSED
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone()
+    COMPOSED.read().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
 #[cfg(test)]
-mod owner_tests;
-#[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod owner_tests;

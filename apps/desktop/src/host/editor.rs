@@ -53,10 +53,7 @@ pub(crate) fn install(launch: Rc<dyn Launch>, cx: &mut App) {
 
 /// The launcher in force.
 pub(crate) fn launcher(cx: &App) -> Rc<dyn Launch> {
-    cx.try_global::<Launcher>().map_or_else(
-        || Rc::new(System) as Rc<dyn Launch>,
-        |launcher| Rc::clone(&launcher.0),
-    )
+    cx.try_global::<Launcher>().map_or_else(|| Rc::new(System) as Rc<dyn Launch>, |launcher| Rc::clone(&launcher.0))
 }
 
 /// The commands to try, in order, to open `path` at `line`.
@@ -67,49 +64,22 @@ pub(crate) fn commands(configured: Option<&str>, path: &str, line: u32) -> Vec<C
         // path with a space in it stays the one argument it is.
         let mut words = template.split_whitespace();
         if let Some(program) = words.next() {
-            let mut args: Vec<String> = words
-                .map(|word| {
-                    word.replace("{path}", path)
-                        .replace("{line}", &line.to_string())
-                })
-                .collect();
+            let mut args: Vec<String> = words.map(|word| word.replace("{path}", path).replace("{line}", &line.to_string())).collect();
             if !template.contains("{path}") {
                 args.push(format!("{path}:{line}"));
             }
-            out.push(Command {
-                program: program.to_owned(),
-                args,
-            });
+            out.push(Command { program: program.to_owned(), args });
         }
     }
-    out.push(Command {
-        program: "code".to_owned(),
-        args: vec!["-g".to_owned(), format!("{path}:{line}")],
-    });
-    out.push(Command {
-        program: "zed".to_owned(),
-        args: vec![format!("{path}:{line}")],
-    });
-    out.push(Command {
-        program: if cfg!(target_os = "macos") {
-            "open"
-        } else {
-            "xdg-open"
-        }
-        .to_owned(),
-        args: vec![path.to_owned()],
-    });
+    out.push(Command { program: "code".to_owned(), args: vec!["-g".to_owned(), format!("{path}:{line}")] });
+    out.push(Command { program: "zed".to_owned(), args: vec![format!("{path}:{line}")] });
+    out.push(Command { program: if cfg!(target_os = "macos") { "open" } else { "xdg-open" }.to_owned(), args: vec![path.to_owned()] });
     out
 }
 
 /// Opens `path` at `line`: the first command that starts wins. The commands
 /// it tried, in order, are returned.
-pub(crate) fn open(
-    launch: &dyn Launch,
-    configured: Option<&str>,
-    path: &str,
-    line: u32,
-) -> Vec<Command> {
+pub(crate) fn open(launch: &dyn Launch, configured: Option<&str>, path: &str, line: u32) -> Vec<Command> {
     let mut tried = Vec::new();
     for command in commands(configured, path, line) {
         let started = launch.run(&command).is_ok();
@@ -135,82 +105,37 @@ mod tests {
     impl Launch for Recorder {
         fn run(&self, command: &Command) -> std::io::Result<()> {
             self.ran.borrow_mut().push(command.clone());
-            if self.works.contains(&command.program.as_str()) {
-                Ok(())
-            } else {
-                Err(std::io::ErrorKind::NotFound.into())
-            }
+            if self.works.contains(&command.program.as_str()) { Ok(()) } else { Err(std::io::ErrorKind::NotFound.into()) }
         }
     }
 
     #[test]
     fn code_first_at_the_line() {
-        let recorder = Recorder {
-            ran: RefCell::new(Vec::new()),
-            works: vec!["code"],
-        };
+        let recorder = Recorder { ran: RefCell::new(Vec::new()), works: vec!["code"] };
         let tried = open(&recorder, None, "/w/crates/engine/src/lib.rs", 40);
-        assert_eq!(
-            tried,
-            [Command {
-                program: "code".into(),
-                args: vec!["-g".into(), "/w/crates/engine/src/lib.rs:40".into()]
-            }]
-        );
+        assert_eq!(tried, [Command { program: "code".into(), args: vec!["-g".into(), "/w/crates/engine/src/lib.rs:40".into()] }]);
     }
 
     #[test]
     fn then_zed_then_the_platform() {
-        let recorder = Recorder {
-            ran: RefCell::new(Vec::new()),
-            works: vec!["zed"],
-        };
+        let recorder = Recorder { ran: RefCell::new(Vec::new()), works: vec!["zed"] };
         let tried = open(&recorder, None, "/w/a.rs", 7);
-        assert_eq!(
-            tried.iter().map(|c| c.program.as_str()).collect::<Vec<_>>(),
-            ["code", "zed"]
-        );
+        assert_eq!(tried.iter().map(|c| c.program.as_str()).collect::<Vec<_>>(), ["code", "zed"]);
         assert_eq!(tried[1].args, ["/w/a.rs:7"]);
-        let none = Recorder {
-            ran: RefCell::new(Vec::new()),
-            works: vec![],
-        };
+        let none = Recorder { ran: RefCell::new(Vec::new()), works: vec![] };
         let tried = open(&none, None, "/w/a.rs", 7);
-        assert_eq!(
-            tried.len(),
-            3,
-            "code, zed, the platform's opener: all tried"
-        );
+        assert_eq!(tried.len(), 3, "code, zed, the platform's opener: all tried");
         assert_eq!(tried[2].args, ["/w/a.rs"]);
     }
 
     #[test]
     fn a_configured_editor_goes_first_with_its_own_template() {
-        let recorder = Recorder {
-            ran: RefCell::new(Vec::new()),
-            works: vec!["subl"],
-        };
+        let recorder = Recorder { ran: RefCell::new(Vec::new()), works: vec!["subl"] };
         let tried = open(&recorder, Some("subl {path}:{line}"), "/w/a.rs", 12);
-        assert_eq!(
-            tried,
-            [Command {
-                program: "subl".into(),
-                args: vec!["/w/a.rs:12".into()]
-            }]
-        );
+        assert_eq!(tried, [Command { program: "subl".into(), args: vec!["/w/a.rs:12".into()] }]);
         let bare = commands(Some("vim"), "/w/a.rs", 3);
-        assert_eq!(
-            bare[0],
-            Command {
-                program: "vim".into(),
-                args: vec!["/w/a.rs:3".into()]
-            }
-        );
+        assert_eq!(bare[0], Command { program: "vim".into(), args: vec!["/w/a.rs:3".into()] });
         let spaced = commands(Some("subl {path}:{line}"), "/w/my project/a.rs", 3);
-        assert_eq!(
-            spaced[0].args,
-            ["/w/my project/a.rs:3"],
-            "a path with a space is one argument"
-        );
+        assert_eq!(spaced[0].args, ["/w/my project/a.rs:3"], "a path with a space is one argument");
     }
 }

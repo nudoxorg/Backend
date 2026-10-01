@@ -18,8 +18,7 @@ use crate::motion::{self, Motion, spec};
 use crate::theme::ActiveFacet;
 use crate::tokens::{Face, TypeRole};
 use gpui::{
-    AnyElement, App, Bounds, ElementId, InteractiveElement, IntoElement, Keystroke, ParentElement,
-    Pixels, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
+    AnyElement, App, Bounds, ElementId, InteractiveElement, IntoElement, Keystroke, ParentElement, Pixels, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -62,10 +61,7 @@ impl MenuItem {
     /// With a shortcut.
     #[must_use]
     pub fn chord(mut self, chord: &[&str]) -> Self {
-        self.chord = chord
-            .iter()
-            .map(|key| SharedString::from((*key).to_owned()))
-            .collect();
+        self.chord = chord.iter().map(|key| SharedString::from((*key).to_owned())).collect();
         self
     }
 
@@ -104,10 +100,7 @@ pub struct Menu {
 
 impl Menu {
     /// A menu of `items` calling `on_choose(index)`.
-    pub fn new(
-        items: Vec<MenuItem>,
-        on_choose: impl Fn(usize, &mut Window, &mut App) + 'static,
-    ) -> Self {
+    pub fn new(items: Vec<MenuItem>, on_choose: impl Fn(usize, &mut Window, &mut App) + 'static) -> Self {
         Self {
             items,
             on_choose: Rc::new(on_choose),
@@ -207,10 +200,7 @@ fn row_top(items: &[MenuItem], index: usize, measure: &Measure) -> Pixels {
 }
 
 /// The content builder for the float layer.
-fn content(
-    key: ElementId,
-    menu: Menu,
-) -> impl Fn(&Measure, &mut Window, &mut App) -> AnyElement + 'static {
+fn content(key: ElementId, menu: Menu) -> impl Fn(&Measure, &mut Window, &mut App) -> AnyElement + 'static {
     let state = Rc::new(RefCell::new(State::default()));
     let motion = Motion::new();
     move |measure: &Measure, window: &mut Window, cx: &mut App| {
@@ -237,17 +227,10 @@ fn content(
             );
         }
         let active = state.borrow().active;
-        let width =
-            px(220.0 * measure.scale()).max(measure.width().min(px(248.0 * measure.scale())));
+        let width = px(220.0 * measure.scale()).max(measure.width().min(px(248.0 * measure.scale())));
         let target = active.map_or(0.0, |index| f32::from(row_top(&menu.items, index, measure)));
         let plate_y = motion.animate("menu-plate", target, spec::FOLLOW, window, cx);
-        let shown = motion.animate(
-            "menu-plate-shown",
-            if active.is_some() { 1.0 } else { 0.0 },
-            spec::HOVER,
-            window,
-            cx,
-        );
+        let shown = motion.animate("menu-plate-shown", if active.is_some() { 1.0 } else { 0.0 }, spec::HOVER, window, cx);
         let keys_held = measure.reveal().keys;
         let mut column = div()
             .relative()
@@ -290,13 +273,7 @@ fn content(
             if let Some(icon) = item.icon {
                 row = row.child(icons::ui(icon, IconSize::S14, ink).size(measure.icon(14.0)));
             }
-            row = row.child(
-                div()
-                    .flex_1()
-                    .set(LABEL, measure)
-                    .text_color(ink)
-                    .child(item.label.clone()),
-            );
+            row = row.child(div().flex_1().set(LABEL, measure).text_color(ink).child(item.label.clone()));
             if !item.chord.is_empty() {
                 let chord: Vec<&str> = item.chord.iter().map(SharedString::as_ref).collect();
                 row = row.child(if keys_held {
@@ -406,28 +383,14 @@ fn handle(
 
 /// Opens `menu` below (or beside) `anchor` for the trigger `key`: a click or
 /// a key; focus moves into the menu and returns when it closes.
-pub fn open(
-    key: impl Into<ElementId>,
-    anchor: Bounds<Pixels>,
-    side: Side,
-    menu: Menu,
-    window: &mut Window,
-    cx: &mut App,
-) {
+pub fn open(key: impl Into<ElementId>, anchor: Bounds<Pixels>, side: Side, menu: Menu, window: &mut Window, cx: &mut App) {
     let key = key.into();
-    let request =
-        FloatRequest::new(key.clone(), anchor, FloatKind::Menu, content(key, menu)).side(side);
+    let request = FloatRequest::new(key.clone(), anchor, FloatKind::Menu, content(key, menu)).side(side);
     float::open(request, window, cx);
 }
 
 /// A context menu at the pointer.
-pub fn context(
-    key: impl Into<ElementId>,
-    at: gpui::Point<Pixels>,
-    menu: Menu,
-    window: &mut Window,
-    cx: &mut App,
-) {
+pub fn context(key: impl Into<ElementId>, at: gpui::Point<Pixels>, menu: Menu, window: &mut Window, cx: &mut App) {
     let anchor = Bounds::new(at, gpui::size(px(1.0), px(1.0)));
     open(key, anchor, Side::Below, menu, window, cx);
 }
@@ -440,11 +403,7 @@ mod tests {
     fn stepping_wraps_and_skips_disabled_rows() {
         let disabled = [false, true, false, false];
         assert_eq!(step(None, &disabled, 1), Some(0));
-        assert_eq!(
-            step(Some(0), &disabled, 1),
-            Some(2),
-            "skips the disabled row"
-        );
+        assert_eq!(step(Some(0), &disabled, 1), Some(2), "skips the disabled row");
         assert_eq!(step(Some(3), &disabled, 1), Some(0), "wraps");
         assert_eq!(step(Some(0), &disabled, -1), Some(3), "wraps back");
         assert_eq!(step(None, &disabled, -1), Some(3));
@@ -458,16 +417,8 @@ mod tests {
         let disabled = [false, false, true, false, false];
         assert_eq!(type_ahead(&labels, &disabled, "c", 0), Some(0));
         assert_eq!(type_ahead(&labels, &disabled, "c", 1), Some(1));
-        assert_eq!(
-            type_ahead(&labels, &disabled, "cu", 0),
-            None,
-            "Cut is disabled"
-        );
-        assert_eq!(
-            type_ahead(&labels, &disabled, "D", 4),
-            Some(4),
-            "case-insensitive, from the active row"
-        );
+        assert_eq!(type_ahead(&labels, &disabled, "cu", 0), None, "Cut is disabled");
+        assert_eq!(type_ahead(&labels, &disabled, "D", 4), Some(4), "case-insensitive, from the active row");
         assert_eq!(type_ahead(&labels, &disabled, "d", 0), Some(3));
         assert_eq!(type_ahead(&labels, &disabled, "x", 0), None);
     }

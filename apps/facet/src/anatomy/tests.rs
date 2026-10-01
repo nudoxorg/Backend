@@ -1,15 +1,15 @@
 //! The anatomy's text: one line of runs per row, links where the names are,
 //! the ⌥ source only under x-ray, and a click on a link dispatching `Open`.
 
-use super::roles;
 use super::text::{Deco, Line, Links, Open, TypeInk};
+use super::roles;
 use crate::measure::{Measure, Reveal};
 use crate::semantics::types::{Nowhere, Scope, Target};
 use crate::theme::{Facet, set_facet};
 use crate::tokens::ABYSS;
 use gpui::{
-    Context, IntoElement, Modifiers, ParentElement, Render, SharedString, Styled, TestAppContext,
-    Window, div, point, px,
+    Context, IntoElement, Modifiers, ParentElement, Render, SharedString, Styled, TestAppContext, Window, div, point,
+    px,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -22,18 +22,9 @@ fn scope() -> Scope<'static> {
 fn a_spelled_type_is_one_line_with_a_link_per_name() {
     let spelled = scope().spell_text("Result<Vec<Relation>, fmt::Error>");
     let mut line = Line::new();
-    line.spelled(
-        &spelled,
-        &TypeInk::new(roles::TYPE, &ABYSS),
-        &Links::plain(),
-        false,
-    );
+    line.spelled(&spelled, &TypeInk::new(roles::TYPE, &ABYSS), &Links::plain(), false);
     assert_eq!(line.text(), "list of Relation or fails with Error");
-    let links: Vec<(&str, &Target)> = line
-        .links()
-        .iter()
-        .map(|(r, t)| (&line.text()[r.clone()], t))
-        .collect();
+    let links: Vec<(&str, &Target)> = line.links().iter().map(|(r, t)| (&line.text()[r.clone()], t)).collect();
     assert_eq!(
         links,
         [
@@ -63,12 +54,7 @@ fn xray_spells_the_exact_source_beside_the_words_and_only_then() {
 fn generics_are_italic_and_never_links() {
     let spelled = Scope::new(&Nowhere).generics(["T"]).spell_text("Option<T>");
     let mut line = Line::new();
-    line.spelled(
-        &spelled,
-        &TypeInk::new(roles::TYPE, &ABYSS),
-        &Links::plain(),
-        false,
-    );
+    line.spelled(&spelled, &TypeInk::new(roles::TYPE, &ABYSS), &Links::plain(), false);
     assert_eq!(line.text(), "maybe T");
     assert!(line.links().is_empty());
 }
@@ -80,20 +66,9 @@ struct OneLine {
 impl Render for OneLine {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let mut line = Line::new();
-        line.link(
-            "RelationLabel",
-            roles::TYPE,
-            ABYSS.ink1.hsla(),
-            Target::Node(21_727),
-        );
+        line.link("RelationLabel", roles::TYPE, ABYSS.ink1.hsla(), Target::Node(21_727));
         line.push(" and some words", roles::TYPE, ABYSS.ink3.hsla());
-        div().size_full().child(line.element(
-            "one-line",
-            roles::TYPE,
-            &self.measure,
-            &Links::plain(),
-            &ABYSS,
-        ))
+        div().size_full().child(line.element("one-line", roles::TYPE, &self.measure, &Links::plain(), &ABYSS))
     }
 }
 
@@ -102,13 +77,7 @@ fn clicking_a_link_dispatches_open_and_clicking_words_does_not(cx: &mut TestAppC
     let opened: Rc<RefCell<Vec<Target>>> = Rc::new(RefCell::new(Vec::new()));
     cx.update(|cx| {
         crate::fonts::install(cx).ok();
-        set_facet(
-            Facet {
-                reveal: Reveal::default(),
-                ..Facet::default()
-            },
-            cx,
-        );
+        set_facet(Facet { reveal: Reveal::default(), ..Facet::default() }, cx);
         let opened = Rc::clone(&opened);
         cx.on_action(move |open: &Open, _| opened.borrow_mut().push(open.target.clone()));
     });
@@ -171,11 +140,7 @@ fn decorating_a_range_splits_its_runs_and_marks_only_that_text() {
     // Text pushed after a decorated run starts its own undecorated run.
     line.decorate(tail, Deco::Underline(ABYSS.mint.base.hsla()));
     line.push("!", roles::TYPE, ABYSS.ink3.hsla());
-    assert!(
-        line.runs_for_test()
-            .last()
-            .is_some_and(|r| r.underline.is_none() && r.len == 1)
-    );
+    assert!(line.runs_for_test().last().is_some_and(|r| r.underline.is_none() && r.len == 1));
 }
 
 fn spans(line: &Line, keep: impl Fn(&gpui::TextRun) -> bool) -> String {
@@ -195,10 +160,7 @@ fn the_lint_sees_gpui_s_break_opportunities_in_code() {
     use super::text::wrap_units;
     // gpui may wrap before `(` and `&`; `.`, `_` and `::` hold a word together.
     let units = wrap_units(".with_prose(Prose::from_fragments(&document.fragments))");
-    let widest = units
-        .split_whitespace()
-        .max_by_key(|u| u.len())
-        .unwrap_or_default();
+    let widest = units.split_whitespace().max_by_key(|u| u.len()).unwrap_or_default();
     assert_eq!(widest, "(Prose::from_fragments");
     assert_eq!(wrap_units("list of Relation"), "list of Relation");
 }

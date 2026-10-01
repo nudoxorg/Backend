@@ -15,33 +15,29 @@ use std::{
 
 use allocation_counter::{AllocationInfo, measure};
 use backend_engine::driver::CompiledFragment;
-use backend_engine::index_build::{
-    EntityFact, EntityProjection, IndexBuildScratch, PreparedIndex, build,
-};
-use backend_engine::index_publish::{
-    CompilationIndexError, CompilationIndexScratch, IndexPackEncodeError, IndexPackOpenError,
-    IndexPackStore, IndexPackStoreError, encode_index_pack, plan_index_pack,
-    seal_compilation_index,
-};
-use backend_engine::publication::{
-    OpenPublicationScratch, OpenPublishedError, OpenedCompilation, OpenedFragmentError,
-    PublicationScratch, PublishCompiledError, PublishControl, PublishedCompilation,
-    binding::COMPILATION_BINDING_BYTES, open_published, publish_compiled,
-};
-use backend_semantic::index_core::{ExactRow, LexicalRow};
 use backend_semantic::ir::{
     Atom, AtomInput, EntityKind, EntityRecord, FragmentError, FragmentView, PrepareError,
     PreparedFragment, PrimitiveType, SourceIdentity, TypeNode, WriteError,
 };
 use backend_semantic::ir::{AtomId, TypeId};
-use backend_semantic::vocabulary::{
-    CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage,
+use backend_engine::publication::{
+    OpenPublicationScratch, OpenPublishedError, OpenedCompilation, OpenedFragmentError,
+    PublicationScratch, PublishCompiledError, PublishControl, PublishedCompilation,
+    binding::COMPILATION_BINDING_BYTES, open_published, publish_compiled,
+};
+use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
+use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
+use backend_engine::index_build::{EntityFact, EntityProjection, IndexBuildScratch, PreparedIndex, build};
+use backend_semantic::index_core::{ExactRow, LexicalRow};
+use backend_engine::index_publish::{
+    CompilationIndexError, CompilationIndexScratch, IndexPackEncodeError, IndexPackOpenError,
+    IndexPackStore, IndexPackStoreError, encode_index_pack, plan_index_pack,
+    seal_compilation_index,
 };
 use backend_store::journal::{
     DurablePublisher, PublicationLimitError, PublicationLimits, PublicationOpenError,
     PublicationPaths, ShutdownError,
 };
-use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 
 const FRAGMENT_BYTES: usize = 512;

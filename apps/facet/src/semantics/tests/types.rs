@@ -12,10 +12,7 @@ struct Known(&'static [(&'static str, u32)]);
 impl Resolve for Known {
     fn named(&self, path: &[String]) -> Option<Target> {
         let joined = path.join("::");
-        self.0
-            .iter()
-            .find(|(name, _)| *name == joined)
-            .map(|(_, id)| Target::Node(*id))
+        self.0.iter().find(|(name, _)| *name == joined).map(|(_, id)| Target::Node(*id))
     }
 
     fn alias(&self, path: &[String], arity: usize) -> Option<(Vec<String>, TypeExpr)> {
@@ -53,64 +50,28 @@ const TABLE: &[(&str, &str)] = &[
     ("&[Advisory]", "list of Advisory"),
     ("Vec<Vec<u8>>", "list of list of u8"),
     ("[[f32; 4]; 4]", "4 × 4 × f32"),
-    (
-        "VecDeque<ExecutableCacheEntry>",
-        "list of ExecutableCacheEntry",
-    ),
+    ("VecDeque<ExecutableCacheEntry>", "list of ExecutableCacheEntry"),
     // maybe
     ("Option<String>", "maybe text"),
     ("Option<&Advisory>", "maybe Advisory"),
     ("Option<&str>", "maybe text"),
     ("Option<u16>", "maybe u16"),
     ("Option<&toml::Value>", "maybe Value"),
-    (
-        "Option<backend_replication::AuthenticatedLocalPeer>",
-        "maybe AuthenticatedLocalPeer",
-    ),
+    ("Option<backend_replication::AuthenticatedLocalPeer>", "maybe AuthenticatedLocalPeer"),
     ("Option<Self::Item>", "maybe its Item"),
     // results
-    (
-        "Result<Self, AuthorityParseError>",
-        "Advisory or fails with AuthorityParseError",
-    ),
-    (
-        "Result<Vec<Advisory>, AuthorityParseError>",
-        "list of Advisory or fails with AuthorityParseError",
-    ),
+    ("Result<Self, AuthorityParseError>", "Advisory or fails with AuthorityParseError"),
+    ("Result<Vec<Advisory>, AuthorityParseError>", "list of Advisory or fails with AuthorityParseError"),
     ("Result<Self, &'static str>", "Advisory or fails with text"),
-    (
-        "Result<&'a str, ParseError>",
-        "text or fails with ParseError",
-    ),
-    (
-        "Result<(), AuthorityStorageError>",
-        "nothing or fails with AuthorityStorageError",
-    ),
-    (
-        "Result<Vec<VersionEvent>, ()>",
-        "list of VersionEvent or fails with nothing",
-    ),
-    (
-        "Result<(String, VersionKey), VersionCompareError>",
-        "text × VersionKey or fails with VersionCompareError",
-    ),
-    (
-        "Result<ProducerObservationClaims, Self::Error>",
-        "ProducerObservationClaims or fails with its Error",
-    ),
-    (
-        "Result<Self::Parsed<'record>, Self::Error>",
-        "its Parsed or fails with its Error",
-    ),
-    (
-        "Result<Self::Key, backend_version::RelationDecodeError>",
-        "its Key or fails with RelationDecodeError",
-    ),
+    ("Result<&'a str, ParseError>", "text or fails with ParseError"),
+    ("Result<(), AuthorityStorageError>", "nothing or fails with AuthorityStorageError"),
+    ("Result<Vec<VersionEvent>, ()>", "list of VersionEvent or fails with nothing"),
+    ("Result<(String, VersionKey), VersionCompareError>", "text × VersionKey or fails with VersionCompareError"),
+    ("Result<ProducerObservationClaims, Self::Error>", "ProducerObservationClaims or fails with its Error"),
+    ("Result<Self::Parsed<'record>, Self::Error>", "its Parsed or fails with its Error"),
+    ("Result<Self::Key, backend_version::RelationDecodeError>", "its Key or fails with RelationDecodeError"),
     ("Result<Self::Value, E>", "its Value or fails with E"),
-    (
-        "Result<Self::Value, D::Error>",
-        "its Value or fails with D’s Error",
-    ),
+    ("Result<Self::Value, D::Error>", "its Value or fails with D’s Error"),
     ("Result<Self::Value, ()>", "its Value or fails with nothing"),
     // aliases of Result
     ("Result<T>", "T or fails with Error"),
@@ -131,50 +92,26 @@ const TABLE: &[(&str, &str)] = &[
     ("Arc<str>", "shared text"),
     // maps
     ("BTreeMap<String, String>", "map text → text"),
-    (
-        "HashMap<PreparationKey, usize>",
-        "map PreparationKey → usize",
-    ),
-    (
-        "&BTreeMap<Arc<str>, FactObservation>",
-        "map shared text → FactObservation",
-    ),
-    (
-        "BTreeMap<CanonicalAdvisoryId, Box<[WithdrawalRecord]>>",
-        "map CanonicalAdvisoryId → list of WithdrawalRecord",
-    ),
-    (
-        "BTreeMap<String, BTreeMap<String, BTreeSet<PackageIdentity>>>",
-        "map text → map text → set of PackageIdentity",
-    ),
+    ("HashMap<PreparationKey, usize>", "map PreparationKey → usize"),
+    ("&BTreeMap<Arc<str>, FactObservation>", "map shared text → FactObservation"),
+    ("BTreeMap<CanonicalAdvisoryId, Box<[WithdrawalRecord]>>", "map CanonicalAdvisoryId → list of WithdrawalRecord"),
+    ("BTreeMap<String, BTreeMap<String, BTreeSet<PackageIdentity>>>", "map text → map text → set of PackageIdentity"),
     // shared, locked, changeable
     ("Arc<Mutex<Vec<u8>>>", "shared locked list of u8"),
-    (
-        "Mutex<Option<Result<(), PreparationError>>>",
-        "locked maybe nothing or fails with PreparationError",
-    ),
+    ("Mutex<Option<Result<(), PreparationError>>>", "locked maybe nothing or fails with PreparationError"),
     ("&Mutex<T>", "locked T"),
     ("Rc<RefCell<Vec<Node>>>", "shared changeable list of Node"),
     ("Arc<AtomicBool>", "shared AtomicBool"),
     ("MutexGuard<'_, T>", "MutexGuard‹T›"),
     // nested generics
-    (
-        "Arc<[RelationState<FactRelation<K, V>>]>",
-        "shared list of RelationState‹FactRelation‹K, V››",
-    ),
-    (
-        "OnceLock<Arc<[FactRecord<K, V>]>>",
-        "OnceLock‹shared list of FactRecord‹K, V››",
-    ),
+    ("Arc<[RelationState<FactRelation<K, V>>]>", "shared list of RelationState‹FactRelation‹K, V››"),
+    ("OnceLock<Arc<[FactRecord<K, V>]>>", "OnceLock‹shared list of FactRecord‹K, V››"),
     (
         "Result<(CompleteAuthorityCoverage, Vec<FactRecord<K, V>>), AuthorityAdmissionError>",
         "CompleteAuthorityCoverage × list of FactRecord‹K, V› or fails with AuthorityAdmissionError",
     ),
     // tuples
-    (
-        "(AdvisoryObservation, AcquisitionDecision)",
-        "AdvisoryObservation × AcquisitionDecision",
-    ),
+    ("(AdvisoryObservation, AcquisitionDecision)", "AdvisoryObservation × AcquisitionDecision"),
     ("(&str, &str)", "text × text"),
     ("(Self, CancelHandle)", "Advisory × CancelHandle"),
     (
@@ -183,60 +120,27 @@ const TABLE: &[(&str, &str)] = &[
     ),
     ("()", "nothing"),
     // dyn and impl
-    (
-        "impl IntoIterator<Item = AdvisorySource>",
-        "any IntoIterator‹AdvisorySource›",
-    ),
+    ("impl IntoIterator<Item = AdvisorySource>", "any IntoIterator‹AdvisorySource›"),
     ("impl AsRef<Path>", "any AsRef‹path›"),
     ("impl Into<String>", "any Into‹text›"),
     ("impl Into<Box<[Relation]>>", "any Into‹list of Relation›"),
     ("&mut impl Write", "mutable any Write"),
     ("impl Iterator<Item = usize> + 'a", "any Iterator‹usize›"),
     ("impl fmt::Display", "any Display"),
-    (
-        "Result<SessionKey, Box<dyn Error>>",
-        "SessionKey or fails with any Error",
-    ),
-    (
-        "Option<&(dyn std::error::Error + 'static)>",
-        "maybe any Error",
-    ),
-    (
-        "Option<Box<dyn RemoteTransport>>",
-        "maybe any RemoteTransport",
-    ),
-    (
-        "Arc<dyn CasNodeReader<R, Error = StoreError> + Send + Sync>",
-        "shared any CasNodeReader‹R, StoreError›",
-    ),
-    (
-        "Pin<Box<dyn Future<Output = T> + Send + 'a>>",
-        "any Future‹T›",
-    ),
+    ("Result<SessionKey, Box<dyn Error>>", "SessionKey or fails with any Error"),
+    ("Option<&(dyn std::error::Error + 'static)>", "maybe any Error"),
+    ("Option<Box<dyn RemoteTransport>>", "maybe any RemoteTransport"),
+    ("Arc<dyn CasNodeReader<R, Error = StoreError> + Send + Sync>", "shared any CasNodeReader‹R, StoreError›"),
+    ("Pin<Box<dyn Future<Output = T> + Send + 'a>>", "any Future‹T›"),
     ("impl Read + Send", "any Read"),
     // functions
     ("&'a dyn Fn() -> bool", "a function of nothing → bool"),
-    (
-        "PhantomData<fn() -> (K, V)>",
-        "a marker for a function of nothing → K × V",
-    ),
-    (
-        "std::marker::PhantomData<fn() -> T>",
-        "a marker for a function of nothing → T",
-    ),
-    (
-        "Box<dyn Fn(&str) -> Result<(), Error> + Send>",
-        "a function of text → nothing or fails with Error",
-    ),
+    ("PhantomData<fn() -> (K, V)>", "a marker for a function of nothing → K × V"),
+    ("std::marker::PhantomData<fn() -> T>", "a marker for a function of nothing → T"),
+    ("Box<dyn Fn(&str) -> Result<(), Error> + Send>", "a function of text → nothing or fails with Error"),
     ("impl FnMut(A) -> B", "a function of A → B"),
-    (
-        "fn(&mut Formatter) -> fmt::Result",
-        "a function of mutable Formatter → nothing or fails with Error",
-    ),
-    (
-        "for<'a> fn(&'a str) -> &'a str",
-        "a function of text → text",
-    ),
+    ("fn(&mut Formatter) -> fmt::Result", "a function of mutable Formatter → nothing or fails with Error"),
+    ("for<'a> fn(&'a str) -> &'a str", "a function of text → text"),
     // projections, never, inference, plain names
     ("<T as Iterator>::Item", "T’s Item"),
     ("!", "never returns"),
@@ -258,17 +162,8 @@ fn every_fixture_type_reads_in_plain_words() {
             wrong.push(format!("{source:?}\n    want {want:?}\n    got  {got:?}"));
         }
     }
-    assert!(
-        TABLE.len() >= 60,
-        "the table must cover at least 60 real types"
-    );
-    assert!(
-        wrong.is_empty(),
-        "{} of {} spelled wrong:\n{}",
-        wrong.len(),
-        TABLE.len(),
-        wrong.join("\n")
-    );
+    assert!(TABLE.len() >= 60, "the table must cover at least 60 real types");
+    assert!(wrong.is_empty(), "{} of {} spelled wrong:\n{}", wrong.len(), TABLE.len(), wrong.join("\n"));
 }
 
 fn names(source: &str) -> Vec<(String, Target)> {
@@ -289,30 +184,14 @@ fn path(p: &str) -> Target {
 
 #[test]
 fn every_named_type_is_a_link_and_generics_never_are() {
-    assert_eq!(
-        names("Result<Vec<Advisory>, AuthorityParseError>"),
-        [
-            ("Advisory".into(), Target::Node(3)),
-            ("AuthorityParseError".into(), Target::Node(6))
-        ]
-    );
+    assert_eq!(names("Result<Vec<Advisory>, AuthorityParseError>"), [("Advisory".into(), Target::Node(3)), ("AuthorityParseError".into(), Target::Node(6))]);
     // Unknown to the world: still a link, by its full path.
-    assert_eq!(
-        names("&mut std::fmt::Formatter<'_>"),
-        [("Formatter".into(), path("std::fmt::Formatter"))]
-    );
+    assert_eq!(names("&mut std::fmt::Formatter<'_>"), [("Formatter".into(), path("std::fmt::Formatter"))]);
     // A qualified path the world names whole resolves.
-    assert_eq!(
-        names("de::Deserialize<'a>"),
-        [("Deserialize".into(), Target::Node(4))]
-    );
+    assert_eq!(names("de::Deserialize<'a>"), [("Deserialize".into(), Target::Node(4))]);
     // Generics, associated types, primitives and plain words are not links.
     assert!(names("Result<Self::Value, E>").is_empty());
-    assert!(
-        names("FactRecord<K, V>")
-            .iter()
-            .all(|(n, _)| n == "FactRecord")
-    );
+    assert!(names("FactRecord<K, V>").iter().all(|(n, _)| n == "FactRecord"));
     assert!(names("Option<u64>").is_empty());
     // `Self` is its owner.
     assert_eq!(names("Self"), [("Advisory".into(), Target::Node(3))]);
@@ -329,10 +208,7 @@ fn a_type_keeps_its_exact_source_for_xray() {
 }
 
 fn named(path: &[&str], args: Vec<TypeExpr>) -> TypeExpr {
-    TypeExpr::Named {
-        path: path.iter().map(|s| (*s).to_owned()).collect(),
-        args,
-    }
+    TypeExpr::Named { path: path.iter().map(|s| (*s).to_owned()).collect(), args }
 }
 
 #[test]
@@ -342,11 +218,7 @@ fn the_parser_builds_the_language_neutral_tree() {
         named(
             &["Result"],
             vec![
-                TypeExpr::Assoc {
-                    base: Box::new(named(&["Self"], vec![])),
-                    via: None,
-                    name: "Parsed".into()
-                },
+                TypeExpr::Assoc { base: Box::new(named(&["Self"], vec![])), via: None, name: "Parsed".into() },
                 named(&["backend_version", "RelationDecodeError"], vec![]),
             ]
         )
@@ -355,10 +227,7 @@ fn the_parser_builds_the_language_neutral_tree() {
         parse("&'a mut [u8; 4]"),
         TypeExpr::Ref {
             mutable: true,
-            inner: Box::new(TypeExpr::Array {
-                inner: Box::new(named(&["u8"], vec![])),
-                len: "4".into()
-            })
+            inner: Box::new(TypeExpr::Array { inner: Box::new(named(&["u8"], vec![])), len: "4".into() })
         }
     );
     assert_eq!(
@@ -368,10 +237,7 @@ fn the_parser_builds_the_language_neutral_tree() {
                 &["Iterator"],
                 vec![TypeExpr::Binding {
                     name: "Item".into(),
-                    ty: Box::new(TypeExpr::Ref {
-                        mutable: false,
-                        inner: Box::new(named(&["str"], vec![]))
-                    })
+                    ty: Box::new(TypeExpr::Ref { mutable: false, inner: Box::new(named(&["str"], vec![])) })
                 }]
             ),
             named(&["Send"], vec![]),
@@ -382,13 +248,7 @@ fn the_parser_builds_the_language_neutral_tree() {
         named(
             &["Box"],
             vec![TypeExpr::Any(vec![TypeExpr::Func {
-                params: vec![
-                    named(&["u8"], vec![]),
-                    TypeExpr::Ref {
-                        mutable: false,
-                        inner: Box::new(named(&["str"], vec![]))
-                    }
-                ],
+                params: vec![named(&["u8"], vec![]), TypeExpr::Ref { mutable: false, inner: Box::new(named(&["str"], vec![])) }],
                 ret: Some(Box::new(named(&["bool"], vec![]))),
             }])]
         )
@@ -403,33 +263,18 @@ fn the_parser_builds_the_language_neutral_tree() {
     );
     // `(T)` is T; `(T,)` is a one-tuple; `()` is nothing.
     assert_eq!(parse("(u8)"), named(&["u8"], vec![]));
-    assert_eq!(
-        parse("(u8,)"),
-        TypeExpr::Tuple(vec![named(&["u8"], vec![])])
-    );
+    assert_eq!(parse("(u8,)"), TypeExpr::Tuple(vec![named(&["u8"], vec![])]));
     assert_eq!(parse("()"), TypeExpr::Tuple(vec![]));
-    assert_eq!(
-        parse("*mut c_void"),
-        TypeExpr::Ptr {
-            mutable: true,
-            inner: Box::new(named(&["c_void"], vec![]))
-        }
-    );
+    assert_eq!(parse("*mut c_void"), TypeExpr::Ptr { mutable: true, inner: Box::new(named(&["c_void"], vec![])) });
     assert_eq!(parse(""), TypeExpr::Tuple(vec![]));
 }
 
 #[test]
 fn printing_the_tree_gives_rust_back() {
     for (source, printed) in [
-        (
-            "Result<Vec<Advisory>, AuthorityParseError>",
-            "Result<Vec<Advisory>, AuthorityParseError>",
-        ),
+        ("Result<Vec<Advisory>, AuthorityParseError>", "Result<Vec<Advisory>, AuthorityParseError>"),
         ("&'a mut [u8; 4]", "&mut [u8; 4]"),
-        (
-            "Box<dyn Fn(&str) -> bool + Send>",
-            "Box<impl fn(&str) -> bool + Send>",
-        ),
+        ("Box<dyn Fn(&str) -> bool + Send>", "Box<impl fn(&str) -> bool + Send>"),
         ("(u8,)", "(u8,)"),
         ("Option<Self::Item>", "Option<Self::Item>"),
         ("<T as Iterator>::Item", "<T as Iterator>::Item"),
@@ -445,10 +290,7 @@ fn printing_the_tree_gives_rust_back() {
 fn payload_lists_split_at_the_top_level_only() {
     assert_eq!(parse_list("SemanticLinkKind, RelationDirection").len(), 2);
     assert_eq!(parse_list("BTreeMap<String, Vec<(u8, u8)>>, bool").len(), 2);
-    assert_eq!(
-        split_top("a: Vec<(u8, u8)>, b: fn(u8) -> u8, c: [u8; 2]", ','),
-        ["a: Vec<(u8, u8)>", "b: fn(u8) -> u8", "c: [u8; 2]"]
-    );
+    assert_eq!(split_top("a: Vec<(u8, u8)>, b: fn(u8) -> u8, c: [u8; 2]", ','), ["a: Vec<(u8, u8)>", "b: fn(u8) -> u8", "c: [u8; 2]"]);
     let fields = parse_fields("path: std::path::PathBuf, source: std::io::Error");
     assert_eq!(fields[0].0.as_deref(), Some("path"));
     assert_eq!(fields[1].1, named(&["std", "io", "Error"], vec![]));

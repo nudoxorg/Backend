@@ -197,10 +197,7 @@ impl Presence {
     #[must_use]
     pub fn unfurling(now: Instant, duration: Duration) -> Self {
         Self {
-            path: Path::Unfurl {
-                from: Bands::CLOSED,
-                offset: 0.0,
-            },
+            path: Path::Unfurl { from: Bands::CLOSED, offset: 0.0 },
             ..Self::entering(now, duration)
         }
     }
@@ -235,11 +232,7 @@ impl Presence {
 
     /// Where an unfurl is on its schedule at linear progress `progress`, ms.
     fn schedule(&self, offset: f32, progress: f32) -> f32 {
-        let end = if self.to >= self.from {
-            unfurl::ENTER_MS
-        } else {
-            unfurl::EXIT_MS
-        };
+        let end = if self.to >= self.from { unfurl::ENTER_MS } else { unfurl::EXIT_MS };
         offset + (end - offset) * progress
     }
 
@@ -254,11 +247,7 @@ impl Presence {
                 if progress >= 1.0 {
                     return Bands::all(self.to);
                 }
-                unfurl::at(
-                    from,
-                    unfurl::Run::toward(self.from, self.to),
-                    self.schedule(offset, progress),
-                )
+                unfurl::at(from, unfurl::Run::toward(self.from, self.to), self.schedule(offset, progress))
             }
         }
     }
@@ -1318,11 +1307,7 @@ impl Model {
         if level.is_none() {
             self.tip_pending = None;
         }
-        let enter = self.duration(if request.unfurl {
-            super::UNFURL_ENTER
-        } else {
-            request.kind.enter()
-        });
+        let enter = self.duration(if request.unfurl { super::UNFURL_ENTER } else { request.kind.enter() });
         let id = match reuse {
             Some(index) => {
                 let card = &mut self.cards[index];

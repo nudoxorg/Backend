@@ -31,12 +31,7 @@ pub fn one(
         measure.role(role),
         1.0,
         TextOverflow::Clip,
-        div()
-            .flex_none()
-            .set(role, measure)
-            .text_color(ink.into())
-            .whitespace_nowrap()
-            .child(content),
+        div().flex_none().set(role, measure).text_color(ink.into()).whitespace_nowrap().child(content),
     )
 }
 
@@ -85,12 +80,5 @@ pub fn wrap(
     } else {
         TextOverflow::Wrap
     };
-    probe::text(
-        id,
-        content.clone(),
-        measure.role(role),
-        1.0,
-        overflow,
-        body.child(content),
-    )
+    probe::text(id, content.clone(), measure.role(role), 1.0, overflow, body.child(content))
 }

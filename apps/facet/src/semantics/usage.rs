@@ -61,8 +61,7 @@ pub fn find(line: &str, needle: &Needle) -> Option<Range<usize>> {
         let start = from + off;
         let end = start + name.len();
         let before_ok = if needle.member {
-            (start >= 1 && bytes[start - 1] == b'.')
-                || (start >= 2 && &bytes[start - 2..start] == b"::")
+            (start >= 1 && bytes[start - 1] == b'.') || (start >= 2 && &bytes[start - 2..start] == b"::")
         } else {
             start == 0 || !is_word(bytes[start - 1])
         };
@@ -82,11 +81,7 @@ pub fn find(line: &str, needle: &Needle) -> Option<Range<usize>> {
 /// headers.
 fn skipped(line: &str) -> bool {
     let t = line.trim_start();
-    t.starts_with("//")
-        || t.starts_with("#[")
-        || t.starts_with("pub fn")
-        || t.starts_with("fn ")
-        || t.starts_with("impl ")
+    t.starts_with("//") || t.starts_with("#[") || t.starts_with("pub fn") || t.starts_with("fn ") || t.starts_with("impl ")
 }
 
 fn closes(line: &str) -> bool {
@@ -111,11 +106,7 @@ pub fn mine(source: &str, start: u32, end: u32, needle: &Needle) -> Option<Excer
     let at = (body + 1..b).find(|&k| !skipped(lines[k]) && find(lines[k], needle).is_some())?;
     // A tail expression runs into the caller's closing brace; the brace is
     // not part of the statement.
-    let last = if b - 1 > at && lines[b - 1].trim() == "}" {
-        b - 2
-    } else {
-        b - 1
-    };
+    let last = if b - 1 > at && lines[b - 1].trim() == "}" { b - 2 } else { b - 1 };
     let mut to = at;
     while to < last.min(at + 2) && !closes(lines[to]) {
         to += 1;
@@ -128,18 +119,8 @@ pub fn mine(source: &str, start: u32, end: u32, needle: &Needle) -> Option<Excer
         .unwrap_or(0);
     let taken: Vec<String> = lines[at..=to]
         .iter()
-        .map(|l| {
-            l.get(indent..)
-                .unwrap_or_else(|| l.trim_start())
-                .trim_end()
-                .to_owned()
-        })
+        .map(|l| l.get(indent..).unwrap_or_else(|| l.trim_start()).trim_end().to_owned())
         .collect();
     let mark = find(&taken[0], needle)?;
-    Some(Excerpt {
-        line: u32::try_from(at + 1).unwrap_or(u32::MAX),
-        lines: taken,
-        hit: 0,
-        mark,
-    })
+    Some(Excerpt { line: u32::try_from(at + 1).unwrap_or(u32::MAX), lines: taken, hit: 0, mark })
 }

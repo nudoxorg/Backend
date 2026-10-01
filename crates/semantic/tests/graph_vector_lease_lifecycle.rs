@@ -1,12 +1,6 @@
 //! Exercises the `backend-semantic::graph_vector` tests lease-lifecycle contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
-use backend_semantic::graph_vector::{
-    Cancellation, EdgeBatchStream, GraphAuthority, GraphEdge, GraphLease, GraphStreamEvent,
-    GraphTerminal, LeaseCapacity, LeasedGraphBatch, PartitionId, ProjectionId, StreamCapacityError,
-    TraceProbe,
-};
-use backend_semantic::index_vocabulary::IndexSnapshotId;
 use backend_semantic::ir::EntityId;
 use core::{
     mem::size_of,
@@ -14,6 +8,12 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
     task::{Context, Poll, Waker},
 };
+use backend_semantic::graph_vector::{
+    Cancellation, EdgeBatchStream, GraphAuthority, GraphEdge, GraphLease, GraphStreamEvent,
+    GraphTerminal, LeaseCapacity, LeasedGraphBatch, PartitionId, ProjectionId, StreamCapacityError,
+    TraceProbe,
+};
+use backend_semantic::index_vocabulary::IndexSnapshotId;
 
 const CAPACITY_ONE: usize = 1;
 const CAPACITY_TWO: usize = 2;

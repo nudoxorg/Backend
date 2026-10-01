@@ -7,13 +7,13 @@ use backend_engine::driver::{
     CompileFailure, NativeArtifactRole, NativeTool, NativeWorkError, NativeWorkPhase,
     NativeWorkPrimary, ToolchainSelectionFact,
 };
-use backend_engine::index_build::BuildError;
-use backend_semantic::index_core::{EntityDocumentId, ExactSegmentError, LexicalSegmentError};
 use backend_semantic::ir::EntityId;
 use backend_semantic::ir::{FragmentError, PrepareError, WriteError};
 use backend_semantic::vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, Language, LanguageProfile, Stage as CompileStage,
 };
+use backend_engine::index_build::BuildError;
+use backend_semantic::index_core::{EntityDocumentId, ExactSegmentError, LexicalSegmentError};
 
 /// Exact structural facts retained when generated compiler input is unexpectedly rejected.
 #[allow(
@@ -572,9 +572,7 @@ pub(crate) fn compile_failure_fact(error: CompileFailure<'_>) -> CompileFailureF
     }
 }
 
-const fn diagnostic_fact(
-    diagnostic: backend_engine::driver::NativeDiagnostic<'_>,
-) -> DiagnosticFact {
+const fn diagnostic_fact(diagnostic: backend_engine::driver::NativeDiagnostic<'_>) -> DiagnosticFact {
     DiagnosticFact {
         captured_bytes: diagnostic.bytes.len(),
         truncated: diagnostic.truncated,
@@ -804,10 +802,9 @@ const fn build_derivation_failure_fact(
         backend_engine::index_build::BuildDerivationError::MissingSemanticImage => {
             BuildFailureFact::MissingSemanticImage
         }
-        backend_engine::index_build::BuildDerivationError::EntityOrdinalAddressSpace {
-            ordinal,
-            ..
-        } => BuildFailureFact::EntityOrdinalAddressSpace { ordinal: *ordinal },
+        backend_engine::index_build::BuildDerivationError::EntityOrdinalAddressSpace { ordinal, .. } => {
+            BuildFailureFact::EntityOrdinalAddressSpace { ordinal: *ordinal }
+        }
         backend_engine::index_build::BuildDerivationError::ScratchInitialization {
             region,
             required,
@@ -817,14 +814,12 @@ const fn build_derivation_failure_fact(
             required: *required,
             available: *available,
         },
-        backend_engine::index_build::BuildDerivationError::AtomAddressSpace {
-            entity,
-            name,
-            ..
-        } => BuildFailureFact::AtomAddressSpace {
-            entity: *entity,
-            name: *name,
-        },
+        backend_engine::index_build::BuildDerivationError::AtomAddressSpace { entity, name, .. } => {
+            BuildFailureFact::AtomAddressSpace {
+                entity: *entity,
+                name: *name,
+            }
+        }
         backend_engine::index_build::BuildDerivationError::TypeAddressSpace {
             entity,
             semantic_type,

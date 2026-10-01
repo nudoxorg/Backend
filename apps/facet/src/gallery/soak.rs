@@ -35,43 +35,22 @@ pub fn measure(scene: &Scene, shot: &Shot) -> Result<Json, GalleryError> {
         total_ms += cpu;
         maximum_ms = maximum_ms.max(cpu);
         if let Some(Json::Obj(fields)) = &tick.state {
-            let field = |name: &str| {
-                fields
-                    .iter()
-                    .find(|(key, _)| key == name)
-                    .map(|(_, value)| value)
-            };
+            let field = |name: &str| fields.iter().find(|(key, _)| key == name).map(|(_, value)| value);
             let present = |name| field(name).is_some_and(|value| !matches!(value, Json::Null));
             let gathered = field("prism").is_some_and(|value| {
                 if let Json::Obj(fields) = value {
-                    fields.iter().any(|(key, value)| {
-                        key == "gathered" && matches!(value, Json::Num(g) if *g >= 1.0)
-                    })
-                } else {
-                    false
-                }
+                    fields.iter().any(|(key, value)| key == "gathered" && matches!(value, Json::Num(g) if *g >= 1.0))
+                } else { false }
             });
-            let results = field("rows")
-                .is_some_and(|value| matches!(value, Json::Arr(rows) if !rows.is_empty()));
-            let mode = |mode| {
-                field("exploration")
-                    .is_some_and(|value| matches!(value, Json::Str(name) if name == mode))
-            };
+            let results = field("rows").is_some_and(|value| matches!(value, Json::Arr(rows) if !rows.is_empty()));
+            let mode = |mode| field("exploration").is_some_and(|value| matches!(value, Json::Str(name) if name == mode));
             let quiet = field("moving") == Some(&Json::Bool(false))
-                && !tick.ledger.any_live()
-                && !tick.drawn.requested();
+                && !tick.ledger.any_live() && !tick.drawn.requested();
             for (count, observed) in coverage.iter_mut().zip([
-                present("focused"),
-                present("hovered"),
-                gathered,
-                results,
-                mode("reach"),
-                mode("tour"),
-                quiet,
+                present("focused"), present("hovered"), gathered, results,
+                mode("reach"), mode("tour"), quiet,
             ]) {
-                if observed {
-                    *count = count.saturating_add(1);
-                }
+                if observed { *count = count.saturating_add(1); }
             }
         }
         Ok(())
@@ -81,32 +60,23 @@ pub fn measure(scene: &Scene, shot: &Shot) -> Result<Json, GalleryError> {
         ("frames", Json::num(frames)),
         ("requested", Json::num(requested)),
         ("events", Json::num(events)),
-        (
-            "mean_cpu_ms",
-            Json::num(total_ms / f64::from(frames.max(1))),
-        ),
+        ("mean_cpu_ms", Json::num(total_ms / f64::from(frames.max(1)))),
         ("max_cpu_ms", Json::num(maximum_ms)),
-        (
-            "last_requested_ms",
-            Json::opt(last_requested.map(|ms| ms as f64)),
-        ),
+        ("last_requested_ms", Json::opt(last_requested.map(|ms| ms as f64))),
         ("until_ms", Json::num(shot.until_ms as f64)),
         ("retained_frames", Json::num(0)),
         ("retained_frame_timings", Json::num(0)),
         ("invalidations_available", Json::Bool(true)),
         ("cpu_is_performance_evidence", Json::Bool(false)),
         ("probe_enabled", Json::Bool(true)),
-        (
-            "coverage",
-            Json::obj([
-                ("focused_frames", Json::num(coverage[0])),
-                ("hovered_frames", Json::num(coverage[1])),
-                ("gathered_prism_frames", Json::num(coverage[2])),
-                ("search_result_frames", Json::num(coverage[3])),
-                ("reach_frames", Json::num(coverage[4])),
-                ("tour_frames", Json::num(coverage[5])),
-                ("quiet_frames", Json::num(coverage[6])),
-            ]),
-        ),
+        ("coverage", Json::obj([
+            ("focused_frames", Json::num(coverage[0])),
+            ("hovered_frames", Json::num(coverage[1])),
+            ("gathered_prism_frames", Json::num(coverage[2])),
+            ("search_result_frames", Json::num(coverage[3])),
+            ("reach_frames", Json::num(coverage[4])),
+            ("tour_frames", Json::num(coverage[5])),
+            ("quiet_frames", Json::num(coverage[6])),
+        ])),
     ]))
 }

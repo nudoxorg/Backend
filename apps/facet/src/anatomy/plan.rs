@@ -283,65 +283,25 @@ impl Cap {
     #[must_use]
     pub fn of_trait(name: &str) -> Option<Self> {
         let (glyph, word, tip) = match name {
-            "Clone" => (
-                CapGlyph::Copy,
-                "clones",
-                "Clone: .clone() gives an owned copy.",
-            ),
-            "Copy" => (
-                CapGlyph::Copy,
-                "copies",
-                "Copy: assigning it copies, no move.",
-            ),
+            "Clone" => (CapGlyph::Copy, "clones", "Clone: .clone() gives an owned copy."),
+            "Copy" => (CapGlyph::Copy, "copies", "Copy: assigning it copies, no move."),
             "PartialEq" => (CapGlyph::Eq, "compares", "PartialEq: == works on it."),
             "PartialOrd" => (CapGlyph::Ord, "orders", "PartialOrd: < and > work on it."),
             "Hash" => (CapGlyph::Hash, "hashes", "Hash: it can be a map key."),
-            "Default" => (
-                CapGlyph::Default,
-                "has a default",
-                "Default: T::default() gives one.",
-            ),
+            "Default" => (CapGlyph::Default, "has a default", "Default: T::default() gives one."),
             "Display" => (CapGlyph::Print, "prints", "Display: it prints with {}."),
-            "Debug" => (
-                CapGlyph::Debug,
-                "debug-prints",
-                "Debug: it prints with {:?}.",
-            ),
-            "Serialize" => (
-                CapGlyph::Ser,
-                "serializes",
-                "Serialize: any serde format can write it.",
-            ),
-            "Deserialize" => (
-                CapGlyph::De,
-                "deserializes",
-                "Deserialize: any serde format can read one.",
-            ),
+            "Debug" => (CapGlyph::Debug, "debug-prints", "Debug: it prints with {:?}."),
+            "Serialize" => (CapGlyph::Ser, "serializes", "Serialize: any serde format can write it."),
+            "Deserialize" => (CapGlyph::De, "deserializes", "Deserialize: any serde format can read one."),
             "Iterator" => (CapGlyph::Iter, "iterates", "Iterator: you loop over it."),
             "IntoIterator" => (CapGlyph::Iter, "loops", "IntoIterator: for x in it works."),
-            "Error" => (
-                CapGlyph::Error,
-                "is an error",
-                "Error: it can be a ? error.",
-            ),
-            "Send" => (
-                CapGlyph::Send,
-                "crosses threads",
-                "Send: it can move to another thread.",
-            ),
-            "Sync" => (
-                CapGlyph::Send,
-                "shared across threads",
-                "Sync: threads can share a reference to it.",
-            ),
+            "Error" => (CapGlyph::Error, "is an error", "Error: it can be a ? error."),
+            "Send" => (CapGlyph::Send, "crosses threads", "Send: it can move to another thread."),
+            "Sync" => (CapGlyph::Send, "shared across threads", "Sync: threads can share a reference to it."),
             "Index" => (CapGlyph::Index, "indexes", "Index: v[i] works on it."),
             _ => return None,
         };
-        Some(Self {
-            glyph,
-            word: word.to_owned(),
-            tip: tip.to_owned(),
-        })
+        Some(Self { glyph, word: word.to_owned(), tip: tip.to_owned() })
     }
 
     /// The capabilities of the traits named in `traits`, each word once, in
@@ -487,9 +447,7 @@ impl Ty {
     pub fn plain(&self) -> String {
         let mut out = String::new();
         for (k, tok) in self.toks.iter().enumerate() {
-            if k > 0 {
-                out.push(' ');
-            }
+            if k > 0 { out.push(' '); }
             out.push_str(&tok.text);
         }
         out
@@ -508,9 +466,7 @@ impl Ty {
     /// The token the glyph draws: the first that is not a word or punctuation.
     #[must_use]
     pub fn head(&self) -> Option<&Tok> {
-        self.toks
-            .iter()
-            .find(|tok| !matches!(tok.kind, TokKind::Word | TokKind::Punct))
+        self.toks.iter().find(|tok| !matches!(tok.kind, TokKind::Word | TokKind::Punct))
     }
 }
 
@@ -1010,42 +966,20 @@ pub fn compile(source: &Source) -> PagePlan {
     // known, never that nothing uses it).
     let usable = matches!(
         source.kind,
-        DeclKind::Struct
-            | DeclKind::Class
-            | DeclKind::Interface
-            | DeclKind::Trait
-            | DeclKind::Enum
-            | DeclKind::Union
-            | DeclKind::Alias
-            | DeclKind::Function
-            | DeclKind::Method
-            | DeclKind::Constant
+        DeclKind::Struct | DeclKind::Class | DeclKind::Interface | DeclKind::Trait | DeclKind::Enum | DeclKind::Union | DeclKind::Alias | DeclKind::Function | DeclKind::Method | DeclKind::Constant
     );
-    if (source.reach.worth_a_section() || usable)
-        && !facts.iter().any(|facts| facts.id == SectionId::Yours)
-    {
+    if (source.reach.worth_a_section() || usable) && !facts.iter().any(|facts| facts.id == SectionId::Yours) {
         facts.push(SectionFacts {
             id: SectionId::Yours,
             count: source.reach.read().then(|| source.reach.total()),
-            yours: source
-                .reach
-                .read()
-                .then(|| u32::try_from(source.reach.yours.len()).ok())
-                .flatten(),
-            tier: if source.reach.basis == super::reach::Basis::Resolved {
-                Tier::Compiler
-            } else {
-                Tier::Name
-            },
+            yours: source.reach.read().then(|| u32::try_from(source.reach.yours.len()).ok()).flatten(),
+            tier: if source.reach.basis == super::reach::Basis::Resolved { Tier::Compiler } else { Tier::Name },
         });
     }
     // What can go wrong counts its branches on its stub (the pipe's drops
     // alone say themselves: the section is there when the docs say more).
     let fails = fails(source, &spec);
-    for facts in facts
-        .iter_mut()
-        .filter(|facts| facts.id == SectionId::Fails && facts.count.is_none())
-    {
+    for facts in facts.iter_mut().filter(|facts| facts.id == SectionId::Fails && facts.count.is_none()) {
         facts.count = u32::try_from(fails.len()).ok();
     }
     facts.sort_by_key(|facts| facts.id);
@@ -1053,46 +987,19 @@ pub fn compile(source: &Source) -> PagePlan {
     // What it does counts what it shows: accessors that moved onto their
     // tines are counted there, not twice.
     if let Spec::Choice(choice) = &spec {
-        let on_tines = choice
-            .cases
-            .iter()
-            .map(|case| case.accessors.len())
-            .sum::<usize>();
+        let on_tines = choice.cases.iter().map(|case| case.accessors.len()).sum::<usize>();
         for facts in facts.iter_mut().filter(|facts| facts.id == SectionId::Does) {
-            facts.count = facts
-                .count
-                .map(|n| n.saturating_sub(u32::try_from(on_tines).unwrap_or(u32::MAX)));
+            facts.count = facts.count.map(|n| n.saturating_sub(u32::try_from(on_tines).unwrap_or(u32::MAX)));
         }
     }
-    let sections = facts
-        .iter()
-        .filter(|facts| facts.id != SectionId::Spec)
-        .map(|facts| section(source, facts))
-        .collect();
+    let sections = facts.iter().filter(|facts| facts.id != SectionId::Spec).map(|facts| section(source, facts)).collect();
     // The reach draws each crate's real lines: Who uses it keeps only its
     // verb rows then, so a call site is never said twice.
     let mut uses = source.uses.clone();
-    if source
-        .reach
-        .yours
-        .iter()
-        .chain(&source.reach.others)
-        .any(|used| !used.lines.is_empty())
-    {
+    if source.reach.yours.iter().chain(&source.reach.others).any(|used| !used.lines.is_empty()) {
         uses.sites.clear();
     }
-    PagePlan {
-        hero: hero(source, &spec),
-        spec,
-        sections,
-        getting: rails::rails(source),
-        fails,
-        uses,
-        reach: source.reach.clone(),
-        strip: source.siblings.clone(),
-        scope: source.scope.clone(),
-        history: source.history.clone(),
-    }
+    PagePlan { hero: hero(source, &spec), spec, sections, getting: rails::rails(source), fails, uses, reach: source.reach.clone(), strip: source.siblings.clone(), scope: source.scope.clone(), history: source.history.clone() }
 }
 
 /// What can go wrong: a callable's drops, each with what its docs say,
@@ -1100,14 +1007,7 @@ pub fn compile(source: &Source) -> PagePlan {
 fn fails(source: &Source, spec: &Spec) -> Vec<FailBranch> {
     let mut said = source.failures.iter().map(Some).collect::<Vec<_>>();
     let mut take = |verbs: &[DropVerb]| {
-        said.iter_mut()
-            .find(|failure| {
-                failure.is_some_and(|failure| {
-                    failure.member.is_none() && verbs.contains(&failure.verb)
-                })
-            })
-            .and_then(Option::take)
-            .map(|failure| failure.words.clone())
+        said.iter_mut().find(|failure| failure.is_some_and(|failure| failure.member.is_none() && verbs.contains(&failure.verb))).and_then(Option::take).map(|failure| failure.words.clone())
     };
     let mut out = Vec::new();
     if let Spec::Callable(callable) = spec {
@@ -1116,21 +1016,11 @@ fn fails(source: &Source, spec: &Spec) -> Vec<FailBranch> {
                 DropVerb::Panics => take(&[DropVerb::Panics]),
                 _ => take(&[DropVerb::FailsWith, DropVerb::Returns, DropVerb::Throws]),
             };
-            out.push(FailBranch {
-                verb: drop.verb,
-                subject: None,
-                ty: drop.ty.clone(),
-                words,
-            });
+            out.push(FailBranch { verb: drop.verb, subject: None, ty: drop.ty.clone(), words });
         }
     }
     for failure in said.into_iter().flatten() {
-        out.push(FailBranch {
-            verb: failure.verb,
-            subject: failure.member.clone(),
-            ty: None,
-            words: Some(failure.words.clone()),
-        });
+        out.push(FailBranch { verb: failure.verb, subject: failure.member.clone(), ty: None, words: Some(failure.words.clone()) });
     }
     out
 }
@@ -1141,9 +1031,7 @@ fn plural(n: u32, one: &str, many: &str) -> String {
 
 fn section(source: &Source, facts: &SectionFacts) -> Section {
     let callable = matches!(source.kind, DeclKind::Function | DeclKind::Method);
-    let contract = matches!(source.kind, DeclKind::Trait)
-        || (source.kind == DeclKind::Interface
-            && source.made_of.iter().any(|m| m.kind != DeclKind::Field));
+    let contract = matches!(source.kind, DeclKind::Trait) || (source.kind == DeclKind::Interface && source.made_of.iter().any(|m| m.kind != DeclKind::Field));
     let (title, dir) = match facts.id {
         SectionId::Spec => ("", Dir::None),
         SectionId::Yours => ("Your code and it", Dir::In),
@@ -1151,10 +1039,7 @@ fn section(source: &Source, facts: &SectionFacts) -> Section {
         SectionId::Getting if contract => ("Doing it", Dir::In),
         SectionId::Getting => ("Getting one", Dir::In),
         SectionId::Does => ("What it does", Dir::Out),
-        SectionId::Fails => (
-            "What can go wrong",
-            if callable { Dir::Out } else { Dir::None },
-        ),
+        SectionId::Fails => ("What can go wrong", if callable { Dir::Out } else { Dir::None }),
         SectionId::Uses => ("Who uses it", Dir::Out),
         SectionId::Changed => ("What changed", Dir::None),
         SectionId::Words => ("Its own words", Dir::None),
@@ -1167,28 +1052,13 @@ fn section(source: &Source, facts: &SectionFacts) -> Section {
         SectionId::Uses | SectionId::Yours => plural(n, "place", "places"),
         _ => n.to_string(),
     });
-    let yours = facts.yours.filter(|n| *n > 0).map(|n| {
-        if facts.id == SectionId::Yours {
-            plural(n, "crate", "crates")
-        } else {
-            format!("{n} yours")
-        }
-    });
-    Section {
-        id: facts.id,
-        title: title.to_owned(),
-        dir,
-        count,
-        yours,
-        tier: facts.tier,
-    }
+    let yours = facts.yours.filter(|n| *n > 0).map(|n| if facts.id == SectionId::Yours { plural(n, "crate", "crates") } else { format!("{n} yours") });
+    Section { id: facts.id, title: title.to_owned(), dir, count, yours, tier: facts.tier }
 }
 
 fn fam_of(kind: DeclKind) -> Fam {
     match kind {
-        DeclKind::Struct | DeclKind::Class | DeclKind::Enum | DeclKind::Union | DeclKind::Alias => {
-            Fam::Type
-        }
+        DeclKind::Struct | DeclKind::Class | DeclKind::Enum | DeclKind::Union | DeclKind::Alias => Fam::Type,
         DeclKind::Interface | DeclKind::Trait => Fam::Contract,
         DeclKind::Function | DeclKind::Method => Fam::Callable,
         DeclKind::Constant | DeclKind::Field | DeclKind::Variant => Fam::Value,
@@ -1199,22 +1069,11 @@ fn fam_of(kind: DeclKind) -> Fam {
 fn hero(source: &Source, spec: &Spec) -> Hero {
     // An interface that only holds data is a record in plain words: it takes
     // the type's hue, not the contract's.
-    let fam = match spec {
-        Spec::Record(_) | Spec::Choice(_) => Fam::Type,
-        Spec::Callable(_) => Fam::Callable,
-        Spec::Contract(_) => Fam::Contract,
-        Spec::None => fam_of(source.kind),
-    };
+    let fam = match spec { Spec::Record(_) | Spec::Choice(_) => Fam::Type, Spec::Callable(_) => Fam::Callable, Spec::Contract(_) => Fam::Contract, Spec::None => fam_of(source.kind) };
     let mut marks = Vec::new();
-    if let Some(since) = &source.since {
-        marks.push(Mark::Since(since.clone()));
-    }
-    if let Some(deprecated) = &source.deprecated {
-        marks.push(Mark::Deprecated(deprecated.clone()));
-    }
-    if source.yours {
-        marks.push(Mark::Yours);
-    }
+    if let Some(since) = &source.since { marks.push(Mark::Since(since.clone())); }
+    if let Some(deprecated) = &source.deprecated { marks.push(Mark::Deprecated(deprecated.clone())); }
+    if source.yours { marks.push(Mark::Yours); }
     Hero {
         kind: source.kind,
         fam,
@@ -1230,9 +1089,7 @@ fn hero(source: &Source, spec: &Spec) -> Hero {
 }
 
 fn specimen(source: &Source) -> Spec {
-    if let Some(choice) = choice::choice(source) {
-        return Spec::Choice(choice);
-    }
+    if let Some(choice) = choice::choice(source) { return Spec::Choice(choice); }
     if matches!(source.kind, DeclKind::Function | DeclKind::Method)
         && let Some(callable) = callable::callable(source)
     {
@@ -1241,32 +1098,19 @@ fn specimen(source: &Source) -> Spec {
     if let Some(contract) = contract::contract(source) {
         return Spec::Contract(contract);
     }
-    let fields = source
-        .made_of
-        .iter()
-        .filter(|member| member.kind == DeclKind::Field)
-        .collect::<Vec<_>>();
+    let fields = source.made_of.iter().filter(|member| member.kind == DeclKind::Field).collect::<Vec<_>>();
     let shaped_as_record = match source.kind {
         DeclKind::Struct | DeclKind::Class => true,
         // An interface of properties only is a record; one with methods is a contract.
-        DeclKind::Interface | DeclKind::Trait => {
-            !fields.is_empty() && fields.len() == source.made_of.len()
-        }
+        DeclKind::Interface | DeclKind::Trait => !fields.is_empty() && fields.len() == source.made_of.len(),
         _ => false,
     };
-    if !shaped_as_record || fields.is_empty() {
-        return Spec::None;
-    }
+    if !shaped_as_record || fields.is_empty() { return Spec::None; }
     let mut rungs = Vec::new();
     let mut private = 0_u32;
     for member in fields {
-        let Some(field) = field(member, source.lang) else {
-            continue;
-        };
-        if field.private {
-            private += 1;
-            continue;
-        }
+        let Some(field) = field(member, source.lang) else { continue };
+        if field.private { private += 1; continue; }
         rungs.push(Rung {
             name: member.name.clone(),
             ty: field.ty,
@@ -1297,9 +1141,7 @@ struct Field {
 
 /// A field's recorded text read in its own language.
 pub(super) fn field_of(member: &SourceMember, lang: Lang) -> Option<(Ty, bool, bool)> {
-    field(member, lang)
-        .filter(|field| !field.private)
-        .map(|field| (field.ty, field.optional, field.readonly))
+    field(member, lang).filter(|field| !field.private).map(|field| (field.ty, field.optional, field.readonly))
 }
 
 fn field(member: &SourceMember, lang: Lang) -> Option<Field> {
@@ -1308,18 +1150,9 @@ fn field(member: &SourceMember, lang: Lang) -> Option<Field> {
     match lang {
         Lang::Rust => {
             let (vis, rest) = rust_visibility(text);
-            let ty = rest
-                .split_once(':')
-                .map_or(rest, |(_, ty)| ty)
-                .trim()
-                .trim_end_matches(',');
+            let ty = rest.split_once(':').map_or(rest, |(_, ty)| ty).trim().trim_end_matches(',');
             let optional = ty.starts_with("Option<");
-            Some(Field {
-                ty: words(ty, Lang::Rust),
-                optional,
-                readonly: false,
-                private: !vis && !text.is_empty(),
-            })
+            Some(Field { ty: words(ty, Lang::Rust), optional, readonly: false, private: !vis && !text.is_empty() })
         }
         Lang::TypeScript => {
             let mut rest = text;
@@ -1327,59 +1160,28 @@ fn field(member: &SourceMember, lang: Lang) -> Option<Field> {
             loop {
                 let word = rest.split_whitespace().next().unwrap_or("");
                 match word {
-                    "readonly" => {
-                        readonly = true;
-                        rest = rest[word.len()..].trim_start();
-                    }
-                    "public" | "declare" | "static" | "abstract" | "override" => {
-                        rest = rest[word.len()..].trim_start()
-                    }
-                    "private" | "protected" => {
-                        return Some(Field {
-                            ty: Ty::default(),
-                            optional: false,
-                            readonly,
-                            private: true,
-                        });
-                    }
+                    "readonly" => { readonly = true; rest = rest[word.len()..].trim_start(); }
+                    "public" | "declare" | "static" | "abstract" | "override" => rest = rest[word.len()..].trim_start(),
+                    "private" | "protected" => return Some(Field { ty: Ty::default(), optional: false, readonly, private: true }),
                     _ => break,
                 }
             }
             let colon = rest.find(':');
             let head = colon.map_or(rest, |at| &rest[..at]).trim();
             let optional = head.ends_with('?');
-            let ty = colon
-                .map_or("", |at| &rest[at + 1..])
-                .trim()
-                .trim_end_matches([';', ','])
-                .trim();
-            Some(Field {
-                ty: words(ty, Lang::TypeScript),
-                optional,
-                readonly,
-                private: head.starts_with('#'),
-            })
+            let ty = colon.map_or("", |at| &rest[at + 1..]).trim().trim_end_matches([';', ',']).trim();
+            Some(Field { ty: words(ty, Lang::TypeScript), optional, readonly, private: head.starts_with('#') })
         }
         Lang::Go => {
             // `Name Type`, or a bare embedded type.
             let rest = text.trim_start_matches(member.name.as_str()).trim();
             let ty = rest.split('`').next().unwrap_or(rest).trim();
             let private = member.name.chars().next().is_some_and(char::is_lowercase);
-            Some(Field {
-                ty: words(if ty.is_empty() { &member.name } else { ty }, Lang::Go),
-                optional: false,
-                readonly: false,
-                private,
-            })
+            Some(Field { ty: words(if ty.is_empty() { &member.name } else { ty }, Lang::Go), optional: false, readonly: false, private })
         }
         _ => {
             let ty = text.split_once(':').map_or("", |(_, ty)| ty).trim();
-            Some(Field {
-                ty: words(ty, lang),
-                optional: false,
-                readonly: false,
-                private: false,
-            })
+            Some(Field { ty: words(ty, lang), optional: false, readonly: false, private: false })
         }
     }
 }
@@ -1397,79 +1199,38 @@ fn rust_visibility(text: &str) -> (bool, &str) {
         let close = rest.find(')').map_or(0, |at| at + 1);
         return (false, rest[close..].trim());
     }
-    if let Some(rest) = text.strip_prefix("pub ") {
-        return (true, rest.trim());
-    }
+    if let Some(rest) = text.strip_prefix("pub ") { return (true, rest.trim()); }
     (false, text)
 }
 
 fn generics(source: &Source) -> Vec<Generic> {
-    let Some(signature) = source.signature.as_deref() else {
-        return Vec::new();
-    };
-    let Some(at) = signature.find(source.name.as_str()) else {
-        return Vec::new();
-    };
+    let Some(signature) = source.signature.as_deref() else { return Vec::new() };
+    let Some(at) = signature.find(source.name.as_str()) else { return Vec::new() };
     let after = &signature[at + source.name.len()..];
-    let Some(inner) = after.strip_prefix('<') else {
-        return Vec::new();
-    };
+    let Some(inner) = after.strip_prefix('<') else { return Vec::new() };
     let mut depth = 1_i32;
     let mut end = None;
     for (k, ch) in inner.char_indices() {
-        match ch {
-            '<' => depth += 1,
-            '>' => {
-                depth -= 1;
-                if depth == 0 {
-                    end = Some(k);
-                    break;
-                }
-            }
-            _ => {}
-        }
+        match ch { '<' => depth += 1, '>' => { depth -= 1; if depth == 0 { end = Some(k); break; } } _ => {} }
     }
     let Some(end) = end else { return Vec::new() };
-    crate::semantics::types::split_top(&inner[..end], ',')
-        .into_iter()
-        .filter_map(|part| {
-            let part = part.trim();
-            if part.starts_with('\'') || part.is_empty() {
-                return None;
-            }
-            let (head, default) = part
-                .split_once('=')
-                .map_or((part, None), |(h, d)| (h.trim(), Some(d.trim())));
-            let name = head
-                .split([':', ' '])
-                .next()
-                .unwrap_or(head)
-                .trim()
-                .to_owned();
-            Some(Generic {
-                name,
-                default: default.map(|d| words(d, source.lang)),
-            })
-        })
-        .collect()
+    crate::semantics::types::split_top(&inner[..end], ',').into_iter().filter_map(|part| {
+        let part = part.trim();
+        if part.starts_with('\'') || part.is_empty() { return None; }
+        let (head, default) = part.split_once('=').map_or((part, None), |(h, d)| (h.trim(), Some(d.trim())));
+        let name = head.split([':', ' ']).next().unwrap_or(head).trim().to_owned();
+        Some(Generic { name, default: default.map(|d| words(d, source.lang)) })
+    }).collect()
 }
 
 // ------------------------------------------------------------------ types in words
 
 fn tok(kind: TokKind, text: impl Into<String>) -> Tok {
-    Tok {
-        kind,
-        text: text.into(),
-        fam: Fam::Type,
-    }
+    Tok { kind, text: text.into(), fam: Fam::Type }
 }
 
 fn named(text: impl Into<String>) -> Tok {
-    Tok {
-        kind: TokKind::Named,
-        text: text.into(),
-        fam: Fam::Type,
-    }
+    Tok { kind: TokKind::Named, text: text.into(), fam: Fam::Type }
 }
 
 /// A type as written in `lang`, in plain words.
@@ -1487,8 +1248,7 @@ pub fn words(ty: &str, lang: Lang) -> Ty {
 
 fn plain_number(name: &str) -> Option<&'static str> {
     Some(match name {
-        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64" | "i128"
-        | "isize" => "integer",
+        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64" | "i128" | "isize" => "integer",
         "f32" | "f64" => "float",
         "bool" => "bool",
         "char" => "character",
@@ -1497,9 +1257,7 @@ fn plain_number(name: &str) -> Option<&'static str> {
 }
 
 fn rust_words(ty: &str) -> Vec<Tok> {
-    if ty.is_empty() {
-        return Vec::new();
-    }
+    if ty.is_empty() { return Vec::new(); }
     let scope = Scope::new(&Nowhere);
     toks_of(&scope.spell_text(ty).pieces)
 }
@@ -1508,10 +1266,7 @@ fn rust_words(ty: &str) -> Vec<Tok> {
 /// the plan's words.
 #[must_use]
 pub fn spelled(pieces: &[Piece], exact: &str) -> Ty {
-    Ty {
-        toks: toks_of(pieces),
-        exact: exact.trim().to_owned(),
-    }
+    Ty { toks: toks_of(pieces), exact: exact.trim().to_owned() }
 }
 
 fn toks_of(pieces: &[Piece]) -> Vec<Tok> {
@@ -1520,11 +1275,7 @@ fn toks_of(pieces: &[Piece]) -> Vec<Tok> {
         match piece {
             Piece::Space => {}
             Piece::Word(w) => {
-                if w.as_ref() == "text" {
-                    out.push(tok(TokKind::Prim, "text"));
-                } else {
-                    out.push(tok(TokKind::Word, w.to_string()));
-                }
+                if w.as_ref() == "text" { out.push(tok(TokKind::Prim, "text")); } else { out.push(tok(TokKind::Word, w.to_string())); }
             }
             Piece::Punct(p) => out.push(tok(TokKind::Punct, p.to_string())),
             Piece::Var(v) | Piece::Assoc(v) => out.push(tok(TokKind::Var, v.to_string())),
@@ -1539,36 +1290,16 @@ fn split_union(text: &str) -> Vec<String> {
     let (mut depth, mut cur, mut out) = (0_i32, String::new(), Vec::new());
     let mut quote = None;
     for ch in text.chars() {
-        if let Some(q) = quote {
-            cur.push(ch);
-            if ch == q {
-                quote = None;
-            }
-            continue;
-        }
+        if let Some(q) = quote { cur.push(ch); if ch == q { quote = None; } continue; }
         match ch {
-            '"' | '\'' | '`' => {
-                quote = Some(ch);
-                cur.push(ch);
-            }
-            '<' | '(' | '[' | '{' => {
-                depth += 1;
-                cur.push(ch);
-            }
-            '>' | ')' | ']' | '}' => {
-                depth -= 1;
-                cur.push(ch);
-            }
-            '|' if depth == 0 => {
-                out.push(cur.trim().to_owned());
-                cur.clear();
-            }
+            '"' | '\'' | '`' => { quote = Some(ch); cur.push(ch); }
+            '<' | '(' | '[' | '{' => { depth += 1; cur.push(ch); }
+            '>' | ')' | ']' | '}' => { depth -= 1; cur.push(ch); }
+            '|' if depth == 0 => { out.push(cur.trim().to_owned()); cur.clear(); }
             _ => cur.push(ch),
         }
     }
-    if !cur.trim().is_empty() {
-        out.push(cur.trim().to_owned());
-    }
+    if !cur.trim().is_empty() { out.push(cur.trim().to_owned()); }
     out.into_iter().filter(|part| !part.is_empty()).collect()
 }
 
@@ -1590,56 +1321,38 @@ fn ts_prim(name: &str) -> Option<&'static str> {
 
 fn ts_words(ty: &str) -> Vec<Tok> {
     let ty = ty.trim();
-    if ty.is_empty() {
-        return Vec::new();
-    }
+    if ty.is_empty() { return Vec::new(); }
     let parts = split_union(ty);
     if parts.len() > 1 {
         let mut out = Vec::new();
-        let literals = parts
-            .iter()
-            .filter(|p| p.starts_with(['"', '\'']))
-            .collect::<Vec<_>>();
+        let literals = parts.iter().filter(|p| p.starts_with(['"', '\''])).collect::<Vec<_>>();
         // `(string & {})` keeps a literal union open; the index sometimes cuts
         // the recorded text at its brace, so its prefix counts too.
         let is_open = |p: &str| p.replace(' ', "").starts_with("(string&");
         let open = parts.iter().any(|p| is_open(p));
-        let rest = parts
-            .iter()
-            .filter(|p| !p.starts_with(['"', '\'']) && !is_open(p))
-            .collect::<Vec<_>>();
+        let rest = parts.iter().filter(|p| !p.starts_with(['"', '\'']) && !is_open(p)).collect::<Vec<_>>();
         if !literals.is_empty() {
             out.push(tok(TokKind::Word, "one of"));
             for (k, lit) in literals.iter().enumerate() {
-                if k > 0 {
-                    out.push(tok(TokKind::Punct, "·"));
-                }
+                if k > 0 { out.push(tok(TokKind::Punct, "·")); }
                 out.push(tok(TokKind::Lit, lit.replace('\'', "\"")));
             }
         }
         for part in rest {
-            if !out.is_empty() {
-                out.push(tok(TokKind::Word, "or"));
-            }
+            if !out.is_empty() { out.push(tok(TokKind::Word, "or")); }
             out.extend(ts_words(part));
         }
-        if open {
-            out.push(tok(TokKind::Word, "or any text"));
-        }
+        if open { out.push(tok(TokKind::Word, "or any text")); }
         return out;
     }
-    if ty.starts_with(['"', '\'']) {
-        return vec![tok(TokKind::Lit, ty.replace('\'', "\""))];
-    }
+    if ty.starts_with(['"', '\'']) { return vec![tok(TokKind::Lit, ty.replace('\'', "\""))]; }
     if let Some(inner) = ty.strip_suffix("[]") {
         let inner = inner.trim().trim_start_matches('(').trim_end_matches(')');
         let mut out = vec![tok(TokKind::Word, "list of")];
         out.extend(ts_words(inner));
         return out;
     }
-    if let Some(p) = ts_prim(ty) {
-        return vec![tok(TokKind::Prim, p)];
-    }
+    if let Some(p) = ts_prim(ty) { return vec![tok(TokKind::Prim, p)]; }
     if let Some(open) = ty.find('<').filter(|_| ty.ends_with('>')) {
         let head = ty[..open].rsplit('.').next().unwrap_or(&ty[..open]);
         let args = crate::semantics::types::split_top(&ty[open + 1..ty.len() - 1], ',');
@@ -1665,17 +1378,14 @@ fn ts_words(ty: &str) -> Vec<Tok> {
         }
     }
     let last = ty.rsplit('.').next().unwrap_or(ty);
-    if last.len() <= 6 && matches!(last, "T" | "U" | "K" | "V" | "Input" | "Output") {
-        return vec![tok(TokKind::Var, last)];
-    }
+    if last.len() <= 6 && matches!(last, "T" | "U" | "K" | "V" | "Input" | "Output") { return vec![tok(TokKind::Var, last)]; }
     vec![named(last.to_owned())]
 }
 
 fn go_prim(name: &str) -> Option<&'static str> {
     Some(match name {
         "string" => "text",
-        "int" | "int8" | "int16" | "int32" | "int64" | "uint" | "uint8" | "uint16" | "uint32"
-        | "uint64" | "uintptr" | "rune" => "integer",
+        "int" | "int8" | "int16" | "int32" | "int64" | "uint" | "uint8" | "uint16" | "uint32" | "uint64" | "uintptr" | "rune" => "integer",
         "float32" | "float64" => "float",
         "bool" => "bool",
         "byte" => "byte",
@@ -1687,32 +1397,18 @@ fn go_prim(name: &str) -> Option<&'static str> {
 
 fn go_words(ty: &str) -> Vec<Tok> {
     let ty = ty.trim();
-    if ty.is_empty() {
-        return Vec::new();
-    }
+    if ty.is_empty() { return Vec::new(); }
     if let Some(inner) = ty.strip_prefix("[]") {
         let mut out = vec![tok(TokKind::Word, "list of")];
         out.extend(go_words(inner));
         return out;
     }
-    if let Some(inner) = ty.strip_prefix('*') {
-        return go_words(inner);
-    }
+    if let Some(inner) = ty.strip_prefix('*') { return go_words(inner); }
     if let Some(rest) = ty.strip_prefix("map[") {
         let mut depth = 1_i32;
         let mut close = None;
         for (k, ch) in rest.char_indices() {
-            match ch {
-                '[' => depth += 1,
-                ']' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        close = Some(k);
-                        break;
-                    }
-                }
-                _ => {}
-            }
+            match ch { '[' => depth += 1, ']' => { depth -= 1; if depth == 0 { close = Some(k); break; } } _ => {} }
         }
         if let Some(close) = close {
             let mut out = vec![tok(TokKind::Word, "map")];
@@ -1722,12 +1418,8 @@ fn go_words(ty: &str) -> Vec<Tok> {
             return out;
         }
     }
-    if ty.starts_with("func") {
-        return vec![tok(TokKind::Word, "callback")];
-    }
-    if let Some(p) = go_prim(ty) {
-        return vec![tok(TokKind::Prim, p)];
-    }
+    if ty.starts_with("func") { return vec![tok(TokKind::Word, "callback")]; }
+    if let Some(p) = go_prim(ty) { return vec![tok(TokKind::Prim, p)]; }
     vec![named(ty.rsplit('.').next().unwrap_or(ty).to_owned())]
 }
 

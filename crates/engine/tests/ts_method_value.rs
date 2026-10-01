@@ -8,8 +8,8 @@ use std::{
 };
 
 use backend_engine::driver::{
-    CompileControl, CompileOutput, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
-    SemanticAuthorityInput, ToolchainSelection, compile,
+    CompileControl, CompileOutput, CompileRequest, CompileScratch, NativeTool,
+    ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile,
 };
 use backend_frontend_typescript::legacy::{Checker, CheckerError, Report};
 use backend_semantic::ir::{
@@ -21,7 +21,8 @@ use backend_semantic::vocabulary::{LanguageProfile, Stage, TypeScriptSource};
 static FIXTURE_ID: AtomicUsize = AtomicUsize::new(0);
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 
-const WORKOUT_SERVICE: &[u8] = b"export class WorkoutService {\n  note = 1;\n  setNote() {}\n}\n";
+const WORKOUT_SERVICE: &[u8] =
+    b"export class WorkoutService {\n  note = 1;\n  setNote() {}\n}\n";
 
 const WEEKS: &[u8] = b"import { WorkoutService } from \"./workout.service\";
 export function group(service: WorkoutService) { const bound = service.setNote; service.setNote(); }
@@ -140,8 +141,11 @@ fn occurrence_span_text<'a>(
 #[test]
 fn cross_file_method_value_is_oracle_package_function_read() {
     let root = fixture_root();
-    let report = match Checker::default().run_in_package(TypeScriptSource::TypeScript, WEEKS, &root)
-    {
+    let report = match Checker::default().run_in_package(
+        TypeScriptSource::TypeScript,
+        WEEKS,
+        &root,
+    ) {
         Ok(report) => report,
         Err(error) if checker_missing(&error) => {
             eprintln!("checker unavailable: {error}");

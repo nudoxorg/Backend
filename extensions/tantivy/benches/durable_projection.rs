@@ -8,13 +8,13 @@
     reason = "the fixed benchmark fixture is intentionally fail-fast and bounded"
 )]
 
-use backend_extension_tantivy::server::TantivySegmentStore;
+use backend_semantic::ir::EntityId;
+use backend_version::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
 use backend_semantic::index_core::{
     EntityArtifactIdentity, EntityDocumentId, IndexSnapshot, LexicalOperation, LexicalRow,
     LexicalScore, LexicalSegment,
 };
-use backend_semantic::ir::EntityId;
-use backend_version::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
+use backend_extension_tantivy::server::TantivySegmentStore;
 use std::{fs, time::Instant};
 
 const SAMPLES: usize = 24;

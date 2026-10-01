@@ -47,33 +47,15 @@ impl StateKey {
 
 /// The key of the state `plan` (a recipe's materializing plan) leaves.
 #[must_use]
-pub fn key(
-    plan: &Plan,
-    inputs: &[(Input, String)],
-    build: &str,
-    toolchain: &[(String, String)],
-) -> StateKey {
-    let mut lines = vec![
-        "journey-state v1".to_owned(),
-        format!("recipe: {}", plan.name),
-    ];
-    lines.extend(
-        plan.steps
-            .iter()
-            .map(|step| format!("step {} :: {:?}", step.text, step.kind)),
-    );
+pub fn key(plan: &Plan, inputs: &[(Input, String)], build: &str, toolchain: &[(String, String)]) -> StateKey {
+    let mut lines = vec!["journey-state v1".to_owned(), format!("recipe: {}", plan.name)];
+    lines.extend(plan.steps.iter().map(|step| format!("step {} :: {:?}", step.text, step.kind)));
     lines.push(format!("size: {}x{}", plan.size.0, plan.size.1));
     lines.push(format!("build: {build}"));
-    lines.extend(
-        toolchain
-            .iter()
-            .map(|(name, value)| format!("env: {name}={value}")),
-    );
+    lines.extend(toolchain.iter().map(|(name, value)| format!("env: {name}={value}")));
     lines.extend(inputs.iter().map(|(input, hash)| match input {
         Input::Tree { rel, .. } => format!("input tree {rel}: {hash}"),
-        Input::Crate(release) => {
-            format!("input crate {}@{}: {hash}", release.name, release.version)
-        }
+        Input::Crate(release) => format!("input crate {}@{}: {hash}", release.name, release.version),
     }));
     let hex = hex(&Sha256::digest(lines.join("\n").as_bytes()));
     StateKey { hex, lines }
@@ -87,24 +69,11 @@ fn hex(bytes: &[u8]) -> String {
 #[must_use]
 pub fn toolchain() -> Vec<(String, String)> {
     let mut vars = std::env::vars_os()
-        .filter_map(|(name, value)| {
-            Some((
-                name.into_string().ok()?,
-                value.to_string_lossy().into_owned(),
-            ))
-        })
+        .filter_map(|(name, value)| Some((name.into_string().ok()?, value.to_string_lossy().into_owned())))
         .filter(|(name, _)| {
-            name.starts_with("NUDOX_")
-                || matches!(
-                    name.as_str(),
-                    "LIBCLANG_PATH" | "CARGO_HOME" | "CARGO_NET_OFFLINE"
-                )
+            name.starts_with("NUDOX_") || matches!(name.as_str(), "LIBCLANG_PATH" | "CARGO_HOME" | "CARGO_NET_OFFLINE")
         })
-        .filter(|(name, _)| {
-            !name.starts_with("NUDOX_HARNESS")
-                && !name.starts_with("NUDOX_TRACE")
-                && !name.starts_with("NUDOX_REVIEW")
-        })
+        .filter(|(name, _)| !name.starts_with("NUDOX_HARNESS") && !name.starts_with("NUDOX_TRACE") && !name.starts_with("NUDOX_REVIEW"))
         .collect::<Vec<_>>();
     vars.sort();
     vars
@@ -132,9 +101,7 @@ pub fn build_id() -> Result<String, String> {
 fn macho_uuid(bytes: &[u8]) -> Option<[u8; 16]> {
     const MH_MAGIC_64: u32 = 0xfeed_facf;
     const LC_UUID: u32 = 0x1b;
-    let word = |at: usize| -> Option<u32> {
-        Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
-    };
+    let word = |at: usize| -> Option<u32> { Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?)) };
     if word(0)? != MH_MAGIC_64 {
         return None;
     }
@@ -184,14 +151,11 @@ fn cached_archive(stem: &str) -> Option<PathBuf> {
 }
 
 fn file_hash(path: &Path) -> Result<String, String> {
-    let mut file =
-        std::fs::File::open(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let mut file = std::fs::File::open(path).map_err(|error| format!("{}: {error}", path.display()))?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0_u8; 1 << 16];
     loop {
-        let read = file
-            .read(&mut buffer)
-            .map_err(|error| format!("{}: {error}", path.display()))?;
+        let read = file.read(&mut buffer).map_err(|error| format!("{}: {error}", path.display()))?;
         if read == 0 {
             break;
         }
@@ -224,23 +188,13 @@ fn walk(root: &Path, dir: &Path, files: &mut Vec<(String, String)>) -> Result<()
         let entry = entry.map_err(|error| format!("{}: {error}", dir.display()))?;
         let path = entry.path();
         let name = entry.file_name();
-        if matches!(
-            name.to_str(),
-            Some("target" | ".git" | "node_modules" | ".DS_Store")
-        ) {
+        if matches!(name.to_str(), Some("target" | ".git" | "node_modules" | ".DS_Store")) {
             continue;
         }
-        let kind = entry
-            .file_type()
-            .map_err(|error| format!("{}: {error}", path.display()))?;
-        let relative = path
-            .strip_prefix(root)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .into_owned();
+        let kind = entry.file_type().map_err(|error| format!("{}: {error}", path.display()))?;
+        let relative = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().into_owned();
         if kind.is_symlink() {
-            let target = std::fs::read_link(&path)
-                .map_err(|error| format!("{}: {error}", path.display()))?;
+            let target = std::fs::read_link(&path).map_err(|error| format!("{}: {error}", path.display()))?;
             files.push((relative, format!("link:{}", target.display())));
         } else if kind.is_dir() {
             walk(root, &path, files)?;
@@ -267,14 +221,9 @@ impl Store {
     /// `.local/harness/journeys`.
     #[must_use]
     pub fn lane() -> Self {
-        let home = std::env::var_os("NUDOX_JOURNEY_HOME").map_or_else(
-            || super::super::repo().join(".local/harness/journeys"),
-            PathBuf::from,
-        );
-        Self {
-            live: home.join("live"),
-            states: home.join("states"),
-        }
+        let home = std::env::var_os("NUDOX_JOURNEY_HOME")
+            .map_or_else(|| super::super::repo().join(".local/harness/journeys"), PathBuf::from);
+        Self { live: home.join("live"), states: home.join("states") }
     }
 
     /// The directory of the state under `key`.
@@ -295,8 +244,7 @@ impl Store {
     /// The old live directory cannot be removed or the new one made.
     pub fn wipe_live(&self) -> Result<(), String> {
         if self.live.exists() {
-            std::fs::remove_dir_all(&self.live)
-                .map_err(|error| format!("{}: {error}", self.live.display()))?;
+            std::fs::remove_dir_all(&self.live).map_err(|error| format!("{}: {error}", self.live.display()))?;
         }
         private_dir(&self.live)
     }
@@ -310,8 +258,7 @@ impl Store {
             return Err(format!("state {} is not materialized", key.short()));
         }
         if self.live.exists() {
-            std::fs::remove_dir_all(&self.live)
-                .map_err(|error| format!("{}: {error}", self.live.display()))?;
+            std::fs::remove_dir_all(&self.live).map_err(|error| format!("{}: {error}", self.live.display()))?;
         }
         clone_tree(&self.state(key).join("root"), &self.live)
     }
@@ -326,15 +273,12 @@ impl Store {
         let dir = self.state(key);
         let root = dir.join("root");
         if root.exists() {
-            std::fs::remove_dir_all(&root)
-                .map_err(|error| format!("{}: {error}", root.display()))?;
+            std::fs::remove_dir_all(&root).map_err(|error| format!("{}: {error}", root.display()))?;
         }
         private_dir(&dir)?;
         clone_tree(&self.live, &root)?;
-        std::fs::write(dir.join("KEY.txt"), key.lines.join("\n") + "\n")
-            .map_err(|error| format!("{}: {error}", dir.display()))?;
-        std::fs::write(dir.join("READY"), format!("{}\n", key.hex))
-            .map_err(|error| format!("{}: {error}", dir.display()))?;
+        std::fs::write(dir.join("KEY.txt"), key.lines.join("\n") + "\n").map_err(|error| format!("{}: {error}", dir.display()))?;
+        std::fs::write(dir.join("READY"), format!("{}\n", key.hex)).map_err(|error| format!("{}: {error}", dir.display()))?;
         Ok(dir)
     }
 
@@ -348,8 +292,7 @@ impl Store {
         let dir = self.state(key);
         let ready = dir.join("READY");
         if ready.exists() {
-            std::fs::remove_file(&ready)
-                .map_err(|error| format!("{}: {error}", ready.display()))?;
+            std::fs::remove_file(&ready).map_err(|error| format!("{}: {error}", ready.display()))?;
         }
         let run = dir.join("run");
         private_dir(&run)?;
@@ -372,12 +315,7 @@ impl Store {
             .write(true)
             .open(&path)
             .map_err(|error| format!("{}: {error}", path.display()))?;
-        file.try_lock().map_err(|error| {
-            format!(
-                "{} is held by another journey run ({error}); one harness process at a time",
-                path.display()
-            )
-        })?;
+        file.try_lock().map_err(|error| format!("{} is held by another journey run ({error}); one harness process at a time", path.display()))?;
         Ok(file)
     }
 }
@@ -393,26 +331,14 @@ fn clone_tree(from: &Path, to: &Path) -> Result<(), String> {
     }
     // The system `cp` (a dev shell's GNU `cp` has no `-c`): on APFS, `-c`
     // clones every file copy-on-write, so a state costs no space until used.
-    let (cp, flags) = if cfg!(target_os = "macos") {
-        ("/bin/cp", "-Rc")
-    } else {
-        ("cp", "-a")
-    };
+    let (cp, flags) = if cfg!(target_os = "macos") { ("/bin/cp", "-Rc") } else { ("cp", "-a") };
     let status = std::process::Command::new(cp)
         .arg(flags)
         .arg(from)
         .arg(to)
         .status()
         .map_err(|error| format!("{cp} {flags} {} {}: {error}", from.display(), to.display()))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "{cp} {flags} {} {}: {status}",
-            from.display(),
-            to.display()
-        ))
-    }
+    if status.success() { Ok(()) } else { Err(format!("{cp} {flags} {} {}: {status}", from.display(), to.display())) }
 }
 
 #[cfg(test)]
@@ -424,116 +350,34 @@ mod tests {
 
     fn recipe(parts: &Parts, text: &str) -> Plan {
         let plan = Plan::parse("J", Path::new("J.journey"), text, parts).expect("parses");
-        let Start::From(recipe) = plan.start else {
-            panic!("a state")
-        };
+        let Start::From(recipe) = plan.start else { panic!("a state") };
         recipe.plan(parts, plan.size).expect("expands")
     }
 
     #[test]
-    fn a_state_key_moves_with_its_steps_arguments_build_toolchain_and_inputs_not_its_line_numbers()
-    {
+    fn a_state_key_moves_with_its_steps_arguments_build_toolchain_and_inputs_not_its_line_numbers() {
         let mut parts = Parts::default();
-        parts
-            .add_file(
-                Path::new("a.part"),
-                "part open WHAT:word\nkey cmd-k\ncheck {WHAT}\n  text \"{WHAT}\"\n",
-            )
-            .expect("parts");
+        parts.add_file(Path::new("a.part"), "part open WHAT:word\nkey cmd-k\ncheck {WHAT}\n  text \"{WHAT}\"\n").expect("parts");
         let plan = recipe(&parts, "start from open toml\ncheck x\n");
-        let tree = Input::Tree {
-            rel: "p".to_owned(),
-            abs: "/p".into(),
-        };
+        let tree = Input::Tree { rel: "p".to_owned(), abs: "/p".into() };
         let env = vec![("NUDOX_RUSTC".to_owned(), "/nix/a/rustc".to_owned())];
-        let base = key(
-            &plan,
-            &[(tree.clone(), "h1".to_owned())],
-            "macho-uuid:1",
-            &env,
-        );
-        assert_eq!(
-            base,
-            key(
-                &plan,
-                &[(tree.clone(), "h1".to_owned())],
-                "macho-uuid:1",
-                &env
-            ),
-            "the same inputs give the same key"
-        );
+        let base = key(&plan, &[(tree.clone(), "h1".to_owned())], "macho-uuid:1", &env);
+        assert_eq!(base, key(&plan, &[(tree.clone(), "h1".to_owned())], "macho-uuid:1", &env), "the same inputs give the same key");
         assert_eq!(base.hex.len(), 64);
         for (why, other) in [
-            (
-                "an argument",
-                key(
-                    &recipe(&parts, "start from open serde\ncheck x\n"),
-                    &[(tree.clone(), "h1".to_owned())],
-                    "macho-uuid:1",
-                    &env,
-                ),
-            ),
-            (
-                "an input's bytes",
-                key(
-                    &plan,
-                    &[(tree.clone(), "h2".to_owned())],
-                    "macho-uuid:1",
-                    &env,
-                ),
-            ),
-            (
-                "the build",
-                key(
-                    &plan,
-                    &[(tree.clone(), "h1".to_owned())],
-                    "macho-uuid:2",
-                    &env,
-                ),
-            ),
-            (
-                "the toolchain",
-                key(
-                    &plan,
-                    &[(tree.clone(), "h1".to_owned())],
-                    "macho-uuid:1",
-                    &[("NUDOX_RUSTC".to_owned(), "/nix/b/rustc".to_owned())],
-                ),
-            ),
+            ("an argument", key(&recipe(&parts, "start from open serde\ncheck x\n"), &[(tree.clone(), "h1".to_owned())], "macho-uuid:1", &env)),
+            ("an input's bytes", key(&plan, &[(tree.clone(), "h2".to_owned())], "macho-uuid:1", &env)),
+            ("the build", key(&plan, &[(tree.clone(), "h1".to_owned())], "macho-uuid:2", &env)),
+            ("the toolchain", key(&plan, &[(tree.clone(), "h1".to_owned())], "macho-uuid:1", &[("NUDOX_RUSTC".to_owned(), "/nix/b/rustc".to_owned())])),
         ] {
             assert_ne!(base.hex, other.hex, "changing {why} must re-run the state");
         }
         let mut edited = Parts::default();
-        edited
-            .add_file(
-                Path::new("a.part"),
-                "part open WHAT:word\nkey cmd-k\ncheck {WHAT}\n  text \"{WHAT}\"\n  absent \"x\"\n",
-            )
-            .expect("parts");
-        assert_ne!(
-            base.hex,
-            key(
-                &recipe(&edited, "start from open toml\ncheck x\n"),
-                &[(tree.clone(), "h1".to_owned())],
-                "macho-uuid:1",
-                &env
-            )
-            .hex,
-            "a part's body is in the key"
-        );
+        edited.add_file(Path::new("a.part"), "part open WHAT:word\nkey cmd-k\ncheck {WHAT}\n  text \"{WHAT}\"\n  absent \"x\"\n").expect("parts");
+        assert_ne!(base.hex, key(&recipe(&edited, "start from open toml\ncheck x\n"), &[(tree.clone(), "h1".to_owned())], "macho-uuid:1", &env).hex, "a part's body is in the key");
         let mut commented = Parts::default();
         commented.add_file(Path::new("a.part"), "# a comment moves every line\n\npart open WHAT:word\nkey cmd-k\ncheck {WHAT}\n  text \"{WHAT}\"\n").expect("parts");
-        assert_eq!(
-            base.hex,
-            key(
-                &recipe(&commented, "start from open toml\ncheck x\n"),
-                &[(tree, "h1".to_owned())],
-                "macho-uuid:1",
-                &env
-            )
-            .hex,
-            "line numbers are not"
-        );
+        assert_eq!(base.hex, key(&recipe(&commented, "start from open toml\ncheck x\n"), &[(tree, "h1".to_owned())], "macho-uuid:1", &env).hex, "line numbers are not");
     }
 
     #[test]
@@ -544,11 +388,7 @@ mod tests {
         std::fs::write(root.join("src/lib.rs"), "pub fn a() {}").expect("write");
         let first = tree_hash(&root).expect("hash");
         std::fs::write(root.join("target/debug/out"), "noise").expect("write");
-        assert_eq!(
-            first,
-            tree_hash(&root).expect("hash"),
-            "build output is not an input"
-        );
+        assert_eq!(first, tree_hash(&root).expect("hash"), "build output is not an input");
         std::fs::write(root.join("src/lib.rs"), "pub fn b() {}").expect("write");
         assert_ne!(first, tree_hash(&root).expect("hash"), "a source edit is");
         std::fs::remove_dir_all(&root).expect("clean up the test's own dir");

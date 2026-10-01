@@ -17,12 +17,13 @@ use crate::{CaptureError, Viewport};
 use gpui::{
     AnyWindowHandle, App, AssetSource, Capslock, Entity, FrameTimingCollector, HeadlessAppContext,
     InputEvent, Keystroke, Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent,
-    MouseExitEvent, MouseMoveEvent, MouseUpEvent, PinchEvent, Pixels, PlatformTextSystem, Point,
-    Render, ScrollDelta, ScrollWheelEvent, TouchPhase, Window, point, px, size,
+    MouseExitEvent, MouseMoveEvent, MouseUpEvent, PinchEvent, PlatformTextSystem, Pixels, Point,
+    Render,
+    ScrollDelta, ScrollWheelEvent, TouchPhase, Window, point, px, size,
 };
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// Guards the span of [`Session::frame`] that draws the window and drains
@@ -294,10 +295,7 @@ impl Session {
                 move |window, cx| {
                     window.set_scale_factor(scale);
                     if audit_scale {
-                        eprintln!(
-                            "GUI_HARNESS_SCALE phase=build requested={scale} actual={}",
-                            window.scale_factor()
-                        );
+                        eprintln!("GUI_HARNESS_SCALE phase=build requested={scale} actual={}", window.scale_factor());
                     }
                     build_root(window, cx)
                 },
@@ -334,9 +332,7 @@ impl Session {
         }
         let settled_scale = session.update(|window, _| window.scale_factor())?;
         if audit_scale {
-            eprintln!(
-                "GUI_HARNESS_SCALE phase=settled requested={scale} before_restore={opened_scale} actual={settled_scale}"
-            );
+            eprintln!("GUI_HARNESS_SCALE phase=settled requested={scale} before_restore={opened_scale} actual={settled_scale}");
         }
         if settled_scale != scale {
             return Err(CaptureError::InvalidConfig(format!(
@@ -363,9 +359,7 @@ impl Session {
         // Locked: the off/on transition clears the *shared* ring outright, so
         // a concurrent session's not-yet-collected frames would otherwise
         // vanish mid-collection (see `FRAME_TIMING_CAPTURE`).
-        let _capture = FRAME_TIMING_CAPTURE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _capture = FRAME_TIMING_CAPTURE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         // The existing off transition clears and releases the global ring.
         // Reset the collector's cursor when total_pushed is reset to zero.
         // This policy belongs to a memory-only session; ordinary perf runs
@@ -413,19 +407,12 @@ impl Session {
     }
 
     fn settle_tasks(&mut self) {
-        let started =
-            (self.trace_action.is_some() && self.input_trace.is_some()).then(Instant::now);
+        let started = (self.trace_action.is_some() && self.input_trace.is_some()).then(Instant::now);
         self.context.run_until_parked();
         if let (Some(started), Some(action), Some(trace)) =
             (started, self.trace_action, self.input_trace.as_mut())
         {
-            trace.record(
-                self.now_ms,
-                action,
-                "foreground_tasks",
-                "settlement",
-                started.elapsed(),
-            );
+            trace.record(self.now_ms, action, "foreground_tasks", "settlement", started.elapsed());
         }
     }
 
@@ -449,7 +436,9 @@ impl Session {
         let trace_started = self.input_trace.as_ref().map(|_| Instant::now());
         let result = loop {
             self.settle_tasks();
-            let holds = self.context.update(|cx| (quiet.check)(cx));
+            let holds = self
+                .context
+                .update(|cx| (quiet.check)(cx));
             if holds {
                 self.settle_tasks();
                 break Ok(());
@@ -464,13 +453,7 @@ impl Session {
         };
         self.quiet = Some(quiet);
         if let (Some(started), Some(trace)) = (trace_started, self.input_trace.as_mut()) {
-            trace.record(
-                self.now_ms,
-                "batch",
-                "script_quiescence",
-                "settlement",
-                started.elapsed(),
-            );
+            trace.record(self.now_ms, "batch", "script_quiescence", "settlement", started.elapsed());
         }
         result
     }
@@ -510,13 +493,7 @@ impl Session {
         if let (Some(action), Some(event), Some(started), Some(trace)) =
             (trace_action, event_kind, started, self.input_trace.as_mut())
         {
-            trace.record(
-                self.now_ms,
-                action,
-                event,
-                "dispatch_event",
-                started.elapsed(),
-            );
+            trace.record(self.now_ms, action, event, "dispatch_event", started.elapsed());
         }
         self.settle_tasks();
         Ok(())
@@ -638,13 +615,7 @@ impl Session {
             let adapter_started = self.input_trace.as_ref().map(|_| Instant::now());
             self.update(|window, cx| adapter(act, window, cx))?;
             if let (Some(started), Some(trace)) = (adapter_started, self.input_trace.as_mut()) {
-                trace.record(
-                    self.now_ms,
-                    action,
-                    "product_adapter",
-                    "adapter",
-                    started.elapsed(),
-                );
+                trace.record(self.now_ms, action, "product_adapter", "adapter", started.elapsed());
             }
             self.settle_tasks();
             Ok(())
@@ -755,9 +726,7 @@ impl Session {
         // Locked: draw, then drain gpui's shared frame-timing ring, as one
         // step. Nothing else may push to (or clear) that ring while this
         // session's own draw is unaccounted for — see `FRAME_TIMING_CAPTURE`.
-        let capture_guard = FRAME_TIMING_CAPTURE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let capture_guard = FRAME_TIMING_CAPTURE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let (callbacks, started, cpu) = self.update(|window, cx| {
             let callbacks = window.simulate_next_frame(cx);
             let started = Instant::now();
@@ -993,10 +962,8 @@ mod tests {
              fails, the bug this test guards no longer applies and the test should be revisited"
         );
 
-        a.frame(false)
-            .expect("warm up a (its own first frame is dirty)");
-        b.frame(false)
-            .expect("warm up b (its own first frame is dirty)");
+        a.frame(false).expect("warm up a (its own first frame is dirty)");
+        b.frame(false).expect("warm up b (its own first frame is dirty)");
 
         let before = a.frame(false).expect("draw a once more").0.invalidations;
         for toggle in 0..30 {
@@ -1022,12 +989,8 @@ mod tests {
     /// name in the doc comment above is not stale).
     #[test]
     fn the_capture_lock_is_uncontended_between_sequential_sessions() {
-        let _first = FRAME_TIMING_CAPTURE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _first = FRAME_TIMING_CAPTURE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         drop(_first);
-        let _second = FRAME_TIMING_CAPTURE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _second = FRAME_TIMING_CAPTURE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     }
 }

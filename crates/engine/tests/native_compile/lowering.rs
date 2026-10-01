@@ -11,10 +11,10 @@ use std::{
 use backend_engine::driver::{
     CompileFailure, CompileOutput, CompileScratch, NativeTool, ToolchainSelection, compile,
 };
+use backend_semantic::ir::EntityKind;
 use backend_engine::publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
 };
-use backend_semantic::ir::EntityKind;
 use backend_semantic::vocabulary::Language;
 use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use thiserror::Error;

@@ -115,10 +115,7 @@ fn owned_row(lane: &Lane<'_>, owner: usize) -> Result<usize, TestError> {
         .ok_or(TestError::Falsified("entity type row absent"))
 }
 
-fn parameter_type<'a>(
-    lane: &'a Lane<'a>,
-    name: &[u8],
-) -> Result<&'a DecodedTypeFact<'a>, TestError> {
+fn parameter_type<'a>(lane: &'a Lane<'a>, name: &[u8]) -> Result<&'a DecodedTypeFact<'a>, TestError> {
     let owner = entity_ordinal(lane, name, EntityKind::Parameter)?;
     let row = owned_row(lane, owner)?;
     Ok(&lane.types[row])

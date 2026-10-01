@@ -102,7 +102,9 @@ pub(crate) fn judge(bytes: &[u8]) -> Result<Verdict, OracleFailure> {
         ));
     }
     let round = decode_message(&encoded, limits).map_err(|error| {
-        OracleFailure::new(format!("canonical replication frame was rejected: {error}"))
+        OracleFailure::new(format!(
+            "canonical replication frame was rejected: {error}"
+        ))
     })?;
     if round != message {
         return Err(OracleFailure::new(

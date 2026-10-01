@@ -2,9 +2,7 @@
 //! asked), text scale, density, contrast and motion. Held reveal modes are
 //! transient and never persisted; they are carried over untouched.
 
-use crate::model::{
-    AppearancePreference, ContrastPreference, DensityPreference, MotionPreference, SettingsState,
-};
+use crate::model::{AppearancePreference, ContrastPreference, DensityPreference, MotionPreference, SettingsState};
 use facet::{Appearance, Contrast, Density, Facet, Reveal};
 
 /// What the window's surroundings contribute: the system's appearance and
@@ -76,37 +74,21 @@ mod tests {
         assert_eq!(dark.contrast, Contrast::High);
         assert!(dark.reduced_motion);
         let light = facet_for(&settings, &around(false, 1.0, "wall"), Reveal::default());
-        assert_eq!(
-            light.appearance,
-            Appearance::Glacier,
-            "system follows the OS"
-        );
-        let held = Reveal {
-            keys: true,
-            xray: false,
-        };
-        assert_eq!(
-            facet_for(&settings, &around(true, 1.0, "wall"), held).reveal,
-            held
-        );
+        assert_eq!(light.appearance, Appearance::Glacier, "system follows the OS");
+        let held = Reveal { keys: true, xray: false };
+        assert_eq!(facet_for(&settings, &around(true, 1.0, "wall"), held).reveal, held);
     }
 
     #[test]
     fn zoom_is_per_display_on_top_of_the_system_size() {
-        let zoom = ZoomPreference::default()
-            .step("laptop", ZoomStep::In)
-            .step("laptop", ZoomStep::In);
+        let zoom = ZoomPreference::default().step("laptop", ZoomStep::In).step("laptop", ZoomStep::In);
         let settings = SettingsState {
             zoom,
             ..SettingsState::default()
         };
         // Two steps up on the laptop: 125 %; the wall screen is untouched.
         let laptop = facet_for(&settings, &around(true, 1.0, "laptop"), Reveal::default());
-        assert!(
-            (laptop.text_scale - 1.25).abs() < 1e-6,
-            "{}",
-            laptop.text_scale
-        );
+        assert!((laptop.text_scale - 1.25).abs() < 1e-6, "{}", laptop.text_scale);
         let wall = facet_for(&settings, &around(true, 1.0, "wall"), Reveal::default());
         assert!((wall.text_scale - 1.0).abs() < 1e-6);
         // The system's size is the baseline the zoom multiplies.

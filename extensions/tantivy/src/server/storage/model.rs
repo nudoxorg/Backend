@@ -1,7 +1,5 @@
 //! Durable projection data model and typed boundary errors.
-use backend_semantic::index_core::{
-    EntityDocumentId, IndexSnapshotId, LexicalScore, LexicalSegmentId,
-};
+use backend_semantic::index_core::{EntityDocumentId, IndexSnapshotId, LexicalScore, LexicalSegmentId};
 use std::{io, path::PathBuf};
 use tantivy::{IndexReader, schema::Field};
 

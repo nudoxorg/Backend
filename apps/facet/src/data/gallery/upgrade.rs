@@ -7,7 +7,6 @@
 
 use super::super::release::{self, fixture, view};
 use super::super::{Run, facts};
-use crate::Set;
 use crate::anatomy::Links;
 use crate::controls::{Release, ReleaseId, Step, version_comb};
 use crate::icons::Kind;
@@ -15,40 +14,13 @@ use crate::paint::gem;
 use crate::semantics::types::Nowhere;
 use crate::theme::ActiveFacet;
 use crate::tokens::{Face, TypeRole, ty};
+use crate::Set;
 use gpui::{AnyElement, App, IntoElement, ParentElement, SharedString, Styled, Window, div, px};
 
-const HERO_NAME: TypeRole = TypeRole {
-    face: Face::Display,
-    weight: 640.0,
-    size: 40.0,
-    line: 44.0,
-    tracking: -0.035,
-    italic: false,
-};
-const CRATE: TypeRole = TypeRole {
-    face: Face::Mono,
-    weight: 600.0,
-    size: 13.0,
-    line: 18.0,
-    tracking: 0.0,
-    italic: false,
-};
-const NOTE: TypeRole = TypeRole {
-    face: Face::Mono,
-    weight: 400.0,
-    size: 11.5,
-    line: 16.0,
-    tracking: 0.0,
-    italic: false,
-};
-const BACK: TypeRole = TypeRole {
-    face: Face::Ui,
-    weight: 400.0,
-    size: 12.0,
-    line: 16.0,
-    tracking: 0.0,
-    italic: false,
-};
+const HERO_NAME: TypeRole = TypeRole { face: Face::Display, weight: 640.0, size: 40.0, line: 44.0, tracking: -0.035, italic: false };
+const CRATE: TypeRole = TypeRole { face: Face::Mono, weight: 600.0, size: 13.0, line: 18.0, tracking: 0.0, italic: false };
+const NOTE: TypeRole = TypeRole { face: Face::Mono, weight: 400.0, size: 11.5, line: 16.0, tracking: 0.0, italic: false };
+const BACK: TypeRole = TypeRole { face: Face::Ui, weight: 400.0, size: 12.0, line: 16.0, tracking: 0.0, italic: false };
 
 /// The version viewed in these scenes.
 pub(crate) const VIEWED: &str = "1.1.6+spec-1.1.0";
@@ -73,11 +45,8 @@ fn shelf(krate: &release::Crate, to: &str, cx: &mut App) -> AnyElement {
     let palette = facet.palette();
     let s = facet.text_scale;
     let m = facet.measure(px(230.0 * s));
-    let versions: Vec<&release::Version> = krate
-        .versions
-        .iter()
-        .filter(|v| !v.yanked || v.v == krate.pinned)
-        .collect();
+    let versions: Vec<&release::Version> =
+        krate.versions.iter().filter(|v| !v.yanked || v.v == krate.pinned).collect();
     let releases: Vec<Release> = versions
         .iter()
         .map(|v| Release {
@@ -89,13 +58,8 @@ fn shelf(krate: &release::Crate, to: &str, cx: &mut App) -> AnyElement {
         .collect();
     let index = |v: &str| versions.iter().position(|x| x.v == v);
     let touches = krate.touches();
-    let mut comb = version_comb("upgrade-comb", releases, &m).touches(
-        versions
-            .iter()
-            .enumerate()
-            .filter(|(_, v)| touches.contains(&v.v))
-            .map(|(k, _)| k),
-    );
+    let mut comb = version_comb("upgrade-comb", releases, &m)
+        .touches(versions.iter().enumerate().filter(|(_, v)| touches.contains(&v.v)).map(|(k, _)| k));
     if let Some(pin) = index(&krate.pinned) {
         comb = comb.pinned(pin);
     }
@@ -114,77 +78,35 @@ fn shelf(krate: &release::Crate, to: &str, cx: &mut App) -> AnyElement {
         .py(px(18.0 * s))
         .border_r_1()
         .border_color(palette.line1.hsla())
-        .child(
-            div()
-                .set(BACK, &m)
-                .text_color(palette.ink3.hsla())
-                .child("‹ dependencies"),
-        )
+        .child(div().set(BACK, &m).text_color(palette.ink3.hsla()).child("‹ dependencies"))
         .child(
             div()
                 .flex()
                 .items_center()
                 .gap(px(12.0 * s))
-                .child(
-                    gem(Kind::Package)
-                        .size(28.0 * s)
-                        .state(crate::paint::GemState::Normal),
-                )
+                .child(gem(Kind::Package).size(28.0 * s).state(crate::paint::GemState::Normal))
                 .child(
                     div()
                         .flex()
                         .flex_col()
-                        .child(
-                            div()
-                                .set(CRATE, &m)
-                                .text_color(palette.ink0.hsla())
-                                .child(krate.name.clone()),
-                        )
-                        .child(
-                            div()
-                                .set(NOTE, &m)
-                                .text_color(if krate.pinned == to {
-                                    palette.ink3.hsla()
-                                } else {
-                                    palette.peri.base.hsla()
-                                })
-                                .child(release::short(to).to_owned()),
-                        ),
+                        .child(div().set(CRATE, &m).text_color(palette.ink0.hsla()).child(krate.name.clone()))
+                        .child(div().set(NOTE, &m).text_color(if krate.pinned == to { palette.ink3.hsla() } else { palette.peri.base.hsla() }).child(release::short(to).to_owned())),
                 ),
         )
         .child(comb)
-        .child(view::shelf_line(
-            "upgrade-shelf",
-            &summary,
-            &krate.pinned,
-            to,
-            &m,
-            palette,
-        ))
+        .child(view::shelf_line("upgrade-shelf", &summary, &krate.pinned, to, &m, palette))
         .into_any_element()
 }
 
 /// The page column: the hero, one facts line, and the upgrade section.
 #[allow(clippy::too_many_arguments)]
-fn page(
-    krate: &release::Crate,
-    symbol: &str,
-    (kind, name): (Kind, &str),
-    lede: &str,
-    to: &str,
-    width: f32,
-    xray: bool,
-    cx: &mut App,
-) -> AnyElement {
+fn page(krate: &release::Crate, symbol: &str, (kind, name): (Kind, &str), lede: &str, to: &str, width: f32, xray: bool, cx: &mut App) -> AnyElement {
     let facet = cx.facet();
     let palette = facet.palette();
     let s = facet.text_scale;
     let m = facet.measure(px(width));
     let lens = release::lens(krate, symbol, to, &Nowhere);
-    let module = symbol
-        .rsplit_once("::")
-        .map_or(symbol, |(owner, _)| owner)
-        .to_owned();
+    let module = symbol.rsplit_once("::").map_or(symbol, |(owner, _)| owner).to_owned();
     div()
         .w(px(width))
         .flex()
@@ -195,49 +117,27 @@ fn page(
                 .flex()
                 .items_center()
                 .gap(px(18.0 * s))
-                .child(
-                    gem(kind)
-                        .size(60.0 * s)
-                        .state(crate::paint::GemState::Normal),
-                )
+                .child(gem(kind).size(60.0 * s).state(crate::paint::GemState::Normal))
                 .child(
                     div()
                         .flex()
                         .flex_col()
                         .min_w_0()
-                        .child(
-                            div()
-                                .set(HERO_NAME, &m)
-                                .text_color(palette.ink0.hsla())
-                                .child(name.to_owned()),
-                        )
-                        .child(
-                            div()
-                                .mt(px(4.0 * s))
-                                .set(ty::LEDE, &m)
-                                .text_color(palette.ink2.hsla())
-                                .child(lede.to_owned()),
-                        ),
+                        .child(div().set(HERO_NAME, &m).text_color(palette.ink0.hsla()).child(name.to_owned()))
+                        .child(div().mt(px(4.0 * s)).set(ty::LEDE, &m).text_color(palette.ink2.hsla()).child(lede.to_owned())),
                 ),
         )
         .child(
             facts(&m, palette)
-                .fact([
-                    Run::Words(format!("{} in ", kind.name()).into()),
-                    Run::Mono(module.into()),
-                ])
+                .fact([Run::Words(format!("{} in ", kind.name()).into()), Run::Mono(module.into())])
                 .fact([Run::Words("used in 59 places".into())])
                 .fact([Run::Yours("7".into()), Run::Words(" in your code".into())]),
         )
-        .child(div().mt(px(10.0 * s)).child(view::section(
-            "upgrade",
-            lens,
-            name.to_owned(),
-            krate.pinned.clone(),
-            &m,
-            &Links::plain(),
-            xray,
-        )))
+        .child(
+            div()
+                .mt(px(10.0 * s))
+                .child(view::section("upgrade", lens, name.to_owned(), krate.pinned.clone(), &m, &Links::plain(), xray)),
+        )
         .into_any_element()
 }
 
@@ -258,16 +158,7 @@ pub(crate) fn value(width: f32, _window: &mut Window, cx: &mut App) -> AnyElemen
                 .flex_1()
                 .pl(px(199.0 * s))
                 .pt(px(62.0 * s))
-                .child(page(
-                    toml(),
-                    "toml::value::Value",
-                    (Kind::Enum, "Value"),
-                    "Representation of a TOML value.",
-                    VIEWED,
-                    column,
-                    false,
-                    cx,
-                )),
+                .child(page(toml(), "toml::value::Value", (Kind::Enum, "Value"), "Representation of a TOML value.", VIEWED, column, false, cx)),
         )
         .into_any_element()
 }
@@ -285,26 +176,8 @@ pub(crate) fn map(width: f32, _window: &mut Window, cx: &mut App) -> AnyElement 
         .gap(px(48.0 * s))
         .px(px(48.0 * s))
         .py(px(40.0 * s))
-        .child(page(
-            krate,
-            "toml::map::Map",
-            (Kind::Struct, "Map"),
-            "Type representing a TOML table.",
-            VIEWED,
-            column,
-            false,
-            cx,
-        ))
-        .child(page(
-            krate,
-            "toml::Deserializer",
-            (Kind::Struct, "Deserializer"),
-            "Deserialization for TOML documents.",
-            VIEWED,
-            column,
-            true,
-            cx,
-        ))
+        .child(page(krate, "toml::map::Map", (Kind::Struct, "Map"), "Type representing a TOML table.", VIEWED, column, false, cx))
+        .child(page(krate, "toml::Deserializer", (Kind::Struct, "Deserializer"), "Deserialization for TOML documents.", VIEWED, column, true, cx))
         .into_any_element()
 }
 
@@ -320,25 +193,7 @@ pub(crate) fn narrow(width: f32, _window: &mut Window, cx: &mut App) -> AnyEleme
         .gap(px(40.0 * s))
         .px(px(16.0 * s))
         .py(px(24.0 * s))
-        .child(page(
-            krate,
-            "toml::map::Map",
-            (Kind::Struct, "Map"),
-            "Type representing a TOML table.",
-            VIEWED,
-            column,
-            false,
-            cx,
-        ))
-        .child(page(
-            krate,
-            "toml::value::Value",
-            (Kind::Enum, "Value"),
-            "Representation of a TOML value.",
-            "0.5.11",
-            column,
-            false,
-            cx,
-        ))
+        .child(page(krate, "toml::map::Map", (Kind::Struct, "Map"), "Type representing a TOML table.", VIEWED, column, false, cx))
+        .child(page(krate, "toml::value::Value", (Kind::Enum, "Value"), "Representation of a TOML value.", "0.5.11", column, false, cx))
         .into_any_element()
 }

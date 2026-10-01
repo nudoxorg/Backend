@@ -243,8 +243,7 @@ fn foreign_key_digest_excludes_display_and_resolved_targets() -> Result<(), Test
 
 #[test]
 fn occurrences_carry_target_kind_confidence_and_owner_relative_span() -> Result<(), TestFailure> {
-    let fragment =
-        backend_semantic::ir_vocabulary::ExternalFragmentId::from_canonical_bytes(b"fragment-a");
+    let fragment = backend_semantic::ir_vocabulary::ExternalFragmentId::from_canonical_bytes(b"fragment-a");
     let declaration = endpoint(b"serialize");
     let target = OccurrenceTarget::Stable(StableRef {
         fragment,

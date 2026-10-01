@@ -5,7 +5,9 @@ use backend_engine::driver::{
     SemanticAuthorityInput, ToolchainSelection, compile,
 };
 use backend_frontend_clang::ClangProject;
-use backend_semantic::ir::{EntityKind, ForeignOrigin, FragmentView, OccurrenceTarget};
+use backend_semantic::ir::{
+    EntityKind, ForeignOrigin, FragmentView, OccurrenceTarget,
+};
 use backend_semantic::vocabulary::{CxxStandard, LanguageProfile, NativeTool, Stage};
 use backend_version::{ContentId, ToolchainDomain};
 use std::{
@@ -185,77 +187,83 @@ fn cross_file_type_use_joins_on_header_package_key() -> Result<(), TestError> {
     for row in &rows {
         if row.owner == drive_fn {
             match row.occurrence.kind {
-                backend_semantic::ir::ReferenceKind::TypeReference => match row.occurrence.target {
-                    OccurrenceTarget::Foreign(key) => {
-                        let ForeignOrigin::Package(lineage) = key.origin else {
-                            return Err(TestError::Missing("package foreign origin"));
-                        };
-                        if lineage.ecosystem != "c" {
-                            return Err(TestError::Missing("c ecosystem"));
+                backend_semantic::ir::ReferenceKind::TypeReference => {
+                    match row.occurrence.target {
+                        OccurrenceTarget::Foreign(key) => {
+                            let ForeignOrigin::Package(lineage) = key.origin else {
+                                return Err(TestError::Missing("package foreign origin"));
+                            };
+                            if lineage.ecosystem != "c" {
+                                return Err(TestError::Missing("c ecosystem"));
+                            }
+                            if lineage.name != "include/workout.h" {
+                                return Err(TestError::Missing("include/workout.h package"));
+                            }
+                            if key.path != "Workout" {
+                                return Err(TestError::Missing("Workout path"));
+                            }
+                            if key.display != "Workout" {
+                                return Err(TestError::Missing("Workout display"));
+                            }
+                            if key.kind != Some(EntityKind::Record) {
+                                return Err(TestError::Missing("Record entity kind"));
+                            }
+                            if row.occurrence.confidence
+                                != backend_semantic::ir::OccurrenceConfidence::Oracle
+                            {
+                                return Err(TestError::Missing("oracle confidence"));
+                            }
+                            workout_type_count += 1;
                         }
-                        if lineage.name != "include/workout.h" {
-                            return Err(TestError::Missing("include/workout.h package"));
-                        }
-                        if key.path != "Workout" {
-                            return Err(TestError::Missing("Workout path"));
-                        }
-                        if key.display != "Workout" {
-                            return Err(TestError::Missing("Workout display"));
-                        }
-                        if key.kind != Some(EntityKind::Record) {
-                            return Err(TestError::Missing("Record entity kind"));
-                        }
-                        if row.occurrence.confidence
-                            != backend_semantic::ir::OccurrenceConfidence::Oracle
-                        {
-                            return Err(TestError::Missing("oracle confidence"));
-                        }
-                        workout_type_count += 1;
+                        _ => {}
                     }
-                    _ => {}
-                },
-                backend_semantic::ir::ReferenceKind::FieldAccess => match row.occurrence.target {
-                    OccurrenceTarget::Foreign(key) => {
-                        let ForeignOrigin::Package(lineage) = key.origin else {
-                            return Err(TestError::Missing("package foreign origin"));
-                        };
-                        if lineage.ecosystem != "c" || lineage.name != "include/workout.h" {
-                            return Err(TestError::Missing("c:include/workout.h package"));
+                }
+                backend_semantic::ir::ReferenceKind::FieldAccess => {
+                    match row.occurrence.target {
+                        OccurrenceTarget::Foreign(key) => {
+                            let ForeignOrigin::Package(lineage) = key.origin else {
+                                return Err(TestError::Missing("package foreign origin"));
+                            };
+                            if lineage.ecosystem != "c" || lineage.name != "include/workout.h" {
+                                return Err(TestError::Missing("c:include/workout.h package"));
+                            }
+                            if key.path != "note" || key.display != "note" {
+                                return Err(TestError::Missing("note path/display"));
+                            }
+                            if key.kind != Some(EntityKind::Field) {
+                                return Err(TestError::Missing("field entity kind"));
+                            }
+                            if row.occurrence.confidence
+                                != backend_semantic::ir::OccurrenceConfidence::Oracle
+                            {
+                                return Err(TestError::Missing("oracle confidence"));
+                            }
+                            field_read = true;
                         }
-                        if key.path != "note" || key.display != "note" {
-                            return Err(TestError::Missing("note path/display"));
-                        }
-                        if key.kind != Some(EntityKind::Field) {
-                            return Err(TestError::Missing("field entity kind"));
-                        }
-                        if row.occurrence.confidence
-                            != backend_semantic::ir::OccurrenceConfidence::Oracle
-                        {
-                            return Err(TestError::Missing("oracle confidence"));
-                        }
-                        field_read = true;
+                        _ => {}
                     }
-                    _ => {}
-                },
-                backend_semantic::ir::ReferenceKind::FunctionCall => match row.occurrence.target {
-                    OccurrenceTarget::Foreign(key) => {
-                        let ForeignOrigin::Package(lineage) = key.origin else {
-                            return Err(TestError::Missing("package foreign origin"));
-                        };
-                        if lineage.ecosystem != "c" || lineage.name != "include/workout.h" {
-                            return Err(TestError::Missing("c:include/workout.h package"));
+                }
+                backend_semantic::ir::ReferenceKind::FunctionCall => {
+                    match row.occurrence.target {
+                        OccurrenceTarget::Foreign(key) => {
+                            let ForeignOrigin::Package(lineage) = key.origin else {
+                                return Err(TestError::Missing("package foreign origin"));
+                            };
+                            if lineage.ecosystem != "c" || lineage.name != "include/workout.h" {
+                                return Err(TestError::Missing("c:include/workout.h package"));
+                            }
+                            if key.path != "set_note" || key.display != "set_note" {
+                                return Err(TestError::Missing("set_note path/display"));
+                            }
+                            if key.kind != Some(EntityKind::Function) {
+                                return Err(TestError::Missing("function entity kind"));
+                            }
+                            method_call = true;
                         }
-                        if key.path != "set_note" || key.display != "set_note" {
-                            return Err(TestError::Missing("set_note path/display"));
-                        }
-                        if key.kind != Some(EntityKind::Function) {
-                            return Err(TestError::Missing("function entity kind"));
-                        }
-                        method_call = true;
+                        OccurrenceTarget::Stable(_) => {}
+                        _ => {}
                     }
-                    OccurrenceTarget::Stable(_) => {}
-                    _ => {}
-                },
+                }
                 backend_semantic::ir::ReferenceKind::VariableUse => {
                     if let OccurrenceTarget::Foreign(key) = row.occurrence.target {
                         if matches!(key.origin, ForeignOrigin::Universe { .. })
@@ -263,7 +271,9 @@ fn cross_file_type_use_joins_on_header_package_key() -> Result<(), TestError> {
                         {
                             system_reference = true;
                         }
-                        if matches!(key.origin, ForeignOrigin::Package(_)) && key.path == "printf" {
+                        if matches!(key.origin, ForeignOrigin::Package(_))
+                            && key.path == "printf"
+                        {
                             return Err(TestError::Missing(
                                 "printf must not retarget to a package key",
                             ));

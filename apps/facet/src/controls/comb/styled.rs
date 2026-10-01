@@ -10,9 +10,8 @@ use super::super::GRIP;
 use super::super::kbd::{KbdSize, KbdVoice, kbd};
 use super::super::state::{pointer_away, track, track_n, watch_pointer};
 use super::{
-    CombState, CombStyle, Layout, Lens, NOTE, NOTE_HEIGHT, NOTE_MONO, OnSelect, Release,
-    VersionComb, VersionSelected, alpha, drop_tip, interpolate, let_go, live_hover, nearest,
-    step_key, tip_anchor, tip_content,
+    CombState, CombStyle, Layout, Lens, NOTE, NOTE_HEIGHT, NOTE_MONO, OnSelect, Release, VersionComb, VersionSelected,
+    alpha, drop_tip, interpolate, let_go, live_hover, nearest, step_key, tip_anchor, tip_content,
 };
 use crate::Set;
 use crate::marks::semver::{self, Tick};
@@ -26,10 +25,9 @@ use crate::theme::ActiveFacet;
 use crate::tokens::motion::Bezier;
 use crate::tokens::{Face, Palette, TypeRole};
 use gpui::{
-    AnyElement, App, Bounds, DispatchPhase, ElementId, Hsla, InteractiveElement, IntoElement,
-    KeyDownEvent, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement, Pixels, SharedString, StatefulInteractiveElement, Styled, Window, canvas, div,
-    px,
+    AnyElement, App, Bounds, DispatchPhase, ElementId, Hsla, InteractiveElement, IntoElement, KeyDownEvent,
+    MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, SharedString,
+    StatefulInteractiveElement, Styled, Window, canvas, div, px,
 };
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -93,14 +91,7 @@ pub(crate) struct Geometry {
 }
 
 impl Geometry {
-    pub(crate) fn new(
-        style: CombStyle,
-        n: usize,
-        width: f32,
-        scale: f32,
-        number: f32,
-        head: f32,
-    ) -> Self {
+    pub(crate) fn new(style: CombStyle, n: usize, width: f32, scale: f32, number: f32, head: f32) -> Self {
         match style {
             CombStyle::Rider => Self {
                 layout: Layout::new(n, width - number, scale),
@@ -210,38 +201,22 @@ fn paint(frame: &Frame, bounds: Bounds<Pixels>, palette: &Palette, window: &mut 
     let ink0: Hsla = palette.ink0.into();
     let mint: Hsla = palette.mint.base.into();
     let peri: Hsla = palette.peri.base.into();
-    let rect = |fill: &mut Fill, x: f32, w: f32, h: f32| {
-        fill.poly(&Poly::rect(x0 + x - w * 0.5, base - h, w, h))
-    };
+    let rect = |fill: &mut Fill, x: f32, w: f32, h: f32| fill.poly(&Poly::rect(x0 + x - w * 0.5, base - h, w, h));
     if frame.style == CombStyle::Band {
         // One hairline from the first release to the newest.
         if n > 1 {
             let mut line = Fill::new();
-            line.poly(&Poly::rect(
-                x0 + frame.xs[0],
-                base - s,
-                frame.xs[n - 1] - frame.xs[0],
-                s,
-            ));
+            line.poly(&Poly::rect(x0 + frame.xs[0], base - s, frame.xs[n - 1] - frame.xs[0], s));
             line.paint(window, alpha(palette.ink4.into(), 0.85));
         }
         for i in 0..n {
-            if frame.kinds[i] != Tick::Breaking
-                || Some(i) == frame.pinned
-                || frame.also.contains(&i)
-            {
+            if frame.kinds[i] != Tick::Breaking || Some(i) == frame.pinned || frame.also.contains(&i) {
                 continue;
             }
             let after = frame.pinned.is_some_and(|p| i > p);
             let mut fill = Fill::new();
             rect(&mut fill, frame.xs[i], s, 6.0 * s);
-            fill.paint(
-                window,
-                alpha(
-                    if after { ink1 } else { ink3 },
-                    if after { 0.9 } else { 0.7 },
-                ),
-            );
+            fill.paint(window, alpha(if after { ink1 } else { ink3 }, if after { 0.9 } else { 0.7 }));
         }
         for &i in frame.also.iter() {
             hollow(window, x0 + frame.xs[i], base, 3.0 * s, 8.0 * s, s, mint);
@@ -259,9 +234,7 @@ fn paint(frame: &Frame, bounds: Bounds<Pixels>, palette: &Palette, window: &mut 
         }
         return;
     }
-    let after_span = frame.pinned.map_or(1.0, |p| {
-        (n.saturating_sub(1).saturating_sub(p)).max(1) as f32
-    });
+    let after_span = frame.pinned.map_or(1.0, |p| (n.saturating_sub(1).saturating_sub(p)).max(1) as f32);
     let hair = if frame.dense { s.max(1.0) } else { 1.5 * s };
     for i in 0..n {
         let x = frame.xs[i];
@@ -276,9 +249,7 @@ fn paint(frame: &Frame, bounds: Bounds<Pixels>, palette: &Palette, window: &mut 
         let kind = frame.kinds[i];
         let after = frame.pinned.is_some_and(|p| i > p);
         #[allow(clippy::cast_precision_loss)]
-        let fade = frame.pinned.map_or(0.62, |p| {
-            0.62 - 0.4 * ((i.saturating_sub(p)) as f32 / after_span)
-        });
+        let fade = frame.pinned.map_or(0.62, |p| 0.62 - 0.4 * ((i.saturating_sub(p)) as f32 / after_span));
         let (w, h, mut ink, mut a) = match kind {
             Tick::Pre => (hair, 5.0 * s, ink3, 0.6),
             Tick::Patch => (hair, 4.0 * s, ink3, if frame.dense { 0.22 } else { 0.42 }),
@@ -328,12 +299,7 @@ fn paint(frame: &Frame, bounds: Bounds<Pixels>, palette: &Palette, window: &mut 
         if shown > 0.001 {
             let x = interpolate(&frame.xs, frame.ring);
             let (w, h) = (2.0 * s, 17.0 * s);
-            let ring = Poly::rect(
-                x0 + x - w * 0.5 - 2.0 * s,
-                base - h - 2.0 * s,
-                w + 4.0 * s,
-                h + 2.0 * s,
-            );
+            let ring = Poly::rect(x0 + x - w * 0.5 - 2.0 * s, base - h - 2.0 * s, w + 4.0 * s, h + 2.0 * s);
             let mut soft = Fill::new();
             for piece in ring.offset(-s).stroke_ring(2.0 * s) {
                 soft.poly(&piece);
@@ -402,9 +368,7 @@ fn number(
     cx: &mut App,
 ) -> AnyElement {
     let s = measure.scale();
-    let odo = window.use_keyed_state(track(id, "odometer"), cx, |_, _| {
-        RefCell::new(Odometer::default())
-    });
+    let odo = window.use_keyed_state(track(id, "odometer"), cx, |_, _| RefCell::new(Odometer::default()));
     let motion = Motion::scoped(ElementId::View(odo.entity_id()), cx);
     let parts = wheels(version);
     {
@@ -441,29 +405,13 @@ fn number(
         (o.rolling.clone(), o.up)
     };
     let whole = rolling.len() == 1 && parts.len() > 1;
-    let wheel = |j: usize,
-                 new: &str,
-                 old: Option<&String>,
-                 color: Hsla,
-                 window: &mut Window,
-                 cx: &mut App|
-     -> AnyElement {
+    let wheel = |j: usize, new: &str, old: Option<&String>, color: Hsla, window: &mut Window, cx: &mut App| -> AnyElement {
         let Some(old) = old else {
-            return div()
-                .h(px(line))
-                .text_color(color)
-                .child(new.to_owned())
-                .into_any_element();
+            return div().h(px(line)).text_color(color).child(new.to_owned()).into_any_element();
         };
-        let v = motion
-            .animate(track_n(id, "wheel", j), 1.0, Spec::Spring(REEL), window, cx)
-            .clamp(0.0, 1.0);
+        let v = motion.animate(track_n(id, "wheel", j), 1.0, Spec::Spring(REEL), window, cx).clamp(0.0, 1.0);
         if v >= 0.999 {
-            return div()
-                .h(px(line))
-                .text_color(color)
-                .child(new.to_owned())
-                .into_any_element();
+            return div().h(px(line)).text_color(color).child(new.to_owned()).into_any_element();
         }
         #[allow(clippy::cast_precision_loss)]
         let width = advance * new.chars().count().max(old.chars().count()) as f32;
@@ -473,22 +421,8 @@ fn number(
             .overflow_hidden()
             .h(px(line))
             .w(px(width))
-            .child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .top(px(-sign * v * line))
-                    .text_color(color)
-                    .child(old.clone()),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .top(px(sign * (1.0 - v) * line))
-                    .text_color(color)
-                    .child(new.to_owned()),
-            )
+            .child(div().absolute().left_0().top(px(-sign * v * line)).text_color(color).child(old.clone()))
+            .child(div().absolute().left_0().top(px(sign * (1.0 - v) * line)).text_color(color).child(new.to_owned()))
             .into_any_element()
     };
     let mut digits = div().flex().items_end().set(NUMBER, measure);
@@ -509,23 +443,8 @@ fn number(
         .flex()
         .items_end()
         .pl(px(advance * 0.75))
-        .child(
-            div()
-                .absolute()
-                .left_0()
-                .bottom_0()
-                .w(px(2.0 * s))
-                .h(px(17.0 * s))
-                .bg(tooth),
-        )
-        .child(probe::text(
-            track(id, "number"),
-            content,
-            measure.role(NUMBER),
-            1.0,
-            TextOverflow::Clip,
-            digits,
-        ))
+        .child(div().absolute().left_0().bottom_0().w(px(2.0 * s)).h(px(17.0 * s)).bg(tooth))
+        .child(probe::text(track(id, "number"), content, measure.role(NUMBER), 1.0, TextOverflow::Clip, digits))
         .into_any_element()
 }
 
@@ -557,15 +476,7 @@ pub(super) fn render(comb: VersionComb, window: &mut Window, cx: &mut App) -> An
     let motion = Motion::scoped(ElementId::View(state.entity_id()), cx);
     let (focus, lens, hot, dragging, drawn, sheet_opened, painted) = {
         let st = state.read(cx);
-        (
-            st.focus.clone(),
-            st.lens,
-            st.hot.filter(|i| *i < n),
-            st.dragging,
-            st.drawn.clone(),
-            st.sheet_tip.clone(),
-            st.last_bounds.clone(),
-        )
+        (st.focus.clone(), st.lens, st.hot.filter(|i| *i < n), st.dragging, st.drawn.clone(), st.sheet_tip.clone(), st.last_bounds.clone())
     };
     let pinned = comb.pinned.filter(|i| *i < n);
     let selected = comb.selected.or(pinned).unwrap_or(n - 1).min(n - 1);
@@ -573,23 +484,14 @@ pub(super) fn render(comb: VersionComb, window: &mut Window, cx: &mut App) -> An
     // The head walks from where it was to the release chosen.
     let was = drawn.get();
     let distance = was.map_or(0, |w: usize| w.abs_diff(selected));
-    let head_spec = if dragging {
-        Spec::Spring(GRIP)
-    } else {
-        Spec::tween(walk(distance), TIMELINE)
-    };
+    let head_spec = if dragging { Spec::Spring(GRIP) } else { Spec::tween(walk(distance), TIMELINE) };
     #[allow(clippy::cast_precision_loss)]
     let head = motion.animate(track(&id, "head"), selected as f32, head_spec, window, cx);
     drawn.set(Some(selected));
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let head_at = (head.round().max(0.0) as usize).min(n - 1);
     let shown = releases[head_at].version.clone();
-    let advance = f32::from(probe::natural_width(
-        &SharedString::new_static("0"),
-        measure.role(NUMBER),
-        1.0,
-        window,
-    ));
+    let advance = f32::from(probe::natural_width(&SharedString::new_static("0"), measure.role(NUMBER), 1.0, window));
     #[allow(clippy::cast_precision_loss)]
     let number_w = motion.animate(
         track(&id, "number-w"),
@@ -606,47 +508,21 @@ pub(super) fn render(comb: VersionComb, window: &mut Window, cx: &mut App) -> An
         f32::from(probe::natural_width(v, measure.role(LATEST), 1.0, window)) + 10.0 * s
     });
     let width = (f32::from(measure.width()) - latest_w).max(40.0 * s);
-    let height = if style == CombStyle::Band {
-        20.0 * s
-    } else {
-        28.0 * s
-    };
+    let height = if style == CombStyle::Band { 20.0 * s } else { 28.0 * s };
     let geometry = Geometry::new(style, n, width, s, number_w, head);
     let strength = motion.animate(
         track(&id, "lens"),
-        if geometry.layout.needs_lens() && lens.is_some() {
-            1.0
-        } else {
-            0.0
-        },
+        if geometry.layout.needs_lens() && lens.is_some() { 1.0 } else { 0.0 },
         Spec::Spring(SNAPPY),
         window,
         cx,
     );
     let xs: Rc<[f32]> = geometry.xs(lens.as_ref(), strength).into();
     let head_x = geometry.head_x(lens.as_ref(), strength);
-    let hot_t = motion.animate(
-        track(&id, "hot"),
-        if hot.is_some() { 1.0 } else { 0.0 },
-        spec::HOVER,
-        window,
-        cx,
-    );
-    let focus_t = motion.animate(
-        track(&id, "focus"),
-        if focused { 1.0 } else { 0.0 },
-        spec::HOVER,
-        window,
-        cx,
-    );
+    let hot_t = motion.animate(track(&id, "hot"), if hot.is_some() { 1.0 } else { 0.0 }, spec::HOVER, window, cx);
+    let focus_t = motion.animate(track(&id, "focus"), if focused { 1.0 } else { 0.0 }, spec::HOVER, window, cx);
     let is_away = pinned.is_some_and(|pin| pin != selected);
-    let away = motion.animate(
-        track(&id, "away"),
-        if is_away { 1.0 } else { 0.0 },
-        spec::REVEAL,
-        window,
-        cx,
-    );
+    let away = motion.animate(track(&id, "away"), if is_away { 1.0 } else { 0.0 }, spec::REVEAL, window, cx);
     let versions: Vec<&str> = releases.iter().map(|r| r.version.as_ref()).collect();
     let kinds: Rc<[Tick]> = semver::kinds(&versions).into();
     let also_idx: Rc<[usize]> = comb.also.iter().map(|t| t.index).collect();
@@ -672,16 +548,13 @@ pub(super) fn render(comb: VersionComb, window: &mut Window, cx: &mut App) -> An
     };
     let live = !comb.number_look && comb.also_look.is_none();
     let claim = live.then(|| {
-        (
-            id.clone(),
-            crate::probe::Target {
-                hovered: hot.is_some() && !dragging,
-                pressed: dragging,
-                focused,
-                focusable: true,
-                clickable: true,
-            },
-        )
+        (id.clone(), crate::probe::Target {
+            hovered: hot.is_some() && !dragging,
+            pressed: dragging,
+            focused,
+            focusable: true,
+            clickable: true,
+        })
     });
     let on_select: Option<OnSelect> = comb.on_select.clone();
     // The tick canvas, with the pointer's hover, lens, tip and drag.
@@ -714,8 +587,7 @@ pub(super) fn render(comb: VersionComb, window: &mut Window, cx: &mut App) -> An
                     float::anchor(&key, tip_anchor(bounds, frame.xs[i], below), window, cx);
                 }
                 watch_pointer(window);
-                let pointer_gone =
-                    pointer_away(window, cx) || !bounds.contains(&window.mouse_position());
+                let pointer_gone = pointer_away(window, cx) || !bounds.contains(&window.mouse_position());
                 if pointer_gone && live_hover(&state, cx) {
                     let state = state.clone();
                     window.defer(cx, move |window, cx| let_go(&state, false, window, cx));
@@ -747,26 +619,17 @@ pub(super) fn render(comb: VersionComb, window: &mut Window, cx: &mut App) -> An
                         return;
                     }
                     let x = f32::from(event.position.x) - x0;
-                    let lens = geo
-                        .layout
-                        .needs_lens()
-                        .then(|| geo.layout.follow(st.lens, geo.to_layout(x, head_x)));
-                    let targets: Vec<f32> =
-                        lens.map_or_else(|| xs_now.to_vec(), |lens| geo.xs(Some(&lens), 1.0));
+                    let lens = geo.layout.needs_lens().then(|| geo.layout.follow(st.lens, geo.to_layout(x, head_x)));
+                    let targets: Vec<f32> = lens.map_or_else(|| xs_now.to_vec(), |lens| geo.xs(Some(&lens), 1.0));
                     let hot = geo.hit(&targets, head_x, x);
                     // On the number or an also tooth, their own cards speak:
                     // no tick tip over them.
                     let on_number = geo.gap > 0.0 && x >= head_x && x <= head_x + geo.gap
                         || geo.offset > 0.0 && x < geo.offset;
-                    let on_tooth = teeth
-                        .iter()
-                        .any(|&t| (targets.get(t).copied().unwrap_or(-1e9) - x).abs() < 5.0 * s);
+                    let on_tooth = teeth.iter().any(|&t| (targets.get(t).copied().unwrap_or(-1e9) - x).abs() < 5.0 * s);
                     let quiet = on_number || on_tooth;
-                    let (was, dragging, old_tip, old_keyboard) =
-                        (st.hot, st.dragging, st.tip.clone(), st.tip_keyboard);
-                    let tip_key = hot.map(|i| {
-                        ElementId::NamedChild(Arc::new(comb_id.clone()), format!("t{i}").into())
-                    });
+                    let (was, dragging, old_tip, old_keyboard) = (st.hot, st.dragging, st.tip.clone(), st.tip_keyboard);
+                    let tip_key = hot.map(|i| ElementId::NamedChild(Arc::new(comb_id.clone()), format!("t{i}").into()));
                     moved.update(cx, |st, cx| {
                         st.lens = lens;
                         st.hot = hot;
@@ -779,17 +642,10 @@ pub(super) fn render(comb: VersionComb, window: &mut Window, cx: &mut App) -> An
                         if let Some(old) = old_tip {
                             drop_tip(&old, old_keyboard, window, cx);
                         }
-                        if let (Some(i), Some(key), false, false) = (hot, tip_key, dragging, quiet)
-                        {
+                        if let (Some(i), Some(key), false, false) = (hot, tip_key, dragging, quiet) {
                             let anchor = tip_anchor(bounds, targets[i], below);
                             float::rest(
-                                FloatRequest::new(
-                                    key,
-                                    anchor,
-                                    FloatKind::Tip,
-                                    tip_content(&rel[i]),
-                                )
-                                .side(Side::Below),
+                                FloatRequest::new(key, anchor, FloatKind::Tip, tip_content(&rel[i])).side(Side::Below),
                                 window,
                                 cx,
                             );
@@ -834,19 +690,9 @@ pub(super) fn render(comb: VersionComb, window: &mut Window, cx: &mut App) -> An
         (Some(_), true) => palette.peri.base.into(),
         (None, _) => palette.ink2.into(),
     };
-    let ink: Hsla = if viewing {
-        palette.peri_hi.into()
-    } else {
-        palette.ink0.into()
-    };
-    let number_el = number(
-        &id, &shown, head_at, tooth, ink, advance, &measure, palette, window, cx,
-    );
-    let number_left = if style == CombStyle::Rider {
-        head_x
-    } else {
-        0.0
-    };
+    let ink: Hsla = if viewing { palette.peri_hi.into() } else { palette.ink0.into() };
+    let number_el = number(&id, &shown, head_at, tooth, ink, advance, &measure, palette, window, cx);
+    let number_left = if style == CombStyle::Rider { head_x } else { 0.0 };
     let number_key = track(&id, "number-card");
     let number_el: AnyElement = match comb.number_card.clone() {
         Some(card) => {
@@ -855,11 +701,7 @@ pub(super) fn render(comb: VersionComb, window: &mut Window, cx: &mut App) -> An
                 number_key.clone(),
                 move |bounds| {
                     let card = card.clone();
-                    FloatRequest::new(key.clone(), bounds, FloatKind::Peek, move |m, w, cx| {
-                        card(m, w, cx)
-                    })
-                    .unfurl()
-                    .hang_from_start()
+                    FloatRequest::new(key.clone(), bounds, FloatKind::Peek, move |m, w, cx| card(m, w, cx)).unfurl().hang_from_start()
                 },
                 number_el,
             )
@@ -874,63 +716,32 @@ pub(super) fn render(comb: VersionComb, window: &mut Window, cx: &mut App) -> An
         .h(px(height))
         .cursor_pointer()
         .child(canvas_el)
-        .child(
-            div()
-                .absolute()
-                .left(px(number_left))
-                .bottom(px(3.0 * s))
-                .child(number_el),
-        );
+        .child(div().absolute().left(px(number_left)).bottom(px(3.0 * s)).child(number_el));
     for tooth in comb.also.iter() {
-        let key =
-            ElementId::NamedChild(Arc::new(id.clone()), format!("also-{}", tooth.index).into());
+        let key = ElementId::NamedChild(Arc::new(id.clone()), format!("also-{}", tooth.index).into());
         let card = tooth.card.clone();
         let request_key = key.clone();
         let x = xs[tooth.index];
         comb_box = comb_box.child(
-            div()
-                .absolute()
-                .left(px(x - 5.0 * s))
-                .bottom(px(3.0 * s))
-                .child(float::trigger(
-                    key,
-                    move |bounds| {
-                        let card = card.clone();
-                        FloatRequest::new(
-                            request_key.clone(),
-                            bounds,
-                            FloatKind::Peek,
-                            move |m, w, cx| card(m, w, cx),
-                        )
-                        .unfurl()
-                        .hang_from_start()
-                    },
-                    div().w(px(10.0 * s)).h(px(18.0 * s)),
-                )),
+            div().absolute().left(px(x - 5.0 * s)).bottom(px(3.0 * s)).child(float::trigger(
+                key,
+                move |bounds| {
+                    let card = card.clone();
+                    FloatRequest::new(request_key.clone(), bounds, FloatKind::Peek, move |m, w, cx| card(m, w, cx)).unfurl().hang_from_start()
+                },
+                div().w(px(10.0 * s)).h(px(18.0 * s)),
+            )),
         );
     }
     // State sheets: open the number's or a tooth's card on the first paint.
     let sheet_card: Option<(ElementId, CardAt)> = if comb.number_look {
-        comb.number_card.clone().map(|card| {
-            (
-                number_key.clone(),
-                CardAt {
-                    card,
-                    x: number_left,
-                    w: number_w,
-                },
-            )
-        })
+        comb.number_card.clone().map(|card| (number_key.clone(), CardAt { card, x: number_left, w: number_w }))
     } else {
         comb.also_look.and_then(|i| {
             comb.also.iter().find(|t| t.index == i).map(|t| {
                 (
                     ElementId::NamedChild(Arc::new(id.clone()), format!("also-{i}").into()),
-                    CardAt {
-                        card: t.card.clone(),
-                        x: xs[i] - 5.0 * s,
-                        w: 10.0 * s,
-                    },
+                    CardAt { card: t.card.clone(), x: xs[i] - 5.0 * s, w: 10.0 * s },
                 )
             })
         })
@@ -938,30 +749,17 @@ pub(super) fn render(comb: VersionComb, window: &mut Window, cx: &mut App) -> An
     if let Some((key, at)) = sheet_card {
         let opened = sheet_opened.clone();
         comb_box = comb_box.child(
-            canvas(
-                |_, _, _| {},
-                move |bounds, (), window, cx| {
-                    if !opened.replace(true) {
-                        let anchor = Bounds::new(
-                            gpui::point(
-                                bounds.origin.x + px(at.x),
-                                bounds.origin.y + bounds.size.height - px(20.0 * s),
-                            ),
-                            gpui::size(px(at.w), px(17.0 * s)),
-                        );
-                        let card = at.card.clone();
-                        let request = FloatRequest::new(
-                            key.clone(),
-                            anchor,
-                            FloatKind::Peek,
-                            move |m, w, cx| card(m, w, cx),
-                        )
-                        .unfurl()
-                        .hang_from_start();
-                        window.defer(cx, move |window, cx| float::rest(request, window, cx));
-                    }
-                },
-            )
+            canvas(|_, _, _| {}, move |bounds, (), window, cx| {
+                if !opened.replace(true) {
+                    let anchor = Bounds::new(
+                        gpui::point(bounds.origin.x + px(at.x), bounds.origin.y + bounds.size.height - px(20.0 * s)),
+                        gpui::size(px(at.w), px(17.0 * s)),
+                    );
+                    let card = at.card.clone();
+                    let request = FloatRequest::new(key.clone(), anchor, FloatKind::Peek, move |m, w, cx| card(m, w, cx)).unfurl().hang_from_start();
+                    window.defer(cx, move |window, cx| float::rest(request, window, cx));
+                }
+            })
             .absolute()
             .top_0()
             .left_0()
@@ -974,31 +772,28 @@ pub(super) fn render(comb: VersionComb, window: &mut Window, cx: &mut App) -> An
     let down_painted = painted.clone();
     let down_geo = geometry.clone();
     let down_xs = xs.clone();
-    let comb_box = comb_box.on_mouse_down(
-        MouseButton::Left,
-        move |event: &MouseDownEvent, window, cx| {
-            let bounds = down_painted.get();
-            let x = f32::from(event.position.x - bounds.origin.x);
-            let at = down_geo.hit(&down_xs, head_x, x);
-            let (tip, keyboard) = {
-                let st = down_state.read(cx);
-                (st.tip.clone(), st.tip_keyboard)
-            };
-            if let Some(tip) = tip {
-                drop_tip(&tip, keyboard, window, cx);
-            }
-            down_state.update(cx, |st, cx| {
-                st.dragging = true;
-                st.hot = at;
-                st.tip = None;
-                st.tip_at = None;
-                cx.notify();
-            });
-            if let (Some(i), Some(select)) = (at, &down_select) {
-                select(&VersionSelected(down_releases[i].id.clone()), window, cx);
-            }
-        },
-    );
+    let comb_box = comb_box.on_mouse_down(MouseButton::Left, move |event: &MouseDownEvent, window, cx| {
+        let bounds = down_painted.get();
+        let x = f32::from(event.position.x - bounds.origin.x);
+        let at = down_geo.hit(&down_xs, head_x, x);
+        let (tip, keyboard) = {
+            let st = down_state.read(cx);
+            (st.tip.clone(), st.tip_keyboard)
+        };
+        if let Some(tip) = tip {
+            drop_tip(&tip, keyboard, window, cx);
+        }
+        down_state.update(cx, |st, cx| {
+            st.dragging = true;
+            st.hot = at;
+            st.tip = None;
+            st.tip_at = None;
+            cx.notify();
+        });
+        if let (Some(i), Some(select)) = (at, &down_select) {
+            select(&VersionSelected(down_releases[i].id.clone()), window, cx);
+        }
+    });
     let mut row = div().flex().items_end().child(comb_box);
     if let Some(latest) = latest {
         row = row.child(
@@ -1014,9 +809,7 @@ pub(super) fn render(comb: VersionComb, window: &mut Window, cx: &mut App) -> An
     let note = pinned.filter(|_| away > 0.001).map(|pin| {
         // Away, it names where you went (the number rides there); on the way
         // home, while the line rolls away, the release the head is leaving.
-        let viewing = releases[if selected != pin { selected } else { head_at }]
-            .version
-            .clone();
+        let viewing = releases[if selected != pin { selected } else { head_at }].version.clone();
         let pinned_version = releases[pin].version.clone();
         let back_to = releases[pin].id.clone();
         let select = on_select.clone();
@@ -1028,24 +821,9 @@ pub(super) fn render(comb: VersionComb, window: &mut Window, cx: &mut App) -> An
             .mt(px(10.0 * s * away))
             .h(px((NOTE_HEIGHT - 10.0) * s * away))
             .overflow_hidden()
-            .child(
-                div()
-                    .set(NOTE, &measure)
-                    .text_color(palette.ink3.hsla())
-                    .child("viewing"),
-            )
-            .child(
-                div()
-                    .set(NOTE_MONO, &measure)
-                    .text_color(palette.peri_hi.hsla())
-                    .child(viewing),
-            )
-            .child(
-                div()
-                    .set(NOTE, &measure)
-                    .text_color(palette.ink4.hsla())
-                    .child("·"),
-            )
+            .child(div().set(NOTE, &measure).text_color(palette.ink3.hsla()).child("viewing"))
+            .child(div().set(NOTE_MONO, &measure).text_color(palette.peri_hi.hsla()).child(viewing))
+            .child(div().set(NOTE, &measure).text_color(palette.ink4.hsla()).child("·"))
             .child(
                 div()
                     .id("pin")
@@ -1053,18 +831,8 @@ pub(super) fn render(comb: VersionComb, window: &mut Window, cx: &mut App) -> An
                     .items_center()
                     .gap(px(6.0 * s))
                     .cursor_pointer()
-                    .child(
-                        div()
-                            .set(NOTE, &measure)
-                            .text_color(palette.ink3.hsla())
-                            .child("you pin"),
-                    )
-                    .child(
-                        div()
-                            .set(NOTE_MONO, &measure)
-                            .text_color(palette.mint.base.hsla())
-                            .child(pinned_version),
-                    )
+                    .child(div().set(NOTE, &measure).text_color(palette.ink3.hsla()).child("you pin"))
+                    .child(div().set(NOTE_MONO, &measure).text_color(palette.mint.base.hsla()).child(pinned_version))
                     .on_click(move |_, window, cx| {
                         if let Some(select) = &select {
                             select(&VersionSelected(back_to.clone()), window, cx);
@@ -1072,11 +840,7 @@ pub(super) fn render(comb: VersionComb, window: &mut Window, cx: &mut App) -> An
                     }),
             )
             .child(div().w(px(8.0 * s)))
-            .child(
-                kbd("esc", &measure)
-                    .voice(KbdVoice::Quiet)
-                    .size(KbdSize::Small),
-            )
+            .child(kbd("esc", &measure).voice(KbdVoice::Quiet).size(KbdSize::Small))
     });
     let key_releases = releases.clone();
     let key_select = on_select.clone();
@@ -1123,8 +887,7 @@ pub(super) fn render(comb: VersionComb, window: &mut Window, cx: &mut App) -> An
                 let bounds = key_painted.get();
                 let away = pinned.is_some_and(|pin| pin != next);
                 let below = if away { NOTE_HEIGHT * s } else { 0.0 };
-                let tip =
-                    ElementId::NamedChild(Arc::new(key_id.clone()), format!("t{next}").into());
+                let tip = ElementId::NamedChild(Arc::new(key_id.clone()), format!("t{next}").into());
                 let (old, old_keyboard) = {
                     let st = key_state.read(cx);
                     (st.tip.clone(), st.tip_keyboard)
@@ -1142,13 +905,8 @@ pub(super) fn render(comb: VersionComb, window: &mut Window, cx: &mut App) -> An
                 });
                 let x = key_xs.get(next).copied().unwrap_or_default();
                 float::open(
-                    FloatRequest::new(
-                        tip,
-                        tip_anchor(bounds, x, below),
-                        FloatKind::Tip,
-                        tip_content(&key_releases[next]),
-                    )
-                    .side(Side::Below),
+                    FloatRequest::new(tip, tip_anchor(bounds, x, below), FloatKind::Tip, tip_content(&key_releases[next]))
+                        .side(Side::Below),
                     window,
                     cx,
                 );
@@ -1179,30 +937,14 @@ mod tests {
         let g = Geometry::new(CombStyle::Rider, 10, 290.0, 1.0, 50.0, 4.0);
         let xs = g.xs(None, 0.0);
         let head_x = g.head_x(None, 0.0);
-        assert!(
-            (head_x - xs[4]).abs() < 1e-3,
-            "the number is release 4's tooth"
-        );
-        assert!(
-            xs[5] >= head_x + 50.0 - 1e-3,
-            "later releases stand clear of the number"
-        );
-        assert!(
-            (xs[9] - 290.0).abs() < 1e-3 && xs[0].abs() < 1e-3,
-            "the comb spans its width"
-        );
-        assert_eq!(
-            g.hit(&xs, head_x, head_x + 20.0),
-            Some(4),
-            "the number means its own release"
-        );
+        assert!((head_x - xs[4]).abs() < 1e-3, "the number is release 4's tooth");
+        assert!(xs[5] >= head_x + 50.0 - 1e-3, "later releases stand clear of the number");
+        assert!((xs[9] - 290.0).abs() < 1e-3 && xs[0].abs() < 1e-3, "the comb spans its width");
+        assert_eq!(g.hit(&xs, head_x, head_x + 20.0), Some(4), "the number means its own release");
         // Half-way to release 5, release 5 is crossing under the number.
         let mid = Geometry::new(CombStyle::Rider, 10, 290.0, 1.0, 50.0, 4.5);
         let (xs, hx) = (mid.xs(None, 0.0), mid.head_x(None, 0.0));
-        assert!(
-            mid.under_number(xs[5], hx),
-            "the crossing tick hides under the number"
-        );
+        assert!(mid.under_number(xs[5], hx), "the crossing tick hides under the number");
     }
 
     #[test]

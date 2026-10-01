@@ -6,15 +6,11 @@
 //! after a neutral tail it checks that nothing asks for frames and that the
 //! pixels equal a fresh boot straight into the same final state.
 
-#![allow(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)]
+#![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 
 use super::{FloatKind, FloatRequest, Side, state};
-use crate::Typeset;
 use crate::gallery;
+use crate::Typeset;
 use crate::measure::Set;
 use crate::motion;
 use crate::theme::{ActiveFacet, Facet};
@@ -77,18 +73,11 @@ fn path_of(key: &ElementId) -> Option<String> {
 }
 
 fn request(path: &str, anchor: Bounds<Pixels>) -> FloatRequest {
-    let side = if path.contains('/') {
-        Side::Right
-    } else {
-        Side::Below
-    };
+    let side = if path.contains('/') { Side::Right } else { Side::Below };
     let owned = path.to_owned();
-    FloatRequest::new(
-        key_of(path),
-        anchor,
-        kind_of(path),
-        move |measure, window, cx| content(&owned, measure, window, cx),
-    )
+    FloatRequest::new(key_of(path), anchor, kind_of(path), move |measure, window, cx| {
+        content(&owned, measure, window, cx)
+    })
     .side(side)
 }
 
@@ -347,9 +336,7 @@ fn storm_steps(seed: u64, count: usize) -> Vec<InputStep> {
     for _ in 0..4 {
         steps.push(key("escape"));
     }
-    steps.push(InputStep::Wait {
-        milliseconds: 1_500,
-    });
+    steps.push(InputStep::Wait { milliseconds: 1_500 });
     steps
 }
 
@@ -446,28 +433,14 @@ fn burst(rng: &mut Rng, removed: &BTreeSet<usize>, window: &mut Window, cx: &mut
 // ------------------------------------------------------------------ checks
 
 /// Every invariant, checked after every step.
-fn check(
-    step: usize,
-    removed_before: &BTreeSet<usize>,
-    shared: &Shared,
-    window: &mut Window,
-    cx: &mut App,
-) {
+fn check(step: usize, removed_before: &BTreeSet<usize>, shared: &Shared, window: &mut Window, cx: &mut App) {
     let layer = state(window, cx);
     let layer = layer.borrow();
     let now = motion::now(cx);
     let chain = layer.model.chain();
-    assert!(
-        chain.len() <= super::MAX_DEPTH,
-        "step {step}: chain of {}",
-        chain.len()
-    );
+    assert!(chain.len() <= super::MAX_DEPTH, "step {step}: chain of {}", chain.len());
     for (index, card) in chain.iter().enumerate() {
-        assert_eq!(
-            card.level,
-            Some(index),
-            "step {step}: chain levels not contiguous"
-        );
+        assert_eq!(card.level, Some(index), "step {step}: chain levels not contiguous");
     }
     let open_tips = layer
         .model
@@ -483,16 +456,11 @@ fn check(
         .collect();
     for card in layer.model.cards() {
         let value = card.presence.value(now);
-        assert!(
-            (0.0..=1.0).contains(&value),
-            "step {step}: presence {value}"
-        );
+        assert!((0.0..=1.0).contains(&value), "step {step}: presence {value}");
         if !card.is_open() {
             continue;
         }
-        let Some(path) = path_of(&card.key) else {
-            continue;
-        };
+        let Some(path) = path_of(&card.key) else { continue };
         // A card whose trigger unmounted at least one frame ago is gone.
         let root: usize = path
             .trim_start_matches('p')
@@ -505,20 +473,9 @@ fn check(
             let cards: Vec<String> = layer
                 .model
                 .cards()
-                .map(|card| {
-                    format!(
-                        "{}@{:?}{}{}",
-                        card.key,
-                        card.level,
-                        if card.is_open() { "" } else { " (leaving)" },
-                        if card.sticky { " sticky" } else { "" }
-                    )
-                })
+                .map(|card| format!("{}@{:?}{}{}", card.key, card.level, if card.is_open() { "" } else { " (leaving)" }, if card.sticky { " sticky" } else { "" }))
                 .collect();
-            let report = layer
-                .triggers
-                .get(&card.key)
-                .map(|r| (r.frame, r.seq, r.view.is_some()));
+            let report = layer.triggers.get(&card.key).map(|r| (r.frame, r.seq, r.view.is_some()));
             panic!(
                 "step {step}: card {path} outlived its trigger; cards {cards:?}; report {report:?}; layer frame {} seq {}",
                 layer.frame, layer.seq
@@ -529,15 +486,7 @@ fn check(
             let chain: Vec<String> = layer
                 .model
                 .cards()
-                .map(|card| {
-                    format!(
-                        "{}@{:?}{}{}",
-                        card.key,
-                        card.level,
-                        if card.is_open() { "" } else { " (leaving)" },
-                        if card.sticky { " sticky" } else { "" }
-                    )
-                })
+                .map(|card| format!("{}@{:?}{}{}", card.key, card.level, if card.is_open() { "" } else { " (leaving)" }, if card.sticky { " sticky" } else { "" }))
                 .collect();
             assert!(
                 open.contains(parent),
@@ -569,19 +518,9 @@ fn check(
             let cards: Vec<String> = layer
                 .model
                 .cards()
-                .map(|card| {
-                    format!(
-                        "#{} {}@{:?}{}",
-                        card.id,
-                        card.key,
-                        card.level,
-                        if card.is_open() { "" } else { " (leaving)" }
-                    )
-                })
+                .map(|card| format!("#{} {}@{:?}{}", card.id, card.key, card.level, if card.is_open() { "" } else { " (leaving)" }))
                 .collect();
-            panic!(
-                "step {step}: focus on a dead element; focus entries {entries:?}; cards {cards:?}"
-            );
+            panic!("step {step}: focus on a dead element; focus entries {entries:?}; cards {cards:?}");
         }
     }
 }
@@ -669,9 +608,9 @@ fn run(
                 coverage.overflow += usize::from(chain.iter().any(|card| card.overflow));
                 coverage.tip += usize::from(layer.model.tip().is_some());
                 coverage.leaving += usize::from(layer.model.cards().any(|card| !card.is_open()));
-                coverage.focus_in_card += usize::from(focused.is_some_and(|focused| {
-                    layer.focus.values().any(|card| card.handle == focused)
-                }));
+                coverage.focus_in_card += usize::from(
+                    focused.is_some_and(|focused| layer.focus.values().any(|card| card.handle == focused)),
+                );
                 coverage.pins_max = coverage.pins_max.max(layer.model.pins().len());
             }
         },
@@ -773,10 +712,7 @@ fn storm(seed: u64, count: usize) {
         let _ = std::fs::create_dir_all(&dir);
         let _ = stormed[0].save(dir.join(format!("stormed-{seed}.png")));
         let _ = fresh[0].save(dir.join(format!("fresh-{seed}.png")));
-        panic!(
-            "seed {seed}: settled storm differs from a fresh boot (see {})",
-            dir.display()
-        );
+        panic!("seed {seed}: settled storm differs from a fresh boot (see {})", dir.display());
     }
 }
 
@@ -784,11 +720,7 @@ fn storm(seed: u64, count: usize) {
 fn float_storm_keeps_every_invariant_and_settles_to_a_fresh_boot() {
     let seeds: Vec<u64> = std::env::var("FLOAT_STORM_SEEDS")
         .ok()
-        .map(|list| {
-            list.split(',')
-                .filter_map(|s| s.trim().parse().ok())
-                .collect()
-        })
+        .map(|list| list.split(',').filter_map(|s| s.trim().parse().ok()).collect())
         .unwrap_or_else(|| vec![7, 1_234]);
     let count: usize = std::env::var("FLOAT_STORM_STEPS")
         .ok()

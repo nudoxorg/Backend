@@ -6,10 +6,7 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
 use super::*;
-use gpui::{
-    AppContext as _, Entity, IntoElement, ParentElement, Render, StyleRefinement, TestAppContext,
-    VisualTestContext, Window, div,
-};
+use gpui::{AppContext as _, Entity, IntoElement, ParentElement, Render, StyleRefinement, TestAppContext, VisualTestContext, Window, div};
 use std::cell::Cell;
 use std::sync::atomic::AtomicU32;
 
@@ -88,21 +85,12 @@ fn window(cx: &mut TestAppContext, memo: &Memo<u32, String>, asks: Option<u32>) 
     let (seen, counted, memo) = (Rc::clone(&words), Rc::clone(&renders), memo.clone());
     let opened = cx.update(|cx| {
         cx.open_window(gpui::WindowOptions::default(), move |_, cx| {
-            let child = cx.new(|_| Probe {
-                memo,
-                asks,
-                shown: seen,
-                renders: counted,
-            });
+            let child = cx.new(|_| Probe { memo, asks, shown: seen, renders: counted });
             cx.new(|_| Frame { child })
         })
         .expect("window")
     });
-    Shown {
-        cx: VisualTestContext::from_window(opened.into(), cx).into_mut(),
-        words,
-        renders,
-    }
+    Shown { cx: VisualTestContext::from_window(opened.into(), cx).into_mut(), words, renders }
 }
 
 fn upper(counted: &Arc<AtomicU32>) -> impl Fn(&u32) -> String + Send + Sync + use<> {
@@ -117,29 +105,13 @@ fn upper(counted: &Arc<AtomicU32>) -> impl Fn(&u32) -> String + Send + Sync + us
 fn the_first_ask_answers_at_once_and_the_value_lands_after(cx: &mut TestAppContext) {
     let calls = Arc::new(AtomicU32::new(0));
     let memo = Memo::new(slots(4), upper(&calls));
-    assert!(
-        matches!(
-            cx.update(|cx| memo.ask(&1, Asker::Everyone, cx)),
-            Answer::Reading
-        ),
-        "the ask does not wait for the work"
-    );
+    assert!(matches!(cx.update(|cx| memo.ask(&1, Asker::Everyone, cx)), Answer::Reading), "the ask does not wait for the work");
     assert_eq!(memo.reading(), 1, "the flight is counted");
     cx.run_until_parked();
     assert_eq!(memo.reading(), 0, "and lands");
-    assert_eq!(
-        memo.peek(&1).as_deref().map(String::as_str),
-        Some("value 1")
-    );
-    assert!(matches!(
-        cx.update(|cx| memo.ask(&1, Asker::Everyone, cx)),
-        Answer::Ready(_)
-    ));
-    assert_eq!(
-        calls.load(Ordering::SeqCst),
-        1,
-        "asked twice, computed once"
-    );
+    assert_eq!(memo.peek(&1).as_deref().map(String::as_str), Some("value 1"));
+    assert!(matches!(cx.update(|cx| memo.ask(&1, Asker::Everyone, cx)), Answer::Ready(_)));
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "asked twice, computed once");
 }
 
 #[gpui::test]
@@ -151,16 +123,8 @@ fn a_value_lands_and_only_the_view_that_asked_redraws(cx: &mut TestAppContext) {
     settle(&mut [&mut asking, &mut idle]);
     assert_eq!(asking.draw(), "value 1", "the asker's frame has the value");
     assert_eq!(idle.draw(), "asks nothing");
-    assert_eq!(
-        asking.renders.get(),
-        2,
-        "the asker drew twice: once reading, once with the value"
-    );
-    assert_eq!(
-        idle.renders.get(),
-        1,
-        "a view that asked nothing never redrew"
-    );
+    assert_eq!(asking.renders.get(), 2, "the asker drew twice: once reading, once with the value");
+    assert_eq!(idle.renders.get(), 1, "a view that asked nothing never redrew");
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
@@ -171,16 +135,8 @@ fn every_ask_before_it_lands_joins_one_flight(cx: &mut TestAppContext) {
     let mut first = window(cx, &memo, Some(7));
     let mut second = window(cx, &memo, Some(7));
     settle(&mut [&mut first, &mut second]);
-    assert_eq!(
-        (first.draw(), second.draw()),
-        ("value 7".to_owned(), "value 7".to_owned()),
-        "both were told"
-    );
-    assert_eq!(
-        calls.load(Ordering::SeqCst),
-        1,
-        "the work ran once for two views"
-    );
+    assert_eq!((first.draw(), second.draw()), ("value 7".to_owned(), "value 7".to_owned()), "both were told");
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "the work ran once for two views");
     assert_eq!(memo.reading(), 0);
 }
 
@@ -194,22 +150,11 @@ fn it_keeps_only_what_it_can_hold_and_forgets_the_least_recently_asked(cx: &mut 
     land(cx, 1);
     land(cx, 2);
     // Ask for 1 again (it is now the more recent), then a third key: 2 goes.
-    assert!(matches!(
-        cx.update(|cx| memo.ask(&1, Asker::Everyone, cx)),
-        Answer::Ready(_)
-    ));
+    assert!(matches!(cx.update(|cx| memo.ask(&1, Asker::Everyone, cx)), Answer::Ready(_)));
     land(cx, 3);
     assert_eq!(memo.len(), 2, "the cache is bounded");
-    assert_eq!(
-        memo.peek(&1).as_deref().map(String::as_str),
-        Some("value 1"),
-        "the recently asked stays"
-    );
-    assert_eq!(
-        memo.peek(&3).as_deref().map(String::as_str),
-        Some("value 3"),
-        "the newest stays"
-    );
+    assert_eq!(memo.peek(&1).as_deref().map(String::as_str), Some("value 1"), "the recently asked stays");
+    assert_eq!(memo.peek(&3).as_deref().map(String::as_str), Some("value 3"), "the newest stays");
     assert!(memo.peek(&2).is_none(), "the least recently asked went");
 }
 
@@ -223,29 +168,13 @@ fn a_panic_becomes_a_typed_fault_and_the_next_key_still_works(cx: &mut TestAppCo
     let mut lucky = window(cx, &memo, Some(2));
     settle(&mut [&mut unlucky, &mut lucky]);
     let failed = unlucky.draw();
-    assert!(
-        failed.starts_with("failed: the work panicked: ") && failed.contains("unlucky 13"),
-        "the page says why: {failed}"
-    );
-    assert_eq!(
-        lucky.draw(),
-        "value 2",
-        "a panic did not take the worker down: the next key lands"
-    );
+    assert!(failed.starts_with("failed: the work panicked: ") && failed.contains("unlucky 13"), "the page says why: {failed}");
+    assert_eq!(lucky.draw(), "value 2", "a panic did not take the worker down: the next key lands");
     assert_eq!(memo.reading(), 0, "nothing is left in flight");
     // A failure is kept (no busy retry each frame) until it is forgotten.
-    assert!(matches!(
-        cx.update(|cx| memo.ask(&13, Asker::Everyone, cx)),
-        Answer::Failed(Fault::Panicked(_))
-    ));
+    assert!(matches!(cx.update(|cx| memo.ask(&13, Asker::Everyone, cx)), Answer::Failed(Fault::Panicked(_))));
     memo.forget(&13);
-    assert!(
-        matches!(
-            cx.update(|cx| memo.ask(&13, Asker::Everyone, cx)),
-            Answer::Reading
-        ),
-        "forgotten, it is asked again"
-    );
+    assert!(matches!(cx.update(|cx| memo.ask(&13, Asker::Everyone, cx)), Answer::Reading), "forgotten, it is asked again");
 }
 
 #[gpui::test]
@@ -268,11 +197,7 @@ fn everyone_is_the_fallback_that_redraws_every_window(cx: &mut TestAppContext) {
     assert_eq!(before, (1, 1), "two idle windows, drawn once");
     cx.update(|cx| memo.ask(&9, Asker::Everyone, cx));
     settle(&mut [&mut first, &mut second]);
-    assert!(
-        first.renders.get() > before.0 && second.renders.get() > before.1,
-        "a caller with no view redraws all: {:?}",
-        (first.renders.get(), second.renders.get())
-    );
+    assert!(first.renders.get() > before.0 && second.renders.get() > before.1, "a caller with no view redraws all: {:?}", (first.renders.get(), second.renders.get()));
 }
 
 #[gpui::test]
@@ -281,11 +206,7 @@ fn a_seeded_value_is_there_at_once_with_no_work(cx: &mut TestAppContext) {
     let memo = Memo::new(slots(4), upper(&calls));
     memo.seed(3, "value from the snapshot".to_owned());
     let mut asking = window(cx, &memo, Some(3));
-    assert_eq!(
-        asking.draw(),
-        "value from the snapshot",
-        "the first frame has it"
-    );
+    assert_eq!(asking.draw(), "value from the snapshot", "the first frame has it");
     assert_eq!(asking.renders.get(), 1, "and never redrew for it");
     assert_eq!(calls.load(Ordering::SeqCst), 0, "no work ran");
 }
@@ -299,18 +220,10 @@ fn a_value_that_lands_during_teardown_leaks_no_entity_handle(cx: &mut TestAppCon
     let memo = Memo::new(slots(4), upper(&Arc::new(AtomicU32::new(0))));
     let asking = window(cx, &memo, Some(1));
     let idle = window(cx, &memo, None);
-    assert_eq!(
-        memo.reading(),
-        1,
-        "the asker's first render started the flight, and it has not landed"
-    );
+    assert_eq!(memo.reading(), 1, "the asker's first render started the flight, and it has not landed");
     // A caller with no view (`Asker::Everyone`) asks for another key the same way.
     cx.update(|cx| memo.ask(&2, Asker::Everyone, cx));
-    assert_eq!(
-        memo.reading(),
-        2,
-        "two flights are running when the body returns"
-    );
+    assert_eq!(memo.reading(), 2, "two flights are running when the body returns");
     // The windows and the memo go out of scope here, with both flights running.
     let _ = (&asking, &idle);
 }

@@ -97,10 +97,7 @@ mod tests {
         let started = Instant::now();
         assert!(!poll(Duration::from_millis(30), || false));
         let waited = started.elapsed();
-        assert!(
-            waited >= Duration::from_millis(30) && waited < Duration::from_secs(2),
-            "waited {waited:?}"
-        );
+        assert!(waited >= Duration::from_millis(30) && waited < Duration::from_secs(2), "waited {waited:?}");
     }
 
     #[test]
@@ -112,9 +109,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(150));
             setter.store(true, std::sync::atomic::Ordering::SeqCst);
         });
-        until("the other thread set the flag", || {
-            flag.load(std::sync::atomic::Ordering::SeqCst)
-        });
+        until("the other thread set the flag", || flag.load(std::sync::atomic::Ordering::SeqCst));
         thread.join().expect("the setter");
         assert_eq!(until_some("an answer", || Some(3)), 3);
     }

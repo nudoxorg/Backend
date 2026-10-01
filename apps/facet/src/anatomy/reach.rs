@@ -59,17 +59,13 @@ impl CrateUse {
     /// How many places were counted whose line was not kept.
     #[must_use]
     pub fn unkept(&self) -> u32 {
-        self.count
-            .saturating_sub(u32::try_from(self.lines.len()).unwrap_or(u32::MAX))
+        self.count.saturating_sub(u32::try_from(self.lines.len()).unwrap_or(u32::MAX))
     }
 
     /// The count for `member`, when this crate reaches it.
     #[must_use]
     pub fn reaches(&self, member: &str) -> Option<u32> {
-        self.members
-            .iter()
-            .find(|(name, _)| name == member)
-            .map(|(_, n)| *n)
+        self.members.iter().find(|(name, _)| name == member).map(|(_, n)| *n)
     }
 }
 
@@ -187,33 +183,15 @@ impl Reach {
             return self
                 .yours
                 .iter()
-                .map(|used| Segment {
-                    id: used.name.clone(),
-                    label: used.name.clone(),
-                    count: used.count,
-                    kind: SegmentKind::Crate,
-                })
+                .map(|used| Segment { id: used.name.clone(), label: used.name.clone(), count: used.count, kind: SegmentKind::Crate })
                 .collect();
         }
         by.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         let named: u32 = by.iter().map(|(_, n)| n).sum();
-        let mut out: Vec<Segment> = by
-            .into_iter()
-            .map(|(name, count)| Segment {
-                id: name.clone(),
-                label: name,
-                count,
-                kind: SegmentKind::Member,
-            })
-            .collect();
+        let mut out: Vec<Segment> = by.into_iter().map(|(name, count)| Segment { id: name.clone(), label: name, count, kind: SegmentKind::Member }).collect();
         let bare = self.total().saturating_sub(named);
         if bare > 0 {
-            out.push(Segment {
-                id: String::new(),
-                label: format!("{itself} itself"),
-                count: bare,
-                kind: SegmentKind::Itself,
-            });
+            out.push(Segment { id: String::new(), label: format!("{itself} itself"), count: bare, kind: SegmentKind::Itself });
         }
         out
     }
@@ -230,42 +208,24 @@ mod tests {
     use super::*;
 
     fn used(name: &str, count: u32, members: &[(&str, u32)]) -> CrateUse {
-        CrateUse {
-            name: name.to_owned(),
-            count,
-            members: members.iter().map(|(m, n)| ((*m).to_owned(), *n)).collect(),
-            lines: Vec::new(),
-        }
+        CrateUse { name: name.to_owned(), count, members: members.iter().map(|(m, n)| ((*m).to_owned(), *n)).collect(), lines: Vec::new() }
     }
 
     #[test]
     fn the_bar_is_the_members_reached_then_the_type_itself() {
         let reach = Reach {
-            yours: vec![
-                used("desktop", 43, &[("as_str", 8), ("as_table", 2)]),
-                used("engine", 15, &[("as_str", 6), ("as_table", 3)]),
-            ],
+            yours: vec![used("desktop", 43, &[("as_str", 8), ("as_table", 2)]), used("engine", 15, &[("as_str", 6), ("as_table", 3)])],
             basis: Basis::Scanned,
             ..Reach::default()
         };
         let segments = reach.segments("Value");
-        let read: Vec<_> = segments
-            .iter()
-            .map(|s| (s.label.as_str(), s.count))
-            .collect();
-        assert_eq!(
-            read,
-            vec![("as_str", 14), ("as_table", 5), ("Value itself", 39)]
-        );
+        let read: Vec<_> = segments.iter().map(|s| (s.label.as_str(), s.count)).collect();
+        assert_eq!(read, vec![("as_str", 14), ("as_table", 5), ("Value itself", 39)]);
     }
 
     #[test]
     fn a_function_is_a_bar_of_crates() {
-        let reach = Reach {
-            yours: vec![used("engine", 5, &[]), used("desktop", 9, &[])],
-            basis: Basis::Resolved,
-            ..Reach::default()
-        };
+        let reach = Reach { yours: vec![used("engine", 5, &[]), used("desktop", 9, &[])], basis: Basis::Resolved, ..Reach::default() };
         let segments = reach.segments("from_str");
         assert!(segments.iter().all(|s| s.kind == SegmentKind::Crate));
         assert_eq!(segments.len(), 2);

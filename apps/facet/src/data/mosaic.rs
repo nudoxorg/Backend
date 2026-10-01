@@ -188,11 +188,7 @@ pub struct Mosaic {
 
 /// A mosaic of `stones` wrapping to the width `measure` gives it.
 #[must_use]
-pub fn mosaic(
-    id: impl Into<ElementId>,
-    stones: impl Into<Rc<[Stone]>>,
-    measure: &Measure,
-) -> Mosaic {
+pub fn mosaic(id: impl Into<ElementId>, stones: impl Into<Rc<[Stone]>>, measure: &Measure) -> Mosaic {
     Mosaic {
         id: id.into(),
         stones: stones.into(),
@@ -250,9 +246,8 @@ impl Mosaic {
     }
 
     fn shown(&self, columns: usize) -> usize {
-        self.max_rows.map_or(self.stones.len(), |rows| {
-            self.stones.len().min(rows * columns)
-        })
+        self.max_rows
+            .map_or(self.stones.len(), |rows| self.stones.len().min(rows * columns))
     }
 }
 
@@ -297,10 +292,7 @@ impl Element for Mosaic {
         style.size.width = px(width).into();
         style.size.height = px(cell.height(self.shown(cols), cols)).into();
         style.flex_shrink = 0.0;
-        (
-            window.request_layout(style, [kid], cx),
-            MosaicLayout { live, keys },
-        )
+        (window.request_layout(style, [kid], cx), MosaicLayout { live, keys })
     }
 
     fn prepaint(
@@ -341,13 +333,7 @@ impl Element for Mosaic {
         } else {
             0.0
         };
-        let dim = motion.animate(
-            live::key(&self.id, "dim"),
-            dim_target,
-            spec::REVEAL,
-            window,
-            cx,
-        );
+        let dim = motion.animate(live::key(&self.id, "dim"), dim_target, spec::REVEAL, window, cx);
         let arrive = if self.arrive {
             motion.animate_from(
                 live::key(&self.id, "arrive"),
@@ -366,12 +352,7 @@ impl Element for Mosaic {
         let (wx, wy, strength) = live::wave(
             &self.id,
             &live,
-            active.map(|i| {
-                (
-                    (i % cols) as f32 * cell.pitch(),
-                    (i / cols) as f32 * cell.pitch(),
-                )
-            }),
+            active.map(|i| ((i % cols) as f32 * cell.pitch(), (i / cols) as f32 * cell.pitch())),
             window,
             cx,
         );
@@ -417,11 +398,7 @@ impl Element for Mosaic {
             let ink = if stone.yours || light <= 0.0 {
                 rest_ink
             } else {
-                crate::paint::mix(
-                    rest_ink.opacity(opacity),
-                    palette.family(stone.family).hue.into(),
-                    light,
-                )
+                crate::paint::mix(rest_ink.opacity(opacity), palette.family(stone.family).hue.into(), light)
             };
             if light > 0.0 && !stone.yours {
                 opacity = 1.0;
@@ -436,17 +413,13 @@ impl Element for Mosaic {
                 y0 + r * cell.pitch() + (cell.edge - e) * 0.5 - lift,
             );
             let poly = Poly::chamfer(sx, sy, e, e, cell.cut * swell);
-            let hatched =
-                matches!(stone.state, StoneState::Gone | StoneState::Gated) && !stone.yours;
+            let hatched = matches!(stone.state, StoneState::Gone | StoneState::Gated) && !stone.yours;
             if lift.abs() > 0.01 || swell > 1.001 || hatched {
                 lifted.push((poly, ink.opacity(opacity), hatched, walk == Some(i)));
                 continue;
             }
             let key = (ink, opacity, false);
-            match batches
-                .iter_mut()
-                .find(|(k, _)| k.0 == key.0 && (k.1 - key.1).abs() < 1e-3)
-            {
+            match batches.iter_mut().find(|(k, _)| k.0 == key.0 && (k.1 - key.1).abs() < 1e-3) {
                 Some((_, fill)) => fill.poly(&poly),
                 None => {
                     let mut fill = Fill::new();
@@ -463,10 +436,7 @@ impl Element for Mosaic {
         for (poly, color, hatched, walked) in lifted {
             if hatched {
                 let (min, max) = poly.bounds();
-                let frame = Bounds::new(
-                    point(px(min.x), px(min.y)),
-                    size(px(max.x - min.x), px(max.y - min.y)),
-                );
+                let frame = Bounds::new(point(px(min.x), px(min.y)), size(px(max.x - min.x), px(max.y - min.y)));
                 Hatch::vertical(1.5 * s, 3.5 * s).paint(window, &poly, frame, color);
             } else {
                 let mut fill = Fill::new();

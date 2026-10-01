@@ -147,11 +147,7 @@ impl Stack {
 
     /// Sends a toast away.
     pub fn dismiss(&mut self, id: u64, now: Instant) {
-        if let Some(entry) = self
-            .entries
-            .iter_mut()
-            .find(|entry| entry.id == id && !entry.leaving)
-        {
+        if let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id && !entry.leaving) {
             entry.leaving = true;
             entry.presence.retarget(0.0, EXIT, now);
         }
@@ -166,9 +162,7 @@ impl Stack {
         for entry in &mut self.entries {
             if hovered {
                 if let Some(since) = entry.running_since.take() {
-                    entry.remaining = entry
-                        .remaining
-                        .saturating_sub(now.saturating_duration_since(since));
+                    entry.remaining = entry.remaining.saturating_sub(now.saturating_duration_since(since));
                 }
             } else if !entry.leaving {
                 entry.running_since = Some(now);
@@ -187,9 +181,8 @@ impl Stack {
         for id in expired {
             self.dismiss(id, now);
         }
-        self.entries.retain(|entry| {
-            !entry.leaving || entry.presence.live(now) || entry.presence.value(now) > 0.0
-        });
+        self.entries
+            .retain(|entry| !entry.leaving || entry.presence.live(now) || entry.presence.value(now) > 0.0);
     }
 
     /// The next moment something changes on its own.
@@ -447,11 +440,7 @@ mod tests {
             stack.show(Toast::new(message), t0 + ms(index as u64));
         }
         assert_eq!(open(&stack), ["b", "c", "d"]);
-        assert_eq!(
-            stack.entries().len(),
-            MAX + 1,
-            "the oldest is still leaving"
-        );
+        assert_eq!(stack.entries().len(), MAX + 1, "the oldest is still leaving");
         stack.tick(t0 + ms(1_000));
         assert_eq!(stack.entries().len(), MAX);
     }

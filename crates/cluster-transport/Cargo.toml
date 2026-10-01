@@ -7,36 +7,19 @@ license.workspace = true
 publish = false
 
 [dependencies]
-bao-tree = { version = "=0.16.0", default-features = false, features = [
-  "tokio_fsm",
-  "validate",
-] }
+bao-tree = { version = "=0.16.0", default-features = false, features = ["tokio_fsm", "validate"] }
 backend-store = { path = "../store" }
 backend-version = { path = "../version" }
 blake3.workspace = true
 bytes.workspace = true
 iroh = { version = "=1.2.0", default-features = false, features = ["tls-ring"] }
-iroh-io = { version = "=0.6.2", default-features = false, features = [
-  "tokio-io",
-] }
-postcard = { version = "=1.1.3", default-features = false, features = [
-  "alloc",
-] }
-rustix = { version = "=1.1.4", default-features = false, features = [
-  "fs",
-  "std",
-] }
+iroh-io = { version = "=0.6.2", default-features = false, features = ["tokio-io"] }
+postcard = { version = "=1.1.3", default-features = false, features = ["alloc"] }
+rustix = { version = "=1.1.4", default-features = false, features = ["fs", "std"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = [
-  "fs",
-  "io-util",
-  "macros",
-  "process",
-  "rt-multi-thread",
-  "time",
-] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "time"] }
 
 
 [[bin]]

@@ -122,11 +122,7 @@ pub(super) fn package_facts(root: &Path, manifest: &Manifest) -> Facts {
     // from a member's own manifest (this manifest's own `[workspace]`
     // table, when it has one, is tried first — a single-file workspace
     // root reading its own fields needs no walk).
-    let ancestor = manifest
-        .workspace
-        .is_none()
-        .then(|| ancestor_workspace_package(root))
-        .flatten();
+    let ancestor = manifest.workspace.is_none().then(|| ancestor_workspace_package(root)).flatten();
     let inherited = manifest
         .workspace
         .as_ref()
@@ -166,19 +162,11 @@ pub(super) fn package_facts(root: &Path, manifest: &Manifest) -> Facts {
 /// registry sources do too.
 pub(super) fn workspace_member_names(root: &Path, manifest: &Manifest) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
-    if let Some(name) = manifest
-        .package
-        .as_ref()
-        .and_then(|package| package.name.clone())
-    {
+    if let Some(name) = manifest.package.as_ref().and_then(|package| package.name.clone()) {
         names.insert(name);
     }
     for member in member_manifests(root, manifest.workspace.as_ref()) {
-        if let Some(name) = member
-            .package
-            .as_ref()
-            .and_then(|package| package.name.clone())
-        {
+        if let Some(name) = member.package.as_ref().and_then(|package| package.name.clone()) {
             names.insert(name);
         }
     }

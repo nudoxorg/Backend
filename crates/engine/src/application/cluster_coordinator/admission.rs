@@ -1310,8 +1310,7 @@ mod tests {
             .ok_or("clang is required for the result recipe regression")?;
         let libclang = std::env::var_os("LIBCLANG_PATH")
             .ok_or("LIBCLANG_PATH is required for the result recipe regression")?;
-        let environment =
-            backend_frontend_clang::ClangAuthorityEnvironment::probe(driver, libclang)?;
+        let environment = backend_frontend_clang::ClangAuthorityEnvironment::probe(driver, libclang)?;
         let clang = environment.driver().to_path_buf();
         let version = Command::new(&clang).arg("--version").output()?;
         if !version.status.success() {

@@ -10,8 +10,7 @@ use backend_library::browse::{ProjectTree, RoleId, build_tree, metadata_input};
 
 const METADATA: &[u8] = include_bytes!("../library/browse/fixtures/tree-2026-09-27/metadata.json");
 const LOCKFILE: &str = include_str!("../library/browse/fixtures/tree-2026-09-27/Cargo.lock");
-const BINCODE: &[u8] =
-    include_bytes!("../advisory/fixtures/rustsec/crates/bincode/RUSTSEC-2025-0141.md");
+const BINCODE: &[u8] = include_bytes!("../advisory/fixtures/rustsec/crates/bincode/RUSTSEC-2025-0141.md");
 
 fn tree() -> ProjectTree {
     let mut authority = AdvisoryAuthority::new(u64::MAX);
@@ -20,14 +19,7 @@ fn tree() -> ProjectTree {
         .expect("admit");
     let input = metadata_input(METADATA, "aarch64-apple-darwin", Some(LOCKFILE)).expect("metadata");
     let observe = |name: &str, version: &str| {
-        authority.observe(
-            &normalize_package("cargo", name).expect("identity"),
-            version,
-            false,
-            false,
-            1,
-            false,
-        )
+        authority.observe(&normalize_package("cargo", name).expect("identity"), version, false, false, 1, false)
     };
     build_tree(&input, &observe)
 }
@@ -36,22 +28,10 @@ fn tree() -> ProjectTree {
 fn the_tree_reads_as_the_library_page_says_it() {
     let reading = read_tree(&tree());
     assert_eq!(reading.name, "backend");
-    assert_eq!(
-        reading.lede,
-        "Your 44 packages lean on 75 others directly, and 884 in all."
-    );
-    assert_eq!(
-        reading.elsewhere.as_deref(),
-        Some("and 309 more for other platforms")
-    );
-    assert_eq!(
-        reading.twice_line.as_deref(),
-        Some("60 crates are here twice")
-    );
-    assert_eq!(
-        reading.health,
-        "advisories from a partial source, not a full check of 884"
-    );
+    assert_eq!(reading.lede, "Your 44 packages lean on 75 others directly, and 884 in all.");
+    assert_eq!(reading.elsewhere.as_deref(), Some("and 309 more for other platforms"));
+    assert_eq!(reading.twice_line.as_deref(), Some("60 crates are here twice"));
+    assert_eq!(reading.health, "advisories from a partial source, not a full check of 884");
     let alert = &reading.alerts[0];
     assert_eq!(alert.title, "bincode 1.3.3 is unmaintained");
     assert_eq!(alert.id, "RUSTSEC-2025-0141");
@@ -65,11 +45,7 @@ fn the_tree_reads_as_the_library_page_says_it() {
 #[test]
 fn toml_is_here_twice_and_moving_yours_would_not_drop_a_copy() {
     let reading = read_tree(&tree());
-    let toml = reading
-        .twice
-        .iter()
-        .find(|twice| twice.name == "toml")
-        .expect("toml twice");
+    let toml = reading.twice.iter().find(|twice| twice.name == "toml").expect("toml twice");
     assert_eq!(
         toml.paths.as_ref(),
         [
@@ -77,119 +53,49 @@ fn toml_is_here_twice_and_moving_yours_would_not_drop_a_copy() {
             "frontend-rust → ra_ap_project_model 0.0.341 → toml 1.1.5".to_owned(),
         ]
     );
-    assert_eq!(
-        toml.copies.as_ref(),
-        [("0.8.23".to_owned(), true), ("1.1.5".to_owned(), false)]
-    );
+    assert_eq!(toml.copies.as_ref(), [("0.8.23".to_owned(), true), ("1.1.5".to_owned(), false)]);
     assert_eq!(
         toml.verdict,
         "Moving yours to 1.1.5 keeps both: cbindgen and rust-i18n-support still ask for 0.8."
     );
-    let syn = reading
-        .twice
-        .iter()
-        .find(|twice| twice.name == "syn")
-        .expect("syn twice");
-    assert!(
-        syn.verdict.starts_with("Neither is yours to move: "),
-        "{}",
-        syn.verdict
-    );
-    assert!(
-        syn.verdict.ends_with(" still ask for 2.x."),
-        "{}",
-        syn.verdict
-    );
+    let syn = reading.twice.iter().find(|twice| twice.name == "syn").expect("syn twice");
+    assert!(syn.verdict.starts_with("Neither is yours to move: "), "{}", syn.verdict);
+    assert!(syn.verdict.ends_with(" still ask for 2.x."), "{}", syn.verdict);
 }
 
 #[test]
 fn a_third_recorded_version_never_reads_as_twice() {
     let mut source = tree();
-    let toml = source
-        .twice
-        .iter_mut()
-        .find(|duplicate| duplicate.name == "toml")
-        .expect("toml duplicate");
+    let toml = source.twice.iter_mut().find(|duplicate| duplicate.name == "toml").expect("toml duplicate");
     let mut copies = toml.copies.to_vec();
     let mut third = copies[1].clone();
     third.version = "1.2.0".to_owned();
     copies.push(third);
     toml.copies = copies.into_boxed_slice();
     let reading = read_tree(&source);
-    assert_eq!(
-        reading
-            .twice_heading
-            .as_ref()
-            .map(|(title, _)| title.as_str()),
-        Some("Multiple versions")
-    );
-    assert!(
-        reading
-            .twice_line
-            .as_deref()
-            .is_some_and(|line| line.contains("appear at more than one version"))
-    );
-    let formats = reading
-        .roles
-        .iter()
-        .find(|role| role.id == RoleId::Formats)
-        .expect("formats");
-    let toml = formats
-        .rows
-        .iter()
-        .find(|row| row.name == "toml")
-        .expect("toml row");
-    assert_eq!(
-        toml.at_rest.as_deref(),
-        Some("3 versions · 0.8.23 · 1.1.5 · 1.2.0")
-    );
+    assert_eq!(reading.twice_heading.as_ref().map(|(title, _)| title.as_str()), Some("Multiple versions"));
+    assert!(reading.twice_line.as_deref().is_some_and(|line| line.contains("appear at more than one version")));
+    let formats = reading.roles.iter().find(|role| role.id == RoleId::Formats).expect("formats");
+    let toml = formats.rows.iter().find(|row| row.name == "toml").expect("toml row");
+    assert_eq!(toml.at_rest.as_deref(), Some("3 versions · 0.8.23 · 1.1.5 · 1.2.0"));
 }
 
 #[test]
 fn each_role_says_what_it_is_for_and_why_a_dependency_is_in_it() {
     let reading = read_tree(&tree());
-    let formats = reading
-        .roles
-        .iter()
-        .find(|role| role.id == RoleId::Formats)
-        .expect("formats");
+    let formats = reading.roles.iter().find(|role| role.id == RoleId::Formats).expect("formats");
     assert_eq!(formats.label, "speaks formats");
-    let toml = formats
-        .rows
-        .iter()
-        .find(|row| row.name == "toml")
-        .expect("toml row");
-    assert_eq!(
-        toml.evidence,
-        "encoding · parser-implementations · parsing · used by advisory, desktop, engine and local-service"
-    );
+    let toml = formats.rows.iter().find(|row| row.name == "toml").expect("toml row");
+    assert_eq!(toml.evidence, "encoding · parser-implementations · parsing · used by advisory, desktop, engine and local-service");
     assert_eq!(toml.at_rest.as_deref(), Some("twice · 0.8.23 · 1.1.5"));
-    let languages = reading
-        .roles
-        .iter()
-        .find(|role| role.id == RoleId::Languages)
-        .expect("languages");
+    let languages = reading.roles.iter().find(|role| role.id == RoleId::Languages).expect("languages");
     assert_eq!(languages.label, "reads languages");
-    let hir = languages
-        .rows
-        .iter()
-        .find(|row| row.name == "ra_ap_hir")
-        .expect("ra_ap_hir");
-    assert_eq!(
-        hir.evidence,
-        "declares nothing · used by frontend-rust, like tree-sitter-rust"
-    );
-    let window = reading
-        .roles
-        .iter()
-        .find(|role| role.id == RoleId::Window)
-        .expect("window");
+    let hir = languages.rows.iter().find(|row| row.name == "ra_ap_hir").expect("ra_ap_hir");
+    assert_eq!(hir.evidence, "declares nothing · used by frontend-rust, like tree-sitter-rust");
+    let window = reading.roles.iter().find(|role| role.id == RoleId::Window).expect("window");
     assert_eq!(window.label, "draws the window");
     assert!(
-        window
-            .brings
-            .as_deref()
-            .is_some_and(|brings| brings.ends_with("crates that come with them")),
+        window.brings.as_deref().is_some_and(|brings| brings.ends_with("crates that come with them")),
         "{:?}",
         window.brings
     );
@@ -197,9 +103,7 @@ fn each_role_says_what_it_is_for_and_why_a_dependency_is_in_it() {
 
 #[test]
 fn the_cli_prints_the_same_sentences() {
-    let view = crate::product_view(&backend_library::SurfaceReply::ProjectTree(
-        Box::new(tree()),
-    ));
+    let view = crate::product_view(&backend_library::SurfaceReply::ProjectTree(Box::new(tree())));
     let text = crate::text::product(&view, crate::Theme::plain());
     for line in [
         "your tree · backend",

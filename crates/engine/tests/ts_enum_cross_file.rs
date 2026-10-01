@@ -7,8 +7,8 @@ use std::{
 };
 
 use backend_engine::driver::{
-    CompileControl, CompileOutput, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
-    SemanticAuthorityInput, ToolchainSelection, compile,
+    CompileControl, CompileOutput, CompileRequest, CompileScratch, NativeTool,
+    ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile,
 };
 use backend_frontend_typescript::legacy::{Reference, Report};
 use backend_semantic::ir::{
@@ -21,8 +21,7 @@ static CANCELLED: AtomicBool = AtomicBool::new(false);
 
 const USER_TS: &str = "import { Color } from \"./color\";\nexport enum Other { Green = 2 }\nexport function pick(): boolean { return Color.Red === 1; }\nexport function wrong(): boolean { return Other.Red === 1; }\n";
 
-const SAME_FILE_TS: &str =
-    "export enum Color { Red = 1 }\nexport function pick(): boolean { return Color.Red === 1; }\n";
+const SAME_FILE_TS: &str = "export enum Color { Red = 1 }\nexport function pick(): boolean { return Color.Red === 1; }\n";
 
 fn report(source: &[u8], references: Vec<Reference>) -> Report {
     let digest = backend_frontend_typescript::legacy::source_digest(source)
@@ -42,7 +41,9 @@ fn report(source: &[u8], references: Vec<Reference>) -> Report {
 
 fn token_offset(source: &str, site: &str, token: &str) -> u32 {
     let site_at = source.find(site).expect("reference site");
-    let offset = site.find(token).expect("token inside site");
+    let offset = site
+        .find(token)
+        .expect("token inside site");
     u32::try_from(site_at + offset).expect("token offset")
 }
 
@@ -193,10 +194,7 @@ fn cross_file_enum_member_is_oracle_package_variant_access() {
         occs
     );
     let row = package_red[0];
-    assert_eq!(
-        row.owner.raw, pick_owner,
-        "enum member read owner must be pick"
-    );
+    assert_eq!(row.owner.raw, pick_owner, "enum member read owner must be pick");
     let OccurrenceTarget::Foreign(key) = row.occurrence.target else {
         unreachable!();
     };
@@ -248,11 +246,7 @@ fn same_file_enum_member_stays_local_without_package_red() {
                 && row.occurrence.confidence == OccurrenceConfidence::Index
         })
         .collect();
-    assert_eq!(
-        local_red.len(),
-        1,
-        "same-file Color.Red is one local field access"
-    );
+    assert_eq!(local_red.len(), 1, "same-file Color.Red is one local field access");
 
     assert_eq!(
         package_red_keys(&occs).len(),

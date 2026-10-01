@@ -8,10 +8,10 @@
 
 #![allow(clippy::expect_used, clippy::panic, clippy::too_many_lines)]
 
-use super::ShelfMode;
 use super::fit_tests::{findings, package_route, painted, resize};
 use super::root::Shell;
 use super::tests::{Rig, page_route, rig};
+use super::ShelfMode;
 use crate::navigation::{BrowseRoute, Intent, OrbitRoute, Route, SettingsPage};
 use facet::probe::{Ledger, TextSample};
 use facet::tokens::fluid::Dock;
@@ -21,32 +21,20 @@ use gpui::{Modifiers, TestAppContext, point, px};
 const PHONES: [(f32, f32); 3] = [(320.0, 568.0), (360.0, 640.0), (390.0, 844.0)];
 
 fn frame(rig: &mut Rig) -> super::Frame {
-    rig.shell
-        .read_with(rig.cx, |shell: &Shell, _| shell.frame())
-        .expect("frame")
+    rig.shell.read_with(rig.cx, |shell: &Shell, _| shell.frame()).expect("frame")
 }
 
 /// A shelf row's words are on screen (the shelf is open, inline or over).
 fn shelf_shown(ledger: &Ledger) -> bool {
-    ledger
-        .texts
-        .iter()
-        .any(|text| text.content == "glyph" && text.key.starts_with("shelf-row:"))
+    ledger.texts.iter().any(|text| text.content == "glyph" && text.key.starts_with("shelf-row:"))
 }
 
 fn toggle(ledger: &Ledger) -> facet::probe::BoundsSample {
-    ledger
-        .targets
-        .iter()
-        .find(|target| target.key == "tb-shelf")
-        .expect("the shelf toggle")
-        .bounds
-        .clone()
+    ledger.targets.iter().find(|target| target.key == "tb-shelf").expect("the shelf toggle").bounds.clone()
 }
 
 fn click(rig: &mut Rig, x: f32, y: f32) {
-    rig.cx
-        .simulate_click(point(px(x), px(y)), Modifiers::default());
+    rig.cx.simulate_click(point(px(x), px(y)), Modifiers::default());
     rig.settle();
 }
 
@@ -66,11 +54,7 @@ fn screens() -> Vec<Screen> {
         ("symbol", page_route("RelationLabel"), None),
         ("graph", Route::World, None),
         ("find", find_route(), None),
-        (
-            "settings",
-            Route::Orbit(OrbitRoute::Home),
-            Some(SettingsPage::Appearance),
-        ),
+        ("settings", Route::Orbit(OrbitRoute::Home), Some(SettingsPage::Appearance)),
     ]
 }
 
@@ -79,16 +63,8 @@ fn first_heading(ledger: &Ledger, titlebar: f32) -> Option<&TextSample> {
     ledger
         .texts
         .iter()
-        .filter(|text| {
-            text.bounds.y >= titlebar
-                && !text.content.trim().is_empty()
-                && !text.key.starts_with("shelf-row:")
-        })
-        .max_by(|a, b| {
-            a.size
-                .total_cmp(&b.size)
-                .then(b.bounds.y.total_cmp(&a.bounds.y))
-        })
+        .filter(|text| text.bounds.y >= titlebar && !text.content.trim().is_empty() && !text.key.starts_with("shelf-row:"))
+        .max_by(|a, b| a.size.total_cmp(&b.size).then(b.bounds.y.total_cmp(&a.bounds.y)))
 }
 
 /// On a phone the shelf is a drawer: not inline, opened by the titlebar
@@ -103,19 +79,10 @@ fn on_a_phone_the_shelf_is_a_drawer_with_a_scrim(cx: &mut TestAppContext) {
         assert_eq!(at.dock.mode, Dock::Drawer, "{width} px is a drawer");
         assert_eq!(at.shelf, ShelfMode::Hidden);
         let ledger = painted(&mut rig);
-        assert!(
-            !shelf_shown(&ledger),
-            "at {width} px the shelf is closed until it is asked for"
-        );
+        assert!(!shelf_shown(&ledger), "at {width} px the shelf is closed until it is asked for");
         let button = toggle(&ledger);
-        assert!(
-            button.within(width, height) && button.width >= 24.0 && button.height >= 24.0,
-            "the toggle at {width} px is {button:?}"
-        );
-        let (bx, by) = (
-            button.x + button.width / 2.0,
-            button.y + button.height / 2.0,
-        );
+        assert!(button.within(width, height) && button.width >= 24.0 && button.height >= 24.0, "the toggle at {width} px is {button:?}");
+        let (bx, by) = (button.x + button.width / 2.0, button.y + button.height / 2.0);
 
         // Opened by the titlebar button.
         click(&mut rig, bx, by);
@@ -126,43 +93,24 @@ fn on_a_phone_the_shelf_is_a_drawer_with_a_scrim(cx: &mut TestAppContext) {
             .find(|text| text.content == "glyph" && text.key.starts_with("shelf-row:"))
             .unwrap_or_else(|| panic!("the toggle opened no drawer at {width} px"));
         let drawer = f32::from(frame(&mut rig).drawer);
-        assert!(
-            row.bounds.x >= 0.0 && row.bounds.x + row.bounds.width <= drawer,
-            "the row {:?} is not inside the {drawer} px drawer at {width} px",
-            row.bounds
-        );
-        assert!(
-            drawer <= width - 47.0,
-            "the drawer covers the page at {width} px: {drawer}"
-        );
+        assert!(row.bounds.x >= 0.0 && row.bounds.x + row.bounds.width <= drawer, "the row {:?} is not inside the {drawer} px drawer at {width} px", row.bounds);
+        assert!(drawer <= width - 47.0, "the drawer covers the page at {width} px: {drawer}");
 
         // Put away by a click on the strip of page beside it (the scrim).
         click(&mut rig, width - 10.0, height / 2.0);
-        assert!(
-            !shelf_shown(&painted(&mut rig)),
-            "a click on the scrim left the drawer open at {width} px"
-        );
+        assert!(!shelf_shown(&painted(&mut rig)), "a click on the scrim left the drawer open at {width} px");
 
         // Put away by Escape.
         click(&mut rig, bx, by);
-        assert!(
-            shelf_shown(&painted(&mut rig)),
-            "the drawer did not reopen at {width} px"
-        );
+        assert!(shelf_shown(&painted(&mut rig)), "the drawer did not reopen at {width} px");
         rig.keys("escape");
-        assert!(
-            !shelf_shown(&painted(&mut rig)),
-            "Escape left the drawer open at {width} px"
-        );
+        assert!(!shelf_shown(&painted(&mut rig)), "Escape left the drawer open at {width} px");
 
         // Put away by moving to another page.
         click(&mut rig, bx, by);
         assert!(shelf_shown(&painted(&mut rig)));
         rig.go(Intent::Navigate(package_route()));
-        assert!(
-            !shelf_shown(&painted(&mut rig)),
-            "a route change left the drawer open at {width} px"
-        );
+        assert!(!shelf_shown(&painted(&mut rig)), "a route change left the drawer open at {width} px");
         rig.go(Intent::Navigate(page_route("RelationLabel")));
     }
 }
@@ -187,27 +135,16 @@ fn on_a_phone_every_screen_shows_its_heading_in_full_and_never_overflows(cx: &mu
             let ledger = painted(&mut rig);
             let found = findings(&ledger, width, height);
             if !ours {
-                eprintln!(
-                    "[fluid] {name} at {width}x{height}: {} findings (a page lane's)",
-                    found.len()
-                );
+                eprintln!("[fluid] {name} at {width}x{height}: {} findings (a page lane's)", found.len());
                 for finding in &found {
                     eprintln!("[fluid]     {finding}");
                 }
                 continue;
             }
             // Nothing hangs past the window, whatever else a page still owes.
-            let overflow: Vec<_> = found
-                .iter()
-                .filter(|finding| finding.rule == "edge")
-                .map(ToString::to_string)
-                .collect();
-            assert!(
-                overflow.is_empty(),
-                "{name} at {width}x{height}: {overflow:?}"
-            );
-            let heading = first_heading(&ledger, titlebar)
-                .unwrap_or_else(|| panic!("{name} at {width}x{height} draws no text"));
+            let overflow: Vec<_> = found.iter().filter(|finding| finding.rule == "edge").map(ToString::to_string).collect();
+            assert!(overflow.is_empty(), "{name} at {width}x{height}: {overflow:?}");
+            let heading = first_heading(&ledger, titlebar).unwrap_or_else(|| panic!("{name} at {width}x{height} draws no text"));
             let b = &heading.bounds;
             assert!(
                 b.x >= 0.0 && b.x + b.width <= width + 0.5 && b.y + b.height <= height,
@@ -223,10 +160,7 @@ fn on_a_phone_every_screen_shows_its_heading_in_full_and_never_overflows(cx: &mu
 fn heading_x(rig: &mut Rig) -> f32 {
     let titlebar = f32::from(frame(rig).titlebar);
     let ledger = painted(rig);
-    first_heading(&ledger, titlebar)
-        .expect("a heading")
-        .bounds
-        .x
+    first_heading(&ledger, titlebar).expect("a heading").bounds.x
 }
 
 fn settings(cx: &mut TestAppContext, width: f32, height: f32) -> Rig {
@@ -253,31 +187,12 @@ fn the_shelf_glides_to_a_spine_instead_of_jumping(cx: &mut TestAppContext) {
     }
     let after = *xs.last().expect("frames");
     assert_eq!(frame(&mut rig).shelf, ShelfMode::Spine);
-    assert!(
-        before - after > 150.0,
-        "the column narrowed from {before} to {after}: a spine is 42 px"
-    );
-    let between = xs
-        .iter()
-        .filter(|x| **x < before - 10.0 && **x > after + 10.0)
-        .count();
-    assert!(
-        between >= 5,
-        "only {between} frames between the shelf and the spine: {xs:?}"
-    );
-    let biggest = xs
-        .windows(2)
-        .map(|pair| (pair[0] - pair[1]).abs())
-        .fold(0.0_f32, f32::max);
-    assert!(
-        biggest < 0.5 * (before - after),
-        "one frame moved the page {biggest} px of {}: {xs:?}",
-        before - after
-    );
-    assert!(
-        xs.windows(2).all(|pair| pair[1] <= pair[0] + 0.01),
-        "the page moved back on its way: {xs:?}"
-    );
+    assert!(before - after > 150.0, "the column narrowed from {before} to {after}: a spine is 42 px");
+    let between = xs.iter().filter(|x| **x < before - 10.0 && **x > after + 10.0).count();
+    assert!(between >= 5, "only {between} frames between the shelf and the spine: {xs:?}");
+    let biggest = xs.windows(2).map(|pair| (pair[0] - pair[1]).abs()).fold(0.0_f32, f32::max);
+    assert!(biggest < 0.5 * (before - after), "one frame moved the page {biggest} px of {}: {xs:?}", before - after);
+    assert!(xs.windows(2).all(|pair| pair[1] <= pair[0] + 0.01), "the page moved back on its way: {xs:?}");
 }
 
 /// A window resting on the shelf's edge, ten px either side of it, does not
@@ -290,34 +205,14 @@ fn a_window_resting_on_the_shelf_edge_holds_its_mode(cx: &mut TestAppContext) {
         resize(rig, width, 700.0);
         frame(rig).shelf
     };
-    assert_eq!(
-        shelf_at(&mut rig, 890.0),
-        ShelfMode::Shelf,
-        "inside the band on the way down: held"
-    );
-    assert_eq!(
-        shelf_at(&mut rig, 870.0),
-        ShelfMode::Spine,
-        "past it: a spine"
-    );
-    assert_eq!(
-        shelf_at(&mut rig, 910.0),
-        ShelfMode::Spine,
-        "inside the band on the way up: held"
-    );
+    assert_eq!(shelf_at(&mut rig, 890.0), ShelfMode::Shelf, "inside the band on the way down: held");
+    assert_eq!(shelf_at(&mut rig, 870.0), ShelfMode::Spine, "past it: a spine");
+    assert_eq!(shelf_at(&mut rig, 910.0), ShelfMode::Spine, "inside the band on the way up: held");
     for pass in 0..12 {
         let width = 900.0 + if pass % 2 == 0 { -10.0 } else { 10.0 };
-        assert_eq!(
-            shelf_at(&mut rig, width),
-            ShelfMode::Spine,
-            "flipped at {width}"
-        );
+        assert_eq!(shelf_at(&mut rig, width), ShelfMode::Spine, "flipped at {width}");
     }
-    assert_eq!(
-        shelf_at(&mut rig, 920.0),
-        ShelfMode::Shelf,
-        "past the band: a shelf"
-    );
+    assert_eq!(shelf_at(&mut rig, 920.0), ShelfMode::Shelf, "past the band: a shelf");
 }
 
 /// Three routes in one instant (A, B, C) are one change from A to C. B never
@@ -350,21 +245,10 @@ fn a_burst_of_routes_paints_no_page_for_the_ones_it_skipped(cx: &mut TestAppCont
     }
     let shows = |frame: &[String], name: &str| frame.iter().any(|content| content == name);
     let first_b = frames.iter().position(|frame| shows(frame, b));
-    assert!(
-        first_b.is_none(),
-        "frame {first_b:?} painted the skipped page `{b}`: {:?}",
-        first_b.map(|at| &frames[at])
-    );
-    assert!(
-        frames.iter().any(|frame| shows(frame, c)),
-        "the last route `{c}` never arrived"
-    );
+    assert!(first_b.is_none(), "frame {first_b:?} painted the skipped page `{b}`: {:?}", first_b.map(|at| &frames[at]));
+    assert!(frames.iter().any(|frame| shows(frame, c)), "the last route `{c}` never arrived");
     // The page it left is on screen until it has gone: the change plays from A, not from nothing.
-    assert!(
-        frames.iter().take(3).any(|frame| shows(frame, a)),
-        "the change did not start from `{a}`: {:?}",
-        &frames[..3]
-    );
+    assert!(frames.iter().take(3).any(|frame| shows(frame, a)), "the change did not start from `{a}`: {:?}", &frames[..3]);
 }
 
 /// ⌘K at every width: the query is drawn in the titlebar as it is typed, and
@@ -376,36 +260,20 @@ fn a_burst_of_routes_paints_no_page_for_the_ones_it_skipped(cx: &mut TestAppCont
 fn typing_into_ask_draws_the_query_and_a_result_row(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     rig.cx.update(|_, cx| cx.set_global(gpui::TextTrace));
-    for (width, height, plate) in [
-        (1440.0_f32, 900.0_f32, 440.0_f32),
-        (800.0, 600.0, 344.0),
-        (360.0, 640.0, 360.0),
-    ] {
+    for (width, height, plate) in [(1440.0_f32, 900.0_f32, 440.0_f32), (800.0, 600.0, 344.0), (360.0, 640.0, 360.0)] {
         resize(&mut rig, width, height);
         rig.keys("cmd-k");
         rig.keys("r e l a t i o n");
         rig.settle();
         let titlebar = f32::from(frame(&mut rig).titlebar);
         let _ = painted(&mut rig);
-        let words: Vec<gpui::PaintedText> =
-            rig.cx.update(|window, _| window.painted_texts().to_vec());
+        let words: Vec<gpui::PaintedText> = rig.cx.update(|window, _| window.painted_texts().to_vec());
         // The query is drawn in the titlebar.
         let query = words
             .iter()
-            .find(|text| {
-                text.text.as_ref() == "relation" && f32::from(text.bounds.origin.y) < titlebar
-            })
-            .unwrap_or_else(|| {
-                panic!(
-                    "the typed query is not drawn in the titlebar at {width} px: {:?}",
-                    words.iter().map(|t| t.text.to_string()).collect::<Vec<_>>()
-                )
-            });
-        assert!(
-            f32::from(query.bounds.right()) <= width,
-            "the query overflows the window at {width} px: {:?}",
-            query.bounds
-        );
+            .find(|text| text.text.as_ref() == "relation" && f32::from(text.bounds.origin.y) < titlebar)
+            .unwrap_or_else(|| panic!("the typed query is not drawn in the titlebar at {width} px: {:?}", words.iter().map(|t| t.text.to_string()).collect::<Vec<_>>()));
+        assert!(f32::from(query.bounds.right()) <= width, "the query overflows the window at {width} px: {:?}", query.bounds);
         // The plate is the width the token says (a sheet across the window on a phone),
         // starts under the titlebar at the window's left edge and runs to the foot.
         let bounds = rig
@@ -413,25 +281,14 @@ fn typing_into_ask_draws_the_query_and_a_result_row(cx: &mut TestAppContext) {
             .debug_bounds("ask-plate")
             .unwrap_or_else(|| panic!("Ask draws no plate at {width} px"));
         assert!(
-            (f32::from(bounds.size.width) - plate).abs() < 1.0
-                && f32::from(bounds.origin.x).abs() < 0.5
-                && (f32::from(bounds.origin.y) - titlebar).abs() < 0.5,
+            (f32::from(bounds.size.width) - plate).abs() < 1.0 && f32::from(bounds.origin.x).abs() < 0.5 && (f32::from(bounds.origin.y) - titlebar).abs() < 0.5,
             "the plate at {width} px is {bounds:?}, want {plate} wide at (0, {titlebar})"
         );
         // A result row is drawn below it, over the shelf's column, inside the plate.
         let row = words
             .iter()
-            .find(|text| {
-                text.text.contains("RelationLabel")
-                    && f32::from(text.bounds.origin.y) > titlebar
-                    && f32::from(text.bounds.origin.x) < plate
-            })
-            .unwrap_or_else(|| {
-                panic!(
-                    "no result row for `relation` at {width} px: {:?}",
-                    words.iter().map(|t| t.text.to_string()).collect::<Vec<_>>()
-                )
-            });
+            .find(|text| text.text.contains("RelationLabel") && f32::from(text.bounds.origin.y) > titlebar && f32::from(text.bounds.origin.x) < plate)
+            .unwrap_or_else(|| panic!("no result row for `relation` at {width} px: {:?}", words.iter().map(|t| t.text.to_string()).collect::<Vec<_>>()));
         assert!(
             f32::from(row.bounds.right()) <= plate + 0.5 && f32::from(row.bounds.right()) <= width,
             "the result row {:?} is outside the {plate} px plate at {width} px",
@@ -439,13 +296,8 @@ fn typing_into_ask_draws_the_query_and_a_result_row(cx: &mut TestAppContext) {
         );
         rig.keys("escape");
         let _ = painted(&mut rig);
-        let after: Vec<gpui::PaintedText> =
-            rig.cx.update(|window, _| window.painted_texts().to_vec());
-        assert!(
-            !after.iter().any(|text| text.text.as_ref() == "relation"
-                && f32::from(text.bounds.origin.y) < titlebar),
-            "Escape left the query in the titlebar at {width} px"
-        );
+        let after: Vec<gpui::PaintedText> = rig.cx.update(|window, _| window.painted_texts().to_vec());
+        assert!(!after.iter().any(|text| text.text.as_ref() == "relation" && f32::from(text.bounds.origin.y) < titlebar), "Escape left the query in the titlebar at {width} px");
     }
 }
 
@@ -467,15 +319,8 @@ fn a_fast_shrink_never_squeezes_the_reader_to_a_sliver(cx: &mut TestAppContext) 
     }
     // The shelf column takes at most 42 % of 360 px (151 px); the heading sits a 16 px gutter inside the reader.
     let worst = xs.iter().copied().fold(0.0_f32, f32::max);
-    assert!(
-        worst <= 0.42 * 360.0 + 16.5,
-        "the reader was squeezed: the heading sat at x = {worst} in a 360 px window: {xs:?}"
-    );
-    assert!(
-        (xs[xs.len() - 1] - 16.0).abs() <= 2.0,
-        "it settles at the phone's gutter, not {}",
-        xs[xs.len() - 1]
-    );
+    assert!(worst <= 0.42 * 360.0 + 16.5, "the reader was squeezed: the heading sat at x = {worst} in a 360 px window: {xs:?}");
+    assert!((xs[xs.len() - 1] - 16.0).abs() <= 2.0, "it settles at the phone's gutter, not {}", xs[xs.len() - 1]);
 }
 
 /// The shelf's rows swap for the spine's while the column narrows. The
@@ -492,16 +337,11 @@ fn the_shelf_swaps_for_the_spine_without_a_lingering_fade_or_a_cut_word(cx: &mut
         let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
         rig.go(Intent::ZoomTo { display, percent });
         resize(&mut rig, 1000.0 * scale, 900.0);
-        assert_eq!(
-            frame(&mut rig).shelf,
-            ShelfMode::Shelf,
-            "{percent} %: 1000 design px is a shelf"
-        );
+        assert_eq!(frame(&mut rig).shelf, ShelfMode::Shelf, "{percent} %: 1000 design px is a shelf");
         let column = f32::from(frame(&mut rig).shelf_width);
         let titlebar = f32::from(frame(&mut rig).titlebar);
         // Every frame of the change, from the shelf at 1000 to the spine at 850 design px.
-        rig.cx
-            .simulate_resize(gpui::size(px(850.0 * scale), px(900.0)));
+        rig.cx.simulate_resize(gpui::size(px(850.0 * scale), px(900.0)));
         rig.draw();
         let mut film: Vec<Vec<gpui::PaintedText>> = Vec::new();
         for _ in 0..60 {
@@ -511,55 +351,26 @@ fn the_shelf_swaps_for_the_spine_without_a_lingering_fade_or_a_cut_word(cx: &mut
         }
         assert_eq!(frame(&mut rig).shelf, ShelfMode::Spine);
         // The shelf's words: painted inside the shelf column, below the titlebar, whole at the start.
-        let in_column = |text: &gpui::PaintedText| {
-            f32::from(text.bounds.right()) <= column + 1.0
-                && f32::from(text.bounds.origin.y) > titlebar
-        };
-        let mut natural: std::collections::BTreeMap<(String, i32), f32> =
-            std::collections::BTreeMap::new();
+        let in_column = |text: &gpui::PaintedText| f32::from(text.bounds.right()) <= column + 1.0 && f32::from(text.bounds.origin.y) > titlebar;
+        let mut natural: std::collections::BTreeMap<(String, i32), f32> = std::collections::BTreeMap::new();
         for text in film.iter().flatten().filter(|text| in_column(text)) {
-            let key = (
-                text.text.to_string(),
-                f32::from(text.bounds.origin.y).round() as i32,
-            );
+            let key = (text.text.to_string(), f32::from(text.bounds.origin.y).round() as i32);
             let wide = natural.entry(key).or_insert(0.0);
             *wide = wide.max(f32::from(text.bounds.size.width));
         }
-        assert!(
-            !natural.is_empty(),
-            "{percent} %: the shelf drew no words in its column"
-        );
+        assert!(!natural.is_empty(), "{percent} %: the shelf drew no words in its column");
         for (key, whole) in &natural {
             let mut lingering = 0;
             for (frame_at, texts) in film.iter().enumerate() {
-                let Some(text) = texts.iter().find(|text| {
-                    in_column(text)
-                        && text.text.as_ref() == key.0
-                        && f32::from(text.bounds.origin.y).round() as i32 == key.1
-                }) else {
+                let Some(text) = texts.iter().find(|text| in_column(text) && text.text.as_ref() == key.0 && f32::from(text.bounds.origin.y).round() as i32 == key.1) else {
                     lingering = 0;
                     continue;
                 };
                 if text.alpha < 0.95 {
-                    assert!(
-                        f32::from(text.bounds.size.width) >= whole - 1.5,
-                        "{percent} %: `{}` is cut mid-glyph ({:.0} of {whole:.0} px) while it fades (alpha {:.2}) at frame {frame_at}",
-                        key.0,
-                        f32::from(text.bounds.size.width),
-                        text.alpha
-                    );
+                    assert!(f32::from(text.bounds.size.width) >= whole - 1.5, "{percent} %: `{}` is cut mid-glyph ({:.0} of {whole:.0} px) while it fades (alpha {:.2}) at frame {frame_at}", key.0, f32::from(text.bounds.size.width), text.alpha);
                 }
-                lingering = if (0.02..0.8).contains(&text.alpha) {
-                    lingering + 1
-                } else {
-                    0
-                };
-                assert!(
-                    lingering <= 2,
-                    "{percent} %: `{}` lingers in a fade ({lingering} frames under 0.8, alpha {:.2}) at frame {frame_at}",
-                    key.0,
-                    text.alpha
-                );
+                lingering = if (0.02..0.8).contains(&text.alpha) { lingering + 1 } else { 0 };
+                assert!(lingering <= 2, "{percent} %: `{}` lingers in a fade ({lingering} frames under 0.8, alpha {:.2}) at frame {frame_at}", key.0, text.alpha);
             }
         }
     }
@@ -576,10 +387,7 @@ fn the_shelf_swaps_for_the_spine_without_a_lingering_fade_or_a_cut_word(cx: &mut
 fn at_200_percent_text_the_owned_screens_never_hang_past_a_phone(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0);
     let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
-    rig.go(Intent::ZoomTo {
-        display,
-        percent: 200,
-    });
+    rig.go(Intent::ZoomTo { display, percent: 200 });
     for (name, route, settings) in screens() {
         if !matches!(name, "library" | "find" | "settings" | "graph") {
             continue;
@@ -595,26 +403,11 @@ fn at_200_percent_text_the_owned_screens_never_hang_past_a_phone(cx: &mut TestAp
             for finding in &found {
                 eprintln!("[fluid] {name} at {width}x{height}, 200 %: {finding}");
             }
-            let hanging: Vec<_> = found
-                .iter()
-                .filter(|finding| matches!(finding.rule, "edge" | "stranded" | "offscreen"))
-                .map(ToString::to_string)
-                .collect();
-            assert!(
-                hanging.is_empty(),
-                "{name} at {width}x{height}, 200 % text: {hanging:?}"
-            );
-            for text in ledger
-                .texts
-                .iter()
-                .filter(|text| text.content.contains("declarations from"))
-            {
+            let hanging: Vec<_> = found.iter().filter(|finding| matches!(finding.rule, "edge" | "stranded" | "offscreen")).map(ToString::to_string).collect();
+            assert!(hanging.is_empty(), "{name} at {width}x{height}, 200 % text: {hanging:?}");
+            for text in ledger.texts.iter().filter(|text| text.content.contains("declarations from")) {
                 let b = &text.bounds;
-                assert!(
-                    b.x >= 0.0 && b.x + b.width <= width + 0.5,
-                    "{name} at {width}x{height}, 200 %: the caption `{}` is {b:?}, outside the window",
-                    text.content
-                );
+                assert!(b.x >= 0.0 && b.x + b.width <= width + 0.5, "{name} at {width}x{height}, 200 %: the caption `{}` is {b:?}, outside the window", text.content);
             }
         }
     }

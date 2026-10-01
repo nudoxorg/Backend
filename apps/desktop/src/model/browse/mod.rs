@@ -4,12 +4,9 @@
 //! so the Library page says exactly what `backend project-tree` prints.
 
 use crate::core::LocalProjectId;
-use crate::model::pages::{
-    DeclRef, Known, PackageDossier, PackageRecord, PackageRef, SearchPage, SearchQuery,
-    SignatureText,
-};
 use crate::navigation::BrowseRoute;
 use crate::navigation::CompareSet;
+use crate::model::pages::{DeclRef, Known, PackageDossier, PackageRecord, PackageRef, SearchPage, SearchQuery, SignatureText};
 use std::fmt;
 use std::sync::Arc;
 

@@ -1897,8 +1897,8 @@ mod tests {
     fn no_result_retirement_is_namespace_monotone_authenticated_and_exactly_acked() {
         let coordinator = crate::SecretKey::generate().public();
         let worker = crate::SecretKey::generate().public();
-        let terminal =
-            AssignmentScope::new([31; 16], [30; 16], 7, [29; 32]).expect("terminal worker scope");
+        let terminal = AssignmentScope::new([31; 16], [30; 16], 7, [29; 32])
+            .expect("terminal worker scope");
         let scope =
             AssignmentScope::new([31; 16], [32; 16], 9, [33; 32]).expect("newer authority attempt");
         let request = ControlNoResultRetireThrough::new(terminal, scope, 8, coordinator)
@@ -1932,9 +1932,13 @@ mod tests {
         assert!(!applied.matches_retirement(&request, coordinator));
 
         assert!(ControlNoResultRetireThrough::new(terminal, scope, 0, coordinator).is_err());
-        assert!(
-            ControlNoResultRetireThrough::new(terminal, scope, scope.attempt, coordinator).is_err()
-        );
+        assert!(ControlNoResultRetireThrough::new(
+            terminal,
+            scope,
+            scope.attempt,
+            coordinator
+        )
+        .is_err());
         let wrong_namespace = AssignmentScope::new([41; 16], [30; 16], 7, [29; 32])
             .expect("other namespace terminal");
         assert!(ControlNoResultRetireThrough::new(wrong_namespace, scope, 8, coordinator).is_err());
@@ -1949,8 +1953,11 @@ mod tests {
         let coordinator = crate::SecretKey::generate().public();
         let untrusted = crate::SecretKey::generate().public();
         let namespace = [51; 16];
-        let policy =
-            ControlAdmissionPolicy::worker_with_namespace(worker, [coordinator], namespace);
+        let policy = ControlAdmissionPolicy::worker_with_namespace(
+            worker,
+            [coordinator],
+            namespace,
+        );
         let terminal = AssignmentScope::new(namespace, [52; 16], 4, [53; 32])
             .expect("terminal exact namespace");
         let anchor = AssignmentScope::new(namespace, [54; 16], 5, [55; 32])
@@ -1968,8 +1975,8 @@ mod tests {
         assert!(exact.sender_identity_matches(coordinator));
         assert!(!exact.sender_identity_matches(untrusted));
 
-        let foreign_terminal =
-            AssignmentScope::new([56; 16], [52; 16], 4, [53; 32]).expect("foreign typed namespace");
+        let foreign_terminal = AssignmentScope::new([56; 16], [52; 16], 4, [53; 32])
+            .expect("foreign typed namespace");
         let foreign_anchor = AssignmentScope::new([56; 16], [54; 16], 5, [55; 32])
             .expect("foreign maintenance barrier");
         let foreign = ControlMessage::NoResultRetireThrough(

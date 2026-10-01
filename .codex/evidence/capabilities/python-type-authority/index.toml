@@ -25,10 +25,7 @@ task = "d3-python-fidelity"
 role = "nudox_luna_implementer"
 card = "card-d3-python-fidelity.md"
 baseline = "HEAD aff5024a2"
-paths = [
-  "compiler/driver/lower/python.rs",
-  "compiler/driver/tests/python_render.rs",
-]
+paths = ["compiler/driver/lower/python.rs", "compiler/driver/tests/python_render.rs"]
 state = "accepted-with-terra-repairs"
 commit = "d6909a85b (Terra mechanical repairs folded into 4187ec9b5)"
 
@@ -51,11 +48,7 @@ task = "d5-emission-geometry"
 role = "nudox_luna_implementer"
 card = "card-d5-emission-geometry.md"
 baseline = "202b42aa2; lower.rs 2448LOC e0e1831ea2b1a1dc; lower/python.rs 2139LOC d2c31634f17d44f2; lower/tests.rs 486LOC eb47acff6445d16d"
-paths = [
-  "compiler/driver/lower.rs",
-  "compiler/driver/lower/python.rs",
-  "compiler/driver/lower/tests.rs",
-]
+paths = ["compiler/driver/lower.rs", "compiler/driver/lower/python.rs", "compiler/driver/lower/tests.rs"]
 state = "accepted-with-terra-repairs"
 commit = "21eaea220 (worker could not run gates: shared-target contamination; Terra verified at isolated target and re-pinned stale boundary falsifiers in python_lower_facts.rs + rust_semantic_lane.rs)"
 
@@ -64,10 +57,7 @@ task = "d7-journey-classes"
 role = "nudox_luna_implementer"
 card = "card-d7-journey-classes.md"
 baseline = "202b42aa2; python_purl_lifecycle.rs 658LOC 49d8984f97b7bf2e; python_support/mod.rs 495LOC a2e608296a1963d1"
-paths = [
-  "compiler/driver/tests/python_purl_lifecycle.rs",
-  "compiler/driver/tests/python_support/mod.rs",
-]
+paths = ["compiler/driver/tests/python_purl_lifecycle.rs", "compiler/driver/tests/python_support/mod.rs"]
 state = "accepted"
 commit = "18241d2e3"
 

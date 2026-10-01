@@ -1,11 +1,11 @@
 //! Exercises the `backend-semantic::index_core` tests exact-snapshot contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
+use backend_version::GenerationId;
 use backend_semantic::index_core::{
     ExactDegradation, ExactManifest, ExactOperation, ExactResolution, ExactRow, ExactSegment,
     ExactSegmentVerifier, ExactTerminal, IndexSnapshot,
 };
-use backend_version::GenerationId;
 
 const ALPHA: &[u8] = b"alpha";
 const BETA: &[u8] = b"beta";

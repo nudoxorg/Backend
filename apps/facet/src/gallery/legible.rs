@@ -152,19 +152,9 @@ fn intersect(a: &BoundsSample, b: &BoundsSample) -> Option<BoundsSample> {
 fn outside(a: &BoundsSample, cut: &BoundsSample) -> Option<BoundsSample> {
     let strips = [
         (a.x, a.y, cut.x - a.x, a.height),
-        (
-            cut.x + cut.width,
-            a.y,
-            a.x + a.width - (cut.x + cut.width),
-            a.height,
-        ),
+        (cut.x + cut.width, a.y, a.x + a.width - (cut.x + cut.width), a.height),
         (a.x, a.y, a.width, cut.y - a.y),
-        (
-            a.x,
-            cut.y + cut.height,
-            a.width,
-            a.y + a.height - (cut.y + cut.height),
-        ),
+        (a.x, cut.y + cut.height, a.width, a.y + a.height - (cut.y + cut.height)),
     ];
     strips
         .into_iter()
@@ -183,13 +173,7 @@ fn outside(a: &BoundsSample, cut: &BoundsSample) -> Option<BoundsSample> {
 /// contrast where no other text covers it. Lines are keyed by their text and
 /// its occurrence in paint order (`name#2` is the second `name` painted).
 #[must_use]
-pub fn measure(
-    image: &RgbaImage,
-    painted: &[PaintedText],
-    scale: u8,
-    at_ms: u64,
-    idle: bool,
-) -> Measured {
+pub fn measure(image: &RgbaImage, painted: &[PaintedText], scale: u8, at_ms: u64, idle: bool) -> Measured {
     #[allow(clippy::cast_precision_loss)]
     let (width, height) = (
         image.width() as f32 / f32::from(scale),
@@ -206,10 +190,7 @@ pub fn measure(
             } else {
                 format!("{}#{count}", line.text)
             };
-            let (x, y) = (
-                f32::from(line.bounds.origin.x).max(0.0),
-                f32::from(line.bounds.origin.y).max(0.0),
-            );
+            let (x, y) = (f32::from(line.bounds.origin.x).max(0.0), f32::from(line.bounds.origin.y).max(0.0));
             let right = f32::from(line.bounds.origin.x + line.bounds.size.width).min(width);
             let bottom = f32::from(line.bounds.origin.y + line.bounds.size.height).min(height);
             (right - x > 1.0 && bottom - y > 1.0 && line.alpha > 0.0).then(|| {
@@ -225,15 +206,8 @@ pub fn measure(
         })
         .collect();
     let contrast = |bounds: &BoundsSample| {
-        ink_contrast(
-            image,
-            scale,
-            bounds.x,
-            bounds.y,
-            bounds.width,
-            bounds.height,
-        )
-        .map_or((1.0, None), |(ratio, _, ground)| (ratio, Some(ground)))
+        ink_contrast(image, scale, bounds.x, bounds.y, bounds.width, bounds.height)
+            .map_or((1.0, None), |(ratio, _, ground)| (ratio, Some(ground)))
     };
     let texts: Vec<Seen> = boxes
         .iter()
@@ -270,9 +244,8 @@ pub fn measure(
             let (Some(own_a), Some(own_b)) = (a.ground, b.ground) else {
                 continue;
             };
-            let seen = ink_contrast(image, scale, cut.x, cut.y, cut.width, cut.height).is_some_and(
-                |(_, _, ground)| same_ground(ground, own_a) && same_ground(ground, own_b),
-            );
+            let seen = ink_contrast(image, scale, cut.x, cut.y, cut.width, cut.height)
+                .is_some_and(|(_, _, ground)| same_ground(ground, own_a) && same_ground(ground, own_b));
             if seen {
                 let (first, second) = if a.key <= b.key { (a, b) } else { (b, a) };
                 crossings.push((first.key.clone(), second.key.clone()));
@@ -315,10 +288,7 @@ pub fn judge(film: &[Measured]) -> Report {
                 (Some(a), Some(b)) => {
                     a.contrast >= READABLE
                         && b.contrast >= READABLE
-                        && frame
-                            .crossings
-                            .iter()
-                            .any(|(x, y)| x == &a.key && y == &b.key)
+                        && frame.crossings.iter().any(|(x, y)| x == &a.key && y == &b.key)
                 }
                 _ => false,
             }
@@ -335,11 +305,7 @@ pub fn judge(film: &[Measured]) -> Report {
                     continue;
                 }
                 let (a, b) = if a.key <= b.key { (a, b) } else { (b, a) };
-                if !frame
-                    .crossings
-                    .iter()
-                    .any(|(x, y)| *x == a.key && *y == b.key)
-                {
+                if !frame.crossings.iter().any(|(x, y)| *x == a.key && *y == b.key) {
                     continue;
                 }
                 hits.push((
@@ -430,11 +396,7 @@ pub fn text(scene: &str, report: &Report) -> String {
             finding.frames,
             finding.what,
             finding.detail,
-            if finding.at_rest {
-                "  (also at rest)"
-            } else {
-                ""
-            }
+            if finding.at_rest { "  (also at rest)" } else { "" }
         ));
     }
     out
@@ -493,13 +455,7 @@ pub fn json(scene: &str, report: &Report) -> Json {
                             ("what", Json::str(finding.what.clone())),
                             (
                                 "keys",
-                                Json::Arr(
-                                    finding
-                                        .keys
-                                        .iter()
-                                        .map(|key| Json::str(key.clone()))
-                                        .collect(),
-                                ),
+                                Json::Arr(finding.keys.iter().map(|key| Json::str(key.clone())).collect()),
                             ),
                             ("from_ms", Json::num(finding.from_ms as f64)),
                             ("to_ms", Json::num(finding.to_ms as f64)),
@@ -539,24 +495,14 @@ pub fn windows(source: &str) -> Vec<Window> {
     let mut previous = 0_u64;
     for line in source.lines() {
         let (code, label) = split_comment(line);
-        for statement in code
-            .split(';')
-            .map(str::trim)
-            .filter(|statement| !statement.is_empty())
-        {
+        for statement in code.split(';').map(str::trim).filter(|statement| !statement.is_empty()) {
             let mut words: Vec<&str> = statement.split_whitespace().collect();
             let mut at = previous;
             if let Some(last) = words.last().copied() {
-                if let Some(time) = last
-                    .strip_prefix('@')
-                    .and_then(|time| time.parse::<u64>().ok())
-                {
+                if let Some(time) = last.strip_prefix('@').and_then(|time| time.parse::<u64>().ok()) {
                     at = time;
                     words.pop();
-                } else if let Some(delta) = last
-                    .strip_prefix('+')
-                    .and_then(|delta| delta.parse::<u64>().ok())
-                {
+                } else if let Some(delta) = last.strip_prefix('+').and_then(|delta| delta.parse::<u64>().ok()) {
                     at = previous.saturating_add(delta);
                     words.pop();
                 }
@@ -575,12 +521,7 @@ pub fn windows(source: &str) -> Vec<Window> {
                     if let Some(window) = out.last_mut() {
                         window.to_ms = Some(at);
                     }
-                    out.push(Window {
-                        label,
-                        act,
-                        from_ms: at,
-                        to_ms: None,
-                    });
+                    out.push(Window { label, act, from_ms: at, to_ms: None });
                 }
             }
         }
@@ -596,10 +537,7 @@ fn split_comment(line: &str) -> (&str, Option<String>) {
             '"' => quoted = !quoted,
             '#' if !quoted => {
                 let comment = line[at + 1..].trim();
-                return (
-                    &line[..at],
-                    (!comment.is_empty()).then(|| comment.to_owned()),
-                );
+                return (&line[..at], (!comment.is_empty()).then(|| comment.to_owned()));
             }
             _ => {}
         }
@@ -704,11 +642,7 @@ pub fn ledger(film: &[Measured], report: &Report, windows: &[Window]) -> Vec<Tra
             let mut overlap = Vec::new();
             let mut faded = Vec::new();
             let mut at_rest = Vec::new();
-            for finding in report
-                .findings
-                .iter()
-                .filter(|finding| inside(finding.from_ms))
-            {
+            for finding in report.findings.iter().filter(|finding| inside(finding.from_ms)) {
                 match (finding.rule, finding.at_rest) {
                     (Rule::Overlap, false) => overlap.push(finding.clone()),
                     (Rule::Overlap, true) => at_rest.push(finding.clone()),
@@ -723,8 +657,7 @@ pub fn ledger(film: &[Measured], report: &Report, windows: &[Window]) -> Vec<Tra
                 .map(drawn)
                 .unwrap_or_default();
             let frames: Vec<&Measured> = film.iter().filter(|frame| inside(frame.at_ms)).collect();
-            let seen: std::collections::BTreeSet<String> =
-                frames.iter().flat_map(|frame| drawn(frame)).collect();
+            let seen: std::collections::BTreeSet<String> = frames.iter().flat_map(|frame| drawn(frame)).collect();
             let end = frames.last().map(|frame| drawn(frame)).unwrap_or_default();
             Transition {
                 window: window.clone(),
@@ -825,32 +758,18 @@ mod tests {
         let film: Vec<_> = (0..6)
             .map(|k| {
                 let y = k as f32 * 20.0;
-                frame(
-                    k * 16,
-                    vec![seen("title", 0.0, y, 8.0), seen("lede", 0.0, 50.0, 6.0)],
-                )
+                frame(k * 16, vec![seen("title", 0.0, y, 8.0), seen("lede", 0.0, 50.0, 6.0)])
             })
             .collect();
         let report = judge(&film);
-        let overlaps: Vec<_> = report
-            .findings
-            .iter()
-            .filter(|f| f.rule == Rule::Overlap)
-            .collect();
+        let overlaps: Vec<_> = report.findings.iter().filter(|f| f.rule == Rule::Overlap).collect();
         assert_eq!(overlaps.len(), 1, "{report:?}");
-        assert_eq!(
-            (overlaps[0].from_ms, overlaps[0].to_ms),
-            (32, 48),
-            "{report:?}"
-        );
+        assert_eq!((overlaps[0].from_ms, overlaps[0].to_ms), (32, 48), "{report:?}");
         // The same flight over a lede that is not drawn (under its ground).
         let film: Vec<_> = (0..6)
             .map(|k| {
                 let y = k as f32 * 20.0;
-                frame(
-                    k * 16,
-                    vec![seen("title", 0.0, y, 8.0), seen("lede", 0.0, 50.0, 1.05)],
-                )
+                frame(k * 16, vec![seen("title", 0.0, y, 8.0), seen("lede", 0.0, 50.0, 1.05)])
             })
             .collect();
         assert!(judge(&film).passed(), "{:?}", judge(&film));
@@ -902,10 +821,7 @@ mod tests {
             "two texts on one ground: {crossed:?}"
         );
         let covered = judge(&film(true));
-        assert!(
-            covered.passed(),
-            "a card hides the page text it covers: {covered:?}"
-        );
+        assert!(covered.passed(), "a card hides the page text it covers: {covered:?}");
     }
 
     #[test]
@@ -916,24 +832,9 @@ mod tests {
         assert_eq!(
             named,
             vec![
-                Window {
-                    label: "route-down".into(),
-                    act: "route package present".into(),
-                    from_ms: 320,
-                    to_ms: Some(640)
-                },
-                Window {
-                    label: "back + move 1,1".into(),
-                    act: "key cmd-[; move 1,1".into(),
-                    from_ms: 640,
-                    to_ms: Some(800)
-                },
-                Window {
-                    label: "key j".into(),
-                    act: "key j".into(),
-                    from_ms: 800,
-                    to_ms: None
-                },
+                Window { label: "route-down".into(), act: "route package present".into(), from_ms: 320, to_ms: Some(640) },
+                Window { label: "back + move 1,1".into(), act: "key cmd-[; move 1,1".into(), from_ms: 640, to_ms: Some(800) },
+                Window { label: "key j".into(), act: "key j".into(), from_ms: 800, to_ms: None },
             ]
         );
         // `old` is drawn until 320; `new` arrives at 336 and crosses `old`
@@ -957,16 +858,8 @@ mod tests {
         let report = judge(&film);
         let rows = ledger(&film, &report, &named);
         assert_eq!(rows[0].verdict(), Verdict::Fail, "{rows:?}");
-        assert_eq!(
-            (rows[0].overlap.len(), rows[0].new, rows[0].gone),
-            (1, 1, 1),
-            "{rows:?}"
-        );
-        assert_eq!(
-            (rows[0].overlap[0].from_ms, rows[0].last_ms()),
-            (336, 32),
-            "{rows:?}"
-        );
+        assert_eq!((rows[0].overlap.len(), rows[0].new, rows[0].gone), (1, 1, 1), "{rows:?}");
+        assert_eq!((rows[0].overlap[0].from_ms, rows[0].last_ms()), (336, 32), "{rows:?}");
         assert_eq!(rows[1].verdict(), Verdict::NotExercised, "{rows:?}");
         assert_eq!(rows[2].verdict(), Verdict::Pass, "{rows:?}");
     }
@@ -975,34 +868,16 @@ mod tests {
     fn a_fade_that_lingers_fails_and_a_cut_does_not() {
         // A 160 ms fade in: ten frames between not drawn and its best.
         let film: Vec<_> = (0..12)
-            .map(|k| {
-                frame(
-                    k * 16,
-                    vec![seen(
-                        "page",
-                        0.0,
-                        0.0,
-                        1.0 + 7.0 * (k as f32 / 10.0).min(1.0),
-                    )],
-                )
-            })
+            .map(|k| frame(k * 16, vec![seen("page", 0.0, 0.0, 1.0 + 7.0 * (k as f32 / 10.0).min(1.0))]))
             .collect();
         let report = judge(&film);
         assert!(
-            report
-                .findings
-                .iter()
-                .any(|f| f.rule == Rule::Faded && f.frames > 2),
+            report.findings.iter().any(|f| f.rule == Rule::Faded && f.frames > 2),
             "{report:?}"
         );
         // A cut: not drawn, then at its best.
         let film: Vec<_> = (0..12)
-            .map(|k| {
-                frame(
-                    k * 16,
-                    vec![seen("page", 0.0, 0.0, if k < 6 { 1.0 } else { 8.0 })],
-                )
-            })
+            .map(|k| frame(k * 16, vec![seen("page", 0.0, 0.0, if k < 6 { 1.0 } else { 8.0 })]))
             .collect();
         assert!(judge(&film).passed());
     }

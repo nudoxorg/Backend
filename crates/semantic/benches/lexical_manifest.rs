@@ -3,13 +3,13 @@
 
 use std::{error::Error, fmt, hint::black_box, time::Instant};
 
+use backend_semantic::ir::EntityId;
+use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 use backend_semantic::index_core::{
     EntityArtifactIdentity, EntityDocumentId, GenerationId, IndexSnapshot, LexicalManifest,
     LexicalOperation, LexicalRow, LexicalScore, LexicalSegment, LexicalSnapshotHit,
     LexicalTerminal, LexicalTopK,
 };
-use backend_semantic::ir::EntityId;
-use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 
 const SEGMENTS: usize = 8;
 const TOP_K: usize = 16;
@@ -141,9 +141,7 @@ fn document(entity: u32) -> EntityDocumentId {
     }
 }
 
-fn placeholder(
-    segment: backend_semantic::index_core::LexicalSegmentId,
-) -> LexicalSnapshotHit<'static> {
+fn placeholder(segment: backend_semantic::index_core::LexicalSegmentId) -> LexicalSnapshotHit<'static> {
     LexicalSnapshotHit::new(
         segment,
         b"placeholder",

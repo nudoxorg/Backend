@@ -43,25 +43,14 @@ pub(crate) fn sync(links: &Links, window: &mut Window, cx: &mut App) {
     let wants = links.snapshot(cx).overlay() == Some(Overlay::AddProject);
     let id = window.window_handle().window_id();
     let open = dialog::is_open(window, cx);
-    let ours = cx
-        .default_global::<PerWindow>()
-        .0
-        .get(&id)
-        .is_some_and(|mounted| mounted.ours);
+    let ours = cx.default_global::<PerWindow>().0.get(&id).is_some_and(|mounted| mounted.ours);
     match (wants, open && ours) {
         (true, false) => {
             let content = match cx.default_global::<PerWindow>().0.get(&id) {
                 Some(mounted) => mounted.content.clone(),
                 None => {
                     let content = cx.new(|cx| Form::new(links.clone(), window, cx));
-                    cx.default_global::<PerWindow>().0.insert(
-                        id,
-                        Mounted {
-                            content: content.clone(),
-                            ours: false,
-                            restore: None,
-                        },
-                    );
+                    cx.default_global::<PerWindow>().0.insert(id, Mounted { content: content.clone(), ours: false, restore: None });
                     content
                 }
             };
@@ -95,14 +84,10 @@ pub(crate) fn sync(links: &Links, window: &mut Window, cx: &mut App) {
         }
         (false, true) => {
             dialog::close(window, cx);
-            let (restore, content) =
-                cx.default_global::<PerWindow>()
-                    .0
-                    .get_mut(&id)
-                    .map_or((None, None), |mounted| {
-                        mounted.ours = false;
-                        (mounted.restore.take(), Some(mounted.content.clone()))
-                    });
+            let (restore, content) = cx.default_global::<PerWindow>().0.get_mut(&id).map_or((None, None), |mounted| {
+                mounted.ours = false;
+                (mounted.restore.take(), Some(mounted.content.clone()))
+            });
             let landed = content.is_some_and(|content| content.read(cx).landed());
             // Back to what held it on Esc or Cancel, unless the place
             // changed under the dialog. An add lands a new project on the
@@ -111,9 +96,7 @@ pub(crate) fn sync(links: &Links, window: &mut Window, cx: &mut App) {
             // the next key starts from the page's first target (D6).
             match restore {
                 _ if landed => window.blur(),
-                Some((handle, route)) if links.snapshot(cx).route() == &route => {
-                    window.focus(&handle, cx)
-                }
+                Some((handle, route)) if links.snapshot(cx).route() == &route => window.focus(&handle, cx),
                 Some(_) => {}
                 None => window.blur(),
             }
@@ -124,10 +107,7 @@ pub(crate) fn sync(links: &Links, window: &mut Window, cx: &mut App) {
 
 /// The dialog's text field, once it has been opened in this window.
 #[cfg(test)]
-pub(crate) fn field(
-    window: &Window,
-    cx: &mut App,
-) -> Option<Entity<gpui_component::input::InputState>> {
+pub(crate) fn field(window: &Window, cx: &mut App) -> Option<Entity<gpui_component::input::InputState>> {
     let id = window.window_handle().window_id();
     let content = cx.default_global::<PerWindow>().0.get(&id)?.content.clone();
     Some(content.read(cx).input().clone())

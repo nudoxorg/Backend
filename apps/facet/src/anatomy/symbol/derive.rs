@@ -32,23 +32,12 @@ pub fn compile(facts: &Facts) -> View {
         Some(derived) => (Some(derived.call), derived.generics),
         None => (None, Vec::new()),
     };
-    let untyped = facts.lang.undeclared()
-        || call
-            .as_ref()
-            .is_some_and(|call| call.ports.iter().any(|p| p.ty.origin.dotted()));
-    let fails = call
-        .as_ref()
-        .and_then(|call| fails_section(facts, call, &generics));
+    let untyped = facts.lang.undeclared() || call.as_ref().is_some_and(|call| call.ports.iter().any(|p| p.ty.origin.dotted()));
+    let fails = call.as_ref().and_then(|call| fails_section(facts, call, &generics));
     let shape = shape::shape(facts);
     let verbs = shape::verbs(facts);
     View {
-        head: Head {
-            kind: facts.kind,
-            path: facts.path.clone(),
-            lang: facts.lang,
-            name: facts.name.clone(),
-            lede: docs::lede(facts),
-        },
+        head: Head { kind: facts.kind, path: facts.path.clone(), lang: facts.lang, name: facts.name.clone(), lede: docs::lede(facts) },
         call,
         generics,
         docs: docs::docs(facts),
@@ -63,31 +52,17 @@ pub fn compile(facts: &Facts) -> View {
 fn fails_section(facts: &Facts, call: &super::view::Call, generics: &[Generic]) -> Option<Fails> {
     let failure = call.fails.as_ref()?;
     let (body, entries) = docs::errors_prose(facts).unwrap_or_default();
-    let full = if body.trim().is_empty() {
-        entries
-            .first()
-            .map(|(_, text)| text.clone())
-            .unwrap_or_default()
-    } else {
-        body
-    };
+    let full = if body.trim().is_empty() { entries.first().map(|(_, text)| text.clone()).unwrap_or_default() } else { body };
     let kinds: Vec<ErrorKind> = facts
         .error_kinds
         .iter()
         .map(|(name, doc)| ErrorKind {
             name: name.clone(),
             doc: text::lead_out(&text::plain(doc)),
-            impossible: known::Source::of(name)
-                .filter(|source| !source.possible(call, generics))
-                .map(|source| source.why_not(name)),
+            impossible: known::Source::of(name).filter(|source| !source.possible(call, generics)).map(|source| source.why_not(name)),
         })
         .collect();
-    (!kinds.is_empty() || full.chars().count() >= 90).then(|| Fails {
-        ty: failure.ty.clone(),
-        when: full,
-        kinds,
-        tells: facts.error_tells.clone(),
-    })
+    (!kinds.is_empty() || full.chars().count() >= 90).then(|| Fails { ty: failure.ty.clone(), when: full, kinds, tells: facts.error_tells.clone() })
 }
 
 /// The page with the workspace's places read into it: the counts on cases,
@@ -95,13 +70,7 @@ fn fails_section(facts: &Facts, call: &super::view::Call, generics: &[Generic]) 
 #[must_use]
 pub fn with_uses(mut view: View, uses: &Uses) -> View {
     let tally = uses.tally();
-    let yours = |name: &str| {
-        tally
-            .iter()
-            .find(|entry| entry.member == name)
-            .map(|entry| entry.yours)
-            .unwrap_or_default()
-    };
+    let yours = |name: &str| tally.iter().find(|entry| entry.member == name).map(|entry| entry.yours).unwrap_or_default();
     match &mut view.shape {
         Some(Shape::OneOf(cases)) => {
             for case in cases {
@@ -117,8 +86,7 @@ pub fn with_uses(mut view: View, uses: &Uses) -> View {
     }
     for group in &mut view.verbs {
         for row in &mut group.rows {
-            row.yours = yours(&row.name).total()
-                + row.also.iter().map(|name| yours(name).total()).sum::<u32>();
+            row.yours = yours(&row.name).total() + row.also.iter().map(|name| yours(name).total()).sum::<u32>();
         }
         group.rows.sort_by(|a, b| b.yours.cmp(&a.yours));
     }

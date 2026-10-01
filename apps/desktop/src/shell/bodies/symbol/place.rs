@@ -17,15 +17,9 @@ fn cache() -> &'static Mutex<HashMap<Key, Option<PathBuf>>> {
 
 /// `~/.cargo/registry/src/<index>/<name>-<version>`, when it is unpacked.
 fn registry_source(name: &str, version: &str) -> Option<PathBuf> {
-    let home = std::env::var_os("CARGO_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")))?;
+    let home = std::env::var_os("CARGO_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")))?;
     let src = home.join("registry").join("src");
-    std::fs::read_dir(src)
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|index| index.path().join(format!("{name}-{version}")))
-        .find(|dir| dir.is_dir())
+    std::fs::read_dir(src).ok()?.filter_map(Result::ok).map(|index| index.path().join(format!("{name}-{version}"))).find(|dir| dir.is_dir())
 }
 
 /// The directory `package`'s relative paths are under.
@@ -36,11 +30,7 @@ pub(super) fn root(package: &PackageRef) -> Option<PathBuf> {
         return (cfg!(test) || path.is_dir()).then_some(path);
     }
     let key = (package.as_str().to_owned(), String::new());
-    if let Some(found) = cache()
-        .lock()
-        .ok()
-        .and_then(|cache| cache.get(&key).cloned())
-    {
+    if let Some(found) = cache().lock().ok().and_then(|cache| cache.get(&key).cloned()) {
         return found;
     }
     let text = package.as_str().strip_prefix("pkg:cargo/")?;

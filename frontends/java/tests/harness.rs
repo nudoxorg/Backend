@@ -732,8 +732,7 @@ fn module_walled_target_compiles_through_module_source_path() {
         },
         JavaSource {
             name: Path::new("module-info.java"),
-            bytes:
-                b"module org.testmod {\n\trequires org.testlib.api;\n\texports org.testmod;\n}\n",
+            bytes: b"module org.testmod {\n\trequires org.testlib.api;\n\texports org.testmod;\n}\n",
         },
     ];
     let mut output = Vec::new();

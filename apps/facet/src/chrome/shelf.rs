@@ -195,10 +195,7 @@ impl Row {
 
     /// Opens the row's page.
     #[must_use]
-    pub fn on_open(
-        mut self,
-        handler: impl Fn(&ElementId, &mut Window, &mut App) + 'static,
-    ) -> Self {
+    pub fn on_open(mut self, handler: impl Fn(&ElementId, &mut Window, &mut App) + 'static) -> Self {
         self.on_open = Some(Rc::new(handler));
         self
     }
@@ -212,10 +209,7 @@ impl RenderOnce for Row {
         let row = self.row;
         let id = match &self.scope {
             Some(scope) => ElementId::NamedChild(
-                Arc::new(ElementId::NamedChild(
-                    Arc::new(scope.clone()),
-                    row.key.to_string().into(),
-                )),
+                Arc::new(ElementId::NamedChild(Arc::new(scope.clone()), row.key.to_string().into())),
                 "row".into(),
             ),
             None => ElementId::NamedChild(Arc::new(row.key.clone()), "row".into()),
@@ -224,33 +218,21 @@ impl RenderOnce for Row {
         let motion = Motion::scoped(ElementId::View(hovered.entity_id()), cx);
         let hover = motion.animate(
             ElementId::NamedChild(Arc::new(id.clone()), "hover".into()),
-            if *hovered.read(cx) || self.look.hover {
-                1.0
-            } else {
-                0.0
-            },
+            if *hovered.read(cx) || self.look.hover { 1.0 } else { 0.0 },
             spec::HOVER,
             window,
             cx,
         );
         let focus = motion.animate(
             ElementId::NamedChild(Arc::new(id.clone()), "focus".into()),
-            if self.focused || self.look.focus {
-                1.0
-            } else {
-                0.0
-            },
+            if self.focused || self.look.focus { 1.0 } else { 0.0 },
             spec::HOVER,
             window,
             cx,
         );
         let current = motion.animate(
             ElementId::NamedChild(Arc::new(id.clone()), "current".into()),
-            if row.tone == RowTone::Current {
-                1.0
-            } else {
-                0.0
-            },
+            if row.tone == RowTone::Current { 1.0 } else { 0.0 },
             spec::REVEAL,
             window,
             cx,
@@ -394,11 +376,7 @@ pub struct Book {
 impl Book {
     /// A book without a release history.
     #[must_use]
-    pub fn new(
-        kind: Kind,
-        name: impl Into<SharedString>,
-        version: impl Into<SharedString>,
-    ) -> Self {
+    pub fn new(kind: Kind, name: impl Into<SharedString>, version: impl Into<SharedString>) -> Self {
         Self {
             kind,
             name: name.into(),
@@ -444,14 +422,10 @@ pub fn book(
     let palette = cx.palette();
     let s = measure.scale();
     let away = match (&book.releases, book.pinned, book.viewing) {
-        (Some(releases), Some(pin), Some(view)) if pin != view => {
-            releases.get(view).map(|r| r.version.clone())
-        }
+        (Some(releases), Some(pin), Some(view)) if pin != view => releases.get(view).map(|r| r.version.clone()),
         _ => None,
     };
-    let (version, ink) = away.map_or((book.version.clone(), palette.ink3.hsla()), |v| {
-        (v, palette.peri_hi.hsla())
-    });
+    let (version, ink) = away.map_or((book.version.clone(), palette.ink3.hsla()), |v| (v, palette.peri_hi.hsla()));
     let head = div()
         .flex()
         .items_center()
@@ -475,12 +449,7 @@ pub fn book(
                         .text_color(palette.ink0.hsla())
                         .child(book.name.clone()),
                 )
-                .child(
-                    div()
-                        .set(BOOK_VERSION, measure)
-                        .text_color(ink)
-                        .child(version),
-                ),
+                .child(div().set(BOOK_VERSION, measure).text_color(ink).child(version)),
         );
     let comb = book.releases.clone().map(|releases| {
         let mut comb = version_comb(id, releases, &comb_measure(measure));
@@ -562,10 +531,7 @@ impl Shelf {
 
     /// A row was opened.
     #[must_use]
-    pub fn on_open(
-        mut self,
-        handler: impl Fn(&ElementId, &mut Window, &mut App) + 'static,
-    ) -> Self {
+    pub fn on_open(mut self, handler: impl Fn(&ElementId, &mut Window, &mut App) + 'static) -> Self {
         self.on_open = Some(Rc::new(handler));
         self
     }
@@ -604,15 +570,18 @@ impl RenderOnce for Shelf {
         if let Some(filter) = &data.filter {
             let inner = measure.inset(px(10.0 * s));
             column = column.child(
-                div().px(px(10.0 * s)).pb(px(8.0 * s)).child(
-                    field(
-                        ElementId::NamedChild(Arc::new(self.id.clone()), "filter".into()),
-                        filter,
-                        &inner,
-                    )
-                    .icon(Icon::Filter)
-                    .quiet(),
-                ),
+                div()
+                    .px(px(10.0 * s))
+                    .pb(px(8.0 * s))
+                    .child(
+                        field(
+                            ElementId::NamedChild(Arc::new(self.id.clone()), "filter".into()),
+                            filter,
+                            &inner,
+                        )
+                        .icon(Icon::Filter)
+                        .quiet(),
+                    ),
             );
         }
         let rows = data.rows.into_iter().enumerate().map(|(index, shelf_row)| {
@@ -658,10 +627,7 @@ pub fn spine(
 impl Spine {
     /// A mark was clicked.
     #[must_use]
-    pub fn on_open(
-        mut self,
-        handler: impl Fn(&ElementId, &mut Window, &mut App) + 'static,
-    ) -> Self {
+    pub fn on_open(mut self, handler: impl Fn(&ElementId, &mut Window, &mut App) + 'static) -> Self {
         self.on_open = Some(Rc::new(handler));
         self
     }
@@ -673,10 +639,7 @@ impl RenderOnce for Spine {
         let palette = cx.palette();
         let measure = self.measure;
         let s = measure.scale();
-        let motion = Motion::scoped(
-            ElementId::NamedChild(Arc::new(self.id.clone()), "m".into()),
-            cx,
-        );
+        let motion = Motion::scoped(ElementId::NamedChild(Arc::new(self.id.clone()), "m".into()), cx);
         let mut column = div()
             .id(self.id.clone())
             .flex()
@@ -696,10 +659,7 @@ impl RenderOnce for Spine {
             let hovered = window.use_keyed_state(mark_id.clone(), cx, |_, _| false);
             let lit = motion.animate(
                 ElementId::NamedChild(
-                    Arc::new(ElementId::NamedChild(
-                        Arc::new(self.id.clone()),
-                        key.to_string().into(),
-                    )),
+                    Arc::new(ElementId::NamedChild(Arc::new(self.id.clone()), key.to_string().into())),
                     "lit".into(),
                 ),
                 if on || *hovered.read(cx) { 1.0 } else { 0.55 },
@@ -813,16 +773,10 @@ mod tests {
         // still be reachable by pointer, each with a target of at least
         // 5 px at this scale once reached.
         for (width, scale) in [(200.0, 2.0), (200.0, 1.0), (264.0, 2.0)] {
-            let facet = Facet {
-                text_scale: scale,
-                ..Facet::default()
-            };
+            let facet = Facet { text_scale: scale, ..Facet::default() };
             let comb = comb_measure(&Measure::new(px(width), &facet));
             let comb_width = f32::from(comb.width());
-            assert!(
-                comb_width > 0.0 && comb_width < width,
-                "{comb_width} of {width}"
-            );
+            assert!(comb_width > 0.0 && comb_width < width, "{comb_width} of {width}");
             for n in [3, 17, 120, 400] {
                 let layout = Layout::new(n, comb_width, scale);
                 let missed = unreachable(&layout);

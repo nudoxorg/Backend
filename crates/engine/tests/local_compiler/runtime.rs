@@ -12,13 +12,13 @@ use backend_engine::application::{
     LocalCompilerScratch, LocalCompilerTimeout, LocalRuntimePackageAuthority,
     LocalRuntimeToolchain,
 };
+use backend_semantic::vocabulary::{LanguageProfile, NativeTool, PythonVersion, Stage};
+use backend_version::{ArtifactId, IrSemanticImageDomain, IrSemanticImageEncoding};
 use backend_library::interface::{
     CompilerCapability, CompilerRequest, CompilerTerminal, SemanticImageAccessError,
     SemanticImageAuthority,
 };
-use backend_semantic::vocabulary::{LanguageProfile, NativeTool, PythonVersion, Stage};
 use backend_store::journal::PublicationLimits;
-use backend_version::{ArtifactId, IrSemanticImageDomain, IrSemanticImageEncoding};
 
 static RUNTIME_ORDINAL: AtomicUsize = AtomicUsize::new(0);
 

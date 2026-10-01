@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::model::{
-    Advisory, AdvisoryCategory, AdvisoryStatus, AffectedRange, FreshnessState, MalwareCoverage,
-    NativeAdvisoryId, SeverityLevel,
+    Advisory, AdvisoryCategory, AdvisoryStatus, AffectedRange, FreshnessState, NativeAdvisoryId,
+    MalwareCoverage, SeverityLevel,
 };
 use super::policy::{
     AcquisitionDecision, AdvisoryCoverage, AdvisoryObservation, OverrideEvidence, PolicyReason,

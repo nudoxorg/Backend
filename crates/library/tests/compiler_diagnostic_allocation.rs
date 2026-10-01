@@ -6,12 +6,12 @@
 use std::mem::size_of;
 
 use allocation_counter::{AllocationInfo, measure};
+use backend_semantic::vocabulary::{Language, LanguageProfile, RustEdition, Stage};
 use backend_library::interface::{
     ApplicationInput, ApplicationOutcome, ApplicationService, Capability, CompilerCapability,
     CompilerDiagnostic, CompilerRequest, CompilerTerminal, CorrelationId, DurableReceiptAuthority,
     InputText, MAX_NATIVE_DIAGNOSTIC_BYTES, ReplyBody, UnavailableCompiler,
 };
-use backend_semantic::vocabulary::{Language, LanguageProfile, RustEdition, Stage};
 
 // The durable semantic result previously added one 32-byte image identity and
 // its exact extent to the compact-artifact reply layout (312 bytes). A later

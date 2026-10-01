@@ -11,17 +11,15 @@ use std::{
 
 use allocation_counter::{AllocationInfo, measure};
 use backend_store::hydration::PlanScratch;
-use backend_store::hydration::{
-    Projection, VerifiedGeneration, VerifiedGenerationFacts, demand, plan,
-};
-use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
+use backend_store::hydration::{Projection, VerifiedGeneration, VerifiedGenerationFacts, demand, plan};
+use backend_version::{ContentId, ObjectDomain};
 use backend_store::memory::{InsertOutcome, MemoryStore, StoreCapacity};
+use backend_version::object::ObjectRef;
 use backend_store::root::{
     ClosureScratch, GenerationRoot, GenerationView, PreparedLocality, RootEntry, ValidatedLocality,
 };
-use backend_version::object::ObjectRef;
 use backend_version::schema::SchemaId;
-use backend_version::{ContentId, ObjectDomain};
+use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 
 static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
 

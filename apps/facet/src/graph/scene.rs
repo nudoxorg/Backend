@@ -601,10 +601,7 @@ impl Scene {
     /// derives adjacency or expands the single-entry cache.
     pub(crate) fn promote_neighbourhood(&self, packet: Arc<Neighbourhood>) {
         debug_assert!((packet.node as usize) < self.world.len());
-        *self
-            .neighbourhood
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(packet);
+        *self.neighbourhood.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(packet);
     }
 
     /// Hover tracks sample the same target many times; derive its adjacency
@@ -877,11 +874,7 @@ impl Scene {
     #[must_use]
     pub fn card_room(view: &View) -> f32 {
         let room = crate::fluid::Room::new(gpui::px(view.w), 1.0);
-        if CARD.at(room) == Card::Beside {
-            f32::from(CARD_ROOM.at(room))
-        } else {
-            0.0
-        }
+        if CARD.at(room) == Card::Beside { f32::from(CARD_ROOM.at(room)) } else { 0.0 }
     }
 
     /// The symbol with its neighbourhood, trimmed to the nearest 85 % so one
@@ -1826,10 +1819,7 @@ mod tests {
         assert!(!Arc::ptr_eq(&first, &next));
         assert!(Arc::ptr_eq(&next, &scene.neighbourhood(3)));
         scene.promote_neighbourhood(first.clone());
-        assert!(
-            Arc::ptr_eq(&first, &scene.neighbourhood(2)),
-            "reacquiring a retained packet cannot rebuild its topology"
-        );
+        assert!(Arc::ptr_eq(&first, &scene.neighbourhood(2)), "reacquiring a retained packet cannot rebuild its topology");
         assert_eq!(
             first.lit,
             vec![0, 2, 3],

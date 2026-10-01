@@ -12,9 +12,7 @@ use backend_engine::driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile,
 };
-use backend_frontend_rust::legacy::{
-    RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
-};
+use backend_frontend_rust::legacy::{RustFeatureControl, RustProject, RustToolchain, SourceByteLimit};
 use backend_semantic::ir::{
     DecodedOccurrence, EntityKind, FragmentView, OccurrenceConfidence, OccurrenceTarget,
     ReferenceKind,
@@ -138,9 +136,8 @@ fn compile_source(root: &PathBuf, relative: &str, source: &str) -> Result<Vec<u8
     let tool = rustc()?;
     let toolchain =
         RustToolchain::discover(&tool).map_err(|error| format!("toolchain: {error:?}"))?;
-    let project =
-        RustProject::open_with_source(root, &source_path, &toolchain, RustEdition::Rust2024)
-            .map_err(|error| format!("project: {error:?}"))?;
+    let project = RustProject::open_with_source(root, &source_path, &toolchain, RustEdition::Rust2024)
+        .map_err(|error| format!("project: {error:?}"))?;
     let resolved = ResolvedToolchain::from_version(
         backend_engine::driver::NativeTool::Rustc,
         &tool,
@@ -216,7 +213,9 @@ fn owner_name(lane: &Lane<'_>, owner: backend_semantic::ir::EntityId) -> Result<
         .ok_or_else(|| format!("entity {} name atom absent", owner.raw))
 }
 
-fn package_value_reads<'a>(lane: &'a Lane<'a>) -> Vec<&'a backend_semantic::ir::Occurrence<'a>> {
+fn package_value_reads<'a>(
+    lane: &'a Lane<'a>,
+) -> Vec<&'a backend_semantic::ir::Occurrence<'a>> {
     lane.occurrences
         .iter()
         .map(|row| &row.occurrence)
@@ -391,8 +390,7 @@ fn cross_file_function_value_read_retargets_to_defining_module_path() -> Result<
         "[package]\nname=\"function_value_fixture\"\nversion=\"0.1.0\"\nedition=\"2024\"\n",
     )
     .map_err(|error| error.to_string())?;
-    fs::write(root.join("src/service.rs"), PATH_VALUE_SERVICE)
-        .map_err(|error| error.to_string())?;
+    fs::write(root.join("src/service.rs"), PATH_VALUE_SERVICE).map_err(|error| error.to_string())?;
     fs::write(root.join("src/lib.rs"), PATH_VALUE_CALL_LIB).map_err(|error| error.to_string())?;
     let bytes = compile_source(&root, "src/lib.rs", PATH_VALUE_CALL_LIB)?;
     let _ = fs::remove_dir_all(&root);
@@ -465,9 +463,7 @@ fn cross_file_function_value_read_retargets_to_defining_module_path() -> Result<
         return Err("retargeted function value read must be foreign".to_owned());
     };
     if key.path.contains("::") || key.display.contains("::") {
-        return Err(
-            "package key must use the name token set_note, not service::set_note".to_owned(),
-        );
+        return Err("package key must use the name token set_note, not service::set_note".to_owned());
     }
     Ok(())
 }
@@ -785,8 +781,7 @@ fn free_const_and_associated_const_reads_stay_distinct() -> Result<(), String> {
         "[package]\nname=\"dual_value_fixture\"\nversion=\"0.1.0\"\nedition=\"2024\"\n",
     )
     .map_err(|error| error.to_string())?;
-    fs::write(root.join("src/service.rs"), DUAL_VALUE_SERVICE)
-        .map_err(|error| error.to_string())?;
+    fs::write(root.join("src/service.rs"), DUAL_VALUE_SERVICE).map_err(|error| error.to_string())?;
     fs::write(root.join("src/lib.rs"), DUAL_VALUE_LIB).map_err(|error| error.to_string())?;
     let bytes = compile_source(&root, "src/lib.rs", DUAL_VALUE_LIB)?;
     let _ = fs::remove_dir_all(&root);

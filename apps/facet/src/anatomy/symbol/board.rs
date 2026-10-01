@@ -7,24 +7,18 @@
 //! board's own derivation.
 
 use super::derive::uses::{Reader, Rel, Site, read_all};
-use super::facts::{
-    Facts, Implementors, Member, Owes, Receives, Section, SectionKind, Site as Source,
-};
+use super::facts::{Facts, Implementors, Member, Owes, Receives, Section, SectionKind, Site as Source};
 use super::view::{Block, Kind, Lang, Uses, View};
 use super::{compile, with_uses};
 use serde_json::Value;
 use std::path::PathBuf;
 
 pub(crate) fn board_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../Nudox-Design-System/v6/moments/data/page6")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Nudox-Design-System/v6/moments/data/page6")
 }
 
 pub(crate) fn text(v: &Value, key: &str) -> String {
-    v.get(key)
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned()
+    v.get(key).and_then(Value::as_str).unwrap_or_default().to_owned()
 }
 
 fn lang(name: &str) -> Lang {
@@ -52,20 +46,13 @@ fn receives(how: &str) -> Receives {
 }
 
 fn ty_text(v: Option<&Value>) -> String {
-    v.and_then(|v| v.get("text"))
-        .and_then(Value::as_str)
-        .unwrap_or("()")
-        .to_owned()
+    v.and_then(|v| v.get("text")).and_then(Value::as_str).unwrap_or("()").to_owned()
 }
 
 /// A method's signature as the source would write it, from the board's
 /// derived model (the board keeps no raw text for methods).
 fn method_signature(name: &str, sig: &Value) -> String {
-    let recv = match sig
-        .get("recv")
-        .and_then(|r| r.get("how"))
-        .and_then(Value::as_str)
-    {
+    let recv = match sig.get("recv").and_then(|r| r.get("how")).and_then(Value::as_str) {
         Some("reads") => "&self",
         Some("changes") => "&mut self",
         Some("uses up") => "self",
@@ -75,17 +62,8 @@ fn method_signature(name: &str, sig: &Value) -> String {
     if !recv.is_empty() {
         params.push(recv.to_owned());
     }
-    for input in sig
-        .get("ins")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        params.push(format!(
-            "{}: {}",
-            text(input, "name"),
-            ty_text(input.get("type"))
-        ));
+    for input in sig.get("ins").and_then(Value::as_array).into_iter().flatten() {
+        params.push(format!("{}: {}", text(input, "name"), ty_text(input.get("type"))));
     }
     let out = sig.get("out");
     let mut ret = ty_text(out.and_then(|o| o.get("type")));
@@ -135,129 +113,48 @@ pub(crate) fn facts_of(v: &Value) -> Facts {
     let lang = lang(&text(v, "lang"));
     let mut facts = Facts::new(&text(v, "name"), kind_of(v), lang, &text(v, "pkg"));
     facts.version = Some(text(v, "version"));
-    facts.path = v
-        .get("path")
-        .and_then(Value::as_array)
-        .map(|p| {
-            p.iter()
-                .filter_map(Value::as_str)
-                .map(ToOwned::to_owned)
-                .collect()
-        })
-        .unwrap_or_default();
+    facts.path = v.get("path").and_then(Value::as_array).map(|p| p.iter().filter_map(Value::as_str).map(ToOwned::to_owned).collect()).unwrap_or_default();
     facts.signature = Some(text(v, "decl"));
     facts.docs = blocks(v);
     if let Some(source) = v.get("source") {
-        facts.site = Some(Source {
-            file: text(source, "file"),
-            line: u32::try_from(source.get("line").and_then(Value::as_u64).unwrap_or(1))
-                .unwrap_or(1),
-            open: Some(format!("/board/{}", text(source, "file"))),
-        });
+        facts.site = Some(Source { file: text(source, "file"), line: u32::try_from(source.get("line").and_then(Value::as_u64).unwrap_or(1)).unwrap_or(1), open: Some(format!("/board/{}", text(source, "file"))) });
     }
     if facts.kind == Kind::Method {
         facts.owner = facts.path.last().cloned();
     }
-    facts.links = vec![
-        ("Error".to_owned(), "addr:Error".to_owned()),
-        ("Value".to_owned(), "addr:Value".to_owned()),
-    ];
+    facts.links = vec![("Error".to_owned(), "addr:Error".to_owned()), ("Value".to_owned(), "addr:Value".to_owned())];
     if let Some(shape) = v.get("shape") {
-        for case in shape
-            .get("cases")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
+        for case in shape.get("cases").and_then(Value::as_array).into_iter().flatten() {
             let ty = case.get("type").filter(|t| !t.is_null());
             let signature = match ty {
                 Some(t) => format!("{}({})", text(case, "name"), ty_text(Some(t))),
                 None => text(case, "name"),
             };
-            facts.made_of.push(Member {
-                name: text(case, "name"),
-                signature: Some(signature),
-                summary: Some(text(case, "doc")),
-                more: Some(text(case, "more")).filter(|m| !m.is_empty()),
-                link: Some(format!("addr:{}", text(case, "name"))),
-                ..Member::default()
-            });
+            facts.made_of.push(Member { name: text(case, "name"), signature: Some(signature), summary: Some(text(case, "doc")), more: Some(text(case, "more")).filter(|m| !m.is_empty()), link: Some(format!("addr:{}", text(case, "name"))), ..Member::default() });
         }
-        for field in shape
-            .get("fields")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            facts.made_of.push(Member {
-                name: text(field, "name"),
-                signature: Some(format!(
-                    "pub {}: {}",
-                    text(field, "name"),
-                    ty_text(field.get("type"))
-                )),
-                summary: Some(text(field, "doc")),
-                more: Some(text(field, "more")).filter(|m| !m.is_empty()),
-                ..Member::default()
-            });
+        for field in shape.get("fields").and_then(Value::as_array).into_iter().flatten() {
+            facts.made_of.push(Member { name: text(field, "name"), signature: Some(format!("pub {}: {}", text(field, "name"), ty_text(field.get("type")))), summary: Some(text(field, "doc")), more: Some(text(field, "more")).filter(|m| !m.is_empty()), ..Member::default() });
         }
     }
-    for group in v
-        .get("groups")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        for item in group
-            .get("items")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
+    for group in v.get("groups").and_then(Value::as_array).into_iter().flatten() {
+        for item in group.get("items").and_then(Value::as_array).into_iter().flatten() {
             let name = text(item, "name");
             if let Some(froms) = item.get("froms").and_then(Value::as_array) {
                 for word in froms.iter().filter_map(Value::as_str) {
-                    facts.does.push(Member {
-                        name: "from".to_owned(),
-                        signature: Some(format!("fn from(val: {}) -> Value", from_type(word))),
-                        receives: Receives::Makes,
-                        ..Member::default()
-                    });
+                    facts.does.push(Member { name: "from".to_owned(), signature: Some(format!("fn from(val: {}) -> Value", from_type(word))), receives: Receives::Makes, ..Member::default() });
                 }
                 continue;
             }
             if name == "parse" {
-                facts.does.push(Member {
-                    name: "from_str".to_owned(),
-                    signature: Some("fn from_str(s: &str) -> Result<Value, Self::Err>".to_owned()),
-                    receives: Receives::Makes,
-                    ..Member::default()
-                });
+                facts.does.push(Member { name: "from_str".to_owned(), signature: Some("fn from_str(s: &str) -> Result<Value, Self::Err>".to_owned()), receives: Receives::Makes, ..Member::default() });
                 continue;
             }
             let Some(sig) = item.get("sig") else {
-                facts.does.push(Member {
-                    name,
-                    summary: Some(text(item, "doc")),
-                    receives: Receives::Makes,
-                    signature: Some("fn default() -> Self".to_owned()),
-                    ..Member::default()
-                });
+                facts.does.push(Member { name, summary: Some(text(item, "doc")), receives: Receives::Makes, signature: Some("fn default() -> Self".to_owned()), ..Member::default() });
                 continue;
             };
-            let how = sig
-                .get("recv")
-                .and_then(|r| r.get("how"))
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            facts.does.push(Member {
-                signature: Some(method_signature(&name, sig)),
-                summary: Some(text(item, "doc")),
-                receives: receives(how),
-                link: Some(format!("addr:{name}")),
-                name,
-                ..Member::default()
-            });
+            let how = sig.get("recv").and_then(|r| r.get("how")).and_then(Value::as_str).unwrap_or("");
+            facts.does.push(Member { signature: Some(method_signature(&name, sig)), summary: Some(text(item, "doc")), receives: receives(how), link: Some(format!("addr:{name}")), name, ..Member::default() });
         }
     }
     if let Some(required) = v.get("required").and_then(Value::as_array) {
@@ -272,33 +169,13 @@ pub(crate) fn facts_of(v: &Value) -> Facts {
         }
     }
     facts.implementors = v.get("implementors").and_then(|i| {
-        let number = |field: &str| {
-            i.get(field)
-                .and_then(Value::as_u64)
-                .and_then(|n| u32::try_from(n).ok())
-        };
-        Some(Implementors {
-            total: number("total")?,
-            crates: number("crates")?,
-            derived: number("derived"),
-        })
+        let number = |field: &str| i.get(field).and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok());
+        Some(Implementors { total: number("total")?, crates: number("crates")?, derived: number("derived") })
     });
-    for item in v
-        .get("implements")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        facts
-            .implements
-            .push((text(item, "name"), text(item, "how") == "derive"));
+    for item in v.get("implements").and_then(Value::as_array).into_iter().flatten() {
+        facts.implements.push((text(item, "name"), text(item, "how") == "derive"));
     }
-    for sibling in v
-        .get("siblings")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
+    for sibling in v.get("siblings").and_then(Value::as_array).into_iter().flatten() {
         let kind = match text(sibling, "kind").as_str() {
             "fn" => Kind::Function,
             "method" => Kind::Method,
@@ -307,23 +184,11 @@ pub(crate) fn facts_of(v: &Value) -> Facts {
             "enum" => Kind::Enum,
             _ => Kind::Other,
         };
-        facts.beside.push(super::facts::Beside {
-            name: text(sibling, "name"),
-            kind,
-            signature: None,
-            link: Some(format!("addr:{}", text(sibling, "name"))),
-        });
+        facts.beside.push(super::facts::Beside { name: text(sibling, "name"), kind, signature: None, link: Some(format!("addr:{}", text(sibling, "name"))) });
     }
-    if let Some(releases) = v
-        .get("history")
-        .and_then(|h| h.get("releases"))
-        .and_then(Value::as_array)
-    {
+    if let Some(releases) = v.get("history").and_then(|h| h.get("releases")).and_then(Value::as_array) {
         let last = releases.last().and_then(|r| r.get("sig")).cloned();
-        facts.releases = releases
-            .iter()
-            .map(|r| (text(r, "v"), r.get("sig") != last.as_ref()))
-            .collect();
+        facts.releases = releases.iter().map(|r| (text(r, "v"), r.get("sig") != last.as_ref())).collect();
     }
     match text(v, "id").as_str() {
         "rs-from_str" => {
@@ -342,25 +207,8 @@ pub(crate) fn facts_of(v: &Value) -> Facts {
         "py-re.match" => {
             facts.docs = vec![Block::Para(text(v, "summary"))];
             facts.sections = vec![
-                Section {
-                    kind: SectionKind::Parameters,
-                    body: String::new(),
-                    entries: vec![
-                        (
-                            "pattern".to_owned(),
-                            "a regular expression, text or compiled".to_owned(),
-                        ),
-                        ("string".to_owned(), "what to look at".to_owned()),
-                    ],
-                },
-                Section {
-                    kind: SectionKind::Errors,
-                    body: String::new(),
-                    entries: vec![(
-                        "re.error".to_owned(),
-                        "if the pattern itself is invalid".to_owned(),
-                    )],
-                },
+                Section { kind: SectionKind::Parameters, body: String::new(), entries: vec![("pattern".to_owned(), "a regular expression, text or compiled".to_owned()), ("string".to_owned(), "what to look at".to_owned())] },
+                Section { kind: SectionKind::Errors, body: String::new(), entries: vec![("re.error".to_owned(), "if the pattern itself is invalid".to_owned())] },
             ];
         }
         "js-which.sync" => {
@@ -372,32 +220,13 @@ pub(crate) fn facts_of(v: &Value) -> Facts {
                     entries: vec![
                         ("cmd".to_owned(), "{string} a program name".to_owned()),
                         ("opt".to_owned(), "{object} options".to_owned()),
-                        (
-                            "opt.nothrow".to_owned(),
-                            "{boolean} give null instead of throwing".to_owned(),
-                        ),
-                        (
-                            "opt.all".to_owned(),
-                            "{boolean} give every match, a list".to_owned(),
-                        ),
-                        (
-                            "opt.path".to_owned(),
-                            "{string} search this instead of $PATH".to_owned(),
-                        ),
-                        (
-                            "opt.pathExt".to_owned(),
-                            "{string} extensions to try (Windows)".to_owned(),
-                        ),
+                        ("opt.nothrow".to_owned(), "{boolean} give null instead of throwing".to_owned()),
+                        ("opt.all".to_owned(), "{boolean} give every match, a list".to_owned()),
+                        ("opt.path".to_owned(), "{string} search this instead of $PATH".to_owned()),
+                        ("opt.pathExt".to_owned(), "{string} extensions to try (Windows)".to_owned()),
                     ],
                 },
-                Section {
-                    kind: SectionKind::Errors,
-                    body: String::new(),
-                    entries: vec![(
-                        "Error".to_owned(),
-                        "if it isn't on PATH, unless nothrow".to_owned(),
-                    )],
-                },
+                Section { kind: SectionKind::Errors, body: String::new(), entries: vec![("Error".to_owned(), "if it isn't on PATH, unless nothrow".to_owned())] },
             ];
         }
         _ => {}
@@ -422,14 +251,9 @@ pub(crate) fn sites_of(v: &Value) -> Vec<Site> {
             let file = text(u, "file");
             Site {
                 package: text(u, "pkg"),
-                path: if dir.is_empty() {
-                    file.clone()
-                } else {
-                    format!("/work/{dir}/{file}")
-                },
+                path: if dir.is_empty() { file.clone() } else { format!("/work/{dir}/{file}") },
                 file,
-                line: u32::try_from(u.get("line").and_then(Value::as_u64).unwrap_or(1))
-                    .unwrap_or(1),
+                line: u32::try_from(u.get("line").and_then(Value::as_u64).unwrap_or(1)).unwrap_or(1),
                 text: text(u, "text"),
                 mark: None,
                 rel,
@@ -446,13 +270,11 @@ pub(crate) fn board(id: &str) -> Option<(View, Uses)> {
     let facts = facts_of(&v);
     let view = compile(&facts);
     let mut uses = read_all(&sites_of(&v), &Reader::of(&view));
-    uses.elsewhere = v
-        .get("workspace")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned);
+    uses.elsewhere = v.get("workspace").and_then(Value::as_str).map(ToOwned::to_owned);
     let view = with_uses(view, &uses);
     Some((view, uses))
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -460,8 +282,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn load(id: &str) -> Option<Value> {
-        serde_json::from_str(&std::fs::read_to_string(board_dir().join(format!("{id}.json"))).ok()?)
-            .ok()
+        serde_json::from_str(&std::fs::read_to_string(board_dir().join(format!("{id}.json"))).ok()?).ok()
     }
 
     /// Reads the board's use sites through the classifier and compares each
@@ -470,35 +291,19 @@ mod tests {
     #[test]
     #[ignore = "reads the design board's data; run by hand to tune the classifier"]
     fn the_classifier_agrees_with_the_boards_tags() {
-        for id in [
-            "rs-Value",
-            "rs-as_str",
-            "rs-from_str",
-            "rs-AllocationInfo",
-            "rs-Serialize",
-            "py-re.match",
-            "js-which.sync",
-        ] {
+        for id in ["rs-Value", "rs-as_str", "rs-from_str", "rs-AllocationInfo", "rs-Serialize", "py-re.match", "js-which.sync"] {
             let Some(v) = load(id) else { continue };
             let view = compile(&facts_of(&v));
             let sites = sites_of(&v);
             let uses = read_all(&sites, &Reader::of(&view));
-            let tags: Vec<String> = v
-                .get("uses")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .map(|u| text(u, "tag"))
-                .collect();
+            let tags: Vec<String> = v.get("uses").and_then(Value::as_array).into_iter().flatten().map(|u| text(u, "tag")).collect();
             let mut agree = 0;
             let mut differ: BTreeMap<(String, &'static str), (usize, String)> = BTreeMap::new();
             for (place, tag) in uses.all.iter().zip(&tags) {
                 if place.verb.word() == tag {
                     agree += 1;
                 } else {
-                    let entry = differ
-                        .entry((tag.clone(), place.verb.word()))
-                        .or_insert((0, place.text.clone()));
+                    let entry = differ.entry((tag.clone(), place.verb.word())).or_insert((0, place.text.clone()));
                     entry.0 += 1;
                 }
             }
@@ -511,9 +316,7 @@ mod tests {
 
     #[test]
     fn the_boards_pages_compile_when_the_data_is_there() {
-        let Some((view, _)) = board("rs-from_str") else {
-            return;
-        };
+        let Some((view, _)) = board("rs-from_str") else { return };
         let call = view.call.expect("a call");
         assert_eq!(call.ports[0].ty.word, "text");
         assert!(call.fails.is_some());

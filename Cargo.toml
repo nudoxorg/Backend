@@ -3,14 +3,16 @@
 [workspace]
 resolver = "3"
 members = [
-  "crates/*",
-  "frontends/*",
-  "extensions/*",
-  "apps/*",
-  "tests/*",
-  "tools/*",
+    "crates/*",
+    "frontends/*",
+    "extensions/*",
+    "apps/*",
+    "tests/*",
+    "tools/*",
 ]
-exclude = [".config/dylint"]
+exclude = [
+    ".config/dylint",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -24,25 +26,17 @@ anyhow = "1.0.100"
 allocation-counter = "0.8.1"
 arrayvec = { version = "0.7.6", default-features = false }
 atomic-waker = { version = "1.1.2", default-features = false }
-axum = { version = "0.8.4", default-features = false, features = [
-  "http1",
-  "json",
-  "tokio",
-] }
+axum = { version = "0.8.4", default-features = false, features = ["http1", "json", "tokio"] }
 base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
 async-channel = "2.5.0"
 blake3 = { version = "1.8.2", default-features = false }
 bolero = "0.13.4"
 bytes = { version = "1.10.1", default-features = false }
-derive_more = { version = "2.1.1", default-features = false, features = [
-  "debug",
-] }
+derive_more = { version = "2.1.1", default-features = false, features = ["debug"] }
 fearless_simd = { version = "0.7.0", default-features = false }
 futures-core = { version = "0.3.31", default-features = false }
 futures-executor = "0.3.31"
-futures-util = { version = "0.3.31", default-features = false, features = [
-  "alloc",
-] }
+futures-util = { version = "0.3.31", default-features = false, features = ["alloc"] }
 flate2 = "1.1.10"
 ignore = "0.4.33"
 # Keep the entire CE family on one published GPUI type universe. Cargo.lock
@@ -54,20 +48,12 @@ hmac = "0.12.1"
 loom = "0.7.2"
 opentelemetry = { version = "=0.32.0", features = ["logs", "metrics", "trace"] }
 opentelemetry-appender-tracing = "=0.32.0"
-opentelemetry_sdk = { version = "=0.32.1", features = [
-  "logs",
-  "metrics",
-  "trace",
-] }
+opentelemetry_sdk = { version = "=0.32.1", features = ["logs", "metrics", "trace"] }
 parking_lot = "0.12.4"
 proptest = "1.7.0"
 quick-xml = "0.41.0"
 rstest = { version = "0.26.1", default-features = false }
-serde = { version = "=1.0.229", default-features = false, features = [
-  "alloc",
-  "derive",
-  "rc",
-] }
+serde = { version = "=1.0.229", default-features = false, features = ["alloc", "derive", "rc"] }
 serde_json = "=1.0.151"
 sha2 = { version = "0.10.9", default-features = false }
 sha1 = { version = "0.10.6", default-features = false }
@@ -77,32 +63,17 @@ strum = { version = "0.28.0", default-features = false, features = ["derive"] }
 tantivy = "0.26.1"
 thiserror = { version = "2", default-features = false }
 trybuild = "1.0.118"
-tokio = { version = "1.47.1", features = [
-  "macros",
-  "rt-multi-thread",
-  "sync",
-  "time",
-] }
+tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 toml = "0.8.23"
 tracing = "=0.1.44"
 tracing-opentelemetry = "=0.33.0"
 tracing-subscriber = { version = "=0.3.23", features = ["registry"] }
 tree-sitter = "=0.27.0"
-trustfall = { git = "https://github.com/philocalyst/trustfall", rev = "5a0a8607fc5d972380437289b9a4ad1aa5150b09", features = [
-  "async",
-] }
-trustfall_core = { git = "https://github.com/philocalyst/trustfall", rev = "5a0a8607fc5d972380437289b9a4ad1aa5150b09", features = [
-  "async",
-] }
+trustfall = { git = "https://github.com/philocalyst/trustfall", rev = "5a0a8607fc5d972380437289b9a4ad1aa5150b09", features = ["async"] }
+trustfall_core = { git = "https://github.com/philocalyst/trustfall", rev = "5a0a8607fc5d972380437289b9a4ad1aa5150b09", features = ["async"] }
 turso = { version = "=0.8.0-pre.10", default-features = false }
-ureq = { version = "=3.4.0", default-features = false, features = [
-  "gzip",
-  "json",
-  "rustls",
-] }
-zerocopy = { version = "0.8.56", default-features = false, features = [
-  "derive",
-] }
+ureq = { version = "=3.4.0", default-features = false, features = ["gzip", "json", "rustls"] }
+zerocopy = { version = "0.8.56", default-features = false, features = ["derive"] }
 
 [workspace.lints.rust]
 # Audited low-level storage modules may opt into narrowly scoped unsafe code;

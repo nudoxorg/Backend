@@ -954,8 +954,10 @@ impl TypedV2HistoryReplay {
     /// confirmation attestations. Do not use it to alias or rewrite identity.
     pub fn lineage_candidates(
         &self,
-    ) -> Result<Option<lineage::UnprovenTypedLineageEdgeSetV1<'_>>, lineage::LineageEdgeSetErrorV1>
-    {
+    ) -> Result<
+        Option<lineage::UnprovenTypedLineageEdgeSetV1<'_>>,
+        lineage::LineageEdgeSetErrorV1,
+    > {
         let Some(bytes) = &self.lineage_edge_set else {
             return Ok(None);
         };

@@ -22,18 +22,11 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 fn repository() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .expect("repository")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().expect("repository")
 }
 
 /// An owner on a private workspace, its RustSec source the one real advisory.
-fn owner() -> (
-    backend_local_service::EmbeddedLocalService,
-    PathBuf,
-    PathBuf,
-) {
+fn owner() -> (backend_local_service::EmbeddedLocalService, PathBuf, PathBuf) {
     let nonce = format!(
         "{}-{}",
         std::process::id(),
@@ -48,15 +41,10 @@ fn owner() -> (
     let endpoint = PathBuf::from("/tmp").join(format!("nx-browse-{nonce}.sock"));
     // The owner refuses a state directory anyone else could enter: 0700, not the umask's 0755.
     crate::host::private_dir(&state.join("data")).expect("workspace");
-    let paths = backend_runtime::WorkspacePaths::discover(
-        Some(repository()),
-        Some(state.join("data")),
-        Some(endpoint.clone()),
-    )
-    .expect("workspace paths");
+    let paths = backend_runtime::WorkspacePaths::discover(Some(repository()), Some(state.join("data")), Some(endpoint.clone()))
+        .expect("workspace paths");
     paths.initialize().expect("initialize");
-    let advisory =
-        repository().join("crates/advisory/fixtures/rustsec/crates/bincode/RUSTSEC-2025-0141.md");
+    let advisory = repository().join("crates/advisory/fixtures/rustsec/crates/bincode/RUSTSEC-2025-0141.md");
     let arguments = [
         "--endpoint",
         paths.endpoint().to_str().expect("utf-8"),
@@ -71,41 +59,27 @@ fn owner() -> (
     ]
     .map(ToOwned::to_owned);
     let config = backend_local_service::ProcessConfig::parse(arguments).expect("owner arguments");
-    let service =
-        backend_local_service::EmbeddedLocalService::start(config).expect("embedded owner");
+    let service = backend_local_service::EmbeddedLocalService::start(config).expect("embedded owner");
     (service, endpoint, state)
 }
 
 fn tree_route(root: &Path) -> Route {
-    Route::Orbit(OrbitRoute::Browse(BrowseRoute::Tree(
-        LocalProjectId::from_path(root).expect("project"),
-    )))
+    Route::Orbit(OrbitRoute::Browse(BrowseRoute::Tree(LocalProjectId::from_path(root).expect("project"))))
 }
 
 #[gpui::test]
 fn the_library_page_shows_a_real_tree_read_by_a_real_owner(cx: &mut TestAppContext) {
     let (_service, endpoint, state) = owner();
     let mut session = Session::connect(&endpoint).expect("session");
-    let SurfaceReply::AdvisoryRefreshed(sources) = session
-        .surface(SurfaceCommand::AdvisoryRefresh)
-        .expect("refresh")
-    else {
+    let SurfaceReply::AdvisoryRefreshed(sources) = session.surface(SurfaceCommand::AdvisoryRefresh).expect("refresh") else {
         panic!("advisory-refresh answered another reply");
     };
     assert_eq!(sources.len(), 1);
-    assert_eq!(
-        (
-            sources[0].source.as_str(),
-            sources[0].advisories,
-            sources[0].complete
-        ),
-        ("rustsec", 1, false)
-    );
+    assert_eq!((sources[0].source.as_str(), sources[0].advisories, sources[0].complete), ("rustsec", 1, false));
 
     let fixture = repository().join("apps/desktop/tests/fixtures/browse_tree");
     let reader_endpoint = endpoint.clone();
-    let pool =
-        ReadPool::start(2, move |_| SessionReader::connect(&reader_endpoint)).expect("read pool");
+    let pool = ReadPool::start(2, move |_| SessionReader::connect(&reader_endpoint)).expect("read pool");
     let mut rig = rig_with_reads(cx, None, 1440.0, 900.0, pool);
     // A real owner reads the tree through `cargo metadata`: real seconds,
     // more under load, which `settle` waits for in real time.
@@ -120,24 +94,14 @@ fn the_library_page_shows_a_real_tree_read_by_a_real_owner(cx: &mut TestAppConte
     let lockfile_only = "Your 2 packages lean on 3 others directly, and 34 in all.";
     let started = Instant::now();
     let mut said = rig.said();
-    while !said
-        .iter()
-        .any(|line| line == with_metadata || line == lockfile_only)
-    {
-        assert!(
-            started.elapsed() < Duration::from_secs(120),
-            "the tree never landed: {said:#?}"
-        );
+    while !said.iter().any(|line| line == with_metadata || line == lockfile_only) {
+        assert!(started.elapsed() < Duration::from_secs(120), "the tree never landed: {said:#?}");
         std::thread::sleep(Duration::from_millis(50));
         rig.settle();
         said = rig.said();
     }
     let metadata = said.iter().any(|line| line == with_metadata);
-    let (lede, crates) = if metadata {
-        (with_metadata, 31)
-    } else {
-        (lockfile_only, 34)
-    };
+    let (lede, crates) = if metadata { (with_metadata, 31) } else { (lockfile_only, 34) };
     let partial = format!("advisories from a partial source, not a full check of {crates}");
     for expected in [
         "browse_tree",
@@ -152,36 +116,19 @@ fn the_library_page_shows_a_real_tree_read_by_a_real_owner(cx: &mut TestAppConte
         "Here twice",
         "4 crates appear at more than one version",
     ] {
-        assert!(
-            said.iter().any(|line| line == expected),
-            "{expected:?} is not on screen: {said:#?}"
-        );
+        assert!(said.iter().any(|line| line == expected), "{expected:?} is not on screen: {said:#?}");
     }
     if metadata {
         for expected in ["checks our work", "speaks formats"] {
-            assert!(
-                said.iter().any(|line| line == expected),
-                "{expected:?} is not on screen: {said:#?}"
-            );
+            assert!(said.iter().any(|line| line == expected), "{expected:?} is not on screen: {said:#?}");
         }
         // bincode speaks a format; its "network-programming" category loses the vote.
-        let formats = said
-            .iter()
-            .position(|line| line == "speaks formats")
-            .expect("formats");
-        let bincode = said
-            .iter()
-            .position(|line| line == "bincode")
-            .expect("bincode row");
-        assert!(
-            bincode > formats,
-            "bincode is listed under speaks formats: {said:#?}"
-        );
+        let formats = said.iter().position(|line| line == "speaks formats").expect("formats");
+        let bincode = said.iter().position(|line| line == "bincode").expect("bincode row");
+        assert!(bincode > formats, "bincode is listed under speaks formats: {said:#?}");
     } else {
         assert!(
-            said.iter().any(|line| line.starts_with(
-                "Read from Cargo.lock alone, for every platform and without package metadata"
-            )),
+            said.iter().any(|line| line.starts_with("Read from Cargo.lock alone, for every platform and without package metadata")),
             "the lockfile-only tree must say why: {said:#?}"
         );
     }
@@ -196,24 +143,12 @@ fn the_library_page_shows_a_real_tree_read_by_a_real_owner(cx: &mut TestAppConte
     // live Cargo.lock or directory name.
     let mut reader = SessionReader::connect(&endpoint);
     let tree = |root: &Path, reader: &mut SessionReader| {
-        let key = crate::model::browse::BrowseKey::Tree(
-            LocalProjectId::from_path(root).expect("project"),
-        );
+        let key = crate::model::browse::BrowseKey::Tree(LocalProjectId::from_path(root).expect("project"));
         let cancel = crate::runtime::CancellationToken::new();
         let outlines = crate::runtime::reads::OutlineCache::default();
-        let context = crate::runtime::reads::ReadContext {
-            worker: 0,
-            cancel: &cancel,
-            outlines: &outlines,
-        };
-        match crate::runtime::reads::PageReader::read(
-            reader,
-            &crate::runtime::reads::ReadRequest::Browse(key),
-            &context,
-        ) {
-            Ok(crate::model::pages::PageValue::Browse(value)) => {
-                value.tree().expect("a tree").reading.clone()
-            }
+        let context = crate::runtime::reads::ReadContext { worker: 0, cancel: &cancel, outlines: &outlines };
+        match crate::runtime::reads::PageReader::read(reader, &crate::runtime::reads::ReadRequest::Browse(key), &context) {
+            Ok(crate::model::pages::PageValue::Browse(value)) => value.tree().expect("a tree").reading.clone(),
             other => panic!("the tree read failed: {other:?}"),
         }
     };
@@ -223,17 +158,10 @@ fn the_library_page_shows_a_real_tree_read_by_a_real_owner(cx: &mut TestAppConte
     let again = tree(&fixture, &mut reader);
     assert_eq!(again.name, "browse_tree");
     assert_eq!(again.lede, lede);
-    let toml = again
-        .twice
-        .iter()
-        .find(|twice| twice.name == "toml")
-        .expect("toml twice");
+    let toml = again.twice.iter().find(|twice| twice.name == "toml").expect("toml twice");
     assert_eq!(
         toml.paths.as_ref(),
-        [
-            "app → toml 0.8.23".to_owned(),
-            "tool → trybuild 1.0.121 → toml 1.1.6".to_owned()
-        ]
+        ["app → toml 0.8.23".to_owned(), "tool → trybuild 1.0.121 → toml 1.1.6".to_owned()]
     );
     assert_eq!(toml.verdict, "Moving yours to 1.1.6 drops a copy.");
     assert_eq!(again.alerts[0].why, "app → bincode 1.3.3");

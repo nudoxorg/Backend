@@ -4006,10 +4006,9 @@ impl NoResultRetirementFloor {
 
     fn encode(&self) -> Result<Vec<u8>, ClusterWorkerError> {
         if self.retired_terminals.len() > MAX_NO_RESULT_RETIREMENT_TERMINALS
-            || self
-                .retired_terminals
-                .windows(2)
-                .any(|pair| no_result_terminal_key(pair[0]) >= no_result_terminal_key(pair[1]))
+            || self.retired_terminals.windows(2).any(|pair| {
+                no_result_terminal_key(pair[0]) >= no_result_terminal_key(pair[1])
+            })
             || self.retired_terminals.iter().any(|terminal| {
                 terminal.namespace_id != self.scope.namespace_id
                     || terminal.attempt > self.retired_through_epoch
@@ -4083,7 +4082,8 @@ impl NoResultRetirementFloor {
             return Err(ClusterWorkerError::InvalidInputClosure);
         }
         let mut reader = ResultRecordReader::new(data);
-        if reader.take(8)? != NO_RESULT_FLOOR_MAGIC || reader.array::<2>()? != version.to_be_bytes()
+        if reader.take(8)? != NO_RESULT_FLOOR_MAGIC
+            || reader.array::<2>()? != version.to_be_bytes()
         {
             return Err(ClusterWorkerError::InvalidInputClosure);
         }
@@ -4093,7 +4093,10 @@ impl NoResultRetirementFloor {
             let work_id = reader.array::<16>()?;
             let attempt = u64::from_be_bytes(reader.array::<8>()?);
             let fence = reader.array::<32>()?;
-            Some(AssignmentScope::new(namespace_id, work_id, attempt, fence).map_err(operation)?)
+            Some(
+                AssignmentScope::new(namespace_id, work_id, attempt, fence)
+                    .map_err(operation)?,
+            )
         } else {
             None
         };
@@ -4101,12 +4104,12 @@ impl NoResultRetirementFloor {
         let work_id = reader.array::<16>()?;
         let attempt = u64::from_be_bytes(reader.array::<8>()?);
         let fence = reader.array::<32>()?;
-        let scope =
-            AssignmentScope::new(namespace_id, work_id, attempt, fence).map_err(operation)?;
+        let scope = AssignmentScope::new(namespace_id, work_id, attempt, fence)
+            .map_err(operation)?;
         let mut retired_terminals = legacy_terminal.into_iter().collect::<Vec<_>>();
         if version == 3 {
-            let count =
-                usize::try_from(u32::from_be_bytes(reader.array::<4>()?)).map_err(operation)?;
+            let count = usize::try_from(u32::from_be_bytes(reader.array::<4>()?))
+                .map_err(operation)?;
             if count > MAX_NO_RESULT_RETIREMENT_TERMINALS {
                 return Err(ClusterWorkerError::InvalidInputClosure);
             }
@@ -4125,10 +4128,9 @@ impl NoResultRetirementFloor {
             || record.coordinator == [0; 32]
             || record.retired_through_epoch == 0
             || record.retired_through_epoch >= record.scope.attempt
-            || record
-                .retired_terminals
-                .windows(2)
-                .any(|pair| no_result_terminal_key(pair[0]) >= no_result_terminal_key(pair[1]))
+            || record.retired_terminals.windows(2).any(|pair| {
+                no_result_terminal_key(pair[0]) >= no_result_terminal_key(pair[1])
+            })
             || record.retired_terminals.iter().any(|terminal| {
                 terminal.namespace_id != record.scope.namespace_id
                     || terminal.attempt > record.retired_through_epoch
@@ -4162,8 +4164,7 @@ impl NoResultRetirementFloor {
             return Err(ClusterWorkerError::InputBounds);
         }
         self.retired_terminals.push(terminal);
-        self.retired_terminals
-            .sort_by_key(|scope| no_result_terminal_key(*scope));
+        self.retired_terminals.sort_by_key(|scope| no_result_terminal_key(*scope));
         Ok(())
     }
 }
@@ -4533,7 +4534,8 @@ fn read_no_result_floor_bytes(
     let bytes = usize::try_from(metadata.len()).map_err(operation)?;
     if bytes != NO_RESULT_FLOOR_V1_BYTES
         && bytes != NO_RESULT_FLOOR_V2_BYTES
-        && !(bytes >= NO_RESULT_FLOOR_V3_BASE_DATA_BYTES + 32 && bytes <= NO_RESULT_FLOOR_MAX_BYTES)
+        && !(bytes >= NO_RESULT_FLOOR_V3_BASE_DATA_BYTES + 32
+            && bytes <= NO_RESULT_FLOOR_MAX_BYTES)
     {
         return Err(ClusterWorkerError::InvalidInputClosure);
     }
@@ -6360,7 +6362,7 @@ mod tests {
             work_a_scope.attempt,
             coordinator,
         )
-        .expect("construct monotone owner floor");
+            .expect("construct monotone owner floor");
         let directory = result_journal_directory(&store, true).expect("private journal directory");
         let floor_record = NoResultRetirementFloor::from_request(request);
         backend_platform::durable::write_private_atomic(
@@ -6557,10 +6559,20 @@ mod tests {
         let coordinator = SecretKey::generate().public();
         let mut policy = test_policy();
         policy.namespace_id = [0x71; 16];
-        let terminal = AssignmentScope::new(policy.namespace_id, [0x72; 16], 5, [0x73; 32])
-            .expect("exact terminal");
-        let older_terminal = AssignmentScope::new(policy.namespace_id, [0x70; 16], 4, [0x71; 32])
-            .expect("older exact terminal in the same prefix");
+        let terminal = AssignmentScope::new(
+            policy.namespace_id,
+            [0x72; 16],
+            5,
+            [0x73; 32],
+        )
+        .expect("exact terminal");
+        let older_terminal = AssignmentScope::new(
+            policy.namespace_id,
+            [0x70; 16],
+            4,
+            [0x71; 32],
+        )
+        .expect("older exact terminal in the same prefix");
         persist_no_result_record(
             &store,
             &policy,
@@ -6578,9 +6590,13 @@ mod tests {
             [0x76; 32],
         )
         .expect("structurally valid substituted terminal fence");
-        let wrong_fence_request =
-            ControlNoResultRetireThrough::new(wrong_fence, anchor, terminal.attempt, coordinator)
-                .expect("wire-valid request with the wrong terminal fence");
+        let wrong_fence_request = ControlNoResultRetireThrough::new(
+            wrong_fence,
+            anchor,
+            terminal.attempt,
+            coordinator,
+        )
+        .expect("wire-valid request with the wrong terminal fence");
         assert!(matches!(
             apply_no_result_retirement_floor(
                 &store,
@@ -6592,9 +6608,13 @@ mod tests {
             Err(ClusterWorkerError::ScopeMismatch)
         ));
 
-        let exact_request =
-            ControlNoResultRetireThrough::new(terminal, anchor, terminal.attempt, coordinator)
-                .expect("exact retirement request");
+        let exact_request = ControlNoResultRetireThrough::new(
+            terminal,
+            anchor,
+            terminal.attempt,
+            coordinator,
+        )
+        .expect("exact retirement request");
         apply_no_result_retirement_floor(
             &store,
             &policy,

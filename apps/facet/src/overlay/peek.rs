@@ -277,19 +277,13 @@ fn head(
     measure: &Measure,
     palette: &Palette,
 ) -> AnyElement {
-    let mut text = div()
-        .flex()
-        .flex_col()
-        .gap(k(measure, 2.0))
-        .min_w_0()
-        .flex_1()
-        .child(
-            div()
-                .set(name_role, measure)
-                .text_color(palette.ink0.hsla())
-                .truncate()
-                .child(name.clone()),
-        );
+    let mut text = div().flex().flex_col().gap(k(measure, 2.0)).min_w_0().flex_1().child(
+        div()
+            .set(name_role, measure)
+            .text_color(palette.ink0.hsla())
+            .truncate()
+            .child(name.clone()),
+    );
     if let Some(place) = place {
         text = text.child(place);
     }
@@ -300,19 +294,12 @@ fn head(
         .child(mark)
         .child(text);
     if pin {
-        row = row.child(
-            icons::ui(icons::Icon::Pin, IconSize::S12, palette.ink3).size(measure.icon(12.0)),
-        );
+        row = row.child(icons::ui(icons::Icon::Pin, IconSize::S12, palette.ink3).size(measure.icon(12.0)));
     }
     row.into_any_element()
 }
 
-fn place_line(
-    id: impl Into<ElementId>,
-    markup: &SharedString,
-    measure: &Measure,
-    palette: &Palette,
-) -> AnyElement {
+fn place_line(id: impl Into<ElementId>, markup: &SharedString, measure: &Measure, palette: &Palette) -> AnyElement {
     div()
         .truncate()
         .child(
@@ -323,12 +310,7 @@ fn place_line(
         .into_any_element()
 }
 
-fn say(
-    id: impl Into<ElementId>,
-    markup: &SharedString,
-    measure: &Measure,
-    palette: &Palette,
-) -> AnyElement {
+fn say(id: impl Into<ElementId>, markup: &SharedString, measure: &Measure, palette: &Palette) -> AnyElement {
     prose(id, markup.clone(), SAY, measure)
         .color(palette.ink1)
         .code_color(palette.ink2)
@@ -358,21 +340,11 @@ fn gem_mark(kind: Kind, size: f32, measure: &Measure) -> AnyElement {
     gem(kind).size(size * measure.scale()).into_any_element()
 }
 
-fn symbol_sections(
-    symbol: &SymbolPeek,
-    show: Show,
-    measure: &Measure,
-    palette: &Palette,
-) -> Vec<AnyElement> {
+fn symbol_sections(symbol: &SymbolPeek, show: Show, measure: &Measure, palette: &Palette) -> Vec<AnyElement> {
     let id = |part: &str| ElementId::Name(format!("peek:{}:{part}", symbol.name).into());
     let mut out = Vec::new();
-    let mark = gem_mark(
-        symbol.kind.unwrap_or(Kind::Unknown),
-        if show.child { 24.0 } else { 28.0 },
-        measure,
-    );
-    let place = (!symbol.place.is_empty())
-        .then(|| place_line(id("where"), &symbol.place, measure, palette));
+    let mark = gem_mark(symbol.kind.unwrap_or(Kind::Unknown), if show.child { 24.0 } else { 28.0 }, measure);
+    let place = (!symbol.place.is_empty()).then(|| place_line(id("where"), &symbol.place, measure, palette));
     out.push(head(
         mark,
         &symbol.name,
@@ -402,30 +374,21 @@ fn symbol_sections(
         && let Some(uses) = symbol.uses
     {
         let count = uses.to_string();
-        out.push(fact(
-            &[(count.as_str(), true), (" uses in your code", false)],
-            measure,
-            palette,
-        ));
+        out.push(fact(&[(count.as_str(), true), (" uses in your code", false)], measure, palette));
     }
     if show.deep {
-        let mut more = div()
-            .flex()
-            .flex_col()
-            .gap(k(measure, 10.0))
-            .pt(k(measure, 4.0));
+        let mut more = div().flex().flex_col().gap(k(measure, 10.0)).pt(k(measure, 4.0));
         let mut any = false;
         if let Some(dirs) = symbol.compass {
             more = more.child(compass_bar(dirs, measure).id(id("compass")));
             any = true;
         }
         if !symbol.file_uses.is_empty() {
-            let mut caption = div().flex().justify_between().items_baseline().child(
-                div()
-                    .set(CAPTION, measure)
-                    .text_color(palette.ink3.hsla())
-                    .child("in your code"),
-            );
+            let mut caption = div()
+                .flex()
+                .justify_between()
+                .items_baseline()
+                .child(div().set(CAPTION, measure).text_color(palette.ink3.hsla()).child("in your code"));
             if let (Some(uses), Some(files)) = (symbol.uses, symbol.files) {
                 caption = caption.child(
                     div()
@@ -446,12 +409,7 @@ fn symbol_sections(
     out
 }
 
-fn package_sections(
-    package: &PackagePeek,
-    show: Show,
-    measure: &Measure,
-    palette: &Palette,
-) -> Vec<AnyElement> {
+fn package_sections(package: &PackagePeek, show: Show, measure: &Measure, palette: &Palette) -> Vec<AnyElement> {
     let id = |part: &str| ElementId::Name(format!("peek:pkg:{}:{part}", package.name).into());
     let mut place = div()
         .flex()
@@ -463,12 +421,7 @@ fn package_sections(
         place = place.child(icons::lang_mark(lang, 11.0 * measure.scale()));
     }
     place = place
-        .child(
-            div()
-                .set(PIN_PATH, measure)
-                .text_color(palette.ink2.hsla())
-                .child(package.version.clone()),
-        )
+        .child(div().set(PIN_PATH, measure).text_color(palette.ink2.hsla()).child(package.version.clone()))
         .child(format!("· {}", package.registry));
     let mut out = vec![head(
         gem_mark(Kind::Package, 28.0, measure),
@@ -485,11 +438,7 @@ fn package_sections(
     if let Some(reach) = package.reach {
         let count = reach.to_string();
         out.push(fact(
-            &[
-                ("your code reaches ", false),
-                (count.as_str(), true),
-                (" of its items", false),
-            ],
+            &[("your code reaches ", false), (count.as_str(), true), (" of its items", false)],
             measure,
             palette,
         ));
@@ -497,12 +446,7 @@ fn package_sections(
     out
 }
 
-fn location_sections(
-    location: &LocationPeek,
-    show: Show,
-    measure: &Measure,
-    palette: &Palette,
-) -> Vec<AnyElement> {
+fn location_sections(location: &LocationPeek, show: Show, measure: &Measure, palette: &Palette) -> Vec<AnyElement> {
     let place = div()
         .set(WHERE, measure)
         .text_color(palette.ink3.hsla())
@@ -559,12 +503,7 @@ fn location_sections(
     out
 }
 
-fn version_sections(
-    version: &VersionPeek,
-    show: Show,
-    measure: &Measure,
-    palette: &Palette,
-) -> Vec<AnyElement> {
+fn version_sections(version: &VersionPeek, show: Show, measure: &Measure, palette: &Palette) -> Vec<AnyElement> {
     let tick = div()
         .w(k(measure, 2.0))
         .h(k(measure, 24.0))
@@ -576,15 +515,7 @@ fn version_sections(
         .text_color(palette.ink3.hsla())
         .child(version.when.clone())
         .into_any_element();
-    let mut out = vec![head(
-        tick,
-        &version.version,
-        Some(place),
-        show.keys || show.deep,
-        NAME,
-        measure,
-        palette,
-    )];
+    let mut out = vec![head(tick, &version.version, Some(place), show.keys || show.deep, NAME, measure, palette)];
     if let Some((item, places)) = &version.yours {
         let count = places.to_string();
         out.push(fact(
@@ -625,11 +556,9 @@ fn version_sections(
 fn foot(peek: &Peek, measure: &Measure, palette: &Palette) -> AnyElement {
     use crate::controls::{KbdVoice, keys};
     let items: &[(&[&str], &str)] = match peek {
-        Peek::Symbol(_) | Peek::Package(_) => &[
-            (&["Space"], "pin"),
-            (&["↵"], "open"),
-            (&["⌥", "→"], "follow"),
-        ],
+        Peek::Symbol(_) | Peek::Package(_) => {
+            &[(&["Space"], "pin"), (&["↵"], "open"), (&["⌥", "→"], "follow")]
+        }
         Peek::Location(_) => &[(&["S"], "peel to source"), (&["↵"], "open file")],
         Peek::Version(_) => &[(&["↵"], "diff"), (&["Space"], "pin")],
     };
@@ -662,11 +591,7 @@ fn pinned_row(peek: &Peek, measure: &Measure, palette: &Palette) -> AnyElement {
             symbol.name.clone(),
             symbol.path.clone(),
         ),
-        Peek::Package(package) => (
-            gem_mark(Kind::Package, 20.0, measure),
-            package.name.clone(),
-            package.registry.clone(),
-        ),
+        Peek::Package(package) => (gem_mark(Kind::Package, 20.0, measure), package.name.clone(), package.registry.clone()),
         Peek::Location(location) => (
             icons::ui(icons::Icon::File, IconSize::S14, palette.ink3)
                 .size(measure.icon(14.0))
@@ -675,12 +600,7 @@ fn pinned_row(peek: &Peek, measure: &Measure, palette: &Palette) -> AnyElement {
             location.path.clone(),
         ),
         Peek::Version(version) => (
-            div()
-                .w(px(2.0))
-                .h(k(measure, 18.0))
-                .mx(k(measure, 6.0))
-                .bg(palette.ink2.hsla())
-                .into_any_element(),
+            div().w(px(2.0)).h(k(measure, 18.0)).mx(k(measure, 6.0)).bg(palette.ink2.hsla()).into_any_element(),
             version.version.clone(),
             version.when.clone(),
         ),
@@ -696,20 +616,8 @@ fn pinned_row(peek: &Peek, measure: &Measure, palette: &Palette) -> AnyElement {
                 .flex_col()
                 .gap(px(1.0))
                 .min_w_0()
-                .child(
-                    div()
-                        .set(PIN_NAME, measure)
-                        .text_color(palette.ink1.hsla())
-                        .truncate()
-                        .child(name),
-                )
-                .child(
-                    div()
-                        .set(PIN_PATH, measure)
-                        .text_color(palette.ink4.hsla())
-                        .truncate()
-                        .child(path),
-                ),
+                .child(div().set(PIN_NAME, measure).text_color(palette.ink1.hsla()).truncate().child(name))
+                .child(div().set(PIN_PATH, measure).text_color(palette.ink4.hsla()).truncate().child(path)),
         )
         .into_any_element()
 }

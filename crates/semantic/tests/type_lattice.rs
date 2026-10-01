@@ -292,9 +292,7 @@ fn nominal_records_demand_a_typed_target() {
             cell: TypeCell::Nominal,
         })
     );
-    row.nominal = Some(NominalRef::Local(
-        backend_semantic::ir_vocabulary::EntityId::new(7),
-    ));
+    row.nominal = Some(NominalRef::Local(backend_semantic::ir_vocabulary::EntityId::new(7)));
     assert_eq!(row.validate(0), Ok(()));
 }
 
@@ -452,9 +450,9 @@ fn child_names_and_flags_are_tag_owned() {
         row.validate_child(
             0,
             &SemanticTypeChild {
-                target: TypeChildTarget::Type(TypeRef::Local(
-                    backend_semantic::ir_vocabulary::TypeId::new(0)
-                )),
+                target: TypeChildTarget::Type(TypeRef::Local(backend_semantic::ir_vocabulary::TypeId::new(
+                    0
+                ))),
                 name: None,
                 flags: 0,
             }
@@ -467,9 +465,9 @@ fn child_names_and_flags_are_tag_owned() {
         row.validate_child(
             0,
             &SemanticTypeChild {
-                target: TypeChildTarget::Type(TypeRef::Local(
-                    backend_semantic::ir_vocabulary::TypeId::new(0)
-                )),
+                target: TypeChildTarget::Type(TypeRef::Local(backend_semantic::ir_vocabulary::TypeId::new(
+                    0
+                ))),
                 name: None,
                 flags: 0,
             }
@@ -483,9 +481,9 @@ fn child_names_and_flags_are_tag_owned() {
         row.validate_child(
             0,
             &SemanticTypeChild {
-                target: TypeChildTarget::Type(TypeRef::Local(
-                    backend_semantic::ir_vocabulary::TypeId::new(0)
-                )),
+                target: TypeChildTarget::Type(TypeRef::Local(backend_semantic::ir_vocabulary::TypeId::new(
+                    0
+                ))),
                 name: Some(b"x"),
                 flags: SemanticTypeChild::FLAG_OPTIONAL | SemanticTypeChild::FLAG_READONLY,
             }
@@ -561,9 +559,9 @@ fn child_names_and_flags_are_tag_owned() {
         row.validate_child(
             0,
             &SemanticTypeChild {
-                target: TypeChildTarget::Type(TypeRef::Local(
-                    backend_semantic::ir_vocabulary::TypeId::new(0)
-                )),
+                target: TypeChildTarget::Type(TypeRef::Local(backend_semantic::ir_vocabulary::TypeId::new(
+                    0
+                ))),
                 name: Some(b"not-a-placeholder"),
                 flags: 0,
             }
@@ -578,9 +576,9 @@ fn child_names_and_flags_are_tag_owned() {
         row.validate_child(
             0,
             &SemanticTypeChild {
-                target: TypeChildTarget::Type(TypeRef::Local(
-                    backend_semantic::ir_vocabulary::TypeId::new(0)
-                )),
+                target: TypeChildTarget::Type(TypeRef::Local(backend_semantic::ir_vocabulary::TypeId::new(
+                    0
+                ))),
                 name: None,
                 flags: SemanticTypeChild::FLAG_OPTIONAL | SemanticTypeChild::FLAG_REST,
             }
@@ -665,9 +663,7 @@ fn variadic_function_rows_have_one_final_rest_parameter_and_plain_results() {
     assert_eq!(row.validate(3), Ok(()));
 
     let child = |flags| SemanticTypeChild {
-        target: TypeChildTarget::Type(TypeRef::Local(
-            backend_semantic::ir_vocabulary::TypeId::new(0),
-        )),
+        target: TypeChildTarget::Type(TypeRef::Local(backend_semantic::ir_vocabulary::TypeId::new(0))),
         name: None,
         flags,
     };
@@ -721,9 +717,7 @@ fn c_variadic_tail_is_distinct_from_typed_rest_and_mixed_forms_fail() {
     assert_eq!(c_tail.validate(0), Ok(()));
 
     let rest = SemanticTypeChild {
-        target: TypeChildTarget::Type(TypeRef::Local(
-            backend_semantic::ir_vocabulary::TypeId::new(0),
-        )),
+        target: TypeChildTarget::Type(TypeRef::Local(backend_semantic::ir_vocabulary::TypeId::new(0))),
         name: None,
         flags: SemanticTypeChild::FLAG_REST,
     };

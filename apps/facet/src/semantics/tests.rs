@@ -4,9 +4,9 @@
 mod bounds;
 mod caps;
 mod members;
+mod types;
+mod usage;
 mod page;
 mod recipes;
 mod relations;
-mod types;
-mod usage;
 mod world;

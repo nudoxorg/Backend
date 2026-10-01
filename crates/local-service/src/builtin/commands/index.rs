@@ -13,8 +13,8 @@ use backend_engine::application::{
     CompilerWorkspaceEntryV2, ExactInputWitness, FullWorkspaceInputClaim, FullWorkspaceInputError,
     FullWorkspaceInputVerifier, LocalCompilerAvailability, LocalCompilerClient, OwnedPackageSource,
     OwnedPackageSourceSet, PackageLineageId, StagedSemanticPackage, VerifiedCompilerInput,
-    VerifiedCompilerInputAdmission, VerifierAcceptedFullWorkspaceInput,
-    capture_full_workspace_v2_with_prior,
+    VerifiedCompilerInputAdmission,
+    VerifierAcceptedFullWorkspaceInput, capture_full_workspace_v2_with_prior,
 };
 use backend_engine::builtin::{
     PartialSemanticCoverage, ProductSemanticPublicationKey, ProductSemanticPublicationRecord,
@@ -1489,13 +1489,8 @@ fn compile_semantic_publications(
                     }
                 }
             }
-            let publication = publish_local_compile(
-                semantic_authority,
-                &key,
-                local_attempt,
-                &staged,
-                revision_fence,
-            )?;
+            let publication =
+                publish_local_compile(semantic_authority, &key, local_attempt, &staged, revision_fence)?;
             (publication.0, publication.1, publication_coverage)
         };
         match execution_route {
@@ -1587,13 +1582,7 @@ fn publish_local_compile(
     attempt: backend_extension_turso::CandidateAttempt,
     staged: &StagedSemanticPackage,
     revision_fence: &ingest::CompilerRevisionFence,
-) -> Result<
-    (
-        SemanticPublicationClaim,
-        backend_extension_turso::SelectedGeneration,
-    ),
-    BuiltinModelError,
-> {
+) -> Result<(SemanticPublicationClaim, backend_extension_turso::SelectedGeneration), BuiltinModelError> {
     if !ingest::compiler_revision_is_current(revision_fence).map_err(BuiltinModelError)? {
         return Err(BuiltinModelError(
             "compiler source or configuration revision changed during semantic compilation; retry indexing"

@@ -10,7 +10,7 @@
 
 use backend_engine::capability::CapabilityArtifactId;
 use backend_engine::registry::{
-    REGISTRY_SOURCE_ROOT_VERSION, RegistryEcosystem, RegistryEndpoint, RegistrySource, storage_root,
+    storage_root, RegistryEcosystem, RegistryEndpoint, RegistrySource, REGISTRY_SOURCE_ROOT_VERSION,
 };
 use backend_runtime::WorkspacePaths;
 use std::ffi::OsString;
@@ -426,9 +426,7 @@ fn remote_add_materializes_searchable_rows_and_reuses_cursor_after_restart() {
     // `RegistrySource::endpoint_for_owner`), not the raw endpoint identity.
     let registry_source = RegistrySource::new(registry_endpoint).with_native(false);
     let journal = storage_root(
-        &workspace
-            .join("registry")
-            .join(REGISTRY_SOURCE_ROOT_VERSION),
+        &workspace.join("registry").join(REGISTRY_SOURCE_ROOT_VERSION),
         &registry_source.endpoint_for_owner(),
     )
     .join("registry.journal");

@@ -379,14 +379,7 @@ impl Model {
         reduced: bool,
     ) -> Placement {
         let carry = carried.layout;
-        let (spring, epoch, generation, wrapped, prior, only_epochs) = (
-            self.spring,
-            self.epoch,
-            self.generation,
-            self.wrapped,
-            self.prior,
-            self.only_epochs,
-        );
+        let (spring, epoch, generation, wrapped, prior, only_epochs) = (self.spring, self.epoch, self.generation, self.wrapped, self.prior, self.only_epochs);
         let waits = self.waits;
         let known = self.records.contains_key(key);
         // Whether anything in the list is still on its way somewhere.
@@ -418,12 +411,8 @@ impl Model {
         // lands it too: a flight between lines crosses what is on them.
         let line = wrapped && known && step.y.abs() >= f32::from(layout.size.height) * 0.5;
         let stepped = step.x.abs() > NOISE || step.y.abs() > NOISE;
-        let flying = [record.x.spring, record.y.spring, record.w, record.h]
-            .iter()
-            .any(|track| track.moving.is_some());
-        let snapped = !reduced
-            && known
-            && ((self.landing == Some(generation) && (stepped || flying)) || (line && stepped));
+        let flying = [record.x.spring, record.y.spring, record.w, record.h].iter().any(|track| track.moving.is_some());
+        let snapped = !reduced && known && ((self.landing == Some(generation) && (stepped || flying)) || (line && stepped));
         let reduced = reduced || snapped;
         // Reduced motion follows everything (the springs are cleared below).
         let (then, grid) = (record.at, self.grid);
@@ -520,11 +509,7 @@ impl Model {
             record.waiting = Some(generation);
         }
         // An arrival shows once a later frame finds the others still.
-        if record
-            .waiting
-            .is_some_and(|arrived| generation > arrived && !others_moving)
-            || (reduced && !snapped)
-        {
+        if record.waiting.is_some_and(|arrived| generation > arrived && !others_moving) || (reduced && !snapped) {
             record.waiting = None;
         }
         let waiting = record.waiting.is_some();
@@ -771,13 +756,7 @@ impl Flow {
             if inner.model.records.is_empty() {
                 return;
             }
-            let gone: Vec<(ElementId, Point<f32>)> = inner
-                .model
-                .records
-                .drain()
-                .filter(|(_, record)| record.reported)
-                .map(|(key, record)| (key, record.shown))
-                .collect();
+            let gone: Vec<(ElementId, Point<f32>)> = inner.model.records.drain().filter(|(_, record)| record.reported).map(|(key, record)| (key, record.shown)).collect();
             inner.model.vanished.clear();
             (inner.scope.clone(), gone)
         };
@@ -998,14 +977,7 @@ impl gpui::Element for FlowItem {
                 if placement.snapped {
                     let target = layout + context.offset;
                     let target = point(f32::from(target.x), f32::from(target.y));
-                    publish_as(
-                        cx,
-                        &scope,
-                        &self.key,
-                        Sample::gone(target),
-                        now,
-                        TrackKind::Snap,
-                    );
+                    publish_as(cx, &scope, &self.key, Sample::gone(target), now, TrackKind::Snap);
                     if let Some(record) = self.inner.borrow_mut().model.records.get_mut(&self.key) {
                         record.reported = false;
                         record.shown = target;
@@ -1032,14 +1004,7 @@ impl gpui::Element for FlowItem {
                 placement.live || placement.rebased || velocity.x.abs() + velocity.y.abs() > NOISE;
             if placement.snapped {
                 // Where it now stands, said as the designed snap it is.
-                publish_as(
-                    cx,
-                    &scope,
-                    &self.key,
-                    Sample::gone(target),
-                    now,
-                    TrackKind::Snap,
-                );
+                publish_as(cx, &scope, &self.key, Sample::gone(target), now, TrackKind::Snap);
             } else if moving || finished {
                 publish(
                     cx,
@@ -1176,34 +1141,15 @@ fn publish(cx: &mut App, scope: &SharedString, key: &ElementId, sample: Sample, 
     publish_as(cx, scope, key, sample, now, TrackKind::Spring);
 }
 
-fn publish_as(
-    cx: &mut App,
-    scope: &SharedString,
-    key: &ElementId,
-    sample: Sample,
-    now: Instant,
-    kind: TrackKind,
-) {
+fn publish_as(cx: &mut App, scope: &SharedString, key: &ElementId, sample: Sample, now: Instant, kind: TrackKind) {
     let epoch = motion_epoch(cx);
     let millis = |at: Instant| at.saturating_duration_since(epoch).as_secs_f64() * 1000.0;
     let at_ms = millis(now);
     let group = probe::current_group();
     let [leg_x, leg_y] = sample.axes;
     for (axis, value, target, velocity, leg) in [
-        (
-            "x",
-            sample.value.x,
-            sample.target.x,
-            sample.velocity.x,
-            leg_x,
-        ),
-        (
-            "y",
-            sample.value.y,
-            sample.target.y,
-            sample.velocity.y,
-            leg_y,
-        ),
+        ("x", sample.value.x, sample.target.x, sample.velocity.x, leg_x),
+        ("y", sample.value.y, sample.target.y, sample.velocity.y, leg_y),
     ] {
         let started_ms = leg.started.map_or(0.0, millis);
         let budget_ms = leg.budget.as_secs_f64() * 1000.0;
@@ -1342,13 +1288,7 @@ mod tests {
             !p.rebased,
             "half a grid pixel is rounding, not a layout interruption: {p:?}"
         );
-        assert_eq!(
-            p.axes[0]
-                .1
-                .expect("active segment survives rounding")
-                .started,
-            t0
-        );
+        assert_eq!(p.axes[0].1.expect("active segment survives rounding").started, t0);
         assert!((f64::from(p.offset.x) - expected.offset).abs() < 1e-4);
         assert!(
             (p.actual_velocity.x - 187.5).abs() < 1e-3,
@@ -1687,11 +1627,7 @@ mod tests {
     fn a_page_of_blocks_lands_a_line_change_and_holds_nothing_back() {
         for waits in [true, false] {
             let t0 = Instant::now();
-            let (a, b, c) = (
-                ElementId::Integer(1),
-                ElementId::Integer(2),
-                ElementId::Integer(3),
-            );
+            let (a, b, c) = (ElementId::Integer(1), ElementId::Integer(2), ElementId::Integer(3));
             let mut model = Model::new();
             model.wrapped = true;
             model.waits = waits;
@@ -1705,15 +1641,8 @@ mod tests {
             let lined = model.place(&b, at(0.0, 40.0), still(), Resize::Scale, now, false);
             let new = model.place(&c, at(0.0, 60.0), still(), Resize::Scale, now, false);
             assert!(flown.live && !flown.snapped, "a move along a line flies");
-            assert!(
-                lined.snapped && lined.offset == origin(),
-                "a move to another line lands"
-            );
-            assert_eq!(
-                (lined.waiting, new.waiting),
-                (waits, waits),
-                "waits = {waits}: the line change and the arrival are held back only in a wrapped list"
-            );
+            assert!(lined.snapped && lined.offset == origin(), "a move to another line lands");
+            assert_eq!((lined.waiting, new.waiting), (waits, waits), "waits = {waits}: the line change and the arrival are held back only in a wrapped list");
         }
     }
 

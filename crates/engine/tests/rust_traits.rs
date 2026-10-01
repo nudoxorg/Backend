@@ -11,12 +11,10 @@ use backend_engine::driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile,
 };
-use backend_frontend_rust::legacy::{
-    RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
-};
 use backend_semantic::ir::{
     DecodedDocFact, DecodedOccurrence, DecodedTypeFact, EntityKind, FragmentView, SemanticTypeTag,
 };
+use backend_frontend_rust::legacy::{RustFeatureControl, RustProject, RustToolchain, SourceByteLimit};
 use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -216,9 +214,7 @@ fn impl_trait_path_is_oracle_local_and_implementation_owned() -> Result<(), Stri
         return Err("impl trait occurrence is not oracle".to_owned());
     }
     match occurrence.occurrence.target {
-        backend_semantic::ir::OccurrenceTarget::Local(target) if target.raw as usize == visitor => {
-            Ok(())
-        }
+        backend_semantic::ir::OccurrenceTarget::Local(target) if target.raw as usize == visitor => Ok(()),
         _ => Err("impl trait target is not local Visitor".to_owned()),
     }
 }
@@ -237,9 +233,7 @@ fn field_access_is_oracle_local_to_named_field() -> Result<(), String> {
         return Err("field occurrence is not oracle".to_owned());
     }
     match row.occurrence.target {
-        backend_semantic::ir::OccurrenceTarget::Local(target) if target.raw as usize == weight => {
-            Ok(())
-        }
+        backend_semantic::ir::OccurrenceTarget::Local(target) if target.raw as usize == weight => Ok(()),
         _ => Err("field target is not local weight".to_owned()),
     }
 }

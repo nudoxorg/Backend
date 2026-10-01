@@ -114,22 +114,8 @@ impl Std {
             Self::Error => Chip::Says(CapMark::Error, "is an error"),
             Self::Iterator | Self::IntoIterator => Chip::Says(CapMark::Iter, "loops"),
             // Implied by another chip, or true of nearly everything.
-            Self::Eq
-            | Self::IntoDeserializer
-            | Self::Send
-            | Self::Sync
-            | Self::Unpin
-            | Self::UnwindSafe => Chip::Hidden,
-            Self::Serializer
-            | Self::ToString
-            | Self::Read
-            | Self::Write
-            | Self::AsRef
-            | Self::Into
-            | Self::From
-            | Self::Future
-            | Self::IntoFuture
-            | Self::Fn => Chip::Named,
+            Self::Eq | Self::IntoDeserializer | Self::Send | Self::Sync | Self::Unpin | Self::UnwindSafe => Chip::Hidden,
+            Self::Serializer | Self::ToString | Self::Read | Self::Write | Self::AsRef | Self::Into | Self::From | Self::Future | Self::IntoFuture | Self::Fn => Chip::Named,
         }
     }
 
@@ -284,18 +270,9 @@ impl Source {
                     .generic
                     .as_deref()
                     .and_then(|name| generics.iter().find(|generic| generic.name == name))
-                    .is_some_and(|generic| {
-                        generic
-                            .bounds
-                            .iter()
-                            .filter_map(|bound| Std::of(&bound.name))
-                            .any(Std::reaches_out)
-                    });
+                    .is_some_and(|generic| generic.bounds.iter().filter_map(|bound| Std::of(&bound.name)).any(Std::reaches_out));
                 let word = port.ty.word.to_ascii_lowercase();
-                bounded
-                    || ["reader", "writer", "stream", "file", "path"]
-                        .iter()
-                        .any(|w| word.contains(w))
+                bounded || ["reader", "writer", "stream", "file", "path"].iter().any(|w| word.contains(w))
             }),
         }
     }
@@ -303,9 +280,7 @@ impl Source {
     /// Why a call that cannot reach it never fails that way.
     pub(super) fn why_not(self, kind: &str) -> String {
         match self {
-            Self::Io => format!(
-                "{kind} can't happen here: nothing it takes reads from outside the program."
-            ),
+            Self::Io => format!("{kind} can't happen here: nothing it takes reads from outside the program."),
         }
     }
 }
@@ -316,10 +291,7 @@ mod tests {
 
     #[test]
     fn traits_are_read_by_their_last_segment() {
-        assert_eq!(
-            Std::of("serde::de::DeserializeOwned"),
-            Some(Std::Deserialize)
-        );
+        assert_eq!(Std::of("serde::de::DeserializeOwned"), Some(Std::Deserialize));
         assert_eq!(Std::of("io::Read"), Some(Std::Read));
         assert_eq!(Std::of("FnMut(&str) -> bool"), Some(Std::Fn));
         assert_eq!(Std::of("Mystery"), None);
@@ -340,29 +312,10 @@ mod tests {
         let mut call = Call::default();
         let mut ty = Ty::plain("R");
         ty.generic = Some("R".to_owned());
-        call.ports.push(Port {
-            name: "rdr".to_owned(),
-            joint: Joint::Required,
-            ty,
-            default: None,
-            note: None,
-            options: Vec::new(),
-        });
+        call.ports.push(Port { name: "rdr".to_owned(), joint: Joint::Required, ty, default: None, note: None, options: Vec::new() });
         let none: Vec<Generic> = Vec::new();
-        assert!(
-            !Source::Io.possible(&call, &none),
-            "a bare generic reaches nowhere"
-        );
-        let reader = Generic {
-            name: "R".to_owned(),
-            role: Role::Needs,
-            bounds: vec![Bound {
-                name: "Read".to_owned(),
-                means: String::new(),
-            }],
-            says: String::new(),
-            origin: Origin::Declared,
-        };
+        assert!(!Source::Io.possible(&call, &none), "a bare generic reaches nowhere");
+        let reader = Generic { name: "R".to_owned(), role: Role::Needs, bounds: vec![Bound { name: "Read".to_owned(), means: String::new() }], says: String::new(), origin: Origin::Declared };
         assert!(Source::Io.possible(&call, &[reader]));
     }
 }

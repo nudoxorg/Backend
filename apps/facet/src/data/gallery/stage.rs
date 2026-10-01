@@ -47,9 +47,7 @@ impl Render for Stage {
                 let view = cx.entity().downgrade();
                 window
                     .spawn(cx, async move |cx| {
-                        cx.background_executor()
-                            .timer(Duration::from_millis(at))
-                            .await;
+                        cx.background_executor().timer(Duration::from_millis(at)).await;
                         let _ = cx.update(|_, cx| {
                             cx.default_global::<Step>().0 += 1;
                             let _ = view.update(cx, |_, cx| cx.notify());
@@ -60,9 +58,7 @@ impl Render for Stage {
             for &(at, x, y) in self.pokes {
                 window
                     .spawn(cx, async move |cx| {
-                        cx.background_executor()
-                            .timer(Duration::from_millis(at))
-                            .await;
+                        cx.background_executor().timer(Duration::from_millis(at)).await;
                         let _ = cx.update(|window, cx| {
                             window.dispatch_event(
                                 PlatformInput::MouseMove(MouseMoveEvent {

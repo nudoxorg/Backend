@@ -105,24 +105,13 @@ pub fn read_tree(tree: &ProjectTree) -> TreeReading {
     let lede = format!(
         "Your {} {} on {} {} directly, and {} in all.",
         count(members),
-        if members == 1 {
-            "package leans"
-        } else {
-            "packages lean"
-        },
+        if members == 1 { "package leans" } else { "packages lean" },
         count(tree.direct.len()),
-        if tree.direct.len() == 1 {
-            "other"
-        } else {
-            "others"
-        },
+        if tree.direct.len() == 1 { "other" } else { "others" },
         count(tree.packages.len()),
     );
     let elsewhere = (tree.other_platforms > 0).then(|| {
-        format!(
-            "and {} more for other platforms",
-            count(tree.other_platforms as usize)
-        )
+        format!("and {} more for other platforms", count(tree.other_platforms as usize))
     });
     let source_note = match &tree.source {
         TreeSource::Cargo { .. } => None,
@@ -131,38 +120,16 @@ pub fn read_tree(tree: &ProjectTree) -> TreeReading {
         )),
     };
     let alerts = tree.health.affecting.iter().map(alert).collect();
-    let all_pairs = tree
-        .twice
-        .iter()
-        .all(|duplicate| duplicate.copies.len() == 2);
+    let all_pairs = tree.twice.iter().all(|duplicate| duplicate.copies.len() == 2);
     let twice_line = (!tree.twice.is_empty()).then(|| {
         if all_pairs {
-            format!(
-                "{} {} here twice",
-                count(tree.twice.len()),
-                if tree.twice.len() == 1 {
-                    "crate is"
-                } else {
-                    "crates are"
-                }
-            )
+            format!("{} {} here twice", count(tree.twice.len()), if tree.twice.len() == 1 { "crate is" } else { "crates are" })
         } else {
-            format!(
-                "{} {} at more than one version",
-                count(tree.twice.len()),
-                if tree.twice.len() == 1 {
-                    "crate appears"
-                } else {
-                    "crates appear"
-                }
-            )
+            format!("{} {} at more than one version", count(tree.twice.len()), if tree.twice.len() == 1 { "crate appears" } else { "crates appear" })
         }
     });
-    let twice_by_name: BTreeMap<&str, &Duplicate> = tree
-        .twice
-        .iter()
-        .map(|duplicate| (duplicate.name.as_str(), duplicate))
-        .collect();
+    let twice_by_name: BTreeMap<&str, &Duplicate> =
+        tree.twice.iter().map(|duplicate| (duplicate.name.as_str(), duplicate)).collect();
     let roles = RoleId::ALL
         .into_iter()
         .filter_map(|role| {
@@ -170,31 +137,18 @@ pub fn read_tree(tree: &ProjectTree) -> TreeReading {
             if direct.is_empty() {
                 return None;
             }
-            direct.sort_by(|left, right| {
-                right
-                    .by
-                    .len()
-                    .cmp(&left.by.len())
-                    .then_with(|| left.name.cmp(&right.name))
-            });
+            direct.sort_by(|left, right| right.by.len().cmp(&left.by.len()).then_with(|| left.name.cmp(&right.name)));
             let brought = tree.brought_by(role).count();
             Some(RoleReading {
                 id: role,
                 label: role_label(role),
                 serving: serving(&direct),
-                rows: direct
-                    .iter()
-                    .map(|dependency| row(dependency, &twice_by_name))
-                    .collect(),
+                rows: direct.iter().map(|dependency| row(dependency, &twice_by_name)).collect(),
                 brings: (brought > 0).then(|| {
                     format!(
                         "and {} {} with them",
                         count(brought),
-                        if brought == 1 {
-                            "crate that comes"
-                        } else {
-                            "crates that come"
-                        }
+                        if brought == 1 { "crate that comes" } else { "crates that come" }
                     )
                 }),
             })
@@ -211,20 +165,11 @@ pub fn read_tree(tree: &ProjectTree) -> TreeReading {
         roles,
         twice_heading: (!tree.twice.is_empty()).then(|| {
             (
-                if all_pairs {
-                    "Here twice"
-                } else {
-                    "Multiple versions"
-                }
-                .to_owned(),
+                if all_pairs { "Here twice" } else { "Multiple versions" }.to_owned(),
                 format!(
                     "{} {} at more than one version",
                     count(tree.twice.len()),
-                    if tree.twice.len() == 1 {
-                        "crate appears"
-                    } else {
-                        "crates appear"
-                    }
+                    if tree.twice.len() == 1 { "crate appears" } else { "crates appear" }
                 ),
             )
         }),
@@ -284,11 +229,7 @@ fn alert(advisory: &TreeAdvisory) -> AlertReading {
         })
         .unwrap_or("has an advisory");
     AlertReading {
-        title: format!(
-            "{} {} {what}",
-            advisory.package,
-            display_version(&advisory.version)
-        ),
+        title: format!("{} {} {what}", advisory.package, display_version(&advisory.version)),
         package: advisory.package.clone(),
         version: advisory.version.clone(),
         id: advisory.id.clone(),
@@ -300,17 +241,10 @@ fn alert(advisory: &TreeAdvisory) -> AlertReading {
 fn health(tree: &ProjectTree) -> String {
     let of = count(tree.health.of as usize);
     let line = match tree.health.coverage {
-        AdvisoryCoverage::Complete => format!(
-            "advisories checked for {} of {of}",
-            count(tree.health.checked as usize)
-        ),
-        AdvisoryCoverage::Partial => {
-            format!("advisories from a partial source, not a full check of {of}")
-        }
+        AdvisoryCoverage::Complete => format!("advisories checked for {} of {of}", count(tree.health.checked as usize)),
+        AdvisoryCoverage::Partial => format!("advisories from a partial source, not a full check of {of}"),
         AdvisoryCoverage::Unknown => "advisories not checked: no source is configured".to_owned(),
-        AdvisoryCoverage::Unavailable => {
-            "advisories unavailable: a source could not be reached".to_owned()
-        }
+        AdvisoryCoverage::Unavailable => "advisories unavailable: a source could not be reached".to_owned(),
     };
     if tree.health.freshness == FreshnessState::Stale {
         format!("{line} · stale")
@@ -320,10 +254,7 @@ fn health(tree: &ProjectTree) -> String {
 }
 
 fn members_list(edges: &[MemberEdge]) -> String {
-    let names = edges
-        .iter()
-        .map(|edge| edge.member.as_str())
-        .collect::<Vec<_>>();
+    let names = edges.iter().map(|edge| edge.member.as_str()).collect::<Vec<_>>();
     if names.len() > 4 {
         return format!("{} and {} more", names[..3].join(", "), names.len() - 3);
     }
@@ -347,11 +278,7 @@ fn serving(direct: &[&DirectDependency]) -> Option<String> {
     }
     let mut ranked = by.into_iter().collect::<Vec<_>>();
     ranked.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(right.0)));
-    let names = ranked
-        .iter()
-        .take(3)
-        .map(|(name, _)| *name)
-        .collect::<Vec<_>>();
+    let names = ranked.iter().take(3).map(|(name, _)| *name).collect::<Vec<_>>();
     (!names.is_empty()).then(|| format!("for {}", and_list(&names)))
 }
 
@@ -361,33 +288,18 @@ fn row(dependency: &DirectDependency, twice: &BTreeMap<&str, &Duplicate>) -> Row
         RoleEvidence::DevOnly => format!("only a dev-dependency of {used_by}"),
         RoleEvidence::Declared { words } => format!(
             "{} · used by {used_by}",
-            words
-                .iter()
-                .take(3)
-                .map(String::as_str)
-                .collect::<Vec<_>>()
-                .join(" · ")
+            words.iter().take(3).map(String::as_str).collect::<Vec<_>>().join(" · ")
         ),
-        RoleEvidence::Described { phrase } => {
-            format!("its description says “{phrase}” · used by {used_by}")
-        }
-        RoleEvidence::Cohort { peer } => {
-            format!("declares nothing · used by {used_by}, like {peer}")
-        }
-        RoleEvidence::Unknown => {
-            format!("no category, keyword, telling description or peer · used by {used_by}")
-        }
+        RoleEvidence::Described { phrase } => format!("its description says “{phrase}” · used by {used_by}"),
+        RoleEvidence::Cohort { peer } => format!("declares nothing · used by {used_by}, like {peer}"),
+        RoleEvidence::Unknown => format!("no category, keyword, telling description or peer · used by {used_by}"),
     };
     let at_rest = twice
         .get(dependency.name.as_str())
         .map(|duplicate| {
             format!(
                 "{} · {}",
-                if duplicate.copies.len() == 2 {
-                    "twice".to_owned()
-                } else {
-                    format!("{} versions", duplicate.copies.len())
-                },
+                if duplicate.copies.len() == 2 { "twice".to_owned() } else { format!("{} versions", duplicate.copies.len()) },
                 duplicate
                     .copies
                     .iter()
@@ -396,9 +308,7 @@ fn row(dependency: &DirectDependency, twice: &BTreeMap<&str, &Duplicate>) -> Row
                     .join(" · ")
             )
         })
-        .or_else(|| {
-            (dependency.evidence == RoleEvidence::DevOnly).then(|| "tests only".to_owned())
-        });
+        .or_else(|| (dependency.evidence == RoleEvidence::DevOnly).then(|| "tests only".to_owned()));
     RowReading {
         name: dependency.name.clone(),
         at_rest,
@@ -410,11 +320,7 @@ fn row(dependency: &DirectDependency, twice: &BTreeMap<&str, &Duplicate>) -> Row
 
 /// `2` reads "2.x"; `0.8` stays "0.8".
 fn class_words(class: &str) -> String {
-    if class.contains('.') {
-        class.to_owned()
-    } else {
-        format!("{class}.x")
-    }
+    if class.contains('.') { class.to_owned() } else { format!("{class}.x") }
 }
 
 fn twice(duplicate: &Duplicate) -> TwiceReading {
@@ -423,27 +329,16 @@ fn twice(duplicate: &Duplicate) -> TwiceReading {
         .iter()
         .map(|copy| (display_version(&copy.version).to_owned(), copy.yours))
         .collect::<Box<[_]>>();
-    let paths = duplicate
-        .copies
-        .iter()
-        .map(|copy| why_line(&copy.why))
-        .collect();
+    let paths = duplicate.copies.iter().map(|copy| why_line(&copy.why)).collect();
     let yours = duplicate.copies.iter().find(|copy| copy.yours);
     let newest_other = duplicate.copies.iter().rev().find(|copy| !copy.yours);
     let verdict = match (yours, newest_other) {
         (Some(_), None) => "Every copy is yours to move.".to_owned(),
         (Some(yours), Some(other)) if yours.only_yours => {
-            format!(
-                "Moving yours to {} drops a copy.",
-                display_version(&other.version)
-            )
+            format!("Moving yours to {} drops a copy.", display_version(&other.version))
         }
         (Some(yours), Some(other)) => {
-            let names = yours
-                .also_asked_by
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>();
+            let names = yours.also_asked_by.iter().map(String::as_str).collect::<Vec<_>>();
             format!(
                 "Moving yours to {} keeps both: {} still {} for {}.",
                 display_version(&other.version),
@@ -454,34 +349,21 @@ fn twice(duplicate: &Duplicate) -> TwiceReading {
         }
         _ => {
             let most = duplicate.copies.iter().max_by_key(|copy| copy.asked_by);
-            let none = if duplicate.copies.len() > 2 {
-                "None"
-            } else {
-                "Neither"
-            };
+            let none = if duplicate.copies.len() > 2 { "None" } else { "Neither" };
             most.map_or_else(
                 || format!("{none} is yours to move."),
                 |copy| {
                     format!(
                         "{none} is yours to move: {} {} for {}.",
                         count(copy.asked_by as usize),
-                        if copy.asked_by == 1 {
-                            "crate still asks"
-                        } else {
-                            "crates still ask"
-                        },
+                        if copy.asked_by == 1 { "crate still asks" } else { "crates still ask" },
                         class_words(&copy.class)
                     )
                 },
             )
         }
     };
-    TwiceReading {
-        name: duplicate.name.clone(),
-        copies,
-        paths,
-        verdict,
-    }
+    TwiceReading { name: duplicate.name.clone(), copies, paths, verdict }
 }
 
 /// 1189 → "1,189".

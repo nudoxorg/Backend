@@ -9,7 +9,7 @@
 //! makes "attach to the live owner" reliable rather than lucky.
 
 use backend_runtime::{
-    AUTHORITY_SECRET_ENV, DATA_ENV, ENDPOINT_ENV, PROJECT_ENV, RuntimeError, WorkspacePaths,
+    RuntimeError, WorkspacePaths, AUTHORITY_SECRET_ENV, DATA_ENV, ENDPOINT_ENV, PROJECT_ENV,
 };
 use std::path::{Path, PathBuf};
 

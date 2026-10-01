@@ -104,33 +104,17 @@ const SYSTEM_BINS: [(&str, Place); 5] = [
 /// The first directory that holds both `rustc` and `cargo`: an explicit
 /// `NUDOX_RUSTC`, else the process's `PATH`, rustup's proxies, Homebrew, Nix.
 /// `system` is [`SYSTEM_BINS`] in production (a test gives its own).
-pub(crate) fn find_rust(
-    variable: &dyn Fn(&str) -> Option<OsString>,
-    system: &[(PathBuf, Place)],
-) -> Rust {
+pub(crate) fn find_rust(variable: &dyn Fn(&str) -> Option<OsString>, system: &[(PathBuf, Place)]) -> Rust {
     let value = |name: &str| variable(name).filter(|value| !value.is_empty());
     if let Some(rustc) = value("NUDOX_RUSTC") {
-        return Rust::Found {
-            rustc: PathBuf::from(rustc),
-            place: Place::Named,
-            version: None,
-        };
+        return Rust::Found { rustc: PathBuf::from(rustc), place: Place::Named, version: None };
     }
-    let home = value("HOME")
-        .map(PathBuf::from)
-        .filter(|home| home.is_absolute());
+    let home = value("HOME").map(PathBuf::from).filter(|home| home.is_absolute());
     let mut places = Vec::new();
     if let Some(path) = value("PATH") {
-        places.extend(
-            std::env::split_paths(&path)
-                .filter(|dir| dir.is_absolute())
-                .map(|dir| (dir, Place::Path)),
-        );
+        places.extend(std::env::split_paths(&path).filter(|dir| dir.is_absolute()).map(|dir| (dir, Place::Path)));
     }
-    let cargo_home = value("CARGO_HOME")
-        .map(PathBuf::from)
-        .filter(|home| home.is_absolute())
-        .or_else(|| home.as_ref().map(|home| home.join(".cargo")));
+    let cargo_home = value("CARGO_HOME").map(PathBuf::from).filter(|home| home.is_absolute()).or_else(|| home.as_ref().map(|home| home.join(".cargo")));
     if let Some(cargo_home) = cargo_home {
         places.push((cargo_home.join("bin"), Place::Rustup));
     }
@@ -156,11 +140,7 @@ pub(crate) fn find_rust(
         }
         let (rustc, cargo) = (dir.join("rustc"), dir.join("cargo"));
         if rustc.is_file() && cargo.is_file() {
-            return Rust::Found {
-                rustc,
-                place,
-                version: None,
-            };
+            return Rust::Found { rustc, place, version: None };
         }
         looked.push(dir);
     }
@@ -172,10 +152,7 @@ static REPORT: RwLock<Option<Rust>> = RwLock::new(None);
 
 /// The Rust this launch found for the owner, once it started.
 pub(crate) fn report() -> Option<Rust> {
-    REPORT
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone()
+    REPORT.read().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
 /// `rustc --version`'s first line, within two seconds (a rustup proxy may
@@ -203,11 +180,7 @@ fn version_of(rustc: &Path) -> Option<String> {
     }
     let mut out = String::new();
     std::io::Read::read_to_string(&mut child.stdout.take()?, &mut out).ok()?;
-    out.lines()
-        .next()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(str::to_owned)
+    out.lines().next().map(str::trim).filter(|line| !line.is_empty()).map(str::to_owned)
 }
 
 /// The paths to supply, given the process's variables.
@@ -281,18 +254,11 @@ pub(crate) fn supplied_among(
 /// Rust looked for where people install it; what was found is [`report`]ed.
 pub(crate) fn supplied_by_the_process() -> Vec<(LocalHostVariable, PathBuf)> {
     let variable = |name: &str| std::env::var_os(name);
-    let system = SYSTEM_BINS
-        .iter()
-        .map(|(dir, place)| (PathBuf::from(dir), *place))
-        .collect::<Vec<_>>();
+    let system = SYSTEM_BINS.iter().map(|(dir, place)| (PathBuf::from(dir), *place)).collect::<Vec<_>>();
     let found = match find_rust(&variable, &system) {
         Rust::Found { rustc, place, .. } => {
             let version = version_of(&rustc);
-            Rust::Found {
-                rustc,
-                place,
-                version,
-            }
+            Rust::Found { rustc, place, version }
         }
         missing @ Rust::Missing { .. } => missing,
     };
@@ -435,8 +401,7 @@ mod tests {
 
     #[test]
     fn a_finder_launch_finds_the_rust_a_person_installed_and_supplies_it_whole() {
-        let root =
-            PathBuf::from("/tmp").join(format!("nx-toolchain-finder-{}", std::process::id()));
+        let root = PathBuf::from("/tmp").join(format!("nx-toolchain-finder-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let home = root.join("home");
         let rustup = bin(&home.join(".cargo/bin"), &["rustc", "cargo"]);
@@ -444,10 +409,7 @@ mod tests {
         let system = [(homebrew.clone(), Place::Homebrew)];
         // The Finder's PATH holds no Rust: rustup's proxies are found, and
         // everything the owner needs comes from that one install.
-        let finder_vars = [
-            ("HOME", home.as_path()),
-            ("PATH", Path::new("/usr/bin:/bin:/usr/sbin:/sbin")),
-        ];
+        let finder_vars = [("HOME", home.as_path()), ("PATH", Path::new("/usr/bin:/bin:/usr/sbin:/sbin"))];
         let finder = env(&finder_vars);
         assert_eq!(
             supplied_among(&finder, &system),
@@ -458,24 +420,10 @@ mod tests {
             ],
             "rustc, the cargo beside it, and cargo's home"
         );
-        assert_eq!(
-            find_rust(&finder, &system),
-            Rust::Found {
-                rustc: rustup.join("rustc"),
-                place: Place::Rustup,
-                version: None
-            }
-        );
+        assert_eq!(find_rust(&finder, &system), Rust::Found { rustc: rustup.join("rustc"), place: Place::Rustup, version: None });
         // Without rustup: Homebrew's.
         std::fs::remove_dir_all(&rustup).expect("uninstall rustup");
-        assert_eq!(
-            find_rust(&finder, &system),
-            Rust::Found {
-                rustc: homebrew.join("rustc"),
-                place: Place::Homebrew,
-                version: None
-            }
-        );
+        assert_eq!(find_rust(&finder, &system), Rust::Found { rustc: homebrew.join("rustc"), place: Place::Homebrew, version: None });
         // A terminal launch's PATH comes first; a directory with a rustc and
         // no cargo beside it is not an install.
         let half = bin(&root.join("half/bin"), &["rustc"]);
@@ -483,34 +431,14 @@ mod tests {
         let path = std::env::join_paths([&half, &whole]).expect("PATH");
         let terminal_vars = [("HOME", home.as_path()), ("PATH", Path::new(&path))];
         let terminal = env(&terminal_vars);
-        assert_eq!(
-            find_rust(&terminal, &system),
-            Rust::Found {
-                rustc: whole.join("rustc"),
-                place: Place::Path,
-                version: None
-            }
-        );
+        assert_eq!(find_rust(&terminal, &system), Rust::Found { rustc: whole.join("rustc"), place: Place::Path, version: None });
         // An explicit NUDOX_RUSTC wins over anything found.
         let named_rustc = homebrew.join("rustc");
-        let named_vars = [
-            ("HOME", home.as_path()),
-            ("PATH", Path::new(&path)),
-            ("NUDOX_RUSTC", named_rustc.as_path()),
-        ];
+        let named_vars = [("HOME", home.as_path()), ("PATH", Path::new(&path)), ("NUDOX_RUSTC", named_rustc.as_path())];
         let named = env(&named_vars);
-        assert_eq!(
-            find_rust(&named, &system),
-            Rust::Found {
-                rustc: homebrew.join("rustc"),
-                place: Place::Named,
-                version: None
-            }
-        );
+        assert_eq!(find_rust(&named, &system), Rust::Found { rustc: homebrew.join("rustc"), place: Place::Named, version: None });
         assert!(
-            !supplied_among(&named, &system)
-                .iter()
-                .any(|(variable, _)| *variable == LocalHostVariable::NudoxRustc),
+            !supplied_among(&named, &system).iter().any(|(variable, _)| *variable == LocalHostVariable::NudoxRustc),
             "a named rustc is the process's own variable, never supplied over it"
         );
         let _ = std::fs::remove_dir_all(&root);
@@ -523,25 +451,14 @@ mod tests {
         let home = root.join("home");
         std::fs::create_dir_all(&home).expect("home");
         let empty = bin(&root.join("system/bin"), &[]);
-        let finder_vars = [
-            ("HOME", home.as_path()),
-            ("PATH", Path::new("/usr/bin:/bin")),
-        ];
+        let finder_vars = [("HOME", home.as_path()), ("PATH", Path::new("/usr/bin:/bin"))];
         let finder = env(&finder_vars);
         let system = [(empty.clone(), Place::Homebrew)];
         let found = find_rust(&finder, &system);
-        let Rust::Missing { looked } = &found else {
-            panic!("no rustc anywhere: {found:?}")
-        };
+        let Rust::Missing { looked } = &found else { panic!("no rustc anywhere: {found:?}") };
         assert_eq!(
             looked,
-            &[
-                PathBuf::from("/usr/bin"),
-                PathBuf::from("/bin"),
-                home.join(".cargo/bin"),
-                empty,
-                home.join(".nix-profile/bin")
-            ],
+            &[PathBuf::from("/usr/bin"), PathBuf::from("/bin"), home.join(".cargo/bin"), empty, home.join(".nix-profile/bin")],
             "every place it looked, in order"
         );
         assert_eq!(
@@ -559,10 +476,7 @@ mod tests {
             place: Place::Homebrew,
             version: Some("rustc 1.98.1 (48a229cea 2026-09-01) (Homebrew)".to_owned()),
         };
-        assert_eq!(
-            found.words(),
-            "Rust 1.98.1 at /opt/homebrew/bin/rustc (from Homebrew)"
-        );
+        assert_eq!(found.words(), "Rust 1.98.1 at /opt/homebrew/bin/rustc (from Homebrew)");
     }
 
     #[test]

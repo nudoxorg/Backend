@@ -35,15 +35,16 @@ pub(crate) use identity::query_semantic_id;
 pub(crate) use identity::semantic_coordinate;
 pub(super) use identity::{external_semantic_symbol, package_token, semantic_symbol};
 pub(super) use query::semantic_query_corpus;
-pub(crate) use semantic::EXTERNAL_SEMANTIC_TARGET_LABEL;
 pub(crate) use semantic::compiled_source_path;
 pub(super) use semantic::{
     ForeignPublication, ProjectedRows, StructuralSites, rows_for_indexed_sources,
 };
+pub(crate) use semantic::EXTERNAL_SEMANTIC_TARGET_LABEL;
 pub(crate) use structural::{
     resolve_specifier_paths, structural_call_coordinate_pairs, structural_call_graph_relations,
     structural_call_graph_relations_mapped, structural_call_span, structural_file_span,
-    structural_reference_facts, structural_symbol_identity, view_row_for_structural_coordinate,
+    structural_reference_facts,
+    structural_symbol_identity, view_row_for_structural_coordinate,
 };
 
 use query::append_structural_query_facts;

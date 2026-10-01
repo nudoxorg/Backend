@@ -11,9 +11,7 @@ use std::fmt;
 use std::sync::Arc;
 
 /// Exact engine coordinate of one declaration, never abbreviated.
-#[derive(
-    Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub struct SymbolRef(Arc<str>);
 
 /// A page key that cannot cross the engine boundary.
@@ -93,9 +91,7 @@ impl fmt::Display for SymbolRef {
 /// only compares keys; holding the bytes rather than the capability-typed
 /// `SymbolKey` (which only an admitted reply can create) lets a page be
 /// persisted and read back (W-Open I2, the launch snapshot).
-#[derive(
-    Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub struct RowKey([u8; 32]);
 
 impl From<SymbolKey> for RowKey {
@@ -107,16 +103,12 @@ impl From<SymbolKey> for RowKey {
 impl fmt::Debug for RowKey {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("RowKey:")?;
-        self.0
-            .iter()
-            .try_for_each(|byte| write!(formatter, "{byte:02x}"))
+        self.0.iter().try_for_each(|byte| write!(formatter, "{byte:02x}"))
     }
 }
 
 /// Exact package locator: a local project root or a version-pinned purl.
-#[derive(
-    Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub struct PackageRef(backend_library::PackageReference);
 
 impl PackageRef {
@@ -208,22 +200,15 @@ impl PackageRef {
         let parent = path.parent()?;
         let parent_name = parent.file_name()?.to_str()?;
         let in_cargo = parent_name.starts_with("index.")
-            && parent
-                .parent()
-                .is_some_and(|src| src.ends_with("registry/src"));
+            && parent.parent().is_some_and(|src| src.ends_with("registry/src"));
         let in_app = parent_name == stem
-            && parent.parent().is_some_and(|dir| {
-                dir.file_name()
-                    .is_some_and(|name| name == "registry-sources")
-            });
+            && parent.parent().is_some_and(|dir| dir.file_name().is_some_and(|name| name == "registry-sources"));
         if !(in_cargo || in_app) {
             return None;
         }
         let (name, version) = stem.match_indices('-').find_map(|(at, _)| {
             let (name, version) = (&stem[..at], &stem[at + 1..]);
-            crate::model::release::Release::new(name, version)
-                .ok()
-                .map(|_| (name, version))
+            crate::model::release::Release::new(name, version).ok().map(|_| (name, version))
         })?;
         // The name and version are the manifest's: the tree's own
         // `Cargo.toml` is read (once per tree) and must say exactly these.
@@ -234,8 +219,7 @@ impl PackageRef {
     /// release's, pinned or unpacked.
     #[must_use]
     pub fn release_version(&self) -> Option<&str> {
-        self.version()
-            .or_else(|| self.registry_release().map(|(_, version)| version))
+        self.version().or_else(|| self.registry_release().map(|(_, version)| version))
     }
 
     /// Returns the readable name: a registry package's own name (its
@@ -256,10 +240,7 @@ impl PackageRef {
                 .unwrap_or(text);
         }
         let without_version = text.split('@').next().unwrap_or(text);
-        without_version
-            .rsplit('/')
-            .next()
-            .unwrap_or(without_version)
+        without_version.rsplit('/').next().unwrap_or(without_version)
     }
 }
 
@@ -268,28 +249,16 @@ impl PackageRef {
 fn manifest_says(root: &std::path::Path, name: &str, version: &str) -> bool {
     use std::collections::HashMap;
     use std::sync::{OnceLock, PoisonError, RwLock};
-    static READ: OnceLock<RwLock<HashMap<std::path::PathBuf, Option<(String, String)>>>> =
-        OnceLock::new();
+    static READ: OnceLock<RwLock<HashMap<std::path::PathBuf, Option<(String, String)>>>> = OnceLock::new();
     let read = READ.get_or_init(RwLock::default);
-    let known = read
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(root)
-        .cloned();
+    let known = read.read().unwrap_or_else(PoisonError::into_inner).get(root).cloned();
     let identity = known.unwrap_or_else(|| {
-        let identity = std::fs::read_to_string(root.join("Cargo.toml"))
-            .ok()
-            .and_then(|text| {
-                let manifest = text.parse::<toml::Table>().ok()?;
-                let package = manifest.get("package")?.as_table()?;
-                Some((
-                    package.get("name")?.as_str()?.to_owned(),
-                    package.get("version")?.as_str()?.to_owned(),
-                ))
-            });
-        read.write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(root.to_path_buf(), identity.clone());
+        let identity = std::fs::read_to_string(root.join("Cargo.toml")).ok().and_then(|text| {
+            let manifest = text.parse::<toml::Table>().ok()?;
+            let package = manifest.get("package")?.as_table()?;
+            Some((package.get("name")?.as_str()?.to_owned(), package.get("version")?.as_str()?.to_owned()))
+        });
+        read.write().unwrap_or_else(PoisonError::into_inner).insert(root.to_path_buf(), identity.clone());
         identity
     });
     identity.is_some_and(|(said_name, said_version)| said_name == name && said_version == version)
@@ -346,9 +315,7 @@ impl<T> Known<T> {
 }
 
 /// Why one field is unknown. Closed so a board can pick its hatch and words.
-#[derive(
-    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub enum GapReason {
     /// The producer retained nothing for this field.
     NotCaptured,
@@ -439,9 +406,7 @@ impl fmt::Display for Gap {
 }
 
 /// Kind family: the gem's hue. Shape is the [`DeclarationKind`].
-#[derive(
-    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub enum KindFamily {
     /// Modules, packages, imports, unknown kinds.
     Namespace,
@@ -526,12 +491,7 @@ impl DeclFacts {
     /// Facts for a reference no producer row was read for.
     #[must_use]
     pub fn unread() -> Self {
-        let gap = || {
-            Gap::new(
-                GapReason::NotCaptured,
-                "no producer row was read for this reference",
-            )
-        };
+        let gap = || Gap::new(GapReason::NotCaptured, "no producer row was read for this reference");
         Self {
             deprecation: Known::Unknown(gap()),
             obligation: Known::Unknown(gap()),
@@ -541,11 +501,7 @@ impl DeclFacts {
     /// Lowers what the producer observed.
     #[must_use]
     pub fn from_facts(facts: &backend_library::DeclarationFacts) -> Self {
-        fn known<T, U>(
-            fact: &backend_library::Fact<T>,
-            what: &str,
-            map: impl FnOnce(&T) -> U,
-        ) -> Known<Option<U>> {
+        fn known<T, U>(fact: &backend_library::Fact<T>, what: &str, map: impl FnOnce(&T) -> U) -> Known<Option<U>> {
             match fact {
                 backend_library::Fact::Unobserved => Known::unknown(
                     GapReason::NotCaptured,
@@ -611,12 +567,11 @@ impl DeclRef {
         captured: Option<(&str, u32)>,
     ) -> Option<Self> {
         let coordinate = SymbolRef::new(label).ok()?;
-        let identity =
-            Identity::parse_with_key(label, key.map_or(IdentityKey::Absent, IdentityKey::Symbol))
-                .with_captured_source(
-                    captured.map(|(path, _)| path),
-                    captured.map(|(_, line)| line),
-                );
+        let identity = Identity::parse_with_key(
+            label,
+            key.map_or(IdentityKey::Absent, IdentityKey::Symbol),
+        )
+        .with_captured_source(captured.map(|(path, _)| path), captured.map(|(_, line)| line));
         Some(Self {
             name: Arc::from(identity.name()),
             path: identity.path().map(|path| Arc::from(path.as_str())),
@@ -657,9 +612,7 @@ impl DeclRef {
 
 /// Where one relation or link came from. A board never renders a name match
 /// or a desktop derivation as if the compiler had proven it.
-#[derive(
-    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub enum Provenance {
     /// A typed edge from the compiler graph authority, with its confidence.
     Semantic(SemanticConfidence),
@@ -678,9 +631,7 @@ pub enum Provenance {
 }
 
 /// The closed set of desktop derivations over compiler facts.
-#[derive(
-    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub enum Derivation {
     /// An impl block published as a `Type` row whose type references name
     /// both a nominal self type and a trait: "self type implements trait".
@@ -731,9 +682,7 @@ pub const fn link_name(kind: SemanticLinkKind) -> &'static str {
 }
 
 /// A half-open UTF-8 byte range inside one text.
-#[derive(
-    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub struct ByteSpan {
     /// Inclusive start byte.
     pub start: u32,
@@ -760,9 +709,7 @@ impl ByteSpan {
 }
 
 /// One contiguous inclusive range of one-based source lines.
-#[derive(
-    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub struct LineSpan {
     /// First line, one-based.
     pub first: u32,

@@ -167,7 +167,10 @@ impl SpanExporter for BlockingSpanExporter {
 struct BlockingLogExporter(BlockingGate);
 
 impl LogExporter for BlockingLogExporter {
-    fn export(&self, batch: LogBatch<'_>) -> impl Future<Output = Result<(), OTelSdkError>> + Send {
+    fn export(
+        &self,
+        batch: LogBatch<'_>,
+    ) -> impl Future<Output = Result<(), OTelSdkError>> + Send {
         let result = self.0.block_export(batch.iter().count());
         async move { result.map_err(AdapterTestError::into_sdk_error) }
     }

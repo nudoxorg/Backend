@@ -152,7 +152,9 @@ fn owner_name(lane: &Lane<'_>, owner: backend_semantic::ir::EntityId) -> Result<
         .ok_or_else(|| format!("entity {} name atom absent", owner.raw))
 }
 
-fn package_const_reads<'a>(lane: &'a Lane<'a>) -> Vec<&'a backend_semantic::ir::Occurrence<'a>> {
+fn package_const_reads<'a>(
+    lane: &'a Lane<'a>,
+) -> Vec<&'a backend_semantic::ir::Occurrence<'a>> {
     lane.occurrences
         .iter()
         .map(|row| &row.occurrence)

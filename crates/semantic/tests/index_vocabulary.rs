@@ -4,17 +4,17 @@
 //! Public laws for the minimal immutable-index identity vocabulary.
 
 use allocation_counter::{AllocationInfo, measure};
-use backend_semantic::index_vocabulary::{
-    CanonicalEntityLocator, ExactSegmentId, IndexLocatorFacts, IndexSnapshotId, LexicalSegmentId,
-    PackageVersion, SemanticImageExtent, SemanticImageLocator, VectorSegmentId,
-};
 use backend_semantic::ir::{DeclarationIdentity, PackageLineage, SemanticImageIdentity};
-use backend_version::{
-    CompilePublicationDomain, ContentId, ContentIdDecodeError, DomainCode, GenerationId,
-};
 use core::{
     mem::{align_of, size_of},
     ops::Deref,
+};
+use backend_version::{
+    CompilePublicationDomain, ContentId, ContentIdDecodeError, DomainCode, GenerationId,
+};
+use backend_semantic::index_vocabulary::{
+    CanonicalEntityLocator, ExactSegmentId, IndexLocatorFacts, IndexSnapshotId, LexicalSegmentId,
+    PackageVersion, SemanticImageExtent, SemanticImageLocator, VectorSegmentId,
 };
 use std::hint::black_box;
 

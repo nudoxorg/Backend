@@ -16,9 +16,7 @@ use backend_semantic::ir::{
     FragmentView, MappedFragment, MappedFragmentError, MappedFragmentIoPhase, PreparedFragment,
     PrimitiveType, SourceIdentity, TypeNode, open_fragment_mmap,
 };
-use backend_semantic::vocabulary::{
-    CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage,
-};
+use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 

@@ -11,21 +11,21 @@
 //! held set; it is never stored. A card goes to its page and touches it.
 
 use super::kit::{kind_mark, text};
-use super::region::Links;
-use crate::navigation::Intent;
 use crate::runtime::fixture_world::Card;
-use crate::runtime::fixture_world::HandView;
-use facet::icons::KindSize;
 use facet::motion::presence::{Act, Axis, Entry, Extent};
 use facet::motion::{Keys, Pose, Presence};
+use std::collections::HashMap;
+use super::region::Links;
+use crate::navigation::Intent;
+use crate::runtime::fixture_world::HandView;
+use facet::icons::KindSize;
 use facet::paint::{Bevel, Chamfer, cut};
 use facet::tokens::ty;
 use facet::{Measure, Palette, Space};
 use gpui::{
-    AnyElement, ClickEvent, InteractiveElement, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, div, px,
+    AnyElement, ClickEvent, InteractiveElement, IntoElement, ParentElement, SharedString, StatefulInteractiveElement, Styled,
+    div, px,
 };
-use std::collections::HashMap;
 
 /// The key a card's mark travels under when it is taken (Take → hand): the
 /// shell remembers the hero stone's bounds under it, and the foot's new mark
@@ -43,25 +43,17 @@ const TAKE: std::time::Duration = std::time::Duration::from_millis(380);
 
 /// Goes to card `n` and touches it.
 fn go(links: &Links, view: &HandView, n: usize, cx: &mut gpui::App) {
-    let Some(card) = view.cards.get(n) else {
-        return;
-    };
+    let Some(card) = view.cards.get(n) else { return };
     if let Some(route) = super::root::held_route(&card.held) {
         links.dispatch(Intent::Navigate(route), cx);
-        links.dispatch(
-            Intent::TouchHeld(card.held.clone(), super::root::now_ms()),
-            cx,
-        );
+        links.dispatch(Intent::TouchHeld(card.held.clone(), super::root::now_ms()), cx);
     }
 }
 
 /// A card's identity on the Mark rung (its Presence key).
 fn card_key(held: &crate::model::hand::Held) -> gpui::ElementId {
     let id = held.id.as_ref().map_or("", |id| id.as_str());
-    gpui::ElementId::Name(SharedString::from(format!(
-        "{}|{id}",
-        held.package.as_str()
-    )))
+    gpui::ElementId::Name(SharedString::from(format!("{}|{id}", held.package.as_str())))
 }
 
 /// A new mark arrives still: Take → hand already moved it.
@@ -69,16 +61,8 @@ fn arrive() -> Act {
     let still = std::time::Duration::from_millis(1);
     Act {
         duration: still,
-        pose: Keys::owned(
-            still,
-            vec![(0.0, Pose::REST), (1.0, Pose::REST)],
-            facet::tokens::motion::GLIDE,
-        ),
-        room: Keys::owned(
-            still,
-            vec![(0.0, Extent::FULL), (1.0, Extent::FULL)],
-            facet::tokens::motion::GLIDE,
-        ),
+        pose: Keys::owned(still, vec![(0.0, Pose::REST), (1.0, Pose::REST)], facet::tokens::motion::GLIDE),
+        room: Keys::owned(still, vec![(0.0, Extent::FULL), (1.0, Extent::FULL)], facet::tokens::motion::GLIDE),
     }
 }
 
@@ -87,26 +71,11 @@ fn arrive() -> Act {
 /// the rest travel from where they were painted.
 fn let_go() -> Act {
     let whole = std::time::Duration::from_millis(360);
-    let sunk = Pose {
-        y: 18.0,
-        ..Pose::REST
-    };
+    let sunk = Pose { y: 18.0, ..Pose::REST };
     Act {
         duration: whole,
-        pose: Keys::owned(
-            whole,
-            vec![(0.0, Pose::REST), (0.55, sunk), (1.0, sunk)],
-            facet::tokens::motion::DROP,
-        ),
-        room: Keys::owned(
-            whole,
-            vec![
-                (0.0, Extent::FULL),
-                (0.45, Extent::FULL),
-                (1.0, Extent::NONE),
-            ],
-            facet::tokens::motion::GLIDE,
-        ),
+        pose: Keys::owned(whole, vec![(0.0, Pose::REST), (0.55, sunk), (1.0, sunk)], facet::tokens::motion::DROP),
+        room: Keys::owned(whole, vec![(0.0, Extent::FULL), (0.45, Extent::FULL), (1.0, Extent::NONE)], facet::tokens::motion::GLIDE),
     }
 }
 
@@ -119,10 +88,7 @@ pub(crate) struct Marks {
 
 impl Default for Marks {
     fn default() -> Self {
-        Self {
-            presence: Presence::new("hand.marks").axis(Axis::Horizontal),
-            drawn: HashMap::new(),
-        }
+        Self { presence: Presence::new("hand.marks").axis(Axis::Horizontal), drawn: HashMap::new() }
     }
 }
 
@@ -153,63 +119,40 @@ impl Marks {
                 joined.insert(n, k > 0);
             }
         }
-        let order: Vec<usize> = view
-            .roads
-            .iter()
-            .flat_map(|road| road.cards.iter().copied())
-            .chain(view.apart.iter().copied())
-            .collect();
+        let order: Vec<usize> = view.roads.iter().flat_map(|road| road.cards.iter().copied()).chain(view.apart.iter().copied()).collect();
         for &n in &order {
             let card = &view.cards[n];
-            self.drawn.insert(
-                card_key(&card.held),
-                (card.clone(), joined.get(&n).copied().unwrap_or(false)),
-            );
+            self.drawn.insert(card_key(&card.held), (card.clone(), joined.get(&n).copied().unwrap_or(false)));
         }
         let items = self.presence.sync_entries(
-            order.iter().map(|&n| {
-                Entry::new(card_key(&view.cards[n].held))
-                    .enter(arrive())
-                    .exit(let_go())
-            }),
+            order.iter().map(|&n| Entry::new(card_key(&view.cards[n].held)).enter(arrive()).exit(let_go())),
             window,
             cx,
         );
-        self.drawn
-            .retain(|key, _| items.iter().any(|item| &item.key == key));
+        self.drawn.retain(|key, _| items.iter().any(|item| &item.key == key));
         if items.is_empty() {
             return None;
         }
         let open_links = links.clone();
         // Not clipped: the digits rise above the foot while ⌘ is held; the
         // window's own floor clips a stone that sinks.
-        let mut row = div().flex().items_center().child(
-            div()
-                .id("hand-open")
-                .cursor_pointer()
-                .pr(px(6.0 * scale))
-                .child(
-                    text(ty::SMALL, measure, palette.ink3)
-                        .keyed("hand-open")
-                        .child("›"),
-                )
-                .on_click(move |_: &ClickEvent, _, cx| {
-                    open_links.shell(cx, |shell, cx| shell.toggle_hand(cx))
-                }),
-        );
+        let mut row = div()
+            .flex()
+            .items_center()
+            .child(
+                div()
+                    .id("hand-open")
+                    .cursor_pointer()
+                    .pr(px(6.0 * scale))
+                    .child(text(ty::SMALL, measure, palette.ink3).keyed("hand-open").child("›"))
+                    .on_click(move |_: &ClickEvent, _, cx| open_links.shell(cx, |shell, cx| shell.toggle_hand(cx))),
+            );
         let keys = facet::ActiveFacet::facet(cx).reveal.keys;
         for item in &items {
-            let Some((card, follows)) = self.drawn.get(&item.key).cloned() else {
-                continue;
-            };
-            let shown = view
-                .cards
-                .iter()
-                .position(|shown| shown.held.same(&card.held));
+            let Some((card, follows)) = self.drawn.get(&item.key).cloned() else { continue };
+            let shown = view.cards.iter().position(|shown| shown.held.same(&card.held));
             // ⌘ held: each card's digit (⌘1–⌘5 go to the cards in shown order).
-            let digit = shown
-                .filter(|_| keys && !item.is_leaving())
-                .and_then(|n| DIGITS.get(n).copied());
+            let digit = shown.filter(|_| keys && !item.is_leaving()).and_then(|n| DIGITS.get(n).copied());
             let mark = kind_mark(card.kind, KindSize::Sm, measure, palette);
             // Only the text-free stone travels (the no-overlap law).
             let mark: AnyElement = match (&card.held.id, item.is_leaving()) {
@@ -235,9 +178,7 @@ impl Marks {
                     // The digit sits centred above its own mark, so the caps
                     // never crowd one another and nothing moves.
                     .children(digit.map(|label| {
-                        let cap = facet::controls::kbd(label, measure)
-                            .size(facet::controls::KbdSize::Small)
-                            .hot();
+                        let cap = facet::controls::kbd(label, measure).size(facet::controls::KbdSize::Small).hot();
                         div()
                             .absolute()
                             .left(px(-6.0 * scale))
@@ -246,9 +187,7 @@ impl Marks {
                             .flex()
                             .justify_center()
                             .child(facet::probe::text(
-                                gpui::ElementId::Name(SharedString::from(format!(
-                                    "hand-digit:{label}"
-                                ))),
+                                gpui::ElementId::Name(SharedString::from(format!("hand-digit:{label}"))),
                                 label,
                                 measure.role(ty::MONO_SMALL),
                                 1.0,
@@ -269,13 +208,7 @@ impl Marks {
 }
 
 /// The Row rung: the hand opened, over the foot.
-pub(crate) fn row(
-    view: &std::rc::Rc<HandView>,
-    at: usize,
-    links: &Links,
-    measure: &Measure,
-    palette: &'static Palette,
-) -> AnyElement {
+pub(crate) fn row(view: &std::rc::Rc<HandView>, at: usize, links: &Links, measure: &Measure, palette: &'static Palette) -> AnyElement {
     let scale = measure.scale();
     let card = |n: usize| {
         let held = &view.cards[n];
@@ -294,11 +227,7 @@ pub(crate) fn row(
             .px(px(8.0 * scale))
             .h(px(26.0 * scale))
             .child(kind_mark(held.kind, KindSize::Sm, measure, palette))
-            .child(
-                text(ty::MONO_ROW, measure, palette.ink0)
-                    .keyed(SharedString::from(format!("hand-row:card:{n}")))
-                    .child(held.name.clone()),
-            )
+            .child(text(ty::MONO_ROW, measure, palette.ink0).keyed(SharedString::from(format!("hand-row:card:{n}"))).child(held.name.clone()))
             .on_click(move |_: &ClickEvent, _, cx| go(&links, &view, n, cx))
     };
     let mut column = cut()
@@ -324,32 +253,23 @@ pub(crate) fn row(
                         .items_center()
                         .gap(px(4.0 * scale))
                         .child(div().w(px(10.0 * scale)).h(px(1.0)).bg(palette.ink4))
-                        .child(
-                            text(ty::SMALL, measure, palette.ink3)
-                                .keyed(SharedString::from(format!("hand-row:verb:{n}")))
-                                .child(verb),
-                        )
+                        .child(text(ty::SMALL, measure, palette.ink3).keyed(SharedString::from(format!("hand-row:verb:{n}"))).child(verb))
                         .child(div().w(px(10.0 * scale)).h(px(1.0)).bg(palette.ink4))
                 };
                 line = line.child(join);
             }
             line = line.child(card(n));
         }
-        column = column.child(line).child(
-            text(ty::CAPTION, measure, palette.ink3)
-                .keyed(SharedString::from(format!(
-                    "hand-row:sentence:{}",
-                    road.cards.first().copied().unwrap_or_default()
-                )))
-                .child(SharedString::from(road.sentence.clone())),
-        );
+        column = column
+            .child(line)
+            .child(
+                text(ty::CAPTION, measure, palette.ink3)
+                    .keyed(SharedString::from(format!("hand-row:sentence:{}", road.cards.first().copied().unwrap_or_default())))
+                    .child(SharedString::from(road.sentence.clone())),
+            );
     }
     if !view.apart.is_empty() {
-        let mut apart = div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(measure.space(Space::Roomy));
+        let mut apart = div().flex().flex_wrap().items_center().gap(measure.space(Space::Roomy));
         for &n in &view.apart {
             apart = apart.child(card(n));
         }

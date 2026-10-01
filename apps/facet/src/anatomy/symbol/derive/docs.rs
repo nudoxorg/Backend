@@ -52,17 +52,10 @@ pub(super) fn docs(facts: &Facts) -> Docs {
     // ones that are not the errors, the parameters or the return read as
     // paragraphs after the rest.
     for section in &facts.sections {
-        if matches!(section.kind, SectionKind::Examples)
-            && !section.body.trim().is_empty()
-            && !facts.docs.iter().any(|b| matches!(b, Block::Code(_)))
-        {
+        if matches!(section.kind, SectionKind::Examples) && !section.body.trim().is_empty() && !facts.docs.iter().any(|b| matches!(b, Block::Code(_))) {
             blocks.push(Block::Code(section.body.trim().to_owned()));
         }
-        if matches!(
-            section.kind,
-            SectionKind::Safety | SectionKind::Deprecated | SectionKind::Panics
-        ) && !section.body.trim().is_empty()
-        {
+        if matches!(section.kind, SectionKind::Safety | SectionKind::Deprecated | SectionKind::Panics) && !section.body.trim().is_empty() {
             let title = match section.kind {
                 SectionKind::Safety => "Safety",
                 SectionKind::Deprecated => "Deprecated",
@@ -78,11 +71,7 @@ pub(super) fn docs(facts: &Facts) -> Docs {
 /// The prose of the errors section: from the sections, else the paragraphs
 /// under an "Errors" heading.
 pub(super) fn errors_prose(facts: &Facts) -> Option<(String, Vec<(String, String)>)> {
-    if let Some(section) = facts
-        .sections
-        .iter()
-        .find(|s| s.kind == SectionKind::Errors)
-    {
+    if let Some(section) = facts.sections.iter().find(|s| s.kind == SectionKind::Errors) {
         let body = section.body.trim().to_owned();
         if !body.is_empty() || !section.entries.is_empty() {
             return Some((body, section.entries.clone()));
@@ -144,9 +133,7 @@ pub(super) fn short_when(prose: &str) -> String {
         }
     }
     if text.chars().count() > 96 {
-        if let Some(at) =
-            text[..text.char_indices().nth(96).map_or(text.len(), |(at, _)| at)].rfind(", ")
-        {
+        if let Some(at) = text[..text.char_indices().nth(96).map_or(text.len(), |(at, _)| at)].rfind(", ") {
             text.truncate(at);
         }
     }
@@ -174,21 +161,12 @@ pub(super) fn none_when(facts: &Facts) -> Option<String> {
     let sentences: Vec<String> = split_sentences(&all);
     for (index, sentence) in sentences.iter().enumerate() {
         let lower = sentence.to_ascii_lowercase();
-        let mentions = ["none", "null", "undefined", "nothing", "returns nothing"]
-            .iter()
-            .any(|w| contains_word(&lower, w));
+        let mentions = ["none", "null", "undefined", "nothing", "returns nothing"].iter().any(|w| contains_word(&lower, w));
         if !mentions {
             continue;
         }
         // `… or None if no match was found`, `Returns None if …`.
-        for marker in [
-            "none if ",
-            "null if ",
-            "undefined if ",
-            "nothing if ",
-            "none when ",
-            "null when ",
-        ] {
+        for marker in ["none if ", "null if ", "undefined if ", "nothing if ", "none when ", "null when "] {
             if let Some(at) = lower.find(marker) {
                 let rest = sentence[at + marker.len()..].trim().trim_end_matches('.');
                 return Some(format!("if {}", cut_when(rest)));
@@ -198,10 +176,7 @@ pub(super) fn none_when(facts: &Facts) -> Option<String> {
             if let Some(previous) = index.checked_sub(1).and_then(|p| sentences.get(p)) {
                 // `If the Value is a String, returns …` → "if it isn't a String".
                 let lower_prev = previous.to_ascii_lowercase();
-                if let Some(at) = lower_prev
-                    .find(" is a ")
-                    .or_else(|| lower_prev.find(" is an "))
-                {
+                if let Some(at) = lower_prev.find(" is a ").or_else(|| lower_prev.find(" is an ")) {
                     let rest = &previous[at + 4..];
                     let head = rest.split([',', ';']).next().unwrap_or(rest).trim();
                     return Some(format!("if it isn't {head}"));
@@ -221,14 +196,7 @@ fn cut_when(text: &str) -> String {
 
 fn contains_word(haystack: &str, word: &str) -> bool {
     haystack.match_indices(word).any(|(at, _)| {
-        !haystack[..at]
-            .chars()
-            .next_back()
-            .is_some_and(char::is_alphanumeric)
-            && !haystack[at + word.len()..]
-                .chars()
-                .next()
-                .is_some_and(char::is_alphanumeric)
+        !haystack[..at].chars().next_back().is_some_and(char::is_alphanumeric) && !haystack[at + word.len()..].chars().next().is_some_and(char::is_alphanumeric)
     })
 }
 
@@ -240,9 +208,7 @@ fn split_sentences(text: &str) -> Vec<String> {
         if sentence.is_empty() {
             break;
         }
-        let consumed = rest
-            .find(sentence.as_str())
-            .map_or(sentence.len(), |at| at + sentence.len());
+        let consumed = rest.find(sentence.as_str()).map_or(sentence.len(), |at| at + sentence.len());
         out.push(sentence);
         rest = rest[consumed.min(rest.len())..].trim_start();
     }
@@ -262,10 +228,7 @@ pub(super) fn row_doc(summary: Option<&str>) -> String {
     summary.map_or_else(String::new, |text| {
         let text = plain(&first_sentence(text));
         let text = text.trim_end_matches('.');
-        let text = ["Represents a ", "Represents an ", "Represents "]
-            .iter()
-            .find_map(|prefix| text.strip_prefix(prefix))
-            .unwrap_or(text);
+        let text = ["Represents a ", "Represents an ", "Represents "].iter().find_map(|prefix| text.strip_prefix(prefix)).unwrap_or(text);
         lower_first_keep_acronym(text)
     })
 }
@@ -273,9 +236,7 @@ pub(super) fn row_doc(summary: Option<&str>) -> String {
 fn lower_first_keep_acronym(text: &str) -> String {
     let mut chars = text.chars();
     match (chars.next(), chars.next()) {
-        (Some(first), Some(second)) if first.is_uppercase() && second.is_lowercase() => {
-            lower_first(text)
-        }
+        (Some(first), Some(second)) if first.is_uppercase() && second.is_lowercase() => lower_first(text),
         _ => text.to_owned(),
     }
 }
@@ -288,42 +249,24 @@ mod tests {
 
     fn facts(docs: &[&str]) -> Facts {
         let mut facts = Facts::new("as_str", Kind::Method, Lang::Rust, "serde_json");
-        facts.docs = docs
-            .iter()
-            .map(|text| Block::Para((*text).to_owned()))
-            .collect();
+        facts.docs = docs.iter().map(|text| Block::Para((*text).to_owned())).collect();
         facts
     }
 
     #[test]
     fn a_failure_reads_as_one_line() {
         let prose = "This conversion can fail if the structure of the input does not match the structure expected by `T`, for example if `T` is a struct type but the input contains something other than a JSON map. It can also fail if the structure is correct.";
-        assert_eq!(
-            short_when(prose),
-            "if the structure of the input does not match the structure expected by T"
-        );
-        assert_eq!(
-            short_when("Returns an error if the file cannot be read."),
-            "if the file cannot be read"
-        );
+        assert_eq!(short_when(prose), "if the structure of the input does not match the structure expected by T");
+        assert_eq!(short_when("Returns an error if the file cannot be read."), "if the file cannot be read");
     }
 
     #[test]
     fn nothing_is_read_from_a_returns_none_otherwise() {
-        let f = facts(&[
-            "If the `Value` is a String, returns the associated `str`. Returns None otherwise.",
-        ]);
+        let f = facts(&["If the `Value` is a String, returns the associated `str`. Returns None otherwise."]);
         assert_eq!(none_when(&f).as_deref(), Some("if it isn't a String"));
-        let f = facts(&[
-            "Try to apply the pattern at the start of the string, returning a Match object, or None if no match was found.",
-        ]);
+        let f = facts(&["Try to apply the pattern at the start of the string, returning a Match object, or None if no match was found."]);
         assert_eq!(none_when(&f).as_deref(), Some("if no match was found"));
-        assert_eq!(
-            none_when(&facts(&[
-                "Deserialize an instance of type `T` from a string of JSON text."
-            ])),
-            None
-        );
+        assert_eq!(none_when(&facts(&["Deserialize an instance of type `T` from a string of JSON text."])), None);
     }
 
     #[test]

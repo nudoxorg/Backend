@@ -2,11 +2,11 @@
 
 use std::error::Error;
 
+use backend_version::IndexSnapshotId;
 use backend_library::protocol::{
     MAX_UNTRUSTED_SOURCE_PATH_BYTES, UNTRUSTED_DOCUMENT_ID_BYTES, UntrustedDocumentId,
     UntrustedSourceSpan, UntrustedSourceSpanAuthorityError, UntrustedSourceSpanError,
 };
-use backend_version::IndexSnapshotId;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 

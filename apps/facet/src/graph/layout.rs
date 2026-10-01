@@ -391,14 +391,8 @@ fn enclose(nodes: &[Body]) -> f64 {
 
 /// Runs `job(k)` for every `k < count`, spread over the machine's cores;
 /// results come back in `k` order regardless of which thread ran them.
-fn parallel<T: Send>(
-    count: usize,
-    cost: impl Fn(usize) -> u64 + Sync,
-    job: impl Fn(usize) -> T + Sync,
-) -> Vec<T> {
-    let threads = std::thread::available_parallelism()
-        .map_or(1, std::num::NonZero::get)
-        .min(16);
+fn parallel<T: Send>(count: usize, cost: impl Fn(usize) -> u64 + Sync, job: impl Fn(usize) -> T + Sync) -> Vec<T> {
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get).min(16);
     if threads <= 1 || count < 2 {
         return (0..count).map(job).collect();
     }
@@ -417,9 +411,7 @@ fn parallel<T: Send>(
         let job = &job;
         let handles: Vec<_> = lanes
             .into_iter()
-            .map(|lane| {
-                scope.spawn(move || lane.into_iter().map(|k| (k, job(k))).collect::<Vec<_>>())
-            })
+            .map(|lane| scope.spawn(move || lane.into_iter().map(|k| (k, job(k))).collect::<Vec<_>>()))
             .collect();
         for handle in handles {
             if let Ok(done) = handle.join() {
@@ -448,9 +440,7 @@ fn ring(x: f64, y: f64, r: f64, n: usize, rot: f64) -> impl Iterator<Item = [f64
 /// Andrew's monotone chain; collinear points dropped.
 fn hull(mut pts: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
     pts.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
-    let cross = |o: [f64; 2], a: [f64; 2], b: [f64; 2]| {
-        (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
-    };
+    let cross = |o: [f64; 2], a: [f64; 2], b: [f64; 2]| (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
     let mut lo: Vec<[f64; 2]> = Vec::new();
     for &p in &pts {
         while lo.len() >= 2 && cross(lo[lo.len() - 2], lo[lo.len() - 1], p) <= 0.0 {
@@ -541,10 +531,7 @@ fn support(poly: &[[f64; 2]], points: &[[f64; 2]]) -> Vec<[f64; 2]> {
             if det.abs() < 1e-12 {
                 return poly[i];
             }
-            [
-                (c1 * n2[1] - c2 * n1[1]) / det,
-                (n1[0] * c2 - n2[0] * c1) / det,
-            ]
+            [(c1 * n2[1] - c2 * n1[1]) / det, (n1[0] * c2 - n2[0] * c1) / det]
         })
         .collect()
 }
@@ -587,11 +574,7 @@ pub fn key(world: &World) -> [u8; 32] {
     h.finalize().into()
 }
 
-#[allow(
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_precision_loss
-)]
+#[allow(clippy::too_many_lines, clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 fn compute(world: &World, key: [u8; 32]) -> Layout {
     let nn = world.len();
     let nodes = &world.nodes;
@@ -613,11 +596,7 @@ fn compute(world: &World, key: [u8; 32]) -> Layout {
         }
         let mut kids: Vec<NodeId> = world.kids(i).to_vec();
         let inner = |k: NodeId| u8::from(!nodes[k as usize].kind.is_part());
-        kids.sort_by(|&a, &b| {
-            inner(a)
-                .cmp(&inner(b))
-                .then(nodes[a as usize].line.cmp(&nodes[b as usize].line))
-        });
+        kids.sort_by(|&a, &b| inner(a).cmp(&inner(b)).then(nodes[a as usize].line.cmp(&nodes[b as usize].line)));
         let r0 = f64::from(core(nodes[i as usize].kind));
         let mut radius = r0 + 0.55;
         let mut count = 0_usize;
@@ -646,10 +625,7 @@ fn compute(world: &World, key: [u8; 32]) -> Layout {
                 radius += SHELL_GAP;
             }
         }
-        r[i as usize] = shells
-            .last()
-            .filter(|_| count > 0)
-            .map_or(r0 as f32, |s: &Shell| s.r + 0.4);
+        r[i as usize] = shells.last().filter(|_| count > 0).map_or(r0 as f32, |s: &Shell| s.r + 0.4);
     }
     shell_off[nn] = shells.len() as u32;
 
@@ -691,15 +667,7 @@ fn compute(world: &World, key: [u8; 32]) -> Layout {
                 })
                 .collect();
             let charge = if ids.len() < 120 { 0.08 } else { 0.0 };
-            simulate(
-                &mut bodies,
-                &module_links[m],
-                Forces {
-                    gravity: 0.06,
-                    iters: 260,
-                    charge,
-                },
-            );
+            simulate(&mut bodies, &module_links[m], Forces { gravity: 0.06, iters: 260, charge });
             let radius = (enclose(&bodies).max(2.0) + 0.9) as f32;
             (bodies.iter().map(|b| (b.x, b.y)).collect(), radius)
         },
@@ -720,17 +688,10 @@ fn compute(world: &World, key: [u8; 32]) -> Layout {
     }
     let mut package_links: Vec<Vec<(u32, u32, f64)>> = vec![Vec::new(); n_pkg];
     for e in &module_edges {
-        let (pa, pb) = (
-            world.modules[e.from as usize].pkg,
-            world.modules[e.to as usize].pkg,
-        );
+        let (pa, pb) = (world.modules[e.from as usize].pkg, world.modules[e.to as usize].pkg);
         if pa == pb {
             let s = (0.3 + 0.15 * f64::from(1 + e.weight).log2()).min(1.0);
-            package_links[pa as usize].push((
-                mod_local[e.from as usize],
-                mod_local[e.to as usize],
-                s,
-            ));
+            package_links[pa as usize].push((mod_local[e.from as usize], mod_local[e.to as usize], s));
         }
     }
     // The module tree: a::b sits near a (the root holds the top modules).
@@ -763,15 +724,7 @@ fn compute(world: &World, key: [u8; 32]) -> Layout {
                     ..Body::default()
                 })
                 .collect();
-            simulate(
-                &mut bodies,
-                &package_links[p],
-                Forces {
-                    gravity: 0.05,
-                    iters: 300,
-                    charge: 0.05,
-                },
-            );
+            simulate(&mut bodies, &package_links[p], Forces { gravity: 0.05, iters: 300, charge: 0.05 });
             let radius = (enclose(&bodies).max(4.0) + 3.0) as f32;
             (bodies.iter().map(|b| (b.x, b.y)).collect(), radius)
         },
@@ -788,23 +741,9 @@ fn compute(world: &World, key: [u8; 32]) -> Layout {
         .collect();
     let world_links: Vec<(u32, u32, f64)> = package_edges
         .iter()
-        .map(|e| {
-            (
-                e.from,
-                e.to,
-                (0.2 + 0.12 * f64::from(1 + e.weight).log2()).min(1.0),
-            )
-        })
+        .map(|e| (e.from, e.to, (0.2 + 0.12 * f64::from(1 + e.weight).log2()).min(1.0)))
         .collect();
-    simulate(
-        &mut world_bodies,
-        &world_links,
-        Forces {
-            gravity: 0.05,
-            iters: 500,
-            charge: 0.1,
-        },
-    );
+    simulate(&mut world_bodies, &world_links, Forces { gravity: 0.05, iters: 500, charge: 0.1 });
     let px: Vec<f32> = world_bodies.iter().map(|b| b.x as f32).collect();
     let py: Vec<f32> = world_bodies.iter().map(|b| b.y as f32).collect();
 
@@ -858,13 +797,7 @@ fn compute(world: &World, key: [u8; 32]) -> Layout {
     let modules: Vec<Territory> = (0..n_mod)
         .map(|m| {
             let hull = to_f32(&module_hulls[m]);
-            Territory {
-                x: mx[m],
-                y: my[m],
-                r: mr[m],
-                bounds: Box2::around(&hull),
-                hull,
-            }
+            Territory { x: mx[m], y: my[m], r: mr[m], bounds: Box2::around(&hull), hull }
         })
         .collect();
     let packages: Vec<Territory> = (0..n_pkg)
@@ -884,22 +817,10 @@ fn compute(world: &World, key: [u8; 32]) -> Layout {
                 })
                 .collect();
             if pts.len() < 3 {
-                pts.extend(ring(
-                    f64::from(px[p]),
-                    f64::from(py[p]),
-                    f64::from(pr[p]),
-                    8,
-                    0.0,
-                ));
+                pts.extend(ring(f64::from(px[p]), f64::from(py[p]), f64::from(pr[p]), 8, 0.0));
             }
             let hull = to_f32(&facet(hull(pts), 0.22));
-            Territory {
-                x: px[p],
-                y: py[p],
-                r: pr[p],
-                bounds: Box2::around(&hull),
-                hull,
-            }
+            Territory { x: px[p], y: py[p], r: pr[p], bounds: Box2::around(&hull), hull }
         })
         .collect();
     let bounds = packages.iter().fold(Box2::EMPTY, |b, t| b.union(t.bounds));
@@ -907,9 +828,7 @@ fn compute(world: &World, key: [u8; 32]) -> Layout {
     // Items per module, most important first (label and paint priority).
     let mut module_items = module_items;
     for list in &mut module_items {
-        list.sort_by(|&a, &b| {
-            world.importance[b as usize].total_cmp(&world.importance[a as usize])
-        });
+        list.sort_by(|&a, &b| world.importance[b as usize].total_cmp(&world.importance[a as usize]));
     }
     Layout {
         x,
@@ -945,31 +864,19 @@ pub fn level_edges(world: &World) -> (Vec<Rollup>, Vec<Rollup>) {
                 out[k].rel |= e.rel;
             } else {
                 index.insert((a, b), out.len());
-                out.push(Rollup {
-                    from: a,
-                    to: b,
-                    rel: e.rel,
-                    weight: e.weight,
-                });
+                out.push(Rollup { from: a, to: b, rel: e.rel, weight: e.weight });
             }
         }
         out
     };
     let nodes = &world.nodes;
-    let modules = roll(&mut world.item_edges.iter().map(|e| {
-        (
-            nodes[e.from as usize].module,
-            nodes[e.to as usize].module,
-            *e,
-        )
-    }));
-    let packages = roll(&mut modules.iter().map(|e| {
-        (
-            world.modules[e.from as usize].pkg,
-            world.modules[e.to as usize].pkg,
-            *e,
-        )
-    }));
+    let modules = roll(&mut world
+        .item_edges
+        .iter()
+        .map(|e| (nodes[e.from as usize].module, nodes[e.to as usize].module, *e)));
+    let packages = roll(&mut modules
+        .iter()
+        .map(|e| (world.modules[e.from as usize].pkg, world.modules[e.to as usize].pkg, *e)));
     (modules, packages)
 }
 
@@ -994,9 +901,7 @@ impl Layout {
             module_items[world.nodes[it as usize].module as usize].push(it);
         }
         for list in &mut module_items {
-            list.sort_by(|&a, &b| {
-                world.importance[b as usize].total_cmp(&world.importance[a as usize])
-            });
+            list.sort_by(|&a, &b| world.importance[b as usize].total_cmp(&world.importance[a as usize]));
         }
         let mut package_modules: Vec<Vec<u32>> = vec![Vec::new(); world.packages.len()];
         for (m, module) in world.modules.iter().enumerate() {
@@ -1012,8 +917,7 @@ impl Layout {
                 continue;
             }
             let (cx, cy) = (x[i as usize], y[i as usize]);
-            let mut by: std::collections::BTreeMap<i64, Vec<NodeId>> =
-                std::collections::BTreeMap::new();
+            let mut by: std::collections::BTreeMap<i64, Vec<NodeId>> = std::collections::BTreeMap::new();
             for &j in kids {
                 let d = (x[j as usize] - cx).hypot(y[j as usize] - cy);
                 by.entry((d * 20.0).round() as i64).or_default().push(j);
@@ -1024,11 +928,7 @@ impl Layout {
                 let start = shell_members.len() as u32;
                 shell_members.extend(&list);
                 #[allow(clippy::cast_precision_loss)]
-                shells.push(Shell {
-                    r: key as f32 / 20.0,
-                    start,
-                    len: list.len() as u32,
-                });
+                shells.push(Shell { r: key as f32 / 20.0, start, len: list.len() as u32 });
             }
         }
         shell_off[nn] = shells.len() as u32;
@@ -1110,8 +1010,7 @@ pub fn layout_of(world: &World) -> Arc<Layout> {
 /// The layout of `world` on the background executor (instant when this
 /// content hash was laid out before).
 pub fn cached(world: Arc<World>, cx: &gpui::App) -> gpui::Task<Arc<Layout>> {
-    cx.background_executor()
-        .spawn(async move { layout_of(&world) })
+    cx.background_executor().spawn(async move { layout_of(&world) })
 }
 
 #[cfg(test)]

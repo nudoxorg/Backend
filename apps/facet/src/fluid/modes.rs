@@ -76,11 +76,7 @@ impl Modes {
     /// The mode `ladder` puts a region of `room` in, held through its
     /// hysteresis band and remembered for the next frame.
     #[must_use]
-    pub fn settle<M: Copy + PartialEq + 'static>(
-        &self,
-        ladder: &Ladder<M>,
-        room: Room,
-    ) -> Settled<M> {
+    pub fn settle<M: Copy + PartialEq + 'static>(&self, ladder: &Ladder<M>, room: Room) -> Settled<M> {
         let mut held = self.held.borrow_mut();
         let before = held.get(&ladder.id()).copied();
         let index = ladder.settle_index(before.map(|memory| memory.index), room);
@@ -89,10 +85,7 @@ impl Modes {
         Settled {
             id: ladder.id(),
             mode: rungs[index].mode(),
-            from: memory
-                .from
-                .and_then(|from| rungs.get(from))
-                .map(super::Rung::mode),
+            from: memory.from.and_then(|from| rungs.get(from)).map(super::Rung::mode),
             epoch: memory.epoch,
         }
     }
@@ -117,10 +110,7 @@ impl Modes {
     /// The memory a view keeps in `window` under `id`: for a view that is a
     /// function of its measure and has no entity of its own to hold one.
     pub fn keyed(id: impl Into<ElementId>, window: &mut Window, cx: &mut App) -> Self {
-        window
-            .use_keyed_state(id, cx, |_, _| Self::new())
-            .read(cx)
-            .clone()
+        window.use_keyed_state(id, cx, |_, _| Self::new()).read(cx).clone()
     }
 
     /// Forgets every decision: the next read of each is its plain edge.
@@ -129,12 +119,7 @@ impl Modes {
     }
 }
 
-fn advance(
-    held: &mut HashMap<ModeId, Memory>,
-    id: ModeId,
-    before: Option<Memory>,
-    index: usize,
-) -> Memory {
+fn advance(held: &mut HashMap<ModeId, Memory>, id: ModeId, before: Option<Memory>, index: usize) -> Memory {
     let next = match before {
         None => Memory {
             index,
@@ -165,9 +150,7 @@ impl<M: Copy> Settled<M> {
             return 1.0;
         }
         let key = ElementId::NamedInteger(self.id.name().into(), u64::from(self.epoch.count()));
-        motion
-            .animate_from(key, 0.0, 1.0, spec::SETTLE, window, cx)
-            .clamp(0.0, 1.0)
+        motion.animate_from(key, 0.0, 1.0, spec::SETTLE, window, cx).clamp(0.0, 1.0)
     }
 }
 
@@ -209,9 +192,7 @@ impl Grid {
         let need = |count: usize| min * to_f32(count) + gap * to_f32(count - 1);
         let held = held.map(|count| count.clamp(1, self.most) - 1);
         let band = super::HYSTERESIS.get() * room.scale();
-        settle_index(held, self.most, f32::from(room.width()), band, |index| {
-            need(index + 1)
-        }) + 1
+        settle_index(held, self.most, f32::from(room.width()), band, |index| need(index + 1)) + 1
     }
 
     /// The room one of `count` columns has at `room`, `gap` apart.

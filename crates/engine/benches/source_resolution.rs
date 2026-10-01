@@ -10,15 +10,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use backend_engine::retrieval::{CanonicalSource, resolve_tantivy_source, resolve_tantivy_sources};
-use backend_extension_tantivy::server::{TantivySegmentHit, TantivySegmentStore};
-use backend_semantic::index_core::{
-    EntityArtifactIdentity, EntityDocumentId, IndexSnapshot, LexicalOperation, LexicalRow,
-    LexicalScore, LexicalSegment,
-};
-use backend_semantic::index_vocabulary::{
-    IndexLocatorFacts, SemanticImageExtent, SemanticImageLocator, VerifiedSemanticPublication,
-};
 use backend_semantic::ir::{
     BorrowedTree, CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts, EntityId,
     EntityVersion, FactAvailability, IrBuilder, ItemKind, ParentageAuthority,
@@ -26,6 +17,15 @@ use backend_semantic::ir::{
     Visibility, encode_full_semantic_image, full_semantic_image_len,
 };
 use backend_version::{CompilePublicationDomain, ContentId, GenerationId};
+use backend_semantic::index_core::{
+    EntityArtifactIdentity, EntityDocumentId, IndexSnapshot, LexicalOperation, LexicalRow,
+    LexicalScore, LexicalSegment,
+};
+use backend_engine::retrieval::{CanonicalSource, resolve_tantivy_source, resolve_tantivy_sources};
+use backend_extension_tantivy::server::{TantivySegmentHit, TantivySegmentStore};
+use backend_semantic::index_vocabulary::{
+    IndexLocatorFacts, SemanticImageExtent, SemanticImageLocator, VerifiedSemanticPublication,
+};
 
 const ENTITY_COUNT: usize = 128;
 const WARMUPS: usize = 5;

@@ -310,10 +310,7 @@ impl Comb {
     /// The card rung's one sentence, as runs; `true` runs are the numbers
     /// that matter to you (mint): `[("19 releases since your pin, ", false), ("2", true), (" touch your code", false)]`.
     #[must_use]
-    pub fn caption(
-        mut self,
-        runs: impl IntoIterator<Item = (impl Into<SharedString>, bool)>,
-    ) -> Self {
+    pub fn caption(mut self, runs: impl IntoIterator<Item = (impl Into<SharedString>, bool)>) -> Self {
         self.caption = runs.into_iter().map(|(t, b)| (t.into(), b)).collect();
         self
     }
@@ -390,10 +387,7 @@ fn extent(rung: Rung, comb: &Comb, tag: Option<&Shaped>) -> (f32, f32) {
             (WHISPER_H * s).max(tag.map_or(0.0, |t| t.role.line)),
         ),
         Rung::Row => (full, comb.thickness * s),
-        Rung::Card => (
-            full,
-            comb.thickness * s + 8.0 * s + comb.measure.role(SAYS).line,
-        ),
+        Rung::Card => (full, comb.thickness * s + 8.0 * s + comb.measure.role(SAYS).line),
     }
 }
 
@@ -420,13 +414,7 @@ impl Element for Comb {
         let (keys, kid) = live::keys(&live, window, cx);
         let motion = live.read(cx).motion.clone();
         let target = rung_index(self.target_rung());
-        let rung = motion.animate(
-            live::key(&self.id, "rung"),
-            target,
-            spec::REVEAL,
-            window,
-            cx,
-        );
+        let rung = motion.animate(live::key(&self.id, "rung"), target, spec::REVEAL, window, cx);
         let palette = cx.palette();
         let lo = rung_at(rung.floor());
         let hi = rung_at(rung.ceil());
@@ -463,29 +451,16 @@ impl Element for Comb {
                     .iter()
                     .map(|(words, strong)| {
                         if *strong {
-                            shape(
-                                words.clone(),
-                                self.measure.role(SAYS_B),
-                                palette.mint.base.into(),
-                                window,
-                            )
+                            shape(words.clone(), self.measure.role(SAYS_B), palette.mint.base.into(), window)
                         } else {
-                            shape(
-                                words.clone(),
-                                self.measure.role(SAYS),
-                                palette.ink3.into(),
-                                window,
-                            )
+                            shape(words.clone(), self.measure.role(SAYS), palette.ink3.into(), window)
                         }
                     })
                     .collect(),
             }
         });
 
-        let (a, b) = (
-            extent(lo, self, tag.as_ref()),
-            extent(hi, self, tag.as_ref()),
-        );
+        let (a, b) = (extent(lo, self, tag.as_ref()), extent(hi, self, tag.as_ref()));
         let f = rung - rung.floor();
         let (main, cross) = (a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f);
         let mut style = Style::default();
@@ -553,11 +528,7 @@ impl Element for Comb {
         };
         let tw = tick_width(n, extent, s);
         #[allow(clippy::cast_precision_loss)]
-        let step = if n > 1 {
-            (extent - tw) / (n - 1) as f32
-        } else {
-            extent.max(1.0)
-        };
+        let step = if n > 1 { (extent - tw) / (n - 1) as f32 } else { extent.max(1.0) };
         let (at, _, strength) = live::wave(
             &self.id,
             &live,
@@ -692,10 +663,9 @@ impl Comb {
         let extent = if horizontal { w } else { h };
         let thick = if horizontal { h } else { w };
         let tw = tick_width(n, extent, s);
-        let quiet: Hsla = self.ink.map_or_else(
-            || Hsla::from(palette.ink4).opacity(0.8),
-            |t| t.resolve(palette),
-        );
+        let quiet: Hsla = self
+            .ink
+            .map_or_else(|| Hsla::from(palette.ink4).opacity(0.8), |t| t.resolve(palette));
         let major: Hsla = self.ink.map_or(palette.ink3.into(), |t| t.resolve(palette));
         let bright: Hsla = palette.ink0.into();
         // Only ticks the window can show are drawn.
@@ -703,15 +673,10 @@ impl Comb {
         let visible = if view.x1 <= view.x0 || view.y1 <= view.y0 {
             (0, 0)
         } else {
-            let (lo, hi) = if horizontal {
-                (view.x0 - x, view.x1 - x)
-            } else {
-                (view.y0 - y, view.y1 - y)
-            };
+            let (lo, hi) = if horizontal { (view.x0 - x, view.x1 - x) } else { (view.y0 - y, view.y1 - y) };
             let slack = 2.0 * s;
             let first = tick_near((lo - slack).max(0.0), n, extent, tw).unwrap_or(0);
-            let last =
-                tick_near((hi + slack).min(extent), n, extent, tw).map_or(n, |i| (i + 1).min(n));
+            let last = tick_near((hi + slack).min(extent), n, extent, tw).map_or(n, |i| (i + 1).min(n));
             (first, last.max(first))
         };
         super::spatial::count(cx, |p| p.ticks += (visible.1 - visible.0) as u64);
@@ -730,21 +695,11 @@ impl Comb {
         let mut majors = Fill::new();
         let mut toned: Vec<(TickTone, Fill)> = Vec::new();
         let mut single: Vec<(Poly, Hsla, bool, Option<(f32, f32)>, f32)> = Vec::new();
-        for (i, tick) in self
-            .ticks
-            .iter()
-            .enumerate()
-            .take(visible.1)
-            .skip(visible.0)
-        {
+        for (i, tick) in self.ticks.iter().enumerate().take(visible.1).skip(visible.0) {
             #[allow(clippy::cast_precision_loss)]
             let d = (i as f32 - wave.centre).abs();
             let rest_len = (tick.height * s).min(thick);
-            let base = tick
-                .tone
-                .map_or(if tick.major { major } else { quiet }, |t| {
-                    t.resolve(palette)
-                });
+            let base = tick.tone.map_or(if tick.major { major } else { quiet }, |t| t.resolve(palette));
             if d < 3.0 && wave.strength > 0.001 {
                 let (stretch, light) = wave_shape(d);
                 let stretch = 1.0 + (stretch - 1.0) * wave.strength;
@@ -880,10 +835,7 @@ impl Comb {
         let mut body = Fill::new();
         let mut accents: Vec<(Poly, Hsla)> = Vec::new();
         for c in 0..columns {
-            let (a, b) = (
-                c * n / columns,
-                ((c + 1) * n / columns).max(c * n / columns + 1),
-            );
+            let (a, b) = (c * n / columns, ((c + 1) * n / columns).max(c * n / columns + 1));
             let span = &self.ticks[a..b.min(n)];
             let peak = span.iter().map(|t| t.height).fold(0.0_f32, f32::max);
             let len = (peak / tallest * h).max(s);
@@ -1134,10 +1086,7 @@ impl Element for FileComb {
         let x0 = f32::from(bounds.origin.x) + 2.0 * s;
         let base = f32::from(bounds.origin.y) + 18.0 * s;
         let (hover, walk) = match &layout.live {
-            Some(live) => (
-                live.read(cx).hover.or(self.rest),
-                live::walking(live, window, cx),
-            ),
+            Some(live) => (live.read(cx).hover.or(self.rest), live::walking(live, window, cx)),
             None => (self.rest, None),
         };
         let mut yours = Fill::new();
@@ -1177,21 +1126,13 @@ impl Element for FileComb {
             };
             if let Some((tone, weight)) = color {
                 let mut fill = Fill::new();
-                fill.poly(&Poly::rect(
-                    x0 + fx - 2.0 * s,
-                    base + 2.5 * s,
-                    fw + 4.0 * s,
-                    weight * s,
-                ));
+                fill.poly(&Poly::rect(x0 + fx - 2.0 * s, base + 2.5 * s, fw + 4.0 * s, weight * s));
                 fill.paint(window, Hsla::from(tone));
             }
         }
-        if let (Some(live), Some(keys), Some(hitbox), Some(id)) = (
-            &layout.live,
-            layout.keys.as_mut(),
-            hitbox.as_ref(),
-            &self.id,
-        ) {
+        if let (Some(live), Some(keys), Some(hitbox), Some(id)) =
+            (&layout.live, layout.keys.as_mut(), hitbox.as_ref(), &self.id)
+        {
             let spans = layout.spans.clone();
             let hit_spans = spans.clone();
             let top = f32::from(bounds.origin.y);
@@ -1243,10 +1184,7 @@ mod tests {
             d += 0.01;
             let now = wave_shape(d);
             assert!((now.0 - last.0).abs() < 0.01, "stretch jumps at {d}");
-            assert!(
-                now.0 <= last.0 + 1e-6,
-                "stretch grows away from the centre at {d}"
-            );
+            assert!(now.0 <= last.0 + 1e-6, "stretch grows away from the centre at {d}");
             last = now;
         }
     }
@@ -1258,11 +1196,7 @@ mod tests {
                 let w = 2.0;
                 for i in 0..n {
                     let at = tick_at(i, n, extent, w);
-                    assert_eq!(
-                        tick_near(at, n, extent, w),
-                        Some(i),
-                        "n={n} extent={extent} i={i}"
-                    );
+                    assert_eq!(tick_near(at, n, extent, w), Some(i), "n={n} extent={extent} i={i}");
                 }
                 assert_eq!(tick_near(-1.0, n, extent, w), None);
                 assert_eq!(tick_near(extent + 1.0, n, extent, w), None);

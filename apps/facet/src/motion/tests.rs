@@ -375,19 +375,16 @@ impl Render for Pushed {
             window,
             cx,
         );
-        div()
-            .flex()
-            .flex_col()
-            .children(items.into_iter().map(|item| {
-                let key = item.key.clone();
-                item.slot(div().pb(px(10.0)).child(self.flow.item(
-                    key.clone(),
-                    crate::probe::measure(
-                        ElementId::Name(format!("pushed.row.{key}").into()),
-                        div().w(px(120.0)).h(px(40.0)),
-                    ),
-                )))
-            }))
+        div().flex().flex_col().children(items.into_iter().map(|item| {
+            let key = item.key.clone();
+            item.slot(div().pb(px(10.0)).child(self.flow.item(
+                key.clone(),
+                crate::probe::measure(
+                    ElementId::Name(format!("pushed.row.{key}").into()),
+                    div().w(px(120.0)).h(px(40.0)),
+                ),
+            )))
+        }))
     }
 }
 
@@ -407,13 +404,12 @@ fn rows_carried_by_a_neighbours_room_move_continuously(cx: &mut TestAppContext) 
         super::reset_epoch(cx);
     });
     let mut ledgers = vec![probed(cx)];
-    let run =
-        |cx: &mut VisualTestContext, ledgers: &mut Vec<crate::probe::Ledger>, frames: usize| {
-            for step in 0..frames {
-                advance(cx, CADENCE[step % CADENCE.len()]);
-                ledgers.push(probed(cx));
-            }
-        };
+    let run = |cx: &mut VisualTestContext, ledgers: &mut Vec<crate::probe::Ledger>, frames: usize| {
+        for step in 0..frames {
+            advance(cx, CADENCE[step % CADENCE.len()]);
+            ledgers.push(probed(cx));
+        }
+    };
     // A reorder (an epoch) first, as in flow-list: the rows flow, settle and
     // report their rest, so what follows is judged against that rest.
     view.update(cx, |pushed, cx| {
@@ -449,12 +445,7 @@ fn rows_carried_by_a_neighbours_room_move_continuously(cx: &mut TestAppContext) 
     ledgers.push(probed(cx));
     run(cx, &mut ledgers, 80);
     let jumps = continuity(&ledgers, "pushed.flip.");
-    assert!(
-        jumps.is_empty(),
-        "{} jumps:\n{}",
-        jumps.len(),
-        jumps.join("\n")
-    );
+    assert!(jumps.is_empty(), "{} jumps:\n{}", jumps.len(), jumps.join("\n"));
     // Carried, not sprung. The arrival's room announces its speed on the
     // frame it starts, so the rows below ride it exactly (a pixel-snap step
     // is smoothed, never more than one device pixel behind).
@@ -468,17 +459,10 @@ fn rows_carried_by_a_neighbours_room_move_continuously(cx: &mut TestAppContext) 
             .fold(0.0_f32, f32::max)
     };
     assert!(
-        ledgers
-            .iter()
-            .flat_map(|ledger| &ledger.tracks)
-            .any(|sample| sample.key.starts_with("pushed.flip.2.")),
+        ledgers.iter().flat_map(|ledger| &ledger.tracks).any(|sample| sample.key.starts_with("pushed.flip.2.")),
         "carried rows publish their motion"
     );
-    assert!(
-        lag(inserted, removed) <= 0.5,
-        "rows lagged the opening room by {}",
-        lag(inserted, removed)
-    );
+    assert!(lag(inserted, removed) <= 0.5, "rows lagged the opening room by {}", lag(inserted, removed));
     // The leaver's room holds, then starts closing at full speed between two
     // frames (a keyframe corner nothing announced ahead): the rows below
     // absorb that one frame's step and catch up, never more than the room
@@ -489,17 +473,13 @@ fn rows_carried_by_a_neighbours_room_move_continuously(cx: &mut TestAppContext) 
         .filter(|sample| sample.key == "pushed.presence.3.room")
         .map(|sample| sample.value * 50.0)
         .collect::<Vec<_>>();
-    let step = room
-        .windows(2)
-        .map(|pair| (pair[1] - pair[0]).abs())
-        .fold(0.0_f32, f32::max);
+    let step = room.windows(2).map(|pair| (pair[1] - pair[0]).abs()).fold(0.0_f32, f32::max);
     assert!(
         lag(removed, f64::MAX) <= step + 0.5,
         "rows lagged the closing room by {} (its largest frame step {step})",
         lag(removed, f64::MAX)
     );
-    assert!(view.read_with(cx, |pushed, cx| pushed.flow.is_settled(cx)
-        && pushed.presence.is_settled(cx)));
+    assert!(view.read_with(cx, |pushed, cx| pushed.flow.is_settled(cx) && pushed.presence.is_settled(cx)));
 }
 
 /// Cards laid out for a width that is dragged: continuous in the width,
@@ -529,24 +509,16 @@ impl Render for Dragged {
         use gpui::{ElementId, px};
         self.flow.epoch(self.width >= CLASS_AT);
         let width = self.width;
-        div()
-            .relative()
-            .w(px(width))
-            .h(px(300.0))
-            .children((0..6).map(|index| {
-                let (x, y, card) = card_at(width, index);
-                div()
-                    .absolute()
-                    .left(px(x))
-                    .top(px(y))
-                    .child(self.flow.item(
-                        ElementId::Integer(index as u64),
-                        crate::probe::measure(
-                            ElementId::Name(format!("dragged.card.{index}").into()),
-                            div().w(px(card)).h(px(40.0)),
-                        ),
-                    ))
-            }))
+        div().relative().w(px(width)).h(px(300.0)).children((0..6).map(|index| {
+            let (x, y, card) = card_at(width, index);
+            div().absolute().left(px(x)).top(px(y)).child(self.flow.item(
+                ElementId::Integer(index as u64),
+                crate::probe::measure(
+                    ElementId::Name(format!("dragged.card.{index}").into()),
+                    div().w(px(card)).h(px(40.0)),
+                ),
+            ))
+        }))
     }
 }
 
@@ -602,12 +574,7 @@ fn a_class_change_mid_drag_springs_from_the_painted_position_and_keeps_following
         "the class change kept the drag-follow: {before} then {during}"
     );
     let jumps = continuity(&ledgers, "dragged.");
-    assert!(
-        jumps.is_empty(),
-        "{} jumps:\n{}",
-        jumps.len(),
-        jumps.join("\n")
-    );
+    assert!(jumps.is_empty(), "{} jumps:\n{}", jumps.len(), jumps.join("\n"));
     // Released: it lands exactly on layout and stops asking for frames.
     for _ in 0..80 {
         advance(cx, 16);
@@ -617,11 +584,7 @@ fn a_class_change_mid_drag_springs_from_the_painted_position_and_keeps_following
     for index in 0..6 {
         let (want, _, _) = card_at(width, index);
         // Layout lands on the device-pixel grid (0.5 px here).
-        assert!(
-            (x(last, index) - want).abs() <= 0.5,
-            "card {index} settled on layout: {} vs {want}",
-            x(last, index)
-        );
+        assert!((x(last, index) - want).abs() <= 0.5, "card {index} settled on layout: {} vs {want}", x(last, index));
     }
     assert!(view.read_with(cx, |dragged, cx| dragged.flow.is_settled(cx)));
     assert_eq!(frame(cx), 0, "a settled flow requests no frames");
@@ -673,6 +636,5 @@ fn a_row_that_leaves_mid_flight_ends_its_track_at_rest(cx: &mut TestAppContext) 
     for key in ["gone.flip.1.y", "gone.flip.3.y", "gone.flip.4.y"] {
         assert!(!last(key).expect("published").live, "{key} settled");
     }
-    assert!(view.read_with(cx, |pushed, cx| pushed.flow.is_settled(cx)
-        && pushed.presence.is_settled(cx)));
+    assert!(view.read_with(cx, |pushed, cx| pushed.flow.is_settled(cx) && pushed.presence.is_settled(cx)));
 }

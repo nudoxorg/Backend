@@ -50,10 +50,7 @@ fn err(error: impl std::fmt::Display) -> String {
 }
 
 fn options() -> SessionOptions {
-    SessionOptions {
-        asset_source: std::sync::Arc::new(facet::icons::Assets),
-        frame_ms: FRAME_MS,
-    }
+    SessionOptions { asset_source: std::sync::Arc::new(facet::icons::Assets), frame_ms: FRAME_MS }
 }
 
 /// Opens a production window over the user root `root` (created if absent,
@@ -61,42 +58,22 @@ fn options() -> SessionOptions {
 ///
 /// # Errors
 /// Fonts, the workspace paths, the engine actor, or GPUI failing.
-pub(super) fn open_production(
-    root: &Path,
-    size: (u32, u32),
-    scale: u8,
-) -> Result<(Session, Launched), String> {
+pub(super) fn open_production(root: &Path, size: (u32, u32), scale: u8) -> Result<(Session, Launched), String> {
     facet::fonts::verify().map_err(err)?;
     private_umask();
     super::super::private_dir(root).map_err(|error| format!("{}: {error}", root.display()))?;
-    let root = root
-        .canonicalize()
-        .map_err(|error| format!("{}: {error}", root.display()))?;
-    let paths = crate::host::paths::ambient_paths(&root)
-        .map_err(|error| format!("workspace paths under {}: {error}", root.display()))?;
-    paths
-        .initialize()
-        .map_err(|error| format!("initialize {}: {error}", root.display()))?;
+    let root = root.canonicalize().map_err(|error| format!("{}: {error}", root.display()))?;
+    let paths = crate::host::paths::ambient_paths(&root).map_err(|error| format!("workspace paths under {}: {error}", root.display()))?;
+    paths.initialize().map_err(|error| format!("initialize {}: {error}", root.display()))?;
     let mut boot = launch::prepare(Ok(paths), crate::host::owner::spawn);
     let owner = boot.owner.take();
     let reading = boot.keep.take();
-    let Boot {
-        snapshot,
-        persistence,
-        client,
-        endpoint,
-        gate,
-        owner: _,
-        keep: _,
-        world_need,
-    } = boot;
+    let Boot { snapshot, persistence, client, endpoint, gate, owner: _, keep: _, world_need } = boot;
     if let Some(need) = world_need {
         crate::runtime::fixture_world::preload(need);
     }
-    let (runtime, reads) =
-        launch::start_workers(snapshot, client, endpoint, &gate).ok_or_else(|| {
-            "the engine actor did not start (backend-desktop said why on stderr)".to_owned()
-        })?;
+    let (runtime, reads) = launch::start_workers(snapshot, client, endpoint, &gate)
+        .ok_or_else(|| "the engine actor did not start (backend-desktop said why on stderr)".to_owned())?;
     let viewport = Viewport::new(size.0, size.1, scale).map_err(err)?;
     let failure = Rc::new(RefCell::new(None::<String>));
     let window_gate = gate.clone();
@@ -118,14 +95,7 @@ pub(super) fn open_production(
             })
             .detach();
             let keep = reading.map(launch::SnapshotRead::joined);
-            let graph = UiEntityGraph::install_with_owner(
-                cx,
-                runtime,
-                persistence,
-                reads,
-                Some(window_gate.clone()),
-                keep,
-            );
+            let graph = UiEntityGraph::install_with_owner(cx, runtime, persistence, reads, Some(window_gate.clone()), keep);
             let saved = graph.store.clone();
             cx.on_app_quit(move |cx| {
                 if let Err(error) = saved.read(cx).save_now() {
@@ -154,10 +124,7 @@ pub(super) fn open_production(
     if let Some(error) = failure.borrow_mut().take() {
         return Err(error);
     }
-    session.set_quiet(Some(Quiet {
-        check: Box::new(quiet),
-        deadline: PRODUCTION_QUIET,
-    }));
+    session.set_quiet(Some(Quiet { check: Box::new(quiet), deadline: PRODUCTION_QUIET }));
     session.quiesce().map_err(err)?;
     session
         .update(|_, cx| {
@@ -190,16 +157,10 @@ pub(super) fn quit(mut session: Session, launched: Launched) {
 ///
 /// # Errors
 /// The window is gone.
-pub(super) fn answer_picker(
-    session: &mut Session,
-    chosen: Option<Vec<std::path::PathBuf>>,
-) -> Result<bool, String> {
+pub(super) fn answer_picker(session: &mut Session, chosen: Option<Vec<std::path::PathBuf>>) -> Result<bool, String> {
     session
         .update(|_, cx| {
-            let Some(root) = cx
-                .try_global::<Booted>()
-                .map(|booted| booted.graph.root.clone())
-            else {
+            let Some(root) = cx.try_global::<Booted>().map(|booted| booted.graph.root.clone()) else {
                 return false;
             };
             root.update(cx, |root, cx| root.answer_folder_picker(chosen, cx))

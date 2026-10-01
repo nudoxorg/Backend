@@ -15,11 +15,7 @@ const PINNED: &str = "pkg:cargo/toml@0.8.23";
 struct Registry;
 
 impl PageReader for Registry {
-    fn read(
-        &mut self,
-        request: &ReadRequest,
-        context: &ReadContext<'_>,
-    ) -> Result<PageValue, ReadFailure> {
+    fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
         let ReadRequest::Package(package) = request else {
             return Fixture.read(request, context);
         };
@@ -32,11 +28,7 @@ impl PageReader for Registry {
             standing: Standing::Available,
             current: package.version() == Some(version),
         };
-        about.versions = Known::Known(Arc::from([
-            release("1.1.6"),
-            release("1.0.0"),
-            release("0.8.23"),
-        ]));
+        about.versions = Known::Known(Arc::from([release("1.1.6"), release("1.0.0"), release("0.8.23")]));
         Ok(PageValue::Package(about))
     }
 }
@@ -83,20 +75,8 @@ fn open(cx: &mut TestAppContext) -> Rig {
 fn scrub_to_newest(rig: &mut Rig) {
     rig.repaint();
     let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
-    let comb = ledger
-        .targets
-        .iter()
-        .find(|target| target.key == "shelf-versions")
-        .expect("the comb")
-        .bounds
-        .clone();
-    rig.cx.simulate_click(
-        point(
-            px(comb.x + comb.width - 2.0),
-            px(comb.y + comb.height / 2.0),
-        ),
-        Modifiers::default(),
-    );
+    let comb = ledger.targets.iter().find(|target| target.key == "shelf-versions").expect("the comb").bounds.clone();
+    rig.cx.simulate_click(point(px(comb.x + comb.width - 2.0), px(comb.y + comb.height / 2.0)), Modifiers::default());
     rig.settle();
 }
 
@@ -105,40 +85,19 @@ fn scrub_to_newest(rig: &mut Rig) {
 /// names the release it upgrades to. Esc takes both away. (The counts are
 /// W-Data's to prove; this is the wiring.)
 #[gpui::test]
-fn scrubbing_away_from_the_pin_opens_the_upgrade_lens_and_escape_closes_it(
-    cx: &mut TestAppContext,
-) {
+fn scrubbing_away_from_the_pin_opens_the_upgrade_lens_and_escape_closes_it(cx: &mut TestAppContext) {
     let mut rig = open_at(cx, from_str());
-    let upgrade = |rig: &mut Rig| {
-        rig.shell
-            .read_with(rig.cx, |shell, cx| shell.shelf_upgrade(cx))
-    };
+    let upgrade = |rig: &mut Rig| rig.shell.read_with(rig.cx, |shell, cx| shell.shelf_upgrade(cx));
     let heading = |rig: &mut Rig| {
         rig.repaint();
         let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
-        ledger
-            .texts
-            .iter()
-            .filter(|text| text.key == "upgrade-heading")
-            .map(|text| text.content.clone())
-            .collect::<Vec<_>>()
+        ledger.texts.iter().filter(|text| text.key == "upgrade-heading").map(|text| text.content.clone()).collect::<Vec<_>>()
     };
-    assert_eq!(
-        upgrade(&mut rig),
-        None,
-        "at the pin there is nothing to compare"
-    );
+    assert_eq!(upgrade(&mut rig), None, "at the pin there is nothing to compare");
     assert!(heading(&mut rig).is_empty());
     scrub_to_newest(&mut rig);
-    assert_eq!(
-        rig.route().at().map(|at| at.as_str().to_owned()),
-        Some("1.1.6".to_owned())
-    );
-    assert_eq!(
-        heading(&mut rig),
-        ["Upgrading to 1.1.6"],
-        "the page's section names the release"
-    );
+    assert_eq!(rig.route().at().map(|at| at.as_str().to_owned()), Some("1.1.6".to_owned()));
+    assert_eq!(heading(&mut rig), ["Upgrading to 1.1.6"], "the page's section names the release");
     assert_eq!(
         upgrade(&mut rig),
         Some(("0.8.23".into(), "1.1.6+spec-1.1.0".into())),
@@ -164,47 +123,23 @@ fn a_package_without_release_data_views_the_release_with_no_lens(cx: &mut TestAp
     let mut rig = open_at(cx, serde);
     scrub_to_newest(&mut rig);
     rig.repaint();
-    assert_eq!(
-        rig.route().at().map(|at| at.as_str().to_owned()),
-        Some("1.1.6".to_owned()),
-        "the release is viewed"
-    );
-    let upgrade = rig
-        .shell
-        .read_with(rig.cx, |shell, cx| shell.shelf_upgrade(cx));
+    assert_eq!(rig.route().at().map(|at| at.as_str().to_owned()), Some("1.1.6".to_owned()), "the release is viewed");
+    let upgrade = rig.shell.read_with(rig.cx, |shell, cx| shell.shelf_upgrade(cx));
     assert_eq!(upgrade, None, "no release data, no lens");
 }
 
 #[gpui::test]
 fn scrubbing_the_comb_views_a_release_and_escape_returns_to_the_pin(cx: &mut TestAppContext) {
     let mut rig = open(cx);
-    let marks = |rig: &mut Rig| {
-        rig.shell
-            .read_with(rig.cx, |shell, cx| shell.shelf_comb(cx))
-            .expect("the comb drew")
-    };
-    assert_eq!(
-        marks(&mut rig),
-        (Some("0.8.23".into()), None),
-        "home: the pin, nothing else viewed"
-    );
+    let marks = |rig: &mut Rig| rig.shell.read_with(rig.cx, |shell, cx| shell.shelf_comb(cx)).expect("the comb drew");
+    assert_eq!(marks(&mut rig), (Some("0.8.23".into()), None), "home: the pin, nothing else viewed");
     // The newest release sits at the comb's right end.
     scrub_to_newest(&mut rig);
     rig.repaint();
-    assert_eq!(
-        rig.route().at().map(|at| at.as_str().to_owned()),
-        Some("1.1.6".to_owned()),
-        "the route views 1.1.6"
-    );
-    let here = rig.graph.store.read_with(rig.cx, |store, _| {
-        super::jump::here(&store.snapshot(), store).path.to_string()
-    });
+    assert_eq!(rig.route().at().map(|at| at.as_str().to_owned()), Some("1.1.6".to_owned()), "the route views 1.1.6");
+    let here = rig.graph.store.read_with(rig.cx, |store, _| super::jump::here(&store.snapshot(), store).path.to_string());
     assert_eq!(here, "viewing 1.1.6 · you pin 0.8.23");
-    assert_eq!(
-        marks(&mut rig),
-        (Some("0.8.23".into()), Some("1.1.6".into())),
-        "the pin stays where you pin it"
-    );
+    assert_eq!(marks(&mut rig), (Some("0.8.23".into()), Some("1.1.6".into())), "the pin stays where you pin it");
     rig.keys("escape");
     assert_eq!(rig.route(), toml(), "Esc returns to the pin");
 }

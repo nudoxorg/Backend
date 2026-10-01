@@ -14,10 +14,10 @@ use backend_engine::driver::{
     ResolvedToolchain, SemanticAuthorityInput, ToolchainResolutionError, ToolchainSelection,
     compile,
 };
+use backend_semantic::ir::EntityKind;
 use backend_frontend_rust::legacy::{
     RustAuthorityError, RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
 };
-use backend_semantic::ir::EntityKind;
 use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 use thiserror::Error;
 

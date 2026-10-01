@@ -199,7 +199,7 @@ let
       workspaceAvailable
       stableRustPlatform
       gpuiOutputHashes
-      ;
+    ;
   };
   backendControl =
     if workspaceAvailable then

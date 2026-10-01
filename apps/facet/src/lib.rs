@@ -9,34 +9,34 @@
 //!
 //! The contract lives in `docs/architecture/gui-plan.md`.
 
-pub mod fluid;
-pub mod measure;
-pub mod theme;
 pub mod tokens;
+pub mod theme;
+pub mod measure;
+pub mod fluid;
 
-pub mod anatomy;
-pub mod browse;
-pub mod chrome;
-pub mod code;
-pub mod controls;
-pub mod data;
-pub mod folio;
 pub mod fonts;
+pub mod motion;
+pub mod paint;
+pub mod icons;
+pub mod controls;
+pub mod chrome;
+pub mod data;
+pub mod overlay;
+pub mod probe;
+pub mod code;
 pub mod graph;
 pub mod hover;
-pub mod icons;
-pub mod marks;
-pub mod motion;
-pub mod overlay;
-pub mod paint;
-pub mod probe;
 pub mod semantics;
+pub mod anatomy;
+pub mod browse;
+pub mod marks;
+pub mod folio;
 
 #[cfg(feature = "gallery")]
 pub mod gallery;
 
 pub use fonts::Typeset;
-pub use measure::{Control, Density, Measure, Needs, Reveal, Rung, Set, Space};
 pub use motion::{Motion, Pose, Pulse, Spec};
+pub use measure::{Control, Density, Measure, Needs, Reveal, Rung, Set, Space};
 pub use theme::{ActiveFacet, Contrast, Facet, set_facet};
 pub use tokens::{Appearance, Face, Family, Palette, Tone, TypeRole, Voice};

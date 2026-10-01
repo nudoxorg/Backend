@@ -1,12 +1,12 @@
 //! Proves typed package URL admission and profile binding.
 
-use backend_library::interface::{
-    CorrelationId, GenerateTarget, PackageCompileRequest, PackageEcosystem, PackageProfileMismatch,
-    PackageUrl, PackageUrlError,
-};
 use backend_semantic::vocabulary::{
     CSharpVersion, CStandard, GoVersion, JavaRelease, LanguageProfile, PythonVersion, RustEdition,
     Stage, TypeScriptSource,
+};
+use backend_library::interface::{
+    CorrelationId, GenerateTarget, PackageCompileRequest, PackageEcosystem, PackageProfileMismatch,
+    PackageUrl, PackageUrlError,
 };
 
 #[test]

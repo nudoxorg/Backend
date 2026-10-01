@@ -8,8 +8,8 @@ use crate::model::pages::{DocFragment, PageKey, SourceView, SymbolRef};
 use crate::navigation::{Intent, Route, SymbolRoute};
 use crate::shell::kit::{gap_words, quiet, symbol_route, text};
 use crate::shell::reader::Reader;
-use facet::Space;
 use facet::tokens::ty;
+use facet::Space;
 use gpui::{
     ClickEvent, Context, InteractiveElement, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, div,
@@ -52,9 +52,7 @@ pub(super) fn body(
     }
     crumb.push(view.symbol.name.to_string());
     let crumb = ctx.say(crumb.join("  ›  "));
-    leaves.push(Leaf::new(
-        text(ty::MONO_ROW, &measure, palette.ink2).child(crumb),
-    ));
+    leaves.push(Leaf::new(text(ty::MONO_ROW, &measure, palette.ink2).child(crumb)));
     match view.text.known() {
         Some(source) => {
             let note = margin(&view, store, &symbol, route, ctx);
@@ -87,15 +85,12 @@ fn code(
     let first_line = source.first_line;
     let total = u32::try_from(source.line_count()).unwrap_or(u32::MAX);
     let last_line = first_line.saturating_add(total.saturating_sub(1));
-    let (from, to) = declaration.map_or(
-        (first_line, last_line.min(first_line + CONTEXT_AFTER)),
-        |span| {
-            (
-                span.first.saturating_sub(CONTEXT_BEFORE).max(first_line),
-                span.last.saturating_add(CONTEXT_AFTER).min(last_line),
-            )
-        },
-    );
+    let (from, to) = declaration.map_or((first_line, last_line.min(first_line + CONTEXT_AFTER)), |span| {
+        (
+            span.first.saturating_sub(CONTEXT_BEFORE).max(first_line),
+            span.last.saturating_add(CONTEXT_AFTER).min(last_line),
+        )
+    });
     let mut shown = String::new();
     let mut numbers = Vec::new();
     for (index, line) in source.text.lines().enumerate() {
@@ -126,35 +121,21 @@ fn code(
     let mut rows = div().flex().flex_col();
     for line in lines {
         let number = numbers.get(line.source).copied();
-        let lit = number.is_some_and(|number| {
-            declaration.is_some_and(|span| span.first <= number && number <= span.last)
-        });
-        let label = if line.continued {
-            String::new()
-        } else {
-            number.map(|number| number.to_string()).unwrap_or_default()
-        };
+        let lit = number.is_some_and(|number| declaration.is_some_and(|span| span.first <= number && number <= span.last));
+        let label = if line.continued { String::new() } else { number.map(|number| number.to_string()).unwrap_or_default() };
         rows = rows.child(
             div()
                 .flex()
                 .gap(gap)
                 .child(
-                    text(
-                        ty::CODE,
-                        &measure,
-                        if lit { palette.mint.base } else { palette.ink3 },
-                    )
-                    .flex_none()
-                    .w(number_width)
-                    .flex()
-                    .justify_end()
-                    .child(label),
+                    text(ty::CODE, &measure, if lit { palette.mint.base } else { palette.ink3 })
+                        .flex_none()
+                        .w(number_width)
+                        .flex()
+                        .justify_end()
+                        .child(label),
                 )
-                .child(
-                    text(ty::CODE, &measure, palette.ink1)
-                        .whitespace_nowrap()
-                        .child(line.text),
-                ),
+                .child(text(ty::CODE, &measure, palette.ink1).whitespace_nowrap().child(line.text)),
         );
     }
     column = column.child(rows);
@@ -179,30 +160,19 @@ fn margin(
     let name = ctx.say(view.symbol.name.to_string());
     column = column.child(text(ty::MONO_ROW, &measure, palette.ink0).child(name));
     let prose = DocFragment::plain_text(&page.docs);
-    if let Some(sentence) = prose
-        .split_terminator(['.', '\n'])
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-    {
+    if let Some(sentence) = prose.split_terminator(['.', '\n']).map(str::trim).find(|line| !line.is_empty()) {
         let sentence = ctx.say(format!("{sentence}."));
         column = column.child(text(ty::MARGIN, &measure, palette.ink2).child(sentence));
     }
     if let Some(callers) = page.rose.left.known().filter(|callers| !callers.is_empty()) {
-        column = column.child(
-            text(ty::SMALL, &measure, palette.ink3)
-                .pt(measure.space(Space::Base))
-                .child("Called by"),
-        );
+        column = column.child(text(ty::SMALL, &measure, palette.ink3).pt(measure.space(Space::Base)).child("Called by"));
         for caller in callers.iter().take(5) {
             let name: SharedString = ctx.say(caller.decl.name.to_string());
             let target = symbol_route(route.package.as_str(), &caller.decl.coordinate);
             let links = ctx.links.clone();
             column = column.child(
                 div()
-                    .id(SharedString::from(format!(
-                        "caller-{}",
-                        caller.decl.coordinate
-                    )))
+                    .id(SharedString::from(format!("caller-{}", caller.decl.coordinate)))
                     .child(text(ty::MONO_SMALL, &measure, palette.ink1).child(name))
                     .on_click(move |_: &ClickEvent, _, cx| {
                         if let Some(route) = target.clone() {

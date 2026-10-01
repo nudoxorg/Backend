@@ -44,9 +44,9 @@
 
 mod model;
 pub mod place;
+pub mod unfurl;
 #[cfg(all(test, feature = "gallery"))]
 mod storm;
-pub mod unfurl;
 #[cfg(test)]
 mod window_tests;
 
@@ -65,8 +65,8 @@ use gpui::{
     FocusHandle, Global, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId,
     InteractiveElement, IntoElement, KeyDownEvent, Keystroke, LayoutId, MouseDownEvent,
     MouseExitEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, ScrollWheelEvent,
-    SharedString, Size, StatefulInteractiveElement, Style, Styled, Window, WindowId, deferred, div,
-    fill, point, px, size,
+    SharedString, Size, StatefulInteractiveElement, Style, Styled, Window, WindowId,
+    deferred, div, fill, point, px, size,
 };
 use place::Hang;
 use std::cell::RefCell;
@@ -1138,16 +1138,12 @@ impl Element for LayerElement {
             let surface = if sheet { Surface::Sheet } else { Surface::Card };
             // A wiping unfurl card lays out what it replaced too (built
             // first, so the new content's title wins).
-            let wiping = card.unfurl
-                && card
-                    .swapped
-                    .is_some_and(|at| now.saturating_duration_since(at).as_secs_f32() < 0.16);
+            let wiping = card.unfurl && card.swapped.is_some_and(|at| now.saturating_duration_since(at).as_secs_f32() < 0.16);
             let previous = match (&card.previous, wiping) {
                 (Some(previous), true) => {
                     let mut old = card.clone();
                     old.content = previous.clone();
-                    let mut element =
-                        self.build_card(&old, width, cap, surface, crumbs.clone(), window, cx);
+                    let mut element = self.build_card(&old, width, cap, surface, crumbs.clone(), window, cx);
                     ids.push(element.request_layout(window, cx));
                     Some(element)
                 }
@@ -1334,12 +1330,7 @@ impl Element for LayerElement {
                     None => Hang::Anchor,
                 }
             };
-            let align = self
-                .layer
-                .borrow()
-                .model
-                .card(id)
-                .map_or(place::Align::Centre, |card| card.align);
+            let align = self.layer.borrow().model.card(id).map_or(place::Align::Centre, |card| card.align);
             let placed = place::place_aligned(
                 anchor,
                 natural.size,
@@ -1446,11 +1437,7 @@ impl Element for LayerElement {
             } else {
                 mask
             };
-            let arrive = if self.cards[index].previous.is_some() {
-                point(px(-12.0 * (1.0 - wipe)), px(0.0))
-            } else {
-                point(px(0.0), px(0.0))
-            };
+            let arrive = if self.cards[index].previous.is_some() { point(px(-12.0 * (1.0 - wipe)), px(0.0)) } else { point(px(0.0), px(0.0)) };
             let shift = shift + arrive;
             let element = &mut self.cards[index].element;
             window.with_content_mask(Some(ContentMask { bounds: mask }), |window| {
@@ -1947,30 +1934,21 @@ pub fn unrolled(painted: Bounds<Pixels>, side: Side, sheet: bool, body: f32) -> 
     let (o, s) = (painted.origin, painted.size);
     let body = body.clamp(0.0, 1.0);
     match (sheet, side) {
-        (true, _) | (false, Side::Above) => Bounds::new(
-            point(o.x, o.y + s.height * (1.0 - body)),
-            size(s.width, s.height * body),
-        ),
+        (true, _) | (false, Side::Above) => {
+            Bounds::new(point(o.x, o.y + s.height * (1.0 - body)), size(s.width, s.height * body))
+        }
         (false, Side::Below) => Bounds::new(o, size(s.width, s.height * body)),
         (false, Side::Right) => Bounds::new(o, size(s.width * body, s.height)),
-        (false, Side::Left) => Bounds::new(
-            point(o.x + s.width * (1.0 - body), o.y),
-            size(s.width * body, s.height),
-        ),
+        (false, Side::Left) => {
+            Bounds::new(point(o.x + s.width * (1.0 - body), o.y), size(s.width * body, s.height))
+        }
     }
 }
 
 /// The unfurl's travelling edge at progress `edge`: the anchor's underline
 /// rect carried to the card's facing edge (a 1 px line along it).
 #[must_use]
-pub fn unfurl_edge(
-    anchor: Bounds<Pixels>,
-    painted: Bounds<Pixels>,
-    side: Side,
-    sheet: bool,
-    chamfer: f32,
-    edge: f32,
-) -> Bounds<Pixels> {
+pub fn unfurl_edge(anchor: Bounds<Pixels>, painted: Bounds<Pixels>, side: Side, sheet: bool, chamfer: f32, edge: f32) -> Bounds<Pixels> {
     let hair = px(1.5);
     let from = Bounds::new(
         point(anchor.origin.x, anchor.origin.y + anchor.size.height - hair),
@@ -1979,36 +1957,18 @@ pub fn unfurl_edge(
     let cut = px(chamfer);
     let to = match (sheet, side) {
         (true, _) => Bounds::new(painted.origin, size(painted.size.width, px(1.0))),
-        (false, Side::Below) => Bounds::new(
-            point(painted.origin.x + cut, painted.origin.y),
-            size(painted.size.width - cut, px(1.0)),
-        ),
-        (false, Side::Above) => Bounds::new(
-            point(painted.origin.x, painted.bottom() - px(1.0)),
-            size(painted.size.width - cut, px(1.0)),
-        ),
-        (false, Side::Right) => Bounds::new(
-            point(painted.origin.x, painted.origin.y + cut),
-            size(px(1.0), painted.size.height - cut),
-        ),
-        (false, Side::Left) => Bounds::new(
-            point(painted.right() - px(1.0), painted.origin.y),
-            size(px(1.0), painted.size.height - cut),
-        ),
+        (false, Side::Below) => Bounds::new(point(painted.origin.x + cut, painted.origin.y), size(painted.size.width - cut, px(1.0))),
+        (false, Side::Above) => Bounds::new(point(painted.origin.x, painted.bottom() - px(1.0)), size(painted.size.width - cut, px(1.0))),
+        (false, Side::Right) => Bounds::new(point(painted.origin.x, painted.origin.y + cut), size(px(1.0), painted.size.height - cut)),
+        (false, Side::Left) => Bounds::new(point(painted.right() - px(1.0), painted.origin.y), size(px(1.0), painted.size.height - cut)),
     };
     if sheet {
         return to;
     }
     let lerp = |a: Pixels, b: Pixels| a + (b - a) * edge.clamp(0.0, 1.0);
     Bounds::new(
-        point(
-            lerp(from.origin.x, to.origin.x),
-            lerp(from.origin.y, to.origin.y),
-        ),
-        size(
-            lerp(from.size.width, to.size.width),
-            lerp(from.size.height, to.size.height),
-        ),
+        point(lerp(from.origin.x, to.origin.x), lerp(from.origin.y, to.origin.y)),
+        size(lerp(from.size.width, to.size.width), lerp(from.size.height, to.size.height)),
     )
 }
 
@@ -2041,10 +2001,7 @@ fn paint_unfurl(draw: &mut CardDraw, palette: &Palette, window: &mut Window, cx:
         // and beside it, never ahead of the edge.
         let shade = Bounds::new(
             point(reveal.origin.x - px(48.0), reveal.origin.y),
-            size(
-                reveal.size.width + px(96.0),
-                reveal.size.height + px(64.0) * body,
-            ),
+            size(reveal.size.width + px(96.0), reveal.size.height + px(64.0) * body),
         );
         window.with_content_mask(Some(ContentMask { bounds: shade }), |window| {
             window.paint_chamfer_shadows(
@@ -2090,9 +2047,7 @@ fn paint_unfurl(draw: &mut CardDraw, palette: &Palette, window: &mut Window, cx:
                     point(painted.origin.x + seam, painted.origin.y),
                     size(painted.size.width - seam, painted.size.height),
                 );
-                window.with_content_mask(Some(ContentMask { bounds: rest }), |window| {
-                    old.paint(window, cx)
-                });
+                window.with_content_mask(Some(ContentMask { bounds: rest }), |window| old.paint(window, cx));
             }
             let content = Bounds::new(painted.origin, size(boundary, painted.size.height));
             let element = &mut draw.element;
@@ -2109,10 +2064,7 @@ fn paint_unfurl(draw: &mut CardDraw, palette: &Palette, window: &mut Window, cx:
     } else if sheet && body > 0.0 {
         // A sheet's edge rides the top of what has unrolled.
         let reveal = unrolled(painted, side, sheet, body);
-        window.paint_quad(fill(
-            Bounds::new(reveal.origin, size(reveal.size.width, px(1.0))),
-            peri.opacity(0.55),
-        ));
+        window.paint_quad(fill(Bounds::new(reveal.origin, size(reveal.size.width, px(1.0))), peri.opacity(0.55)));
     }
 }
 

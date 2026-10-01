@@ -109,13 +109,8 @@ fn the_menu() -> Menu {
         vec![
             MenuItem::new("Open").icon(Icon::Peek).chord(&["↵"]),
             MenuItem::new("Open beside").icon(Icon::Split),
-            MenuItem::new("Copy path")
-                .icon(Icon::Copy)
-                .chord(&["⌘", "C"]),
-            MenuItem::new("Pin")
-                .icon(Icon::Pin)
-                .chord(&["Space"])
-                .separated(),
+            MenuItem::new("Copy path").icon(Icon::Copy).chord(&["⌘", "C"]),
+            MenuItem::new("Pin").icon(Icon::Pin).chord(&["Space"]).separated(),
             MenuItem::new("Rename").disabled(),
             MenuItem::new("Remove from shelf").danger(),
         ],
@@ -146,16 +141,11 @@ impl Render for Stage {
             more.clone(),
             move |bounds| {
                 let menu_key = more.clone();
-                FloatRequest::new(
-                    menu_key.clone(),
-                    bounds,
-                    FloatKind::Tip,
-                    tooltip::content(TipText {
-                        title: None,
-                        body: "More actions".into(),
-                        chord: Vec::new(),
-                    }),
-                )
+                FloatRequest::new(menu_key.clone(), bounds, FloatKind::Tip, tooltip::content(TipText {
+                    title: None,
+                    body: "More actions".into(),
+                    chord: Vec::new(),
+                }))
                 .side(Side::Above)
             },
             button("more-button", "More", &measure).icon(Icon::More),
@@ -173,11 +163,7 @@ impl Render for Stage {
             "method_edge",
         ];
         let mut rows = div().flex().flex_col().gap(px(10.0 * measure.scale()));
-        let count = if self.grid {
-            names.len() * 2
-        } else {
-            names.len()
-        };
+        let count = if self.grid { names.len() * 2 } else { names.len() };
         for index in 0..count {
             let name = names[index % names.len()];
             let k = key(&format!("row{index}"));
@@ -186,18 +172,13 @@ impl Render for Stage {
                 k.clone(),
                 move |bounds| {
                     let label = label.clone();
-                    FloatRequest::new(
-                        k.clone(),
-                        bounds,
-                        FloatKind::Tip,
-                        move |measure, window, cx| {
-                            tooltip::content(TipText {
-                                title: None,
-                                body: label.clone(),
-                                chord: Vec::new(),
-                            })(measure, window, cx)
-                        },
-                    )
+                    FloatRequest::new(k.clone(), bounds, FloatKind::Tip, move |measure, window, cx| {
+                        tooltip::content(TipText {
+                            title: None,
+                            body: label.clone(),
+                            chord: Vec::new(),
+                        })(measure, window, cx)
+                    })
                 },
                 div()
                     .set(ty::MONO_ROW, &measure)
@@ -254,11 +235,7 @@ fn toasts() -> Vec<(u64, Step)> {
         (
             20,
             Box::new(|window: &mut Window, cx: &mut App| {
-                toast::show(
-                    Toast::new("Pinned SemanticLinkKind").undo(|_, _| {}),
-                    window,
-                    cx,
-                );
+                toast::show(Toast::new("Pinned SemanticLinkKind").undo(|_, _| {}), window, cx);
             }) as Step,
         ),
         (
@@ -281,24 +258,13 @@ fn overlays(window: &mut Window, cx: &mut App) -> AnyView {
         (
             80,
             Box::new(|window, cx| {
-                let at = float::reported(
-                    &ElementId::NamedChild(
-                        std::sync::Arc::new(ElementId::Name("gem".into())),
-                        "tip".into(),
-                    ),
-                    window,
-                    cx,
-                )
-                .unwrap_or_default();
-                let request = tooltip::request(
-                    key("gem-tip"),
-                    at,
-                    TipText {
-                        title: Some("Enum".into()),
-                        body: "A closed set of variants.".into(),
-                        chord: vec!["⌥".into()],
-                    },
-                );
+                let at = float::reported(&ElementId::NamedChild(std::sync::Arc::new(ElementId::Name("gem".into())), "tip".into()), window, cx)
+                    .unwrap_or_default();
+                let request = tooltip::request(key("gem-tip"), at, TipText {
+                    title: Some("Enum".into()),
+                    body: "A closed set of variants.".into(),
+                    chord: vec!["⌥".into()],
+                });
                 float::rest(request, window, cx);
             }),
         ),
@@ -329,12 +295,7 @@ fn dialog_still(window: &mut Window, cx: &mut App) -> AnyView {
 }
 
 fn hints(window: &mut Window, cx: &mut App) -> AnyView {
-    stage(
-        true,
-        vec![(1, Box::new(|window, cx| super::hint::enter(window, cx)))],
-        window,
-        cx,
-    )
+    stage(true, vec![(1, Box::new(|window, cx| super::hint::enter(window, cx)))], window, cx)
 }
 
 fn hints_typed(window: &mut Window, cx: &mut App) -> AnyView {
@@ -377,17 +338,11 @@ fn toast_film(window: &mut Window, cx: &mut App) -> AnyView {
             (
                 1,
                 Box::new(|window: &mut Window, cx: &mut App| {
-                    let id = toast::show(
-                        Toast::new("Pinned SemanticLinkKind").undo(|_, _| {}),
-                        window,
-                        cx,
-                    );
+                    let id = toast::show(Toast::new("Pinned SemanticLinkKind").undo(|_, _| {}), window, cx);
                     // The undo is pressed at 900 ms.
                     window
                         .spawn(cx, async move |cx| {
-                            cx.background_executor()
-                                .timer(Duration::from_millis(899))
-                                .await;
+                            cx.background_executor().timer(Duration::from_millis(899)).await;
                             let _ = cx.update(|window, cx| toast::dismiss(id, window, cx));
                         })
                         .detach();
@@ -396,11 +351,7 @@ fn toast_film(window: &mut Window, cx: &mut App) -> AnyView {
             (
                 250,
                 Box::new(|window: &mut Window, cx: &mut App| {
-                    toast::show(
-                        Toast::new("Removed serde from the shelf").voice(Voice::Coral),
-                        window,
-                        cx,
-                    );
+                    toast::show(Toast::new("Removed serde from the shelf").voice(Voice::Coral), window, cx);
                 }),
             ),
         ],
@@ -422,6 +373,7 @@ fn dialog_film(window: &mut Window, cx: &mut App) -> AnyView {
     )
 }
 
+
 /// A node whose position is a function of time (a camera flying over a
 /// graph), with a tracked trigger on it.
 struct Flight {
@@ -436,13 +388,7 @@ impl Render for Flight {
         let start = *self.start.get_or_insert(now);
         let t = now.saturating_duration_since(start).as_secs_f32();
         // Drift right, then accelerate off the right edge after 0.6 s.
-        let x = 120.0
-            + 260.0 * t
-            + if t > 0.6 {
-                2400.0 * (t - 0.6) * (t - 0.6)
-            } else {
-                0.0
-            };
+        let x = 120.0 + 260.0 * t + if t > 0.6 { 2400.0 * (t - 0.6) * (t - 0.6) } else { 0.0 };
         let y = 140.0 + 40.0 * (t * 3.0).sin();
         if x < 1400.0 {
             crate::motion::request_frame(window, cx);
@@ -454,32 +400,25 @@ impl Render for Flight {
             .bg(palette.g1.hsla())
             .child(ground())
             .child(
-                div()
-                    .absolute()
-                    .left(px(x))
-                    .top(px(y))
-                    .child(float::trigger(
-                        node.clone(),
-                        move |bounds| {
-                            super::peek::request(
-                                node.clone(),
-                                bounds,
-                                super::peek::Peek::Symbol(super::peek::SymbolPeek {
-                                    kind: Some(Kind::Enum),
-                                    name: "SemanticLinkKind".into(),
-                                    place: "enum in `present::relation`".into(),
-                                    path: "present::relation".into(),
-                                    sentence: Some(
-                                        "The closed vocabulary of how one symbol touches another."
-                                            .into(),
-                                    ),
-                                    uses: Some(14),
-                                    ..super::peek::SymbolPeek::default()
-                                }),
-                            )
-                        },
-                        gem(Kind::Enum).size(28.0),
-                    )),
+                div().absolute().left(px(x)).top(px(y)).child(float::trigger(
+                    node.clone(),
+                    move |bounds| {
+                        super::peek::request(
+                            node.clone(),
+                            bounds,
+                            super::peek::Peek::Symbol(super::peek::SymbolPeek {
+                                kind: Some(Kind::Enum),
+                                name: "SemanticLinkKind".into(),
+                                place: "enum in `present::relation`".into(),
+                                path: "present::relation".into(),
+                                sentence: Some("The closed vocabulary of how one symbol touches another.".into()),
+                                uses: Some(14),
+                                ..super::peek::SymbolPeek::default()
+                            }),
+                        )
+                    },
+                    gem(Kind::Enum).size(28.0),
+                )),
             )
             .child(float::layer(window, cx))
     }
@@ -501,9 +440,7 @@ fn follow_film(window: &mut Window, cx: &mut App) -> AnyView {
                             name: "SemanticLinkKind".into(),
                             place: "enum in `present::relation`".into(),
                             path: "present::relation".into(),
-                            sentence: Some(
-                                "The closed vocabulary of how one symbol touches another.".into(),
-                            ),
+                            sentence: Some("The closed vocabulary of how one symbol touches another.".into()),
                             uses: Some(14),
                             ..super::peek::SymbolPeek::default()
                         }),
@@ -512,10 +449,7 @@ fn follow_film(window: &mut Window, cx: &mut App) -> AnyView {
                     float::settle_now(window, cx);
                 }) as Step,
             ),
-            (
-                2,
-                Box::new(|window: &mut Window, cx: &mut App| float::settle_now(window, cx)),
-            ),
+            (2, Box::new(|window: &mut Window, cx: &mut App| float::settle_now(window, cx))),
         ],
         window,
         cx,

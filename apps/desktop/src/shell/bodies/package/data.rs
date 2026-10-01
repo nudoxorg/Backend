@@ -3,12 +3,9 @@
 //! licence, the advisories, and (in the past) what the release being read
 //! did to each name. Nothing here draws.
 
-use crate::model::pages::{
-    Gap, GapReason, Known, OutlineNode, OutlineTree, PackageDossier, PackageRecord, PackageRef,
-    Standing, SymbolRef,
-};
-use crate::model::source_facts::{self, SourceFacts};
+use crate::model::pages::{Gap, GapReason, Known, OutlineNode, OutlineTree, PackageDossier, PackageRecord, PackageRef, Standing, SymbolRef};
 use backend_library::DeclarationKind;
+use crate::model::source_facts::{self, SourceFacts};
 use facet::folio::berg::{BergBlock, BergFacts};
 use facet::folio::cards::Change;
 use facet::folio::crest::{Advisories, Silence};
@@ -84,49 +81,27 @@ pub(super) enum Structure {
 /// the page says a flat root, or names with no module, in words rather than
 /// drawing one region as though that were how the package is organised.
 pub(super) fn structure(modules: &[ModuleData], source: Option<&SourceFacts>) -> Structure {
-    let [only] = modules else {
-        return Structure::Modules;
-    };
+    let [only] = modules else { return Structure::Modules };
     if only.placement == Placement::Gathered {
         return Structure::Gathered;
     }
-    let Some(scanned) = source.and_then(|source| {
-        source
-            .module(only.name.as_ref())
-            .or_else(|| source.module(&source_key(only.name.as_ref())))
-    }) else {
+    let Some(scanned) = source.and_then(|source| source.module(only.name.as_ref()).or_else(|| source.module(&source_key(only.name.as_ref())))) else {
         return Structure::Modules;
     };
     let mut origins: Vec<&str> = only
         .items
         .iter()
-        .filter_map(|item| {
-            scanned
-                .items
-                .iter()
-                .find(|found| found.name.as_str() == item.name.as_ref())
-                .and_then(|found| found.from.as_deref())
-        })
+        .filter_map(|item| scanned.items.iter().find(|found| found.name.as_str() == item.name.as_ref()).and_then(|found| found.from.as_deref()))
         .collect();
     origins.sort_unstable();
     origins.dedup();
-    if origins.is_empty() {
-        Structure::Modules
-    } else {
-        Structure::Root {
-            hidden: origins.len(),
-        }
-    }
+    if origins.is_empty() { Structure::Modules } else { Structure::Root { hidden: origins.len() } }
 }
 
 impl ModuleData {
     /// How it opens: inline, or on a page of its own when it has many names.
     pub(super) fn extent(&self) -> Extent {
-        if self.items.len() > BIG {
-            Extent::Page
-        } else {
-            Extent::Inline
-        }
+        if self.items.len() > BIG { Extent::Page } else { Extent::Inline }
     }
 }
 
@@ -185,9 +160,7 @@ pub(super) fn brief_of(_node: &OutlineNode) -> (Option<Arc<str>>, Option<Arc<str
 /// `de`, `lib.rs` reads `lib`, in the language's own separator.
 fn module_path(node: &OutlineNode) -> String {
     let separator = match node.decl.language {
-        backend_present::Language::Rust
-        | backend_present::Language::Cxx
-        | backend_present::Language::C => "::",
+        backend_present::Language::Rust | backend_present::Language::Cxx | backend_present::Language::C => "::",
         backend_present::Language::Python => ".",
         _ => "/",
     };
@@ -208,13 +181,7 @@ fn module_path(node: &OutlineNode) -> String {
     parts.join(separator)
 }
 
-fn collect(
-    node: &OutlineNode,
-    name: String,
-    package_name: &str,
-    placement: Placement,
-    out: &mut Vec<ModuleData>,
-) {
+fn collect(node: &OutlineNode, name: String, package_name: &str, placement: Placement, out: &mut Vec<ModuleData>) {
     let _ = package_name;
     let mut items = Vec::new();
     let mut nested = Vec::new();
@@ -243,44 +210,23 @@ fn collect(
         }
     }
     if !items.is_empty() {
-        out.push(ModuleData {
-            name: name.clone().into(),
-            placement,
-            doc: None,
-            items,
-        });
+        out.push(ModuleData { name: name.clone().into(), placement, doc: None, items });
     }
     for child in nested {
         let inner = super::super::super::shelf::shelf_name(child);
-        collect(
-            child,
-            format!("{name}::{inner}"),
-            package_name,
-            placement,
-            out,
-        );
+        collect(child, format!("{name}::{inner}"), package_name, placement, out);
     }
 }
 
 /// The modules of a package: every non-test module with at least one public
 /// name, `lib` first and then by size, the way the board orders them.
-pub(super) fn modules(
-    tree: &OutlineTree,
-    package_name: &str,
-    source: Option<&SourceFacts>,
-) -> Vec<ModuleData> {
+pub(super) fn modules(tree: &OutlineTree, package_name: &str, source: Option<&SourceFacts>) -> Vec<ModuleData> {
     let mut out = Vec::new();
     let mut top = Vec::new();
     for root in tree.roots.iter() {
         if root.decl.kind == Some(DeclarationKind::Module) {
             if !super::super::super::shelf::is_test_module(root) {
-                collect(
-                    root,
-                    module_path(root),
-                    package_name,
-                    Placement::Recorded,
-                    &mut out,
-                );
+                collect(root, module_path(root), package_name, Placement::Recorded, &mut out);
             }
         } else if is_name(root.decl.kind) {
             top.push(root);
@@ -293,32 +239,17 @@ pub(super) fn modules(
         // that module. What carries none (an implementation block, a type the
         // signatures merely mention) has no module to be placed in and is not a
         // public name of one.
-        let placed: Vec<&OutlineNode> = top
-            .iter()
-            .copied()
-            .filter(|node| {
-                node.decl.language == backend_present::Language::Rust && node.decl.path.is_some()
-            })
-            .collect();
+        let placed: Vec<&OutlineNode> =
+            top.iter().copied().filter(|node| node.decl.language == backend_present::Language::Rust && node.decl.path.is_some()).collect();
         if placed.is_empty() {
             // Top-level names of languages that have no file module (Go
             // packages, a Python `__init__`), and of an outline that places
             // none of its names, read as one module of the package.
             let synthetic = OutlineNode {
-                children: top
-                    .iter()
-                    .map(|node| (*node).clone())
-                    .collect::<Vec<_>>()
-                    .into(),
+                children: top.iter().map(|node| (*node).clone()).collect::<Vec<_>>().into(),
                 ..top[0].clone()
             };
-            collect(
-                &synthetic,
-                package_name.to_owned(),
-                package_name,
-                Placement::Gathered,
-                &mut out,
-            );
+            collect(&synthetic, package_name.to_owned(), package_name, Placement::Gathered, &mut out);
         }
         let mut by_module: Vec<(String, Vec<OutlineNode>)> = Vec::new();
         for node in placed {
@@ -329,10 +260,7 @@ pub(super) fn modules(
             }
         }
         for (name, names) in by_module {
-            let group = OutlineNode {
-                children: names.clone().into(),
-                ..names[0].clone()
-            };
+            let group = OutlineNode { children: names.clone().into(), ..names[0].clone() };
             collect(&group, name, package_name, Placement::Recorded, &mut out);
         }
     }
@@ -352,12 +280,7 @@ pub(super) fn modules(
     if let Some(source) = source {
         enrich(&mut merged, source);
     }
-    merged.sort_by(|a, b| {
-        (b.name == "lib")
-            .cmp(&(a.name == "lib"))
-            .then_with(|| b.items.len().cmp(&a.items.len()))
-            .then_with(|| a.name.cmp(&b.name))
-    });
+    merged.sort_by(|a, b| (b.name == "lib").cmp(&(a.name == "lib")).then_with(|| b.items.len().cmp(&a.items.len())).then_with(|| a.name.cmp(&b.name)));
     merged
 }
 
@@ -373,36 +296,19 @@ fn source_key(name: &str) -> String {
 /// does not make private.
 fn enrich(modules: &mut Vec<ModuleData>, source: &SourceFacts) {
     let scanned = !source.modules.is_empty();
-    let key_of = |name: &str| -> String {
-        if source.module(name).is_some() || source.docs.contains_key(name) {
-            name.to_owned()
-        } else {
-            source_key(name)
-        }
-    };
+    let key_of = |name: &str| -> String { if source.module(name).is_some() || source.docs.contains_key(name) { name.to_owned() } else { source_key(name) } };
     // Every name the index put in a module, by the module that defines it:
     // what a `pub use` elsewhere makes public is found here (its page is
     // the definition's).
-    let pool: Vec<(String, ItemData)> = modules
-        .iter()
-        .flat_map(|m| m.items.iter().map(|i| (key_of(m.name.as_ref()), i.clone())))
-        .collect();
+    let pool: Vec<(String, ItemData)> = modules.iter().flat_map(|m| m.items.iter().map(|i| (key_of(m.name.as_ref()), i.clone()))).collect();
     let adopt = |module_key: &str, into: &mut Vec<ItemData>| {
-        let Some(scanned_module) = source.module(module_key) else {
-            return;
-        };
+        let Some(scanned_module) = source.module(module_key) else { return };
         for item in scanned_module.items.iter().filter(|i| i.from.is_some()) {
-            if into
-                .iter()
-                .any(|have| have.name.as_ref() == item.name.as_str())
-            {
+            if into.iter().any(|have| have.name.as_ref() == item.name.as_str()) {
                 continue;
             }
             let origin = item.from.as_deref().unwrap_or_default();
-            if let Some((_, found)) = pool
-                .iter()
-                .find(|(key, i)| key == origin && i.name.as_ref() == item.name.as_str())
-            {
+            if let Some((_, found)) = pool.iter().find(|(key, i)| key == origin && i.name.as_ref() == item.name.as_str()) {
                 into.push(found.clone());
             }
         }
@@ -415,15 +321,9 @@ fn enrich(modules: &mut Vec<ModuleData>, source: &SourceFacts) {
         {
             module.doc = Some(doc.sentence.clone().into());
         }
-        let Some(scanned_module) = source.module(&key) else {
-            continue;
-        };
+        let Some(scanned_module) = source.module(&key) else { continue };
         for item in &mut module.items {
-            if let Some(found) = scanned_module
-                .items
-                .iter()
-                .find(|i| i.name.as_str() == item.name.as_ref())
-            {
+            if let Some(found) = scanned_module.items.iter().find(|i| i.name.as_str() == item.name.as_ref()) {
                 if item.signature.is_none() {
                     item.signature = Some(Arc::from(found.declaration.as_str()));
                 }
@@ -435,14 +335,8 @@ fn enrich(modules: &mut Vec<ModuleData>, source: &SourceFacts) {
             }
         }
         if scanned {
-            let public: Vec<&str> = scanned_module
-                .items
-                .iter()
-                .map(|i| i.name.as_str())
-                .collect();
-            module
-                .items
-                .retain(|item| public.contains(&item.name.as_ref()));
+            let public: Vec<&str> = scanned_module.items.iter().map(|i| i.name.as_str()).collect();
+            module.items.retain(|item| public.contains(&item.name.as_ref()));
         }
     }
     // A module that is public only through what it re-exports may hold no
@@ -450,34 +344,19 @@ fn enrich(modules: &mut Vec<ModuleData>, source: &SourceFacts) {
     if scanned {
         let known: Vec<String> = modules.iter().map(|m| key_of(m.name.as_ref())).collect();
         for module in &source.modules {
-            if module.access == source_facts::docs::Access::Private
-                || known.contains(&module.path)
-                || !module.items.iter().any(|i| i.from.is_some())
-            {
+            if module.access == source_facts::docs::Access::Private || known.contains(&module.path) || !module.items.iter().any(|i| i.from.is_some()) {
                 continue;
             }
             let mut items = Vec::new();
             adopt(&module.path, &mut items);
             if !items.is_empty() {
-                modules.push(ModuleData {
-                    name: module.path.clone().into(),
-                    placement: Placement::Recorded,
-                    doc: source
-                        .docs
-                        .get(&module.path)
-                        .map(|d| d.sentence.clone().into()),
-                    items,
-                });
+                modules.push(ModuleData { name: module.path.clone().into(), placement: Placement::Recorded, doc: source.docs.get(&module.path).map(|d| d.sentence.clone().into()), items });
             }
         }
         for module in modules.iter_mut() {
             if let Some(scanned_module) = source.module(&key_of(module.name.as_ref())) {
                 for item in &mut module.items {
-                    if let Some(found) = scanned_module
-                        .items
-                        .iter()
-                        .find(|i| i.name.as_str() == item.name.as_ref())
-                    {
+                    if let Some(found) = scanned_module.items.iter().find(|i| i.name.as_str() == item.name.as_ref()) {
                         if item.signature.is_none() {
                             item.signature = Some(Arc::from(found.declaration.as_str()));
                         }
@@ -492,10 +371,7 @@ fn enrich(modules: &mut Vec<ModuleData>, source: &SourceFacts) {
         }
         modules.retain(|module| {
             let key = key_of(module.name.as_ref());
-            !module.items.is_empty()
-                && !source
-                    .module(&key)
-                    .is_some_and(|m| m.access == source_facts::docs::Access::Private)
+            !module.items.is_empty() && !source.module(&key).is_some_and(|m| m.access == source_facts::docs::Access::Private)
         });
     }
 }
@@ -503,11 +379,7 @@ fn enrich(modules: &mut Vec<ModuleData>, source: &SourceFacts) {
 /// Every module's names and how many carry a summary.
 pub(super) fn documented(modules: &[ModuleData]) -> Option<(usize, usize)> {
     let total: usize = modules.iter().map(|m| m.items.len()).sum();
-    let with: usize = modules
-        .iter()
-        .flat_map(|m| m.items.iter())
-        .filter(|item| item.summary.is_some())
-        .count();
+    let with: usize = modules.iter().flat_map(|m| m.items.iter()).filter(|item| item.summary.is_some()).count();
     (with > 0).then_some((with, total))
 }
 
@@ -522,15 +394,8 @@ pub(super) enum Subject {
 
 /// The licence the folio judges: the record's SPDX, against the active
 /// project's own.
-pub(super) fn licence(
-    record: Option<&PackageRecord>,
-    active_license: Option<&str>,
-    project: &str,
-    subject: Subject,
-) -> Rc<LicenseFacts> {
-    let spdx = record
-        .and_then(|record| record.license.known())
-        .map(ToString::to_string);
+pub(super) fn licence(record: Option<&PackageRecord>, active_license: Option<&str>, project: &str, subject: Subject) -> Rc<LicenseFacts> {
+    let spdx = record.and_then(|record| record.license.known()).map(ToString::to_string);
     let mut facts = LicenseFacts::new(spdx.as_deref(), active_license, project);
     facts.own = subject == Subject::Project;
     Rc::new(facts)
@@ -539,15 +404,9 @@ pub(super) fn licence(
 /// What the advisory feeds say, in the crest's three states.
 pub(super) fn advisories(record: Option<&PackageRecord>) -> Advisories {
     use backend_library::{AdvisoryCoverage, FreshnessState, SeverityLevel};
-    let unknown = |why: Silence, note: &str| Advisories::Unknown {
-        why,
-        note: note.to_owned().into(),
-    };
+    let unknown = |why: Silence, note: &str| Advisories::Unknown { why, note: note.to_owned().into() };
     let Some(record) = record else {
-        return unknown(
-            Silence::NotRead,
-            "The record this page is about has not been read.",
-        );
+        return unknown(Silence::NotRead, "The record this page is about has not been read.");
     };
     match &record.advisory {
         Known::Known(summary) => {
@@ -571,19 +430,11 @@ pub(super) fn advisories(record: Option<&PackageRecord>) -> Advisories {
                 FreshnessState::Unknown => "feed age unknown",
             };
             match summary.coverage {
-                AdvisoryCoverage::Complete => Advisories::Clear {
-                    note: format!(
-                        "Every configured feed was read, {fresh}. None names this release."
-                    )
-                    .into(),
-                },
-                AdvisoryCoverage::Partial => Advisories::Clear {
-                    note: format!("Some feeds were read, {fresh}. None named this release.").into(),
-                },
-                AdvisoryCoverage::Unknown | AdvisoryCoverage::Unavailable => unknown(
-                    Silence::NoFeed,
-                    "RustSec, OSV and GHSA can be read; none configured.",
-                ),
+                AdvisoryCoverage::Complete => Advisories::Clear { note: format!("Every configured feed was read, {fresh}. None names this release.").into() },
+                AdvisoryCoverage::Partial => Advisories::Clear { note: format!("Some feeds were read, {fresh}. None named this release.").into() },
+                AdvisoryCoverage::Unknown | AdvisoryCoverage::Unavailable => {
+                    unknown(Silence::NoFeed, "RustSec, OSV and GHSA can be read; none configured.")
+                }
             }
         }
         Known::Unknown(gap) => gap_state(gap),
@@ -591,25 +442,13 @@ pub(super) fn advisories(record: Option<&PackageRecord>) -> Advisories {
 }
 
 fn gap_state(gap: &Gap) -> Advisories {
-    let unknown = |why: Silence, note: String| Advisories::Unknown {
-        why,
-        note: note.into(),
-    };
+    let unknown = |why: Silence, note: String| Advisories::Unknown { why, note: note.into() };
     match gap.reason {
-        GapReason::LocalProject => unknown(
-            Silence::Yours,
-            "Advisory feeds check published releases; this is a project of yours.".to_owned(),
-        ),
+        GapReason::LocalProject => unknown(Silence::Yours, "Advisory feeds check published releases; this is a project of yours.".to_owned()),
         GapReason::Unconfigured | GapReason::NotRecorded | GapReason::NoSemanticPublication => {
-            unknown(
-                Silence::NoFeed,
-                "RustSec, OSV and GHSA can be read; none configured.".to_owned(),
-            )
+            unknown(Silence::NoFeed, "RustSec, OSV and GHSA can be read; none configured.".to_owned())
         }
-        _ => unknown(
-            Silence::Unknown,
-            crate::shell::kit::gap_words(gap).to_string(),
-        ),
+        _ => unknown(Silence::Unknown, crate::shell::kit::gap_words(gap).to_string()),
     }
 }
 
@@ -656,38 +495,19 @@ pub(super) enum Diffs {
 
 /// The past for `at`, from the release fixture's diffs when it has them.
 pub(super) fn past(package: &PackageRef, at: &str, cx: &mut gpui::App) -> Past {
-    let mut out = Past {
-        at: at.to_owned().into(),
-        ..Past::default()
-    };
+    let mut out = Past { at: at.to_owned().into(), ..Past::default() };
     let Some(release) = crate::runtime::fixture_releases::release_data(package, cx) else {
         return out;
     };
     let Some(spelled) = crate::runtime::fixture_releases::spelled(release, at) else {
         return out;
     };
-    let position = |v: &str| {
-        release
-            .versions
-            .iter()
-            .position(|known| known.v.as_ref() == v)
-    };
-    let (Some(pinned), Some(viewed)) = (
-        position(release.pinned.as_ref()),
-        position(spelled.as_ref()),
-    ) else {
+    let position = |v: &str| release.versions.iter().position(|known| known.v.as_ref() == v);
+    let (Some(pinned), Some(viewed)) = (position(release.pinned.as_ref()), position(spelled.as_ref())) else {
         return out;
     };
-    out.side = if viewed < pinned {
-        Side::Before
-    } else {
-        Side::After
-    };
-    let Some(diff) = release
-        .diffs
-        .iter()
-        .find(|diff| diff.from == release.pinned && diff.to == spelled)
-    else {
+    out.side = if viewed < pinned { Side::Before } else { Side::After };
+    let Some(diff) = release.diffs.iter().find(|diff| diff.from == release.pinned && diff.to == spelled) else {
         return out;
     };
     out.diffs = Diffs::Known;
@@ -704,12 +524,7 @@ pub(super) fn past(package: &PackageRef, at: &str, cx: &mut gpui::App) -> Past {
                     out.states.insert(name, Change::Gone);
                 }
             }
-            What::Changed
-            | What::Deprecated
-            | What::FieldAdded
-            | What::FieldRemoved
-            | What::VariantAdded
-            | What::VariantRemoved => {
+            What::Changed | What::Deprecated | What::FieldAdded | What::FieldRemoved | What::VariantAdded | What::VariantRemoved => {
                 if change.what == What::Changed && change.respelled() {
                     continue;
                 }
@@ -727,14 +542,7 @@ pub(super) fn past(package: &PackageRef, at: &str, cx: &mut gpui::App) -> Past {
 
 /// The ticker for a dossier: its recorded releases, with the dates the
 /// release fixture knows, and the pin from the route.
-pub(super) fn ticker(
-    dossier: &PackageDossier,
-    source: Option<&SourceFacts>,
-    pin: Option<&str>,
-    reading: Option<&str>,
-    today: &str,
-    cx: &mut gpui::App,
-) -> Option<Rc<TickerFacts>> {
+pub(super) fn ticker(dossier: &PackageDossier, source: Option<&SourceFacts>, pin: Option<&str>, reading: Option<&str>, today: &str, cx: &mut gpui::App) -> Option<Rc<TickerFacts>> {
     // Every release the registry's index cache knows, dated; the ones the
     // index has read are the ones whose names the page can show. This holds
     // for a crate the library indexed from an unpacked registry directory
@@ -742,13 +550,9 @@ pub(super) fn ticker(
     // release whose names are read then.
     if let Some(published) = source.map(|s| &s.releases).filter(|r| r.len() > 1) {
         let versions = dossier.versions.known();
-        let same = |a: &str, b: &str| {
-            a == b || facet::marks::semver::short(a) == facet::marks::semver::short(b)
-        };
+        let same = |a: &str, b: &str| a == b || facet::marks::semver::short(a) == facet::marks::semver::short(b);
         let read = |version: &str| match versions {
-            Some(list) => list
-                .iter()
-                .any(|entry| same(entry.version.as_ref(), version)),
+            Some(list) => list.iter().any(|entry| same(entry.version.as_ref(), version)),
             None => pin.is_some_and(|pin| same(pin, version)),
         };
         let releases: Vec<Release> = published
@@ -757,16 +561,10 @@ pub(super) fn ticker(
                 version: release.version.clone(),
                 date: release.date.clone(),
                 standing: release.standing,
-                names: if read(&release.version) {
-                    Names::Read
-                } else {
-                    Names::Unread
-                },
+                names: if read(&release.version) { Names::Read } else { Names::Unread },
             })
             .collect();
-        return Some(Rc::new(
-            TickerFacts::new(&releases, pin, today).reading(reading),
-        ));
+        return Some(Rc::new(TickerFacts::new(&releases, pin, today).reading(reading)));
     }
     let versions = dossier.versions.known()?;
     if versions.is_empty() {
@@ -780,51 +578,31 @@ pub(super) fn ticker(
                 release
                     .versions
                     .iter()
-                    .find(|known| {
-                        known.v.as_ref() == entry.version.as_ref()
-                            || facet::data::release::short(&known.v) == entry.version.as_ref()
-                    })
+                    .find(|known| known.v.as_ref() == entry.version.as_ref() || facet::data::release::short(&known.v) == entry.version.as_ref())
                     .map(|known| known.at.to_string())
             });
             Release {
                 version: entry.version.to_string(),
                 date: at,
-                standing: if entry.standing == Standing::Yanked {
-                    ReleaseStanding::Yanked
-                } else {
-                    ReleaseStanding::Available
-                },
+                standing: if entry.standing == Standing::Yanked { ReleaseStanding::Yanked } else { ReleaseStanding::Available },
                 names: Names::Read,
             }
         })
         .collect();
-    Some(Rc::new(
-        TickerFacts::new(&releases, pin, today).reading(reading),
-    ))
+    Some(Rc::new(TickerFacts::new(&releases, pin, today).reading(reading)))
 }
+
 
 /// The heads-up findings' facts, from what the source says it does.
 pub(super) fn signals(source: &SourceFacts) -> Signals {
     let places = |cap: &source_facts::scan::Capability| -> Sighting {
         Sighting {
             count: cap.count,
-            places: cap
-                .examples
-                .iter()
-                .map(|e| Place {
-                    file: e.file.clone().into(),
-                    line: e.line,
-                    text: e.text.clone().into(),
-                })
-                .collect(),
+            places: cap.examples.iter().map(|e| Place { file: e.file.clone().into(), line: e.line, text: e.text.clone().into() }).collect(),
         }
     };
     Signals {
-        build: if source.manifest.build == Build::Script || source.scan.build == Build::Script {
-            Build::Script
-        } else {
-            Build::Plain
-        },
+        build: if source.manifest.build == Build::Script || source.scan.build == Build::Script { Build::Script } else { Build::Plain },
         library: source.manifest.library,
         unsafe_code: source.scan.unsafe_code,
         unsafe_count: source.scan.unsafe_count,
@@ -868,19 +646,7 @@ pub(super) fn features(source: &SourceFacts) -> Option<FeatureFacts> {
     Some(FeatureFacts {
         names: manifest.features.clone(),
         default: manifest.default.clone(),
-        graph: manifest
-            .graph
-            .iter()
-            .map(|(name, node)| {
-                (
-                    name.clone(),
-                    FeatureNode {
-                        enables: node.enables.clone(),
-                        deps: node.deps.clone(),
-                    },
-                )
-            })
-            .collect(),
+        graph: manifest.graph.iter().map(|(name, node)| (name.clone(), FeatureNode { enables: node.enables.clone(), deps: node.deps.clone() })).collect(),
         sizes: source.dependency_lines.iter().cloned().collect(),
     })
 }
@@ -891,49 +657,21 @@ pub(super) fn byline(source: &SourceFacts) -> Vec<SharedString> {
     let manifest = &source.manifest;
     let mut parts: Vec<SharedString> = Vec::new();
     if !manifest.authors.is_empty() {
-        parts.push(
-            format!(
-                "by {}",
-                manifest
-                    .authors
-                    .iter()
-                    .take(2)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-            .into(),
-        );
+        parts.push(format!("by {}", manifest.authors.iter().take(2).cloned().collect::<Vec<_>>().join(", ")).into());
     }
     if let Some(repository) = &manifest.repository {
-        let short = repository
-            .trim_start_matches("https://")
-            .trim_start_matches("http://")
-            .trim_start_matches("www.")
-            .trim_end_matches(".git")
-            .trim_end_matches('/');
+        let short = repository.trim_start_matches("https://").trim_start_matches("http://").trim_start_matches("www.").trim_end_matches(".git").trim_end_matches('/');
         parts.push(short.to_owned().into());
     }
     if !manifest.categories.is_empty() {
-        parts.push(
-            manifest
-                .categories
-                .iter()
-                .take(2)
-                .map(|c| c.replace("::", " › "))
-                .collect::<Vec<_>>()
-                .join(", ")
-                .into(),
-        );
+        parts.push(manifest.categories.iter().take(2).map(|c| c.replace("::", " › ")).collect::<Vec<_>>().join(", ").into());
     }
     if let Some(edition) = &manifest.edition {
-        parts.push(
-            match &manifest.rust_version {
-                Some(version) => format!("Rust {edition}, needs {version}"),
-                None => format!("Rust {edition}"),
-            }
-            .into(),
-        );
+        parts.push(match &manifest.rust_version {
+            Some(version) => format!("Rust {edition}, needs {version}"),
+            None => format!("Rust {edition}"),
+        }
+        .into());
     }
     parts
 }

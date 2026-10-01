@@ -16,32 +16,16 @@ fn every_use_the_toml_upgrade_touches_is_only_respelled() {
     let krate = toml();
     let impact = krate.impact(TOML_PIN, TOML_NEXT);
     let paths: Vec<&str> = impact.iter().map(|u| u.change.path.as_ref()).collect();
-    assert_eq!(
-        paths, ["toml::from_str"; 4],
-        "the four uses the upgrade touches"
-    );
+    assert_eq!(paths, ["toml::from_str"; 4], "the four uses the upgrade touches");
     for u in impact {
-        assert!(
-            u.change.respelled(),
-            "{} at {} should read the same in plain words",
-            u.change.path,
-            u.site.place()
-        );
+        assert!(u.change.respelled(), "{} at {} should read the same in plain words", u.change.path, u.site.place());
     }
 
     let lens = lens(krate, "toml::value::Value", TOML_NEXT, &Nowhere);
     assert_eq!(lens.heading(), "Upgrading to 1.1.6");
-    assert_eq!(
-        lens.your_code().as_deref(),
-        Some("none of the 80 places your code uses toml change")
-    );
-    let (lead, places, more) = lens
-        .respelled_line()
-        .expect("the respelled uses get their quiet line");
-    assert_eq!(
-        lead,
-        "4 touch toml::from_str, respelled but the same in plain words: "
-    );
+    assert_eq!(lens.your_code().as_deref(), Some("none of the 80 places your code uses toml change"));
+    let (lead, places, more) = lens.respelled_line().expect("the respelled uses get their quiet line");
+    assert_eq!(lead, "4 touch toml::from_str, respelled but the same in plain words: ");
     assert_eq!(
         places,
         [
@@ -56,12 +40,7 @@ fn every_use_the_toml_upgrade_touches_is_only_respelled() {
 
     let line = summary(krate, TOML_PIN, TOML_NEXT);
     println!("shelf: {}", line.words(TOML_NEXT));
-    assert!(
-        line.words(TOML_NEXT)
-            .ends_with(" · none of your 80 uses change"),
-        "{}",
-        line.words(TOML_NEXT)
-    );
+    assert!(line.words(TOML_NEXT).ends_with(" · none of your 80 uses change"), "{}", line.words(TOML_NEXT));
     assert_eq!(line.changing, 0);
 }
 
@@ -75,11 +54,7 @@ fn map_insert_is_a_real_change_marked_where_it_differs() {
         .expect("Map::insert changed");
     assert_eq!(change.what, What::Changed);
     assert!(!change.respelled(), "Map::insert really changed");
-    let (before, after) = marked(
-        change.before.as_deref().unwrap_or(""),
-        change.after.as_deref().unwrap_or(""),
-        &Nowhere,
-    );
+    let (before, after) = marked(change.before.as_deref().unwrap_or(""), change.after.as_deref().unwrap_or(""), &Nowhere);
     assert_eq!(before.plain(), "(k text, v Value) → maybe Value");
     assert_eq!(after.plain(), "(k K, v V) → maybe V");
     // Exactly the differing subtrees are marked; `maybe`, the names and the
@@ -93,50 +68,20 @@ fn map_insert_is_a_real_change_marked_where_it_differs() {
 fn deserializer_new_changes_is_deprecated_and_can_now_fail_once_each() {
     let krate = toml();
     let changes = krate.changes(TOML_PIN, TOML_NEXT);
-    let new: Vec<_> = changes
-        .iter()
-        .filter(|c| c.name() == "new" && c.path.contains("::Deserializer::"))
-        .collect();
+    let new: Vec<_> = changes.iter().filter(|c| c.name() == "new" && c.path.contains("::Deserializer::")).collect();
     let whats: Vec<What> = new.iter().map(|c| c.what).collect();
-    assert_eq!(
-        whats,
-        [What::Changed, What::Deprecated],
-        "one change and one deprecation, re-exports folded: {new:#?}"
-    );
+    assert_eq!(whats, [What::Changed, What::Deprecated], "one change and one deprecation, re-exports folded: {new:#?}");
     let changed = new[0];
     assert!(!changed.respelled());
-    assert!(
-        changed.newly_fails(),
-        "`-> Deserializer` became `-> Result<Deserializer, Error>`"
-    );
+    assert!(changed.newly_fails(), "`-> Deserializer` became `-> Result<Deserializer, Error>`");
 
     let lens = lens(krate, "toml::Deserializer", TOML_NEXT, &Nowhere);
-    let rows: Vec<(What, &str, bool)> = lens
-        .rows
-        .iter()
-        .filter(|r| r.name == "new")
-        .map(|r| (r.what, r.name.as_ref(), r.newly_fails))
-        .collect();
-    assert_eq!(
-        rows,
-        [
-            (What::Changed, "new", true),
-            (What::Deprecated, "new", false)
-        ]
-    );
-    let row = lens
-        .rows
-        .iter()
-        .find(|r| r.name == "new" && r.what == What::Changed)
-        .expect("the changed row");
-    assert_eq!(
-        row.after.as_ref().map(|m| m.plain()).as_deref(),
-        Some("(raw text) → Deserializer or fails with Error")
-    );
-    assert_eq!(
-        row.after.as_ref().map(|m| m.marked(Mark::New)),
-        Some(vec!["raw".to_owned(), "or fails with Error".to_owned()])
-    );
+    let rows: Vec<(What, &str, bool)> =
+        lens.rows.iter().filter(|r| r.name == "new").map(|r| (r.what, r.name.as_ref(), r.newly_fails)).collect();
+    assert_eq!(rows, [(What::Changed, "new", true), (What::Deprecated, "new", false)]);
+    let row = lens.rows.iter().find(|r| r.name == "new" && r.what == What::Changed).expect("the changed row");
+    assert_eq!(row.after.as_ref().map(|m| m.plain()).as_deref(), Some("(raw text) → Deserializer or fails with Error"));
+    assert_eq!(row.after.as_ref().map(|m| m.marked(Mark::New)), Some(vec!["raw".to_owned(), "or fails with Error".to_owned()]));
 }
 
 #[test]
@@ -145,26 +90,11 @@ fn the_value_page_shows_one_row_per_item_not_per_re_export() {
     let rows: Vec<String> = lens
         .rows
         .iter()
-        .map(|r| {
-            format!(
-                "{} {} {}",
-                r.what.word(),
-                r.name,
-                r.after.as_ref().map(|m| m.plain()).unwrap_or_default()
-            )
-        })
+        .map(|r| format!("{} {} {}", r.what.word(), r.name, r.after.as_ref().map(|m| m.plain()).unwrap_or_default()))
         .collect();
-    assert_eq!(
-        rows,
-        [
-            "added deserialize_struct (name text, fields list of text, visitor V) → V’s Value or fails with Error"
-        ]
-    );
+    assert_eq!(rows, ["added deserialize_struct (name text, fields list of text, visitor V) → V’s Value or fails with Error"]);
     // The same page reached through the root re-export says the same.
-    assert_eq!(
-        lens,
-        super::lens(toml(), "toml::Value", TOML_NEXT, &Nowhere)
-    );
+    assert_eq!(lens, super::lens(toml(), "toml::Value", TOML_NEXT, &Nowhere));
 }
 
 #[test]
@@ -174,35 +104,19 @@ fn smallvec_1_16_0_to_1_16_1_changes_nothing() {
     assert!(krate.changes("1.16.0", "1.16.1").is_empty());
     assert!(krate.impact("1.16.0", "1.16.1").is_empty());
     let line = summary(krate, "1.16.0", "1.16.1");
-    assert_eq!(
-        line.words("1.16.1"),
-        "nothing breaking · 0 added · none of your 8 uses change"
-    );
+    assert_eq!(line.words("1.16.1"), "nothing breaking · 0 added · none of your 8 uses change");
     let lens = lens(krate, "smallvec::SmallVec", "1.16.1", &Nowhere);
     assert!(lens.rows.is_empty() && lens.affected.is_empty() && lens.respelled.is_empty());
-    assert_eq!(
-        lens.your_code().as_deref(),
-        Some("none of the 8 places your code uses smallvec change")
-    );
+    assert_eq!(lens.your_code().as_deref(), Some("none of the 8 places your code uses smallvec change"));
 }
 
 #[test]
 fn a_release_not_on_this_machine_is_said_so() {
     let krate = toml();
-    let old = krate
-        .versions
-        .iter()
-        .find(|v| !v.local)
-        .expect("some toml release is date-only");
+    let old = krate.versions.iter().find(|v| !v.local).expect("some toml release is date-only");
     let line = summary(krate, TOML_PIN, &old.v);
     assert!(!line.local);
-    assert_eq!(
-        line.words(&old.v),
-        format!(
-            "{} is not on this machine; only its date is known",
-            super::short(&old.v)
-        )
-    );
+    assert_eq!(line.words(&old.v), format!("{} is not on this machine; only its date is known", super::short(&old.v)));
     let lens = lens(krate, "toml::value::Value", &old.v, &Nowhere);
     assert!(!lens.compared() && lens.rows.is_empty());
 }
@@ -226,32 +140,18 @@ fn going_back_reads_as_going_back() {
 fn the_toml_upgrade_counts_each_item_once() {
     let krate = toml();
     let line = summary(krate, TOML_PIN, TOML_NEXT);
-    assert_eq!(
-        line.words(TOML_NEXT),
-        "40 breaking · 77 added · 38 respelled · none of your 80 uses change"
-    );
+    assert_eq!(line.words(TOML_NEXT), "40 breaking · 77 added · 38 respelled · none of your 80 uses change");
     let changes = krate.changes(TOML_PIN, TOML_NEXT);
-    let find = |what: What, path: &str| {
-        changes
-            .iter()
-            .filter(|c| c.what == what && c.path == path)
-            .count()
-    };
+    let find = |what: What, path: &str| changes.iter().filter(|c| c.what == what && c.path == path).count();
     // 1. `toml::from_slice` is `toml::de::from_slice` re-exported: one item
     //    (a path keyed on only its last two segments would count it twice).
-    assert_eq!(
-        find(What::Added, "toml::from_slice") + find(What::Added, "toml::de::from_slice"),
-        1
-    );
+    assert_eq!(find(What::Added, "toml::from_slice") + find(What::Added, "toml::de::from_slice"), 1);
     // 2. `de::Error::fmt` and `ser::Error::fmt` are two items that happen to
     //    share a tail (a naive fold by tail alone would merge them).
     assert_eq!(find(What::Changed, "toml::de::Error::fmt"), 1);
     assert_eq!(find(What::Changed, "toml::ser::Error::fmt"), 1);
     // 3. `v: f32` → `mut v: f32` is a binding the caller never sees.
-    let f32 = changes
-        .iter()
-        .find(|c| c.path == "toml::ser::ValueSerializer::serialize_f32")
-        .expect("serialize_f32 changed");
+    let f32 = changes.iter().find(|c| c.path == "toml::ser::ValueSerializer::serialize_f32").expect("serialize_f32 changed");
     assert!(f32.respelled(), "{:?} → {:?}", f32.before, f32.after);
 }
 
@@ -268,41 +168,14 @@ fn a_parameter_rename_alone_is_respelled_not_breaking() {
         .find(|c| c.path == "toml::ser::Serializer::serialize_bool")
         .expect("serialize_bool's parameter was renamed between these releases");
     assert_eq!(change.what, What::Changed);
-    assert_eq!(
-        change.before.as_deref(),
-        Some("fn serialize_bool(self, v:bool) -> Result<Serializer::Ok, Serializer::Error>")
-    );
-    assert_eq!(
-        change.after.as_deref(),
-        Some("fn serialize_bool(self, _v:bool) -> Result<Serializer::Ok, Serializer::Error>")
-    );
-    assert!(
-        change.respelled(),
-        "a parameter rename alone is never breaking: {:?} → {:?}",
-        change.before,
-        change.after
-    );
+    assert_eq!(change.before.as_deref(), Some("fn serialize_bool(self, v:bool) -> Result<Serializer::Ok, Serializer::Error>"));
+    assert_eq!(change.after.as_deref(), Some("fn serialize_bool(self, _v:bool) -> Result<Serializer::Ok, Serializer::Error>"));
+    assert!(change.respelled(), "a parameter rename alone is never breaking: {:?} → {:?}", change.before, change.after);
 
-    let (before, after) = marked(
-        change.before.as_deref().unwrap_or(""),
-        change.after.as_deref().unwrap_or(""),
-        &Nowhere,
-    );
-    assert!(
-        before.marked(Mark::Old).is_empty(),
-        "a renamed parameter is never struck: {:?}",
-        before.marked(Mark::Old)
-    );
-    assert!(
-        after.marked(Mark::New).is_empty(),
-        "a renamed parameter is never underlined: {:?}",
-        after.marked(Mark::New)
-    );
-    assert_eq!(
-        before.plain(),
-        after.plain(),
-        "the two sides read the same in plain words"
-    );
+    let (before, after) = marked(change.before.as_deref().unwrap_or(""), change.after.as_deref().unwrap_or(""), &Nowhere);
+    assert!(before.marked(Mark::Old).is_empty(), "a renamed parameter is never struck: {:?}", before.marked(Mark::Old));
+    assert!(after.marked(Mark::New).is_empty(), "a renamed parameter is never underlined: {:?}", after.marked(Mark::New));
+    assert_eq!(before.plain(), after.plain(), "the two sides read the same in plain words");
 
     // The same `respelled()` predicate gates both the shelf's breaking count
     // and `Crate::impact`'s per-use changing count, so this change (were it
@@ -310,10 +183,7 @@ fn a_parameter_rename_alone_is_respelled_not_breaking() {
     // crate-wide line already prices it as one of the 38 respelled, not one
     // of the 40 breaking.
     let line = summary(krate, TOML_PIN, TOML_NEXT);
-    assert_eq!(
-        line.words(TOML_NEXT),
-        "40 breaking · 77 added · 38 respelled · none of your 80 uses change"
-    );
+    assert_eq!(line.words(TOML_NEXT), "40 breaking · 77 added · 38 respelled · none of your 80 uses change");
 }
 
 #[test]
@@ -322,12 +192,7 @@ fn the_comb_touches_only_releases_that_really_change_your_code() {
     // pin (a lifetime moved), so none of them touches your code.
     let krate = toml();
     assert!(krate.touches().is_empty(), "{:?}", krate.touches());
-    assert!(
-        fixture::get("smallvec")
-            .expect("smallvec is in the fixture")
-            .touches()
-            .is_empty()
-    );
+    assert!(fixture::get("smallvec").expect("smallvec is in the fixture").touches().is_empty());
     // Had one of your uses been `Map::insert`, 1.1.6 would touch it.
     let insert = krate
         .changes(TOML_PIN, TOML_NEXT)
@@ -337,10 +202,7 @@ fn the_comb_touches_only_releases_that_really_change_your_code() {
     let mut yours = krate.clone();
     for (from, to, list) in &mut yours.impact {
         if from == TOML_PIN && to == TOML_NEXT {
-            list.push(super::Impacted {
-                site: list[0].site.clone(),
-                change: insert.clone(),
-            });
+            list.push(super::Impacted { site: list[0].site.clone(), change: insert.clone() });
         }
     }
     let touches: Vec<String> = yours.touches().iter().map(ToString::to_string).collect();
@@ -358,10 +220,7 @@ fn debug_respelled_dump() {
     for c in &changes {
         if c.what == What::Changed && c.severity == super::Severity::Breaking && c.respelled() {
             n += 1;
-            println!(
-                "RESPELLED[{n}] {} \n  before: {:?}\n  after:  {:?}",
-                c.path, c.before, c.after
-            );
+            println!("RESPELLED[{n}] {} \n  before: {:?}\n  after:  {:?}", c.path, c.before, c.after);
         }
     }
     println!("total respelled-breaking: {n}");

@@ -217,9 +217,7 @@ fn rust_real_corpus_crates_lower() {
             continue;
         }
         if let Some(filter) = &filter
-            && !filter
-                .iter()
-                .any(|needle| crate_name.contains(needle.as_str()))
+            && !filter.iter().any(|needle| crate_name.contains(needle.as_str()))
         {
             continue;
         }
@@ -323,18 +321,20 @@ fn rust_real_corpus_regression_fixtures() {
     let repeated_foreign_application = "pub fn pair(_: Vec<u8>, _: Vec<u8>) -> usize { 0 }";
     // `impl Trait` spells no path leaf; the whole written bound run is borrowed
     // so two distinct `impl` positions stay distinct without a fabricated name.
-    let impl_trait_written_run =
-        "pub fn a() -> impl core::fmt::Debug { 0u8 } pub fn b() -> impl core::fmt::Debug { 0u16 }";
+    let impl_trait_written_run = "pub fn a() -> impl core::fmt::Debug { 0u8 } pub fn b() -> impl core::fmt::Debug { 0u16 }";
     // A generic default on a declaration is an annotation, not a use; the bare
     // local default binds the declared ordinal, and an unmodelled default keeps
     // its honest written spelling.
-    let generic_defaults = "pub struct Holder<T = u8>(pub T); pub type Alias<T = u16> = T;";
+    let generic_defaults =
+        "pub struct Holder<T = u8>(pub T); pub type Alias<T = u16> = T;";
     // A `where` predicate is a free predicate on the callable, not a second
     // declared parameter row.
-    let where_free_predicate = "pub fn f<T>(value: T) -> T where T: core::fmt::Debug { value }";
+    let where_free_predicate =
+        "pub fn f<T>(value: T) -> T where T: core::fmt::Debug { value }";
     // Two distinct raw-pointer compounds in one signature are distinct
     // carriers, while the shared leaf stays one deduped row.
-    let repeated_raw_pointer = "pub fn pair(_: *const u8, _: *const u8) -> u8 { 0 }";
+    let repeated_raw_pointer =
+        "pub fn pair(_: *const u8, _: *const u8) -> u8 { 0 }";
     for (label, body) in [
         ("multiple-inherent-impls", impl_blocks),
         ("wildcard-parameters", wildcard_parameters),
@@ -387,9 +387,6 @@ fn rust_real_corpus_macro_stamped_impls_lower() {
     ] {
         let outcome = compile_corpus_file(body.as_bytes());
         eprintln!("MACRO-IMPL {label} => {outcome}");
-        assert_eq!(
-            outcome, "OK",
-            "macro-stamped impl fixture {label} did not lower"
-        );
+        assert_eq!(outcome, "OK", "macro-stamped impl fixture {label} did not lower");
     }
 }

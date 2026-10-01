@@ -21,13 +21,7 @@ pub(super) fn split_top(text: &str, sep: char) -> Vec<String> {
             '"' | '`' => quote = Some(ch),
             // A single quote opens a string only where a value can start
             // (`= 'x'`, `('x')`); elsewhere it is a Rust lifetime (`<'a, T>`).
-            '\'' if matches!(
-                current.trim_end().chars().next_back(),
-                Some('=' | '(' | '[' | ':')
-            ) =>
-            {
-                quote = Some(ch)
-            }
+            '\'' if matches!(current.trim_end().chars().next_back(), Some('=' | '(' | '[' | ':')) => quote = Some(ch),
             '<' | '(' | '[' | '{' => depth += 1,
             '>' if previous == '-' || previous == '=' => {}
             '>' | ')' | ']' | '}' => depth -= 1,
@@ -67,10 +61,7 @@ pub(super) fn balanced(text: &str, open: usize) -> Option<(&str, usize)> {
             depth -= 1;
             if depth == 0 {
                 let end = open + at;
-                return Some((
-                    &text[open + opener.len_utf8()..end],
-                    end + closer.len_utf8(),
-                ));
+                return Some((&text[open + opener.len_utf8()..end], end + closer.len_utf8()));
             }
         }
         previous = ch;
@@ -94,9 +85,7 @@ pub(super) fn strip_leading(mut source: &str) -> &str {
                 None => return "",
             }
         } else if source.starts_with("#[") || source.starts_with("#![") {
-            let Some(start) = source.find('[') else {
-                return "";
-            };
+            let Some(start) = source.find('[') else { return "" };
             match balanced(source, start) {
                 Some((_, end)) => source = &source[end..],
                 None => return "",
@@ -129,16 +118,10 @@ pub(super) fn clean(markup: &str) -> String {
         };
         let inner = &after[..end];
         let mut tail = &after[end + 2..];
-        if let Some(target) = tail
-            .strip_prefix('(')
-            .and_then(|t| t.find(')').map(|close| (&t[..close], &t[close + 1..])))
-        {
+        if let Some(target) = tail.strip_prefix('(').and_then(|t| t.find(')').map(|close| (&t[..close], &t[close + 1..]))) {
             out.push_str(&format!("[{inner}]({})", target.0));
             tail = target.1;
-        } else if let Some(reference) = tail
-            .strip_prefix('[')
-            .and_then(|t| t.find(']').map(|close| &t[close + 1..]))
-        {
+        } else if let Some(reference) = tail.strip_prefix('[').and_then(|t| t.find(']').map(|close| &t[close + 1..])) {
             out.push_str(&format!("`{inner}`"));
             tail = reference;
         } else {
@@ -162,8 +145,7 @@ fn unlink_code(markup: &str) -> String {
             let label = &after[..close];
             let tail = &after[close + 2..];
             let end = tail.find(')')?;
-            (label.contains('`') && !label.contains('[') && !tail[..end].starts_with("http"))
-                .then(|| (label, &tail[end + 1..]))
+            (label.contains('`') && !label.contains('[') && !tail[..end].starts_with("http")).then(|| (label, &tail[end + 1..]))
         });
         match linked {
             Some((label, tail)) => {
@@ -193,14 +175,8 @@ pub(super) fn keyword(text: &str, word: &str) -> Option<usize> {
     for (at, ch) in text.char_indices() {
         if depth == 0
             && text[at..].starts_with(word)
-            && !text[..at]
-                .chars()
-                .next_back()
-                .is_some_and(|c| c.is_alphanumeric() || c == '_')
-            && !text[at + word.len()..]
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+            && !text[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_')
+            && !text[at + word.len()..].chars().next().is_some_and(|c| c.is_alphanumeric() || c == '_')
         {
             return Some(at);
         }
@@ -286,22 +262,8 @@ pub(super) fn plain(markup: &str) -> String {
 pub(super) fn lead_out(doc: &str) -> String {
     let lower = doc.to_ascii_lowercase();
     let mut rest = doc.trim();
-    for subject in [
-        "the error",
-        "this error",
-        "the failure",
-        "this failure",
-        "the problem",
-        "this kind",
-    ] {
-        for verb in [
-            " was caused by ",
-            " is caused by ",
-            " is due to ",
-            " was due to ",
-            " happens when ",
-            " occurs when ",
-        ] {
+    for subject in ["the error", "this error", "the failure", "this failure", "the problem", "this kind"] {
+        for verb in [" was caused by ", " is caused by ", " is due to ", " was due to ", " happens when ", " occurs when "] {
             let lead = format!("{subject}{verb}");
             if lower.starts_with(&lead) {
                 rest = &doc[lead.len()..];
@@ -315,16 +277,12 @@ pub(super) fn lead_out(doc: &str) -> String {
 /// `text` with its first letter in lower case.
 pub(super) fn lower_first(text: &str) -> String {
     let mut chars = text.chars();
-    chars.next().map_or_else(String::new, |first| {
-        first.to_lowercase().chain(chars).collect()
-    })
+    chars.next().map_or_else(String::new, |first| first.to_lowercase().chain(chars).collect())
 }
 
 /// The last `::`, `.` or `\` separated segment of a path.
 pub(super) fn last_segment(path: &str) -> &str {
-    path.rsplit(['.', ':', '\\'])
-        .find(|part| !part.is_empty())
-        .unwrap_or(path)
+    path.rsplit(['.', ':', '\\']).find(|part| !part.is_empty()).unwrap_or(path)
 }
 
 #[cfg(test)]
@@ -333,53 +291,25 @@ mod tests {
 
     #[test]
     fn splits_outside_brackets_and_lifetimes() {
-        assert_eq!(
-            split_top("a: &'a str, b: Vec<(i32, i32)>, c: [u8; 4]", ','),
-            ["a: &'a str", "b: Vec<(i32, i32)>", "c: [u8; 4]"]
-        );
-        assert_eq!(
-            split_top("x: Fn(A) -> B, y: T", ','),
-            ["x: Fn(A) -> B", "y: T"]
-        );
+        assert_eq!(split_top("a: &'a str, b: Vec<(i32, i32)>, c: [u8; 4]", ','), ["a: &'a str", "b: Vec<(i32, i32)>", "c: [u8; 4]"]);
+        assert_eq!(split_top("x: Fn(A) -> B, y: T", ','), ["x: Fn(A) -> B", "y: T"]);
     }
 
     #[test]
     fn sentences_skip_code_and_links() {
-        assert_eq!(
-            first_sentence("Deserialize an instance of type `T` from a string of JSON text. More."),
-            "Deserialize an instance of type `T` from a string of JSON text."
-        );
-        assert_eq!(
-            first_sentence(
-                "Read [the guide][crate::v1.2] before calling `value.get()` again. A second."
-            ),
-            "Read [the guide][crate::v1.2] before calling `value.get()` again."
-        );
+        assert_eq!(first_sentence("Deserialize an instance of type `T` from a string of JSON text. More."), "Deserialize an instance of type `T` from a string of JSON text.");
+        assert_eq!(first_sentence("Read [the guide][crate::v1.2] before calling `value.get()` again. A second."), "Read [the guide][crate::v1.2] before calling `value.get()` again.");
     }
 
     #[test]
     fn intra_doc_links_become_code() {
-        assert_eq!(
-            clean(
-                "See the [`serde_json::value`] module and [`Map`][crate::Map] or [`x`](http://a)."
-            ),
-            "See the `serde_json::value` module and `Map` or [x](http://a)."
-        );
-        assert_eq!(
-            clean("plain [text](t) and `code`"),
-            "plain [text](t) and `code`"
-        );
-        assert_eq!(
-            clean("See the [`serde_json::value` module documentation](self) for usage."),
-            "See the `serde_json::value` module documentation for usage."
-        );
+        assert_eq!(clean("See the [`serde_json::value`] module and [`Map`][crate::Map] or [`x`](http://a)."), "See the `serde_json::value` module and `Map` or [x](http://a).");
+        assert_eq!(clean("plain [text](t) and `code`"), "plain [text](t) and `code`");
+        assert_eq!(clean("See the [`serde_json::value` module documentation](self) for usage."), "See the `serde_json::value` module documentation for usage.");
     }
 
     #[test]
     fn markup_reads_as_plain_words() {
-        assert_eq!(
-            plain("Call `x.get()` on the [Value](crate::Value) and **stop**."),
-            "Call x.get() on the Value and stop."
-        );
+        assert_eq!(plain("Call `x.get()` on the [Value](crate::Value) and **stop**."), "Call x.get() on the Value and stop.");
     }
 }

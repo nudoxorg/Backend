@@ -8,9 +8,7 @@
 //! `(f *FlagSet)`, grouped parameters (`a, b string`), and results whose
 //! trailing `error` is the drop ("or returns error").
 
-use super::{
-    Callable, Drop, DropVerb, Effect, Lang, Port, Recv, Source, Tok, TokKind, Ty, spelled, words,
-};
+use super::{Callable, Drop, DropVerb, Effect, Lang, Port, Recv, Source, Tok, TokKind, Ty, spelled, words};
 use crate::semantics::members::Receiver;
 use crate::semantics::recorded::{Language, callable as recorded};
 use crate::semantics::types::{Piece, split_top};
@@ -33,86 +31,48 @@ pub(super) fn callable(source: &Source) -> Option<Callable> {
     let signature = source.signature.as_deref()?;
     let mut out = match source.lang {
         Lang::Go => go(signature, &source.name, source.owner.as_deref())?,
-        lang => shared(
-            signature,
-            &source.name,
-            lang,
-            source.owner.as_deref(),
-            source.kind == super::DeclKind::Method,
-        )?,
+        lang => shared(signature, &source.name, lang, source.owner.as_deref(), source.kind == super::DeclKind::Method)?,
     };
     // A documented panic is a drop too.
-    let panics = source
-        .failures
-        .iter()
-        .any(|failure| failure.member.is_none() && failure.verb == DropVerb::Panics);
+    let panics = source.failures.iter().any(|failure| failure.member.is_none() && failure.verb == DropVerb::Panics);
     if panics && !out.drops.iter().any(|drop| drop.verb == DropVerb::Panics) {
-        out.drops.push(Drop {
-            verb: DropVerb::Panics,
-            ty: None,
-        });
+        out.drops.push(Drop { verb: DropVerb::Panics, ty: None });
     }
     Some(out)
 }
 
 fn word(text: &str) -> Tok {
-    Tok {
-        kind: TokKind::Word,
-        text: text.to_owned(),
-        fam: super::Fam::Type,
-    }
+    Tok { kind: TokKind::Word, text: text.to_owned(), fam: super::Fam::Type }
 }
 
 /// A port's type in words; a bare generic with a bound reads as the bound
 /// (`T` where `T: Deserialize` reads "any Deserialize").
 fn port_ty(ty: &crate::semantics::types::Spelled, wheres: &[crate::semantics::model::Where]) -> Ty {
-    let solid = ty
-        .pieces
-        .iter()
-        .filter(|piece| !matches!(piece, Piece::Space))
-        .collect::<Vec<_>>();
+    let solid = ty.pieces.iter().filter(|piece| !matches!(piece, Piece::Space)).collect::<Vec<_>>();
     if let [Piece::Var(name)] = solid.as_slice()
         && let Some(clause) = wheres.iter().find(|clause| clause.name == *name)
     {
-        let mut pieces = clause
-            .sentence
-            .iter()
-            .skip_while(|piece| matches!(piece, Piece::Space))
-            .cloned()
-            .collect::<Vec<_>>();
+        let mut pieces = clause.sentence.iter().skip_while(|piece| matches!(piece, Piece::Space)).cloned().collect::<Vec<_>>();
         if let Some(Piece::Word(first)) = pieces.first().cloned() {
             match first.as_ref().strip_prefix("is") {
                 Some("") => {
                     pieces.remove(0);
                 }
-                Some(rest) if rest.starts_with(' ') => {
-                    pieces[0] = Piece::Word(rest.trim_start().to_owned().into())
-                }
+                Some(rest) if rest.starts_with(' ') => pieces[0] = Piece::Word(rest.trim_start().to_owned().into()),
                 _ => {}
             }
         }
-        let pieces = pieces
-            .into_iter()
-            .skip_while(|piece| matches!(piece, Piece::Space))
-            .collect::<Vec<_>>();
+        let pieces = pieces.into_iter().skip_while(|piece| matches!(piece, Piece::Space)).collect::<Vec<_>>();
         return spelled(&pieces, &ty.source);
     }
     spelled(&ty.pieces, &ty.source)
 }
 
-fn shared(
-    signature: &str,
-    name: &str,
-    lang: Lang,
-    owner: Option<&str>,
-    method: bool,
-) -> Option<Callable> {
+fn shared(signature: &str, name: &str, lang: Lang, owner: Option<&str>, method: bool) -> Option<Callable> {
     let pipe = recorded(signature, name, language(lang))?;
     // TypeScript's types read in its own words (`unknown` is "anything",
     // `$ZodType` keeps its `$`); the shared projection spells Rust's.
-    let own = |ty: &crate::semantics::types::Spelled| {
-        (lang == Lang::TypeScript).then(|| words(&ty.source, lang))
-    };
+    let own = |ty: &crate::semantics::types::Spelled| (lang == Lang::TypeScript).then(|| words(&ty.source, lang));
     let mut receiver = None;
     let mut ports = Vec::new();
     for input in &pipe.inputs {
@@ -124,23 +84,10 @@ fn shared(
                     Receiver::UsesUp => Effect::UsesUp,
                     Receiver::Makes => Effect::Makes,
                 };
-                let ty = owner.map_or_else(
-                    || Ty {
-                        toks: vec![word("it")],
-                        exact: String::new(),
-                    },
-                    |owner| words(owner, lang),
-                );
-                receiver = Some(Recv {
-                    name: "self".to_owned(),
-                    ty,
-                    effect,
-                });
+                let ty = owner.map_or_else(|| Ty { toks: vec![word("it")], exact: String::new() }, |owner| words(owner, lang));
+                receiver = Some(Recv { name: "self".to_owned(), ty, effect });
             }
-            (None, Some(ty)) => ports.push(Port {
-                name: input.name.to_string(),
-                ty: own(ty).unwrap_or_else(|| port_ty(ty, &pipe.wheres)),
-            }),
+            (None, Some(ty)) => ports.push(Port { name: input.name.to_string(), ty: own(ty).unwrap_or_else(|| port_ty(ty, &pipe.wheres)) }),
             (None, None) => {}
         }
     }
@@ -150,29 +97,16 @@ fn shared(
         && method
         && let Some(owner) = owner
     {
-        receiver = Some(Recv {
-            name: String::new(),
-            ty: words(owner, lang),
-            effect: Effect::None,
-        });
+        receiver = Some(Recv { name: String::new(), ty: words(owner, lang), effect: Effect::None });
     }
     let drops = match &pipe.fails {
-        Some(error) => vec![Drop {
-            verb: DropVerb::FailsWith,
-            ty: error
-                .as_ref()
-                .map(|ty| own(ty).unwrap_or_else(|| spelled(&ty.pieces, &ty.source))),
-        }],
+        Some(error) => vec![Drop { verb: DropVerb::FailsWith, ty: error.as_ref().map(|ty| own(ty).unwrap_or_else(|| spelled(&ty.pieces, &ty.source))) }],
         None => Vec::new(),
     };
     Some(Callable {
         receiver,
         ports,
-        gives: pipe
-            .output
-            .as_ref()
-            .map(|out| own(out).unwrap_or_else(|| spelled(&out.pieces, &out.source)))
-            .filter(|ty| !ty.toks.is_empty()),
+        gives: pipe.output.as_ref().map(|out| own(out).unwrap_or_else(|| spelled(&out.pieces, &out.source))).filter(|ty| !ty.toks.is_empty()),
         drops,
         flags: pipe.flags.iter().map(|flag| (*flag).to_owned()).collect(),
     })
@@ -201,17 +135,9 @@ fn parens(text: &str) -> Option<(&str, &str)> {
 /// `a, b string, c int` → `[(a, string), (b, string), (c, int)]`; unnamed
 /// results (`int, error`) have empty names.
 fn go_list(list: &str, named: bool) -> Vec<(String, String)> {
-    let parts = split_top(list, ',')
-        .into_iter()
-        .map(|part| part.trim().to_owned())
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>();
+    let parts = split_top(list, ',').into_iter().map(|part| part.trim().to_owned()).filter(|part| !part.is_empty()).collect::<Vec<_>>();
     // A list is named when any part has a name and a type.
-    let any_named = named
-        && parts.iter().any(|part| {
-            part.split_once(char::is_whitespace)
-                .is_some_and(|(_, ty)| !ty.trim().is_empty())
-        });
+    let any_named = named && parts.iter().any(|part| part.split_once(char::is_whitespace).is_some_and(|(_, ty)| !ty.trim().is_empty()));
     if !any_named {
         return parts.into_iter().map(|ty| (String::new(), ty)).collect();
     }
@@ -241,67 +167,38 @@ fn go(signature: &str, name: &str, owner: Option<&str>) -> Option<Callable> {
     let mut receiver = None;
     let rest = if text.starts_with('(') {
         let (recv, rest) = parens(text)?;
-        let (recv_name, recv_ty) = recv
-            .trim()
-            .split_once(char::is_whitespace)
-            .map_or(("", recv.trim()), |(n, t)| (n, t.trim()));
-        let effect = if recv_ty.starts_with('*') {
-            Effect::Changes
-        } else {
-            Effect::Reads
-        };
+        let (recv_name, recv_ty) = recv.trim().split_once(char::is_whitespace).map_or(("", recv.trim()), |(n, t)| (n, t.trim()));
+        let effect = if recv_ty.starts_with('*') { Effect::Changes } else { Effect::Reads };
         let ty = recv_ty.trim_start_matches('*');
         let ty = owner.filter(|owner| !owner.is_empty()).unwrap_or(ty);
-        receiver = Some(Recv {
-            name: recv_name.to_owned(),
-            ty: words(ty, Lang::Go),
-            effect,
-        });
+        receiver = Some(Recv { name: recv_name.to_owned(), ty: words(ty, Lang::Go), effect });
         rest.trim_start()
     } else {
         text
     };
     let rest = rest.strip_prefix(name)?.trim_start();
     // Type parameters: `[T any]`.
-    let rest = if let Some(inner) = rest.strip_prefix('[') {
-        inner.split_once(']').map_or(rest, |(_, after)| after)
-    } else {
-        rest
-    };
+    let rest = if let Some(inner) = rest.strip_prefix('[') { inner.split_once(']').map_or(rest, |(_, after)| after) } else { rest };
     let (params, results) = parens(rest)?;
     let ports = go_list(params, true)
         .into_iter()
         .map(|(name, ty)| {
             let variadic = ty.strip_prefix("...");
-            let ty = variadic.map_or_else(
-                || words(&ty, Lang::Go),
-                |inner| {
-                    let mut ty = words(inner, Lang::Go);
-                    ty.toks.insert(0, word("any number of"));
-                    ty.exact = format!("...{inner}");
-                    ty
-                },
-            );
+            let ty = variadic.map_or_else(|| words(&ty, Lang::Go), |inner| {
+                let mut ty = words(inner, Lang::Go);
+                ty.toks.insert(0, word("any number of"));
+                ty.exact = format!("...{inner}");
+                ty
+            });
             Port { name, ty }
         })
         .collect();
     let results = results.trim().trim_end_matches('{').trim();
-    let mut outs = if results.starts_with('(') {
-        parens(results)
-            .map(|(list, _)| go_list(list, true))
-            .unwrap_or_default()
-    } else if results.is_empty() {
-        Vec::new()
-    } else {
-        vec![(String::new(), results.to_owned())]
-    };
+    let mut outs = if results.starts_with('(') { parens(results).map(|(list, _)| go_list(list, true)).unwrap_or_default() } else if results.is_empty() { Vec::new() } else { vec![(String::new(), results.to_owned())] };
     let mut drops = Vec::new();
     if outs.last().is_some_and(|(_, ty)| ty.trim() == "error") {
         outs.pop();
-        drops.push(Drop {
-            verb: DropVerb::Returns,
-            ty: Some(words("error", Lang::Go)),
-        });
+        drops.push(Drop { verb: DropVerb::Returns, ty: Some(words("error", Lang::Go)) });
     }
     let gives = match outs.as_slice() {
         [] => None,
@@ -316,17 +213,8 @@ fn go(signature: &str, name: &str, owner: Option<&str>) -> Option<Callable> {
                 toks.extend(words(ty, Lang::Go).toks);
                 exact.push(ty.clone());
             }
-            Some(Ty {
-                toks,
-                exact: format!("({})", exact.join(", ")),
-            })
+            Some(Ty { toks, exact: format!("({})", exact.join(", ")) })
         }
     };
-    Some(Callable {
-        receiver,
-        ports,
-        gives,
-        drops,
-        flags: Vec::new(),
-    })
+    Some(Callable { receiver, ports, gives, drops, flags: Vec::new() })
 }

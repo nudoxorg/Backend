@@ -121,9 +121,9 @@ impl IntoElement for Said {
         } else {
             facet::probe::TextOverflow::Wrap
         };
-        let key = self.key.unwrap_or_else(|| {
-            gpui::ElementId::Name(SharedString::from(format!("text:{}", self.content)))
-        });
+        let key = self
+            .key
+            .unwrap_or_else(|| gpui::ElementId::Name(SharedString::from(format!("text:{}", self.content))));
         facet::probe::text(key, self.content, self.role, 1.0, overflow, self.div).into_any_element()
     }
 }
@@ -186,12 +186,7 @@ pub(crate) fn quiet(words: impl Into<SharedString>, measure: &Measure, palette: 
 
 /// A comb of hairline ticks where text will arrive (the loading board):
 /// `width` px wide, one line of `role` tall.
-pub(crate) fn pending(
-    width: Pixels,
-    role: TypeRole,
-    measure: &Measure,
-    palette: &Palette,
-) -> impl IntoElement {
+pub(crate) fn pending(width: Pixels, role: TypeRole, measure: &Measure, palette: &Palette) -> impl IntoElement {
     let role = measure.role(role);
     let tick: Hsla = palette.ink4.into();
     let height = px(role.line);
@@ -223,13 +218,7 @@ pub(crate) struct HoverIntent {
 
 impl HoverIntent {
     /// Reports the pointer entering (`true`) or leaving (`false`) a link.
-    pub(crate) fn hover<R: 'static>(
-        &mut self,
-        key: PageKey,
-        hovered: bool,
-        links: &Links,
-        cx: &mut Context<R>,
-    ) {
+    pub(crate) fn hover<R: 'static>(&mut self, key: PageKey, hovered: bool, links: &Links, cx: &mut Context<R>) {
         if hovered {
             if self.hovered.as_ref() == Some(&key) {
                 return;
@@ -266,17 +255,9 @@ pub(crate) fn scroll_probe(key: &'static str, handle: gpui::ScrollHandle) -> imp
                 let reach = handle.max_offset();
                 let content = Bounds::new(
                     viewport.origin,
-                    size(
-                        viewport.size.width + reach.x,
-                        viewport.size.height + reach.y,
-                    ),
+                    size(viewport.size.width + reach.x, viewport.size.height + reach.y),
                 );
-                facet::probe::record_scroll(
-                    cx,
-                    &gpui::ElementId::Name(SharedString::new_static(key)),
-                    viewport,
-                    content,
-                );
+                facet::probe::record_scroll(cx, &gpui::ElementId::Name(SharedString::new_static(key)), viewport, content);
             }
         },
         |_, (), _, _| {},
@@ -287,11 +268,7 @@ pub(crate) fn scroll_probe(key: &'static str, handle: gpui::ScrollHandle) -> imp
 
 /// A key cap that shows over a shell-drawn control while ⌘ is held (facet
 /// controls rise their own through `.key(…)`).
-pub(crate) fn keycap(
-    shown: bool,
-    label: &'static str,
-    measure: &Measure,
-) -> Option<gpui::AnyElement> {
+pub(crate) fn keycap(shown: bool, label: &'static str, measure: &Measure) -> Option<gpui::AnyElement> {
     shown.then(|| {
         div()
             .absolute()
@@ -309,40 +286,31 @@ pub(crate) fn symbol_view_route(
     view: crate::navigation::View,
     line: Option<u32>,
 ) -> Option<crate::navigation::Route> {
-    Some(crate::navigation::Route::Symbol(
-        crate::navigation::SymbolRoute {
-            project: None,
-            package: crate::core::PackageId::new(package).ok()?,
-            id: crate::navigation::Coordinate::new(symbol.as_str()).ok()?,
-            at: None,
-            view,
-            line,
-            selected: None,
-        },
-    ))
+    Some(crate::navigation::Route::Symbol(crate::navigation::SymbolRoute {
+        project: None,
+        package: crate::core::PackageId::new(package).ok()?,
+        id: crate::navigation::Coordinate::new(symbol.as_str()).ok()?,
+        at: None,
+        view,
+        line,
+        selected: None,
+    }))
 }
 
 /// The page route for a declaration inside `package`.
-pub(crate) fn symbol_route(
-    package: &str,
-    symbol: &crate::model::pages::SymbolRef,
-) -> Option<crate::navigation::Route> {
+pub(crate) fn symbol_route(package: &str, symbol: &crate::model::pages::SymbolRef) -> Option<crate::navigation::Route> {
     symbol_view_route(package, symbol, crate::navigation::View::Page, None)
 }
 
 /// The package route for a package.
-pub(crate) fn package_route(
-    package: &crate::model::pages::PackageRef,
-) -> Option<crate::navigation::Route> {
-    Some(crate::navigation::Route::Package(
-        crate::navigation::PackageRoute {
-            project: None,
-            package: crate::core::PackageId::new(package.as_str()).ok()?,
-            lane: crate::navigation::PackageLane::Overview,
-            selected: None,
-            at: None,
-        },
-    ))
+pub(crate) fn package_route(package: &crate::model::pages::PackageRef) -> Option<crate::navigation::Route> {
+    Some(crate::navigation::Route::Package(crate::navigation::PackageRoute {
+        project: None,
+        package: crate::core::PackageId::new(package.as_str()).ok()?,
+        lane: crate::navigation::PackageLane::Overview,
+        selected: None,
+        at: None,
+    }))
 }
 
 /// The element id a declaration's mark carries on every view that shows it
@@ -365,12 +333,7 @@ pub(crate) fn package_of(symbol: &crate::model::pages::SymbolRef) -> Option<Stri
 
 /// A kind mark at the size its text is set at: the three board sizes, picked
 /// by the text scale so a mark beside 200 % text is not a 100 % speck.
-pub(crate) fn kind_mark(
-    kind: Kind,
-    base: facet::icons::KindSize,
-    measure: &Measure,
-    palette: &Palette,
-) -> gpui::AnyElement {
+pub(crate) fn kind_mark(kind: Kind, base: facet::icons::KindSize, measure: &Measure, palette: &Palette) -> gpui::AnyElement {
     use facet::icons::KindSize;
     let (boxed, _, _) = base.metrics();
     let wanted = boxed * measure.scale();
@@ -400,8 +363,8 @@ pub(crate) fn link_ink(has_place: bool, palette: &Palette) -> Hsla {
 
 /// A world node's kind as the mark it wears.
 pub(crate) const fn world_kind(kind: facet::graph::Kind) -> Kind {
-    use Kind as Mark;
     use facet::graph::Kind as World;
+    use Kind as Mark;
     match kind {
         World::Struct => Mark::Struct,
         World::Enum => Mark::Enum,
@@ -425,13 +388,9 @@ pub(crate) const fn world_kind(kind: facet::graph::Kind) -> Kind {
 #[must_use]
 pub(crate) fn names_a_declaration(name: &str) -> bool {
     let mut chars = name.chars();
-    let starts = chars
-        .next()
-        .is_some_and(|first| first.is_alphabetic() || first == '_' || first == '$');
+    let starts = chars.next().is_some_and(|first| first.is_alphabetic() || first == '_' || first == '$');
     starts
-        && name
-            .chars()
-            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '$' | '-' | '.'))
+        && name.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | '$' | '-' | '.'))
         && !matches!(name, "crate" | "self" | "super" | "Self")
 }
 
@@ -441,19 +400,10 @@ mod declaration_name_tests {
 
     #[test]
     fn a_type_written_out_or_a_path_keyword_is_not_a_declaration() {
-        for name in [
-            "Value",
-            "read_settings",
-            "from_str",
-            "_private",
-            "RUSTSEC",
-            "value.rs",
-        ] {
+        for name in ["Value", "read_settings", "from_str", "_private", "RUSTSEC", "value.rs"] {
             assert!(names_a_declaration(name), "{name}");
         }
-        for name in [
-            "&str", "crate", "self", "super", "Self", "Vec<T>", "[u8]", "", "&'a str", "()",
-        ] {
+        for name in ["&str", "crate", "self", "super", "Self", "Vec<T>", "[u8]", "", "&'a str", "()"] {
             assert!(!names_a_declaration(name), "{name}");
         }
     }

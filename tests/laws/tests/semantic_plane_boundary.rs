@@ -102,11 +102,7 @@ fn code_only(text: &str) -> String {
             if bytes[index] == b'b' {
                 out[index] = b' ';
             }
-            let mut cursor = if bytes[index] == b'b' {
-                index + 1
-            } else {
-                index
-            };
+            let mut cursor = if bytes[index] == b'b' { index + 1 } else { index };
             out[cursor] = b' ';
             cursor += 1;
             while cursor < bytes.len() {
@@ -327,7 +323,8 @@ fn tree_sitter_is_confined_to_structural_frontends_and_syntax_compile() {
                 continue;
             }
             let is_rust = path.extension().and_then(|extension| extension.to_str()) == Some("rs");
-            let is_manifest = path.file_name().and_then(|name| name.to_str()) == Some("Cargo.toml");
+            let is_manifest =
+                path.file_name().and_then(|name| name.to_str()) == Some("Cargo.toml");
             if !is_rust && !is_manifest {
                 continue;
             }
@@ -372,12 +369,8 @@ fn tree_sitter_boundary_scanner_ignores_data_and_catches_code() {
     assert!(!code_uses_tree_sitter(comment));
 
     assert!(code_uses_tree_sitter("use tree_sitter::{Parser, Query};"));
-    assert!(code_uses_tree_sitter(
-        "let parser = tree_sitter::Parser::new();"
-    ));
-    assert!(code_uses_tree_sitter(
-        "fn f() { tree_sitter_cpp::LANGUAGE; }"
-    ));
+    assert!(code_uses_tree_sitter("let parser = tree_sitter::Parser::new();"));
+    assert!(code_uses_tree_sitter("fn f() { tree_sitter_cpp::LANGUAGE; }"));
 
     assert!(declares_tree_sitter_dependency(
         "tree-sitter = \"=0.27.0\"\n"
@@ -385,9 +378,7 @@ fn tree_sitter_boundary_scanner_ignores_data_and_catches_code() {
     assert!(declares_tree_sitter_dependency(
         "tree-sitter.workspace = true\n"
     ));
-    assert!(declares_tree_sitter_dependency(
-        "[dependencies.tree-sitter]\n"
-    ));
+    assert!(declares_tree_sitter_dependency("[dependencies.tree-sitter]\n"));
     assert!(!declares_tree_sitter_dependency(
         "[dependencies]\nserde = \"1\"\n"
     ));

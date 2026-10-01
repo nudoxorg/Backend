@@ -5,10 +5,7 @@
 //! implementation, not two.
 
 use super::parts::{Arg, Input, Parts, bind, substitute};
-use super::script::{
-    Assert, Gap, GapKind, Origin, Site, Step, StepKind, Tok, assertion, injects, split_else,
-    step_kind, tokens,
-};
+use super::script::{Assert, Gap, GapKind, Origin, Site, Step, StepKind, Tok, assertion, injects, split_else, step_kind, tokens};
 use std::path::{Path, PathBuf};
 
 /// The machine a journey starts on.
@@ -61,10 +58,7 @@ impl Recipe {
     pub fn plan(&self, parts: &Parts, size: (u32, u32)) -> Result<Plan, String> {
         let mut sink = Sink::new(parts);
         for used in &self.uses {
-            sink.line(
-                &Origin::at(used.site.clone()),
-                &format!("do {} {}", used.part, used.raw),
-            )?;
+            sink.line(&Origin::at(used.site.clone()), &format!("do {} {}", used.part, used.raw))?;
         }
         Ok(Plan {
             name: format!("state {self}"),
@@ -77,8 +71,7 @@ impl Recipe {
 }
 
 fn used_source(uses: &[PartUse]) -> PathBuf {
-    uses.first()
-        .map_or_else(PathBuf::new, |used| used.site.file.to_path_buf())
+    uses.first().map_or_else(PathBuf::new, |used| used.site.file.to_path_buf())
 }
 
 impl std::fmt::Display for Recipe {
@@ -87,12 +80,7 @@ impl std::fmt::Display for Recipe {
             if index > 0 {
                 f.write_str(" then ")?;
             }
-            write!(
-                f,
-                "{}({})",
-                used.part,
-                used.raw.split_whitespace().collect::<Vec<_>>().join(", ")
-            )?;
+            write!(f, "{}({})", used.part, used.raw.split_whitespace().collect::<Vec<_>>().join(", "))?;
         }
         Ok(())
     }
@@ -140,12 +128,7 @@ impl<'a> Sink<'a> {
     /// An empty sink over `parts`.
     #[must_use]
     pub const fn new(parts: &'a Parts) -> Self {
-        Self {
-            parts,
-            steps: Vec::new(),
-            needs: None,
-            using: Vec::new(),
-        }
+        Self { parts, steps: Vec::new(), needs: None, using: Vec::new() }
     }
 
     /// The steps, once every line is in.
@@ -154,9 +137,7 @@ impl<'a> Sink<'a> {
     /// A `needs` with no step after it.
     pub fn finish(self) -> Result<Vec<Step>, String> {
         if let Some((_, origin)) = self.needs {
-            return Err(format!(
-                "{origin}: `needs` gates the step after it, and there is none"
-            ));
+            return Err(format!("{origin}: `needs` gates the step after it, and there is none"));
         }
         Ok(self.steps)
     }
@@ -176,36 +157,20 @@ impl<'a> Sink<'a> {
             return Ok(());
         }
         if raw.starts_with(char::is_whitespace) {
-            let Some(Step {
-                kind: StepKind::Check { asserts, .. },
-                ..
-            }) = self.steps.last_mut()
-            else {
-                return Err(Self::fail(
-                    origin,
-                    raw,
-                    "an indented assert belongs under a `check NAME`",
-                ));
+            let Some(Step { kind: StepKind::Check { asserts, .. }, .. }) = self.steps.last_mut() else {
+                return Err(Self::fail(origin, raw, "an indented assert belongs under a `check NAME`"));
             };
             asserts.push(assertion(trimmed).map_err(|message| Self::fail(origin, raw, &message))?);
             return Ok(());
         }
         let (verb, rest) = trimmed.split_once(' ').unwrap_or((trimmed, ""));
         match verb {
-            "size" | "start" => Err(Self::fail(
-                origin,
-                raw,
-                "`size` and `start` are journey headers: a part cannot set them",
-            )),
+            "size" | "start" => Err(Self::fail(origin, raw, "`size` and `start` are journey headers: a part cannot set them")),
             "do" => self.expand(origin, raw, rest.trim()),
             "needs" => {
                 let gap = needs(rest).map_err(|message| Self::fail(origin, raw, &message))?;
                 if self.needs.is_some() {
-                    return Err(Self::fail(
-                        origin,
-                        raw,
-                        "two `needs` in a row: one gates one step",
-                    ));
+                    return Err(Self::fail(origin, raw, "two `needs` in a row: one gates one step"));
                 }
                 self.needs = Some((gap, origin.clone()));
                 Ok(())
@@ -214,15 +179,7 @@ impl<'a> Sink<'a> {
                 if rest.trim().is_empty() {
                     return Err(Self::fail(origin, raw, "`check` needs a name"));
                 }
-                self.push(
-                    origin,
-                    trimmed,
-                    StepKind::Check {
-                        name: rest.trim().to_owned(),
-                        asserts: Vec::new(),
-                    },
-                    None,
-                );
+                self.push(origin, trimmed, StepKind::Check { name: rest.trim().to_owned(), asserts: Vec::new() }, None);
                 Ok(())
             }
             _ => {
@@ -234,9 +191,7 @@ impl<'a> Sink<'a> {
                     return Err(Self::fail(
                         origin,
                         raw,
-                        &format!(
-                            "`{act}` injects a product intent instead of a person's input: it may only be a detour (`STEP else {act}`)"
-                        ),
+                        &format!("`{act}` injects a product intent instead of a person's input: it may only be a detour (`STEP else {act}`)"),
                     ));
                 }
                 let otherwise = otherwise
@@ -252,21 +207,9 @@ impl<'a> Sink<'a> {
         }
     }
 
-    fn push(
-        &mut self,
-        origin: &Origin,
-        text: &str,
-        kind: StepKind,
-        otherwise: Option<Box<StepKind>>,
-    ) {
+    fn push(&mut self, origin: &Origin, text: &str, kind: StepKind, otherwise: Option<Box<StepKind>>) {
         let needs = self.needs.take().map(|(gap, _)| gap);
-        self.steps.push(Step {
-            origin: origin.clone(),
-            text: text.to_owned(),
-            kind,
-            otherwise,
-            needs,
-        });
+        self.steps.push(Step { origin: origin.clone(), text: text.to_owned(), kind, otherwise, needs });
     }
 
     /// `do NAME ARGS…`: the part's body, its arguments substituted, through
@@ -278,10 +221,7 @@ impl<'a> Sink<'a> {
             Self::fail(
                 origin,
                 raw,
-                &format!(
-                    "no part `{name}` (have: {})",
-                    parts.names().collect::<Vec<_>>().join(", ")
-                ),
+                &format!("no part `{name}` (have: {})", parts.names().collect::<Vec<_>>().join(", ")),
             )
         })?;
         let here = origin.last().cloned().unwrap_or_else(|| def.site.clone());
@@ -294,15 +234,12 @@ impl<'a> Sink<'a> {
                 .join(" > ");
             return Err(Self::fail(origin, raw, &format!("part cycle: {chain}")));
         }
-        let bound = bind(def, args).map_err(|message| {
-            Self::fail(origin, raw, &format!("{message} (part at {})", def.site))
-        })?;
+        let bound = bind(def, args).map_err(|message| Self::fail(origin, raw, &format!("{message} (part at {})", def.site)))?;
         // A `needs` right before `do` gates the part's first step.
         self.using.push((name.to_owned(), here));
         let result = def.body.iter().try_for_each(|(site, line)| {
             let within = origin.then(site.clone());
-            let filled =
-                substitute(line, &bound).map_err(|message| Self::fail(&within, line, &message))?;
+            let filled = substitute(line, &bound).map_err(|message| Self::fail(&within, line, &message))?;
             self.line(&within, &filled)
         });
         self.using.pop();
@@ -337,27 +274,16 @@ fn start(rest: &str, site: &Site, parts: &Parts) -> Result<Start, String> {
         for used in chain.split(" then ") {
             let used = used.trim();
             let (name, raw) = used.split_once(' ').unwrap_or((used, ""));
-            let def = parts.get(name).ok_or_else(|| {
-                format!(
-                    "`start from {name}`: no part `{name}` (have: {})",
-                    parts.names().collect::<Vec<_>>().join(", ")
-                )
-            })?;
-            let args =
-                bind(def, raw).map_err(|message| format!("{message} (part at {})", def.site))?;
-            uses.push(PartUse {
-                part: name.to_owned(),
-                raw: raw.trim().to_owned(),
-                args,
-                site: site.clone(),
-            });
+            let def = parts
+                .get(name)
+                .ok_or_else(|| format!("`start from {name}`: no part `{name}` (have: {})", parts.names().collect::<Vec<_>>().join(", ")))?;
+            let args = bind(def, raw).map_err(|message| format!("{message} (part at {})", def.site))?;
+            uses.push(PartUse { part: name.to_owned(), raw: raw.trim().to_owned(), args, site: site.clone() });
         }
         return Ok(Start::From(Recipe { uses }));
     }
     super::super::route::parse(rest)?;
-    Ok(Start::Fixture {
-        route: rest.to_owned(),
-    })
+    Ok(Start::Fixture { route: rest.to_owned() })
 }
 
 impl Plan {
@@ -370,9 +296,7 @@ impl Plan {
             name: name.to_owned(),
             source: source.to_path_buf(),
             size: (1440, 900),
-            start: Start::Fixture {
-                route: "orbit".to_owned(),
-            },
+            start: Start::Fixture { route: "orbit".to_owned() },
             steps: Vec::new(),
         };
         let mut sink = Sink::new(parts);
@@ -388,8 +312,7 @@ impl Plan {
                         .ok_or_else(|| format!("{site}: `{rest}` is not WxH\n    {raw}"))?;
                 }
                 "start" if !raw.starts_with(char::is_whitespace) => {
-                    plan.start = start(rest, &site, parts)
-                        .map_err(|message| format!("{site}: {message}\n    {raw}"))?;
+                    plan.start = start(rest, &site, parts).map_err(|message| format!("{site}: {message}\n    {raw}"))?;
                 }
                 _ => sink.line(&Origin::at(site), raw)?,
             }
@@ -406,11 +329,7 @@ impl Plan {
     /// # Errors
     /// The first call that does not parse or expand.
     #[track_caller]
-    pub fn build(
-        name: &str,
-        parts: &Parts,
-        build: impl FnOnce(&mut Builder<'_>),
-    ) -> Result<Self, String> {
+    pub fn build(name: &str, parts: &Parts, build: impl FnOnce(&mut Builder<'_>)) -> Result<Self, String> {
         let caller = std::panic::Location::caller();
         let mut builder = Builder {
             sink: Sink::new(parts),
@@ -435,22 +354,12 @@ impl Plan {
     }
 
     fn validate(&self) -> Result<(), String> {
-        if !self
-            .steps
-            .iter()
-            .any(|step| matches!(step.kind, StepKind::Check { .. }))
-        {
-            return Err(format!(
-                "{}: a journey needs at least one `check`",
-                self.source.display()
-            ));
+        if !self.steps.iter().any(|step| matches!(step.kind, StepKind::Check { .. })) {
+            return Err(format!("{}: a journey needs at least one `check`", self.source.display()));
         }
         if !self.start.is_production() {
             for step in &self.steps {
-                if matches!(
-                    step.kind,
-                    StepKind::Restart | StepKind::AnswerPicker(_) | StepKind::Await { .. }
-                ) {
+                if matches!(step.kind, StepKind::Restart | StepKind::AnswerPicker(_) | StepKind::Await { .. }) {
                     return Err(format!(
                         "{}: `{}` needs the production machine (`start clean` or `start from …`), not the fixture",
                         step.origin, step.text
@@ -498,9 +407,7 @@ impl Builder<'_> {
     #[track_caller]
     pub fn start(&mut self, words: &str) -> &mut Self {
         let site = Self::site();
-        let result = start(words, &site, self.parts)
-            .map(|start| self.start = start)
-            .map_err(|message| format!("{site}: {message}"));
+        let result = start(words, &site, self.parts).map(|start| self.start = start).map_err(|message| format!("{site}: {message}"));
         self.keep(result)
     }
 
@@ -526,10 +433,7 @@ impl Builder<'_> {
         let origin = Origin::at(Self::site());
         let result = self.sink.line(&origin, &format!("check {name}"));
         if result.is_ok()
-            && let Some(Step {
-                kind: StepKind::Check { asserts: into, .. },
-                ..
-            }) = self.sink.steps.last_mut()
+            && let Some(Step { kind: StepKind::Check { asserts: into, .. }, .. }) = self.sink.steps.last_mut()
         {
             into.extend(asserts);
         }
@@ -561,135 +465,51 @@ mod tests {
     #[test]
     fn a_part_expands_in_place_with_its_checks_and_both_sites() {
         let parts = library();
-        let plan = Plan::parse(
-            "J",
-            Path::new("J.journey"),
-            "start clean\ndo twice frontends/rust/fixtures/toml_pin\n",
-            &parts,
-        )
-        .expect("parses");
+        let plan = Plan::parse("J", Path::new("J.journey"), "start clean\ndo twice frontends/rust/fixtures/toml_pin\n", &parts).expect("parses");
         assert!(matches!(plan.start, Start::Clean));
-        assert_eq!(
-            plan.steps.len(),
-            4,
-            "twice → open ×2 → a click and a check each"
-        );
-        let StepKind::Check { name, asserts } = &plan.steps[1].kind else {
-            panic!("a check")
-        };
+        assert_eq!(plan.steps.len(), 4, "twice → open ×2 → a click and a check each");
+        let StepKind::Check { name, asserts } = &plan.steps[1].kind else { panic!("a check") };
         assert_eq!(name, "opened-toml_pin");
-        assert_eq!(
-            asserts[0],
-            Assert::Text(vec!["toml-pin-fixture".to_owned()], Some(Area::Reader))
-        );
+        assert_eq!(asserts[0], Assert::Text(vec!["toml-pin-fixture".to_owned()], Some(Area::Reader)));
         let origin = plan.steps[3].origin.to_string();
-        assert_eq!(
-            origin, "J.journey:2 > lib.part:7 > lib.part:3",
-            "the use, the part that used it, the line that wrote it"
-        );
+        assert_eq!(origin, "J.journey:2 > lib.part:7 > lib.part:3", "the use, the part that used it, the line that wrote it");
     }
 
     #[test]
     fn an_error_inside_a_part_names_the_use_and_the_part_line() {
         let mut parts = library();
-        parts
-            .add_file(Path::new("bad.part"), "part bad\nclik \"x\"\n")
-            .expect("parses as a part");
-        let error = Plan::parse(
-            "J",
-            Path::new("J.journey"),
-            "start clean\n\ndo bad\n",
-            &parts,
-        )
-        .expect_err("a bad body line");
+        parts.add_file(Path::new("bad.part"), "part bad\nclik \"x\"\n").expect("parses as a part");
+        let error = Plan::parse("J", Path::new("J.journey"), "start clean\n\ndo bad\n", &parts).expect_err("a bad body line");
         assert!(error.starts_with("J.journey:3 > bad.part:2:"), "{error}");
-        let error = Plan::parse(
-            "J",
-            Path::new("J.journey"),
-            "start clean\ndo open no/such/place\n",
-            &parts,
-        )
-        .expect_err("a mistyped argument");
-        assert!(
-            error.starts_with("J.journey:2:")
-                && error.contains("PROJECT:path")
-                && error.contains("lib.part:1"),
-            "{error}"
-        );
+        let error = Plan::parse("J", Path::new("J.journey"), "start clean\ndo open no/such/place\n", &parts).expect_err("a mistyped argument");
+        assert!(error.starts_with("J.journey:2:") && error.contains("PROJECT:path") && error.contains("lib.part:1"), "{error}");
     }
 
     #[test]
     fn a_part_that_uses_itself_is_a_cycle_naming_the_chain() {
-        let error = Plan::parse(
-            "J",
-            Path::new("J.journey"),
-            "start clean\ndo loop-a\ncheck x\n",
-            &library(),
-        )
-        .expect_err("a cycle");
+        let error = Plan::parse("J", Path::new("J.journey"), "start clean\ndo loop-a\ncheck x\n", &library()).expect_err("a cycle");
         assert!(error.contains("part cycle: loop-a (used at J.journey:2) > loop-b (used at lib.part:9) > loop-a (used at lib.part:11)"), "{error}");
     }
 
     #[test]
     fn needs_gates_the_next_step_and_stand_in_acts_are_detours_only() {
         let parts = library();
-        let plan = Plan::parse(
-            "J",
-            Path::new("J.journey"),
-            "start clean\ndo gated\ncheck x\n",
-            &parts,
-        )
-        .expect("parses");
+        let plan = Plan::parse("J", Path::new("J.journey"), "start clean\ndo gated\ncheck x\n", &parts).expect("parses");
         let gap = plan.steps[0].needs.as_ref().expect("gated");
         assert_eq!((gap.kind, gap.what.as_str()), (GapKind::Product, "a thing"));
         assert!(plan.steps[1].needs.is_none(), "one gate, one step");
-        let error = Plan::parse(
-            "J",
-            Path::new("J.journey"),
-            "start clean\ntheme glacier\ncheck x\n",
-            &parts,
-        )
-        .expect_err("an injected setting");
+        let error = Plan::parse("J", Path::new("J.journey"), "start clean\ntheme glacier\ncheck x\n", &parts).expect_err("an injected setting");
         assert!(error.contains("may only be a detour"), "{error}");
-        Plan::parse(
-            "J",
-            Path::new("J.journey"),
-            "start clean\nkey cmd-, else theme glacier\ncheck x\n",
-            &parts,
-        )
-        .expect("as a detour it parses");
-        assert!(
-            Plan::parse(
-                "J",
-                Path::new("J.journey"),
-                "start clean\nneeds data \"x\"\n",
-                &parts
-            )
-            .is_err(),
-            "a gate with nothing after it"
-        );
-        assert!(
-            Plan::parse(
-                "J",
-                Path::new("J.journey"),
-                "start orbit\nrestart\ncheck x\n",
-                &parts
-            )
-            .expect_err("fixture")
-            .contains("production machine")
-        );
+        Plan::parse("J", Path::new("J.journey"), "start clean\nkey cmd-, else theme glacier\ncheck x\n", &parts).expect("as a detour it parses");
+        assert!(Plan::parse("J", Path::new("J.journey"), "start clean\nneeds data \"x\"\n", &parts).is_err(), "a gate with nothing after it");
+        assert!(Plan::parse("J", Path::new("J.journey"), "start orbit\nrestart\ncheck x\n", &parts).expect_err("fixture").contains("production machine"));
     }
 
     #[test]
     fn start_from_binds_a_typed_recipe() {
         let plan = Plan::parse("J", Path::new("J.journey"), "start from open frontends/rust/fixtures/toml_pin then twice frontends/rust/fixtures/toml_pin\ncheck x\n", &library()).expect("parses");
-        let Start::From(recipe) = &plan.start else {
-            panic!("a state")
-        };
-        assert_eq!(
-            recipe.to_string(),
-            "open(frontends/rust/fixtures/toml_pin) then twice(frontends/rust/fixtures/toml_pin)"
-        );
+        let Start::From(recipe) = &plan.start else { panic!("a state") };
+        assert_eq!(recipe.to_string(), "open(frontends/rust/fixtures/toml_pin) then twice(frontends/rust/fixtures/toml_pin)");
         assert_eq!(recipe.inputs().len(), 2);
         let state = recipe.plan(&library(), (1440, 900)).expect("expands");
         assert_eq!(state.steps.len(), 6);
@@ -701,32 +521,19 @@ mod tests {
     #[test]
     fn every_journey_in_the_repository_parses_against_the_real_parts() {
         let parts = Parts::load(&Parts::dir()).expect("the repository's parts load");
-        assert!(
-            parts.get("install").is_some(),
-            "the install part is where the journeys expect it"
-        );
+        assert!(parts.get("install").is_some(), "the install part is where the journeys expect it");
         let dir = Parts::dir().parent().expect("journeys dir").to_path_buf();
         let mut parsed = 0;
         for entry in std::fs::read_dir(&dir).expect("journeys dir") {
             let path = entry.expect("entry").path();
-            if path
-                .extension()
-                .is_some_and(|extension| extension == "journey")
-            {
+            if path.extension().is_some_and(|extension| extension == "journey") {
                 let text = std::fs::read_to_string(&path).expect("journey text");
-                let name = path
-                    .file_stem()
-                    .and_then(|stem| stem.to_str())
-                    .expect("stem");
+                let name = path.file_stem().and_then(|stem| stem.to_str()).expect("stem");
                 Plan::parse(name, &path, &text, &parts).unwrap_or_else(|error| panic!("{error}"));
                 parsed += 1;
             }
         }
-        assert!(
-            parsed >= 2,
-            "only {parsed} journeys found in {}",
-            dir.display()
-        );
+        assert!(parsed >= 2, "only {parsed} journeys found in {}", dir.display());
     }
 
     #[test]
@@ -738,24 +545,12 @@ mod tests {
             plan.start("clean")
                 .part("open", "frontends/rust/fixtures/toml_pin")
                 .step("key cmd-k")
-                .check(
-                    "end",
-                    [Assert::Text(vec!["a".to_owned()], Some(Area::Reader))],
-                );
+                .check("end", [Assert::Text(vec!["a".to_owned()], Some(Area::Reader))]);
         })
         .expect("builds");
-        let shape = |plan: &Plan| {
-            plan.steps
-                .iter()
-                .map(|step| format!("{} {:?}", step.text, step.kind))
-                .collect::<Vec<_>>()
-        };
+        let shape = |plan: &Plan| plan.steps.iter().map(|step| format!("{} {:?}", step.text, step.kind)).collect::<Vec<_>>();
         assert_eq!(shape(&parsed), shape(&built));
-        assert!(
-            built.steps[0].origin.to_string().contains("plan.rs:"),
-            "a built step names its Rust line: {}",
-            built.steps[0].origin
-        );
+        assert!(built.steps[0].origin.to_string().contains("plan.rs:"), "a built step names its Rust line: {}", built.steps[0].origin);
         let error = Plan::build("J", &parts, |plan| {
             plan.part("open", "nowhere");
         })

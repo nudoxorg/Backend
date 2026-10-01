@@ -11,10 +11,8 @@ use backend_engine::driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile,
 };
-use backend_frontend_rust::legacy::{
-    RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
-};
 use backend_semantic::ir::{EntityKind, FragmentView, SemanticTypeTag, TypeFactSegment};
+use backend_frontend_rust::legacy::{RustFeatureControl, RustProject, RustToolchain, SourceByteLimit};
 use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -54,11 +52,8 @@ fn compile_fixture(body: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let toolchain = RustToolchain::discover(&tool)?;
     let project =
         RustProject::open_with_source(&root, &source_path, &toolchain, RustEdition::Rust2024)?;
-    let resolved = ResolvedToolchain::from_version(
-        backend_engine::driver::NativeTool::Rustc,
-        &tool,
-        b"computed",
-    )?;
+    let resolved =
+        ResolvedToolchain::from_version(backend_engine::driver::NativeTool::Rustc, &tool, b"computed")?;
     let cancelled = AtomicBool::new(false);
     let mut diagnostic = [];
     let mut output = vec![0; 1_048_576];

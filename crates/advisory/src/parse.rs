@@ -738,10 +738,7 @@ fn rustsec_front_matter(document: &str) -> (&str, &str) {
     let Some(rest) = trimmed.strip_prefix("```toml") else {
         return (document, "");
     };
-    let Some(rest) = rest
-        .strip_prefix("\r\n")
-        .or_else(|| rest.strip_prefix('\n'))
-    else {
+    let Some(rest) = rest.strip_prefix("\r\n").or_else(|| rest.strip_prefix('\n')) else {
         return (document, "");
     };
     let mut offset = 0;

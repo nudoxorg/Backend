@@ -35,30 +35,30 @@ const CANVAS: (u32, u32) = (1440, 824);
 #[cfg(test)]
 #[path = "gallery_checks.rs"]
 mod adversarial;
-#[path = "gallery_fixture.rs"]
-mod pinned;
 #[cfg(test)]
 #[path = "sprite_checks.rs"]
 mod sprite_checks;
+#[path = "gallery_fixture.rs"]
+mod pinned;
 
 pub(crate) const SCENES: &[Scene] = &[
     Scene {
         id: "graph-check-hover-phases",
         title: "Live: actual dense hover, leave, drag onset and rapid sparse handoff",
         size: CANVAS,
-        build: |w, cx| build(Src::Rust, At::CheckHoverPhases, w, cx),
+        build: |w,cx| build(Src::Rust,At::CheckHoverPhases,w,cx),
     },
     Scene {
         id: "graph-live-dense-focus",
         title: "Live: qualified Debug search, high-fanout focus at narrow scale",
         size: CANVAS,
-        build: |w, cx| build(Src::Rust, At::DenseFocus, w, cx),
+        build: |w,cx| build(Src::Rust,At::DenseFocus,w,cx),
     },
     Scene {
         id: "graph-check-live-hover-naive",
         title: "Control: identical real high-fanout hover, naive drawing",
         size: CANVAS,
-        build: |w, cx| with(Strategy::Naive, Src::Rust, At::CheckLiveHover, w, cx),
+        build: |w,cx| with(Strategy::Naive,Src::Rust,At::CheckLiveHover,w,cx),
     },
     Scene {
         id: "graph-check-live-hover-batched",
@@ -70,7 +70,7 @@ pub(crate) const SCENES: &[Scene] = &[
         id: "graph-check-live-hover-paths",
         title: "Control: identical real high-fanout hover, all paths drawing",
         size: CANVAS,
-        build: |w, cx| with(Strategy::AllPaths, Src::Rust, At::CheckLiveHover, w, cx),
+        build: |w,cx| with(Strategy::AllPaths,Src::Rust,At::CheckLiveHover,w,cx),
     },
     Scene {
         id: "graph-check-parked",
@@ -446,9 +446,7 @@ fn fixture() -> PathBuf {
 /// Loads once, preserving an actual read/parse failure for the review UI.
 fn loaded_world() -> Result<Arc<World>, fixture_load::LoadError> {
     static WORLD: OnceLock<Result<Arc<World>, fixture_load::LoadError>> = OnceLock::new();
-    WORLD
-        .get_or_init(|| fixture_load::load(&fixture().join("world.json")))
-        .clone()
+    WORLD.get_or_init(|| fixture_load::load(&fixture().join("world.json"))).clone()
 }
 
 /// The fixture world. Callers must never treat an unavailable fixture as a
@@ -568,117 +566,49 @@ fn adapt(act: &backend_gui_harness::Act, window: &mut Window, cx: &mut App) {
             eprintln!("FACET_MEMORY_PHASE {label}");
             return;
         }
-        if let Some(id) = target.strip_prefix("graph-hover-drag-start ") {
-            let node: NodeId = id
-                .parse()
-                .unwrap_or_else(|_| panic!("invalid native drag target {id}"));
-            let entity = cx
-                .global::<Current>()
-                .0
-                .upgrade()
-                .unwrap_or_else(|| panic!("graph gone"));
-            let (x, y) = entity
-                .read(cx)
-                .screen_position(node)
-                .unwrap_or_else(|| panic!("drag target not positioned"));
-            cx.set_global(HoverDragAnchor(Some((x, y))));
-            let position = gpui::point(gpui::px(x), gpui::px(y));
-            window.dispatch_event(
-                gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
-                    position,
-                    pressed_button: None,
-                    modifiers: window.modifiers(),
-                }),
-                cx,
-            );
-            window.dispatch_event(
-                gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
-                    position,
-                    button: gpui::MouseButton::Left,
-                    modifiers: window.modifiers(),
-                    click_count: 1,
-                    first_mouse: false,
-                }),
-                cx,
-            );
+        if let Some(id)=target.strip_prefix("graph-hover-drag-start ") {
+            let node: NodeId=id.parse().unwrap_or_else(|_|panic!("invalid native drag target {id}"));
+            let entity=cx.global::<Current>().0.upgrade().unwrap_or_else(||panic!("graph gone"));
+            let (x,y)=entity.read(cx).screen_position(node).unwrap_or_else(||panic!("drag target not positioned"));
+            cx.set_global(HoverDragAnchor(Some((x,y))));
+            let position=gpui::point(gpui::px(x),gpui::px(y));
+            window.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                position,pressed_button:None,modifiers:window.modifiers(),
+            }),cx);
+            window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                position,button:gpui::MouseButton::Left,modifiers:window.modifiers(),click_count:1,first_mouse:false,
+            }),cx);
             return;
         }
-        for (prefix, up) in [
-            ("graph-hover-drag-move ", false),
-            ("graph-hover-drag-end ", true),
-        ] {
-            if let Some(offset) = target.strip_prefix(prefix) {
-                let mut values = offset.split_whitespace().map(|value| {
-                    value
-                        .parse::<f32>()
-                        .unwrap_or_else(|_| panic!("invalid drag offset"))
-                });
-                let (dx, dy) = (
-                    values.next().expect("drag x offset"),
-                    values.next().expect("drag y offset"),
-                );
-                let (x, y) = cx
-                    .default_global::<HoverDragAnchor>()
-                    .0
-                    .unwrap_or_else(|| panic!("native drag start absent"));
-                let position = gpui::point(gpui::px(x + dx), gpui::px(y + dy));
+        for (prefix,up) in [("graph-hover-drag-move ",false),("graph-hover-drag-end ",true)] {
+            if let Some(offset)=target.strip_prefix(prefix) {
+                let mut values=offset.split_whitespace().map(|value|value.parse::<f32>().unwrap_or_else(|_|panic!("invalid drag offset")));
+                let (dx,dy)=(values.next().expect("drag x offset"),values.next().expect("drag y offset"));
+                let (x,y)=cx.default_global::<HoverDragAnchor>().0.unwrap_or_else(||panic!("native drag start absent"));
+                let position=gpui::point(gpui::px(x+dx),gpui::px(y+dy));
                 if up {
-                    window.dispatch_event(
-                        gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
-                            position,
-                            button: gpui::MouseButton::Left,
-                            modifiers: window.modifiers(),
-                            click_count: 1,
-                        }),
-                        cx,
-                    );
+                    window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                        position,button:gpui::MouseButton::Left,modifiers:window.modifiers(),click_count:1,
+                    }),cx);
                     cx.set_global(HoverDragAnchor(None));
                 } else {
-                    window.dispatch_event(
-                        gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
-                            position,
-                            pressed_button: Some(gpui::MouseButton::Left),
-                            modifiers: window.modifiers(),
-                        }),
-                        cx,
-                    );
+                    window.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                        position,pressed_button:Some(gpui::MouseButton::Left),modifiers:window.modifiers(),
+                    }),cx);
                 }
                 return;
             }
         }
         if let Some(id) = target.strip_prefix("graph-prism-hover ") {
-            let node: NodeId = id
-                .parse()
-                .unwrap_or_else(|_| panic!("invalid prism hover target {id}"));
-            let entity = cx
-                .global::<Current>()
-                .0
-                .upgrade()
-                .unwrap_or_else(|| panic!("graph gone"));
-            let frame = entity
-                .read(cx)
-                .inspect(cx)
-                .frame
-                .unwrap_or_else(|| panic!("prism frame absent"));
-            let slot = frame
-                .slots
-                .iter()
-                .find(|s| s.node == Some(node))
-                .unwrap_or_else(|| panic!("prism node {node} absent"));
-            let b = slot
-                .label
-                .unwrap_or_else(|| panic!("prism label {node} absent"));
-            window.dispatch_event(
-                gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
-                    position: gpui::point(
-                        gpui::px((b[0] + b[2]) * 0.5),
-                        gpui::px((b[1] + b[3]) * 0.5),
-                    ),
-                    pressed_button: None,
-                    modifiers: window.modifiers(),
-                }),
-                cx,
-            );
+            let node: NodeId = id.parse().unwrap_or_else(|_| panic!("invalid prism hover target {id}"));
+            let entity = cx.global::<Current>().0.upgrade().unwrap_or_else(|| panic!("graph gone"));
+            let frame = entity.read(cx).inspect(cx).frame.unwrap_or_else(|| panic!("prism frame absent"));
+            let slot = frame.slots.iter().find(|s| s.node == Some(node)).unwrap_or_else(|| panic!("prism node {node} absent"));
+            let b = slot.label.unwrap_or_else(|| panic!("prism label {node} absent"));
+            window.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                position: gpui::point(gpui::px((b[0]+b[2])*0.5),gpui::px((b[1]+b[3])*0.5)),
+                pressed_button: None, modifiers: window.modifiers(),
+            }), cx);
             return;
         }
         if let Some(node) = target.strip_prefix("graph-hover ") {
@@ -775,33 +705,16 @@ fn snapshot(cx: &mut App, ledger: &crate::probe::Ledger) -> crate::gallery::json
     // their actual chrome bounds in this draw's ledger instead.
     let measured_card = match mode {
         "chain" | "tour" => {
-            let key = if mode == "chain" {
-                "graph-chain-bounds"
-            } else {
-                "graph-tour-bounds"
-            };
-            ledger
-                .bounds
-                .iter()
-                .rev()
-                .find(|bounds| bounds.key == key)
-                .map_or(Json::Null, |bounds| {
-                    Json::obj([
-                        ("x", Json::num(bounds.x)),
-                        ("y", Json::num(bounds.y)),
-                        ("width", Json::num(bounds.width)),
-                        ("height", Json::num(bounds.height)),
-                    ])
-                })
+            let key = if mode == "chain" { "graph-chain-bounds" } else { "graph-tour-bounds" };
+            ledger.bounds.iter().rev().find(|bounds| bounds.key == key).map_or(Json::Null, |bounds| Json::obj([
+                ("x", Json::num(bounds.x)), ("y", Json::num(bounds.y)),
+                ("width", Json::num(bounds.width)), ("height", Json::num(bounds.height)),
+            ]))
         }
-        _ => state.card_bounds.map_or(Json::Null, |b| {
-            Json::obj([
-                ("x", Json::num(f32::from(b.origin.x))),
-                ("y", Json::num(f32::from(b.origin.y))),
-                ("width", Json::num(f32::from(b.size.width))),
-                ("height", Json::num(f32::from(b.size.height))),
-            ])
-        }),
+        _ => state.card_bounds.map_or(Json::Null, |b| Json::obj([
+            ("x", Json::num(f32::from(b.origin.x))), ("y", Json::num(f32::from(b.origin.y))),
+            ("width", Json::num(f32::from(b.size.width))), ("height", Json::num(f32::from(b.size.height))),
+        ])),
     };
     let bounds = |b: &crate::probe::BoundsSample| {
         Json::obj([
@@ -815,203 +728,81 @@ fn snapshot(cx: &mut App, ledger: &crate::probe::Ledger) -> crate::gallery::json
     let retained = graph.retained();
     let snapshot = Json::obj([
         ("source", Json::str(source)),
-        (
-            "strategy",
-            Json::str(match strategy {
-                Strategy::Batched => "batched",
-                Strategy::AllPaths => "all_paths",
-                Strategy::Coverage => "coverage",
-                Strategy::Naive => "naive",
-            }),
-        ),
-        ("expected_focus", node(expected_focus)),
-        (
-            "find_bounds",
-            ledger
-                .bounds("graph-find-bounds")
-                .map_or(Json::Null, bounds),
-        ),
-        (
-            "scrolls",
-            Json::Arr(
-                ledger
-                    .scrolls
-                    .iter()
-                    .map(|scroll| {
-                        Json::obj([
-                            ("key", Json::str(scroll.key.clone())),
-                            ("viewport", bounds(&scroll.viewport)),
-                            ("content", bounds(&scroll.content)),
-                        ])
-                    })
-                    .collect(),
-            ),
-        ),
-        (
-            "prism_room",
-            state.frame.as_ref().map_or(Json::Null, |f| {
-                Json::Arr(f.room.into_iter().map(Json::num).collect())
-            }),
-        ),
+        ("strategy", Json::str(match strategy { Strategy::Batched=>"batched",Strategy::AllPaths=>"all_paths",Strategy::Coverage=>"coverage",Strategy::Naive=>"naive" })),
+        ("expected_focus",node(expected_focus)),
+        ("find_bounds",ledger.bounds("graph-find-bounds").map_or(Json::Null,bounds)),
+        ("scrolls",Json::Arr(ledger.scrolls.iter().map(|scroll|Json::obj([
+            ("key",Json::str(scroll.key.clone())),("viewport",bounds(&scroll.viewport)),("content",bounds(&scroll.content)),
+        ])).collect())),
+        ("prism_room",state.frame.as_ref().map_or(Json::Null,|f|Json::Arr(f.room.into_iter().map(Json::num).collect()))),
         ("world_nodes", Json::num(graph.world().len() as f64)),
-        (
-            "world_packages",
-            Json::num(graph.world().packages.len() as f64),
-        ),
-        (
-            "retained",
-            Json::obj([
-                ("motion_tracks", Json::num(retained.motion_tracks as f64)),
-                ("trail", Json::num(retained.trail as f64)),
-                ("tours", Json::num(retained.tours as f64)),
-                ("prism_rows", Json::num(retained.prism_rows as f64)),
-                ("search_cache", Json::num(retained.search_cache as f64)),
-                ("fading_symbols", Json::num(retained.fading_symbols as f64)),
-                (
-                    "fading_relations",
-                    Json::num(retained.fading_relations as f64),
-                ),
-            ]),
-        ),
+        ("world_packages", Json::num(graph.world().packages.len() as f64)),
+        ("retained", Json::obj([
+            ("motion_tracks",Json::num(retained.motion_tracks as f64)),
+            ("trail",Json::num(retained.trail as f64)),
+            ("tours",Json::num(retained.tours as f64)),
+            ("prism_rows",Json::num(retained.prism_rows as f64)),
+            ("search_cache",Json::num(retained.search_cache as f64)),
+            ("fading_symbols",Json::num(retained.fading_symbols as f64)),
+            ("fading_relations",Json::num(retained.fading_relations as f64)),
+        ])),
         ("focused", node(graph.focused())),
         ("hovered", node(state.hover)),
-        ("hover_strength", Json::num(state.hover_strength)),
-        (
-            "fading_hover",
-            state.fading_hover.map_or(Json::Null, |(id, alpha)| {
-                Json::obj([("node", node(Some(id))), ("strength", Json::num(alpha))])
-            }),
-        ),
-        (
-            "fading_hovers",
-            Json::Arr(
-                state
-                    .fading_hovers
-                    .iter()
-                    .map(|&(id, alpha)| {
-                        Json::obj([("node", node(Some(id))), ("strength", Json::num(alpha))])
-                    })
-                    .collect(),
-            ),
-        ),
-        (
-            "expected_hover_targets",
-            expected_hover_targets.map_or(Json::Null, |(dense, sparse)| {
-                Json::obj([("dense", node(Some(dense))), ("sparse", node(Some(sparse)))])
-            }),
-        ),
+        ("hover_strength",Json::num(state.hover_strength)),
+        ("fading_hover",state.fading_hover.map_or(Json::Null,|(id,alpha)|Json::obj([
+            ("node",node(Some(id))),("strength",Json::num(alpha)),
+        ]))),
+        ("fading_hovers", Json::Arr(state.fading_hovers.iter().map(|&(id, alpha)| Json::obj([
+            ("node", node(Some(id))), ("strength", Json::num(alpha)),
+        ])).collect())),
+        ("expected_hover_targets",expected_hover_targets.map_or(Json::Null,|(dense,sparse)|Json::obj([
+            ("dense",node(Some(dense))),("sparse",node(Some(sparse))),
+        ]))),
         ("selected", node(selected)),
         ("camera", camera),
-        (
-            "viewport",
-            state.viewport.map_or(Json::Null, |v| {
-                Json::obj([
-                    ("x", Json::num(v.x)),
-                    ("y", Json::num(v.y)),
-                    ("width", Json::num(v.w)),
-                    ("height", Json::num(v.h)),
-                ])
-            }),
-        ),
+        ("viewport", state.viewport.map_or(Json::Null, |v| Json::obj([
+            ("x", Json::num(v.x)), ("y", Json::num(v.y)),
+            ("width", Json::num(v.w)), ("height", Json::num(v.h)),
+        ]))),
         ("measured_card_bounds", measured_card),
-        (
-            "focus_bounds",
-            graph.focus_bounds().map_or(Json::Null, |b| {
-                Json::obj([
-                    ("x", Json::num(f32::from(b.origin.x))),
-                    ("y", Json::num(f32::from(b.origin.y))),
-                    ("width", Json::num(f32::from(b.size.width))),
-                    ("height", Json::num(f32::from(b.size.height))),
-                ])
-            }),
-        ),
-        (
-            "relation_rail",
-            state.rail_viewport.map_or(Json::Null, |bounds| {
-                Json::obj([
-                    ("x", Json::num(f32::from(bounds.origin.x))),
-                    ("y", Json::num(f32::from(bounds.origin.y))),
-                    ("width", Json::num(f32::from(bounds.size.width))),
-                    ("height", Json::num(f32::from(bounds.size.height))),
-                    ("offset_x", Json::num(state.rail_offset.0)),
-                    ("offset_y", Json::num(state.rail_offset.1)),
-                    (
-                        "visible_keys",
-                        Json::Arr(
-                            state
-                                .rail_visible
-                                .iter()
-                                .map(|key| {
-                                    Json::obj([
-                                        ("node", node(Some(key.node))),
-                                        ("side", Json::num(key.side)),
-                                        ("word", Json::Str(key.word.text().into())),
-                                    ])
-                                })
-                                .collect(),
-                        ),
-                    ),
-                ])
-            }),
-        ),
-        (
-            "hover_slot",
-            state
-                .hover_slot
-                .map_or(Json::Null, |slot| Json::num(slot as f64)),
-        ),
-        (
-            "pointer_prism_pick",
-            state
-                .pointer
-                .and_then(|(x, y)| state.frame.as_ref().and_then(|f| f.pick(x, y)))
-                .map_or(Json::Null, |slot| Json::num(slot as f64)),
-        ),
-        (
-            "pointer",
-            state.pointer.map_or(Json::Null, |(x, y)| {
-                Json::obj([("x", Json::num(x)), ("y", Json::num(y))])
-            }),
-        ),
+        ("focus_bounds", graph.focus_bounds().map_or(Json::Null, |b| Json::obj([
+            ("x", Json::num(f32::from(b.origin.x))), ("y", Json::num(f32::from(b.origin.y))),
+            ("width", Json::num(f32::from(b.size.width))), ("height", Json::num(f32::from(b.size.height))),
+        ]))),
+        ("relation_rail", state.rail_viewport.map_or(Json::Null, |bounds| Json::obj([
+            ("x", Json::num(f32::from(bounds.origin.x))), ("y", Json::num(f32::from(bounds.origin.y))),
+            ("width", Json::num(f32::from(bounds.size.width))), ("height", Json::num(f32::from(bounds.size.height))),
+            ("offset_x", Json::num(state.rail_offset.0)), ("offset_y", Json::num(state.rail_offset.1)),
+            ("visible_keys", Json::Arr(state.rail_visible.iter().map(|key| Json::obj([
+                ("node", node(Some(key.node))), ("side", Json::num(key.side)), ("word", Json::Str(key.word.text().into())),
+            ])).collect())),
+        ]))),
+        ("hover_slot", state.hover_slot.map_or(Json::Null, |slot| Json::num(slot as f64))),
+        ("pointer_prism_pick", state.pointer.and_then(|(x,y)| state.frame.as_ref().and_then(|f|f.pick(x,y)))
+            .map_or(Json::Null, |slot| Json::num(slot as f64))),
+        ("pointer", state.pointer.map_or(Json::Null, |(x,y)| Json::obj([
+            ("x", Json::num(x)), ("y", Json::num(y)),
+        ]))),
         ("moving", Json::Bool(state.moving)),
         ("exploration", Json::str(mode)),
         ("tour_stop", node(graph.tour_stop())),
         ("find_open", Json::Bool(state.find_open)),
         ("pending_accept", Json::Bool(state.pending_accept)),
         ("query", Json::str(state.query)),
-        (
-            "find_scroll",
-            Json::obj([
-                ("x", Json::num(state.find_scroll.0)),
-                ("y", Json::num(state.find_scroll.1)),
-            ]),
-        ),
-        (
-            "find_selection",
-            Json::obj([
-                ("start", Json::num(state.find_selection.0 as f64)),
-                ("end", Json::num(state.find_selection.1 as f64)),
-            ]),
-        ),
+        ("find_scroll", Json::obj([
+            ("x", Json::num(state.find_scroll.0)), ("y", Json::num(state.find_scroll.1)),
+        ])),
+        ("find_selection", Json::obj([
+            ("start", Json::num(state.find_selection.0 as f64)),
+            ("end", Json::num(state.find_selection.1 as f64)),
+        ])),
         ("searching", Json::Bool(state.searching)),
         ("discovery_ready", Json::Bool(state.discovery_ready)),
-        (
-            "discovery_prepare_ms",
-            state.discovery_prepare_ms.map_or(Json::Null, Json::num),
-        ),
-        (
-            "preparing_tour",
-            state.preparing_tour.map_or(Json::Null, |(package, at)| {
-                Json::obj([
-                    ("package", Json::num(package)),
-                    ("at", Json::num(at as f64)),
-                ])
-            }),
-        ),
-        (
-            "unavailable_tour",
-            state.unavailable_tour.map_or(Json::Null, Json::num),
-        ),
+        ("discovery_prepare_ms", state.discovery_prepare_ms.map_or(Json::Null, Json::num)),
+        ("preparing_tour", state.preparing_tour.map_or(Json::Null, |(package, at)| Json::obj([
+            ("package", Json::num(package)), ("at", Json::num(at as f64)),
+        ]))),
+        ("unavailable_tour", state.unavailable_tour.map_or(Json::Null, Json::num)),
         (
             "rows",
             Json::Arr(state.rows.iter().map(|&id| node(Some(id))).collect()),
@@ -1029,15 +820,9 @@ fn snapshot(cx: &mut App, ledger: &crate::probe::Ledger) -> crate::gallery::json
                 Json::obj([("node", node(Some(id))), ("gathered", Json::num(g))])
             }),
         ),
-        (
-            "visible_prism",
-            state.frame.as_ref().map_or(Json::Null, |frame| {
-                Json::obj([
-                    ("node", node(Some(frame.node))),
-                    ("gathered", Json::num(frame.e)),
-                ])
-            }),
-        ),
+        ("visible_prism",state.frame.as_ref().map_or(Json::Null,|frame|Json::obj([
+            ("node",node(Some(frame.node))),("gathered",Json::num(frame.e)),
+        ]))),
         (
             "prism_labels",
             Json::Arr(state.frame.as_ref().map_or_else(Vec::new, |f| {
@@ -1065,15 +850,12 @@ fn snapshot(cx: &mut App, ledger: &crate::probe::Ledger) -> crate::gallery::json
             "pending_motion",
             Json::num(ledger.tracks.iter().filter(|t| t.live).count() as f64),
         ),
-        ("frames_requested", Json::num(frame_requests as f64)),
         (
-            "frame_requests_total",
-            Json::num(ledger.frames_requested as f64),
+            "frames_requested",
+            Json::num(frame_requests as f64),
         ),
-        (
-            "floating_entries",
-            Json::num(ledger.stacks.iter().map(|s| s.entries.len()).sum::<usize>() as f64),
-        ),
+        ("frame_requests_total", Json::num(ledger.frames_requested as f64)),
+        ("floating_entries", Json::num(ledger.stacks.iter().map(|s| s.entries.len()).sum::<usize>() as f64)),
         ("reduced_motion", Json::Bool(ledger.reduced_motion)),
         (
             "drawn",
@@ -1083,15 +865,9 @@ fn snapshot(cx: &mut App, ledger: &crate::probe::Ledger) -> crate::gallery::json
                 ("hover_relations", Json::num(stats.hover_relations)),
                 ("hover_routes", Json::num(stats.hover_routes)),
                 ("hover_candidates", Json::num(stats.hover_candidates)),
-                (
-                    "fading_hover_relations",
-                    Json::num(stats.fading_hover_relations),
-                ),
+                ("fading_hover_relations", Json::num(stats.fading_hover_relations)),
                 ("fading_hover_routes", Json::num(stats.fading_hover_routes)),
-                (
-                    "fading_hover_candidates",
-                    Json::num(stats.fading_hover_candidates),
-                ),
+                ("fading_hover_candidates", Json::num(stats.fading_hover_candidates)),
                 ("items", Json::num(stats.items)),
                 ("members", Json::num(stats.members)),
                 ("edges", Json::num(stats.edges)),
@@ -1103,9 +879,7 @@ fn snapshot(cx: &mut App, ledger: &crate::probe::Ledger) -> crate::gallery::json
     ]);
     if let Some(label) = memory_phase {
         let mut phase = snapshot.clone();
-        if let Json::Obj(fields) = &mut phase {
-            fields.push(("label".to_owned(), Json::str(label)));
-        }
+        if let Json::Obj(fields) = &mut phase { fields.push(("label".to_owned(),Json::str(label))); }
         eprintln!("FACET_MEMORY_STATE {phase}");
     }
     snapshot
@@ -1115,19 +889,15 @@ fn snapshot(cx: &mut App, ledger: &crate::probe::Ledger) -> crate::gallery::json
 struct ExpectedFocus(Option<NodeId>);
 impl gpui::Global for ExpectedFocus {}
 struct CurrentStrategy(Strategy);
-impl Default for CurrentStrategy {
-    fn default() -> Self {
-        Self(Strategy::default())
-    }
-}
+impl Default for CurrentStrategy { fn default()->Self { Self(Strategy::default()) } }
 impl gpui::Global for CurrentStrategy {}
 
 #[derive(Default)]
-struct HoverDragAnchor(Option<(f32, f32)>);
+struct HoverDragAnchor(Option<(f32,f32)>);
 impl gpui::Global for HoverDragAnchor {}
 
 #[derive(Default)]
-struct ExpectedHoverTargets(Option<(NodeId, NodeId)>);
+struct ExpectedHoverTargets(Option<(NodeId,NodeId)>);
 impl gpui::Global for ExpectedHoverTargets {}
 
 #[derive(Default)]
@@ -1163,9 +933,7 @@ fn build(src: Src, at: At, window: &mut Window, cx: &mut App) -> AnyView {
 fn with(strategy: Strategy, src: Src, at: At, window: &mut Window, cx: &mut App) -> AnyView {
     cx.set_global(CurrentStrategy(strategy));
     if !matches!(src, Src::Pinned) {
-        if let Err(error) = loaded_world() {
-            return fixture_load::error_view(error, cx);
-        }
+        if let Err(error) = loaded_world() { return fixture_load::error_view(error, cx); }
     }
     let map = scene(src);
     let world = map.world.clone();
@@ -1193,7 +961,7 @@ fn with(strategy: Strategy, src: Src, at: At, window: &mut Window, cx: &mut App)
             At::CheckPeek => Start::Cam(map.focus_cam(&view, 0, 0.0)),
             At::CheckReachTour => Start::Focus(5),
             At::CheckParked => Start::Focus(0),
-            At::CheckLiveHover | At::CheckHoverPhases => {
+        At::CheckLiveHover | At::CheckHoverPhases => {
                 fanout(&world).map_or(Start::World, |i| Start::Cam(map.focus_cam(&view, i, 0.0)))
             }
             At::Package(p) => package(&world, p)
@@ -1235,39 +1003,27 @@ fn with(strategy: Strategy, src: Src, at: At, window: &mut Window, cx: &mut App)
             }
         }
         At::DenseFocus => {
-            let target = find(&world, "std::fmt", "Debug");
+            let target=find(&world,"std::fmt","Debug");
             cx.set_global(ExpectedFocus(target));
-            if let Some(node) = target {
-                let query = format!("{}::{}", world.qual(node), world.node(node).name);
-                let script =
-                    format!("key / @200; type \"{query}\" @240; key enter @280; leave @4000");
-                declare_script(Box::leak(script.into_boxed_str()), cx);
+            if let Some(node)=target {
+                let query=format!("{}::{}",world.qual(node),world.node(node).name);
+                let script=format!("key / @200; type \"{query}\" @240; key enter @280; leave @4000");
+                declare_script(Box::leak(script.into_boxed_str()),cx);
             }
         }
         At::CheckHoverPhases => {
-            if let Some(dense) = fanout(&world) {
-                let cam = map.focus_cam(&view, dense, 0.0);
-                let degree = |id| world.in_edges(id).len() + world.out_edges(id).len();
-                let sparse = world
-                    .items
-                    .iter()
-                    .copied()
-                    .filter(|&id| id != dense && world.node(id).module == world.node(dense).module)
+            if let Some(dense)=fanout(&world) {
+                let cam=map.focus_cam(&view,dense,0.0);
+                let degree=|id| world.in_edges(id).len()+world.out_edges(id).len();
+                let sparse=world.items.iter().copied().filter(|&id| id!=dense && world.node(id).module==world.node(dense).module)
                     .filter(|&id| {
-                        let (x, y) = view.to_screen(&cam, lay.x[id as usize], lay.y[id as usize]);
-                        x > 160.0
-                            && x < view.w - 160.0
-                            && y > 120.0
-                            && y < view.h - 120.0
-                            && map.pick(&view, &cam, x, y) == Some(id)
-                    })
-                    .min_by_key(|&id| (degree(id), id));
-                if let Some(sparse) = sparse.filter(|&id| degree(id) * 2 < degree(dense)) {
-                    cx.set_global(ExpectedHoverTargets(Some((dense, sparse))));
-                    let script = format!(
-                        "leave @0; route graph-hover {dense} @200; leave @900; route graph-hover {dense} @1400; route graph-hover-drag-start {dense} @2000; route graph-hover-drag-move 80 40 @2032; route graph-hover-drag-end 80 40 @2300; leave @2400; route graph-hover {dense} @3000; route graph-hover {sparse} @3080; route graph-hover {dense} @3120; route graph-hover {sparse} @3180; route graph-hover {dense} @3260; leave @3600; route graph-hover-drag-start {dense} @4300; route graph-hover-drag-move 80 40 @4300; route graph-hover-drag-end 80 40 @4300; leave @4600; leave @6200"
-                    );
-                    declare_script(Box::leak(script.into_boxed_str()), cx);
+                        let (x,y)=view.to_screen(&cam,lay.x[id as usize],lay.y[id as usize]);
+                        x>160.0 && x<view.w-160.0 && y>120.0 && y<view.h-120.0 && map.pick(&view,&cam,x,y)==Some(id)
+                    }).min_by_key(|&id|(degree(id),id));
+                if let Some(sparse)=sparse.filter(|&id|degree(id)*2<degree(dense)) {
+                    cx.set_global(ExpectedHoverTargets(Some((dense,sparse))));
+                    let script=format!("leave @0; route graph-hover {dense} @200; leave @900; route graph-hover {dense} @1400; route graph-hover-drag-start {dense} @2000; route graph-hover-drag-move 80 40 @2032; route graph-hover-drag-end 80 40 @2300; leave @2400; route graph-hover {dense} @3000; route graph-hover {sparse} @3080; route graph-hover {dense} @3120; route graph-hover {sparse} @3180; route graph-hover {dense} @3260; leave @3600; route graph-hover-drag-start {dense} @4300; route graph-hover-drag-move 80 40 @4300; route graph-hover-drag-end 80 40 @4300; leave @4600; leave @6200");
+                    declare_script(Box::leak(script.into_boxed_str()),cx);
                 }
             }
         }

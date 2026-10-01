@@ -7,10 +7,5 @@ pub trait Service<T> {
 }
 
 pub struct Worker;
-pub enum Event {
-    Started,
-    Finished,
-}
-pub fn execute(worker: &impl Service<String>) -> String {
-    worker.run(String::new())
-}
+pub enum Event { Started, Finished }
+pub fn execute(worker: &impl Service<String>) -> String { worker.run(String::new()) }

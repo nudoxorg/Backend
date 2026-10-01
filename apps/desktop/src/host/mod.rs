@@ -4,19 +4,19 @@
 
 pub(crate) mod aside;
 pub(crate) mod editor;
-#[cfg(test)]
-mod embedded_owner_tests;
 pub(crate) mod launch;
 pub(crate) mod lease;
-#[cfg(test)]
-mod lifecycle_tests;
 pub(crate) mod owner;
 pub(crate) mod paths;
 pub(crate) mod registry;
 pub(crate) mod toolchain;
+pub(crate) mod window_size;
+#[cfg(test)]
+mod embedded_owner_tests;
+#[cfg(test)]
+mod lifecycle_tests;
 #[cfg(test)]
 mod window_first_tests;
-pub(crate) mod window_size;
 
 /// Creates `path` and every missing parent owner-only (0700). The owner
 /// refuses a state directory any other user could enter, and a test that
@@ -29,10 +29,7 @@ pub(crate) fn private_dir(path: &std::path::Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt as _;
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(path)
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(path)
     }
     #[cfg(not(unix))]
     {

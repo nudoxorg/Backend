@@ -11,23 +11,23 @@
 
 mod retrieval_support;
 
+use backend_semantic::ir::EntityId;
+use backend_semantic::index_core::{
+    ExactDegradation, ExactOperation, ExactResolution, LexicalDegradation, LexicalManifest,
+    LexicalOperation, LexicalScore, LexicalSnapshotHit, LexicalTopK,
+};
+use backend_semantic::graph_vector::{
+    Cancellation, GraphDegradation, GraphEdge, GraphRow, GraphTerminal, PartitionId,
+    StreamCapacityError, ValidatedGraphView,
+};
+use backend_extension_qdrant::server::{PhysicalPointId, QdrantBlockingAdapter, QdrantCandidate};
 use backend_engine::retrieval::{
     CancellationCause, ExactRoute, LexicalRoute, RetrievalAbsence, RetrievalBoundary,
     RetrievalCoverage, RetrievalDegradation, RetrievalFailure, RetrievalOperationTerminal,
     RetrievalResult, VectorDegradation, VectorRoute,
 };
-use backend_extension_qdrant::server::{PhysicalPointId, QdrantBlockingAdapter, QdrantCandidate};
 use backend_extension_tantivy::server::{TantivyHit, TantivyLexical};
 use backend_extension_trustfall::server::TrustfallHit;
-use backend_semantic::graph_vector::{
-    Cancellation, GraphDegradation, GraphEdge, GraphRow, GraphTerminal, PartitionId,
-    StreamCapacityError, ValidatedGraphView,
-};
-use backend_semantic::index_core::{
-    ExactDegradation, ExactOperation, ExactResolution, LexicalDegradation, LexicalManifest,
-    LexicalOperation, LexicalScore, LexicalSnapshotHit, LexicalTopK,
-};
-use backend_semantic::ir::EntityId;
 
 use retrieval_support::{
     GraphAcquisitionKind, SealedFixture, acquired_terminal, lexical_document,
@@ -409,9 +409,7 @@ fn assert_qdrant_coverage_and_live_facade_journey(fixture: &SealedFixture<'_>) {
     .expect("valid offline Qdrant adapter");
     let sentinel = Some(QdrantCandidate {
         authority: fixture.vector_authority,
-        segment: backend_semantic::index_vocabulary::VectorSegmentId::from_canonical_bytes(
-            b"sentinel",
-        ),
+        segment: backend_semantic::index_vocabulary::VectorSegmentId::from_canonical_bytes(b"sentinel"),
         partition: PartitionId::new(1),
         entity: EntityId::new(1),
         score: 0.0,

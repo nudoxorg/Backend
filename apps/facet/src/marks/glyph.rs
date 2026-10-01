@@ -38,16 +38,7 @@ struct Cut {
 }
 
 const CRATES: &[StoneCut] = &[StoneCut {
-    outer: &[
-        (6.5, 4.0),
-        (17.5, 4.0),
-        (21.5, 8.0),
-        (21.5, 16.0),
-        (17.5, 20.0),
-        (6.5, 20.0),
-        (2.5, 16.0),
-        (2.5, 8.0),
-    ],
+    outer: &[(6.5, 4.0), (17.5, 4.0), (21.5, 8.0), (21.5, 16.0), (17.5, 20.0), (6.5, 20.0), (2.5, 16.0), (2.5, 8.0)],
     k: 0.5,
     centre: (12.0, 12.0),
     apex: None,
@@ -92,27 +83,14 @@ const MAVEN: &[StoneCut] = &[StoneCut {
 }];
 const NUGET: &[StoneCut] = &[StoneCut {
     // A regular hexagon, radius 10 about (12, 12.2), a vertex at the top.
-    outer: &[
-        (12.0, 2.2),
-        (20.66, 7.2),
-        (20.66, 17.2),
-        (12.0, 22.2),
-        (3.34, 17.2),
-        (3.34, 7.2),
-    ],
+    outer: &[(12.0, 2.2), (20.66, 7.2), (20.66, 17.2), (12.0, 22.2), (3.34, 17.2), (3.34, 7.2)],
     k: 0.5,
     centre: (12.0, 12.2),
     apex: None,
     back: false,
 }];
 const CPP: &[StoneCut] = &[StoneCut {
-    outer: &[
-        (5.0, 8.5),
-        (12.5, 2.5),
-        (21.0, 8.0),
-        (18.5, 19.5),
-        (6.5, 20.0),
-    ],
+    outer: &[(5.0, 8.5), (12.5, 2.5), (21.0, 8.0), (18.5, 19.5), (6.5, 20.0)],
     k: 0.0,
     centre: (12.0, 12.0),
     apex: Some((11.0, 11.5)),
@@ -121,34 +99,13 @@ const CPP: &[StoneCut] = &[StoneCut {
 
 fn cut(eco: Eco) -> Cut {
     match eco {
-        Eco::Crates => Cut {
-            stones: CRATES,
-            step: 180.0,
-        },
-        Eco::Npm => Cut {
-            stones: NPM,
-            step: 90.0,
-        },
-        Eco::Pypi => Cut {
-            stones: PYPI,
-            step: 90.0,
-        },
-        Eco::Go => Cut {
-            stones: GO,
-            step: 180.0,
-        },
-        Eco::Maven => Cut {
-            stones: MAVEN,
-            step: 180.0,
-        },
-        Eco::Nuget => Cut {
-            stones: NUGET,
-            step: 60.0,
-        },
-        Eco::Cpp => Cut {
-            stones: CPP,
-            step: 0.0,
-        },
+        Eco::Crates => Cut { stones: CRATES, step: 180.0 },
+        Eco::Npm => Cut { stones: NPM, step: 90.0 },
+        Eco::Pypi => Cut { stones: PYPI, step: 90.0 },
+        Eco::Go => Cut { stones: GO, step: 180.0 },
+        Eco::Maven => Cut { stones: MAVEN, step: 180.0 },
+        Eco::Nuget => Cut { stones: NUGET, step: 60.0 },
+        Eco::Cpp => Cut { stones: CPP, step: 0.0 },
     }
 }
 
@@ -174,13 +131,7 @@ fn facet_light(outer: &[P]) -> Vec<f32> {
         .map_or(0, |(i, _)| i);
     dots.iter()
         .enumerate()
-        .map(|(i, d)| {
-            if i == lit {
-                0.95
-            } else {
-                0.1 + 0.42 * d.max(0.0).powf(1.4)
-            }
-        })
+        .map(|(i, d)| if i == lit { 0.95 } else { 0.1 + 0.42 * d.max(0.0).powf(1.4) })
         .collect()
 }
 
@@ -205,55 +156,30 @@ fn to_px(bounds: Bounds<Pixels>) -> impl Fn(P) -> Pt {
 /// Paints `eco`'s stone in `bounds` in `ink`, turned `turn` of one symmetry
 /// step (0 at rest; the copy tick runs it from 1 back to 0). A `local` stone
 /// has a mint table (`mine`).
-pub(crate) fn stone(
-    eco: Eco,
-    bounds: Bounds<Pixels>,
-    ink: Hsla,
-    table: Option<Hsla>,
-    turn: f32,
-    window: &mut Window,
-) {
+pub(crate) fn stone(eco: Eco, bounds: Bounds<Pixels>, ink: Hsla, table: Option<Hsla>, turn: f32, window: &mut Window) {
     let cut = cut(eco);
     let map = to_px(bounds);
     let scale = f32::from(bounds.size.width) / 24.0;
     // The rough stone has no symmetry: it rocks a little instead.
-    let angle = if cut.step > 0.0 {
-        -cut.step * turn
-    } else {
-        -18.0 * turn
-    };
+    let angle = if cut.step > 0.0 { -cut.step * turn } else { -18.0 * turn };
     let radians = angle.to_radians();
     for s in cut.stones {
-        let outer: Vec<P> = s
-            .outer
-            .iter()
-            .map(|p| rotate(*p, s.centre, radians))
-            .collect();
+        let outer: Vec<P> = s.outer.iter().map(|p| rotate(*p, s.centre, radians)).collect();
         let light = facet_light(&outer);
         let n = outer.len();
-        let inner: Option<Vec<P>> = (s.k > 0.0).then(|| {
-            outer
-                .iter()
-                .map(|p| scale_about(*p, s.centre, s.k))
-                .collect()
-        });
+        let inner: Option<Vec<P>> = (s.k > 0.0).then(|| outer.iter().map(|p| scale_about(*p, s.centre, s.k)).collect());
         let apex = s.apex.map(|a| rotate(a, s.centre, radians));
         let dim = if s.back { 0.6 } else { 1.0 };
         for i in 0..n {
             let (a, b) = (outer[i], outer[(i + 1) % n]);
             let poly = match (&inner, apex) {
-                (Some(inner), _) => {
-                    Poly::new([map(a), map(b), map(inner[(i + 1) % n]), map(inner[i])])
-                }
+                (Some(inner), _) => Poly::new([map(a), map(b), map(inner[(i + 1) % n]), map(inner[i])]),
                 (None, Some(apex)) => Poly::new([map(a), map(b), map(apex)]),
                 (None, None) => continue,
             };
             let mut fill = Fill::new();
             fill.poly(&poly);
-            fill.paint(
-                window,
-                crate::controls::with_alpha(ink, ink.alpha * light[i] * dim),
-            );
+            fill.paint(window, crate::controls::with_alpha(ink, ink.alpha * light[i] * dim));
         }
         if let Some(inner) = &inner {
             let table_poly = Poly::new(inner.iter().map(|p| map(*p)));
@@ -261,10 +187,7 @@ pub(crate) fn stone(
             fill.poly(&table_poly);
             match table {
                 Some(mine) => fill.paint(window, mine),
-                None => fill.paint(
-                    window,
-                    crate::controls::with_alpha(ink, ink.alpha * 0.4 * dim),
-                ),
+                None => fill.paint(window, crate::controls::with_alpha(ink, ink.alpha * 0.4 * dim)),
             }
         }
         let outline = Poly::new(outer.iter().map(|p| map(*p)));
@@ -302,13 +225,7 @@ fn segment(a: Pt, b: Pt, w: f32) -> Poly {
 }
 
 /// Paints the ring of `family` in `bounds`, turned `turn` degrees.
-pub(crate) fn ring(
-    family: Family,
-    bounds: Bounds<Pixels>,
-    ink: Hsla,
-    turn: f32,
-    window: &mut Window,
-) {
+pub(crate) fn ring(family: Family, bounds: Bounds<Pixels>, ink: Hsla, turn: f32, window: &mut Window) {
     let map = to_px(bounds);
     let scale = f32::from(bounds.size.width) / 24.0;
     let v = octagon(turn.to_radians());
@@ -319,12 +236,7 @@ pub(crate) fn ring(
         Family::Public => {
             for c in v {
                 let d = 1.1 * std::f32::consts::SQRT_2;
-                edges.poly(&Poly::new([
-                    map((c.0, c.1 - d)),
-                    map((c.0 + d, c.1)),
-                    map((c.0, c.1 + d)),
-                    map((c.0 - d, c.1)),
-                ]));
+                edges.poly(&Poly::new([map((c.0, c.1 - d)), map((c.0 + d, c.1)), map((c.0, c.1 + d)), map((c.0 - d, c.1))]));
             }
         }
         Family::Unknown => {
@@ -350,28 +262,18 @@ pub(crate) fn ring(
             }
             match family {
                 Family::Strong => {
-                    core.poly(&Poly::new(
-                        v.iter().map(|p| map(scale_about(*p, (12.0, 12.0), 0.52))),
-                    ));
+                    core.poly(&Poly::new(v.iter().map(|p| map(scale_about(*p, (12.0, 12.0), 0.52)))));
                 }
                 Family::Weak => {
                     let r = 2.4 * std::f32::consts::SQRT_2;
-                    core.poly(&Poly::new([
-                        map((12.0, 12.0 - r)),
-                        map((12.0 + r, 12.0)),
-                        map((12.0, 12.0 + r)),
-                        map((12.0 - r, 12.0)),
-                    ]));
+                    core.poly(&Poly::new([map((12.0, 12.0 - r)), map((12.0 + r, 12.0)), map((12.0, 12.0 + r)), map((12.0 - r, 12.0))]));
                     core_alpha = 0.9;
                 }
                 _ => {}
             }
         }
     }
-    core.paint(
-        window,
-        crate::controls::with_alpha(ink, ink.alpha * core_alpha),
-    );
+    core.paint(window, crate::controls::with_alpha(ink, ink.alpha * core_alpha));
     edges.paint(window, ink);
 }
 
@@ -394,12 +296,7 @@ pub(crate) fn diamond(kind: Diamond, bounds: Bounds<Pixels>, ink: Hsla, window: 
     // A square of `side` turned 45°: its half-diagonal (it overhangs its
     // box as the board's rotated square does).
     let r = side * 0.5 * std::f32::consts::SQRT_2 * if kind == Diamond::Dev { 0.8 } else { 1.0 };
-    let shape = Poly::new([
-        pt(cx, cy - r),
-        pt(cx + r, cy),
-        pt(cx, cy + r),
-        pt(cx - r, cy),
-    ]);
+    let shape = Poly::new([pt(cx, cy - r), pt(cx + r, cy), pt(cx, cy + r), pt(cx - r, cy)]);
     match kind {
         Diamond::Solid => {
             let mut fill = Fill::new();
@@ -424,29 +321,17 @@ mod tests {
     #[test]
     fn a_stone_turned_one_whole_step_takes_the_light_it_started_with() {
         // Turning the octagon a half turn (its step) lights the same facets.
-        let turned: Vec<(f32, f32)> = CRATES[0]
-            .outer
-            .iter()
-            .map(|p| rotate(*p, (12.0, 12.0), 180_f32.to_radians()))
-            .collect();
+        let turned: Vec<(f32, f32)> =
+            CRATES[0].outer.iter().map(|p| rotate(*p, (12.0, 12.0), 180_f32.to_radians())).collect();
         let (a, b) = (facet_light(CRATES[0].outer), facet_light(&turned));
         // The facet that faces the light after a half turn is the one
         // opposite: the lights are the same set, shifted by half the edges.
         let n = a.len();
         for i in 0..n {
-            assert!(
-                (a[i] - b[(i + n / 2) % n]).abs() < 1e-3,
-                "facet {i}: {} vs {}",
-                a[i],
-                b[(i + n / 2) % n]
-            );
+            assert!((a[i] - b[(i + n / 2) % n]).abs() < 1e-3, "facet {i}: {} vs {}", a[i], b[(i + n / 2) % n]);
         }
         // Half a step in, the light has moved: it is a turn, not a still.
-        let half: Vec<(f32, f32)> = NUGET[0]
-            .outer
-            .iter()
-            .map(|p| rotate(*p, (12.0, 12.2), 30_f32.to_radians()))
-            .collect();
+        let half: Vec<(f32, f32)> = NUGET[0].outer.iter().map(|p| rotate(*p, (12.0, 12.2), 30_f32.to_radians())).collect();
         assert_ne!(facet_light(NUGET[0].outer), facet_light(&half));
     }
 }

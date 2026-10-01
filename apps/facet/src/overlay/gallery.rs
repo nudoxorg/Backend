@@ -135,9 +135,7 @@ fn method_call() -> Peek {
         name: "MethodCall".into(),
         place: "variant, no payload".into(),
         path: "present::relation".into(),
-        sentence: Some(
-            "A call through a receiver, `value.method()`, resolved by the compiler.".into(),
-        ),
+        sentence: Some("A call through a receiver, `value.method()`, resolved by the compiler.".into()),
         ..SymbolPeek::default()
     })
 }
@@ -178,18 +176,10 @@ fn semantic_link_kind() -> Peek {
                 .val("Calls")
                 .p(",")
                 .sp()
-                .link(
-                    "MethodCall",
-                    Role::Value,
-                    child_link("SemanticLinkKind", method_call()),
-                )
+                .link("MethodCall", Role::Value, child_link("SemanticLinkKind", method_call()))
                 .p(",")
                 .sp()
-                .link(
-                    "TypeReference",
-                    Role::Value,
-                    child_link("SemanticLinkKind", type_reference()),
-                )
+                .link("TypeReference", Role::Value, child_link("SemanticLinkKind", type_reference()))
                 .p(", … }"),
         ),
         sentence: Some("The closed vocabulary of how one symbol touches another.".into()),
@@ -273,26 +263,9 @@ fn glyph_rs() -> Peek {
                 Sig::new().span("#[derive(Clone, Copy, Debug, Eq, Hash)]", Role::Punct),
                 true,
             ),
-            line(
-                139,
-                Sig::new()
-                    .kw("pub enum")
-                    .sp()
-                    .ty("RelationLabel")
-                    .sp()
-                    .p("{"),
-                true,
-            ),
-            line(
-                140,
-                Sig::new().sp().sp().sp().sp().val("Typed").p("(…),"),
-                false,
-            ),
-            line(
-                141,
-                Sig::new().sp().sp().sp().sp().val("Neighbourhood").p(","),
-                false,
-            ),
+            line(139, Sig::new().kw("pub enum").sp().ty("RelationLabel").sp().p("{"), true),
+            line(140, Sig::new().sp().sp().sp().sp().val("Typed").p("(…),"), false),
+            line(141, Sig::new().sp().sp().sp().sp().val("Neighbourhood").p(","), false),
         ],
     })
 }
@@ -336,24 +309,14 @@ fn fragment(measure: &Measure, hovered: bool, cx: &App) -> AnyElement {
     let palette = cx.facet().palette();
     let word = |name: &str, peek: fn() -> Peek| {
         let key = key(&format!("page:{name}"));
-        Link::new(key.clone(), move |rect| {
-            peek::request(key.clone(), rect, peek())
-        })
+        Link::new(key.clone(), move |rect| peek::request(key.clone(), rect, peek()))
     };
     let name = Sig::new()
         .span("Typed", Role::Strong)
         .p("(")
-        .link(
-            "SemanticLinkKind",
-            Role::Strong,
-            word("SemanticLinkKind", semantic_link_kind),
-        )
+        .link("SemanticLinkKind", Role::Strong, word("SemanticLinkKind", semantic_link_kind))
         .span(", ", Role::Quiet)
-        .link(
-            "RelationDirection",
-            Role::Quiet,
-            word("RelationDirection", relation_direction),
-        )
+        .link("RelationDirection", Role::Quiet, word("RelationDirection", relation_direction))
         .p(")");
     let kind = |kind: Kind| crate::icons::kind_mark(kind, crate::icons::KindSize::Sm, palette);
     let scale = measure.scale();
@@ -407,18 +370,8 @@ fn fragment(measure: &Measure, hovered: bool, cx: &App) -> AnyElement {
             None,
             hovered,
         ))
-        .child(row(
-            kind(Kind::Variant),
-            plain("Neighbourhood"),
-            Some("A bounded neighbourhood."),
-            false,
-        ))
-        .child(row(
-            kind(Kind::Variant),
-            plain("Related"),
-            Some("Related, and nothing more."),
-            false,
-        ))
+        .child(row(kind(Kind::Variant), plain("Neighbourhood"), Some("A bounded neighbourhood."), false))
+        .child(row(kind(Kind::Variant), plain("Related"), Some("Related, and nothing more."), false))
         .into_any_element()
 }
 
@@ -456,11 +409,7 @@ impl Render for Stage {
         if self.board {
             root = root.child(board(frag, &measure, window, cx));
         } else {
-            let pad = px(if viewport.width < px(600.0) {
-                16.0
-            } else {
-                40.0
-            });
+            let pad = px(if viewport.width < px(600.0) { 16.0 } else { 40.0 });
             root = root.child(div().absolute().left(pad).top(px(34.0)).child(frag));
         }
         if self.pins {
@@ -516,24 +465,8 @@ fn labelled(label: &'static str, child: AnyElement, measure: &Measure, cx: &App)
 fn board(frag: gpui::Div, measure: &Measure, window: &mut Window, cx: &mut App) -> AnyElement {
     let palette = cx.facet().palette();
     let scale = measure.scale();
-    let keys = still(
-        &semantic_link_kind(),
-        Reveal {
-            keys: true,
-            xray: false,
-        },
-        window,
-        cx,
-    );
-    let xray = still(
-        &semantic_link_kind(),
-        Reveal {
-            keys: true,
-            xray: true,
-        },
-        window,
-        cx,
-    );
+    let keys = still(&semantic_link_kind(), Reveal { keys: true, xray: false }, window, cx);
+    let xray = still(&semantic_link_kind(), Reveal { keys: true, xray: true }, window, cx);
     let pins = div()
         .w(px(280.0) * scale)
         .py(px(16.0) * scale)
@@ -541,11 +474,7 @@ fn board(frag: gpui::Div, measure: &Measure, window: &mut Window, cx: &mut App) 
         .border_l_1()
         .border_color(palette.line1.hsla())
         .bg(palette.g0.alpha(0.45).hsla())
-        .child(float::pinned_column(
-            &measure.within(px(252.0) * scale),
-            window,
-            cx,
-        ))
+        .child(float::pinned_column(&measure.within(px(252.0) * scale), window, cx))
         .into_any_element();
     let package = still(&serde(), Reveal::default(), window, cx);
     let location = still(&glyph_rs(), Reveal::default(), window, cx);
@@ -565,12 +494,7 @@ fn board(frag: gpui::Div, measure: &Measure, window: &mut Window, cx: &mut App) 
         .gap(px(34.0) * scale)
         .py(px(44.0) * scale)
         .px(px(56.0) * scale)
-        .child(
-            div()
-                .set(H1, measure)
-                .text_color(palette.ink0.hsla())
-                .child("Peeks"),
-        )
+        .child(div().set(H1, measure).text_color(palette.ink0.hsla()).child("Peeks"))
         .child(labelled(
             "Resting on a word",
             div().h(px(330.0) * scale).child(frag).into_any_element(),
@@ -590,13 +514,7 @@ fn board(frag: gpui::Div, measure: &Measure, window: &mut Window, cx: &mut App) 
         .into_any_element()
 }
 
-fn stage(
-    board: bool,
-    pins: bool,
-    steps: Vec<(u64, Step)>,
-    window: &mut Window,
-    cx: &mut App,
-) -> AnyView {
+fn stage(board: bool, pins: bool, steps: Vec<(u64, Step)>, window: &mut Window, cx: &mut App) -> AnyView {
     let view = cx.new(|_| Stage { board, pins });
     script(steps, window, cx);
     view.into()
@@ -642,15 +560,8 @@ fn leave(key_name: &'static str) -> Step {
 
 fn pin(name: &'static str, peek: fn() -> Peek) -> Step {
     Box::new(move |window, cx| {
-        let anchor = Bounds::new(
-            gpui::point(px(-100.0), px(-100.0)),
-            gpui::size(px(1.0), px(1.0)),
-        );
-        float::open(
-            peek::request(key(&format!("pin:{name}")), anchor, peek()),
-            window,
-            cx,
-        );
+        let anchor = Bounds::new(gpui::point(px(-100.0), px(-100.0)), gpui::size(px(1.0), px(1.0)));
+        float::open(peek::request(key(&format!("pin:{name}")), anchor, peek()), window, cx);
         float::pin_top(window, cx);
     })
 }
@@ -665,21 +576,16 @@ fn step(f: impl FnOnce(&mut Window, &mut App) + 'static) -> Step {
 
 fn tip_request(window: &Window, cx: &mut App) -> FloatRequest {
     let anchor = anchor_of(&key("page:SemanticLinkKind"), window, cx);
-    FloatRequest::new(
-        key("tip"),
-        anchor,
-        FloatKind::Tip,
-        |measure, _window, cx| {
-            let palette = cx.facet().palette();
-            div()
-                .px(px(10.0) * measure.scale())
-                .py(px(6.0) * measure.scale())
-                .set(crate::tokens::ty::SMALL, measure)
-                .text_color(palette.ink1.hsla())
-                .child("14 uses in 5 files")
-                .into_any_element()
-        },
-    )
+    FloatRequest::new(key("tip"), anchor, FloatKind::Tip, |measure, _window, cx| {
+        let palette = cx.facet().palette();
+        div()
+            .px(px(10.0) * measure.scale())
+            .py(px(6.0) * measure.scale())
+            .set(crate::tokens::ty::SMALL, measure)
+            .text_color(palette.ink1.hsla())
+            .child("14 uses in 5 files")
+            .into_any_element()
+    })
 }
 
 // ------------------------------------------------------------------ scenes
@@ -688,15 +594,9 @@ fn tip_request(window: &Window, cx: &mut App) -> FloatRequest {
 /// on the word inside the peek.
 fn chain() -> Vec<(u64, Step)> {
     vec![
-        (
-            1,
-            open("page:SemanticLinkKind", semantic_link_kind, Side::Below),
-        ),
+        (1, open("page:SemanticLinkKind", semantic_link_kind, Side::Below)),
         (2, settle()),
-        (
-            3,
-            open("SemanticLinkKind:MethodCall", method_call, Side::Right),
-        ),
+        (3, open("SemanticLinkKind:MethodCall", method_call, Side::Right)),
         (4, settle()),
     ]
 }
@@ -715,10 +615,7 @@ fn peeks_narrow(window: &mut Window, cx: &mut App) -> AnyView {
         false,
         false,
         vec![
-            (
-                1,
-                open("page:SemanticLinkKind", semantic_link_kind, Side::Below),
-            ),
+            (1, open("page:SemanticLinkKind", semantic_link_kind, Side::Below)),
             (2, settle()),
         ],
         window,
@@ -776,16 +673,9 @@ impl Render for Edges {
                 .h(px(14.0))
                 .bg(palette.peri.base.hsla())
         };
-        let stage = div()
-            .relative()
-            .size_full()
-            .bg(palette.g0.hsla())
-            .child(ground());
+        let stage = div().relative().size_full().bg(palette.g0.hsla()).child(ground());
         let stage = if self.top_bottom_tip {
-            stage
-                .child(mark(330.0, 6.0))
-                .child(mark(330.0, 440.0))
-                .child(mark(650.0, 6.0))
+            stage.child(mark(330.0, 6.0)).child(mark(330.0, 440.0)).child(mark(650.0, 6.0))
         } else {
             stage.child(mark(6.0, 220.0)).child(mark(654.0, 220.0))
         };
@@ -807,11 +697,7 @@ fn edge_peek(name: &'static str) -> Peek {
 
 fn open_peek_at(name: &'static str, bounds: Bounds<Pixels>, side: Side) -> Step {
     Box::new(move |window, cx| {
-        float::open(
-            peek::request(key(name), bounds, edge_peek(name)).side(side),
-            window,
-            cx,
-        );
+        float::open(peek::request(key(name), bounds, edge_peek(name)).side(side), window, cx);
     })
 }
 
@@ -822,18 +708,12 @@ fn open_tip_at(name: &'static str, bounds: Bounds<Pixels>, side: Side) -> Step {
             body: "No connector on a tip.".into(),
             chord: vec![],
         });
-        float::open(
-            FloatRequest::new(key(name), bounds, FloatKind::Tip, content).side(side),
-            window,
-            cx,
-        );
+        float::open(FloatRequest::new(key(name), bounds, FloatKind::Tip, content).side(side), window, cx);
     })
 }
 
 fn float_edges(window: &mut Window, cx: &mut App) -> AnyView {
-    let view = cx.new(|_| Edges {
-        top_bottom_tip: true,
-    });
+    let view = cx.new(|_| Edges { top_bottom_tip: true });
     let b = |x: f32, y: f32| Bounds::new(point(px(x), px(y)), size(px(40.0), px(14.0)));
     // `edge-top` and the tip are both fresh cards (nothing else is open
     // yet), so they paint at their true target immediately — no spring to
@@ -844,10 +724,7 @@ fn float_edges(window: &mut Window, cx: &mut App) -> AnyView {
             (1, open_peek_at("edge-top", b(330.0, 6.0), Side::Above)),
             (1, open_tip_at("edge-tip", b(650.0, 6.0), Side::Below)),
             (50, settle()),
-            (
-                100,
-                open_peek_at("edge-bottom", b(330.0, 440.0), Side::Below),
-            ),
+            (100, open_peek_at("edge-bottom", b(330.0, 440.0), Side::Below)),
             (400, settle()),
         ],
         window,
@@ -857,9 +734,7 @@ fn float_edges(window: &mut Window, cx: &mut App) -> AnyView {
 }
 
 fn float_edges_sides(window: &mut Window, cx: &mut App) -> AnyView {
-    let view = cx.new(|_| Edges {
-        top_bottom_tip: false,
-    });
+    let view = cx.new(|_| Edges { top_bottom_tip: false });
     let b = |x: f32, y: f32| Bounds::new(point(px(x), px(y)), size(px(40.0), px(14.0)));
     // Same reasoning as `float_edges`: `edge-left` is the first (and so
     // fresh) card in this scene, `edge-right` is a swap onto it and gets
@@ -868,10 +743,7 @@ fn float_edges_sides(window: &mut Window, cx: &mut App) -> AnyView {
         vec![
             (1, open_peek_at("edge-left", b(6.0, 220.0), Side::Below)),
             (50, settle()),
-            (
-                100,
-                open_peek_at("edge-right", b(654.0, 220.0), Side::Below),
-            ),
+            (100, open_peek_at("edge-right", b(654.0, 220.0), Side::Below)),
             (400, settle()),
         ],
         window,
@@ -906,8 +778,7 @@ impl Render for WrapLink {
                         body: "Wrapped-link hairline proof.".into(),
                         chord: vec![],
                     });
-                    FloatRequest::new(key("wrap-link"), rect, FloatKind::Tip, content)
-                        .side(Side::Below)
+                    FloatRequest::new(key("wrap-link"), rect, FloatKind::Tip, content).side(Side::Below)
                 })
             })
         });
@@ -916,14 +787,7 @@ impl Render for WrapLink {
             .size_full()
             .bg(palette.g0.hsla())
             .child(ground())
-            .child(
-                div()
-                    .absolute()
-                    .left(px(20.0))
-                    .top(px(20.0))
-                    .w(px(120.0))
-                    .child(content),
-            )
+            .child(div().absolute().left(px(20.0)).top(px(20.0)).w(px(120.0)).child(content))
             .child(float::layer(window, cx))
     }
 }
@@ -933,16 +797,7 @@ fn text_wrap_link(_window: &mut Window, cx: &mut App) -> AnyView {
 }
 
 fn film_rise(window: &mut Window, cx: &mut App) -> AnyView {
-    stage(
-        false,
-        false,
-        vec![(
-            1,
-            open("page:SemanticLinkKind", semantic_link_kind, Side::Below),
-        )],
-        window,
-        cx,
-    )
+    stage(false, false, vec![(1, open("page:SemanticLinkKind", semantic_link_kind, Side::Below))], window, cx)
 }
 
 fn film_sweep(window: &mut Window, cx: &mut App) -> AnyView {
@@ -950,16 +805,10 @@ fn film_sweep(window: &mut Window, cx: &mut App) -> AnyView {
         false,
         false,
         vec![
-            (
-                1,
-                rest("page:SemanticLinkKind", semantic_link_kind, Side::Below),
-            ),
+            (1, rest("page:SemanticLinkKind", semantic_link_kind, Side::Below)),
             (360, settle()),
             (400, leave("page:SemanticLinkKind")),
-            (
-                400,
-                rest("page:RelationDirection", relation_direction, Side::Below),
-            ),
+            (400, rest("page:RelationDirection", relation_direction, Side::Below)),
         ],
         window,
         cx,
@@ -971,15 +820,9 @@ fn film_chain(window: &mut Window, cx: &mut App) -> AnyView {
         false,
         false,
         vec![
-            (
-                1,
-                open("page:SemanticLinkKind", semantic_link_kind, Side::Below),
-            ),
+            (1, open("page:SemanticLinkKind", semantic_link_kind, Side::Below)),
             (2, settle()),
-            (
-                100,
-                open("SemanticLinkKind:MethodCall", method_call, Side::Right),
-            ),
+            (100, open("SemanticLinkKind:MethodCall", method_call, Side::Right)),
         ],
         window,
         cx,
@@ -1003,10 +846,7 @@ fn film_pin(window: &mut Window, cx: &mut App) -> AnyView {
         true,
         vec![
             (1, pin("page-relations", page_relations)),
-            (
-                2,
-                open("page:SemanticLinkKind", semantic_link_kind, Side::Below),
-            ),
+            (2, open("page:SemanticLinkKind", semantic_link_kind, Side::Below)),
             (3, settle()),
             (
                 100,
@@ -1025,10 +865,7 @@ fn film_reverse(window: &mut Window, cx: &mut App) -> AnyView {
         false,
         false,
         vec![
-            (
-                1,
-                open("page:SemanticLinkKind", semantic_link_kind, Side::Below),
-            ),
+            (1, open("page:SemanticLinkKind", semantic_link_kind, Side::Below)),
             (2, settle()),
             (
                 10,
@@ -1036,10 +873,7 @@ fn film_reverse(window: &mut Window, cx: &mut App) -> AnyView {
                     float::close_all(window, cx);
                 }),
             ),
-            (
-                80,
-                open("page:SemanticLinkKind", semantic_link_kind, Side::Below),
-            ),
+            (80, open("page:SemanticLinkKind", semantic_link_kind, Side::Below)),
         ],
         window,
         cx,
@@ -1074,10 +908,7 @@ fn film_deepen(window: &mut Window, cx: &mut App) -> AnyView {
     stage(
         false,
         false,
-        vec![(
-            1,
-            rest("page:SemanticLinkKind", semantic_link_kind, Side::Below),
-        )],
+        vec![(1, rest("page:SemanticLinkKind", semantic_link_kind, Side::Below))],
         window,
         cx,
     )
@@ -1101,15 +932,9 @@ impl Render for HoverStage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let facet = cx.facet();
         let palette = facet.palette();
-        let measure = facet
-            .measure(window.viewport_size().width)
-            .within(px(640.0));
+        let measure = facet.measure(window.viewport_size().width).within(px(640.0));
         let hue = Kind::Enum.hue(&palette);
-        let word = |id: &'static str,
-                    name: &'static str,
-                    rest: Tone,
-                    role: TypeRole,
-                    peek: fn() -> Peek| {
+        let word = |id: &'static str, name: &'static str, rest: Tone, role: TypeRole, peek: fn() -> Peek| {
             let subject = crate::hover::Subject::new(format!("present::relation::{name}"));
             crate::hover::hoverable(id, subject, hue, move |lit| {
                 div()
@@ -1121,10 +946,7 @@ impl Render for HoverStage {
             .peek(move |anchor| peek::request(key(id), anchor, peek()))
         };
         let text = |role: TypeRole, tone: Tone, content: &'static str| {
-            div()
-                .set(role, &measure)
-                .text_color(tone.hsla())
-                .child(content)
+            div().set(role, &measure).text_color(tone.hsla()).child(content)
         };
         let line = || div().flex().items_baseline();
         let row = |name: &'static str, say: &'static str| {
@@ -1132,11 +954,7 @@ impl Render for HoverStage {
                 .gap(px(12.0))
                 .min_h(px(34.0))
                 .items_center()
-                .child(crate::icons::kind_mark(
-                    Kind::Variant,
-                    crate::icons::KindSize::Sm,
-                    &palette,
-                ))
+                .child(crate::icons::kind_mark(Kind::Variant, crate::icons::KindSize::Sm, &palette))
                 .child(text(ROW_NAME, palette.ink0, name))
                 .child(text(ROW_SAY, palette.ink3, say))
         };
@@ -1151,43 +969,18 @@ impl Render for HoverStage {
             .child(
                 line()
                     .child(text(ROW_NAME, palette.ink1, "Typed("))
-                    .child(word(
-                        "hover:SemanticLinkKind",
-                        "SemanticLinkKind",
-                        palette.ink1,
-                        ROW_NAME,
-                        semantic_link_kind,
-                    ))
+                    .child(word("hover:SemanticLinkKind", "SemanticLinkKind", palette.ink1, ROW_NAME, semantic_link_kind))
                     .child(text(ROW_NAME, palette.ink3, ", "))
-                    .child(word(
-                        "hover:RelationDirection",
-                        "RelationDirection",
-                        palette.ink1,
-                        ROW_NAME,
-                        relation_direction,
-                    ))
+                    .child(word("hover:RelationDirection", "RelationDirection", palette.ink1, ROW_NAME, relation_direction))
                     .child(text(ROW_NAME, palette.ink1, ")")),
             )
             .child(
                 line()
                     .child(text(ROW_SAY, palette.ink2, "Every "))
-                    .child(word(
-                        "hover:SemanticLinkKind:prose",
-                        "SemanticLinkKind",
-                        palette.ink2,
-                        ROW_SAY,
-                        semantic_link_kind,
-                    ))
-                    .child(text(
-                        ROW_SAY,
-                        palette.ink2,
-                        " names one way a symbol touches another.",
-                    )),
+                    .child(word("hover:SemanticLinkKind:prose", "SemanticLinkKind", palette.ink2, ROW_SAY, semantic_link_kind))
+                    .child(text(ROW_SAY, palette.ink2, " names one way a symbol touches another.")),
             )
-            .child(row(
-                "Neighbourhood",
-                "A bounded neighbourhood of one symbol.",
-            ))
+            .child(row("Neighbourhood", "A bounded neighbourhood of one symbol."))
             .child(row("Related", "Related, and nothing more."))
             .child(row("Calls", "A call from one function to another."))
             .child(row("MethodCall", "A call through a receiver."))

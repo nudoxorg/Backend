@@ -1323,24 +1323,20 @@ print('FORK_ALLOWED')"#;
         ProcessTerminal::Success,
         "{baseline:?}"
     );
-    assert!(
-        baseline
-            .stdout()
-            .windows(b"FORK_ALLOWED".len())
-            .any(|part| part == b"FORK_ALLOWED")
-    );
+    assert!(baseline
+        .stdout()
+        .windows(b"FORK_ALLOWED".len())
+        .any(|part| part == b"FORK_ALLOWED"));
 
     let process_limits =
         limits(64, 256, Duration::from_secs(10), 512)?.with_process_count_limit(1)?;
     let receipt = command(python, &["-c", FORK_PROBE], process_limits)?.run()?;
     assert_eq!(receipt.terminal(), ProcessTerminal::Exit, "{receipt:?}");
     assert_eq!(receipt.status(), Some(73), "{receipt:?}");
-    assert!(
-        receipt
-            .stdout()
-            .windows(b"FORK_DENIED_EAGAIN".len())
-            .any(|part| part == b"FORK_DENIED_EAGAIN")
-    );
+    assert!(receipt
+        .stdout()
+        .windows(b"FORK_DENIED_EAGAIN".len())
+        .any(|part| part == b"FORK_DENIED_EAGAIN"));
     assert!(receipt.reaped());
     Ok(())
 }

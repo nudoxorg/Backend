@@ -85,14 +85,7 @@ impl ProjectCommand {
     #[must_use]
     pub(crate) fn for_phase(phase: ProjectPhase, active: bool) -> Vec<Self> {
         match phase {
-            ProjectPhase::Ready => [
-                (!active).then_some(Self::Activate),
-                Some(Self::Reveal),
-                Some(Self::Remove),
-            ]
-            .into_iter()
-            .flatten()
-            .collect(),
+            ProjectPhase::Ready => [(!active).then_some(Self::Activate), Some(Self::Reveal), Some(Self::Remove)].into_iter().flatten().collect(),
             ProjectPhase::Indexing => vec![Self::Reveal, Self::Remove],
             ProjectPhase::Cancelling => vec![Self::Reveal],
             ProjectPhase::Cancelled => vec![Self::Resume, Self::Reveal, Self::Remove],
@@ -110,63 +103,19 @@ mod tests {
     #[test]
     fn every_phase_offers_what_makes_sense_and_each_command_dispatches_its_own_intent() {
         let project = LocalProjectId::new("/tmp/nudox-commands-project").expect("identity");
-        let offered = |phase, active| {
-            ProjectCommand::for_phase(phase, active)
-                .into_iter()
-                .map(ProjectCommand::label)
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(
-            offered(ProjectPhase::Failed, true),
-            ["Try again", "Reveal", "Remove from shelf"]
-        );
-        assert_eq!(
-            offered(ProjectPhase::Cancelled, false),
-            ["Resume", "Reveal", "Remove from shelf"]
-        );
-        assert_eq!(
-            offered(ProjectPhase::Missing, false),
-            ["Add it again", "Remove from shelf"],
-            "a folder that is gone cannot be revealed"
-        );
-        assert_eq!(
-            offered(ProjectPhase::Ready, false),
-            ["Make active", "Reveal", "Remove from shelf"]
-        );
-        assert_eq!(
-            offered(ProjectPhase::Ready, true),
-            ["Reveal", "Remove from shelf"],
-            "the active project need not be made active"
-        );
-        assert_eq!(
-            offered(ProjectPhase::Cancelling, false),
-            ["Reveal"],
-            "nothing to remove or resume while the owner is stopping it"
-        );
-        assert_eq!(
-            ProjectCommand::Retry.intent(&project),
-            Intent::RetryIndex(project.clone())
-        );
-        assert_eq!(
-            ProjectCommand::Resume.intent(&project),
-            Intent::RetryIndex(project.clone())
-        );
-        assert_eq!(
-            ProjectCommand::Reveal.intent(&project),
-            Intent::RevealProject(project.clone())
-        );
-        assert_eq!(
-            ProjectCommand::Remove.intent(&project),
-            Intent::RemoveProject(project.clone())
-        );
-        assert_eq!(
-            ProjectCommand::Activate.intent(&project),
-            Intent::ActivateProject(project.clone())
-        );
-        assert_eq!(
-            ProjectCommand::Locate.intent(&project),
-            Intent::OpenAddProject
-        );
+        let offered = |phase, active| ProjectCommand::for_phase(phase, active).into_iter().map(ProjectCommand::label).collect::<Vec<_>>();
+        assert_eq!(offered(ProjectPhase::Failed, true), ["Try again", "Reveal", "Remove from shelf"]);
+        assert_eq!(offered(ProjectPhase::Cancelled, false), ["Resume", "Reveal", "Remove from shelf"]);
+        assert_eq!(offered(ProjectPhase::Missing, false), ["Add it again", "Remove from shelf"], "a folder that is gone cannot be revealed");
+        assert_eq!(offered(ProjectPhase::Ready, false), ["Make active", "Reveal", "Remove from shelf"]);
+        assert_eq!(offered(ProjectPhase::Ready, true), ["Reveal", "Remove from shelf"], "the active project need not be made active");
+        assert_eq!(offered(ProjectPhase::Cancelling, false), ["Reveal"], "nothing to remove or resume while the owner is stopping it");
+        assert_eq!(ProjectCommand::Retry.intent(&project), Intent::RetryIndex(project.clone()));
+        assert_eq!(ProjectCommand::Resume.intent(&project), Intent::RetryIndex(project.clone()));
+        assert_eq!(ProjectCommand::Reveal.intent(&project), Intent::RevealProject(project.clone()));
+        assert_eq!(ProjectCommand::Remove.intent(&project), Intent::RemoveProject(project.clone()));
+        assert_eq!(ProjectCommand::Activate.intent(&project), Intent::ActivateProject(project.clone()));
+        assert_eq!(ProjectCommand::Locate.intent(&project), Intent::OpenAddProject);
         assert_eq!(ProjectCommand::Remove.weight(), Weight::Danger);
     }
 }

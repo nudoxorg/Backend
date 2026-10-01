@@ -130,24 +130,11 @@ mod tests {
         let start = Instant::now();
         let carry = Carry::new(0.0, 1.0, start);
         let p = |ms| carry.value(at(start, ms));
-        for (ms, want) in [
-            (40, 0.23),
-            (80, 0.54),
-            (120, 0.75),
-            (160, 0.87),
-            (240, 0.97),
-        ] {
-            assert!(
-                (p(ms) - want).abs() < 0.01,
-                "p({ms}) = {:.3}, want {want}",
-                p(ms)
-            );
+        for (ms, want) in [(40, 0.23), (80, 0.54), (120, 0.75), (160, 0.87), (240, 0.97)] {
+            assert!((p(ms) - want).abs() < 0.01, "p({ms}) = {:.3}, want {want}", p(ms));
         }
         let peak = (0..2000).map(p).fold(0.0_f32, f32::max);
-        assert!(
-            peak <= 1.0 + 1e-6,
-            "critically damped: never past 1 ({peak})"
-        );
+        assert!(peak <= 1.0 + 1e-6, "critically damped: never past 1 ({peak})");
     }
 
     /// Back at 120 ms: the value is continuous, the velocity carries over,

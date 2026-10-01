@@ -1,12 +1,12 @@
 //! Exercises the `backend-semantic::index_core` tests lexical contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
+use backend_semantic::ir::EntityId;
+use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 use backend_semantic::index_core::{
     EntityArtifactIdentity, EntityDocumentId, LexicalHit, LexicalOperation, LexicalOutputError,
     LexicalRow, LexicalScore, LexicalSegment, LexicalSegmentError, LexicalTopK, MAX_LEXICAL_ROWS,
 };
-use backend_semantic::ir::EntityId;
-use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 
 fn score(units: u32) -> LexicalScore {
     LexicalScore::from(units)

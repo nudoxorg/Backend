@@ -39,7 +39,5 @@ pub(super) fn find(qualified: &str) -> NodeId {
 /// `src/repo/<file>` for the workspace.
 pub(super) fn read(package: &Package, file: &str) -> Option<Arc<str>> {
     let dir = if package.external { "registry" } else { "repo" };
-    std::fs::read_to_string(fixture_dir().join("src").join(dir).join(file))
-        .ok()
-        .map(Arc::from)
+    std::fs::read_to_string(fixture_dir().join("src").join(dir).join(file)).ok().map(Arc::from)
 }

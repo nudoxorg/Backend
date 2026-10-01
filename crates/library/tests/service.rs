@@ -12,6 +12,8 @@ use std::{
     task::{Context, Poll, Wake, Waker},
 };
 
+use backend_semantic::vocabulary::{Language, LanguageProfile, RustEdition, Stage};
+use backend_version::observe::{DropNewest, FlightRecorder, Probe};
 use backend_library::interface::{
     AdaptiveDisposition, ApplicationDisposition, ApplicationEvent, ApplicationInput,
     ApplicationObservation, ApplicationOutcome, ApplicationService, BatteryState, ByteCount,
@@ -21,8 +23,6 @@ use backend_library::interface::{
     OperationKey, Pin, Pressure, RecoveryCause, RejectedSourceText, ReplyBody, ResourceBudget,
     RetryBudget, SourceText,
 };
-use backend_semantic::vocabulary::{Language, LanguageProfile, RustEdition, Stage};
-use backend_version::observe::{DropNewest, FlightRecorder, Probe};
 
 fn text(value: &str) -> Result<InputText, InputTextError> {
     InputText::try_from_str(value)

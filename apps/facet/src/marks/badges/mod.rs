@@ -64,12 +64,7 @@ pub struct Badge {
 }
 
 impl Badge {
-    pub(crate) fn new(
-        glyph: Glyph,
-        word: impl Into<SharedString>,
-        tip: impl Into<SharedString>,
-        ink: Ink,
-    ) -> Self {
+    pub(crate) fn new(glyph: Glyph, word: impl Into<SharedString>, tip: impl Into<SharedString>, ink: Ink) -> Self {
         Self {
             glyph,
             word: word.into(),
@@ -160,9 +155,7 @@ impl Shape {
             Kind::Trait | Kind::Interface => Self::Contract,
             Kind::Function | Kind::Method | Kind::Constructor => Self::Function,
             Kind::Macro => Self::Macro,
-            Kind::Constant | Kind::Field | Kind::Property | Kind::Variable | Kind::Variant => {
-                Self::Constant
-            }
+            Kind::Constant | Kind::Field | Kind::Property | Kind::Variable | Kind::Variant => Self::Constant,
             Kind::Unknown => Self::Item,
         }
     }
@@ -223,10 +216,7 @@ impl Reading {
     /// The words of every badge, in order.
     #[must_use]
     pub fn words(&self) -> Vec<&str> {
-        self.badges
-            .iter()
-            .map(|badge| badge.word.as_ref())
-            .collect()
+        self.badges.iter().map(|badge| badge.word.as_ref()).collect()
     }
 
     /// Whether some badge says `word`.
@@ -265,36 +255,10 @@ pub fn read(item: &Item<'_>) -> Reading {
 /// The producer served an encoded compiler type, not source text.
 fn encoded(text: &str) -> bool {
     const HEADS: [&str; 30] = [
-        "annotated(",
-        "applied(",
-        "array(",
-        "builtin(",
-        "c-qualified(",
-        "channel(",
-        "conditional(",
-        "cxx-member-pointer(",
-        "cxx-reference(",
-        "entity(",
-        "external(",
-        "fixed(",
-        "function(parameters=",
-        "import(",
-        "indexed(",
-        "infer(",
-        "inferred(",
-        "map(",
-        "mapped(",
-        "namespace(",
-        "nominal(",
-        "package(",
-        "pointer(",
-        "qualified(",
-        "rectangular(",
-        "reference(",
-        "tuple(",
-        "typeof(",
-        "unknown(",
-        "literal.",
+        "annotated(", "applied(", "array(", "builtin(", "c-qualified(", "channel(", "conditional(",
+        "cxx-member-pointer(", "cxx-reference(", "entity(", "external(", "fixed(", "function(parameters=",
+        "import(", "indexed(", "infer(", "inferred(", "map(", "mapped(", "namespace(", "nominal(", "package(",
+        "pointer(", "qualified(", "rectangular(", "reference(", "tuple(", "typeof(", "unknown(", "literal.",
     ];
     HEADS.iter().any(|head| text.starts_with(head))
 }
@@ -302,11 +266,7 @@ fn encoded(text: &str) -> bool {
 /// One line, one space between words, attributes and doc lines dropped.
 pub(crate) fn normalize(signature: &str) -> String {
     let mut kept = String::new();
-    let mut lines = signature
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .peekable();
+    let mut lines = signature.lines().map(str::trim).filter(|line| !line.is_empty()).peekable();
     while let Some(line) = lines.next() {
         // `#[derive(..)]`, `#[inline]`, `@Override`, `[[nodiscard]]` stand alone on their line.
         let attribute = (line.starts_with("#[") && line.ends_with(']'))
@@ -384,10 +344,7 @@ pub(crate) fn type_params(body: &str) -> Vec<String> {
         .filter(|param| !param.starts_with('\''))
         .map(|param| {
             let name = param.split([':', '=']).next().unwrap_or(param).trim();
-            name.strip_prefix("const ")
-                .unwrap_or(name)
-                .trim()
-                .to_owned()
+            name.strip_prefix("const ").unwrap_or(name).trim().to_owned()
         })
         .filter(|name| !name.is_empty())
         .collect()

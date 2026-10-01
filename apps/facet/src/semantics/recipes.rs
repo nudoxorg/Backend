@@ -27,9 +27,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// Keys that cost nothing.
-const GROUND: [&str; 8] = [
-    "text", "path", "number", "bool", "char", "bytes", "nothing", "any",
-];
+const GROUND: [&str; 8] = ["text", "path", "number", "bool", "char", "bytes", "nothing", "any"];
 
 /// Whether a key is a plain value (or "any X": a bound, which you bring).
 #[must_use]
@@ -38,60 +36,17 @@ pub fn is_ground(key: &str) -> bool {
 }
 
 const NUM: [&str; 17] = [
-    "u16",
-    "u32",
-    "u64",
-    "u128",
-    "usize",
-    "i8",
-    "i16",
-    "i32",
-    "i64",
-    "i128",
-    "isize",
-    "f32",
-    "f64",
-    "NonZeroU32",
-    "NonZeroU64",
-    "NonZeroUsize",
-    "Duration",
+    "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize", "f32", "f64", "NonZeroU32",
+    "NonZeroU64", "NonZeroUsize", "Duration",
 ];
 /// Wrappers a key sees through.
 const SEE: [&str; 21] = [
-    "Option",
-    "Result",
-    "Box",
-    "Rc",
-    "Arc",
-    "Cow",
-    "Pin",
-    "RefCell",
-    "Cell",
-    "Mutex",
-    "RwLock",
-    "Ref",
-    "RefMut",
-    "MutexGuard",
-    "RwLockReadGuard",
-    "RwLockWriteGuard",
-    "AsRef",
-    "Into",
-    "Borrow",
-    "ManuallyDrop",
-    "Weak",
+    "Option", "Result", "Box", "Rc", "Arc", "Cow", "Pin", "RefCell", "Cell", "Mutex", "RwLock", "Ref", "RefMut",
+    "MutexGuard", "RwLockReadGuard", "RwLockWriteGuard", "AsRef", "Into", "Borrow", "ManuallyDrop", "Weak",
 ];
 const LISTS: [&str; 11] = [
-    "Vec",
-    "VecDeque",
-    "SmallVec",
-    "LinkedList",
-    "HashSet",
-    "BTreeSet",
-    "IndexSet",
-    "BinaryHeap",
-    "IntoIterator",
-    "Iterator",
-    "Peekable",
+    "Vec", "VecDeque", "SmallVec", "LinkedList", "HashSet", "BTreeSet", "IndexSet", "BinaryHeap", "IntoIterator",
+    "Iterator", "Peekable",
 ];
 const MAPS: [&str; 3] = ["HashMap", "BTreeMap", "IndexMap"];
 /// Number of type arguments represented by a canonical recipe key.
@@ -111,21 +66,8 @@ pub(crate) fn canonical_name(name: &str) -> bool {
     represented_arguments(name).is_some() || plain(name).is_some()
 }
 
-const PLAIN_BOUNDS: [&str; 13] = [
-    "Sized",
-    "Send",
-    "Sync",
-    "Clone",
-    "Copy",
-    "Debug",
-    "Unpin",
-    "Default",
-    "PartialEq",
-    "Eq",
-    "Hash",
-    "Ord",
-    "PartialOrd",
-];
+const PLAIN_BOUNDS: [&str; 13] =
+    ["Sized", "Send", "Sync", "Clone", "Copy", "Debug", "Unpin", "Default", "PartialEq", "Eq", "Hash", "Ord", "PartialOrd"];
 
 fn plain(last: &str) -> Option<&'static str> {
     Some(match last {
@@ -187,8 +129,7 @@ struct Keyer<'a> {
 
 impl Keyer<'_> {
     fn is_var(&self, name: &str) -> bool {
-        self.gens.contains_key(name)
-            || (name.len() == 1 && name.chars().all(|c| c.is_ascii_uppercase()))
+        self.gens.contains_key(name) || (name.len() == 1 && name.chars().all(|c| c.is_ascii_uppercase()))
     }
 
     /// What a generic stands for, read from its bounds.
@@ -198,23 +139,13 @@ impl Keyer<'_> {
                 let p = part.trim();
                 for wrapper in ["AsRef", "Into", "Borrow"] {
                     if let Some(rest) = p.strip_prefix(wrapper)
-                        && let Some(inner) = rest
-                            .trim_start()
-                            .strip_prefix('<')
-                            .and_then(|r| r.trim_end().strip_suffix('>'))
+                        && let Some(inner) = rest.trim_start().strip_prefix('<').and_then(|r| r.trim_end().strip_suffix('>'))
                     {
                         let inner = inner.trim();
-                        if !inner.is_empty()
-                            && inner
-                                .chars()
-                                .all(|c| c.is_alphanumeric() || c == '_' || c == ':')
+                        if !inner.is_empty() && inner.chars().all(|c| c.is_alphanumeric() || c == '_' || c == ':')
                             && let Some(w) = plain(inner.rsplit("::").next().unwrap_or(inner))
                         {
-                            return if w == "byte" {
-                                "number".to_owned()
-                            } else {
-                                w.to_owned()
-                            };
+                            return if w == "byte" { "number".to_owned() } else { w.to_owned() };
                         }
                     }
                 }
@@ -227,23 +158,12 @@ impl Keyer<'_> {
                     return format!("any {named}");
                 }
                 if let Some(rest) = p.strip_prefix("IntoIterator")
-                    && let Some(inner) = rest
-                        .trim_start()
-                        .strip_prefix('<')
-                        .and_then(|r| r.strip_suffix('>'))
-                    && let Some(item) = inner
-                        .trim_start()
-                        .strip_prefix("Item")
-                        .map(str::trim_start)
-                        .and_then(|r| r.strip_prefix('='))
+                    && let Some(inner) = rest.trim_start().strip_prefix('<').and_then(|r| r.strip_suffix('>'))
+                    && let Some(item) = inner.trim_start().strip_prefix("Item").map(str::trim_start).and_then(|r| r.strip_prefix('='))
                 {
                     let item = item.trim();
                     let k = self.key_of(item).key;
-                    return if k == "number" && contains_word(item, "u8") {
-                        "bytes".to_owned()
-                    } else {
-                        format!("list of {k}")
-                    };
+                    return if k == "number" && contains_word(item, "u8") { "bytes".to_owned() } else { format!("list of {k}") };
                 }
             }
         }
@@ -251,11 +171,7 @@ impl Keyer<'_> {
     }
 
     fn key_of(&self, source: &str) -> TypeKey {
-        let mut out = TypeKey {
-            key: "nothing".to_owned(),
-            maybe: false,
-            fails: false,
-        };
+        let mut out = TypeKey { key: "nothing".to_owned(), maybe: false, fails: false };
         if source.trim().is_empty() {
             return out;
         }
@@ -274,38 +190,23 @@ impl Keyer<'_> {
 
     fn ty(&self, expr: &TypeExpr, depth: usize, flags: &mut TypeKey) -> String {
         match expr {
-            TypeExpr::Ref { inner, .. } | TypeExpr::Ptr { inner, .. } => {
-                self.ty(inner, depth, flags)
-            }
+            TypeExpr::Ref { inner, .. } | TypeExpr::Ptr { inner, .. } => self.ty(inner, depth, flags),
             TypeExpr::Tuple(items) => match items.as_slice() {
                 [] => "nothing".to_owned(),
                 [one] => self.ty(one, depth + 1, flags),
-                many => format!(
-                    "({})",
-                    many.iter()
-                        .map(|t| self.ty(t, depth + 1, flags))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
+                many => format!("({})", many.iter().map(|t| self.ty(t, depth + 1, flags)).collect::<Vec<_>>().join(", ")),
             },
             TypeExpr::Slice(inner) | TypeExpr::Array { inner, .. } => {
                 let k = self.ty(inner, depth + 1, flags);
-                if k == "byte" {
-                    "bytes".to_owned()
-                } else {
-                    format!("list of {k}")
-                }
+                if k == "byte" { "bytes".to_owned() } else { format!("list of {k}") }
             }
             TypeExpr::Never => "never".to_owned(),
             TypeExpr::Infer => "_".to_owned(),
-            TypeExpr::Any(bounds) => bounds
-                .first()
-                .map_or_else(|| "?".to_owned(), |b| self.ty(b, depth, flags)),
+            TypeExpr::Any(bounds) => bounds.first().map_or_else(|| "?".to_owned(), |b| self.ty(b, depth, flags)),
             TypeExpr::Func { .. } => "a function".to_owned(),
             TypeExpr::Binding { ty, .. } => self.ty(ty, depth, flags),
             TypeExpr::Assoc { base, name, .. } => {
-                if matches!(&**base, TypeExpr::Named { path, .. } if path.first().is_some_and(|p| p == "Self" || self.is_var(p)))
-                {
+                if matches!(&**base, TypeExpr::Named { path, .. } if path.first().is_some_and(|p| p == "Self" || self.is_var(p))) {
                     return "any".to_owned();
                 }
                 // A projection from a concrete type can still name its result.
@@ -316,17 +217,8 @@ impl Keyer<'_> {
         }
     }
 
-    fn named(
-        &self,
-        path: &[String],
-        args: &[TypeExpr],
-        depth: usize,
-        flags: &mut TypeKey,
-        projected: bool,
-    ) -> String {
-        let Some(last) = path.last().map(String::as_str) else {
-            return "?".to_owned();
-        };
+    fn named(&self, path: &[String], args: &[TypeExpr], depth: usize, flags: &mut TypeKey, projected: bool) -> String {
+        let Some(last) = path.last().map(String::as_str) else { return "?".to_owned() };
         // A generic's associated type is unknown, not an unrelated symbol
         // elsewhere in the world with the same final name (`T::Error`).
         if !projected && path.len() > 1 && path.first().is_some_and(|p| self.is_var(p)) {
@@ -351,11 +243,7 @@ impl Keyer<'_> {
                 if depth == 0 {
                     flags.fails = true;
                 }
-                return if keys.is_empty() {
-                    "nothing".to_owned()
-                } else {
-                    a0
-                };
+                return if keys.is_empty() { "nothing".to_owned() } else { a0 };
             }
             _ => {}
         }
@@ -375,9 +263,7 @@ impl Keyer<'_> {
             return format!("map {a0} to {}", keys.get(1).map_or("?", String::as_str));
         }
         if last == "Self" {
-            return self
-                .owner
-                .map_or_else(|| "any".to_owned(), |o| format!("#{o}"));
+            return self.owner.map_or_else(|| "any".to_owned(), |o| format!("#{o}"));
         }
         if let Some(p) = plain(last) {
             return p.to_owned();
@@ -390,20 +276,13 @@ impl Keyer<'_> {
 }
 
 fn starts_with_word(s: &str, w: &str) -> bool {
-    s.strip_prefix(w)
-        .is_some_and(|rest| !rest.starts_with(|c: char| c.is_alphanumeric() || c == '_'))
+    s.strip_prefix(w).is_some_and(|rest| !rest.starts_with(|c: char| c.is_alphanumeric() || c == '_'))
 }
 
 fn contains_word(s: &str, w: &str) -> bool {
     s.match_indices(w).any(|(at, _)| {
-        let before = s[..at]
-            .chars()
-            .next_back()
-            .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
-        let after = s[at + w.len()..]
-            .chars()
-            .next()
-            .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+        let before = s[..at].chars().next_back().is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+        let after = s[at + w.len()..].chars().next().is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
         before && after
     })
 }
@@ -417,15 +296,11 @@ fn bound_name(p: &str) -> Option<&str> {
     };
     let head = head.trim_end();
     let segs: Vec<&str> = head.split("::").collect();
-    if segs
-        .iter()
-        .any(|s| s.is_empty() || !s.chars().all(|c| c.is_alphanumeric() || c == '_'))
-    {
+    if segs.iter().any(|s| s.is_empty() || !s.chars().all(|c| c.is_alphanumeric() || c == '_')) {
         return None;
     }
     let last = *segs.last()?;
-    last.starts_with(|c: char| c.is_ascii_uppercase())
-        .then_some(last)
+    last.starts_with(|c: char| c.is_ascii_uppercase()).then_some(last)
 }
 
 /// Splits at top-level `+` (outside `<>` and `()`), as `page.js` `splitPlus`.
@@ -504,13 +379,8 @@ pub struct Producer {
 }
 
 fn is_test(file: &str) -> bool {
-    let path_hit = ["tests/", "test/", "benches/"]
-        .iter()
-        .any(|d| file.starts_with(d) || file.contains(&format!("/{d}")));
-    path_hit
-        || file.ends_with("_test.rs")
-        || file.ends_with("_tests.rs")
-        || file.ends_with("/tests.rs")
+    let path_hit = ["tests/", "test/", "benches/"].iter().any(|d| file.starts_with(d) || file.contains(&format!("/{d}")));
+    path_hit || file.ends_with("_test.rs") || file.ends_with("_tests.rs") || file.ends_with("/tests.rs")
 }
 
 /// The least-cost derivation seen from one package.
@@ -547,12 +417,7 @@ impl Tree {
     /// Steps in the tree.
     #[must_use]
     pub fn size(&self) -> usize {
-        1 + self
-            .kids
-            .iter()
-            .filter_map(|k| k.node.as_ref())
-            .map(Tree::size)
-            .sum::<usize>()
+        1 + self.kids.iter().filter_map(|k| k.node.as_ref()).map(Tree::size).sum::<usize>()
     }
 }
 
@@ -599,11 +464,7 @@ pub const MAYBE: f64 = 0.35;
 
 /// `Default` among a node's derives.
 fn derives_default(world: &World, i: NodeId) -> bool {
-    world
-        .node(i)
-        .derives
-        .iter()
-        .any(|d| d.as_ref() == "Default")
+    world.node(i).derives.iter().any(|d| d.as_ref() == "Default")
 }
 
 impl Recipes {
@@ -612,50 +473,28 @@ impl Recipes {
     pub fn new(world: &World) -> Self {
         let mut names: HashMap<String, Vec<NodeId>> = HashMap::new();
         for (i, n) in world.nodes.iter().enumerate() {
-            if n.parent.is_none()
-                && matches!(
-                    n.kind,
-                    Kind::Struct | Kind::Enum | Kind::Trait | Kind::Type | Kind::Union
-                )
-            {
-                names
-                    .entry(n.name.to_string())
-                    .or_default()
-                    .push(u32::try_from(i).unwrap_or(u32::MAX));
+            if n.parent.is_none() && matches!(n.kind, Kind::Struct | Kind::Enum | Kind::Trait | Kind::Type | Kind::Union) {
+                names.entry(n.name.to_string()).or_default().push(u32::try_from(i).unwrap_or(u32::MAX));
             }
         }
-        let mut me = Self {
-            table: Arc::new(Vec::new()),
-            runs: RefCell::new(HashMap::new()),
-            names: Arc::new(names),
-        };
+        let mut me = Self { table: Arc::new(Vec::new()), runs: RefCell::new(HashMap::new()), names: Arc::new(names) };
         me.table = Arc::new(me.build(world));
         me
     }
 
     /// Detaches thread-local recipe caches for transfer from a worker.
     pub fn into_prepared(self) -> PreparedRecipes {
-        PreparedRecipes {
-            table: self.table,
-            names: self.names,
-        }
+        PreparedRecipes { table: self.table, names: self.names }
     }
 
     /// Shares immutable producer data with another worker without copying it.
     pub(crate) fn prepared(&self) -> PreparedRecipes {
-        PreparedRecipes {
-            table: self.table.clone(),
-            names: self.names.clone(),
-        }
+        PreparedRecipes { table: self.table.clone(), names: self.names.clone() }
     }
 
     /// Attaches fresh caches after producer data arrives on the UI thread.
     pub fn from_prepared(data: PreparedRecipes) -> Self {
-        Self {
-            table: data.table,
-            names: data.names,
-            runs: RefCell::new(HashMap::new()),
-        }
+        Self { table: data.table, names: data.names, runs: RefCell::new(HashMap::new()) }
     }
 
     /// The prototype's `resolveName`: same package first, then importance,
@@ -669,8 +508,7 @@ impl Recipes {
                 None => Some(c),
                 Some(b) => {
                     let (sc, sb) = (world.node(c).pkg == here, world.node(b).pkg == here);
-                    let better =
-                        (sc && !sb) || (sc == sb && world.importance(c) > world.importance(b));
+                    let better = (sc && !sb) || (sc == sb && world.importance(c) > world.importance(b));
                     Some(if better { c } else { b })
                 }
             };
@@ -681,39 +519,18 @@ impl Recipes {
     fn keyer<'a>(&'a self, world: &'a World, from: NodeId, owner: Option<NodeId>) -> Keyer<'a> {
         let n = world.node(from);
         let parent = n.parent.map(|p| world.node(p));
-        let lists: Vec<&str> = [
-            n.generics.as_deref(),
-            parent.and_then(|p| p.generics.as_deref()),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
+        let lists: Vec<&str> =
+            [n.generics.as_deref(), parent.and_then(|p| p.generics.as_deref())].into_iter().flatten().collect();
         let mut gens: HashMap<String, Vec<String>> = HashMap::new();
         for g in generics(&lists, n.where_.as_deref().unwrap_or("")) {
             gens.insert(g.name, g.bounds);
         }
-        Keyer {
-            world,
-            recipes: self,
-            from,
-            owner,
-            gens,
-        }
+        Keyer { world, recipes: self, from, owner, gens }
     }
 
     /// The existing canonical representation, reused by discovery's proof layer.
-    pub(crate) fn expression_key(
-        &self,
-        world: &World,
-        from: NodeId,
-        owner: Option<NodeId>,
-        expr: &TypeExpr,
-    ) -> String {
-        let mut flags = TypeKey {
-            key: String::new(),
-            maybe: false,
-            fails: false,
-        };
+    pub(crate) fn expression_key(&self, world: &World, from: NodeId, owner: Option<NodeId>, expr: &TypeExpr) -> String {
+        let mut flags = TypeKey { key: String::new(), maybe: false, fails: false };
         bytes_to_numbers(&self.keyer(world, from, owner).ty(expr, 0, &mut flags))
     }
 
@@ -724,11 +541,7 @@ impl Recipes {
             if n.orphan {
                 continue;
             }
-            let file = n
-                .file
-                .clone()
-                .or_else(|| world.node(world.top(i)).file.clone())
-                .unwrap_or_default();
+            let file = n.file.clone().or_else(|| world.node(world.top(i)).file.clone()).unwrap_or_default();
             if is_test(&file) {
                 continue;
             }
@@ -736,14 +549,7 @@ impl Recipes {
                 Kind::Function | Kind::Method => {
                     let owner = n.parent;
                     let keyer = self.keyer(world, i, owner);
-                    let out = n.ret.as_deref().map_or(
-                        TypeKey {
-                            key: "nothing".into(),
-                            maybe: false,
-                            fails: false,
-                        },
-                        |r| keyer.key_of(r),
-                    );
+                    let out = n.ret.as_deref().map_or(TypeKey { key: "nothing".into(), maybe: false, fails: false }, |r| keyer.key_of(r));
                     let mut ins = Vec::new();
                     let mut names = Vec::new();
                     let method = n.recv.as_deref().is_some_and(|r| !r.is_empty());
@@ -774,16 +580,8 @@ impl Recipes {
                     let record = n.shape.as_deref() == Some("record");
                     let mut ins = Vec::new();
                     let mut names = Vec::new();
-                    for part in
-                        n.ty.as_deref()
-                            .map(|t| split_top(t, ','))
-                            .unwrap_or_default()
-                    {
-                        let colon = if record {
-                            part.find(':').filter(|&c| c > 0)
-                        } else {
-                            None
-                        };
+                    for part in n.ty.as_deref().map(|t| split_top(t, ',')).unwrap_or_default() {
+                        let colon = if record { part.find(':').filter(|&c| c > 0) } else { None };
                         match colon {
                             Some(c) => {
                                 names.push(part[..c].trim().to_owned());
@@ -795,39 +593,16 @@ impl Recipes {
                             }
                         }
                     }
-                    table.push(Producer {
-                        node: i,
-                        how: How::Variant,
-                        ins,
-                        names,
-                        out: format!("#{owner}"),
-                        fails: false,
-                        maybe: false,
-                        record,
-                        closed: false,
-                        tuple: false,
-                    });
+                    table.push(Producer { node: i, how: How::Variant, ins, names, out: format!("#{owner}"), fails: false, maybe: false, record, closed: false, tuple: false });
                 }
                 Kind::Struct | Kind::Enum => {
                     if n.kind == Kind::Struct && !n.non_exhaustive {
-                        let fields: Vec<NodeId> = world
-                            .kids(i)
-                            .iter()
-                            .copied()
-                            .filter(|&j| world.node(j).kind == Kind::Field)
-                            .collect();
+                        let fields: Vec<NodeId> = world.kids(i).iter().copied().filter(|&j| world.node(j).kind == Kind::Field).collect();
                         let ins = fields
                             .iter()
-                            .map(|&j| {
-                                self.keyer(world, j, Some(i))
-                                    .key_of(world.node(j).ty.as_deref().unwrap_or(""))
-                                    .key
-                            })
+                            .map(|&j| self.keyer(world, j, Some(i)).key_of(world.node(j).ty.as_deref().unwrap_or("")).key)
                             .collect();
-                        let names = fields
-                            .iter()
-                            .map(|&j| world.node(j).name.to_string())
-                            .collect();
+                        let names = fields.iter().map(|&j| world.node(j).name.to_string()).collect();
                         table.push(Producer {
                             node: i,
                             how: How::Literal,
@@ -837,28 +612,12 @@ impl Recipes {
                             fails: false,
                             maybe: false,
                             record: false,
-                            closed: fields
-                                .iter()
-                                .any(|&j| world.node(j).vis.as_deref() != Some("pub")),
-                            tuple: !fields.is_empty()
-                                && fields.iter().all(|&j| {
-                                    world.node(j).name.chars().all(|c| c.is_ascii_digit())
-                                }),
+                            closed: fields.iter().any(|&j| world.node(j).vis.as_deref() != Some("pub")),
+                            tuple: !fields.is_empty() && fields.iter().all(|&j| world.node(j).name.chars().all(|c| c.is_ascii_digit())),
                         });
                     }
                     if derives_default(world, i) {
-                        table.push(Producer {
-                            node: i,
-                            how: How::Default,
-                            ins: Vec::new(),
-                            names: Vec::new(),
-                            out: format!("#{i}"),
-                            fails: false,
-                            maybe: false,
-                            record: false,
-                            closed: false,
-                            tuple: false,
-                        });
+                        table.push(Producer { node: i, how: How::Default, ins: Vec::new(), names: Vec::new(), out: format!("#{i}"), fails: false, maybe: false, record: false, closed: false, tuple: false });
                     }
                 }
                 _ => {}
@@ -891,17 +650,9 @@ impl Recipes {
         let ins = e.ins.len() as f64;
         1.0 + if e.fails { FAILS } else { 0.0 }
             + if e.maybe { MAYBE } else { 0.0 }
-            + if e.how == How::Literal {
-                0.12 * ins
-            } else {
-                0.0
-            }
+            + if e.how == How::Literal { 0.12 * ins } else { 0.0 }
             - if e.how == How::Default { 0.3 } else { 0.0 }
-            + if world.packages[world.node(e.node).pkg as usize].external {
-                0.05
-            } else {
-                0.0
-            }
+            + if world.packages[world.node(e.node).pkg as usize].external { 0.05 } else { 0.0 }
     }
 
     /// The least-cost derivation seen from package `pk` (cached).
@@ -921,13 +672,7 @@ impl Recipes {
     }
 
     /// The same derivation, admitting only producers whose inputs are proven.
-    pub(crate) fn run_with_filter(
-        &self,
-        world: &World,
-        pk: u32,
-        free: &HashSet<String>,
-        eligible: impl Fn(usize, &Producer) -> bool,
-    ) -> Run {
+    pub(crate) fn run_with_filter(&self, world: &World, pk: u32, free: &HashSet<String>, eligible: impl Fn(usize, &Producer) -> bool) -> Run {
         let mut cost: HashMap<String, f64> = HashMap::new();
         let mut best: HashMap<String, Option<usize>> = HashMap::new();
         let mut done: HashSet<String> = HashSet::new();
@@ -973,13 +718,7 @@ impl Recipes {
             }
             Some(top)
         }
-        let relax = |k: &str,
-                     c: f64,
-                     q: Option<usize>,
-                     cost: &mut HashMap<String, f64>,
-                     best: &mut HashMap<String, Option<usize>>,
-                     done: &HashSet<String>,
-                     heap: &mut Vec<(f64, String)>| {
+        let relax = |k: &str, c: f64, q: Option<usize>, cost: &mut HashMap<String, f64>, best: &mut HashMap<String, Option<usize>>, done: &HashSet<String>, heap: &mut Vec<(f64, String)>| {
             if !done.contains(k) && c < cost.get(k).copied().unwrap_or(f64::INFINITY) {
                 cost.insert(k.to_owned(), c);
                 best.insert(k.to_owned(), q);
@@ -1002,13 +741,7 @@ impl Recipes {
             }
         }
         for (q, e) in self.table.iter().enumerate() {
-            if is_ground(&e.out)
-                || e.out == "never"
-                || e.out == "?"
-                || e.ins.contains(&e.out)
-                || !Self::usable(world, e, pk)
-                || !eligible(q, e)
-            {
+            if is_ground(&e.out) || e.out == "never" || e.out == "?" || e.ins.contains(&e.out) || !Self::usable(world, e, pk) || !eligible(q, e) {
                 continue;
             }
             let mut ks: Vec<&String> = Vec::new();
@@ -1031,9 +764,7 @@ impl Recipes {
             if !done.insert(k.clone()) {
                 continue;
             }
-            let Some(list) = waiting.get(&k).cloned() else {
-                continue;
-            };
+            let Some(list) = waiting.get(&k).cloned() else { continue };
             for q in list {
                 if left[q] <= 0 {
                     continue;
@@ -1062,30 +793,15 @@ impl Recipes {
             .map(|(a, k)| {
                 let name = e.names.get(a).cloned().unwrap_or_default();
                 if is_ground(k) {
-                    return Kid {
-                        key: k.clone(),
-                        name,
-                        node: None,
-                        opaque: false,
-                    };
+                    return Kid { key: k.clone(), name, node: None, opaque: false };
                 }
                 match run.best.get(k).copied().flatten() {
                     Some(b) if !seen.contains(k) => {
                         let mut s = seen.clone();
                         s.insert(k.clone());
-                        Kid {
-                            key: k.clone(),
-                            name,
-                            node: Some(self.tree(run, b, &s)),
-                            opaque: false,
-                        }
+                        Kid { key: k.clone(), name, node: Some(self.tree(run, b, &s)), opaque: false }
                     }
-                    _ => Kid {
-                        key: k.clone(),
-                        name,
-                        node: None,
-                        opaque: true,
-                    },
+                    _ => Kid { key: k.clone(), name, node: None, opaque: true },
                 }
             })
             .collect();
@@ -1125,24 +841,15 @@ impl Recipes {
                 #[allow(clippy::cast_precision_loss)]
                 let adj = (if en.pkg == n.pkg { 0.0 } else { 0.3 }) + 0.04 * e.ins.len() as f64
                     - (if en.parent == Some(i) { 0.15 } else { 0.0 })
-                    + (if world.yours(e.node) && !world.yours(i) {
-                        0.2
-                    } else {
-                        0.0
-                    });
+                    + (if world.yours(e.node) && !world.yours(i) { 0.2 } else { 0.0 });
                 cands.push((c + adj, q));
             }
         }
         cands.sort_by(|a, b| {
-            a.0.partial_cmp(&b.0)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| {
-                    let (ia, ib) = (
-                        world.importance(self.table[a.1].node),
-                        world.importance(self.table[b.1].node),
-                    );
-                    ib.partial_cmp(&ia).unwrap_or(std::cmp::Ordering::Equal)
-                })
+            a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal).then_with(|| {
+                let (ia, ib) = (world.importance(self.table[a.1].node), world.importance(self.table[b.1].node));
+                ib.partial_cmp(&ia).unwrap_or(std::cmp::Ordering::Equal)
+            })
         });
         let mut out: Vec<Route> = Vec::new();
         let mut groups: HashMap<(How, Option<NodeId>, String), usize> = HashMap::new();
@@ -1165,32 +872,17 @@ impl Recipes {
                 continue;
             }
             groups.insert(tag, out.len());
-            out.push(Route {
-                cost: c,
-                tree,
-                alts: Vec::new(),
-            });
+            out.push(Route { cost: c, tree, alts: Vec::new() });
         }
-        Routes {
-            routes: out,
-            makers: cands.len(),
-            picks,
-        }
+        Routes { routes: out, makers: cands.len(), picks }
     }
 
     /// How to call the callable `i`: its own row, each argument derived.
     #[must_use]
     pub fn call_route(&self, world: &World, i: NodeId) -> Option<Route> {
-        let q = self
-            .table
-            .iter()
-            .position(|e| e.node == i && matches!(e.how, How::Call | How::Method))?;
+        let q = self.table.iter().position(|e| e.node == i && matches!(e.how, How::Call | How::Method))?;
         let run = self.run(world, world.node(i).pkg);
-        Some(Route {
-            cost: self.cost_of(world, &run, &self.table[q]),
-            tree: self.tree(&run, q, &HashSet::new()),
-            alts: Vec::new(),
-        })
+        Some(Route { cost: self.cost_of(world, &run, &self.table[q]), tree: self.tree(&run, q, &HashSet::new()), alts: Vec::new() })
     }
 
     /// The row `q`.
@@ -1281,11 +973,7 @@ fn write_code(recipes: &Recipes, world: &World, tree: &Tree, optional: bool) -> 
             }
         }
         fn fresh(&mut self, v: &str) -> String {
-            let base = if self.calls.contains(v) {
-                format!("the_{v}")
-            } else {
-                v.to_owned()
-            };
+            let base = if self.calls.contains(v) { format!("the_{v}") } else { v.to_owned() };
             let mut w = base.clone();
             let mut k = 2;
             while self.used.contains(&w) {
@@ -1297,20 +985,11 @@ fn write_code(recipes: &Recipes, world: &World, tree: &Tree, optional: bool) -> 
         }
         fn name_for(&self, key: &str) -> String {
             let list = key.strip_prefix("list of ");
-            let base = node_of(list.unwrap_or(key))
-                .map_or_else(|| "value".to_owned(), |j| snake(&self.world.node(j).name));
-            if list.is_some() {
-                format!("{base}s")
-            } else {
-                base
-            }
+            let base = node_of(list.unwrap_or(key)).map_or_else(|| "value".to_owned(), |j| snake(&self.world.node(j).name));
+            if list.is_some() { format!("{base}s") } else { base }
         }
         fn leaf(&self, k: &Kid) -> String {
-            if !k.name.is_empty()
-                && k.name != "it"
-                && k.name != "self"
-                && !k.name.chars().all(|c| c.is_ascii_digit())
-            {
+            if !k.name.is_empty() && k.name != "it" && k.name != "self" && !k.name.chars().all(|c| c.is_ascii_digit()) {
                 return k.name.clone();
             }
             if let Some(j) = node_of(&k.key) {
@@ -1351,23 +1030,10 @@ fn write_code(recipes: &Recipes, world: &World, tree: &Tree, optional: bool) -> 
             let args: Vec<String> = t.kids.iter().map(|k| self.arg(k)).collect();
             let value = spell(self.recipes, self.world, t, &args);
             let e = self.recipes.producer(t.q);
-            if self.optional && t.q != self.root && e.maybe && !e.fails {
-                format!("{value}?")
-            } else {
-                value
-            }
+            if self.optional && t.q != self.root && e.maybe && !e.fails { format!("{value}?") } else { value }
         }
     }
-    let mut coder = Coder {
-        optional,
-        root: tree.q,
-        recipes,
-        world,
-        lets: Vec::new(),
-        bound: HashMap::new(),
-        used: HashSet::new(),
-        calls: HashSet::new(),
-    };
+    let mut coder = Coder { optional, root: tree.q, recipes, world, lets: Vec::new(), bound: HashMap::new(), used: HashSet::new(), calls: HashSet::new() };
     coder.walk(tree);
     let last = coder.one(tree);
     let mut out = coder.lets;
@@ -1378,21 +1044,12 @@ fn write_code(recipes: &Recipes, world: &World, tree: &Tree, optional: bool) -> 
 fn spell(recipes: &Recipes, world: &World, t: &Tree, args: &[String]) -> String {
     let e = recipes.producer(t.q);
     let n = world.node(e.node);
-    let owner = n
-        .parent
-        .map(|p| world.node(p).name.to_string())
-        .unwrap_or_default();
+    let owner = n.parent.map(|p| world.node(p).name.to_string()).unwrap_or_default();
     let fields = || {
         e.names
             .iter()
             .zip(args)
-            .map(|(f, a)| {
-                if f == a {
-                    f.clone()
-                } else {
-                    format!("{f}: {a}")
-                }
-            })
+            .map(|(f, a)| if f == a { f.clone() } else { format!("{f}: {a}") })
             .collect::<Vec<_>>()
             .join(", ")
     };
@@ -1400,33 +1057,12 @@ fn spell(recipes: &Recipes, world: &World, t: &Tree, args: &[String]) -> String 
         How::Method => {
             let recv = args.first().cloned().unwrap_or_default();
             let wrapped = recv.split_once(' ').is_some_and(|(head, rest)| {
-                !head.is_empty()
-                    && head
-                        .chars()
-                        .next()
-                        .is_some_and(|c| c.is_alphanumeric() || c == '_')
-                    && head
-                        .chars()
-                        .all(|c| c.is_alphanumeric() || c == '_' || c == ':')
-                    && rest.starts_with('{')
+                !head.is_empty() && head.chars().next().is_some_and(|c| c.is_alphanumeric() || c == '_') && head.chars().all(|c| c.is_alphanumeric() || c == '_' || c == ':') && rest.starts_with('{')
             });
             let recv = if wrapped { format!("({recv})") } else { recv };
-            format!(
-                "{recv}.{}({})",
-                n.name,
-                args.get(1..).unwrap_or_default().join(", ")
-            )
+            format!("{recv}.{}({})", n.name, args.get(1..).unwrap_or_default().join(", "))
         }
-        How::Call => format!(
-            "{}{}({})",
-            if owner.is_empty() {
-                String::new()
-            } else {
-                format!("{owner}::")
-            },
-            n.name,
-            args.join(", ")
-        ),
+        How::Call => format!("{}{}({})", if owner.is_empty() { String::new() } else { format!("{owner}::") }, n.name, args.join(", ")),
         How::Variant => {
             let head = format!("{owner}::{}", n.name);
             if e.ins.is_empty() {
@@ -1545,14 +1181,7 @@ impl Recipes {
                     }
                 }
             }
-            let sides = t
-                .kids
-                .iter()
-                .enumerate()
-                .filter(|(a, _)| Some(*a) != spine)
-                .map(|(_, k)| k)
-                .filter(|k| !(k.node.is_none() && k.key == "nothing"))
-                .collect();
+            let sides = t.kids.iter().enumerate().filter(|(a, _)| Some(*a) != spine).map(|(_, k)| k).filter(|k| !(k.node.is_none() && k.key == "nothing")).collect();
             raw.insert(0, Raw { q: t.q, sides });
             cur = spine.and_then(|a| t.kids[a].node.as_ref());
         }
@@ -1571,16 +1200,7 @@ impl Recipes {
                 let plain: Vec<(String, String)> = raw[0]
                     .sides
                     .drain(..take)
-                    .map(|k| {
-                        (
-                            k.key.clone(),
-                            if shown_name(&k.name) {
-                                k.name.clone()
-                            } else {
-                                String::new()
-                            },
-                        )
-                    })
+                    .map(|k| (k.key.clone(), if shown_name(&k.name) { k.name.clone() } else { String::new() }))
                     .collect();
                 lead = Lead::Plain(plain);
             }
@@ -1593,13 +1213,7 @@ impl Recipes {
                 let e = &self.table[r.q];
                 let n = world.node(e.node);
                 let verb = match e.how {
-                    How::Variant => format!(
-                        "{}::{}",
-                        n.parent
-                            .map(|p| world.node(p).name.to_string())
-                            .unwrap_or_default(),
-                        n.name
-                    ),
+                    How::Variant => format!("{}::{}", n.parent.map(|p| world.node(p).name.to_string()).unwrap_or_default(), n.name),
                     How::Literal => "build".to_owned(),
                     How::Default => "default".to_owned(),
                     How::Call | How::Method => n.name.to_string(),
@@ -1614,11 +1228,7 @@ impl Recipes {
                         .iter()
                         .map(|k| Rider {
                             key: k.key.clone(),
-                            name: if shown_name(&k.name) {
-                                k.name.clone()
-                            } else {
-                                String::new()
-                            },
+                            name: if shown_name(&k.name) { k.name.clone() } else { String::new() },
                             article: k.node.as_ref().is_some_and(|t| self.trivial(t.q)),
                         })
                         .collect(),
@@ -1635,13 +1245,7 @@ impl Recipes {
             }
         }
         also.truncate(5);
-        Rail {
-            lead,
-            steps,
-            also,
-            also_more: alts.len().saturating_sub(5),
-            code: code(self, world, &route.tree),
-        }
+        Rail { lead, steps, also, also_more: alts.len().saturating_sub(5), code: code(self, world, &route.tree) }
     }
 }
 
@@ -1691,11 +1295,7 @@ impl Rail {
             Lead::Plain(list) => out.push(format!(
                 "from {}",
                 list.iter()
-                    .map(|(k, n)| if n.is_empty() {
-                        key_words(world, k)
-                    } else {
-                        format!("{} {n}", key_words(world, k))
-                    })
+                    .map(|(k, n)| if n.is_empty() { key_words(world, k) } else { format!("{} {n}", key_words(world, k)) })
                     .collect::<Vec<_>>()
                     .join(" , ")
             )),
@@ -1707,11 +1307,7 @@ impl Rail {
             }
             for r in &s.riders {
                 let a = if r.article { "a " } else { "" };
-                let name = if r.name.is_empty() {
-                    String::new()
-                } else {
-                    format!(" {}", r.name)
-                };
+                let name = if r.name.is_empty() { String::new() } else { format!(" {}", r.name) };
                 out.push(format!("+ {a}{}{name}", key_words(world, &r.key)));
             }
             if let Some(st) = &s.station {
@@ -1719,19 +1315,8 @@ impl Rail {
             }
         }
         if !self.also.is_empty() {
-            let more = if self.also_more > 0 {
-                format!(" and {} more", self.also_more)
-            } else {
-                String::new()
-            };
-            out.push(format!(
-                "also from {}{more}",
-                self.also
-                    .iter()
-                    .map(|k| key_words(world, k))
-                    .collect::<Vec<_>>()
-                    .join(" , ")
-            ));
+            let more = if self.also_more > 0 { format!(" and {} more", self.also_more) } else { String::new() };
+            out.push(format!("also from {}{more}", self.also.iter().map(|k| key_words(world, k)).collect::<Vec<_>>().join(" , ")));
         }
         out.join(" ")
     }
@@ -1780,41 +1365,22 @@ impl Section {
     pub fn foot(&self, world: &World) -> String {
         match self {
             Self::Getting { makers, picks, .. } => {
-                let mut parts = vec![format!(
-                    "{makers} way{} in this world make{} one",
-                    if *makers == 1 { "" } else { "s" },
-                    if *makers == 1 { "s" } else { "" }
-                )];
+                let mut parts = vec![format!("{makers} way{} in this world make{} one", if *makers == 1 { "" } else { "s" }, if *makers == 1 { "s" } else { "" })];
                 if *picks > 0 {
-                    parts.push(format!(
-                        "or pick one of its {picks} variant{} above",
-                        if *picks == 1 { "" } else { "s" }
-                    ));
+                    parts.push(format!("or pick one of its {picks} variant{} above", if *picks == 1 { "" } else { "s" }));
                 }
                 parts.push("⌥ for code".to_owned());
                 parts.join(" · ")
             }
-            Self::PickOnly(picks) => format!(
-                "Pick one of its {picks} variant{} above; nothing else in this world makes one.",
-                if *picks == 1 { "" } else { "s" }
-            ),
+            Self::PickOnly(picks) => format!("Pick one of its {picks} variant{} above; nothing else in this world makes one.", if *picks == 1 { "" } else { "s" }),
             Self::Received { makers } => format!(
                 "Nothing public makes one from plain values. You receive it{}; the prism shows from where.",
-                if *makers > 0 {
-                    ""
-                } else {
-                    " from its own crate"
-                }
+                if *makers > 0 { "" } else { " from its own crate" }
             ),
-            Self::Calling { need, .. } if need.is_empty() => {
-                "every argument, from plain values · ⌥ for code".to_owned()
-            }
+            Self::Calling { need, .. } if need.is_empty() => "every argument, from plain values · ⌥ for code".to_owned(),
             Self::Calling { need, .. } => format!(
                 "you need {} — nothing public makes one from plain values",
-                need.iter()
-                    .map(|k| key_words(world, k))
-                    .collect::<Vec<_>>()
-                    .join(" , ")
+                need.iter().map(|k| key_words(world, k)).collect::<Vec<_>>().join(" , ")
             ),
         }
     }
@@ -1837,27 +1403,16 @@ impl Recipes {
     /// Getting one, for a type (`None` for anything else).
     #[must_use]
     pub fn getting_one(&self, world: &World, i: NodeId) -> Option<Section> {
-        if !matches!(
-            world.node(i).kind,
-            Kind::Struct | Kind::Enum | Kind::Union | Kind::Type
-        ) {
+        if !matches!(world.node(i).kind, Kind::Struct | Kind::Enum | Kind::Union | Kind::Type) {
             return None;
         }
-        let Routes {
-            routes,
-            makers,
-            picks,
-        } = self.routes(world, i, 3);
+        let Routes { routes, makers, picks } = self.routes(world, i, 3);
         Some(if routes.is_empty() && picks > 0 {
             Section::PickOnly(picks)
         } else if routes.is_empty() {
             Section::Received { makers }
         } else {
-            Section::Getting {
-                rails: routes.iter().map(|r| self.rail(world, r)).collect(),
-                makers,
-                picks,
-            }
+            Section::Getting { rails: routes.iter().map(|r| self.rail(world, r)).collect(), makers, picks }
         })
     }
 
@@ -1869,20 +1424,11 @@ impl Recipes {
         }
         let route = self.call_route(world, i)?;
         let deep = route.tree.kids.iter().any(|k| k.node.is_some());
-        let need: Vec<String> = route
-            .tree
-            .kids
-            .iter()
-            .filter(|k| k.opaque && !is_ground(&k.key))
-            .map(|k| k.key.clone())
-            .collect();
+        let need: Vec<String> = route.tree.kids.iter().filter(|k| k.opaque && !is_ground(&k.key)).map(|k| k.key.clone()).collect();
         if !deep && need.is_empty() {
             return None;
         }
-        Some(Section::Calling {
-            rail: self.rail(world, &route),
-            need,
-        })
+        Some(Section::Calling { rail: self.rail(world, &route), need })
     }
 }
 
@@ -1900,10 +1446,7 @@ fn word(w: &str) -> Piece {
 #[must_use]
 pub fn key_pieces(world: &World, key: &str) -> Vec<Piece> {
     if let Some(j) = node_of(key) {
-        return vec![Piece::Name {
-            text: world.node(j).name.clone(),
-            target: Target::Node(j),
-        }];
+        return vec![Piece::Name { text: world.node(j).name.clone(), target: Target::Node(j) }];
     }
     let mut out = Vec::new();
     for (prefix, words) in [("list of ", "list of"), ("maybe ", "maybe")] {
@@ -1932,18 +1475,8 @@ pub fn key_pieces(world: &World, key: &str) -> Vec<Piece> {
             .iter()
             .position(|n| n.kind == Kind::Trait && n.name.as_ref() == rest)
             .and_then(|j| u32::try_from(j).ok())
-            .map_or_else(
-                || Target::Path(SharedString::from(rest.to_owned())),
-                Target::Node,
-            );
-        return vec![
-            word("any"),
-            Piece::Space,
-            Piece::Name {
-                text: SharedString::from(rest.to_owned()),
-                target,
-            },
-        ];
+            .map_or_else(|| Target::Path(SharedString::from(rest.to_owned())), Target::Node);
+        return vec![word("any"), Piece::Space, Piece::Name { text: SharedString::from(rest.to_owned()), target }];
     }
     vec![word(&key_words(world, key))]
 }
@@ -1964,18 +1497,11 @@ impl Rail {
         let mut lead = Vec::new();
         let starts = match &self.lead {
             Lead::None => Vec::new(),
-            Lead::FromA(key) | Lead::From(key) => vec![RecipePort {
+            Lead::FromA(key) | Lead::From(key) => vec![RecipePort { ty: key_pieces(world, key), name: None }],
+            Lead::Plain(inputs) => inputs.iter().map(|(key, name)| RecipePort {
                 ty: key_pieces(world, key),
-                name: None,
-            }],
-            Lead::Plain(inputs) => inputs
-                .iter()
-                .map(|(key, name)| RecipePort {
-                    ty: key_pieces(world, key),
-                    name: (inputs.len() > 1 && shown_name(name))
-                        .then(|| SharedString::from(name.clone())),
-                })
-                .collect(),
+                name: (inputs.len() > 1 && shown_name(name)).then(|| SharedString::from(name.clone())),
+            }).collect(),
         };
         match &self.lead {
             Lead::None => {}
@@ -2017,14 +1543,10 @@ impl Rail {
                         p
                     })
                     .collect(),
-                side_inputs: s
-                    .riders
-                    .iter()
-                    .map(|r| RecipePort {
-                        ty: key_pieces(world, &r.key),
-                        name: shown_name(&r.name).then(|| SharedString::from(r.name.clone())),
-                    })
-                    .collect(),
+                side_inputs: s.riders.iter().map(|r| RecipePort {
+                    ty: key_pieces(world, &r.key),
+                    name: shown_name(&r.name).then(|| SharedString::from(r.name.clone())),
+                }).collect(),
                 station: s.station.as_ref().map(|k| key_pieces(world, k)),
             })
             .collect();
@@ -2041,14 +1563,7 @@ impl Rail {
                 also.extend([Piece::Space, word(&format!("and {} more", self.also_more))]);
             }
         }
-        RailView {
-            lead,
-            starts,
-            steps,
-            also,
-            code: SharedString::from(self.code.clone()),
-            call,
-        }
+        RailView { lead, starts, steps, also, code: SharedString::from(self.code.clone()), call }
     }
 }
 
@@ -2065,20 +1580,12 @@ impl Section {
                 sentence: None,
                 outcome: Some(key_pieces(world, &format!("#{node}"))),
             },
-            Self::Calling { rail, .. } => RecipeView {
-                heading: self.heading(),
-                rails: vec![rail.view(world, true)],
-                foot: Some(foot),
-                sentence: None,
-                outcome: None,
-            },
-            Self::PickOnly(_) | Self::Received { .. } => RecipeView {
-                heading: self.heading(),
-                rails: Vec::new(),
-                foot: None,
-                sentence: Some(foot),
-                outcome: None,
-            },
+            Self::Calling { rail, .. } => {
+                RecipeView { heading: self.heading(), rails: vec![rail.view(world, true)], foot: Some(foot), sentence: None, outcome: None }
+            }
+            Self::PickOnly(_) | Self::Received { .. } => {
+                RecipeView { heading: self.heading(), rails: Vec::new(), foot: None, sentence: Some(foot), outcome: None }
+            }
         }
     }
 }

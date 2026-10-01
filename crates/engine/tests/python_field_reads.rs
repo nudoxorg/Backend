@@ -19,7 +19,9 @@ use backend_engine::driver::{
     CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, NativeTool,
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile,
 };
-use backend_frontend_python::legacy::{DeclarationKind, OccurrenceKind, Span, extract};
+use backend_frontend_python::legacy::{
+    DeclarationKind, OccurrenceKind, Span, extract,
+};
 use backend_semantic::ir::{
     EntityId, EntityKind, ForeignOrigin, FragmentView, OccurrenceConfidence, OccurrenceTarget,
     ReferenceKind,
@@ -117,9 +119,7 @@ fn method_ordinal_in_class(
         }
     }
     if class_method_indexes.len() != 1 {
-        return Err(TestError::Falsified(
-            "method declaration in class not unique",
-        ));
+        return Err(TestError::Falsified("method declaration in class not unique"));
     }
     let mut prior_methods = 0_usize;
     for (index, declaration) in module.declarations.iter().enumerate() {
@@ -168,9 +168,7 @@ fn field_ordinal_in_class(
         }
     }
     if class_field_indexes.len() != 1 {
-        return Err(TestError::Falsified(
-            "field declaration in class not unique",
-        ));
+        return Err(TestError::Falsified("field declaration in class not unique"));
     }
     let mut prior_fields = 0_usize;
     for (index, declaration) in module.declarations.iter().enumerate() {
@@ -304,6 +302,7 @@ fn occurrences<'a>(
     Ok(rows)
 }
 
+
 /// A resolved binding is right at either evidence tier: `Index` from the
 /// syntax lane alone, or `Oracle` when pyrefly is on PATH and confirms the
 /// site. These laws are about the binding, so they hold on machines with and
@@ -327,8 +326,7 @@ fn python_field_reads_lower_honestly() -> Result<(), TestError> {
     let read_item = entity_ordinal(&decoded, &atoms, b"read_item", EntityKind::Function)?;
     let read_foreign = entity_ordinal(&decoded, &atoms, b"read_foreign", EntityKind::Function)?;
     let call_foreign = entity_ordinal(&decoded, &atoms, b"call_foreign", EntityKind::Function)?;
-    let read_unresolved =
-        entity_ordinal(&decoded, &atoms, b"read_unresolved", EntityKind::Function)?;
+    let read_unresolved = entity_ordinal(&decoded, &atoms, b"read_unresolved", EntityKind::Function)?;
 
     let extractor_reads = module
         .occurrences
@@ -426,9 +424,10 @@ fn python_field_reads_lower_honestly() -> Result<(), TestError> {
             "service.set_note() is not exactly one package MethodCall",
         ));
     }
-    for row in rows.iter().filter(|row| {
-        row.owner == call_foreign && row.occurrence.kind == ReferenceKind::FieldAccess
-    }) {
+    for row in rows
+        .iter()
+        .filter(|row| row.owner == call_foreign && row.occurrence.kind == ReferenceKind::FieldAccess)
+    {
         if matches!(
             &row.occurrence.target,
             OccurrenceTarget::Foreign(key) if key.display == "set_note"
@@ -547,9 +546,7 @@ fn function_decl_start(
         }
     }
     if matches.len() != 1 {
-        return Err(TestError::Falsified(
-            "function declaration start not unique",
-        ));
+        return Err(TestError::Falsified("function declaration start not unique"));
     }
     Ok(matches[0])
 }
@@ -589,10 +586,7 @@ fn assert_no_local_target(
     kind: ReferenceKind,
     decoy: EntityId,
 ) -> Result<(), TestError> {
-    for row in rows
-        .iter()
-        .filter(|row| row.owner == owner && row.occurrence.kind == kind)
-    {
+    for row in rows.iter().filter(|row| row.owner == owner && row.occurrence.kind == kind) {
         if matches!(
             row.occurrence.target,
             OccurrenceTarget::Local(target) if target == decoy
@@ -694,9 +688,7 @@ fn python_inherited_field_read_ambiguous_bases_stays_universe() -> Result<(), Te
     let left_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Left", b"note")?;
     let right_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Right", b"note")?;
     if left_note == right_note {
-        return Err(TestError::Falsified(
-            "Left.note and Right.note are one field",
-        ));
+        return Err(TestError::Falsified("Left.note and Right.note are one field"));
     }
     let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
     universe_field_access(&rows, read, "note")?;
@@ -749,7 +741,8 @@ fn python_inherited_method_call_shadows_base_method() -> Result<(), TestError> {
     let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
     let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
     let rows = occurrences(&decoded)?;
-    let child_set_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Child", b"set_note")?;
+    let child_set_note =
+        method_ordinal_in_class(&decoded, &atoms, &module, b"Child", b"set_note")?;
     let run = entity_ordinal(&decoded, &atoms, b"run", EntityKind::Function)?;
     local_method_call(&rows, run, child_set_note)?;
     Ok(())
@@ -860,9 +853,7 @@ fn python_enclosing_class_method_value_child_shadows_base() -> Result<(), TestEr
     let base_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
     let child_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Child", b"note")?;
     if base_note == child_note {
-        return Err(TestError::Falsified(
-            "Base.note and Child.note are one method",
-        ));
+        return Err(TestError::Falsified("Base.note and Child.note are one method"));
     }
     let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
     local_field_access(&rows, read, child_note)?;
@@ -879,9 +870,7 @@ fn python_enclosing_class_field_wins_over_method_on_class() -> Result<(), TestEr
     let child_field = field_ordinal_in_class(&decoded, &atoms, &module, b"Child", b"note")?;
     let child_method = method_ordinal_in_class(&decoded, &atoms, &module, b"Child", b"note")?;
     if child_field == child_method {
-        return Err(TestError::Falsified(
-            "Child field and method share one ordinal",
-        ));
+        return Err(TestError::Falsified("Child field and method share one ordinal"));
     }
     let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
     local_field_access(&rows, read, child_field)?;
@@ -898,9 +887,7 @@ fn python_enclosing_class_inherited_field_wins_over_inherited_method() -> Result
     let base_field = field_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
     let base_method = method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
     if base_field == base_method {
-        return Err(TestError::Falsified(
-            "Base field and method share one ordinal",
-        ));
+        return Err(TestError::Falsified("Base field and method share one ordinal"));
     }
     let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
     local_field_access(&rows, read, base_field)?;
@@ -926,9 +913,7 @@ fn python_enclosing_class_ambiguous_local_methods_stays_universe() -> Result<(),
         }
     }
     if method_indexes.len() != 2 {
-        return Err(TestError::Falsified(
-            "Child does not declare two note methods",
-        ));
+        return Err(TestError::Falsified("Child does not declare two note methods"));
     }
     let helper_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Helper", b"note")?;
     let named_methods: Vec<EntityId> = decoded
@@ -960,9 +945,7 @@ fn python_enclosing_class_ambiguous_inherited_methods_stays_universe() -> Result
     let left_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Left", b"note")?;
     let right_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Right", b"note")?;
     if left_note == right_note {
-        return Err(TestError::Falsified(
-            "Left.note and Right.note are one method",
-        ));
+        return Err(TestError::Falsified("Left.note and Right.note are one method"));
     }
     let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
     universe_field_access(&rows, read, "note")?;
@@ -970,8 +953,8 @@ fn python_enclosing_class_ambiguous_inherited_methods_stays_universe() -> Result
 }
 
 #[test]
-fn python_enclosing_class_ambiguous_inherited_fields_do_not_fall_through_to_method()
--> Result<(), TestError> {
+fn python_enclosing_class_ambiguous_inherited_fields_do_not_fall_through_to_method(
+) -> Result<(), TestError> {
     let source = b"class Left:\n    note: str\n\nclass Right:\n    note: str\n    def note(self):\n        pass\n\nclass Child(Left, Right):\n    def read(self):\n        return self.note\n";
     let (fragment, module) = compile_fixture(source)?;
     let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
@@ -980,15 +963,11 @@ fn python_enclosing_class_ambiguous_inherited_fields_do_not_fall_through_to_meth
     let left_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Left", b"note")?;
     let right_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Right", b"note")?;
     if left_note == right_note {
-        return Err(TestError::Falsified(
-            "Left.note and Right.note are one field",
-        ));
+        return Err(TestError::Falsified("Left.note and Right.note are one field"));
     }
     let right_method = method_ordinal_in_class(&decoded, &atoms, &module, b"Right", b"note")?;
     if right_note == right_method {
-        return Err(TestError::Falsified(
-            "Right field and method share one ordinal",
-        ));
+        return Err(TestError::Falsified("Right field and method share one ordinal"));
     }
     let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
     universe_field_access(&rows, read, "note")?;
@@ -1017,9 +996,7 @@ fn python_super_field_read_resolves_to_base() -> Result<(), TestError> {
     let base_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
     let other_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Other", b"note")?;
     if base_note == other_note {
-        return Err(TestError::Falsified(
-            "Base.note and Other.note are one field",
-        ));
+        return Err(TestError::Falsified("Base.note and Other.note are one field"));
     }
     pin_local_field_access(
         source,
@@ -1045,9 +1022,7 @@ fn python_super_field_read_two_level_chain() -> Result<(), TestError> {
     let grand_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Grand", b"note")?;
     let other_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Other", b"note")?;
     if grand_note == other_note {
-        return Err(TestError::Falsified(
-            "Grand.note and Other.note are one field",
-        ));
+        return Err(TestError::Falsified("Grand.note and Other.note are one field"));
     }
     pin_local_field_access(
         source,
@@ -1070,9 +1045,12 @@ fn python_super_method_call_skips_child_override() -> Result<(), TestError> {
     let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
     let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
     let rows = occurrences(&decoded)?;
-    let base_set_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"set_note")?;
-    let child_set_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Child", b"set_note")?;
-    let other_set_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Other", b"set_note")?;
+    let base_set_note =
+        method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"set_note")?;
+    let child_set_note =
+        method_ordinal_in_class(&decoded, &atoms, &module, b"Child", b"set_note")?;
+    let other_set_note =
+        method_ordinal_in_class(&decoded, &atoms, &module, b"Other", b"set_note")?;
     if base_set_note == child_set_note || base_set_note == other_set_note {
         return Err(TestError::Falsified("set_note ordinals are not distinct"));
     }
@@ -1102,9 +1080,7 @@ fn python_super_method_value_resolves_to_base() -> Result<(), TestError> {
     let base_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
     let child_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Child", b"note")?;
     if base_note == child_note {
-        return Err(TestError::Falsified(
-            "Base.note and Child.note are one method",
-        ));
+        return Err(TestError::Falsified("Base.note and Child.note are one method"));
     }
     pin_local_field_access(
         source,
@@ -1148,9 +1124,7 @@ fn python_super_field_wins_over_child_method() -> Result<(), TestError> {
     let base_field = field_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
     let child_method = method_ordinal_in_class(&decoded, &atoms, &module, b"Child", b"note")?;
     if base_field == child_method {
-        return Err(TestError::Falsified(
-            "Base field and Child method share one ordinal",
-        ));
+        return Err(TestError::Falsified("Base field and Child method share one ordinal"));
     }
     pin_local_field_access(
         source,
@@ -1176,9 +1150,7 @@ fn python_super_child_field_does_not_hide_base_method() -> Result<(), TestError>
     let base_method = method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
     let child_field = field_ordinal_in_class(&decoded, &atoms, &module, b"Child", b"note")?;
     if base_method == child_field {
-        return Err(TestError::Falsified(
-            "Base method and Child field share one ordinal",
-        ));
+        return Err(TestError::Falsified("Base method and Child field share one ordinal"));
     }
     pin_local_field_access(
         source,
@@ -1209,9 +1181,7 @@ fn python_super_two_bases_field_read_targets_left() -> Result<(), TestError> {
     let left_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Left", b"note")?;
     let right_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Right", b"note")?;
     if left_note == right_note {
-        return Err(TestError::Falsified(
-            "Left.note and Right.note are one field",
-        ));
+        return Err(TestError::Falsified("Left.note and Right.note are one field"));
     }
     let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
     local_field_access(&rows, read, left_note)?;
@@ -1268,9 +1238,7 @@ fn python_super_generic_base_resolves_to_base() -> Result<(), TestError> {
     let base_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
     let other_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Other", b"note")?;
     if base_note == other_note {
-        return Err(TestError::Falsified(
-            "Base.note and Other.note are one field",
-        ));
+        return Err(TestError::Falsified("Base.note and Other.note are one field"));
     }
     pin_local_field_access(
         source,
@@ -1296,9 +1264,7 @@ fn python_self_field_read_still_binds_child_override() -> Result<(), TestError> 
     let child_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Child", b"note")?;
     let base_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
     if child_note == base_note {
-        return Err(TestError::Falsified(
-            "Child.note and Base.note are one field",
-        ));
+        return Err(TestError::Falsified("Child.note and Base.note are one field"));
     }
     pin_local_field_access(
         source,
@@ -1324,9 +1290,7 @@ fn python_class_field_read_binds_named_class() -> Result<(), TestError> {
     let item_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Item", b"note")?;
     let other_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Other", b"note")?;
     if item_note == other_note {
-        return Err(TestError::Falsified(
-            "Item.note and Other.note are one field",
-        ));
+        return Err(TestError::Falsified("Item.note and Other.note are one field"));
     }
     pin_local_field_access(
         source,
@@ -1349,12 +1313,12 @@ fn python_class_method_call_binds_named_class() -> Result<(), TestError> {
     let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
     let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
     let rows = occurrences(&decoded)?;
-    let item_set_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Item", b"set_note")?;
-    let other_set_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Other", b"set_note")?;
+    let item_set_note =
+        method_ordinal_in_class(&decoded, &atoms, &module, b"Item", b"set_note")?;
+    let other_set_note =
+        method_ordinal_in_class(&decoded, &atoms, &module, b"Other", b"set_note")?;
     if item_set_note == other_set_note {
-        return Err(TestError::Falsified(
-            "Item.set_note and Other.set_note are one method",
-        ));
+        return Err(TestError::Falsified("Item.set_note and Other.set_note are one method"));
     }
     pin_local_method_call(
         source,
@@ -1380,9 +1344,7 @@ fn python_class_inherited_field_read() -> Result<(), TestError> {
     let base_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
     let other_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Other", b"note")?;
     if base_note == other_note {
-        return Err(TestError::Falsified(
-            "Base.note and Other.note are one field",
-        ));
+        return Err(TestError::Falsified("Base.note and Other.note are one field"));
     }
     pin_local_field_access(
         source,
@@ -1405,12 +1367,12 @@ fn python_class_inherited_method_call() -> Result<(), TestError> {
     let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
     let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
     let rows = occurrences(&decoded)?;
-    let base_set_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"set_note")?;
-    let other_set_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Other", b"set_note")?;
+    let base_set_note =
+        method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"set_note")?;
+    let other_set_note =
+        method_ordinal_in_class(&decoded, &atoms, &module, b"Other", b"set_note")?;
     if base_set_note == other_set_note {
-        return Err(TestError::Falsified(
-            "Base.set_note and Other.set_note are one method",
-        ));
+        return Err(TestError::Falsified("Base.set_note and Other.set_note are one method"));
     }
     pin_local_method_call(
         source,
@@ -1436,9 +1398,7 @@ fn python_class_field_read_shadows_base() -> Result<(), TestError> {
     let item_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Item", b"note")?;
     let base_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
     if item_note == base_note {
-        return Err(TestError::Falsified(
-            "Item.note and Base.note are one field",
-        ));
+        return Err(TestError::Falsified("Item.note and Base.note are one field"));
     }
     pin_local_field_access(
         source,
@@ -1464,9 +1424,7 @@ fn python_class_method_value_binds_named_class() -> Result<(), TestError> {
     let item_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Item", b"note")?;
     let other_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Other", b"note")?;
     if item_note == other_note {
-        return Err(TestError::Falsified(
-            "Item.note and Other.note are one method",
-        ));
+        return Err(TestError::Falsified("Item.note and Other.note are one method"));
     }
     pin_local_field_access(
         source,
@@ -1510,9 +1468,7 @@ fn python_class_ambiguous_inherited_fields_stays_universe() -> Result<(), TestEr
     let left_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Left", b"note")?;
     let right_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Right", b"note")?;
     if left_note == right_note {
-        return Err(TestError::Falsified(
-            "Left.note and Right.note are one field",
-        ));
+        return Err(TestError::Falsified("Left.note and Right.note are one field"));
     }
     pin_universe_field_access(source, &module, &decoded, &atoms, &rows, b"read", "note")?;
     Ok(())
@@ -1528,9 +1484,7 @@ fn python_class_generic_base_field_read() -> Result<(), TestError> {
     let base_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
     let other_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Other", b"note")?;
     if base_note == other_note {
-        return Err(TestError::Falsified(
-            "Base.note and Other.note are one field",
-        ));
+        return Err(TestError::Falsified("Base.note and Other.note are one field"));
     }
     pin_local_field_access(
         source,

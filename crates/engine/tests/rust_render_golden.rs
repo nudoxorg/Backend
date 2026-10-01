@@ -11,10 +11,10 @@ use backend_engine::driver::{
     CompileControl, CompileFailure, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainResolutionError, ToolchainSelection, compile_ir,
 };
+use backend_semantic::ir::{EntityId, ItemKind};
 use backend_frontend_rust::legacy::{
     RustAuthorityError, RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
 };
-use backend_semantic::ir::{EntityId, ItemKind};
 use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 use thiserror::Error;
 
@@ -135,9 +135,7 @@ fn failure_label(failure: &CompileFailure<'_>) -> &'static str {
         CompileFailure::AuthorityInputRequired { .. } => "authority-input-required",
         CompileFailure::AuthorityInputProfileMismatch { .. } => "authority-profile-mismatch",
         CompileFailure::LoweringUnsupported { cause, .. } => match cause {
-            backend_semantic::vocabulary::LoweringUnsupported::FactRejected { .. } => {
-                "fact-rejected"
-            }
+            backend_semantic::vocabulary::LoweringUnsupported::FactRejected { .. } => "fact-rejected",
             backend_semantic::vocabulary::LoweringUnsupported::CSharpProjection { .. } => {
                 "csharp-projection"
             }
@@ -230,11 +228,7 @@ fn compile_fixture() -> Result<backend_semantic::ir::Ir, TestError> {
     result
 }
 
-fn item(
-    ir: &backend_semantic::ir::Ir,
-    name: &'static [u8],
-    kind: ItemKind,
-) -> Result<EntityId, TestError> {
+fn item(ir: &backend_semantic::ir::Ir, name: &'static [u8], kind: ItemKind) -> Result<EntityId, TestError> {
     ir.items()
         .find(|item| item.name() == name && item.kind() == kind)
         .map(|item| item.id())
@@ -258,11 +252,7 @@ fn assert_golden(name: &'static str, actual: String, expected: &str) -> Result<(
     Ok(())
 }
 
-fn signature(
-    ir: &backend_semantic::ir::Ir,
-    id: EntityId,
-    name: &'static str,
-) -> Result<String, TestError> {
+fn signature(ir: &backend_semantic::ir::Ir, id: EntityId, name: &'static str) -> Result<String, TestError> {
     ir.signature(id)
         .map(|display| display.to_string())
         .ok_or(TestError::MissingEntity {

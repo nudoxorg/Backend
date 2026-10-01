@@ -135,9 +135,7 @@ fn typed_csharp_plane_is_profile_bound_canonical_and_reopens() {
     let ir = builder.finish().expect("validated extension");
     let extensions = ir.language_extensions();
     assert_eq!(
-        extensions
-            .csharp
-            .get(backend_semantic::ir::EntityId::new(0)),
+        extensions.csharp.get(backend_semantic::ir::EntityId::new(0)),
         Some(&facts)
     );
     assert!(
@@ -202,9 +200,7 @@ fn typed_csharp_plane_is_profile_bound_canonical_and_reopens() {
 fn extension_language_cannot_cross_the_image_profile() {
     let mut builder = IrBuilder::new();
     builder
-        .set_language_profile(LanguageProfile::Rust(
-            backend_semantic::ir::RustEdition::Rust2024,
-        ))
+        .set_language_profile(LanguageProfile::Rust(backend_semantic::ir::RustEdition::Rust2024))
         .expect("profile");
     let facts = CSharpFacts {
         nullability: CSharpNullability::Oblivious,
@@ -297,9 +293,7 @@ fn every_language_plane_round_trips_through_its_typed_column() {
 
     let mut builder = IrBuilder::new();
     builder
-        .set_language_profile(LanguageProfile::Rust(
-            backend_semantic::ir::RustEdition::Rust2024,
-        ))
+        .set_language_profile(LanguageProfile::Rust(backend_semantic::ir::RustEdition::Rust2024))
         .expect("Rust profile");
     let empty_atoms = builder.intern_attributes(&[]).expect("atoms");
     let const_default = builder.intern_atom(b"0").expect("const default atom");
@@ -366,9 +360,7 @@ fn every_language_plane_round_trips_through_its_typed_column() {
 
     let mut builder = IrBuilder::new();
     builder
-        .set_language_profile(LanguageProfile::Java(
-            backend_semantic::ir::JavaRelease::Java25,
-        ))
+        .set_language_profile(LanguageProfile::Java(backend_semantic::ir::JavaRelease::Java25))
         .expect("Java profile");
     let empty_entities = builder.intern_members(&[]).expect("entities");
     let java = JavaFacts {
@@ -382,9 +374,7 @@ fn every_language_plane_round_trips_through_its_typed_column() {
 
     let mut builder = IrBuilder::new();
     builder
-        .set_language_profile(LanguageProfile::Cxx(
-            backend_semantic::ir::CxxStandard::Cxx26,
-        ))
+        .set_language_profile(LanguageProfile::Cxx(backend_semantic::ir::CxxStandard::Cxx26))
         .expect("Clang profile");
     let clang = ClangFacts {
         qualifiers: ClangQualifiers {
@@ -584,9 +574,7 @@ fn admitted_language_facts_prevent_profile_rebinding() {
     assert!(matches!(
         builder.set_language_profile(LanguageProfile::Go(backend_semantic::ir::GoVersion::Go125)),
         Err(BuildError::LanguageProfileRebind {
-            existing: backend_semantic::ir::SemanticImageAuthority::Language(
-                LanguageProfile::CSharp(_)
-            ),
+            existing: backend_semantic::ir::SemanticImageAuthority::Language(LanguageProfile::CSharp(_)),
             requested: LanguageProfile::Go(_),
         })
     ));
@@ -646,9 +634,7 @@ fn common_only_images_encode_zero_bytes_for_every_empty_plane() {
 fn current_clang_plane_extent_and_fact_decode() {
     let mut builder = IrBuilder::new();
     builder
-        .set_language_profile(LanguageProfile::Cxx(
-            backend_semantic::ir::CxxStandard::Cxx26,
-        ))
+        .set_language_profile(LanguageProfile::Cxx(backend_semantic::ir::CxxStandard::Cxx26))
         .expect("profile");
     let clang = ClangFacts {
         qualifiers: ClangQualifiers {
@@ -682,9 +668,7 @@ fn current_clang_plane_extent_and_fact_decode() {
 fn extension_schema_rejects_each_unadmitted_version_cell() {
     let mut builder = IrBuilder::new();
     builder
-        .set_language_profile(LanguageProfile::Cxx(
-            backend_semantic::ir::CxxStandard::Cxx26,
-        ))
+        .set_language_profile(LanguageProfile::Cxx(backend_semantic::ir::CxxStandard::Cxx26))
         .expect("profile");
     let clang = ClangFacts {
         qualifiers: ClangQualifiers {

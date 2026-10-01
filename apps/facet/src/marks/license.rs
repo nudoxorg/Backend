@@ -26,8 +26,8 @@ use crate::paint::mix;
 use crate::theme::ActiveFacet;
 use crate::tokens::Palette;
 use gpui::{
-    AnyElement, App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce,
-    SharedString, StatefulInteractiveElement, Styled, Window, canvas, div, px,
+    AnyElement, App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
+    StatefulInteractiveElement, Styled, Window, canvas, div, px,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -101,10 +101,7 @@ impl LicenseFacts {
         let expr = self.expr();
         let ids = expr.as_ref().map(spdx::ids).unwrap_or_default();
         let (title, place) = match (&self.spdx, &self.file) {
-            (None, Some(file)) => (
-                "Custom terms".to_owned(),
-                format!("license-file = \"{file}\""),
-            ),
+            (None, Some(file)) => ("Custom terms".to_owned(), format!("license-file = \"{file}\"")),
             (None, None) => ("No license".to_owned(), "no license field".to_owned()),
             (Some(spdx), _) => {
                 if ids.len() == 1 {
@@ -132,27 +129,20 @@ impl LicenseFacts {
         let fit = if self.own {
             Some(spdx::Fit {
                 level: 0,
-                line:
-                    "Your project's own license: every package in your tree is checked against it."
-                        .to_owned(),
+                line: "Your project's own license: every package in your tree is checked against it.".to_owned(),
                 choice: ids.first().cloned().into_iter().collect(),
                 assumed: false,
                 chose: Vec::new(),
             })
         } else {
-            self.yours
-                .as_deref()
-                .map(|yours| spdx::fit(expr.as_ref(), yours, &self.project))
+            self.yours.as_deref().map(|yours| spdx::fit(expr.as_ref(), yours, &self.project))
         };
-        let assumed = if self.own {
-            None
-        } else {
-            fit.as_ref().and_then(spdx::assumption)
-        };
+        let assumed = if self.own { None } else { fit.as_ref().and_then(spdx::assumption) };
         let tree = match (&self.tree, &expr) {
             (Some(tree), _) if self.own => Some(TreeLine::Summary(spdx::tree_summary(tree))),
-            (Some(tree), Some(expr)) => spdx::tree_line(expr, tree, self.package.as_deref())
-                .map(|(line, new)| TreeLine::Line(line, new)),
+            (Some(tree), Some(expr)) => {
+                spdx::tree_line(expr, tree, self.package.as_deref()).map(|(line, new)| TreeLine::Line(line, new))
+            }
             _ => None,
         };
         Reading {
@@ -206,11 +196,7 @@ pub struct LicenseMark {
 
 /// The license mark for `facts`, sized for `measure`.
 #[must_use]
-pub fn license_mark(
-    id: impl Into<ElementId>,
-    facts: LicenseFacts,
-    measure: &Measure,
-) -> LicenseMark {
+pub fn license_mark(id: impl Into<ElementId>, facts: LicenseFacts, measure: &Measure) -> LicenseMark {
     LicenseMark {
         id: id.into(),
         facts: Rc::new(facts),
@@ -250,16 +236,10 @@ fn ring_element(family: Family, size: f32, ink: Hsla, turn: f32) -> AnyElement {
 }
 
 fn nudged_ring(family: Family, size: f32, ink: Hsla, turn: f32, nudge: f32) -> AnyElement {
-    canvas(
-        |_, _, _| {},
-        move |bounds, (), window, _| {
-            let bounds = gpui::Bounds::new(
-                gpui::point(bounds.origin.x + px(nudge), bounds.origin.y),
-                bounds.size,
-            );
-            glyph::ring(family, bounds, ink, turn, window);
-        },
-    )
+    canvas(|_, _, _| {}, move |bounds, (), window, _| {
+        let bounds = gpui::Bounds::new(gpui::point(bounds.origin.x + px(nudge), bounds.origin.y), bounds.size);
+        glyph::ring(family, bounds, ink, turn, window);
+    })
     .size(px(size))
     .flex_none()
     .into_any_element()
@@ -270,35 +250,14 @@ fn nudged_ring(family: Family, size: f32, ink: Hsla, turn: f32, nudge: f32) -> A
 /// rest (`parted` 0) each is drawn towards the row's middle, so they part
 /// on hover without moving anything around them. `fit` rings are drawn in
 /// `fit_ink`.
-fn rings(
-    expr: Option<&Expr>,
-    size: f32,
-    ink: Hsla,
-    part: f32,
-    turn: f32,
-    parted: f32,
-    fit: Option<(&[String], Hsla)>,
-) -> AnyElement {
+fn rings(expr: Option<&Expr>, size: f32, ink: Hsla, part: f32, turn: f32, parted: f32, fit: Option<(&[String], Hsla)>) -> AnyElement {
     let one = |id: &str, nudge: f32| {
         let family = spdx::family(id);
-        let chosen = fit
-            .filter(|(ids, _)| ids.iter().any(|i| i == id))
-            .map(|(_, c)| c);
-        let spin = if family == Family::Permissive {
-            turn
-        } else {
-            0.0
-        };
+        let chosen = fit.filter(|(ids, _)| ids.iter().any(|i| i == id)).map(|(_, c)| c);
+        let spin = if family == Family::Permissive { turn } else { 0.0 };
         nudged_ring(family, size, chosen.unwrap_or(ink), spin, nudge)
     };
-    fn walk(
-        e: &Expr,
-        one: &dyn Fn(&str, f32) -> AnyElement,
-        size: f32,
-        part: f32,
-        parted: f32,
-        nudge: f32,
-    ) -> AnyElement {
+    fn walk(e: &Expr, one: &dyn Fn(&str, f32) -> AnyElement, size: f32, part: f32, parted: f32, nudge: f32) -> AnyElement {
         match e {
             Expr::Id(id) => one(id, nudge),
             Expr::Or(any) => {
@@ -320,11 +279,7 @@ fn rings(
                 .items_center()
                 .children(all.iter().enumerate().map(|(i, e)| {
                     let inner = walk(e, one, size, part, parted, nudge);
-                    if i == 0 {
-                        inner
-                    } else {
-                        div().ml(px(-size * 0.25)).child(inner).into_any_element()
-                    }
+                    if i == 0 { inner } else { div().ml(px(-size * 0.25)).child(inner).into_any_element() }
                 }))
                 .into_any_element(),
         }
@@ -343,10 +298,7 @@ impl RenderOnce for LicenseMark {
         let key = ElementId::NamedChild(Arc::new(self.id.clone()), "card".into());
         let live = card::live(&self.id, &key, window, cx);
         let ink = mix(palette.ink2.into(), palette.ink0.into(), live.lit);
-        let motion = Motion::scoped(
-            ElementId::NamedChild(Arc::new(self.id.clone()), "motion".into()),
-            cx,
-        );
+        let motion = Motion::scoped(ElementId::NamedChild(Arc::new(self.id.clone()), "motion".into()), cx);
         // Hover turns an open ring a quarter (under the fixed light), and a
         // choice's rings part.
         let turn = motion.animate(
@@ -357,15 +309,11 @@ impl RenderOnce for LicenseMark {
             cx,
         );
         let expr = self.facts.expr();
-        let mut mark = div().flex().items_center().gap(px(7.0 * s)).child(rings(
-            expr.as_ref(),
-            16.0 * s,
-            ink,
-            4.0 * s,
-            turn,
-            live.lit,
-            None,
-        ));
+        let mut mark = div()
+            .flex()
+            .items_center()
+            .gap(px(7.0 * s))
+            .child(rings(expr.as_ref(), 16.0 * s, ink, 4.0 * s, turn, live.lit, None));
         if self.word {
             mark = mark.child(text(
                 ElementId::NamedChild(Arc::new(self.id.clone()), "word".into()),
@@ -376,11 +324,9 @@ impl RenderOnce for LicenseMark {
             ));
         }
         let selected = window
-            .use_keyed_state(
-                ElementId::NamedChild(Arc::new(self.id.clone()), "tab".into()),
-                cx,
-                |_, _| Rc::new(RefCell::new(None::<String>)),
-            )
+            .use_keyed_state(ElementId::NamedChild(Arc::new(self.id.clone()), "tab".into()), cx, |_, _| {
+                Rc::new(RefCell::new(None::<String>))
+            })
             .read(cx)
             .clone();
         let content = license_card(self.facts.clone(), selected);
@@ -389,147 +335,83 @@ impl RenderOnce for LicenseMark {
 }
 
 fn license_card(facts: Rc<LicenseFacts>, selected: Rc<RefCell<Option<String>>>) -> Content {
-    Rc::new(
-        move |measure: &Measure, window: &mut Window, cx: &mut App| {
-            let palette = cx.facet().palette();
-            let reading = facts.reading();
-            let expr = facts.expr();
-            let fit_ids = reading
-                .fit
-                .as_ref()
-                .map(|fit| fit.choice.clone())
-                .unwrap_or_default();
-            let chosen = selected
-                .borrow()
-                .clone()
-                .filter(|id| reading.ids.contains(id))
-                .or_else(|| fit_ids.first().cloned());
-            let fit_ink: Hsla = palette.mint.base.into();
-            let head = div()
-                .flex()
-                .items_center()
-                .gap(k(measure, 11.0))
-                .child(rings(
-                    expr.as_ref(),
-                    26.0 * measure.scale(),
-                    palette.ink1.into(),
-                    4.0 * measure.scale(),
-                    0.0,
-                    1.0,
-                    reading
-                        .fit
-                        .as_ref()
-                        .is_some_and(|fit| fit.level <= 1)
-                        .then_some((fit_ids.as_slice(), fit_ink)),
-                ))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(1.0 * measure.scale()))
-                        .min_w_0()
-                        .child(text(
-                            "mk-lic-title",
-                            reading.title.clone(),
-                            card::TITLE,
-                            measure,
-                            palette.ink0,
-                        ))
-                        .child(text(
-                            "mk-lic-place",
-                            reading.place.clone(),
-                            card::PLACE,
-                            measure,
-                            palette.ink3,
-                        )),
-                );
-            let mut body = card::body(384.0, measure).child(head);
-            let listed: Vec<&String> = reading
-                .ids
-                .iter()
-                .filter(|id| id.as_str() != spdx::LICENSE_FILE)
-                .collect();
-            if listed.len() > 1 {
-                body = body.child(tabs(
-                    &listed,
-                    chosen.as_deref(),
-                    &selected,
-                    measure,
-                    palette,
-                    window,
-                ));
+    Rc::new(move |measure: &Measure, window: &mut Window, cx: &mut App| {
+        let palette = cx.facet().palette();
+        let reading = facts.reading();
+        let expr = facts.expr();
+        let fit_ids = reading.fit.as_ref().map(|fit| fit.choice.clone()).unwrap_or_default();
+        let chosen = selected.borrow().clone().filter(|id| reading.ids.contains(id)).or_else(|| fit_ids.first().cloned());
+        let fit_ink: Hsla = palette.mint.base.into();
+        let head = div()
+            .flex()
+            .items_center()
+            .gap(k(measure, 11.0))
+            .child(rings(
+                expr.as_ref(),
+                26.0 * measure.scale(),
+                palette.ink1.into(),
+                4.0 * measure.scale(),
+                0.0,
+                1.0,
+                reading.fit.as_ref().is_some_and(|fit| fit.level <= 1).then_some((fit_ids.as_slice(), fit_ink)),
+            ))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(1.0 * measure.scale()))
+                    .min_w_0()
+                    .child(text("mk-lic-title", reading.title.clone(), card::TITLE, measure, palette.ink0))
+                    .child(text("mk-lic-place", reading.place.clone(), card::PLACE, measure, palette.ink3)),
+            );
+        let mut body = card::body(384.0, measure).child(head);
+        let listed: Vec<&String> = reading.ids.iter().filter(|id| id.as_str() != spdx::LICENSE_FILE).collect();
+        if listed.len() > 1 {
+            body = body.child(tabs(&listed, chosen.as_deref(), &selected, measure, palette, window));
+        }
+        if let Some(id) = chosen.as_ref().filter(|id| id.as_str() != spdx::LICENSE_FILE) {
+            body = body.child(columns(id, measure, palette));
+        }
+        if let Some(fit_data) = &reading.fit {
+            body = body.child(fit(fit_data, measure, palette));
+        }
+        if let Some(assumed) = &reading.assumed {
+            body = body.child(div().mt(k(measure, 4.0)).pl(k(measure, 21.0)).child(text(
+                "mk-lic-assumed",
+                assumed.clone(),
+                card::FACT,
+                measure,
+                palette.ink3,
+            )));
+        }
+        match &reading.tree {
+            Some(TreeLine::Summary((line, unread))) => {
+                let mut tree = div()
+                    .mt(k(measure, 9.0))
+                    .flex()
+                    .flex_col()
+                    .gap(k(measure, 2.0))
+                    .child(text("mk-lic-tree-head", "Your tree", card::FACT, measure, palette.ink3))
+                    .child(text("mk-lic-tree", line.clone(), card::FACT, measure, palette.ink2));
+                if let Some(unread) = unread {
+                    tree = tree.child(text("mk-lic-unread", unread.clone(), card::FACT, measure, palette.ink3));
+                }
+                body = body.child(tree);
             }
-            if let Some(id) = chosen
-                .as_ref()
-                .filter(|id| id.as_str() != spdx::LICENSE_FILE)
-            {
-                body = body.child(columns(id, measure, palette));
-            }
-            if let Some(fit_data) = &reading.fit {
-                body = body.child(fit(fit_data, measure, palette));
-            }
-            if let Some(assumed) = &reading.assumed {
-                body = body.child(div().mt(k(measure, 4.0)).pl(k(measure, 21.0)).child(text(
-                    "mk-lic-assumed",
-                    assumed.clone(),
+            Some(TreeLine::Line(line, new)) => {
+                body = body.child(div().mt(k(measure, 9.0)).child(text(
+                    "mk-lic-tree",
+                    line.clone(),
                     card::FACT,
                     measure,
-                    palette.ink3,
+                    if *new { palette.ink1 } else { palette.ink2 },
                 )));
             }
-            match &reading.tree {
-                Some(TreeLine::Summary((line, unread))) => {
-                    let mut tree = div()
-                        .mt(k(measure, 9.0))
-                        .flex()
-                        .flex_col()
-                        .gap(k(measure, 2.0))
-                        .child(text(
-                            "mk-lic-tree-head",
-                            "Your tree",
-                            card::FACT,
-                            measure,
-                            palette.ink3,
-                        ))
-                        .child(text(
-                            "mk-lic-tree",
-                            line.clone(),
-                            card::FACT,
-                            measure,
-                            palette.ink2,
-                        ));
-                    if let Some(unread) = unread {
-                        tree = tree.child(text(
-                            "mk-lic-unread",
-                            unread.clone(),
-                            card::FACT,
-                            measure,
-                            palette.ink3,
-                        ));
-                    }
-                    body = body.child(tree);
-                }
-                Some(TreeLine::Line(line, new)) => {
-                    body = body.child(div().mt(k(measure, 9.0)).child(text(
-                        "mk-lic-tree",
-                        line.clone(),
-                        card::FACT,
-                        measure,
-                        if *new { palette.ink1 } else { palette.ink2 },
-                    )));
-                }
-                None => {}
-            }
-            body = body.child(div().mt(k(measure, 10.0)).child(text(
-                "mk-lic-hedge",
-                spdx::HEDGE,
-                card::FOOT,
-                measure,
-                palette.ink4,
-            )));
-            body.into_any_element()
-        },
-    )
+            None => {}
+        }
+        body = body.child(div().mt(k(measure, 10.0)).child(text("mk-lic-hedge", spdx::HEDGE, card::FOOT, measure, palette.ink4)));
+        body.into_any_element()
+    })
 }
 
 fn tabs(
@@ -548,11 +430,7 @@ fn tabs(
         .border_color(palette.line1.hsla());
     for (i, id) in ids.iter().enumerate() {
         let on = chosen == Some(id.as_str());
-        let ink: Hsla = if on {
-            palette.ink0.into()
-        } else {
-            palette.ink3.into()
-        };
+        let ink: Hsla = if on { palette.ink0.into() } else { palette.ink3.into() };
         let pick = selected.clone();
         let this = (*id).clone();
         let hover_pick = selected.clone();
@@ -565,19 +443,8 @@ fn tabs(
             .gap(k(measure, 6.0))
             .pb(k(measure, 7.0))
             .cursor_pointer()
-            .child(ring_element(
-                spdx::family(id),
-                13.0 * measure.scale(),
-                ink,
-                0.0,
-            ))
-            .child(text(
-                ("mk-lic-tab-word", i),
-                spdx::short_id(id),
-                card::HEAD,
-                measure,
-                ink,
-            ))
+            .child(ring_element(spdx::family(id), 13.0 * measure.scale(), ink, 0.0))
+            .child(text(("mk-lic-tab-word", i), spdx::short_id(id), card::HEAD, measure, ink))
             .on_click(move |_, window, _| {
                 *pick.borrow_mut() = Some(this.clone());
                 window.refresh();
@@ -606,9 +473,7 @@ fn tabs(
 
 fn columns(id: &str, measure: &Measure, palette: &'static Palette) -> AnyElement {
     let terms = spdx::terms(id);
-    let (p, c, l): (&[&str], &[&str], &[&str]) = terms.map_or((&[], &[], &[]), |t| {
-        (t.permissions, t.conditions, t.limitations)
-    });
+    let (p, c, l): (&[&str], &[&str], &[&str]) = terms.map_or((&[], &[], &[]), |t| (t.permissions, t.conditions, t.limitations));
     let col = |i: usize, head: &'static str, items: &[&str]| {
         let mut col = div()
             .flex()
@@ -616,30 +481,12 @@ fn columns(id: &str, measure: &Measure, palette: &'static Palette) -> AnyElement
             .flex_1()
             .min_w_0()
             .gap(k(measure, 3.0))
-            .child(div().mb(k(measure, 3.0)).child(text(
-                ("mk-lic-col", i),
-                head,
-                card::HEAD,
-                measure,
-                palette.ink3,
-            )));
+            .child(div().mb(k(measure, 3.0)).child(text(("mk-lic-col", i), head, card::HEAD, measure, palette.ink3)));
         if items.is_empty() {
-            col = col.child(text(
-                ("mk-lic-none", i),
-                "none",
-                card::FACT,
-                measure,
-                palette.ink4,
-            ));
+            col = col.child(text(("mk-lic-none", i), "none", card::FACT, measure, palette.ink4));
         }
         for (j, item) in items.iter().enumerate() {
-            col = col.child(text(
-                ("mk-lic-item", i * 16 + j),
-                *item,
-                card::FACT,
-                measure,
-                palette.ink1,
-            ));
+            col = col.child(text(("mk-lic-item", i * 16 + j), *item, card::FACT, measure, palette.ink1));
         }
         col
     };
@@ -667,19 +514,8 @@ fn fit(fit: &spdx::Fit, measure: &Measure, palette: &'static Palette) -> AnyElem
         .flex()
         .items_start()
         .gap(k(measure, 9.0))
-        .child(div().mt(k(measure, 4.0)).child(ring_element(
-            Family::Permissive,
-            12.0 * measure.scale(),
-            ink,
-            0.0,
-        )))
-        .child(div().flex_1().min_w_0().child(text(
-            "mk-lic-fit",
-            fit.line.clone(),
-            card::SAY,
-            measure,
-            palette.ink1,
-        )))
+        .child(div().mt(k(measure, 4.0)).child(ring_element(Family::Permissive, 12.0 * measure.scale(), ink, 0.0)))
+        .child(div().flex_1().min_w_0().child(text("mk-lic-fit", fit.line.clone(), card::SAY, measure, palette.ink1)))
         .into_any_element()
 }
 

@@ -290,9 +290,7 @@ impl ZoomPreference {
             .iter()
             .enumerate()
             .min_by_key(|(_, step)| step.abs_diff(percent))
-            .map_or(Self::HOME, |(index, _)| {
-                i8::try_from(index).unwrap_or(Self::HOME)
-            });
+            .map_or(Self::HOME, |(index, _)| i8::try_from(index).unwrap_or(Self::HOME));
         self.with(display, index - Self::HOME)
     }
 

@@ -9,9 +9,7 @@ use crate::measure::{Measure, Set};
 use crate::semantics::model::Holds;
 use crate::theme::ActiveFacet;
 use gpui::{
-    App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
-    Styled, Window, div, px,
-};
+    InteractiveElement,App, ElementId, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, div, px};
 use std::sync::Arc;
 
 /// Holds. Build with [`holds`].
@@ -25,18 +23,8 @@ pub struct HoldsView {
 
 /// The holds bracket for `holds` at `measure`.
 #[must_use]
-pub fn holds(
-    id: impl Into<ElementId>,
-    holds: Holds,
-    measure: &Measure,
-    links: &Links,
-) -> HoldsView {
-    HoldsView {
-        id: id.into(),
-        holds,
-        measure: *measure,
-        links: links.clone(),
-    }
+pub fn holds(id: impl Into<ElementId>, holds: Holds, measure: &Measure, links: &Links) -> HoldsView {
+    HoldsView { id: id.into(), holds, measure: *measure, links: links.clone() }
 }
 
 /// A `[`-shaped bracket down the left of a group of rows (solid, or dashed
@@ -65,10 +53,7 @@ impl RenderOnce for HoldsView {
         let gutter = gutter(&m);
         let rows_measure = m.within(m.width() - gutter);
         let mut root = div().id(self.id.clone()).flex().flex_col().child(heading(
-            ElementId::NamedChild(
-                Arc::new(self.id.clone()),
-                SharedString::new_static("heading"),
-            ),
+            ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::new_static("heading")),
             self.holds.heading(),
             &m,
             palette,
@@ -77,26 +62,12 @@ impl RenderOnce for HoldsView {
             return root;
         }
         let rows = self.holds.fields.iter().enumerate().map(|(n, field)| {
-            let name_role = if field.public {
-                roles::NAME
-            } else {
-                roles::NAME_QUIET
-            };
-            let name_ink = if field.public {
-                palette.ink0
-            } else {
-                palette.ink2
-            };
-            let words = div()
-                .set(name_role, &rows_measure)
-                .text_color(name_ink.hsla())
-                .children(field.name.clone());
+            let name_role = if field.public { roles::NAME } else { roles::NAME_QUIET };
+            let name_ink = if field.public { palette.ink0 } else { palette.ink2 };
+            let words = div().set(name_role, &rows_measure).text_color(name_ink.hsla()).children(field.name.clone());
             let name = match &field.name {
                 Some(text) => crate::probe::text(
-                    ElementId::NamedChild(
-                        Arc::new(self.id.clone()),
-                        SharedString::from(format!("{n}-name")),
-                    ),
+                    ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::from(format!("{n}-name"))),
                     text.clone(),
                     rows_measure.role(name_role),
                     1.0,
@@ -108,10 +79,7 @@ impl RenderOnce for HoldsView {
             };
             let mut line = Line::new();
             line.spelled(&field.ty, &ink, &self.links, xray);
-            let id = ElementId::NamedChild(
-                Arc::new(self.id.clone()),
-                SharedString::from(format!("{n}-ty")),
-            );
+            let id = ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::from(format!("{n}-ty")));
             let ty = line.element(id, roles::TYPE, &rows_measure, &self.links, palette);
             part_row(name, Some(ty), field.doc.clone(), &rows_measure, palette)
         });

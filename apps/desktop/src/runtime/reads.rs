@@ -26,8 +26,8 @@ use super::wake::{WakeReceiver, WakeSender, wake_channel};
 use crate::core::{ErrorValue, FaultCode, LocalProjectId};
 use crate::model::local_package::LocalPackageLoader;
 use crate::model::pages::{
-    Gap, GapReason, Generation, PackageRef, PageKey, PageValue, ReadFailure, SearchContinuation,
-    SearchQuery, SymbolRef,
+    Gap, GapReason, Generation, PackageRef, PageKey, PageValue, ReadFailure, SearchContinuation, SearchQuery,
+    SymbolRef,
 };
 use backend_client::{ClientError, Session};
 use backend_library::{
@@ -421,11 +421,7 @@ fn run_worker<R: PageReader>(worker: usize, mut reader: R, shared: &Shared) {
                 }
                 if let Some(job) = next_job(&mut queue, worker) {
                     if let Some(slot) = queue.running.get_mut(worker) {
-                        *slot = Some(RunningJob {
-                            key: job.key.clone(),
-                            generation: job.generation,
-                            cancel: job.cancel.clone(),
-                        });
+                        *slot = Some(RunningJob { key: job.key.clone(), generation: job.generation, cancel: job.cancel.clone() });
                     }
                     break job;
                 }
@@ -532,9 +528,8 @@ impl SessionEngine {
         for attempt in 0..2 {
             if self.session.is_none() {
                 if let Some(gate) = &self.gate {
-                    gate.wait().map_err(|message| {
-                        ClientError::Io(format!("the index could not start: {message}"))
-                    })?;
+                    gate.wait()
+                        .map_err(|message| ClientError::Io(format!("the index could not start: {message}")))?;
                 }
                 self.session = Some(Session::connect(&self.endpoint)?);
             }
@@ -639,10 +634,7 @@ impl Engine for SessionEngine {
         let name = super::trace::enabled().then(|| format!("{command:?}"));
         let reply = self.with_session(|session| session.surface(command.clone()));
         if let Some(name) = name {
-            let variant = name
-                .split(|c: char| !c.is_alphanumeric())
-                .next()
-                .unwrap_or("surface");
+            let variant = name.split(|c: char| !c.is_alphanumeric()).next().unwrap_or("surface");
             super::trace::span("surface", asking, variant);
         }
         reply
@@ -672,10 +664,7 @@ impl SessionReader<SessionEngine> {
     /// A reader whose first connect waits for the owner, on its worker.
     #[must_use]
     pub fn gated(endpoint: impl AsRef<Path>, gate: super::owner::OwnerGate) -> Self {
-        Self::new(
-            SessionEngine::gated(endpoint, gate),
-            LocalPackageLoader::default(),
-        )
+        Self::new(SessionEngine::gated(endpoint, gate), LocalPackageLoader::default())
     }
 }
 
@@ -714,33 +703,21 @@ impl<E: Engine + Send + 'static> PageReader for SessionReader<E> {
                 .map(|report| PageValue::Health(page_mapping::health_model(&report)))
                 .map_err(|error| failure(&error)),
             ReadRequest::Browse(key) => match key {
-                crate::model::browse::BrowseKey::Tree(_) => {
-                    super::browse_reads::compose(&mut self.engine, key)
-                }
-                crate::model::browse::BrowseKey::FindHome => {
-                    compose_find(&mut self.engine, None, context).map(|page| {
-                        PageValue::Browse(crate::model::browse::BrowseValue::Find(Arc::new(page)))
-                    })
-                }
-                crate::model::browse::BrowseKey::Find(query) => {
-                    compose_find(&mut self.engine, Some(query), context).map(|page| {
-                        PageValue::Browse(crate::model::browse::BrowseValue::Find(Arc::new(page)))
-                    })
-                }
+                crate::model::browse::BrowseKey::Tree(_) => super::browse_reads::compose(&mut self.engine, key),
+                crate::model::browse::BrowseKey::FindHome => compose_find(&mut self.engine, None, context)
+                    .map(|page| PageValue::Browse(crate::model::browse::BrowseValue::Find(Arc::new(page)))),
+                crate::model::browse::BrowseKey::Find(query) => compose_find(&mut self.engine, Some(query), context)
+                    .map(|page| PageValue::Browse(crate::model::browse::BrowseValue::Find(Arc::new(page)))),
                 crate::model::browse::BrowseKey::Compare(selection) => {
                     let mut packages = Vec::with_capacity(selection.packages().len());
                     let mut apis = Vec::with_capacity(selection.packages().len());
                     for package in selection.packages() {
                         check(context.cancel)?;
-                        let PageValue::Package(dossier) =
-                            compose_package(&mut self.engine, &self.loader, package, context)?
-                        else {
+                        let PageValue::Package(dossier) = compose_package(&mut self.engine, &self.loader, package, context)? else {
                             return Err(shape("compare package"));
                         };
                         let api = match outline(&mut self.engine, package, context) {
-                            Ok(index) => {
-                                crate::model::pages::Known::Known(index.comparison_api(package))
-                            }
+                            Ok(index) => crate::model::pages::Known::Known(index.comparison_api(package)),
                             Err(gap) => crate::model::pages::Known::Unknown(gap),
                         };
                         check(context.cancel)?;
@@ -748,15 +725,9 @@ impl<E: Engine + Send + 'static> PageReader for SessionReader<E> {
                         apis.push(api);
                     }
                     let prepared = Arc::new(super::browse_views::prepare_compare(&packages, &apis));
-                    Ok(PageValue::Browse(
-                        crate::model::browse::BrowseValue::Compare(Arc::new(
-                            crate::model::browse::CompareModel {
-                                packages: packages.into(),
-                                apis: apis.into(),
-                                prepared,
-                            },
-                        )),
-                    ))
+                    Ok(PageValue::Browse(crate::model::browse::BrowseValue::Compare(Arc::new(
+                        crate::model::browse::CompareModel { packages: packages.into(), apis: apis.into(), prepared },
+                    ))))
                 }
             },
         }
@@ -992,20 +963,22 @@ fn compose_symbol(
         |package| outline(engine, &package, context),
     );
     check(context.cancel)?;
-    let mut page = page_mapping::symbol_page(&SymbolInputs {
-        coordinate: symbol,
-        document: &document,
-        related: related
-            .as_ref()
-            .map(|hood| page_mapping::Neighbourhood {
-                rows: &hood.rows,
-                relations: hood.relations.as_deref(),
-                rich: hood.rich.as_ref(),
-            })
-            .map_err(Clone::clone),
-        references: references.as_ref(),
-        outline: outline.as_deref().map_err(Clone::clone),
-    });
+    let mut page = page_mapping::symbol_page(
+        &SymbolInputs {
+            coordinate: symbol,
+            document: &document,
+            related: related
+                .as_ref()
+                .map(|hood| page_mapping::Neighbourhood {
+                    rows: &hood.rows,
+                    relations: hood.relations.as_deref(),
+                    rich: hood.rich.as_ref(),
+                })
+                .map_err(Clone::clone),
+            references: references.as_ref(),
+            outline: outline.as_deref().map_err(Clone::clone),
+        },
+    );
     // Your own files at each use's span: read here, on the worker, so the page
     // lands with its lines and nothing reads them again on the UI thread.
     if let Some(sites) = page.references.known() {
@@ -1164,28 +1137,16 @@ fn compose_find(
             Err(ReadFailure::Cancelled) => return Err(ReadFailure::Cancelled),
             Err(error) => Known::Unknown(Gap::new(GapReason::ReadFailed, format!("{error:?}"))),
         },
-        None => Known::unknown(
-            GapReason::NotCaptured,
-            "Enter a name to find indexed declarations.",
-        ),
+        None => Known::unknown(GapReason::NotCaptured, "Enter a name to find indexed declarations."),
     };
     check(context.cancel)?;
     let indexed = engine.probe(Probe::Packages);
     check(context.cancel)?;
-    let query_text = query
-        .map(|query| ProductText::new(query.text.to_string()))
-        .transpose()
-        .map_err(|_| shape("find query"))?;
-    let catalog = engine.surface(SurfaceCommand::Explore {
-        query: query_text,
-        limit: EXPLORE_LIMIT,
-    });
+    let query_text = query.map(|query| ProductText::new(query.text.to_string())).transpose().map_err(|_| shape("find query"))?;
+    let catalog = engine.surface(SurfaceCommand::Explore { query: query_text, limit: EXPLORE_LIMIT });
     check(context.cancel)?;
     let indexed_rows = match &indexed {
-        Ok(reply) => match &reply.reply {
-            CommandReply::Packages(rows) => Some(rows.root.rows().iter().collect::<Vec<_>>()),
-            _ => None,
-        },
+        Ok(reply) => match &reply.reply { CommandReply::Packages(rows) => Some(rows.root.rows().iter().collect::<Vec<_>>()), _ => None },
         Err(_) => None,
     };
     let catalog_rows = match &catalog {
@@ -1193,19 +1154,11 @@ fn compose_find(
         _ => None,
     };
     let registry = crate::host::registry::composed();
-    let packages = super::browse_reads::find_packages(
-        query.map_or("", |query| query.text.as_ref()),
-        indexed_rows.as_deref().unwrap_or_default(),
-        catalog_rows.unwrap_or_default(),
-        registry.as_ref().map(|composed| composed.source.as_ref()),
-    );
+    let packages = super::browse_reads::find_packages(query.map_or("", |query| query.text.as_ref()), indexed_rows.as_deref().unwrap_or_default(), catalog_rows.unwrap_or_default(), registry.as_ref().map(|composed| composed.source.as_ref()));
     let package_coverage = if indexed_rows.is_some() && catalog_rows.is_some() {
         Known::Known(())
     } else {
-        Known::Unknown(Gap::new(
-            GapReason::Unavailable,
-            "Some package sources could not answer; these are the matches available locally.",
-        ))
+        Known::Unknown(Gap::new(GapReason::Unavailable, "Some package sources could not answer; these are the matches available locally."))
     };
     let prepared = Arc::new(super::browse_views::prepare_find(
         query.map_or("", |query| query.text.as_ref()),
@@ -1213,26 +1166,14 @@ fn compose_find(
         &packages,
         &package_coverage,
     ));
-    Ok(FindModel {
-        answers,
-        packages: packages.into(),
-        package_coverage,
-        prepared,
-    })
+    Ok(FindModel { answers, packages: packages.into(), package_coverage, prepared })
 }
 
-fn compose_orbit(
-    engine: &mut dyn Engine,
-    context: &ReadContext<'_>,
-) -> Result<PageValue, ReadFailure> {
-    let packages = engine
-        .probe(Probe::Packages)
-        .and_then(|reply| match reply.reply {
-            CommandReply::Packages(snapshot) => Ok(snapshot),
-            _ => Err(ClientError::Protocol(
-                "the packages reply changed shape".to_owned(),
-            )),
-        });
+fn compose_orbit(engine: &mut dyn Engine, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+    let packages = engine.probe(Probe::Packages).and_then(|reply| match reply.reply {
+        CommandReply::Packages(snapshot) => Ok(snapshot),
+        _ => Err(ClientError::Protocol("the packages reply changed shape".to_owned())),
+    });
     check(context.cancel)?;
     let projects = engine.surface(SurfaceCommand::Projects);
     check(context.cancel)?;

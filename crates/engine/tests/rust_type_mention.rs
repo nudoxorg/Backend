@@ -11,9 +11,7 @@ use backend_engine::driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
-use backend_frontend_rust::legacy::{
-    RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
-};
+use backend_frontend_rust::legacy::{RustFeatureControl, RustProject, RustToolchain, SourceByteLimit};
 use backend_semantic::ir::{
     DecodedOccurrence, EntityId, EntityKind, FragmentView, OccurrenceConfidence, OccurrenceTarget,
     ParentageAuthority, ReferenceKind,
@@ -90,9 +88,8 @@ fn compile_source(root: &PathBuf, relative: &str, source: &str) -> Result<Vec<u8
     let tool = rustc()?;
     let toolchain =
         RustToolchain::discover(&tool).map_err(|error| format!("toolchain: {error:?}"))?;
-    let project =
-        RustProject::open_with_source(root, &source_path, &toolchain, RustEdition::Rust2024)
-            .map_err(|error| format!("project: {error:?}"))?;
+    let project = RustProject::open_with_source(root, &source_path, &toolchain, RustEdition::Rust2024)
+        .map_err(|error| format!("project: {error:?}"))?;
     let resolved = ResolvedToolchain::from_version(
         backend_engine::driver::NativeTool::Rustc,
         &tool,
@@ -139,18 +136,13 @@ fn compile_source(root: &PathBuf, relative: &str, source: &str) -> Result<Vec<u8
         .ok_or_else(|| "declared length exceeds output".to_owned())
 }
 
-fn compile_ir_source(
-    root: &PathBuf,
-    relative: &str,
-    source: &str,
-) -> Result<backend_engine::driver::CompiledIr, String> {
+fn compile_ir_source(root: &PathBuf, relative: &str, source: &str) -> Result<backend_engine::driver::CompiledIr, String> {
     let source_path = root.join(relative);
     let tool = rustc()?;
     let toolchain =
         RustToolchain::discover(&tool).map_err(|error| format!("toolchain: {error:?}"))?;
-    let project =
-        RustProject::open_with_source(root, &source_path, &toolchain, RustEdition::Rust2024)
-            .map_err(|error| format!("project: {error:?}"))?;
+    let project = RustProject::open_with_source(root, &source_path, &toolchain, RustEdition::Rust2024)
+        .map_err(|error| format!("project: {error:?}"))?;
     let resolved = ResolvedToolchain::from_version(
         backend_engine::driver::NativeTool::Rustc,
         &tool,
@@ -235,7 +227,9 @@ fn owner_name(lane: &Lane<'_>, owner: EntityId) -> Result<Vec<u8>, String> {
     entity_name(&lane.view, owner.raw)
 }
 
-fn package_type_mentions<'a>(lane: &'a Lane<'a>) -> Vec<&'a backend_semantic::ir::Occurrence<'a>> {
+fn package_type_mentions<'a>(
+    lane: &'a Lane<'a>,
+) -> Vec<&'a backend_semantic::ir::Occurrence<'a>> {
     lane.occurrences
         .iter()
         .map(|row| &row.occurrence)
@@ -333,9 +327,7 @@ fn cross_file_type_mention_retargets_to_defining_module_path() -> Result<(), Str
             continue;
         };
         if key.path.contains("::") || key.display.contains("::") {
-            return Err(
-                "package key must use the name token Workout, not the qualified path".to_owned(),
-            );
+            return Err("package key must use the name token Workout, not the qualified path".to_owned());
         }
         let row = lane
             .occurrences
@@ -376,8 +368,7 @@ fn cross_file_type_mention_retargets_to_defining_module_path() -> Result<(), Str
             let backend_semantic::ir::ForeignOrigin::Package(lineage) = key.origin else {
                 return false;
             };
-            lineage.name.starts_with("src/")
-                && !(lineage.name == "src/service" && key.path == "Workout")
+            lineage.name.starts_with("src/") && !(lineage.name == "src/service" && key.path == "Workout")
         })
         .count();
     if stray_project_packages > 0 {
@@ -518,9 +509,7 @@ fn crate_root_without_module_use_has_no_crate_module() -> Result<(), String> {
                 .nth(entity.name.raw as usize)
                 .is_some_and(|atom| atom.bytes == b"crate")
     }) {
-        return Err(
-            "crate-root file without module-level use must not gain a crate module".to_owned(),
-        );
+        return Err("crate-root file without module-level use must not gain a crate module".to_owned());
     }
     Ok(())
 }

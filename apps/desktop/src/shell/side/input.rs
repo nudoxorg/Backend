@@ -39,42 +39,15 @@ pub(crate) struct KeyDoc {
 /// keyboard), in the order a newcomer needs them. Each one is read by
 /// [`decode`] and acted on by `Shelf::key`.
 pub(crate) const KEYS: &[KeyDoc] = &[
-    KeyDoc {
-        cap: "a–z …",
-        says: "narrow the list as you type; the last row widens to Find",
-    },
-    KeyDoc {
-        cap: "⌫",
-        says: "take a letter back",
-    },
-    KeyDoc {
-        cap: "Esc",
-        says: "clear the narrowing",
-    },
-    KeyDoc {
-        cap: "↑  ↓",
-        says: "move along the list",
-    },
-    KeyDoc {
-        cap: "→  ←",
-        says: "open a group or step into it; step back out",
-    },
-    KeyDoc {
-        cap: "Space",
-        says: "peek at the row; again to put it away",
-    },
-    KeyDoc {
-        cap: "H",
-        says: "hold the peeked row in the hand",
-    },
-    KeyDoc {
-        cap: "G C  G V  G R  G U",
-        says: "Contents, Versions, Rests on, Used by",
-    },
-    KeyDoc {
-        cap: "G G",
-        says: "the peeked row in the graph",
-    },
+    KeyDoc { cap: "a–z …", says: "narrow the list as you type; the last row widens to Find" },
+    KeyDoc { cap: "⌫", says: "take a letter back" },
+    KeyDoc { cap: "Esc", says: "clear the narrowing" },
+    KeyDoc { cap: "↑  ↓", says: "move along the list" },
+    KeyDoc { cap: "→  ←", says: "open a group or step into it; step back out" },
+    KeyDoc { cap: "Space", says: "peek at the row; again to put it away" },
+    KeyDoc { cap: "H", says: "hold the peeked row in the hand" },
+    KeyDoc { cap: "G C  G V  G R  G U", says: "Contents, Versions, Rests on, Used by" },
+    KeyDoc { cap: "G G", says: "the peeked row in the graph" },
 ];
 
 /// One key the sidebar reads.
@@ -117,23 +90,14 @@ pub(super) fn decode(keystroke: &Keystroke) -> Option<SideKey> {
     }
     // A real key event carries the character it types; a synthesised one
     // carries only the key's name.
-    let typed = keystroke
-        .key_char
-        .as_deref()
-        .unwrap_or(keystroke.key.as_str());
+    let typed = keystroke.key_char.as_deref().unwrap_or(keystroke.key.as_str());
     let mut chars = typed.chars();
-    let (Some(character), None) = (chars.next(), chars.next()) else {
-        return None;
-    };
+    let (Some(character), None) = (chars.next(), chars.next()) else { return None };
     if character.is_control() || character.is_whitespace() {
         return None;
     }
     let shifted = mods.shift && keystroke.key_char.is_none();
-    Some(SideKey::Char(if shifted {
-        character.to_ascii_uppercase()
-    } else {
-        character
-    }))
+    Some(SideKey::Char(if shifted { character.to_ascii_uppercase() } else { character }))
 }
 
 /// Whether words are already being typed: a chord only starts on an empty
@@ -202,9 +166,7 @@ impl Chord {
                 *self = Self::Idle;
                 match Lens::from_chord(character) {
                     Some(lens) => Typed::Lens(lens),
-                    None if peek == Peek::On && character.eq_ignore_ascii_case(&'g') => {
-                        Typed::Graph
-                    }
+                    None if peek == Peek::On && character.eq_ignore_ascii_case(&'g') => Typed::Graph,
                     None => Typed::Text(format!("g{character}")),
                 }
             }
@@ -251,32 +213,11 @@ mod tests {
         assert_eq!(press("up"), Some(SideKey::Up));
         assert_eq!(press("down"), Some(SideKey::Down));
         assert_eq!(press("space"), Some(SideKey::Space));
-        for shell_key in [
-            "enter",
-            "tab",
-            "cmd-d",
-            "ctrl-1",
-            "alt-x",
-            "cmd-k",
-            "cmd-up",
-            "shift-tab",
-        ] {
-            assert_eq!(
-                press(shell_key),
-                None,
-                "{shell_key} is not the sidebar's to read"
-            );
+        for shell_key in ["enter", "tab", "cmd-d", "ctrl-1", "alt-x", "cmd-k", "cmd-up", "shift-tab"] {
+            assert_eq!(press(shell_key), None, "{shell_key} is not the sidebar's to read");
         }
-        let typed = Keystroke {
-            key: "a".into(),
-            key_char: Some("é".into()),
-            modifiers: gpui::Modifiers::none(),
-        };
-        assert_eq!(
-            decode(&typed),
-            Some(SideKey::Char('é')),
-            "the character a key types wins over its name"
-        );
+        let typed = Keystroke { key: "a".into(), key_char: Some("é".into()), modifiers: gpui::Modifiers::none() };
+        assert_eq!(decode(&typed), Some(SideKey::Char('é')), "the character a key types wins over its name");
     }
 
     #[test]
@@ -285,10 +226,7 @@ mod tests {
             let mut chord = Chord::default();
             assert_eq!(chord.feed('g', Query::Empty, Peek::Closed), Typed::Armed);
             assert!(chord.is_armed());
-            assert_eq!(
-                chord.feed(lens.chord(), Query::Empty, Peek::Closed),
-                Typed::Lens(lens)
-            );
+            assert_eq!(chord.feed(lens.chord(), Query::Empty, Peek::Closed), Typed::Lens(lens));
             assert!(!chord.is_armed());
         }
     }
@@ -297,15 +235,8 @@ mod tests {
     fn g_then_any_other_key_is_the_two_letters_of_a_word() {
         let mut chord = Chord::default();
         assert_eq!(chord.feed('g', Query::Empty, Peek::Closed), Typed::Armed);
-        assert_eq!(
-            chord.feed('e', Query::Empty, Peek::Closed),
-            Typed::Text("ge".into()),
-            "typing get is not a chord"
-        );
-        assert_eq!(
-            chord.feed('t', Query::Typing, Peek::Closed),
-            Typed::Text("t".into())
-        );
+        assert_eq!(chord.feed('e', Query::Empty, Peek::Closed), Typed::Text("ge".into()), "typing get is not a chord");
+        assert_eq!(chord.feed('t', Query::Typing, Peek::Closed), Typed::Text("t".into()));
     }
 
     #[test]
@@ -314,26 +245,14 @@ mod tests {
         assert_eq!(chord.feed('g', Query::Empty, Peek::On), Typed::Armed);
         assert_eq!(chord.feed('g', Query::Empty, Peek::On), Typed::Graph);
         assert_eq!(chord.feed('g', Query::Empty, Peek::Closed), Typed::Armed);
-        assert_eq!(
-            chord.feed('g', Query::Empty, Peek::Closed),
-            Typed::Text("gg".into()),
-            "with no peek it is the word"
-        );
+        assert_eq!(chord.feed('g', Query::Empty, Peek::Closed), Typed::Text("gg".into()), "with no peek it is the word");
     }
 
     #[test]
     fn a_g_in_the_middle_of_a_query_is_a_letter_and_a_g_left_waiting_is_a_letter_too() {
         let mut chord = Chord::default();
-        assert_eq!(
-            chord.feed('g', Query::Typing, Peek::Closed),
-            Typed::Text("g".into()),
-            "the chord only starts on an empty query"
-        );
-        assert_eq!(
-            chord.feed('G', Query::Empty, Peek::Closed),
-            Typed::Armed,
-            "a shifted G chords too"
-        );
+        assert_eq!(chord.feed('g', Query::Typing, Peek::Closed), Typed::Text("g".into()), "the chord only starts on an empty query");
+        assert_eq!(chord.feed('G', Query::Empty, Peek::Closed), Typed::Armed, "a shifted G chords too");
         assert_eq!(chord.flush(), Some("g"), "the window passed: it was a g");
         assert_eq!(chord.flush(), None, "and it is not pending any more");
     }

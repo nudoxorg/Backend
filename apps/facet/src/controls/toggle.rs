@@ -42,12 +42,7 @@ pub enum Tri {
 
 /// A diamond centred at `(cx, cy)` with half-diagonals `rx` × `ry`.
 fn diamond(cx: f32, cy: f32, rx: f32, ry: f32) -> Poly {
-    Poly::new([
-        pt(cx, cy - ry),
-        pt(cx + rx, cy),
-        pt(cx, cy + ry),
-        pt(cx - rx, cy),
-    ])
+    Poly::new([pt(cx, cy - ry), pt(cx + rx, cy), pt(cx, cy + ry), pt(cx - rx, cy)])
 }
 
 fn fill_diamond(window: &mut Window, poly: &Poly, color: Hsla) {
@@ -215,12 +210,7 @@ fn switch_mark(paint: Paint, palette: &'static Palette) -> AnyElement {
             let body = mix(table, mint, paint.on);
             fill_diamond(window, &poly, body);
             let line = mix(ink2, ink0, paint.hover);
-            ring_diamond(
-                window,
-                &poly.offset(-0.8 * s),
-                1.6 * s,
-                mix(line, clear(mint), paint.on),
-            );
+            ring_diamond(window, &poly.offset(-0.8 * s), 1.6 * s, mix(line, clear(mint), paint.on));
         },
     )
     .size_full();
@@ -252,12 +242,7 @@ fn standing_mark(radio: bool, paint: Paint, palette: &'static Palette) -> AnyEle
             let line = mix(ink2, ink0, paint.hover);
             if radio {
                 fill_diamond(window, &outer, table);
-                ring_diamond(
-                    window,
-                    &outer.offset(-0.8 * s),
-                    1.6 * s,
-                    mix(line, mint, paint.on),
-                );
+                ring_diamond(window, &outer.offset(-0.8 * s), 1.6 * s, mix(line, mint, paint.on));
                 let heart = r * 0.52 * paint.tick;
                 if heart > 0.2 {
                     fill_diamond(window, &diamond(cx, cy, heart, heart), mint);
@@ -266,12 +251,7 @@ fn standing_mark(radio: bool, paint: Paint, palette: &'static Palette) -> AnyEle
                 let voice = mix(mint, peri, paint.mixed);
                 let lit = paint.on.max(paint.mixed);
                 fill_diamond(window, &outer, mix(table, voice, lit));
-                ring_diamond(
-                    window,
-                    &outer.offset(-0.8 * s),
-                    1.6 * s,
-                    mix(line, clear(voice), lit),
-                );
+                ring_diamond(window, &outer.offset(-0.8 * s), 1.6 * s, mix(line, clear(voice), lit));
                 let ink: Hsla = palette.mint_ink.into();
                 if paint.tick > 0.02 && paint.mixed < 0.5 {
                     // The tick: `m5 12.5 4.5 4.5L13.5 8` in a 10 px box.
@@ -296,12 +276,7 @@ fn standing_mark(radio: bool, paint: Paint, palette: &'static Palette) -> AnyEle
             if paint.focus > 0.0 {
                 // Doubled periwinkle, drawn as the mark's own outer ring.
                 let ring = diamond(cx, cy, r + 2.6 * s, r + 2.6 * s);
-                ring_diamond(
-                    window,
-                    &ring,
-                    1.2 * s,
-                    mix(clear(peri_hi), peri_hi, paint.focus),
-                );
+                ring_diamond(window, &ring, 1.2 * s, mix(clear(peri_hi), peri_hi, paint.focus));
                 ring_diamond(
                     window,
                     &diamond(cx, cy, r + 4.2 * s, r + 4.2 * s),
@@ -352,13 +327,7 @@ impl RenderOnce for Toggle {
             window,
             cx,
         );
-        let on_t = motion.animate(
-            track(&id, "on"),
-            if on { 1.0 } else { 0.0 },
-            spec::REVEAL,
-            window,
-            cx,
-        );
+        let on_t = motion.animate(track(&id, "on"), if on { 1.0 } else { 0.0 }, spec::REVEAL, window, cx);
         let mixed_t = motion.animate(
             track(&id, "mixed"),
             if mixed { 1.0 } else { 0.0 },
@@ -374,13 +343,7 @@ impl RenderOnce for Toggle {
             cx,
         );
         let x = if matches!(self.kind, Kind::Switch(_)) {
-            motion.animate(
-                track(&id, "x"),
-                if on { 1.0 } else { 0.0 },
-                BOUNCY,
-                window,
-                cx,
-            )
+            motion.animate(track(&id, "x"), if on { 1.0 } else { 0.0 }, BOUNCY, window, cx)
         } else {
             0.0
         };
@@ -429,7 +392,9 @@ impl RenderOnce for Toggle {
                     .child(note),
             );
         }
-        let row = row.id(id).opacity(if self.disabled { 0.4 } else { 1.0 });
+        let row = row
+            .id(id)
+            .opacity(if self.disabled { 0.4 } else { 1.0 });
         let row = if active {
             wire(row, &touch, self.on_toggle).into_any_element()
         } else {

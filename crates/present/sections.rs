@@ -247,11 +247,7 @@ fn markdown_heading(trimmed: &str) -> Option<LineRole> {
     if !(1..=3).contains(&hashes) {
         return None;
     }
-    let title = trimmed[hashes..]
-        .strip_prefix(' ')?
-        .trim()
-        .trim_end_matches('#')
-        .trim();
+    let title = trimmed[hashes..].strip_prefix(' ')?.trim().trim_end_matches('#').trim();
     if title.is_empty() {
         return None;
     }
@@ -349,7 +345,9 @@ fn sphinx_field(line: &str, lead: usize, field: &str) -> Option<LineRole> {
     let kind = match name {
         "raises" | "raise" | "except" | "exception" | "throws" => SectionKind::Errors,
         "returns" | "return" | "rtype" | "yields" => SectionKind::Returns,
-        "param" | "parameter" | "arg" | "argument" | "key" | "keyword" => SectionKind::Parameters,
+        "param" | "parameter" | "arg" | "argument" | "key" | "keyword" => {
+            SectionKind::Parameters
+        }
         _ => return None,
     };
     let subject = words.last().map(str::to_owned);
@@ -423,26 +421,24 @@ mod tests {
         lines
             .iter()
             .enumerate()
-            .map(
-                |(at, line)| match reader.line(line, lines.get(at + 1).copied()) {
-                    LineRole::Prose => format!("prose {:?}", line.trim()),
-                    LineRole::Heading { kind, title } => format!("heading {} {title}", kind.name()),
-                    LineRole::Tag {
-                        kind,
-                        title,
-                        subject,
-                        consumed,
-                    } => format!(
-                        "tag {} {title} {subject:?} body {:?}",
-                        kind.name(),
-                        line[consumed..].trim()
-                    ),
-                    LineRole::Entry { subject, consumed } => {
-                        format!("entry {subject} body {:?}", line[consumed..].trim())
-                    }
-                    LineRole::Underline => "underline".to_owned(),
-                },
-            )
+            .map(|(at, line)| match reader.line(line, lines.get(at + 1).copied()) {
+                LineRole::Prose => format!("prose {:?}", line.trim()),
+                LineRole::Heading { kind, title } => format!("heading {} {title}", kind.name()),
+                LineRole::Tag {
+                    kind,
+                    title,
+                    subject,
+                    consumed,
+                } => format!(
+                    "tag {} {title} {subject:?} body {:?}",
+                    kind.name(),
+                    line[consumed..].trim()
+                ),
+                LineRole::Entry { subject, consumed } => {
+                    format!("entry {subject} body {:?}", line[consumed..].trim())
+                }
+                LineRole::Underline => "underline".to_owned(),
+            })
             .collect()
     }
 
@@ -483,10 +479,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            read(
-                Language::Java,
-                "@exception IOException if closed\n@deprecated use {@link Fresh}"
-            ),
+            read(Language::Java, "@exception IOException if closed\n@deprecated use {@link Fresh}"),
             [
                 r#"tag errors exception Some("IOException") body "if closed""#,
                 r#"tag deprecated deprecated None body "use {@link Fresh}""#,
@@ -497,10 +490,7 @@ mod tests {
             [r#"tag errors throws Some("std::bad_alloc") body "on exhaustion""#]
         );
         assert_eq!(
-            read(
-                Language::CSharp,
-                "Makes one.\n@throws System.ArgumentNullException When nothing is given."
-            ),
+            read(Language::CSharp, "Makes one.\n@throws System.ArgumentNullException When nothing is given."),
             [
                 r#"prose "Makes one.""#,
                 r#"tag errors throws Some("System.ArgumentNullException") body "When nothing is given.""#,
@@ -530,10 +520,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            read(
-                Language::Python,
-                "Raises\n------\nValueError\n    when empty."
-            ),
+            read(Language::Python, "Raises\n------\nValueError\n    when empty."),
             [
                 "heading errors Raises",
                 "underline",
@@ -542,10 +529,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            read(
-                Language::Python,
-                ":raises ValueError: when empty.\n:returns: the thing."
-            ),
+            read(Language::Python, ":raises ValueError: when empty.\n:returns: the thing."),
             [
                 r#"tag errors raises Some("ValueError") body "when empty.""#,
                 r#"tag returns returns None body "the thing.""#,
@@ -556,10 +540,7 @@ mod tests {
     #[test]
     fn go_reads_only_its_deprecated_paragraph() {
         assert_eq!(
-            read(
-                Language::Go,
-                "Old makes one.\n\nDeprecated: use New.\nReturns: never a section."
-            ),
+            read(Language::Go, "Old makes one.\n\nDeprecated: use New.\nReturns: never a section."),
             [
                 r#"prose "Old makes one.""#,
                 r#"prose """#,

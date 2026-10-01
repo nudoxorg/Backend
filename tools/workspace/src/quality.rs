@@ -90,7 +90,10 @@ unwrap_used = "deny"
 
     #[test]
     fn workspace_forbid_unsafe_is_rejected_in_favor_of_deny() {
-        let mutated = root_manifest().replace("unsafe_code = \"deny\"", "unsafe_code = \"forbid\"");
+        let mutated = root_manifest().replace(
+            "unsafe_code = \"deny\"",
+            "unsafe_code = \"forbid\"",
+        );
         let violations = validate_workspace_lints(
             &mutated,
             &[("backend-demo".to_owned(), inherited_manifest())],

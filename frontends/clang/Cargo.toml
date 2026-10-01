@@ -10,10 +10,7 @@ workspace = true
 backend-compile = { path = "../../crates/compile" }
 backend-semantic = { path = "../../crates/semantic" }
 blake3.workspace = true
-clang-sys = { version = "1.9.1", default-features = false, features = [
-  "clang_3_6",
-  "runtime",
-] }
+clang-sys = { version = "1.9.1", default-features = false, features = ["clang_3_6", "runtime"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

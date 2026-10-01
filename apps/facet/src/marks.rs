@@ -35,6 +35,7 @@ pub(crate) mod gallery;
 #[cfg(all(test, feature = "gallery"))]
 mod tests;
 
+
 pub use deps::{DepFacts, DepKind, DepLine, DepLink, InTree, dep_line, dep_link};
 pub use eco::{Eco, EcoFacts, EcosystemMark, ecosystem_mark};
 pub use license::{LicenseFacts, LicenseMark, license_mark};

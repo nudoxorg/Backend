@@ -3,13 +3,11 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::ops::Deref;
 
-use crate::index_vocabulary::VectorSegmentId;
 use crate::ir::EntityId;
 use backend_version::{ContentHasher, FixedCanonicalRecord, IndexVectorSegmentDomain};
+use crate::index_vocabulary::VectorSegmentId;
 
-use crate::graph_vector::{
-    MAX_PARTITIONS, Metric, MissingPartitions, PartitionId, VectorAuthority,
-};
+use crate::graph_vector::{MAX_PARTITIONS, Metric, MissingPartitions, PartitionId, VectorAuthority};
 
 /// Maximum coordinates admitted by stack-resident graph/vector projection structures.
 pub const MAX_VECTOR_DIMENSION: usize = 16;

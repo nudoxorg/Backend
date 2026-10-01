@@ -12,23 +12,11 @@ use crate::motion::spec;
 use crate::paint::{Bevel, Chamfer, Edge, Plate, cut, mix};
 use crate::theme::ActiveFacet;
 use crate::tokens::{TypeRole, ty};
-use gpui::{
-    App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
-    Styled, Window, div, px,
-};
+use gpui::{App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, div, px};
 use std::rc::Rc;
 
-const NAME: TypeRole = TypeRole {
-    weight: 500.0,
-    size: 12.0,
-    line: 16.0,
-    ..ty::MONO_SMALL
-};
-const COUNT: TypeRole = TypeRole {
-    size: 11.0,
-    line: 16.0,
-    ..ty::MONO_SMALL
-};
+const NAME: TypeRole = TypeRole { weight: 500.0, size: 12.0, line: 16.0, ..ty::MONO_SMALL };
+const COUNT: TypeRole = TypeRole { size: 11.0, line: 16.0, ..ty::MONO_SMALL };
 
 /// What the rail does with a click.
 pub type Pick = Rc<dyn Fn(usize, &mut Window, &mut App)>;
@@ -49,21 +37,8 @@ pub struct Rail {
 
 /// A rail of `chips` (`(module, names)`), `close` the closing chip's words.
 #[must_use]
-pub fn rail(
-    id: impl Into<ElementId>,
-    chips: Vec<(SharedString, usize)>,
-    close: impl Into<SharedString>,
-    measure: &Measure,
-) -> Rail {
-    Rail {
-        id: id.into(),
-        chips,
-        current: None,
-        close: close.into(),
-        measure: *measure,
-        on_pick: None,
-        on_close: None,
-    }
+pub fn rail(id: impl Into<ElementId>, chips: Vec<(SharedString, usize)>, close: impl Into<SharedString>, measure: &Measure) -> Rail {
+    Rail { id: id.into(), chips, current: None, close: close.into(), measure: *measure, on_pick: None, on_close: None }
 }
 
 impl Rail {
@@ -107,27 +82,9 @@ impl RenderOnce for Chip {
         let scale = measure.scale();
         let touch = Touch::read(&self.id, crate::controls::Look::LIVE, true, window, cx);
         let motion = touch.motion.clone();
-        let hover = motion.animate(
-            track(&self.id, "hover"),
-            if touch.hovered { 1.0 } else { 0.0 },
-            spec::HOVER,
-            window,
-            cx,
-        );
-        let on = motion.animate(
-            track(&self.id, "on"),
-            if self.on { 1.0 } else { 0.0 },
-            spec::HOVER,
-            window,
-            cx,
-        );
-        let focus = motion.animate(
-            track(&self.id, "focus"),
-            if touch.focused { 1.0 } else { 0.0 },
-            spec::HOVER,
-            window,
-            cx,
-        );
+        let hover = motion.animate(track(&self.id, "hover"), if touch.hovered { 1.0 } else { 0.0 }, spec::HOVER, window, cx);
+        let on = motion.animate(track(&self.id, "on"), if self.on { 1.0 } else { 0.0 }, spec::HOVER, window, cx);
+        let focus = motion.animate(track(&self.id, "focus"), if touch.focused { 1.0 } else { 0.0 }, spec::HOVER, window, cx);
         let mut rest = Edge::of(Bevel::Rest, palette);
         rest.hi = palette.line3.into();
         rest.lo = palette.line2.into();
@@ -139,11 +96,7 @@ impl RenderOnce for Chip {
             .chamfer(Chamfer::Px(4.0 * scale))
             .edge(edge)
             .plate(Plate::Flat)
-            .fill(mix(
-                palette.plate.into(),
-                palette.plate2.into(),
-                on.max(hover * 0.6),
-            ))
+            .fill(mix(palette.plate.into(), palette.plate2.into(), on.max(hover * 0.6)))
             .flex()
             .flex_none()
             .items_center()
@@ -153,21 +106,9 @@ impl RenderOnce for Chip {
         if self.close {
             body = body.child(glyph(Glyph::Error, 12.0 * scale, ink));
         }
-        body = body.child(one(
-            key(&self.id, "name"),
-            self.name.clone(),
-            NAME,
-            ink,
-            &measure,
-        ));
+        body = body.child(one(key(&self.id, "name"), self.name.clone(), NAME, ink, &measure));
         if let Some(count) = self.count {
-            body = body.child(one(
-                key(&self.id, "count"),
-                count.to_string(),
-                COUNT,
-                palette.ink3,
-                &measure,
-            ));
+            body = body.child(one(key(&self.id, "count"), count.to_string(), COUNT, palette.ink3, &measure));
         }
         let body = wire(body.id(self.id.clone()), &touch, self.act.clone());
         hover_zone(body, &touch, 4.0 * scale, true)
@@ -177,11 +118,7 @@ impl RenderOnce for Chip {
 impl RenderOnce for Rail {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let measure = self.measure;
-        let mut row = div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(measure.space(Space::Tight));
+        let mut row = div().flex().flex_wrap().items_center().gap(measure.space(Space::Tight));
         for (index, (name, count)) in self.chips.iter().enumerate() {
             let pick = self.on_pick.clone();
             row = row.child(Chip {
@@ -191,10 +128,7 @@ impl RenderOnce for Rail {
                 on: self.current == Some(index),
                 close: false,
                 measure,
-                act: pick.map(|pick| {
-                    Rc::new(move |window: &mut Window, cx: &mut App| pick(index, window, cx))
-                        as Rc<dyn Fn(&mut Window, &mut App)>
-                }),
+                act: pick.map(|pick| Rc::new(move |window: &mut Window, cx: &mut App| pick(index, window, cx)) as Rc<dyn Fn(&mut Window, &mut App)>),
             });
         }
         let close = self.on_close.clone();

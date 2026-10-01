@@ -15,8 +15,8 @@
 
 use crate::model::pages::{OutlineNode, OutlineTree, PackageRef, SymbolRef};
 use crate::navigation::Route;
-use crate::runtime::store::route_package;
 use crate::shell::jump::route_symbol;
+use crate::runtime::store::route_package;
 
 /// A place the sidebar can show.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -62,13 +62,10 @@ impl Crumbs {
 
     /// The package on the path down to what is shown (or being read).
     pub(crate) fn package(&self) -> Option<&PackageRef> {
-        self.path[..=self.at]
-            .iter()
-            .rev()
-            .find_map(|scope| match scope {
-                Scope::Package(package) => Some(package),
-                Scope::Library | Scope::Node(_) => None,
-            })
+        self.path[..=self.at].iter().rev().find_map(|scope| match scope {
+            Scope::Package(package) => Some(package),
+            Scope::Library | Scope::Node(_) => None,
+        })
     }
 
     /// Whether a node is what is shown.
@@ -102,20 +99,10 @@ impl Crumbs {
     /// is hoisted when the reader only went to a declaration inside it.
     pub(crate) fn follow(&mut self, route: &Route, tree: Option<&OutlineTree>) {
         let fresh = Self::following(route);
-        let inside_hoist = match (
-            self.shown(),
-            self.path.get(1),
-            fresh.path.get(1),
-            route_symbol(route),
-            tree,
-        ) {
-            (
-                Scope::Node(node),
-                Some(Scope::Package(old)),
-                Some(Scope::Package(new)),
-                Some(symbol),
-                Some(tree),
-            ) => book_of(old) == book_of(new) && inside(tree, node, &symbol),
+        let inside_hoist = match (self.shown(), self.path.get(1), fresh.path.get(1), route_symbol(route), tree) {
+            (Scope::Node(node), Some(Scope::Package(old)), Some(Scope::Package(new)), Some(symbol), Some(tree)) => {
+                book_of(old) == book_of(new) && inside(tree, node, &symbol)
+            }
             _ => false,
         };
         if inside_hoist {
@@ -128,9 +115,7 @@ impl Crumbs {
     /// The reader is on another release of the same book: the package on
     /// the path is that release now (what is shown stays shown).
     pub(crate) fn retarget(&mut self, route: &Route) {
-        if let (Some(slot @ Scope::Package(_)), Some(package)) =
-            (self.path.get_mut(1), route_package(route))
-        {
+        if let (Some(slot @ Scope::Package(_)), Some(package)) = (self.path.get_mut(1), route_package(route)) {
             *slot = Scope::Package(package);
         }
     }
@@ -166,11 +151,7 @@ pub(crate) struct Located<'a> {
 
 /// The node of `tree` that is `symbol`, and the nodes above it.
 pub(crate) fn locate<'a>(tree: &'a OutlineTree, symbol: &SymbolRef) -> Option<Located<'a>> {
-    fn walk<'a>(
-        nodes: &'a [OutlineNode],
-        symbol: &SymbolRef,
-        above: &mut Vec<&'a OutlineNode>,
-    ) -> Option<&'a OutlineNode> {
+    fn walk<'a>(nodes: &'a [OutlineNode], symbol: &SymbolRef, above: &mut Vec<&'a OutlineNode>) -> Option<&'a OutlineNode> {
         for node in nodes {
             if &node.decl.coordinate == symbol {
                 return Some(node);
@@ -223,15 +204,10 @@ mod tests {
     }
 
     #[test]
-    fn the_reader_on_a_package_or_its_declaration_scopes_the_sidebar_to_the_package_and_elsewhere_to_the_library()
-     {
+    fn the_reader_on_a_package_or_its_declaration_scopes_the_sidebar_to_the_package_and_elsewhere_to_the_library() {
         let on_package = Crumbs::following(&package(None));
         assert!(matches!(on_package.shown(), Scope::Package(p) if p.display_name() == "toml"));
-        assert_eq!(
-            on_package.up(),
-            Some(&Scope::Library),
-            "one step out is the Library"
-        );
+        assert_eq!(on_package.up(), Some(&Scope::Library), "one step out is the Library");
         let on_symbol = Crumbs::following(&symbol_route("Value"));
         assert!(matches!(on_symbol.shown(), Scope::Package(_)));
         let library = Crumbs::following(&Route::Orbit(OrbitRoute::Home));
@@ -240,49 +216,29 @@ mod tests {
     }
 
     #[test]
-    fn stepping_out_shows_the_library_without_forgetting_the_package_and_hoisting_forgets_what_was_below()
-     {
+    fn stepping_out_shows_the_library_without_forgetting_the_package_and_hoisting_forgets_what_was_below() {
         let mut crumbs = Crumbs::following(&package(None));
         assert!(crumbs.step_out());
         assert_eq!(crumbs.shown(), &Scope::Library);
         assert!(!crumbs.step_out(), "the Library is the top");
         crumbs.hoist(Scope::Node(node("Value")));
         assert!(crumbs.is_hoisted());
-        assert_eq!(
-            crumbs.up(),
-            Some(&Scope::Library),
-            "hoisting from the Library forgot the package below it"
-        );
+        assert_eq!(crumbs.up(), Some(&Scope::Library), "hoisting from the Library forgot the package below it");
         let mut crumbs = Crumbs::following(&package(None));
         crumbs.hoist(Scope::Node(node("value")));
         crumbs.hoist(Scope::Node(node("Value")));
         assert!(crumbs.step_out());
         assert_eq!(crumbs.shown(), &Scope::Node(node("value")));
-        assert!(
-            crumbs.package().is_some(),
-            "the package is still on the path"
-        );
+        assert!(crumbs.package().is_some(), "the package is still on the path");
     }
 
     #[test]
     fn a_hoist_survives_the_reader_moving_inside_it_and_is_dropped_when_it_leaves() {
         let tree = OutlineTree {
             roots: std::sync::Arc::from([OutlineNode {
-                decl: crate::model::pages::DeclRef::from_label(
-                    &format!("{BOOK}::value.rs:3::Value"),
-                    None,
-                    Some(backend_library::DeclarationKind::Enum),
-                    None,
-                )
-                .expect("decl"),
+                decl: crate::model::pages::DeclRef::from_label(&format!("{BOOK}::value.rs:3::Value"), None, Some(backend_library::DeclarationKind::Enum), None).expect("decl"),
                 children: std::sync::Arc::from([OutlineNode {
-                    decl: crate::model::pages::DeclRef::from_label(
-                        &format!("{BOOK}::value.rs:3::as_str"),
-                        None,
-                        Some(backend_library::DeclarationKind::Method),
-                        None,
-                    )
-                    .expect("decl"),
+                    decl: crate::model::pages::DeclRef::from_label(&format!("{BOOK}::value.rs:3::as_str"), None, Some(backend_library::DeclarationKind::Method), None).expect("decl"),
                     children: std::sync::Arc::from([]),
                 }]),
             }]),
@@ -291,22 +247,12 @@ mod tests {
         let mut crumbs = Crumbs::following(&package(None));
         crumbs.hoist(Scope::Node(node("Value")));
         crumbs.follow(&symbol_route("as_str"), Some(&tree));
-        assert_eq!(
-            crumbs.shown(),
-            &Scope::Node(node("Value")),
-            "opening a member keeps you inside the type"
-        );
+        assert_eq!(crumbs.shown(), &Scope::Node(node("Value")), "opening a member keeps you inside the type");
         crumbs.follow(&symbol_route("Elsewhere"), Some(&tree));
-        assert!(
-            matches!(crumbs.shown(), Scope::Package(_)),
-            "a declaration outside it re-scopes to the package"
-        );
+        assert!(matches!(crumbs.shown(), Scope::Package(_)), "a declaration outside it re-scopes to the package");
         crumbs.hoist(Scope::Node(node("Value")));
         crumbs.follow(&package(Some("1.1.6")), Some(&tree));
-        assert!(
-            !crumbs.is_hoisted(),
-            "a package page has no declaration inside the hoist"
-        );
+        assert!(!crumbs.is_hoisted(), "a package page has no declaration inside the hoist");
     }
 
     #[test]
@@ -315,16 +261,10 @@ mod tests {
         crumbs.step_out();
         crumbs.retarget(&package(Some("1.1.6")));
         assert_eq!(crumbs.shown(), &Scope::Library, "the Library stays on show");
-        assert!(
-            matches!(crumbs.path[1], Scope::Package(ref p) if p.version() == Some("1.1.6")),
-            "and the package below it is the release now read"
-        );
+        assert!(matches!(crumbs.path[1], Scope::Package(ref p) if p.version() == Some("1.1.6")), "and the package below it is the release now read");
         let mut crumbs = Crumbs::following(&package(None));
         crumbs.step_out();
         crumbs.follow(&symbol_route("Value"), None);
-        assert!(
-            matches!(crumbs.shown(), Scope::Package(_)),
-            "a new place re-scopes to where the reader is"
-        );
+        assert!(matches!(crumbs.shown(), Scope::Package(_)), "a new place re-scopes to where the reader is");
     }
 }

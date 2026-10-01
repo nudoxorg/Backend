@@ -16,9 +16,7 @@
 
 use super::button::sunk;
 use super::kbd::key_badge_at;
-use super::state::{
-    Look, Touch, hover_zone, key_press, set_hot_item, set_key_pressed, set_pressed, track, track_n,
-};
+use super::state::{Look, Touch, hover_zone, key_press, set_hot_item, set_key_pressed, set_pressed, track, track_n};
 use super::text;
 use crate::Set;
 use crate::icons::{Icon, IconSize, ui};
@@ -198,10 +196,7 @@ impl Seg {
     /// The accessible names of the choices, in order.
     #[must_use]
     pub fn names(&self) -> Vec<SharedString> {
-        self.choices
-            .iter()
-            .map(|choice| choice.name.clone())
-            .collect()
+        self.choices.iter().map(|choice| choice.name.clone()).collect()
     }
 }
 
@@ -340,13 +335,7 @@ fn density_art(density: Density, size: Pixels, ink: Hsla) -> AnyElement {
                 bars.poly(&Poly::rect(x0 + 6.0 * s, y, long * s, 1.6 * s));
             }
             marks.paint(window, ink);
-            bars.paint(
-                window,
-                Hsla {
-                    alpha: ink.alpha * 0.55,
-                    ..ink
-                },
-            );
+            bars.paint(window, Hsla { alpha: ink.alpha * 0.55, ..ink });
         },
     )
     .flex_none()
@@ -416,20 +405,11 @@ impl RenderOnce for Seg {
         // running off the window: the plate then glides down the column.
         let stacked = at - gap + pad > measure.width() && widths.len() > 1;
         let (well_w, well_h, ys) = if stacked {
-            let widest = widths
-                .iter()
-                .copied()
-                .fold(px(0.0), |a, b| if b > a { b } else { a });
+            let widest = widths.iter().copied().fold(px(0.0), |a, b| if b > a { b } else { a });
             widths.iter_mut().for_each(|width| *width = widest);
             xs.iter_mut().for_each(|x| *x = pad);
-            let ys: Vec<Pixels> = (0..widths.len())
-                .map(|i| pad + (item_h + gap) * i as f32)
-                .collect();
-            (
-                widest + pad * 2.0,
-                ys.last().copied().unwrap_or(pad) + item_h + pad,
-                ys,
-            )
+            let ys: Vec<Pixels> = (0..widths.len()).map(|i| pad + (item_h + gap) * i as f32).collect();
+            (widest + pad * 2.0, ys.last().copied().unwrap_or(pad) + item_h + pad, ys)
         } else {
             (at - gap + pad, item_h + pad * 2.0, vec![pad; widths.len()])
         };
@@ -440,35 +420,13 @@ impl RenderOnce for Seg {
             .zip(widths.get(selected).copied())
             .unwrap_or((pad, px(0.0)));
         let target_y = ys.get(selected).copied().unwrap_or(pad);
-        let x = motion.animate(
-            track(&id, "x"),
-            f32::from(target_x),
-            spec::FOLLOW,
-            window,
-            cx,
-        );
-        let w = motion.animate(
-            track(&id, "w"),
-            f32::from(target_w),
-            spec::FOLLOW,
-            window,
-            cx,
-        );
-        let y = motion.animate(
-            track(&id, "y"),
-            f32::from(target_y),
-            spec::FOLLOW,
-            window,
-            cx,
-        );
+        let x = motion.animate(track(&id, "x"), f32::from(target_x), spec::FOLLOW, window, cx);
+        let w = motion.animate(track(&id, "w"), f32::from(target_w), spec::FOLLOW, window, cx);
+        let y = motion.animate(track(&id, "y"), f32::from(target_y), spec::FOLLOW, window, cx);
         // Lean toward a hovered choice: the plate wants to go there.
         let lean_to = match touch.hot_item {
             Some(hot) if hot != selected && active => {
-                if hot > selected {
-                    1.0
-                } else {
-                    -1.0
-                }
+                if hot > selected { 1.0 } else { -1.0 }
             }
             _ => 0.0,
         };
@@ -559,8 +517,7 @@ impl RenderOnce for Seg {
                 .h(item_h)
                 .child(face);
             if let Some(key) = &choice.key {
-                let key_id =
-                    ElementId::NamedChild(Arc::new(id.clone()), format!("k{index}").into());
+                let key_id = ElementId::NamedChild(Arc::new(id.clone()), format!("k{index}").into());
                 item = item.child(key_badge_at(key, &motion, &key_id, &measure, active));
             }
             if active {

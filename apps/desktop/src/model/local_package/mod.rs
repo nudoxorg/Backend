@@ -220,12 +220,8 @@ impl LocalPackageLoader {
         let readme = readme::project_readme(&root);
         let facts = manifest::read_manifest(&root.join("Cargo.toml"))
             .map(|manifest| manifest::package_facts(&root, &manifest));
-        let description = facts
-            .as_ref()
-            .and_then(|facts| present(facts.description.clone()));
-        let license = facts
-            .as_ref()
-            .and_then(|facts| present(facts.license.clone()));
+        let description = facts.as_ref().and_then(|facts| present(facts.description.clone()));
+        let license = facts.as_ref().and_then(|facts| present(facts.license.clone()));
         // A project with neither a README to project nor manifest facts to
         // recover has nothing for this reader to contribute; `None` lets the
         // caller fall through to its own gap. But a missing README must not
@@ -314,10 +310,7 @@ pub fn active_project(root: &Path) -> ActiveProject {
     ActiveProject {
         name: present(facts.name).map(Arc::from),
         license: present(facts.license).map(Arc::from),
-        members: manifest::workspace_member_names(root, &manifest)
-            .into_iter()
-            .map(Arc::from)
-            .collect(),
+        members: manifest::workspace_member_names(root, &manifest).into_iter().map(Arc::from).collect(),
     }
 }
 

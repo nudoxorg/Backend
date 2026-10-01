@@ -21,8 +21,8 @@ use crate::theme::ActiveFacet;
 use crate::tokens::{Face, Palette, TypeRole, Voice, ty};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, Bounds, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels,
-    RenderOnce, SharedString, Styled, Window, canvas, deferred, div, px,
+    App, Bounds, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, RenderOnce, SharedString, Styled, Window, canvas,
+    deferred, div, px,
 };
 use std::rc::Rc;
 
@@ -31,47 +31,13 @@ pub const REST: Nominal = Nominal::px(138.0);
 /// The band the licence stamp may unfold into, px at 100 %.
 pub const FULL: Nominal = Nominal::px(188.0);
 
-const LABEL: TypeRole = TypeRole {
-    weight: 620.0,
-    size: 10.5,
-    line: 14.0,
-    tracking: 0.08,
-    ..ty::LABEL
-};
-const VERDICT: TypeRole = TypeRole {
-    face: Face::Display,
-    weight: 700.0,
-    size: 16.0,
-    line: 20.0,
-    tracking: -0.01,
-    italic: false,
-};
-const EXPR: TypeRole = TypeRole {
-    size: 12.0,
-    line: 16.0,
-    ..ty::MONO_SMALL
-};
-const LINE: TypeRole = TypeRole {
-    size: 12.5,
-    line: 17.0,
-    ..ty::SMALL
-};
-const TERMS: TypeRole = TypeRole {
-    size: 12.0,
-    line: 16.0,
-    ..ty::SMALL
-};
-const NOTE: TypeRole = TypeRole {
-    weight: 400.0,
-    size: 10.5,
-    line: 14.0,
-    ..ty::SMALL
-};
-const AND: TypeRole = TypeRole {
-    size: 11.5,
-    line: 16.0,
-    ..ty::CAPTION
-};
+const LABEL: TypeRole = TypeRole { weight: 620.0, size: 10.5, line: 14.0, tracking: 0.08, ..ty::LABEL };
+const VERDICT: TypeRole = TypeRole { face: Face::Display, weight: 700.0, size: 16.0, line: 20.0, tracking: -0.01, italic: false };
+const EXPR: TypeRole = TypeRole { size: 12.0, line: 16.0, ..ty::MONO_SMALL };
+const LINE: TypeRole = TypeRole { size: 12.5, line: 17.0, ..ty::SMALL };
+const TERMS: TypeRole = TypeRole { size: 12.0, line: 16.0, ..ty::SMALL };
+const NOTE: TypeRole = TypeRole { weight: 400.0, size: 10.5, line: 14.0, ..ty::SMALL };
+const AND: TypeRole = TypeRole { size: 11.5, line: 16.0, ..ty::CAPTION };
 
 /// The voice a tone speaks in.
 fn ink_of(tone: Voice, palette: &Palette) -> Hsla {
@@ -81,44 +47,21 @@ fn ink_of(tone: Voice, palette: &Palette) -> Hsla {
 /// The frame every crest cell shares: a cut plate with its small-caps
 /// label at the head (`accent` is a count in amber beside it).
 #[must_use]
-pub fn cell(
-    id: &ElementId,
-    label: &str,
-    accent: Option<String>,
-    note: Option<&str>,
-    measure: &Measure,
-    palette: &'static Palette,
-) -> crate::paint::Cut {
+pub fn cell(id: &ElementId, label: &str, accent: Option<String>, note: Option<&str>, measure: &Measure, palette: &'static Palette) -> crate::paint::Cut {
     let scale = measure.scale();
-    let mut head = div()
-        .flex()
-        .items_center()
-        .gap(measure.space(Space::Snug))
-        .child(one(
-            key(id, "label"),
-            label.to_uppercase(),
-            LABEL,
-            palette.ink3,
-            measure,
-        ));
+    let mut head = div().flex().items_center().gap(measure.space(Space::Snug)).child(one(
+        key(id, "label"),
+        label.to_uppercase(),
+        LABEL,
+        palette.ink3,
+        measure,
+    ));
     if let Some(accent) = accent {
-        head = head.child(one(
-            key(id, "accent"),
-            accent,
-            LABEL,
-            palette.amber.base,
-            measure,
-        ));
+        head = head.child(one(key(id, "accent"), accent, LABEL, palette.amber.base, measure));
     }
     if let Some(note) = note {
         // Where the fact was read from: never presented as an index fact.
-        head = head.child(div().flex_1()).child(one(
-            key(id, "note"),
-            note.to_owned(),
-            NOTE,
-            palette.ink3,
-            measure,
-        ));
+        head = head.child(div().flex_1()).child(one(key(id, "note"), note.to_owned(), NOTE, palette.ink3, measure));
     }
     let mut edge = Edge::of(Bevel::Rest, palette);
     edge.hi = palette.line3.into();
@@ -155,10 +98,7 @@ pub fn seal(g: Glyph, size: f32, ink: Hsla) -> impl IntoElement {
             }
             fill.paint(window, ink);
             let inner = w.min(h) * 0.5;
-            let at = Bounds::new(
-                gpui::point(px(cx - inner * 0.5), px(cy - inner * 0.5)),
-                gpui::size(px(inner), px(inner)),
-            );
+            let at = Bounds::new(gpui::point(px(cx - inner * 0.5), px(cy - inner * 0.5)), gpui::size(px(inner), px(inner)));
             glyph::paint(window, at, g, ink);
         },
     )
@@ -233,20 +173,10 @@ pub fn verdict(facts: &LicenseFacts) -> Verdict {
     let options = spdx::options(&expr);
     let chosen: Vec<String> = options
         .iter()
-        .min_by_key(|option| {
-            option
-                .iter()
-                .map(|id| rank(spdx::family(id)))
-                .max()
-                .unwrap_or(4)
-        })
+        .min_by_key(|option| option.iter().map(|id| rank(spdx::family(id))).max().unwrap_or(4))
         .cloned()
         .unwrap_or_default();
-    let family = chosen
-        .iter()
-        .map(|id| spdx::family(id))
-        .max_by_key(|f| rank(*f))
-        .unwrap_or(Family::Unknown);
+    let family = chosen.iter().map(|id| spdx::family(id)).max_by_key(|f| rank(*f)).unwrap_or(Family::Unknown);
     let (word, family_tone) = match family {
         Family::Public => ("Public domain", Voice::Mint),
         Family::Permissive => ("Permissive", Voice::Mint),
@@ -264,29 +194,16 @@ pub fn verdict(facts: &LicenseFacts) -> Verdict {
         || match family {
             Family::Public => "Nothing is asked of you.".to_owned(),
             Family::Permissive => "Keep its notice when you ship.".to_owned(),
-            Family::Weak => {
-                "Fine to use as is. If you change its files, share those changes.".to_owned()
-            }
-            Family::Strong => {
-                "Shipping your program with it puts your whole program under its terms.".to_owned()
-            }
-            Family::Unknown => {
-                "Its terms are not ones this reads: read them before you ship.".to_owned()
-            }
+            Family::Weak => "Fine to use as is. If you change its files, share those changes.".to_owned(),
+            Family::Strong => "Shipping your program with it puts your whole program under its terms.".to_owned(),
+            Family::Unknown => "Its terms are not ones this reads: read them before you ship.".to_owned(),
         },
         |fit| fit.line.clone(),
     );
     let mut expression = Vec::new();
     fn walk(e: &Expr, chosen: &[String], out: &mut Vec<Part>) {
         match e {
-            Expr::Id(id) => out.push(Part::Id {
-                id: spdx::short_id(id),
-                fit: if chosen.iter().any(|c| c == id) {
-                    Fit::Judged
-                } else {
-                    Fit::Aside
-                },
-            }),
+            Expr::Id(id) => out.push(Part::Id { id: spdx::short_id(id), fit: if chosen.iter().any(|c| c == id) { Fit::Judged } else { Fit::Aside } }),
             Expr::Or(any) => {
                 for (i, e) in any.iter().enumerate() {
                     if i > 0 {
@@ -310,11 +227,7 @@ pub fn verdict(facts: &LicenseFacts) -> Verdict {
     let mut asks: Vec<&'static str> = Vec::new();
     let mut limits: Vec<&'static str> = Vec::new();
     for terms in chosen.iter().filter_map(|id| spdx::terms(id)) {
-        for (list, from) in [
-            (&mut permits, terms.permissions),
-            (&mut asks, terms.conditions),
-            (&mut limits, terms.limitations),
-        ] {
+        for (list, from) in [(&mut permits, terms.permissions), (&mut asks, terms.conditions), (&mut limits, terms.limitations)] {
             for word in from {
                 if !list.contains(word) {
                     list.push(word);
@@ -322,15 +235,7 @@ pub fn verdict(facts: &LicenseFacts) -> Verdict {
             }
         }
     }
-    Verdict {
-        word,
-        tone,
-        line,
-        expression,
-        permits,
-        asks,
-        limits,
-    }
+    Verdict { word, tone, line, expression, permits, asks, limits }
 }
 
 /// The licence stamp (see [`stamp`]).
@@ -345,19 +250,8 @@ pub struct Stamp {
 
 /// A stamp for `facts`, `width` px wide.
 #[must_use]
-pub fn stamp(
-    id: impl Into<ElementId>,
-    facts: Rc<LicenseFacts>,
-    width: Pixels,
-    measure: &Measure,
-) -> Stamp {
-    Stamp {
-        id: id.into(),
-        facts,
-        measure: *measure,
-        width,
-        held: Pose::Live,
-    }
+pub fn stamp(id: impl Into<ElementId>, facts: Rc<LicenseFacts>, width: Pixels, measure: &Measure) -> Stamp {
+    Stamp { id: id.into(), facts, measure: *measure, width, held: Pose::Live }
 }
 
 impl Stamp {
@@ -386,73 +280,22 @@ impl RenderOnce for Stamp {
         let touch = Touch::read(&self.id, crate::controls::Look::LIVE, true, window, cx);
         let motion = touch.motion.clone();
         let wanted = touch.hovered || touch.focused || self.held == Pose::Held;
-        let open = motion.animate(
-            track(&self.id, "open"),
-            if wanted { 1.0 } else { 0.0 },
-            super::state::plate(wanted),
-            window,
-            cx,
-        );
+        let open = motion.animate(track(&self.id, "open"), if wanted { 1.0 } else { 0.0 }, super::state::plate(wanted), window, cx);
         let open = open.clamp(0.0, 1.05);
-        let hover = motion.animate(
-            track(&self.id, "hover"),
-            if touch.hovered { 1.0 } else { 0.0 },
-            spec::HOVER,
-            window,
-            cx,
-        );
+        let hover = motion.animate(track(&self.id, "hover"), if touch.hovered { 1.0 } else { 0.0 }, spec::HOVER, window, cx);
         let tone = ink_of(verdict.tone, palette);
-        let glyph_of = if verdict.tone == Voice::Mint {
-            Glyph::Shield
-        } else {
-            Glyph::Unsafe
-        };
+        let glyph_of = if verdict.tone == Voice::Mint { Glyph::Shield } else { Glyph::Unsafe };
 
         // The expression: the judged option in full ink, the rest quiet.
-        let mut expression = div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap_x(measure.space(Space::Snug));
+        let mut expression = div().flex().flex_wrap().items_center().gap_x(measure.space(Space::Snug));
         if verdict.expression.is_empty() {
-            expression = expression.child(one(
-                key(&self.id, "expr"),
-                "no licence declared",
-                EXPR,
-                palette.ink3,
-                &measure,
-            ));
+            expression = expression.child(one(key(&self.id, "expr"), "no licence declared", EXPR, palette.ink3, &measure));
         }
         for (i, part) in verdict.expression.iter().enumerate() {
             expression = expression.child(match part {
-                Part::Id { id, fit } => one(
-                    key(&self.id, format!("id-{i}")),
-                    id.clone(),
-                    EXPR,
-                    if *fit == Fit::Judged {
-                        palette.ink0
-                    } else {
-                        palette.ink3
-                    },
-                    &measure,
-                )
-                .into_any_element(),
-                Part::Or => one(
-                    key(&self.id, format!("op-{i}")),
-                    "or",
-                    AND,
-                    palette.ink3,
-                    &measure,
-                )
-                .into_any_element(),
-                Part::And => one(
-                    key(&self.id, format!("op-{i}")),
-                    "and",
-                    AND,
-                    palette.amber.base,
-                    &measure,
-                )
-                .into_any_element(),
+                Part::Id { id, fit } => one(key(&self.id, format!("id-{i}")), id.clone(), EXPR, if *fit == Fit::Judged { palette.ink0 } else { palette.ink3 }, &measure).into_any_element(),
+                Part::Or => one(key(&self.id, format!("op-{i}")), "or", AND, palette.ink3, &measure).into_any_element(),
+                Part::And => one(key(&self.id, format!("op-{i}")), "and", AND, palette.amber.base, &measure).into_any_element(),
             });
         }
 
@@ -465,13 +308,7 @@ impl RenderOnce for Stamp {
                 div()
                     .flex()
                     .flex_col()
-                    .child(one(
-                        key(&self.id, "verdict"),
-                        verdict.word,
-                        VERDICT,
-                        tone,
-                        &measure,
-                    ))
+                    .child(one(key(&self.id, "verdict"), verdict.word, VERDICT, tone, &measure))
                     .child(expression),
             );
 
@@ -483,13 +320,7 @@ impl RenderOnce for Stamp {
                     .items_center()
                     .gap(measure.space(Space::Snug))
                     .child(glyph(g, 12.0 * scale, ink))
-                    .child(div().flex_1().min_w_0().flex().child(ellipsis(
-                        key(&self.id, name),
-                        words.join(" · "),
-                        TERMS,
-                        palette.ink1,
-                        &measure,
-                    )))
+                    .child(div().flex_1().min_w_0().flex().child(ellipsis(key(&self.id, name), words.join(" · "), TERMS, palette.ink1, &measure)))
             })
         };
         let more = div()
@@ -497,32 +328,10 @@ impl RenderOnce for Stamp {
             .flex_col()
             .gap(measure.space(Space::Tight))
             .pt(measure.space(Space::Snug))
-            .child(wrap(
-                key(&self.id, "line"),
-                verdict.line.clone(),
-                LINE,
-                palette.ink1,
-                &measure,
-                Some(3),
-            ))
-            .children(term(
-                Glyph::Makes,
-                palette.mint.base.into(),
-                &verdict.permits,
-                "permits",
-            ))
-            .children(term(
-                Glyph::Takes,
-                palette.peri_hi.into(),
-                &verdict.asks,
-                "asks",
-            ))
-            .children(term(
-                Glyph::Error,
-                palette.coral.base.into(),
-                &verdict.limits,
-                "limits",
-            ));
+            .child(wrap(key(&self.id, "line"), verdict.line.clone(), LINE, palette.ink1, &measure, Some(3)))
+            .children(term(Glyph::Makes, palette.mint.base.into(), &verdict.permits, "permits"))
+            .children(term(Glyph::Takes, palette.peri_hi.into(), &verdict.asks, "asks"))
+            .children(term(Glyph::Error, palette.coral.base.into(), &verdict.limits, "limits"));
 
         let height = (REST.value() + (FULL.value() - REST.value()) * open) * scale;
         let mut edge = Edge::of(Bevel::Rest, palette);
@@ -543,22 +352,11 @@ impl RenderOnce for Stamp {
             // The plate unfolds over what lies below it (drawn late, hit
             // first), so opening it moves nothing on the page.
             let plate = plate.absolute().top_0().left_0();
-            div()
-                .relative()
-                .flex_none()
-                .w(self.width)
-                .h(REST.at(scale))
-                .child(deferred(hover_zone(plate, &touch, 9.0 * scale, true)).with_priority(1))
-                .into_any_element()
+            div().relative().flex_none().w(self.width).h(REST.at(scale)).child(deferred(hover_zone(plate, &touch, 9.0 * scale, true)).with_priority(1)).into_any_element()
         } else {
             // At rest it is part of the page's own flow, so a page change
             // that cuts the page cuts it too (a deferred draw would not be).
-            div()
-                .flex_none()
-                .w(self.width)
-                .h(REST.at(scale))
-                .child(hover_zone(plate, &touch, 9.0 * scale, true))
-                .into_any_element()
+            div().flex_none().w(self.width).h(REST.at(scale)).child(hover_zone(plate, &touch, 9.0 * scale, true)).into_any_element()
         }
     }
 }
@@ -628,18 +426,8 @@ pub struct AdvisoriesCell {
 
 /// The advisories cell, `width` px wide.
 #[must_use]
-pub fn advisories(
-    id: impl Into<ElementId>,
-    facts: Advisories,
-    width: Pixels,
-    measure: &Measure,
-) -> AdvisoriesCell {
-    AdvisoriesCell {
-        id: id.into(),
-        facts,
-        measure: *measure,
-        width,
-    }
+pub fn advisories(id: impl Into<ElementId>, facts: Advisories, width: Pixels, measure: &Measure) -> AdvisoriesCell {
+    AdvisoriesCell { id: id.into(), facts, measure: *measure, width }
 }
 
 impl RenderOnce for AdvisoriesCell {
@@ -647,33 +435,11 @@ impl RenderOnce for AdvisoriesCell {
         let palette = cx.palette();
         let measure = self.measure;
         let scale = measure.scale();
-        let (word, tone, quiet, note): (SharedString, Hsla, bool, SharedString) = match &self.facts
-        {
-            Advisories::Unknown { why, note } => (
-                SharedString::from(why.word()),
-                palette.ink3.into(),
-                true,
-                note.clone(),
-            ),
-            Advisories::Clear { note } => (
-                "clear".into(),
-                palette.mint.base.into(),
-                false,
-                note.clone(),
-            ),
-            Advisories::Found {
-                count,
-                worst,
-                decision,
-            } => {
-                let word = format!(
-                    "{count} {}",
-                    if *count == 1 {
-                        "advisory"
-                    } else {
-                        "advisories"
-                    }
-                );
+        let (word, tone, quiet, note): (SharedString, Hsla, bool, SharedString) = match &self.facts {
+            Advisories::Unknown { why, note } => (SharedString::from(why.word()), palette.ink3.into(), true, note.clone()),
+            Advisories::Clear { note } => ("clear".into(), palette.mint.base.into(), false, note.clone()),
+            Advisories::Found { count, worst, decision } => {
+                let word = format!("{count} {}", if *count == 1 { "advisory" } else { "advisories" });
                 let tone: Hsla = match decision.as_ref() {
                     "deny" => palette.coral.base.into(),
                     _ => palette.amber.base.into(),
@@ -689,11 +455,7 @@ impl RenderOnce for AdvisoriesCell {
                 )
             }
         };
-        let face_word = TypeRole {
-            weight: if quiet { 560.0 } else { 700.0 },
-            size: if quiet { 14.0 } else { 16.0 },
-            ..VERDICT
-        };
+        let face_word = TypeRole { weight: if quiet { 560.0 } else { 700.0 }, size: if quiet { 14.0 } else { 16.0 }, ..VERDICT };
         cell(&self.id, "Advisories", None, None, &measure, palette)
             .w(self.width)
             .h(REST.at(scale))
@@ -702,21 +464,10 @@ impl RenderOnce for AdvisoriesCell {
                     .flex()
                     .items_center()
                     .gap(measure.space(Space::Roomy))
-                    .child(seal(
-                        Glyph::Shield,
-                        30.0 * scale,
-                        if quiet { palette.ink3.into() } else { tone },
-                    ))
+                    .child(seal(Glyph::Shield, 30.0 * scale, if quiet { palette.ink3.into() } else { tone }))
                     .child(one(key(&self.id, "word"), word, face_word, tone, &measure)),
             )
-            .child(wrap(
-                key(&self.id, "note"),
-                note,
-                TERMS,
-                palette.ink2,
-                &measure,
-                Some(3),
-            ))
+            .child(wrap(key(&self.id, "note"), note, TERMS, palette.ink2, &measure, Some(3)))
             .into_any_element()
     }
 }
@@ -738,21 +489,8 @@ pub struct Unread {
 /// An unread cell: `label` at the head, `words` (`reading its source…`)
 /// beneath, `width` px wide.
 #[must_use]
-pub fn unread(
-    id: impl Into<ElementId>,
-    label: impl Into<SharedString>,
-    words: impl Into<SharedString>,
-    width: Pixels,
-    measure: &Measure,
-) -> Unread {
-    Unread {
-        id: id.into(),
-        label: label.into(),
-        words: words.into(),
-        note: None,
-        measure: *measure,
-        width,
-    }
+pub fn unread(id: impl Into<ElementId>, label: impl Into<SharedString>, words: impl Into<SharedString>, width: Pixels, measure: &Measure) -> Unread {
+    Unread { id: id.into(), label: label.into(), words: words.into(), note: None, measure: *measure, width }
 }
 
 impl Unread {
@@ -768,25 +506,11 @@ impl RenderOnce for Unread {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let palette = cx.palette();
         let measure = self.measure;
-        cell(
-            &self.id,
-            &self.label,
-            None,
-            self.note.as_deref(),
-            &measure,
-            palette,
-        )
-        .w(self.width)
-        .h(REST.at(measure.scale()))
-        .child(wrap(
-            key(&self.id, "words"),
-            self.words.clone(),
-            TERMS,
-            palette.ink3,
-            &measure,
-            Some(4),
-        ))
-        .into_any_element()
+        cell(&self.id, &self.label, None, self.note.as_deref(), &measure, palette)
+            .w(self.width)
+            .h(REST.at(measure.scale()))
+            .child(wrap(key(&self.id, "words"), self.words.clone(), TERMS, palette.ink3, &measure, Some(4)))
+            .into_any_element()
     }
 }
 
@@ -801,9 +525,7 @@ mod tests {
         v.expression
             .iter()
             .map(|p| match p {
-                Part::Id { id, fit } => {
-                    format!("{id}{}", if *fit == Fit::Judged { "*" } else { "" })
-                }
+                Part::Id { id, fit } => format!("{id}{}", if *fit == Fit::Judged { "*" } else { "" }),
                 Part::Or => "or".into(),
                 Part::And => "and".into(),
             })
@@ -812,45 +534,24 @@ mod tests {
 
     #[test]
     fn a_dual_permissive_licence_reads_permissive_and_judges_the_lighter_option() {
-        let v = verdict(&LicenseFacts::new(
-            Some("MIT OR Apache-2.0"),
-            Some("MIT OR Apache-2.0"),
-            "backend",
-        ));
+        let v = verdict(&LicenseFacts::new(Some("MIT OR Apache-2.0"), Some("MIT OR Apache-2.0"), "backend"));
         assert_eq!(v.word, "Permissive");
         assert_eq!(v.tone, Voice::Mint);
         assert_eq!(parts(&v), ["MIT*", "or", "Apache-2.0"]);
-        assert!(
-            v.permits.contains(&"commercial use")
-                && v.asks.contains(&"keep the notice")
-                && v.limits.contains(&"no warranty"),
-            "{v:?}"
-        );
+        assert!(v.permits.contains(&"commercial use") && v.asks.contains(&"keep the notice") && v.limits.contains(&"no warranty"), "{v:?}");
     }
 
     #[test]
     fn copyleft_is_coral_and_says_what_it_does_to_your_project() {
-        let v = verdict(&LicenseFacts::new(
-            Some("GPL-3.0-only"),
-            Some("MIT OR Apache-2.0"),
-            "backend",
-        ));
+        let v = verdict(&LicenseFacts::new(Some("GPL-3.0-only"), Some("MIT OR Apache-2.0"), "backend"));
         assert_eq!(v.word, "Copyleft");
         assert_eq!(v.tone, Voice::Coral);
-        assert!(
-            v.line.contains("backend"),
-            "the fit sentence names your project: {}",
-            v.line
-        );
+        assert!(v.line.contains("backend"), "the fit sentence names your project: {}", v.line);
     }
 
     #[test]
     fn a_choice_with_a_copyleft_option_judges_the_permissive_one() {
-        let v = verdict(&LicenseFacts::new(
-            Some("GPL-2.0-only OR MIT"),
-            None,
-            "backend",
-        ));
+        let v = verdict(&LicenseFacts::new(Some("GPL-2.0-only OR MIT"), None, "backend"));
         assert_eq!(v.word, "Permissive");
         assert_eq!(parts(&v), ["GPL-2.0", "or", "MIT*"]);
     }
@@ -861,21 +562,13 @@ mod tests {
         assert_eq!(v.word, "No licence");
         assert_eq!(v.tone, Voice::Coral);
         let unknown_yours = verdict(&LicenseFacts::new(Some("MIT"), None, "backend"));
-        assert!(
-            !unknown_yours.line.contains("backend"),
-            "without your licence, the stamp does not compare: {}",
-            unknown_yours.line
-        );
+        assert!(!unknown_yours.line.contains("backend"), "without your licence, the stamp does not compare: {}", unknown_yours.line);
         assert_eq!(unknown_yours.tone, Voice::Mint);
     }
 
     #[test]
     fn a_licence_the_table_does_not_know_is_unrecognised_not_permissive() {
-        let v = verdict(&LicenseFacts::new(
-            Some("LicenseRef-Custom"),
-            None,
-            "backend",
-        ));
+        let v = verdict(&LicenseFacts::new(Some("LicenseRef-Custom"), None, "backend"));
         assert_eq!(v.word, "Unrecognised");
         assert_eq!(v.tone, Voice::Amber);
     }

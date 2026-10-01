@@ -251,8 +251,7 @@ fn workspace_membership_names_the_root_and_its_glob_members_only() -> Outcome {
     // matches no member pattern at all.
     let scratch = workspace_fixture("membership")?;
     let active = active_project(&scratch.0);
-    let names: std::collections::BTreeSet<&str> =
-        active.members.iter().map(AsRef::as_ref).collect();
+    let names: std::collections::BTreeSet<&str> = active.members.iter().map(AsRef::as_ref).collect();
     assert_eq!(
         names,
         std::collections::BTreeSet::from(["fixture-root", "alpha", "beta"]),
@@ -438,10 +437,7 @@ fn readme_projection_ignores_manifest_package_facts() -> Outcome {
     let loader = LocalPackageLoader::without_cargo();
     let package = loader.readme(&project).expect("readme");
     assert_eq!(package.source, LocalPackageSource::Readme);
-    assert_eq!(
-        package.name.as_ref(),
-        scratch.0.file_name().unwrap().to_str().unwrap()
-    );
+    assert_eq!(package.name.as_ref(), scratch.0.file_name().unwrap().to_str().unwrap());
     assert!(package.version.is_none());
     assert!(package.dependencies.is_empty());
     assert!(package.name.as_ref() != "secret-name");
@@ -542,16 +538,9 @@ fn readme_projection_survives_a_missing_readme_file() -> Outcome {
 #[test]
 fn readme_projection_still_reports_nothing_when_there_is_nothing() -> Outcome {
     let scratch = Scratch::new("readme-truly-empty")?;
-    scratch.write(
-        "Cargo.toml",
-        "[package]\nname = \"bare\"\nversion = \"0.1.0\"\n",
-    )?;
+    scratch.write("Cargo.toml", "[package]\nname = \"bare\"\nversion = \"0.1.0\"\n")?;
     let project = scratch.project()?;
-    assert!(
-        LocalPackageLoader::without_cargo()
-            .readme(&project)
-            .is_none()
-    );
+    assert!(LocalPackageLoader::without_cargo().readme(&project).is_none());
     Ok(())
 }
 
@@ -583,12 +572,10 @@ fn workspace_inheritance_is_followed_up_to_the_ancestor_root_not_only_the_same_f
     );
     // A literal field in the member's own file still wins outright.
     let member_project = LocalProjectId::from_path(&member_root).map_err(text)?;
-    let package = LocalPackageLoader::without_cargo().load(&member_project);
+    let package = LocalPackageLoader::without_cargo()
+        .load(&member_project);
     assert_eq!(package.version.as_deref(), Some("0.4.2"));
-    assert_eq!(
-        package.description.as_deref(),
-        Some("Not inherited: its own line.")
-    );
+    assert_eq!(package.description.as_deref(), Some("Not inherited: its own line."));
     Ok(())
 }
 

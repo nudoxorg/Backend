@@ -167,7 +167,10 @@ impl fmt::Display for RelationLabel {
 /// The incoming spelling is the passive voice of the outgoing one, so a reader
 /// never has to work out which end of the edge they are standing on.
 #[must_use]
-pub const fn relation_label(kind: SemanticLinkKind, direction: RelationDirection) -> RelationLabel {
+pub const fn relation_label(
+    kind: SemanticLinkKind,
+    direction: RelationDirection,
+) -> RelationLabel {
     RelationLabel::Typed(kind, direction)
 }
 

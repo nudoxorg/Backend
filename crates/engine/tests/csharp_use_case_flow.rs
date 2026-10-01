@@ -145,8 +145,8 @@ fn oracle_image(dotnet: &Path, source: &[u8]) -> Option<Vec<u8>> {
 
 fn compile_flow(dotnet: &Path, source: &[u8]) -> Result<(Ir, Duration), String> {
     let image = oracle_image(dotnet, source).ok_or_else(|| "Roslyn authority image".to_owned())?;
-    let authority = backend_frontend_csharp::legacy::CSharpImage::open(&image)
-        .map_err(|error| error.to_string())?;
+    let authority =
+        backend_frontend_csharp::legacy::CSharpImage::open(&image).map_err(|error| error.to_string())?;
     let changed: Vec<_> = authority
         .declarations()
         .filter_map(|declared| declared.ok())

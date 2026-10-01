@@ -1885,7 +1885,9 @@ fn runs(values: &[bool], minimum_fraction: f64, axis: &str, color: [u8; 4]) -> V
     {
         if uniform && start.is_none() {
             start = Some(index);
-        } else if !uniform && let Some(start) = start.take() {
+        } else if !uniform
+            && let Some(start) = start.take()
+        {
             let end = index;
             let fraction = (end - start) as f64 / values.len().max(1) as f64;
             if fraction >= minimum_fraction {

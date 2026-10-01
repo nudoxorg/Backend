@@ -9,30 +9,30 @@ publish = false
 [features]
 default = ["extended-journeys", "gui"]
 extended-journeys = [
-  "backend-locald/cluster-process-journey-hooks",
-  "dep:backend-semantic",
-  "dep:backend-store",
-  "dep:backend-version",
-  "dep:backend-present",
-  "dep:backend-engine",
-  "dep:backend-execution",
-  "dep:backend-replication",
-  "dep:backend-runtime",
-  "dep:backend-worker",
-  "dep:backend-extension-turso",
-  "dep:backend-store-s3",
-  "dep:backend-compile",
-  "dep:backend-frontend-clang",
-  "dep:backend-frontend-csharp",
-  "dep:backend-frontend-go",
-  "dep:backend-frontend-java",
-  "dep:backend-frontend-python",
-  "dep:backend-frontend-rust",
-  "dep:backend-frontend-typescript",
-  "dep:blake3",
-  "dep:flate2",
-  "dep:serde",
-  "dep:tokio",
+    "backend-locald/cluster-process-journey-hooks",
+    "dep:backend-semantic",
+    "dep:backend-store",
+    "dep:backend-version",
+    "dep:backend-present",
+    "dep:backend-engine",
+    "dep:backend-execution",
+    "dep:backend-replication",
+    "dep:backend-runtime",
+    "dep:backend-worker",
+    "dep:backend-extension-turso",
+    "dep:backend-store-s3",
+    "dep:backend-compile",
+    "dep:backend-frontend-clang",
+    "dep:backend-frontend-csharp",
+    "dep:backend-frontend-go",
+    "dep:backend-frontend-java",
+    "dep:backend-frontend-python",
+    "dep:backend-frontend-rust",
+    "dep:backend-frontend-typescript",
+    "dep:blake3",
+    "dep:flate2",
+    "dep:serde",
+    "dep:tokio",
 ]
 gui = ["dep:backend-desktop", "dep:backend-gui-harness"]
 
@@ -51,14 +51,10 @@ backend-client = { path = "../../crates/client" }
 backend-locald = { package = "backend-local-service", path = "../../crates/local-service" }
 backend-runtime = { path = "../../crates/runtime", optional = true }
 backend-worker = { path = "../../apps/worker", optional = true }
-backend-desktop = { path = "../../apps/desktop", features = [
-  "visual-harness",
-], optional = true }
+backend-desktop = { path = "../../apps/desktop", features = ["visual-harness"], optional = true }
 backend-gui-harness = { path = "../../tools/gui-harness", optional = true }
 backend-extension-turso = { path = "../../extensions/turso", optional = true }
-backend-store-s3 = { path = "../../crates/store-s3", features = [
-  "test-support",
-], optional = true }
+backend-store-s3 = { path = "../../crates/store-s3", features = ["test-support"], optional = true }
 backend-compile = { path = "../../crates/compile", optional = true }
 backend-frontend-clang = { path = "../../frontends/clang", optional = true }
 backend-frontend-csharp = { path = "../../frontends/csharp", optional = true }

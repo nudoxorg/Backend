@@ -18,7 +18,9 @@ use backend_engine::driver::{
 use backend_frontend_rust::legacy::{
     RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
 };
-use backend_semantic::ir::{DocFragment, EntityId, FactAvailability, Ir, ItemKind, SemanticReader};
+use backend_semantic::ir::{
+    DocFragment, EntityId, FactAvailability, Ir, ItemKind, SemanticReader,
+};
 use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 
 const FIXTURE_BODY: &str = r#"//! Fixture crate docs.
@@ -53,9 +55,7 @@ fn failure_label(failure: &CompileFailure<'_>) -> &'static str {
         CompileFailure::AuthorityInputRequired { .. } => "authority-input-required",
         CompileFailure::AuthorityInputProfileMismatch { .. } => "authority-profile-mismatch",
         CompileFailure::LoweringUnsupported { cause, .. } => match cause {
-            backend_semantic::vocabulary::LoweringUnsupported::FactRejected { .. } => {
-                "fact-rejected"
-            }
+            backend_semantic::vocabulary::LoweringUnsupported::FactRejected { .. } => "fact-rejected",
             backend_semantic::vocabulary::LoweringUnsupported::CSharpProjection { .. } => {
                 "csharp-projection"
             }

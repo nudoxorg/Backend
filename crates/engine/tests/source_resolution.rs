@@ -10,23 +10,6 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use backend_engine::retrieval::{
-    CanonicalOccurrenceSource, CanonicalSource, CanonicalSourceError,
-    OwnedCanonicalOccurrenceSource, VerifiedSourceImage, resolve_occurrence_source,
-    resolve_occurrence_sources, resolve_tantivy_source, resolve_tantivy_sources,
-};
-use backend_extension_tantivy::server::{TantivySegment, TantivySegmentHit, TantivySegmentStore};
-use backend_extension_trustfall::server::SemanticTrustfallGraph;
-use backend_library::protocol::{UntrustedDocumentId, UntrustedSourceSpan};
-use backend_semantic::graph_vector::Cancellation;
-use backend_semantic::index_core::{
-    EntityArtifactIdentity, EntityDocumentId, IndexSnapshot, LexicalOperation, LexicalRow,
-    LexicalScore, LexicalSegment,
-};
-use backend_semantic::index_vocabulary::{
-    IndexLocatorFacts, IndexSnapshotId, SemanticImageExtent, SemanticImageLocator,
-    VerifiedSemanticPublication,
-};
 use backend_semantic::ir::{
     BorrowedTree, CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts, EntityId,
     EntityVersion, FactAvailability, IrBuilder, ItemKind, LinkKind, OccurrenceAuthorityFacts,
@@ -34,15 +17,32 @@ use backend_semantic::ir::{
     TreeItemInput, TreeLinkInput, TreeLinkTarget, VariantFingerprint, Visibility,
     encode_full_semantic_image, full_semantic_image_len,
 };
-use backend_version::{
-    ArtifactId, CompilePublicationDomain, ContentId, GenerationId, IrFragmentDomain,
-    IrFragmentEncoding,
-};
 use core::{
     pin::Pin,
     task::{Context, Poll, Waker},
 };
 use futures_core::Stream;
+use backend_version::{
+    ArtifactId, CompilePublicationDomain, ContentId, GenerationId, IrFragmentDomain,
+    IrFragmentEncoding,
+};
+use backend_library::protocol::{UntrustedDocumentId, UntrustedSourceSpan};
+use backend_semantic::index_core::{
+    EntityArtifactIdentity, EntityDocumentId, IndexSnapshot, LexicalOperation, LexicalRow,
+    LexicalScore, LexicalSegment,
+};
+use backend_semantic::graph_vector::Cancellation;
+use backend_engine::retrieval::{
+    CanonicalOccurrenceSource, CanonicalSource, CanonicalSourceError,
+    OwnedCanonicalOccurrenceSource, VerifiedSourceImage, resolve_occurrence_source,
+    resolve_occurrence_sources, resolve_tantivy_source, resolve_tantivy_sources,
+};
+use backend_extension_tantivy::server::{TantivySegment, TantivySegmentHit, TantivySegmentStore};
+use backend_extension_trustfall::server::SemanticTrustfallGraph;
+use backend_semantic::index_vocabulary::{
+    IndexLocatorFacts, IndexSnapshotId, SemanticImageExtent, SemanticImageLocator,
+    VerifiedSemanticPublication,
+};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
@@ -401,8 +401,7 @@ fn only_a_canonical_source_can_materialize_owned_client_reply_facts() -> TestRes
     assert_eq!(round_trip.path(), b"src/\xff-owned.rs");
     assert_eq!((round_trip.start(), round_trip.end()), (5, 11));
     assert_eq!(round_trip.snapshot(), expected_snapshot);
-    let document: [u8; backend_semantic::index_core::ENTITY_DOCUMENT_ID_BYTES] =
-        expected_document.into();
+    let document: [u8; backend_semantic::index_core::ENTITY_DOCUMENT_ID_BYTES] = expected_document.into();
     assert_eq!(round_trip.document().as_bytes(), &document);
     Ok(())
 }

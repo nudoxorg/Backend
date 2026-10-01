@@ -24,17 +24,13 @@ impl Site {
     /// `file:line`.
     #[must_use]
     pub fn new(file: &Path, line: usize) -> Self {
-        Self {
-            file: Arc::from(file),
-            line,
-        }
+        Self { file: Arc::from(file), line }
     }
 }
 
 impl std::fmt::Display for Site {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let shown = super::look::short(&self.file.display().to_string())
-            .replace("<repo>/apps/desktop/journeys/", "");
+        let shown = super::look::short(&self.file.display().to_string()).replace("<repo>/apps/desktop/journeys/", "");
         write!(f, "{shown}:{}", self.line)
     }
 }
@@ -431,9 +427,7 @@ fn strings_in(text: &str) -> Result<(Vec<String>, Option<Area>), String> {
     }
     let area = match (iter.next(), iter.next(), iter.next()) {
         (None, _, _) => None,
-        (Some(Tok::Word(word)), Some(Tok::Word(area)), None) if word == "in" => {
-            Some(Area::parse(&area)?)
-        }
+        (Some(Tok::Word(word)), Some(Tok::Word(area)), None) if word == "in" => Some(Area::parse(&area)?),
         _ => return Err("after the strings: nothing, or `in AREA`".to_owned()),
     };
     Ok((list, area))
@@ -458,17 +452,11 @@ fn pick(text: &str) -> Result<Pick, String> {
                         }
                         rest = tail;
                     }
-                    [Tok::Word(key), Tok::Word(name), tail @ ..]
-                        if key == "in" && area.is_none() =>
-                    {
+                    [Tok::Word(key), Tok::Word(name), tail @ ..] if key == "in" && area.is_none() => {
                         area = Some(Area::parse(name)?);
                         rest = tail;
                     }
-                    _ => {
-                        return Err(
-                            "after the text: `after \"ANCHOR\"…` and/or `in AREA`".to_owned()
-                        );
-                    }
+                    _ => return Err("after the text: `after \"ANCHOR\"…` and/or `in AREA`".to_owned()),
                 }
             }
             Ok(Pick::Text {
@@ -509,11 +497,7 @@ fn acts(text: &str) -> Result<Vec<Act>, String> {
     if script.events.iter().any(|event| event.at_ms != 0) {
         return Err("journey acts are untimed (`@T`/`+T`): use `wait MS` or `settle`".to_owned());
     }
-    if script
-        .events
-        .iter()
-        .any(|event| matches!(event.act, Act::Drag { .. }))
-    {
+    if script.events.iter().any(|event| matches!(event.act, Act::Drag { .. })) {
         return Err("`drag` is not a journey act yet".to_owned());
     }
     for event in &script.events {
@@ -560,24 +544,13 @@ fn size(rest: &str) -> Result<Assert, String> {
     let toks = tokens(rest)?;
     let (text, least, area) = match toks.as_slice() {
         [Tok::Str(text), Tok::Word(op), Tok::Word(least)] if op == ">=" => (text, least, None),
-        [
-            Tok::Str(text),
-            Tok::Word(op),
-            Tok::Word(least),
-            Tok::Word(key),
-            Tok::Word(area),
-        ] if op == ">=" && key == "in" => (text, least, Some(Area::parse(area)?)),
+        [Tok::Str(text), Tok::Word(op), Tok::Word(least), Tok::Word(key), Tok::Word(area)] if op == ">=" && key == "in" => {
+            (text, least, Some(Area::parse(area)?))
+        }
         _ => return Err(usage()),
     };
-    let at_least = least
-        .trim_end_matches("px")
-        .parse::<f32>()
-        .map_err(|_| usage())?;
-    Ok(Assert::Size {
-        text: text.clone(),
-        at_least,
-        area,
-    })
+    let at_least = least.trim_end_matches("px").parse::<f32>().map_err(|_| usage())?;
+    Ok(Assert::Size { text: text.clone(), at_least, area })
 }
 
 /// One indented assert line.
@@ -599,11 +572,7 @@ pub(super) fn assertion(line: &str) -> Result<Assert, String> {
         "text" => strings_in(rest).map(|(list, area)| Assert::Text(list, area)),
         "saw" => strings_in(rest).map(|(list, area)| Assert::Saw(list, area)),
         "ground" => {
-            let (tone, area) = rest
-                .split_once(" in ")
-                .map_or((rest, None), |(tone, area)| {
-                    (tone.trim(), Some(area.trim()))
-                });
+            let (tone, area) = rest.split_once(" in ").map_or((rest, None), |(tone, area)| (tone.trim(), Some(area.trim())));
             let tone = match tone {
                 "dark" => Tone::Dark,
                 "light" => Tone::Light,
@@ -616,11 +585,7 @@ pub(super) fn assertion(line: &str) -> Result<Assert, String> {
             let [glob] = list.as_slice() else {
                 return Err(format!("`{verb} \"GLOB\" [in AREA]`: one glob"));
             };
-            Ok(if verb == "like" {
-                Assert::Like(glob.clone(), area)
-            } else {
-                Assert::Unlike(glob.clone(), area)
-            })
+            Ok(if verb == "like" { Assert::Like(glob.clone(), area) } else { Assert::Unlike(glob.clone(), area) })
         }
         "order" => {
             let (list, area) = strings_in(rest)?;
@@ -637,34 +602,11 @@ pub(super) fn assertion(line: &str) -> Result<Assert, String> {
         "budget" => budget(rest),
         "size" => size(rest),
         "state" => {
-            const KEYS: [&str; 14] = [
-                "zone",
-                "focus",
-                "ask",
-                "peek",
-                "hints",
-                "hand",
-                "zen",
-                "shelf",
-                "drawer",
-                "overlay",
-                "held",
-                "text",
-                "theme",
-                "clipboard",
-            ];
+            const KEYS: [&str; 14] = ["zone", "focus", "ask", "peek", "hints", "hand", "zen", "shelf", "drawer", "overlay", "held", "text", "theme", "clipboard"];
             let toks = tokens(rest)?;
             match toks.as_slice() {
-                [Tok::Word(key), Tok::Str(glob)] if KEYS.contains(&key.as_str()) => {
-                    Ok(Assert::State {
-                        key: key.clone(),
-                        glob: glob.clone(),
-                    })
-                }
-                _ => Err(format!(
-                    "`state {rest}`: expected `state KEY \"GLOB\"`, KEY one of {}",
-                    KEYS.join(", ")
-                )),
+                [Tok::Word(key), Tok::Str(glob)] if KEYS.contains(&key.as_str()) => Ok(Assert::State { key: key.clone(), glob: glob.clone() }),
+                _ => Err(format!("`state {rest}`: expected `state KEY \"GLOB\"`, KEY one of {}", KEYS.join(", "))),
             }
         }
         other => Err(format!(
@@ -678,9 +620,7 @@ fn duration(word: &str) -> Result<Duration, String> {
     let (number, unit) = word
         .find(|c: char| !c.is_ascii_digit())
         .map_or((word, ""), |at| word.split_at(at));
-    let value = number
-        .parse::<u64>()
-        .map_err(|_| format!("`{word}` is not a duration (20m, 90s, 1500ms)"))?;
+    let value = number.parse::<u64>().map_err(|_| format!("`{word}` is not a duration (20m, 90s, 1500ms)"))?;
     match unit {
         "ms" => Ok(Duration::from_millis(value)),
         "s" => Ok(Duration::from_secs(value)),
@@ -694,10 +634,7 @@ fn await_step(rest: &str) -> Result<StepKind, String> {
     let (condition, within) = rest
         .rsplit_once(" within ")
         .ok_or_else(|| "`await text|absent \"S\"… [in AREA] within DURATION`".to_owned())?;
-    let (verb, strings) = condition
-        .trim()
-        .split_once(' ')
-        .unwrap_or((condition.trim(), ""));
+    let (verb, strings) = condition.trim().split_once(' ').unwrap_or((condition.trim(), ""));
     let (list, area) = strings_in(strings)?;
     let until = match verb {
         "text" => Until::Text(list, area),
@@ -708,17 +645,13 @@ fn await_step(rest: &str) -> Result<StepKind, String> {
         },
         other => return Err(format!("`await {other}`: await `text`, `absent` or `like`")),
     };
-    Ok(StepKind::Await {
-        until,
-        within: duration(within.trim())?,
-    })
+    Ok(StepKind::Await { until, within: duration(within.trim())? })
 }
 
 /// A path a journey names: repo-relative, and it must exist.
 pub(super) fn repo_path(word: &str) -> Result<PathBuf, String> {
     let path = super::super::repo().join(word);
-    path.canonicalize()
-        .map_err(|error| format!("`{word}` is not a path under the repository: {error}"))
+    path.canonicalize().map_err(|error| format!("`{word}` is not a path under the repository: {error}"))
 }
 
 /// One step line (not a header, not `do`, not `needs`).
@@ -737,10 +670,7 @@ pub(super) fn step_kind(text: &str) -> Result<StepKind, String> {
         "crawl" => {
             let words: Vec<&str> = rest.split_whitespace().collect();
             let usage = || format!("`crawl {rest}`: expected `crawl DEPTH [per N]`");
-            let depth = words
-                .first()
-                .and_then(|word| word.parse::<u8>().ok())
-                .ok_or_else(usage)?;
+            let depth = words.first().and_then(|word| word.parse::<u8>().ok()).ok_or_else(usage)?;
             let per_page = match words.get(1..) {
                 Some([]) | None => 8,
                 Some(["per", n]) => n.parse::<usize>().map_err(|_| usage())?,
@@ -776,10 +706,7 @@ pub(super) fn glob(pattern: &str, key: &str) -> bool {
         return pattern == key;
     }
     let (first, last) = (parts[0], parts[parts.len() - 1]);
-    if key.len() < first.len() + last.len()
-        || !key.starts_with(first)
-        || !key[first.len()..].ends_with(last)
-    {
+    if key.len() < first.len() + last.len() || !key.starts_with(first) || !key[first.len()..].ends_with(last) {
         return false;
     }
     let mut rest = &key[first.len()..key.len() - last.len()];
@@ -794,22 +721,13 @@ pub(super) fn glob(pattern: &str, key: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        Area, Assert, Pick, PickerAnswer, StepKind, Until, assertion, glob, pick, split_else,
-        step_kind, strings_in,
-    };
+    use super::{Area, Assert, Pick, PickerAnswer, StepKind, Until, assertion, glob, pick, split_else, step_kind, strings_in};
     use std::time::Duration;
 
     #[test]
     fn globs_match_whole_keys() {
-        assert!(glob(
-            "orbit-package-*toml_pin",
-            "orbit-package-/a/b/toml_pin"
-        ));
-        assert!(!glob(
-            "orbit-package-*toml_pin",
-            "orbit-package-/a/b/toml_pin/x"
-        ));
+        assert!(glob("orbit-package-*toml_pin", "orbit-package-/a/b/toml_pin"));
+        assert!(!glob("orbit-package-*toml_pin", "orbit-package-/a/b/toml_pin/x"));
         assert!(glob("pkg-*::from_str*", "pkg-rust:toml::from_str#12"));
         assert!(glob("resume", "resume"));
         assert!(!glob("resume", "resume-2"));
@@ -821,10 +739,7 @@ mod tests {
     fn strings_picks_and_detours_parse() {
         assert_eq!(
             strings_in(r#""a" "b \"c\"" in reader"#),
-            Ok((
-                vec!["a".to_owned(), "b \"c\"".to_owned()],
-                Some(Area::Reader)
-            ))
+            Ok((vec!["a".to_owned(), "b \"c\"".to_owned()], Some(Area::Reader)))
         );
         assert!(strings_in("a").is_err());
         assert!(strings_in(r#""a" in nowhere"#).is_err());
@@ -836,82 +751,34 @@ mod tests {
                 area: Some(Area::Reader),
             })
         );
-        assert_eq!(
-            pick("orbit-package-*"),
-            Ok(Pick::Probe("orbit-package-*".to_owned()))
-        );
-        assert_eq!(
-            split_else("click x else route orbit"),
-            ("click x", Some("route orbit"))
-        );
-        assert_eq!(
-            split_else(r#"type "a else b""#),
-            (r#"type "a else b""#, None)
-        );
+        assert_eq!(pick("orbit-package-*"), Ok(Pick::Probe("orbit-package-*".to_owned())));
+        assert_eq!(split_else("click x else route orbit"), ("click x", Some("route orbit")));
+        assert_eq!(split_else(r#"type "a else b""#), (r#"type "a else b""#, None));
     }
 
     #[test]
     fn production_steps_and_asserts_parse() {
-        let StepKind::Await { until, within } =
-            step_kind(r#"await absent "indexing" in reader within 20m"#).expect("await")
-        else {
+        let StepKind::Await { until, within } = step_kind(r#"await absent "indexing" in reader within 20m"#).expect("await") else {
             panic!("not an await");
         };
-        assert_eq!(
-            until,
-            Until::Absent(vec!["indexing".to_owned()], Some(Area::Reader))
-        );
+        assert_eq!(until, Until::Absent(vec!["indexing".to_owned()], Some(Area::Reader)));
         assert_eq!(within, Duration::from_secs(1200));
         assert!(step_kind(r#"await text "x" within soon"#).is_err());
         assert!(step_kind(r#"await "x" within 2m"#).is_err());
         assert!(matches!(step_kind("restart"), Ok(StepKind::Restart)));
-        assert!(matches!(
-            step_kind("answer-picker cancel"),
-            Ok(StepKind::AnswerPicker(PickerAnswer::Cancel))
-        ));
-        let Ok(StepKind::AnswerPicker(PickerAnswer::Folders(folders))) =
-            step_kind("answer-picker frontends/rust/fixtures/toml_pin")
-        else {
+        assert!(matches!(step_kind("answer-picker cancel"), Ok(StepKind::AnswerPicker(PickerAnswer::Cancel))));
+        let Ok(StepKind::AnswerPicker(PickerAnswer::Folders(folders))) = step_kind("answer-picker frontends/rust/fixtures/toml_pin") else {
             panic!("a repo folder answers the picker");
         };
-        assert!(
-            folders[0].is_absolute() && folders[0].ends_with("frontends/rust/fixtures/toml_pin")
-        );
-        assert!(
-            step_kind("answer-picker no/such/folder").is_err(),
-            "a folder that does not exist is refused at parse"
-        );
-        assert_eq!(
-            assertion(r#"route like "package *toml_pin""#),
-            Ok(Assert::RouteLike("package *toml_pin".to_owned()))
-        );
-        assert_eq!(
-            assertion(r#"saw "Compiling" in reader"#),
-            Ok(Assert::Saw(
-                vec!["Compiling".to_owned()],
-                Some(Area::Reader)
-            ))
-        );
-        assert_eq!(
-            assertion(r#"like "* declarations from *" in reader"#),
-            Ok(Assert::Like(
-                "* declarations from *".to_owned(),
-                Some(Area::Reader)
-            ))
-        );
-        assert_eq!(
-            assertion(r#"unlike "0 declarations *""#),
-            Ok(Assert::Unlike("0 declarations *".to_owned(), None))
-        );
+        assert!(folders[0].is_absolute() && folders[0].ends_with("frontends/rust/fixtures/toml_pin"));
+        assert!(step_kind("answer-picker no/such/folder").is_err(), "a folder that does not exist is refused at parse");
+        assert_eq!(assertion(r#"route like "package *toml_pin""#), Ok(Assert::RouteLike("package *toml_pin".to_owned())));
+        assert_eq!(assertion(r#"saw "Compiling" in reader"#), Ok(Assert::Saw(vec!["Compiling".to_owned()], Some(Area::Reader))));
+        assert_eq!(assertion(r#"like "* declarations from *" in reader"#), Ok(Assert::Like("* declarations from *".to_owned(), Some(Area::Reader))));
+        assert_eq!(assertion(r#"unlike "0 declarations *""#), Ok(Assert::Unlike("0 declarations *".to_owned(), None)));
         assert!(assertion(r#"like "a" "b""#).is_err(), "one glob");
-        assert_eq!(
-            assertion("ground dark in reader"),
-            Ok(Assert::Ground(super::Tone::Dark, Some(Area::Reader)))
-        );
-        assert_eq!(
-            assertion("ground light"),
-            Ok(Assert::Ground(super::Tone::Light, None))
-        );
+        assert_eq!(assertion("ground dark in reader"), Ok(Assert::Ground(super::Tone::Dark, Some(Area::Reader))));
+        assert_eq!(assertion("ground light"), Ok(Assert::Ground(super::Tone::Light, None)));
         assert!(assertion("ground grey").is_err());
     }
 }

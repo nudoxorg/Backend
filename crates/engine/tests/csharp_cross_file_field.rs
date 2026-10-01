@@ -11,8 +11,8 @@ use backend_engine::driver::{
 };
 use backend_frontend_csharp::legacy::{CSharpImage, DeclarationKind, ReferenceTag};
 use backend_semantic::ir::{
-    EntityKind, ForeignOrigin, FragmentError, FragmentView, OccurrenceConfidence, OccurrenceTarget,
-    ReferenceKind,
+    EntityKind, ForeignOrigin, FragmentError, FragmentView, OccurrenceConfidence,
+    OccurrenceTarget, ReferenceKind,
 };
 use backend_semantic::vocabulary::{CSharpVersion, LanguageProfile, Stage};
 use std::{
@@ -151,7 +151,8 @@ fn entity_name<'fragment>(
 
 fn drive_owner<'fragment>(view: &FragmentView<'fragment>) -> Result<u32, TestError> {
     for entity in view.entities() {
-        if entity.kind == EntityKind::Function && entity_name(view, entity.entity.raw)? == b"Drive"
+        if entity.kind == EntityKind::Function
+            && entity_name(view, entity.entity.raw)? == b"Drive"
         {
             return Ok(entity.entity.raw);
         }
@@ -234,9 +235,11 @@ fn cross_file_field_read_targets_workout_service_namespace_key() -> Result<(), T
 
     let drive = drive_owner(&view)?;
     let (note_start, note_end) = {
-        let before = WEEKS.find("service.Note").ok_or_else(|| TestError::Fact {
-            message: "cross-file Note site is absent from the fixture source".to_owned(),
-        })?;
+        let before = WEEKS
+            .find("service.Note")
+            .ok_or_else(|| TestError::Fact {
+                message: "cross-file Note site is absent from the fixture source".to_owned(),
+            })?;
         let start = u32::try_from(before + "service.".len()).map_err(|_| TestError::Fact {
             message: "Note span start does not fit u32".to_owned(),
         })?;

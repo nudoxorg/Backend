@@ -5,20 +5,20 @@
 
 use core::mem::size_of;
 
-use backend_store::root::{
-    EntryKey, GenerationEntry, GenerationRoot, GenerationView, Locality, LocalityError,
-    LocalityException, LocalityScanWork, LocalityValidator, NonResident, PreparedLocality,
-    RootBuildError, RootEntry, ValidatedLocality,
+use backend_version::{
+    CONTENT_PAYLOAD_BYTES, ContentAuthorityError, DependencySetDomain, Domain, GenerationId,
+    ObjectDomain,
 };
 use backend_version::object::{
     ObjectKind, ObjectLength, ObjectRef, ProviderId, ProviderIdError, ProviderSet,
     ProviderSetError, RemoteBase,
 };
-use backend_version::schema::{SchemaId, UnknownSchemaId};
-use backend_version::{
-    CONTENT_PAYLOAD_BYTES, ContentAuthorityError, DependencySetDomain, Domain, GenerationId,
-    ObjectDomain,
+use backend_store::root::{
+    EntryKey, GenerationEntry, GenerationRoot, GenerationView, Locality, LocalityError,
+    LocalityException, LocalityScanWork, LocalityValidator, NonResident, PreparedLocality,
+    RootBuildError, RootEntry, ValidatedLocality,
 };
+use backend_version::schema::{SchemaId, UnknownSchemaId};
 use thiserror::Error;
 
 const LONG_LANE_ROWS: u8 = 64;

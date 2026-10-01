@@ -2,6 +2,11 @@
 
 use core::num::NonZeroU64;
 
+use backend_semantic::ir::EntityId;
+use backend_version::{
+    ArtifactId, ContentId, GenerationId, IndexExactSegmentDomain, IndexLexicalSegmentDomain,
+    IrFragmentDomain, IrFragmentEncoding, ObjectDomain, derive_index_snapshot,
+};
 use backend_library::interface::{
     ClientIndex, ClientManifest, ClientSyncError, ClientSyncPhase, DemandSelection,
     EffectiveSearchResult, LocalDelta, LocalQueryTerminal, LocalSelection, ManifestEpoch,
@@ -10,11 +15,6 @@ use backend_library::interface::{
     SelectionScratch, SyncCancellation, SyncTerminal,
 };
 use backend_semantic::index_core::{EntityArtifactIdentity, EntityDocumentId, IndexSnapshot};
-use backend_semantic::ir::EntityId;
-use backend_version::{
-    ArtifactId, ContentId, GenerationId, IndexExactSegmentDomain, IndexLexicalSegmentDomain,
-    IrFragmentDomain, IrFragmentEncoding, ObjectDomain, derive_index_snapshot,
-};
 
 #[derive(Debug)]
 enum TestError {

@@ -29,6 +29,6 @@ pub mod harness;
 pub(crate) mod host;
 
 #[cfg(any(unix, windows))]
-pub use host::launch::main_entry;
-#[cfg(any(unix, windows))]
 pub use host::lease::{DesktopHost, HostError, HostMode};
+#[cfg(any(unix, windows))]
+pub use host::launch::main_entry;

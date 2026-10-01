@@ -4,10 +4,8 @@
 //! (`IdentityAdapter`, file + line + name), and every assertion reads what
 //! was painted (the probe ledger), never the model it was built from.
 
-use super::tests::{Fixture, PACKAGE, Rig, dossier, page_route, rig, rig_with_reads};
-use crate::model::pages::{
-    DeclRef, Known, OutlineNode, OutlineTree, PackageRef, PageValue, ReadFailure,
-};
+use super::tests::{PACKAGE, Fixture, Rig, dossier, page_route, rig, rig_with_reads};
+use crate::model::pages::{DeclRef, Known, OutlineNode, OutlineTree, PackageRef, PageValue, ReadFailure};
 use crate::navigation::Intent;
 use crate::runtime::reads::{PageReader, ReadContext, ReadPool, ReadRequest};
 use crate::shell::bodies::graph::identity::IdentityAdapter;
@@ -87,9 +85,7 @@ pub(super) fn world() -> Arc<World> {
                     file: "app.rs".into(),
                 },
             ],
-            vec![
-                label, typed, related, function, caller, payload, error, main, kind,
-            ],
+            vec![label, typed, related, function, caller, payload, error, main, kind],
             vec![
                 Edge {
                     from: 4,
@@ -126,10 +122,7 @@ pub(super) fn world() -> Arc<World> {
 
 pub(super) fn install(rig: &mut Rig) {
     let world = world();
-    let identities = Arc::new(IdentityAdapter::synthetic(
-        &world,
-        PackageRef::parse(PACKAGE).expect("package"),
-    ));
+    let identities = Arc::new(IdentityAdapter::synthetic(&world, PackageRef::parse(PACKAGE).expect("package")));
     let files = HashMap::from([("glyph.rs".to_owned(), Arc::<str>::from(GLYPH))]);
     rig.cx.update(|_, cx| {
         crate::runtime::fixture_world::install(world, identities, files, cx);
@@ -157,21 +150,13 @@ impl PackageGate {
         state.0 = true;
         self.wake.notify_all();
         while !state.1 {
-            let (next, timed) = self
-                .wake
-                .wait_timeout(state, Duration::from_secs(10))
-                .expect("package barrier");
+            let (next, timed) = self.wake.wait_timeout(state, Duration::from_secs(10)).expect("package barrier");
             state = next;
-            assert!(
-                !timed.timed_out() || state.1,
-                "the test never released its package read"
-            );
+            assert!(!timed.timed_out() || state.1, "the test never released its package read");
         }
     }
 
-    fn entered(&self) -> bool {
-        self.state.lock().expect("package gate").0
-    }
+    fn entered(&self) -> bool { self.state.lock().expect("package gate").0 }
     fn release(&self) {
         self.state.lock().expect("package gate").1 = true;
         self.wake.notify_all();
@@ -180,38 +165,21 @@ impl PackageGate {
 
 struct ReleasePackage(Arc<PackageGate>);
 impl Drop for ReleasePackage {
-    fn drop(&mut self) {
-        self.0.release();
-    }
+    fn drop(&mut self) { self.0.release(); }
 }
 
-struct CrossPackageFixture {
-    gate: Arc<PackageGate>,
-}
+struct CrossPackageFixture { gate: Arc<PackageGate> }
 impl PageReader for CrossPackageFixture {
-    fn read(
-        &mut self,
-        request: &ReadRequest,
-        context: &ReadContext<'_>,
-    ) -> Result<PageValue, ReadFailure> {
+    fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
         if let ReadRequest::Package(package) = request
             && package.as_str() == "/fixture/app"
         {
             self.gate.hold();
             let mut page = dossier();
             page.package = package.clone();
-            let decl = DeclRef::from_label(
-                "/fixture/app::app.rs:1::main",
-                None,
-                Some(DeclarationKind::Function),
-                Some(("app.rs", 1)),
-            )
-            .expect("exact main");
+            let decl = DeclRef::from_label("/fixture/app::app.rs:1::main", None, Some(DeclarationKind::Function), Some(("app.rs", 1))).expect("exact main");
             page.outline = Known::Known(OutlineTree {
-                roots: Arc::from([OutlineNode {
-                    decl,
-                    children: Arc::from([]),
-                }]),
+                roots: Arc::from([OutlineNode { decl, children: Arc::from([]) }]),
                 complete: true,
             });
             return Ok(PageValue::Package(page));
@@ -221,94 +189,50 @@ impl PageReader for CrossPackageFixture {
 }
 
 #[gpui::test]
-fn late_cross_package_outline_cannot_open_after_back_away_but_a_fresh_click_can(
-    cx: &mut TestAppContext,
-) {
+fn late_cross_package_outline_cannot_open_after_back_away_but_a_fresh_click_can(cx: &mut TestAppContext) {
     let gate = Arc::new(PackageGate::default());
     let worker_gate = gate.clone();
-    let pool = ReadPool::start(2, move |_| CrossPackageFixture {
-        gate: worker_gate.clone(),
-    })
-    .expect("package pool");
+    let pool = ReadPool::start(2, move |_| CrossPackageFixture { gate: worker_gate.clone() }).expect("package pool");
     let mut rig = rig_with_reads(cx, Some(page_route("RelationLabel")), 1440.0, 900.0, pool);
     let _release_on_unwind = ReleasePackage(gate.clone());
     let world = world();
-    let identities = Arc::new(IdentityAdapter::synthetic_catalog(
-        &world,
-        vec![
-            PackageRef::parse(PACKAGE).expect("present"),
-            PackageRef::parse("/fixture/app").expect("app"),
-        ],
-    ));
+    let identities = Arc::new(IdentityAdapter::synthetic_catalog(&world, vec![
+        PackageRef::parse(PACKAGE).expect("present"),
+        PackageRef::parse("/fixture/app").expect("app"),
+    ]));
     rig.cx.update(|_, cx| {
         crate::runtime::fixture_world::install(world, identities, HashMap::new(), cx);
         facet::probe::enable(cx);
     });
     rig.repaint();
 
-    let open = || facet::anatomy::Open {
-        target: facet::semantics::Target::Node(7),
-    };
-    rig.cx
-        .update(|window, cx| window.dispatch_action(Box::new(open()), cx));
+    let open = || facet::anatomy::Open { target: facet::semantics::Target::Node(7) };
+    rig.cx.update(|window, cx| window.dispatch_action(Box::new(open()), cx));
     let deadline = Instant::now() + Duration::from_secs(3);
     while !gate.entered() {
         rig.frame(16);
-        assert!(
-            Instant::now() < deadline,
-            "cross-package outline never entered its worker"
-        );
+        assert!(Instant::now() < deadline, "cross-package outline never entered its worker");
         std::thread::sleep(Duration::from_millis(1));
     }
-    assert_eq!(
-        rig.route(),
-        page_route("RelationLabel"),
-        "no guessed route while the exact outline is cold"
-    );
+    assert_eq!(rig.route(), page_route("RelationLabel"), "no guessed route while the exact outline is cold");
 
     let away = page_route("SemanticLinkKind");
-    rig.graph.root.update(rig.cx, |root, cx| {
-        root.queue(Intent::Navigate(away.clone()), cx)
-    });
+    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(away.clone()), cx));
     let deadline = Instant::now() + Duration::from_secs(3);
     while rig.route() != away {
         rig.frame(16);
-        assert!(
-            Instant::now() < deadline,
-            "the later navigation did not land"
-        );
+        assert!(Instant::now() < deadline, "the later navigation did not land");
     }
     gate.release();
     rig.settle();
-    assert_eq!(
-        rig.route(),
-        away,
-        "a late exact result cannot replace the newer page"
-    );
-    assert!(
-        !painted(&mut rig)
-            .texts
-            .iter()
-            .any(|text| text.content.contains("Opening main")),
-        "cancel clears the pending status"
-    );
+    assert_eq!(rig.route(), away, "a late exact result cannot replace the newer page");
+    assert!(!painted(&mut rig).texts.iter().any(|text| text.content.contains("Opening main")), "cancel clears the pending status");
 
     rig.go(Intent::Navigate(page_route("RelationLabel")));
-    rig.cx
-        .update(|window, cx| window.dispatch_action(Box::new(open()), cx));
+    rig.cx.update(|window, cx| window.dispatch_action(Box::new(open()), cx));
     rig.settle();
-    let exact = super::kit::symbol_view_route(
-        "/fixture/app",
-        &crate::model::pages::SymbolRef::new("/fixture/app::app.rs:1::main").expect("main"),
-        crate::navigation::View::Page,
-        Some(1),
-    )
-    .expect("route");
-    assert_eq!(
-        rig.route(),
-        exact,
-        "a fresh click can open only the complete cross-package outline match"
-    );
+    let exact = super::kit::symbol_view_route("/fixture/app", &crate::model::pages::SymbolRef::new("/fixture/app::app.rs:1::main").expect("main"), crate::navigation::View::Page, Some(1)).expect("route");
+    assert_eq!(rig.route(), exact, "a fresh click can open only the complete cross-package outline match");
 }
 
 /// S2: a link whose package is not even admitted (the fixture's `app` here)
@@ -316,43 +240,22 @@ fn late_cross_package_outline_cannot_open_after_back_away_but_a_fresh_click_can(
 /// says so instead of silently doing nothing (§15 ruling 1), and it clears
 /// the moment the page navigates away.
 #[gpui::test]
-fn an_anatomy_link_the_index_lacks_speaks_through_the_notice_instead_of_moving(
-    cx: &mut TestAppContext,
-) {
+fn an_anatomy_link_the_index_lacks_speaks_through_the_notice_instead_of_moving(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     install(&mut rig); // single-package identity: `app`/`main` (node 7) is not admitted
-    let open = || facet::anatomy::Open {
-        target: facet::semantics::Target::Node(7),
-    };
-    rig.cx
-        .update(|window, cx| window.dispatch_action(Box::new(open()), cx));
+    let open = || facet::anatomy::Open { target: facet::semantics::Target::Node(7) };
+    rig.cx.update(|window, cx| window.dispatch_action(Box::new(open()), cx));
     rig.settle();
-    assert_eq!(
-        rig.route(),
-        page_route("RelationLabel"),
-        "an unresolvable link does not move the page"
-    );
-    let message = rig.graph.store.read_with(rig.cx, |store, _| {
-        store.notice().map(|notice| notice.message.to_string())
-    });
+    assert_eq!(rig.route(), page_route("RelationLabel"), "an unresolvable link does not move the page");
+    let message = rig.graph.store.read_with(rig.cx, |store, _| store.notice().map(|notice| notice.message.to_string()));
     assert_eq!(message.as_deref(), Some("main isn't in the index"));
     rig.go(Intent::Navigate(page_route("SemanticLinkKind")));
-    assert!(
-        rig.graph
-            .store
-            .read_with(rig.cx, |store, _| store.notice().is_none()),
-        "a notice does not survive navigation"
-    );
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.notice().is_none()), "a notice does not survive navigation");
 }
 
 /// The painted texts published under exactly `key`, in paint order.
 fn at(ledger: &Ledger, key: &str) -> Vec<String> {
-    ledger
-        .texts
-        .iter()
-        .filter(|text| text.key == key)
-        .map(|text| text.content.clone())
-        .collect()
+    ledger.texts.iter().filter(|text| text.key == key).map(|text| text.content.clone()).collect()
 }
 
 /// The fork's case names, in paint order.
@@ -371,50 +274,18 @@ fn an_enum_page_draws_its_fork_in_place_of_its_code(cx: &mut TestAppContext) {
     install(&mut rig);
     let ledger = painted(&mut rig);
     assert_eq!(at(&ledger, "s6-shape-head-count"), ["one of 2"]);
-    assert_eq!(
-        case_names(&ledger),
-        ["Typed", "Related"],
-        "one row per variant, in order"
-    );
-    assert_eq!(
-        at(&ledger, "s6-case-0-holds-0-word"),
-        ["SemanticLinkKind"],
-        "Typed holds its payload, in words"
-    );
-    assert_eq!(
-        at(&ledger, "s6-case-1-nothing"),
-        ["nothing inside"],
-        "Related holds nothing"
-    );
+    assert_eq!(case_names(&ledger), ["Typed", "Related"], "one row per variant, in order");
+    assert_eq!(at(&ledger, "s6-case-0-holds-0-word"), ["SemanticLinkKind"], "Typed holds its payload, in words");
+    assert_eq!(at(&ledger, "s6-case-1-nothing"), ["nothing inside"], "Related holds nothing");
     // The methods, by what they do with it.
     assert_eq!(at(&ledger, "s6-group-0-head"), ["Reads it"]);
     assert_eq!(at(&ledger, "s6-group-0-method-0-name"), ["as_str"]);
     assert_eq!(at(&ledger, "s6-group-0-method-1-name"), ["is_typed"]);
     let said = rig.said();
-    assert!(
-        !said
-            .iter()
-            .any(|line| line.starts_with("pub enum RelationLabel {")),
-        "the fork replaces the declaration's code: {said:#?}"
-    );
-    assert!(
-        !ledger.texts.iter().any(|text| text.key.contains("prism")),
-        "the prism stays in the graph"
-    );
-    for gone in [
-        "Reference",
-        "Relations",
-        "Usage",
-        "History",
-        "made of",
-        "is",
-        "from",
-        "to",
-    ] {
-        assert!(
-            !said.iter().any(|line| line == gone),
-            "`{gone}` (a tab or the relation list) is still said: {said:#?}"
-        );
+    assert!(!said.iter().any(|line| line.starts_with("pub enum RelationLabel {")), "the fork replaces the declaration's code: {said:#?}");
+    assert!(!ledger.texts.iter().any(|text| text.key.contains("prism")), "the prism stays in the graph");
+    for gone in ["Reference", "Relations", "Usage", "History", "made of", "is", "from", "to"] {
+        assert!(!said.iter().any(|line| line == gone), "`{gone}` (a tab or the relation list) is still said: {said:#?}");
     }
 }
 
@@ -423,25 +294,10 @@ fn a_declaration_the_world_does_not_know_draws_from_the_index_alone(cx: &mut Tes
     let mut rig = rig(cx, Some(page_route("KindGlyph")), 1440.0, 900.0);
     install(&mut rig);
     let ledger = painted(&mut rig);
-    assert!(
-        !ledger
-            .texts
-            .iter()
-            .any(|text| text.key.starts_with("anatomy")),
-        "no world anatomy without a node"
-    );
-    assert_eq!(
-        case_names(&ledger),
-        ["Typed", "Related"],
-        "the index's variants are the fork"
-    );
+    assert!(!ledger.texts.iter().any(|text| text.key.starts_with("anatomy")), "no world anatomy without a node");
+    assert_eq!(case_names(&ledger), ["Typed", "Related"], "the index's variants are the fork");
     let said = rig.said();
-    assert!(
-        !said
-            .iter()
-            .any(|line| line.starts_with("pub enum KindGlyph {")),
-        "raw declarations stay in Code: {said:#?}"
-    );
+    assert!(!said.iter().any(|line| line.starts_with("pub enum KindGlyph {")), "raw declarations stay in Code: {said:#?}");
 }
 
 pub(super) fn package_route() -> crate::navigation::Route {
@@ -464,66 +320,17 @@ fn the_package_page_shows_its_recorded_outline(cx: &mut TestAppContext) {
     let ledger = painted(&mut rig);
     // The fixture files every declaration under `glyph.rs`, so the recorded
     // outline is one module of its six names.
-    let regions: Vec<&str> = ledger
-        .texts
-        .iter()
-        .filter(|text| text.key.contains("shingles-region-"))
-        .map(|text| text.content.as_str())
-        .collect();
-    assert_eq!(
-        regions,
-        ["glyph"],
-        "the recorded outline's module is a region of the territory"
-    );
-    let region = ledger
-        .texts
-        .iter()
-        .find(|text| text.key.contains("shingles-region-glyph"))
-        .expect("the glyph region")
-        .bounds
-        .clone();
-    rig.cx.simulate_click(
-        point(
-            px(region.x + region.width / 2.0),
-            px(region.y + region.height / 2.0),
-        ),
-        Modifiers::default(),
-    );
+    let regions: Vec<&str> = ledger.texts.iter().filter(|text| text.key.contains("shingles-region-")).map(|text| text.content.as_str()).collect();
+    assert_eq!(regions, ["glyph"], "the recorded outline's module is a region of the territory");
+    let region = ledger.texts.iter().find(|text| text.key.contains("shingles-region-glyph")).expect("the glyph region").bounds.clone();
+    rig.cx.simulate_click(point(px(region.x + region.width / 2.0), px(region.y + region.height / 2.0)), Modifiers::default());
     rig.settle();
     let ledger = painted(&mut rig);
-    let names: Vec<&str> = ledger
-        .texts
-        .iter()
-        .filter(|text| text.key.contains("module-card-") && text.key.ends_with("-name"))
-        .map(|text| text.content.as_str())
-        .collect();
-    assert_eq!(
-        names,
-        [
-            "Identity",
-            "RelationLabel",
-            "RelationDirection",
-            "KindGlyph",
-            "relation_label",
-            "Outline"
-        ],
-        "the recorded order is preserved"
-    );
+    let names: Vec<&str> = ledger.texts.iter().filter(|text| text.key.contains("module-card-") && text.key.ends_with("-name")).map(|text| text.content.as_str()).collect();
+    assert_eq!(names, ["Identity", "RelationLabel", "RelationDirection", "KindGlyph", "relation_label", "Outline"], "the recorded order is preserved");
     let said = rig.said();
-    let painted_words: Vec<&str> = ledger
-        .texts
-        .iter()
-        .map(|text| text.content.as_str())
-        .collect();
-    assert!(
-        !said
-            .iter()
-            .any(|line| line == "Start here" || line == "what you hold")
-            && !painted_words
-                .iter()
-                .any(|w| *w == "Start here" || *w == "what you hold"),
-        "no fixture-ranked tour: {said:#?}"
-    );
+    let painted_words: Vec<&str> = ledger.texts.iter().map(|text| text.content.as_str()).collect();
+    assert!(!said.iter().any(|line| line == "Start here" || line == "what you hold") && !painted_words.iter().any(|w| *w == "Start here" || *w == "what you hold"), "no fixture-ranked tour: {said:#?}");
 }
 
 /// A recorded name's card is a door to its exact indexed coordinate.
@@ -532,37 +339,13 @@ fn a_recorded_outline_row_opens_its_page(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(package_route()), 1440.0, 900.0);
     install(&mut rig);
     let ledger = painted(&mut rig);
-    let region = ledger
-        .texts
-        .iter()
-        .find(|text| text.key.contains("shingles-region-glyph"))
-        .expect("the glyph region")
-        .bounds
-        .clone();
-    rig.cx.simulate_click(
-        point(
-            px(region.x + region.width / 2.0),
-            px(region.y + region.height / 2.0),
-        ),
-        Modifiers::default(),
-    );
+    let region = ledger.texts.iter().find(|text| text.key.contains("shingles-region-glyph")).expect("the glyph region").bounds.clone();
+    rig.cx.simulate_click(point(px(region.x + region.width / 2.0), px(region.y + region.height / 2.0)), Modifiers::default());
     rig.settle();
     let ledger = painted(&mut rig);
     let key = format!("pkg-card-{}", super::tests::coordinate("RelationLabel"));
-    let card = ledger
-        .targets
-        .iter()
-        .find(|target| target.key == key)
-        .expect("the recorded RelationLabel card")
-        .bounds
-        .clone();
-    rig.cx.simulate_click(
-        point(
-            px(card.x + card.width / 2.0),
-            px(card.y + card.height / 2.0),
-        ),
-        Modifiers::default(),
-    );
+    let card = ledger.targets.iter().find(|target| target.key == key).expect("the recorded RelationLabel card").bounds.clone();
+    rig.cx.simulate_click(point(px(card.x + card.width / 2.0), px(card.y + card.height / 2.0)), Modifiers::default());
     rig.settle();
     assert_eq!(rig.route(), page_route("RelationLabel"));
 }

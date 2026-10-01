@@ -21,9 +21,7 @@
 //! declared location (the release's `via`) before changes are counted or
 //! listed.
 
-use crate::semantics::types::{
-    Nowhere, Piece, Resolve, Scope, TypeExpr, name_colon, parse, split_top,
-};
+use crate::semantics::types::{Nowhere, Piece, Resolve, Scope, TypeExpr, name_colon, parse, split_top};
 use gpui::SharedString;
 use std::collections::HashMap;
 
@@ -122,9 +120,7 @@ impl Change {
         if self.what != What::Changed {
             return false;
         }
-        let (Some(before), Some(after)) = (&self.before, &self.after) else {
-            return false;
-        };
+        let (Some(before), Some(after)) = (&self.before, &self.after) else { return false };
         match (shape_of(before), shape_of(after)) {
             (Some(a), Some(b)) => a.plain(resolve) == b.plain(resolve),
             _ => false,
@@ -262,11 +258,7 @@ impl Crate {
         self.versions
             .iter()
             .filter(|v| v.v != self.pinned)
-            .filter(|v| {
-                self.impact(&self.pinned, &v.v)
-                    .iter()
-                    .any(|u| !u.change.respelled())
-            })
+            .filter(|v| self.impact(&self.pinned, &v.v).iter().any(|u| !u.change.respelled()))
             .map(|v| v.v.clone())
             .collect()
     }
@@ -275,9 +267,7 @@ impl Crate {
     /// change each (first listed wins).
     #[must_use]
     pub fn changes(&self, from: &str, to: &str) -> Vec<Change> {
-        let Some(diff) = self.diff(from, to) else {
-            return Vec::new();
-        };
+        let Some(diff) = self.diff(from, to) else { return Vec::new() };
         dedupe(&diff.changes, |p| self.canonical(p, to, from))
     }
 }
@@ -289,14 +279,7 @@ pub fn dedupe(changes: &[Change], canonical: impl Fn(&str) -> SharedString) -> V
     let mut seen = std::collections::HashSet::new();
     changes
         .iter()
-        .filter(|c| {
-            seen.insert((
-                c.what,
-                canonical(&c.path),
-                c.before.clone(),
-                c.after.clone(),
-            ))
-        })
+        .filter(|c| seen.insert((c.what, canonical(&c.path), c.before.clone(), c.after.clone())))
         .cloned()
         .collect()
 }
@@ -308,11 +291,7 @@ pub fn dedupe(changes: &[Change], canonical: impl Fn(&str) -> SharedString) -> V
 pub fn semver(v: &str) -> (u64, u64, u64) {
     let core = v.split(['+', '-']).next().unwrap_or(v);
     let mut it = core.split('.').map(|p| p.parse::<u64>().unwrap_or(0));
-    (
-        it.next().unwrap_or(0),
-        it.next().unwrap_or(0),
-        it.next().unwrap_or(0),
-    )
+    (it.next().unwrap_or(0), it.next().unwrap_or(0), it.next().unwrap_or(0))
 }
 
 /// A version as people read it: `1.1.6+spec-1.1.0` reads `1.1.6`.
@@ -355,16 +334,8 @@ impl Shape {
         match self {
             Self::Sig(sig) => {
                 let scope = Scope::new(resolve).generics(sig.generics.iter().cloned());
-                let params: Vec<String> = sig
-                    .params
-                    .iter()
-                    .map(|(_, ty)| scope.spell(ty).plain())
-                    .collect();
-                let ret = sig
-                    .ret
-                    .as_ref()
-                    .map(|r| scope.spell(r).plain())
-                    .unwrap_or_default();
+                let params: Vec<String> = sig.params.iter().map(|(_, ty)| scope.spell(ty).plain()).collect();
+                let ret = sig.ret.as_ref().map(|r| scope.spell(r).plain()).unwrap_or_default();
                 format!("({}) → {ret}", params.join(", "))
             }
             Self::Type(t) => Scope::new(resolve).spell(t).plain(),
@@ -432,11 +403,7 @@ pub fn sig(text: &str) -> Option<Sig> {
         };
         parse(r.trim())
     });
-    Some(Sig {
-        params,
-        ret,
-        generics,
-    })
+    Some(Sig { params, ret, generics })
 }
 
 fn find_word(text: &str, word: &str) -> Option<usize> {
@@ -446,8 +413,7 @@ fn find_word(text: &str, word: &str) -> Option<usize> {
         let at = from + k;
         let before = at == 0 || !(bytes[at - 1].is_ascii_alphanumeric() || bytes[at - 1] == b'_');
         let end = at + word.len();
-        let after =
-            end >= bytes.len() || !(bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_');
+        let after = end >= bytes.len() || !(bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_');
         if before && after {
             return Some(at);
         }
@@ -460,8 +426,7 @@ fn is_receiver(param: &str) -> bool {
     let p = param.trim();
     let p = p.strip_prefix('&').map_or(p, str::trim_start);
     let p = if p.starts_with('\'') {
-        p.split_once(char::is_whitespace)
-            .map_or("", |(_, r)| r.trim_start())
+        p.split_once(char::is_whitespace).map_or("", |(_, r)| r.trim_start())
     } else {
         p
     };
@@ -478,13 +443,9 @@ pub fn shape_of(text: &str) -> Option<Shape> {
     if let Some(at) = find_word(text, "type")
         && let Some(eq) = text[at..].find('=')
     {
-        return Some(Shape::Type(parse(
-            text[at + eq + 1..].trim().trim_end_matches(';'),
-        )));
+        return Some(Shape::Type(parse(text[at + eq + 1..].trim().trim_end_matches(';'))));
     }
-    let keyword = [
-        "struct ", "enum ", "trait ", "union ", "const ", "static ", "mod ", "derive(", "impl ",
-    ];
+    let keyword = ["struct ", "enum ", "trait ", "union ", "const ", "static ", "mod ", "derive(", "impl "];
     if keyword.iter().any(|k| text.contains(k)) {
         return Some(Shape::Text(text.trim().to_owned()));
     }
@@ -538,10 +499,7 @@ impl Marked {
                 open = false;
             }
         }
-        out.into_iter()
-            .map(|s| s.trim().to_owned())
-            .filter(|s| !s.is_empty())
-            .collect()
+        out.into_iter().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).collect()
     }
 }
 
@@ -555,38 +513,16 @@ fn holes(t: &TypeExpr) -> (Vec<TypeExpr>, TypeExpr) {
     let mut hole = |child: &TypeExpr| {
         let k = kids.len();
         kids.push(child.clone());
-        TypeExpr::Named {
-            path: vec![format!("{HOLE}{k}")],
-            args: Vec::new(),
-        }
+        TypeExpr::Named { path: vec![format!("{HOLE}{k}")], args: Vec::new() }
     };
     let skeleton = match t {
-        TypeExpr::Named { path, args } => TypeExpr::Named {
-            path: path.clone(),
-            args: args.iter().map(&mut hole).collect(),
-        },
-        TypeExpr::Binding { name, ty } => TypeExpr::Binding {
-            name: name.clone(),
-            ty: Box::new(hole(ty)),
-        },
-        TypeExpr::Assoc { base, via, name } => TypeExpr::Assoc {
-            base: Box::new(hole(base)),
-            via: via.clone(),
-            name: name.clone(),
-        },
-        TypeExpr::Ref { mutable, inner } => TypeExpr::Ref {
-            mutable: *mutable,
-            inner: Box::new(hole(inner)),
-        },
-        TypeExpr::Ptr { mutable, inner } => TypeExpr::Ptr {
-            mutable: *mutable,
-            inner: Box::new(hole(inner)),
-        },
+        TypeExpr::Named { path, args } => TypeExpr::Named { path: path.clone(), args: args.iter().map(&mut hole).collect() },
+        TypeExpr::Binding { name, ty } => TypeExpr::Binding { name: name.clone(), ty: Box::new(hole(ty)) },
+        TypeExpr::Assoc { base, via, name } => TypeExpr::Assoc { base: Box::new(hole(base)), via: via.clone(), name: name.clone() },
+        TypeExpr::Ref { mutable, inner } => TypeExpr::Ref { mutable: *mutable, inner: Box::new(hole(inner)) },
+        TypeExpr::Ptr { mutable, inner } => TypeExpr::Ptr { mutable: *mutable, inner: Box::new(hole(inner)) },
         TypeExpr::Slice(inner) => TypeExpr::Slice(Box::new(hole(inner))),
-        TypeExpr::Array { inner, len } => TypeExpr::Array {
-            inner: Box::new(hole(inner)),
-            len: len.clone(),
-        },
+        TypeExpr::Array { inner, len } => TypeExpr::Array { inner: Box::new(hole(inner)), len: len.clone() },
         TypeExpr::Tuple(items) => TypeExpr::Tuple(items.iter().map(&mut hole).collect()),
         TypeExpr::Func { params, ret } => TypeExpr::Func {
             params: params.iter().map(&mut hole).collect(),
@@ -603,19 +539,14 @@ fn holes(t: &TypeExpr) -> (Vec<TypeExpr>, TypeExpr) {
 fn same_node(a: &TypeExpr, b: &TypeExpr) -> bool {
     use TypeExpr as T;
     match (a, b) {
-        (T::Named { path: p, args: x }, T::Named { path: q, args: y }) => {
-            p.last() == q.last() && x.len() == y.len()
-        }
+        (T::Named { path: p, args: x }, T::Named { path: q, args: y }) => p.last() == q.last() && x.len() == y.len(),
         (T::Binding { name: m, .. }, T::Binding { name: n, .. }) => m == n,
         (T::Assoc { name: m, .. }, T::Assoc { name: n, .. }) => m == n,
-        (T::Ref { mutable: m, .. }, T::Ref { mutable: n, .. })
-        | (T::Ptr { mutable: m, .. }, T::Ptr { mutable: n, .. }) => m == n,
+        (T::Ref { mutable: m, .. }, T::Ref { mutable: n, .. }) | (T::Ptr { mutable: m, .. }, T::Ptr { mutable: n, .. }) => m == n,
         (T::Slice(_), T::Slice(_)) => true,
         (T::Array { len: m, .. }, T::Array { len: n, .. }) => m == n,
         (T::Tuple(x), T::Tuple(y)) | (T::Any(x), T::Any(y)) => x.len() == y.len(),
-        (T::Func { params: x, ret: r }, T::Func { params: y, ret: s }) => {
-            x.len() == y.len() && r.is_some() == s.is_some()
-        }
+        (T::Func { params: x, ret: r }, T::Func { params: y, ret: s }) => x.len() == y.len() && r.is_some() == s.is_some(),
         (T::Never, T::Never) | (T::Infer, T::Infer) => true,
         _ => false,
     }
@@ -626,12 +557,7 @@ fn all(pieces: Vec<Piece>, mark: Mark) -> Vec<(Piece, Mark)> {
 }
 
 /// Both trees spelled, with the subtrees that differ marked.
-fn mark_types(
-    sa: &Scope<'_>,
-    a: &TypeExpr,
-    sb: &Scope<'_>,
-    b: &TypeExpr,
-) -> (Vec<(Piece, Mark)>, Vec<(Piece, Mark)>) {
+fn mark_types(sa: &Scope<'_>, a: &TypeExpr, sb: &Scope<'_>, b: &TypeExpr) -> (Vec<(Piece, Mark)>, Vec<(Piece, Mark)>) {
     let (pa, pb) = (sa.pieces(a), sb.pieces(b));
     let text = |p: &[Piece]| p.iter().map(Piece::text).collect::<String>();
     if text(&pa) == text(&pb) {
@@ -650,37 +576,20 @@ fn mark_types(
     }
     let (ka, skel_a) = holes(a);
     let (kb, skel_b) = holes(b);
-    let kids: Vec<_> = ka
-        .iter()
-        .zip(&kb)
-        .map(|(x, y)| mark_types(sa, x, sb, y))
-        .collect();
+    let kids: Vec<_> = ka.iter().zip(&kb).map(|(x, y)| mark_types(sa, x, sb, y)).collect();
     let (wa, wb) = (sa.pieces(&skel_a), sb.pieces(&skel_b));
     // The wrapper's own words differ (a path's meaning changed): mark them.
-    let (ma, mb) = if text(&wa) == text(&wb) {
-        (Mark::Same, Mark::Same)
-    } else {
-        (Mark::Old, Mark::New)
-    };
-    (
-        fill(wa, ma, |k| kids.get(k).map(|(x, _)| x.clone())),
-        fill(wb, mb, |k| kids.get(k).map(|(_, y)| y.clone())),
-    )
+    let (ma, mb) = if text(&wa) == text(&wb) { (Mark::Same, Mark::Same) } else { (Mark::Old, Mark::New) };
+    (fill(wa, ma, |k| kids.get(k).map(|(x, _)| x.clone())), fill(wb, mb, |k| kids.get(k).map(|(_, y)| y.clone())))
 }
 
 /// A skeleton's pieces with each hole replaced by its child's marked pieces;
 /// the wrapper's own pieces take `whole`.
-fn fill(
-    skeleton: Vec<Piece>,
-    whole: Mark,
-    kid: impl Fn(usize) -> Option<Vec<(Piece, Mark)>>,
-) -> Vec<(Piece, Mark)> {
+fn fill(skeleton: Vec<Piece>, whole: Mark, kid: impl Fn(usize) -> Option<Vec<(Piece, Mark)>>) -> Vec<(Piece, Mark)> {
     let mut out = Vec::new();
     for piece in skeleton {
         let hole = match &piece {
-            Piece::Name { text, .. } => text
-                .strip_prefix(HOLE)
-                .and_then(|k| k.parse::<usize>().ok()),
+            Piece::Name { text, .. } => text.strip_prefix(HOLE).and_then(|k| k.parse::<usize>().ok()),
             _ => None,
         };
         match hole.and_then(&kid) {
@@ -693,20 +602,12 @@ fn fill(
 
 /// If one of `outer`'s children reads `inner`, `outer` spelled with that
 /// child plain and everything else marked `mark`.
-fn wrapping(
-    scope: &Scope<'_>,
-    outer: &TypeExpr,
-    inner: &str,
-    mark: Mark,
-) -> Option<Vec<(Piece, Mark)>> {
+fn wrapping(scope: &Scope<'_>, outer: &TypeExpr, inner: &str, mark: Mark) -> Option<Vec<(Piece, Mark)>> {
     let (kids, skeleton) = holes(outer);
     let text = |p: &[Piece]| p.iter().map(Piece::text).collect::<String>();
-    let at = kids
-        .iter()
-        .position(|kid| text(&scope.pieces(kid)) == inner)?;
+    let at = kids.iter().position(|kid| text(&scope.pieces(kid)) == inner)?;
     Some(fill(scope.pieces(&skeleton), mark, |k| {
-        kids.get(k)
-            .map(|kid| all(scope.pieces(kid), if k == at { Mark::Same } else { mark }))
+        kids.get(k).map(|kid| all(scope.pieces(kid), if k == at { Mark::Same } else { mark }))
     }))
 }
 
@@ -729,15 +630,8 @@ fn sig_pieces(
         // A parameter's name is not a type: quiet mono, never a link. A
         // leading `_` (an otherwise-unused parameter) is the callee's own
         // business too, so it never shows.
-        if let Some(shown) = name
-            .as_deref()
-            .map(|n| n.strip_prefix('_').unwrap_or(n))
-            .filter(|n| !n.is_empty())
-        {
-            out.push((
-                Piece::Prim(SharedString::from(shown.to_owned())),
-                *name_mark,
-            ));
+        if let Some(shown) = name.as_deref().map(|n| n.strip_prefix('_').unwrap_or(n)).filter(|n| !n.is_empty()) {
+            out.push((Piece::Prim(SharedString::from(shown.to_owned())), *name_mark));
             out.push((Piece::Space, Mark::Same));
         }
         out.extend(ty.iter().cloned());
@@ -766,19 +660,10 @@ pub fn words(text: &str, resolve: &dyn Resolve) -> Marked {
                 .map(|(n, t)| (n.clone(), all(scope.pieces(t), Mark::Same), Mark::Same))
                 .collect();
             let ret = sig.ret.as_ref().map(|r| all(scope.pieces(r), Mark::Same));
-            Marked {
-                pieces: sig_pieces(&scope, &params, ret),
-                source,
-            }
+            Marked { pieces: sig_pieces(&scope, &params, ret), source }
         }
-        Some(Shape::Type(t)) => Marked {
-            pieces: all(Scope::new(resolve).pieces(&t), Mark::Same),
-            source,
-        },
-        _ => Marked {
-            pieces: vec![(Piece::Prim(source.clone()), Mark::Same)],
-            source,
-        },
+        Some(Shape::Type(t)) => Marked { pieces: all(Scope::new(resolve).pieces(&t), Mark::Same), source },
+        _ => Marked { pieces: vec![(Piece::Prim(source.clone()), Mark::Same)], source },
     }
 }
 
@@ -786,10 +671,7 @@ pub fn words(text: &str, resolve: &dyn Resolve) -> Marked {
 /// the `before` side, new parts underlined on the `after` side.
 #[must_use]
 pub fn marked(before: &str, after: &str, resolve: &dyn Resolve) -> (Marked, Marked) {
-    let (src_a, src_b) = (
-        SharedString::from(before.to_owned()),
-        SharedString::from(after.to_owned()),
-    );
+    let (src_a, src_b) = (SharedString::from(before.to_owned()), SharedString::from(after.to_owned()));
     match (shape_of(before), shape_of(after)) {
         (Some(Shape::Sig(a)), Some(Shape::Sig(b))) => {
             let sa = Scope::new(resolve).generics(a.generics.iter().cloned());
@@ -810,12 +692,8 @@ pub fn marked(before: &str, after: &str, resolve: &dyn Resolve) -> (Marked, Mark
                         pa.push((na.clone(), ma, if renamed { Mark::Old } else { Mark::Same }));
                         pb.push((nb.clone(), mb, if renamed { Mark::New } else { Mark::Same }));
                     }
-                    (Some((na, ta)), None) => {
-                        pa.push((na.clone(), all(sa.pieces(ta), Mark::Old), Mark::Old))
-                    }
-                    (None, Some((nb, tb))) => {
-                        pb.push((nb.clone(), all(sb.pieces(tb), Mark::New), Mark::New))
-                    }
+                    (Some((na, ta)), None) => pa.push((na.clone(), all(sa.pieces(ta), Mark::Old), Mark::Old)),
+                    (None, Some((nb, tb))) => pb.push((nb.clone(), all(sb.pieces(tb), Mark::New), Mark::New)),
                     (None, None) => {}
                 }
             }
@@ -829,29 +707,14 @@ pub fn marked(before: &str, after: &str, resolve: &dyn Resolve) -> (Marked, Mark
                 (None, None) => (None, None),
             };
             (
-                Marked {
-                    pieces: sig_pieces(&sa, &pa, ra),
-                    source: src_a,
-                },
-                Marked {
-                    pieces: sig_pieces(&sb, &pb, rb),
-                    source: src_b,
-                },
+                Marked { pieces: sig_pieces(&sa, &pa, ra), source: src_a },
+                Marked { pieces: sig_pieces(&sb, &pb, rb), source: src_b },
             )
         }
         (Some(Shape::Type(a)), Some(Shape::Type(b))) => {
             let (sa, sb) = (Scope::new(resolve), Scope::new(resolve));
             let (ma, mb) = mark_types(&sa, &a, &sb, &b);
-            (
-                Marked {
-                    pieces: ma,
-                    source: src_a,
-                },
-                Marked {
-                    pieces: mb,
-                    source: src_b,
-                },
-            )
+            (Marked { pieces: ma, source: src_a }, Marked { pieces: mb, source: src_b })
         }
         _ => {
             let mut x = words(before, resolve);
@@ -893,13 +756,7 @@ impl Summary {
     #[must_use]
     pub fn segments(&self, to: &str) -> Vec<(String, bool)> {
         if !self.local {
-            return vec![(
-                format!(
-                    "{} is not on this machine; only its date is known",
-                    short(to)
-                ),
-                false,
-            )];
+            return vec![(format!("{} is not on this machine; only its date is known", short(to)), false)];
         }
         let mut out = Vec::new();
         if self.breaking > 0 {
@@ -919,10 +776,7 @@ impl Summary {
                 out.push((self.changing.to_string(), true));
                 out.push((format!(" of your {} use{s} change", self.uses), false));
             } else {
-                out.push((
-                    format!(" · none of your {} use{s} change", self.uses),
-                    false,
-                ));
+                out.push((format!(" · none of your {} use{s} change", self.uses), false));
             }
         }
         out
@@ -937,8 +791,7 @@ impl Summary {
     /// "breaking in a patch release", when a breaking change slipped in.
     #[must_use]
     pub fn slip_words(&self) -> Option<String> {
-        self.slip
-            .map(|class| format!("breaking in a {class} release"))
+        self.slip.map(|class| format!("breaking in a {class} release"))
     }
 }
 
@@ -946,46 +799,16 @@ impl Summary {
 #[must_use]
 pub fn summary(krate: &Crate, from: &str, to: &str) -> Summary {
     let Some(diff) = krate.diff(from, to) else {
-        return Summary {
-            local: false,
-            breaking: 0,
-            added: 0,
-            respelled: 0,
-            uses: krate.uses.len(),
-            changing: 0,
-            slip: None,
-        };
+        return Summary { local: false, breaking: 0, added: 0, respelled: 0, uses: krate.uses.len(), changing: 0, slip: None };
     };
     let changes = krate.changes(from, to);
     let respelled = changes.iter().filter(|c| c.respelled()).count();
-    let breaking = changes
-        .iter()
-        .filter(|c| c.severity == Severity::Breaking && !c.respelled())
-        .count();
-    let added = changes
-        .iter()
-        .filter(|c| c.severity == Severity::Additive)
-        .count();
-    let changing = krate
-        .impact(from, to)
-        .iter()
-        .filter(|u| !u.change.respelled())
-        .count();
+    let breaking = changes.iter().filter(|c| c.severity == Severity::Breaking && !c.respelled()).count();
+    let added = changes.iter().filter(|c| c.severity == Severity::Additive).count();
+    let changing = krate.impact(from, to).iter().filter(|u| !u.change.respelled()).count();
     let (a, b) = (semver(from), semver(to));
-    let slip = diff.semver_slip.then_some(if a.0 == b.0 && a.1 == b.1 {
-        "patch"
-    } else {
-        "minor"
-    });
-    Summary {
-        local: true,
-        breaking,
-        added,
-        respelled,
-        uses: krate.uses.len(),
-        changing,
-        slip,
-    }
+    let slip = diff.semver_slip.then_some(if a.0 == b.0 && a.1 == b.1 { "patch" } else { "minor" });
+    Summary { local: true, breaking, added, respelled, uses: krate.uses.len(), changing, slip }
 }
 
 // ------------------------------------------------------------------ the page's section
@@ -1043,15 +866,7 @@ impl Lens {
     /// "Upgrading to 1.1.6" / "Going back to 0.5.11".
     #[must_use]
     pub fn heading(&self) -> String {
-        format!(
-            "{} to {}",
-            if self.forward {
-                "Upgrading"
-            } else {
-                "Going back"
-            },
-            self.to
-        )
+        format!("{} to {}", if self.forward { "Upgrading" } else { "Going back" }, self.to)
     }
 
     /// Whether the section says anything beyond "not on this machine".
@@ -1068,17 +883,9 @@ impl Lens {
             return None;
         }
         Some(if self.affected.is_empty() {
-            format!(
-                "none of the {} places your code uses {} change",
-                self.uses, self.krate
-            )
+            format!("none of the {} places your code uses {} change", self.uses, self.krate)
         } else {
-            format!(
-                "{} of the {} places your code uses {} change",
-                self.affected.len(),
-                self.uses,
-                self.krate
-            )
+            format!("{} of the {} places your code uses {} change", self.affected.len(), self.uses, self.krate)
         })
     }
 
@@ -1088,27 +895,14 @@ impl Lens {
     pub fn respelled_line(&self) -> Option<(String, Vec<String>, Option<String>)> {
         let first = self.respelled.first()?;
         let n = self.respelled.len();
-        let distinct: std::collections::HashSet<&str> = self
-            .respelled
-            .iter()
-            .map(|u| u.change.path.as_ref())
-            .collect();
+        let distinct: std::collections::HashSet<&str> = self.respelled.iter().map(|u| u.change.path.as_ref()).collect();
         let lead = format!(
             "{n} touch{} {}{}, respelled but the same in plain words: ",
             if n == 1 { "es" } else { "" },
             tail(&first.change.path),
-            if distinct.len() > 1 {
-                " and others"
-            } else {
-                ""
-            },
+            if distinct.len() > 1 { " and others" } else { "" },
         );
-        let places = self
-            .respelled
-            .iter()
-            .take(SITES)
-            .map(|u| u.site.place())
-            .collect();
+        let places = self.respelled.iter().take(SITES).map(|u| u.site.place()).collect();
         let more = (n > SITES).then(|| format!(" and {} more", n - SITES));
         Some((lead, places, more))
     }
@@ -1116,8 +910,7 @@ impl Lens {
     /// The words under the rows: "and 3 more changes to it".
     #[must_use]
     pub fn more(&self) -> Option<String> {
-        (self.rows.len() > ROWS)
-            .then(|| format!("and {} more changes to it", self.rows.len() - ROWS))
+        (self.rows.len() > ROWS).then(|| format!("and {} more changes to it", self.rows.len() - ROWS))
     }
 }
 
@@ -1138,9 +931,7 @@ fn belongs(krate: &Crate, path: &str, symbol: &str, from: &str, to: &str) -> boo
     let symbol = canonical(symbol);
     let item = canonical(path);
     let owner = |p: &str| p.rsplit_once("::").map(|(owner, _)| canonical(owner));
-    item == symbol
-        || owner(path).is_some_and(|o| o == symbol)
-        || owner(&item).is_some_and(|o| o == symbol)
+    item == symbol || owner(path).is_some_and(|o| o == symbol) || owner(&item).is_some_and(|o| o == symbol)
 }
 
 /// The lens for `symbol` (a stable path) while `krate` is viewed at `to`
@@ -1150,10 +941,7 @@ pub fn lens(krate: &Crate, symbol: &str, to: &str, resolve: &dyn Resolve) -> Len
     let from = krate.pinned.as_ref();
     let forward = semver(from) < semver(to);
     let impact = krate.impact(from, to);
-    let (respelled, affected): (Vec<Impacted>, Vec<Impacted>) = impact
-        .iter()
-        .cloned()
-        .partition(|u| u.change.respelled_in(resolve));
+    let (respelled, affected): (Vec<Impacted>, Vec<Impacted>) = impact.iter().cloned().partition(|u| u.change.respelled_in(resolve));
     let mut rows: Vec<Row> = krate
         .changes(from, to)
         .into_iter()
@@ -1166,10 +954,7 @@ pub fn lens(krate: &Crate, symbol: &str, to: &str, resolve: &dyn Resolve) -> Len
                     (Some(x), Some(y))
                 }
                 (What::Changed, _, Some(b)) => (None, Some(words(b, resolve))),
-                (_, a, b) => (
-                    a.as_deref().map(|t| words(t, resolve)),
-                    b.as_deref().map(|t| words(t, resolve)),
-                ),
+                (_, a, b) => (a.as_deref().map(|t| words(t, resolve)), b.as_deref().map(|t| words(t, resolve))),
             };
             Row {
                 what: c.what,

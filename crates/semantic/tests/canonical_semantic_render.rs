@@ -109,9 +109,7 @@ fn preparation_rejects_small_output_without_touching_it() -> Result<(), TestErro
 #[test]
 fn recursive_rendering_names_the_exact_depth_boundary() -> Result<(), TestError> {
     let mut builder = IrBuilder::new();
-    let leaf = builder.intern_concrete(ConcreteType::Builtin(
-        backend_semantic::ir::BuiltinType::Bool,
-    ))?;
+    let leaf = builder.intern_concrete(ConcreteType::Builtin(backend_semantic::ir::BuiltinType::Bool))?;
     let first = builder.intern_concrete(ConcreteType::Slice(leaf.erase()))?;
     let second = builder.intern_concrete(ConcreteType::Slice(first.erase()))?;
     let root = builder.intern_concrete(ConcreteType::Slice(second.erase()))?;

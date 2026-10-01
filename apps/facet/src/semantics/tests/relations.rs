@@ -4,9 +4,7 @@
 
 use super::world::{find, world};
 use crate::graph::model::{Kind, NodeId};
-use crate::semantics::relations::{
-    Group, Note, PAGE_SHOWS, Side, Word, except, page_shows, prism, relations_of,
-};
+use crate::semantics::relations::{Group, Note, PAGE_SHOWS, Side, Word, except, page_shows, prism, relations_of};
 
 fn line(i: NodeId, g: &Group) -> String {
     let w = world();
@@ -26,12 +24,7 @@ fn line(i: NodeId, g: &Group) -> String {
             (None, None) => node(e.node),
         })
         .collect();
-    format!(
-        "{i}|{}|{}|{side}|{}",
-        w.node(i).name,
-        g.word.text(),
-        entries.join(",")
-    )
+    format!("{i}|{}|{}|{side}|{}", w.node(i).name, g.word.text(), entries.join(","))
 }
 
 #[test]
@@ -44,11 +37,7 @@ fn relations_match_the_prototype_entry_for_entry() {
         want.push(l);
         if let Some(head) = l.strip_suffix("|end") {
             symbols += 1;
-            let i: NodeId = head
-                .split('|')
-                .next()
-                .and_then(|s| s.parse().ok())
-                .expect("an id");
+            let i: NodeId = head.split('|').next().and_then(|s| s.parse().ok()).expect("an id");
             for g in relations_of(world(), i) {
                 got.push(line(i, &g));
             }
@@ -62,13 +51,7 @@ fn relations_match_the_prototype_entry_for_entry() {
         .filter(|(a, b)| **a != b.as_str())
         .map(|(a, b)| format!("want {a}\n got  {b}"))
         .collect();
-    assert!(
-        diffs.is_empty() && want.len() == got.len(),
-        "{} of {} lines differ:\n{}",
-        diffs.len(),
-        want.len(),
-        diffs.join("\n")
-    );
+    assert!(diffs.is_empty() && want.len() == got.len(), "{} of {} lines differ:\n{}", diffs.len(), want.len(), diffs.join("\n"));
 }
 
 #[test]
@@ -81,14 +64,8 @@ fn a_type_is_its_capabilities_and_its_parts_come_first() {
     let is = &groups[0];
     assert_eq!(is.side, Side::Is);
     assert_eq!(is.entries[0].note, Some(Note::Written));
-    assert_eq!(
-        w.node(is.entries[0].node.expect("Display")).name.as_ref(),
-        "Display"
-    );
-    assert_eq!(
-        is.entries[1].text.as_deref(),
-        Some("Copy · Debug · Hash · Ord")
-    );
+    assert_eq!(w.node(is.entries[0].node.expect("Display")).name.as_ref(), "Display");
+    assert_eq!(is.entries[1].text.as_deref(), Some("Copy · Debug · Hash · Ord"));
     assert_eq!(is.entries[2].note, Some(Note::Via("Display".into())));
 }
 
@@ -96,16 +73,10 @@ fn a_type_is_its_capabilities_and_its_parts_come_first() {
 fn the_page_drops_what_its_anatomy_shows_and_the_capability_line() {
     let w = world();
     let label = find("present::glyph::RelationLabel");
-    let words: Vec<Word> = except(relations_of(w, label), &PAGE_SHOWS)
-        .iter()
-        .map(|g| g.word)
-        .collect();
+    let words: Vec<Word> = except(relations_of(w, label), &PAGE_SHOWS).iter().map(|g| g.word).collect();
     assert_eq!(words, [Word::MadeBy, Word::TakenBy, Word::HeldBy]);
     let from_str = find("serde_json::de::from_str");
-    let words: Vec<Word> = except(relations_of(w, from_str), &PAGE_SHOWS)
-        .iter()
-        .map(|g| g.word)
-        .collect();
+    let words: Vec<Word> = except(relations_of(w, from_str), &PAGE_SHOWS).iter().map(|g| g.word).collect();
     assert_eq!(words, [Word::CalledFrom, Word::Calls]);
 }
 
@@ -120,11 +91,7 @@ fn column_text(cols: &[crate::semantics::relations::Column]) -> Vec<String> {
                     None => r.text.to_string(),
                 })
                 .collect();
-            let more = if c.more > 0 {
-                format!(" +{}", c.more)
-            } else {
-                String::new()
-            };
+            let more = if c.more > 0 { format!(" +{}", c.more) } else { String::new() };
             format!("{}: {}{more}", c.word.text(), rows.join(", "))
         })
         .collect()
@@ -136,10 +103,7 @@ fn relation_groups_prism_names_its_columns_and_tells_duplicates_apart() {
     let group = find("present::page::RelationGroup");
     let groups = except(relations_of(w, group), &PAGE_SHOWS);
     let (left, right) = prism(w, group, &groups, 5);
-    assert_eq!(
-        column_text(&left),
-        ["made by: relation_groups, Page::relations"]
-    );
+    assert_eq!(column_text(&left), ["made by: relation_groups, Page::relations"]);
     assert_eq!(
         column_text(&right),
         [
@@ -158,14 +122,9 @@ fn visitors_prism_notes_other_packages_and_counts_the_rest() {
     let (left, right) = prism(w, visitor, &groups, 5);
     assert_eq!(
         column_text(&left),
-        [
-            "implemented by: OptionVisitor, ArrayVisitor, OsStringVisitor, FromStrVisitor, RangeVisitor +22"
-        ]
+        ["implemented by: OptionVisitor, ArrayVisitor, OsStringVisitor, FromStrVisitor, RangeVisitor +22"]
     );
-    assert_eq!(
-        column_text(&right)[0],
-        "calls it: U32Deserializer::deserialize_any"
-    );
+    assert_eq!(column_text(&right)[0], "calls it: U32Deserializer::deserialize_any");
     assert_eq!(
         column_text(&right)[1],
         "used by: Value::deserialize (serde_json), Map::deserialize (serde_json), RawValue::deserialize (serde_json), deserialize, deserialize_in_place +12"
@@ -180,10 +139,7 @@ fn in_use_ranks_callers_as_the_prototype_does() {
         let mut parts = l.split('|');
         let i: NodeId = parts.next().and_then(|s| s.parse().ok()).expect("an id");
         let want = parts.nth(2).unwrap_or_default();
-        let got: Vec<String> = crate::semantics::page::callers(world(), i)
-            .iter()
-            .map(ToString::to_string)
-            .collect();
+        let got: Vec<String> = crate::semantics::page::callers(world(), i).iter().map(ToString::to_string).collect();
         assert_eq!(got.join(","), want, "callers of {}", world().node(i).name);
         checked += 1;
     }
@@ -196,48 +152,14 @@ fn page_discovery_counts_the_whole_pinned_neighborhood_before_disclosure() {
     let w = world();
     let visitor = find("serde_core::de::Visitor");
     let rows = rows(w, visitor, relations_of(w, visitor));
-    let implementations = rows
-        .iter()
-        .find(|row| row.word == Word::ImplementedBy)
-        .expect("implementations");
-    assert_eq!(
-        implementations.count(),
-        "27 relations, 0 of yours, in 4 packages"
-    );
-    assert_eq!(
-        implementations.invitation(3),
-        "done by: OptionVisitor, ArrayVisitor, OsStringVisitor and 24 more"
-    );
-    assert_eq!(
-        implementations.invitation(1),
-        "done by: OptionVisitor and 26 more"
-    );
-    assert_eq!(
-        implementations
-            .scopes
-            .iter()
-            .map(|scope| scope.band)
-            .collect::<Vec<_>>(),
-        [Band::Here, Band::Elsewhere]
-    );
+    let implementations = rows.iter().find(|row| row.word == Word::ImplementedBy).expect("implementations");
+    assert_eq!(implementations.count(), "27 relations, 0 of yours, in 4 packages");
+    assert_eq!(implementations.invitation(3), "done by: OptionVisitor, ArrayVisitor, OsStringVisitor and 24 more");
+    assert_eq!(implementations.invitation(1), "done by: OptionVisitor and 26 more");
+    assert_eq!(implementations.scopes.iter().map(|scope| scope.band).collect::<Vec<_>>(), [Band::Here, Band::Elsewhere]);
     assert_eq!(implementations.scopes[0].packages[0].names.len(), 19);
-    assert_eq!(
-        implementations.scopes[1]
-            .packages
-            .iter()
-            .map(|package| package.names.len())
-            .sum::<usize>(),
-        8
-    );
-    assert_eq!(
-        implementations
-            .scopes
-            .iter()
-            .flat_map(|scope| &scope.packages)
-            .flat_map(|package| &package.names)
-            .count(),
-        27
-    );
+    assert_eq!(implementations.scopes[1].packages.iter().map(|package| package.names.len()).sum::<usize>(), 8);
+    assert_eq!(implementations.scopes.iter().flat_map(|scope| &scope.packages).flat_map(|package| &package.names).count(), 27);
 }
 
 #[test]
@@ -248,29 +170,16 @@ fn producer_relations_are_not_claimed_by_shape_anatomy() {
     let w = world();
     let label = find("present::glyph::RelationLabel");
     let remaining = except(relations_of(w, label), &PAGE_SHOWS);
-    let producers = remaining
-        .iter()
-        .find(|group| group.word == Word::MadeBy)
-        .expect("producers");
+    let producers = remaining.iter().find(|group| group.word == Word::MadeBy).expect("producers");
     let identities: Vec<_> = producers
         .entries
         .iter()
         .map(|entry| {
             let node = w.node(entry.node.expect("pinned producer identity"));
-            (
-                node.name.as_ref(),
-                node.file.as_deref().map(|file| file.as_ref()),
-                node.line,
-            )
+            (node.name.as_ref(), node.file.as_deref().map(|file| file.as_ref()), node.line)
         })
         .collect();
-    assert_eq!(
-        identities,
-        [
-            ("relation_label", Some("crates/present/glyph.rs"), 170),
-            ("label", Some("crates/present/page.rs"), 235)
-        ]
-    );
+    assert_eq!(identities, [("relation_label", Some("crates/present/glyph.rs"), 170), ("label", Some("crates/present/page.rs"), 235)]);
 }
 
 #[test]
@@ -280,23 +189,11 @@ fn a_type_page_drops_producers_only_because_getting_one_covers_them() {
     assert_eq!(kind, Kind::Enum);
 
     let raw = relations_of(w, find("present::glyph::RelationLabel"));
-    assert!(
-        raw.iter().any(|group| group.word == Word::MadeBy),
-        "the pinned enum has a producer row"
-    );
+    assert!(raw.iter().any(|group| group.word == Word::MadeBy), "the pinned enum has a producer row");
 
     let shown = page_shows(kind);
-    assert!(
-        shown.contains(&Word::MadeBy),
-        "the enum's Getting one section owns producer coverage"
-    );
-    assert!(
-        !page_shows(Kind::Function).contains(&Word::MadeBy),
-        "functions do not claim type producer coverage"
-    );
+    assert!(shown.contains(&Word::MadeBy), "the enum's Getting one section owns producer coverage");
+    assert!(!page_shows(Kind::Function).contains(&Word::MadeBy), "functions do not claim type producer coverage");
     let prism = except(raw, &shown);
-    assert!(
-        !prism.iter().any(|group| group.word == Word::MadeBy),
-        "the type page does not repeat the producer row in its prism"
-    );
+    assert!(!prism.iter().any(|group| group.word == Word::MadeBy), "the type page does not repeat the producer row in its prism");
 }

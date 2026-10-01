@@ -8,11 +8,11 @@ mod support;
 
 use core::mem::{offset_of, size_of};
 
+use backend_version::object::{OBJECT_DESCRIPTOR_RECORD_BYTES, ObjectDescriptorWireRecord};
 use backend_store::object_pack::{
     OBJECT_PACK_HEADER_BYTES, ObjectPackBytes, ObjectPackError, ObjectPackIndex,
     ObjectPackObjectCount,
 };
-use backend_version::object::{OBJECT_DESCRIPTOR_RECORD_BYTES, ObjectDescriptorWireRecord};
 use backend_version::schema::UnknownSchemaId;
 use thiserror::Error;
 use zerocopy::{IntoBytes, byteorder::U64};

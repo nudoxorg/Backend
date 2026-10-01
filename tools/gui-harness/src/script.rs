@@ -134,11 +134,7 @@ impl Mods {
                 "alt" | "option" | "opt" => mods.alt = true,
                 "shift" => mods.shift = true,
                 "ctrl" | "control" => mods.ctrl = true,
-                other => {
-                    return Err(format!(
-                        "`{other}` is not a modifier (cmd, alt, shift, ctrl)"
-                    ));
-                }
+                other => return Err(format!("`{other}` is not a modifier (cmd, alt, shift, ctrl)")),
             }
         }
         Ok(mods)
@@ -681,7 +677,8 @@ fn act(verb: &str, args: &[String]) -> Result<Vec<Act>, String> {
             }
             args.iter()
                 .map(|chord| {
-                    gpui::Keystroke::parse(chord).map_err(|error| format!("`{chord}`: {error}"))?;
+                    gpui::Keystroke::parse(chord)
+                        .map_err(|error| format!("`{chord}`: {error}"))?;
                     Ok(Act::Key {
                         chord: chord.clone(),
                     })
@@ -1004,10 +1001,7 @@ mod tests {
             "drag 100,100 -> 200,140 over 64 @10; wheel-zoom 300,200 1.25 @20; route symbol present::glyph::RelationLabel view=graph at=0.3.0 @30",
         )
         .expect("parses");
-        assert_eq!(
-            Script::parse(&script.to_string()).expect("reparses"),
-            script
-        );
+        assert_eq!(Script::parse(&script.to_string()).expect("reparses"), script);
         assert_eq!(script.end_ms(), 74);
         assert_eq!(
             script.events[2].act,
@@ -1047,6 +1041,9 @@ mod tests {
         script.push(30, Act::Leave);
         script.push(20, Act::Leave);
         let rendered = script.to_string();
-        assert_eq!(rendered, "move 1,1 @10\nleave @20\nmove 2,2 @30\nleave @30");
+        assert_eq!(
+            rendered,
+            "move 1,1 @10\nleave @20\nmove 2,2 @30\nleave @30"
+        );
     }
 }

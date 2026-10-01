@@ -387,10 +387,7 @@ impl Csr {
     /// Row `i`: `(target, rel)` in input order.
     pub fn row(&self, i: NodeId) -> impl ExactSizeIterator<Item = (NodeId, Rel)> + '_ {
         let (a, b) = self.span(i);
-        self.dst[a..b]
-            .iter()
-            .copied()
-            .zip(self.rel[a..b].iter().copied())
+        self.dst[a..b].iter().copied().zip(self.rel[a..b].iter().copied())
     }
 
     /// Row `i`'s targets.
@@ -480,10 +477,7 @@ impl World {
         }
         for (i, module) in modules.iter().enumerate() {
             if module.pkg as usize >= packages.len() {
-                return Err(ModelError(format!(
-                    "module {i} names package {}",
-                    module.pkg
-                )));
+                return Err(ModelError(format!("module {i} names package {}", module.pkg)));
             }
         }
         for (i, node) in nodes.iter().enumerate() {
@@ -520,10 +514,13 @@ impl World {
             .collect();
         let kids = Csr::build(
             n,
-            nodes.iter().enumerate().filter_map(|(i, node)| {
-                #[allow(clippy::cast_possible_truncation)]
-                node.parent.map(|p| (p, i as u32, Rel::NONE))
-            }),
+            nodes
+                .iter()
+                .enumerate()
+                .filter_map(|(i, node)| {
+                    #[allow(clippy::cast_possible_truncation)]
+                    node.parent.map(|p| (p, i as u32, Rel::NONE))
+                }),
         );
         let out = Csr::build(n, edges.iter().map(|e| (e.from, e.to, e.rel)));
         let inn = Csr::build(n, edges.iter().map(|e| (e.to, e.from, e.rel)));
@@ -801,12 +798,7 @@ pub fn pagerank(n: usize, items: &[NodeId], edges: &[Rollup]) -> Vec<f64> {
 /// Importance from PageRank: `(pr / max)^0.35` (items) and half the item's
 /// value (members), as `(exact f32, rounded to 0.001)` — layout.mjs seeds
 /// with the first and writes the second, which every view sorts by.
-fn importance(
-    n: usize,
-    items: &[NodeId],
-    top: &[NodeId],
-    edges: &[Rollup],
-) -> (Vec<f32>, Vec<f32>) {
+fn importance(n: usize, items: &[NodeId], top: &[NodeId], edges: &[Rollup]) -> (Vec<f32>, Vec<f32>) {
     let mut imp = vec![0.0_f32; n];
     if items.is_empty() {
         return (imp.clone(), imp);
@@ -1057,51 +1049,23 @@ pub(crate) mod tests {
             },
         ];
         let modules = vec![
-            Module {
-                pkg: 0,
-                path: "".into(),
-                file: "src/lib.rs".into(),
-            },
-            Module {
-                pkg: 1,
-                path: "de".into(),
-                file: "src/de.rs".into(),
-            },
+            Module { pkg: 0, path: "".into(), file: "src/lib.rs".into() },
+            Module { pkg: 1, path: "de".into(), file: "src/de.rs".into() },
         ];
         let nodes = vec![
-            Node::new(Kind::Struct, "Page", 0, 0),                  // 0
+            Node::new(Kind::Struct, "Page", 0, 0),               // 0
             Node::new(Kind::Field, "relations", 0, 0).member_of(0), // 1
-            Node::new(Kind::Method, "new", 0, 0).member_of(0),      // 2
-            Node::new(Kind::Function, "from_str", 1, 1),            // 3
-            Node::new(Kind::Trait, "Visitor", 1, 1),                // 4
-            Node::new(Kind::Enum, "Error", 1, 1),                   // 5
+            Node::new(Kind::Method, "new", 0, 0).member_of(0),    // 2
+            Node::new(Kind::Function, "from_str", 1, 1),          // 3
+            Node::new(Kind::Trait, "Visitor", 1, 1),              // 4
+            Node::new(Kind::Enum, "Error", 1, 1),                 // 5
         ];
         let edges = vec![
-            Edge {
-                from: 2,
-                to: 3,
-                rel: Rel::CALLS,
-            },
-            Edge {
-                from: 1,
-                to: 5,
-                rel: Rel::TYPE,
-            },
-            Edge {
-                from: 3,
-                to: 4,
-                rel: Rel::USES,
-            },
-            Edge {
-                from: 3,
-                to: 5,
-                rel: Rel::GIVES,
-            },
-            Edge {
-                from: 2,
-                to: 5,
-                rel: Rel::GIVES,
-            },
+            Edge { from: 2, to: 3, rel: Rel::CALLS },
+            Edge { from: 1, to: 5, rel: Rel::TYPE },
+            Edge { from: 3, to: 4, rel: Rel::USES },
+            Edge { from: 3, to: 5, rel: Rel::GIVES },
+            Edge { from: 2, to: 5, rel: Rel::GIVES },
         ];
         match World::new(packages, modules, nodes, edges) {
             Ok(world) => world,
@@ -1112,11 +1076,7 @@ pub(crate) mod tests {
     #[test]
     fn rollups_merge_member_edges_in_first_seen_order() {
         let w = tiny();
-        let got: Vec<_> = w
-            .item_edges
-            .iter()
-            .map(|e| (e.from, e.to, e.rel, e.weight))
-            .collect();
+        let got: Vec<_> = w.item_edges.iter().map(|e| (e.from, e.to, e.rel, e.weight)).collect();
         assert_eq!(
             got,
             vec![
@@ -1138,14 +1098,8 @@ pub(crate) mod tests {
     fn footprint_is_what_your_code_reaches() {
         let w = tiny();
         assert!(w.yours(0) && !w.yours(3));
-        assert!(
-            w.reached(3) && w.reached(5),
-            "your Page calls from_str and holds Error"
-        );
-        assert!(
-            !w.reached(4),
-            "Visitor is reached only through from_str, not by your code"
-        );
+        assert!(w.reached(3) && w.reached(5), "your Page calls from_str and holds Error");
+        assert!(!w.reached(4), "Visitor is reached only through from_str, not by your code");
         assert_eq!(w.yours_in[5], 2);
     }
 
@@ -1153,29 +1107,17 @@ pub(crate) mod tests {
     fn importance_is_pagerank_normalised_to_the_top_item() {
         let w = tiny();
         // Error is the sink everything flows into: the most important item.
-        let top = w
-            .items
-            .iter()
-            .copied()
-            .max_by(|a, b| w.importance(*a).total_cmp(&w.importance(*b)));
+        let top = w.items.iter().copied().max_by(|a, b| w.importance(*a).total_cmp(&w.importance(*b)));
         assert_eq!(top, Some(5));
         assert!((w.importance(5) - 1.0).abs() < 1e-6);
         // Members carry half their item.
         assert!((w.importance(1) - w.importance(0) * 0.5).abs() < 0.0011);
-        assert!(
-            w.items
-                .iter()
-                .all(|&i| (0.0..=1.0).contains(&w.importance(i)))
-        );
+        assert!(w.items.iter().all(|&i| (0.0..=1.0).contains(&w.importance(i))));
     }
 
     #[test]
     fn a_member_of_a_member_is_refused() {
-        let modules = vec![Module {
-            pkg: 0,
-            path: "".into(),
-            file: "".into(),
-        }];
+        let modules = vec![Module { pkg: 0, path: "".into(), file: "".into() }];
         let packages = vec![Package {
             name: "p".into(),
             version: "0".into(),

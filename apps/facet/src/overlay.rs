@@ -8,16 +8,16 @@
 //! here; the peek is implemented against the lead's rendered targets under
 //! `Nudox-Design-System/v4/shots/`, not prose.
 
-pub(crate) mod deadline;
-pub mod dialog;
 pub mod float;
-pub mod hint;
+pub(crate) mod deadline;
 pub mod lens;
-pub mod menu;
-pub mod peek;
 pub mod text;
-pub mod toast;
+pub mod peek;
 pub mod tooltip;
+pub mod menu;
+pub mod toast;
+pub mod dialog;
+pub mod hint;
 
 #[cfg(feature = "gallery")]
 pub(crate) mod gallery;

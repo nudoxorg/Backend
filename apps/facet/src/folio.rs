@@ -15,12 +15,12 @@ pub mod berg;
 pub mod cards;
 pub mod crest;
 pub mod features;
+pub mod flight;
 #[cfg(any(test, feature = "gallery"))]
 pub mod fixture;
-pub mod flight;
+pub mod heads;
 #[cfg(feature = "gallery")]
 pub(crate) mod gallery;
-pub mod heads;
 pub mod module;
 pub mod rail;
 pub mod shingles;

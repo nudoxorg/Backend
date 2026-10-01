@@ -27,7 +27,8 @@ const SERVICE: &str = "package demo\n\ntype Workout struct { Note int }\n";
 
 const LIB: &str = "package demo\n\nfunc Drive(item Workout) { _ = item.Note }\n";
 
-const LOCAL_LIB: &str = "package demo\n\ntype Workout struct { Note int }\n\nfunc Local(item Workout) { _ = item.Note }\n";
+const LOCAL_LIB: &str =
+    "package demo\n\ntype Workout struct { Note int }\n\nfunc Local(item Workout) { _ = item.Note }\n";
 
 struct Lane<'a> {
     view: FragmentView<'a>,
@@ -152,7 +153,9 @@ fn owner_name(lane: &Lane<'_>, owner: backend_semantic::ir::EntityId) -> Result<
         .ok_or_else(|| format!("entity {} name atom absent", owner.raw))
 }
 
-fn package_type_mentions<'a>(lane: &'a Lane<'a>) -> Vec<&'a backend_semantic::ir::Occurrence<'a>> {
+fn package_type_mentions<'a>(
+    lane: &'a Lane<'a>,
+) -> Vec<&'a backend_semantic::ir::Occurrence<'a>> {
     lane.occurrences
         .iter()
         .map(|row| &row.occurrence)

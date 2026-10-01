@@ -166,18 +166,9 @@ impl IdentityAdapter {
 
     #[cfg(test)]
     pub(crate) fn synthetic_catalog(world: &World, packages: Vec<PackageRef>) -> Self {
-        Self::admit(
-            world,
-            &packages
-                .into_iter()
-                .map(|package| {
-                    Some(PackageBinding {
-                        aliases: vec![package],
-                        fixture_root: PathBuf::new(),
-                    })
-                })
-                .collect::<Vec<_>>(),
-        )
+        Self::admit(world, &packages.into_iter().map(|package| Some(PackageBinding {
+            aliases: vec![package], fixture_root: PathBuf::new(),
+        })).collect::<Vec<_>>())
     }
 
     pub(crate) fn candidates(&self, decl: &DeclRef, package: &PackageRef) -> Vec<NodeId> {
@@ -225,21 +216,12 @@ impl IdentityAdapter {
         let mut registry = Vec::new();
         let mut local = Vec::new();
         for (locator, indices) in &self.aliases {
-            if indices.as_slice() != &[package] {
-                continue;
-            }
-            if locator.is_local() {
-                local.push(locator);
-            } else {
-                registry.push(locator);
-            }
+            if indices.as_slice() != &[package] { continue; }
+            if locator.is_local() { local.push(locator); } else { registry.push(locator); }
         }
         match registry.as_slice() {
             [only] => Some((**only).clone()),
-            [] => match local.as_slice() {
-                [only] => Some((**only).clone()),
-                _ => None,
-            },
+            [] => match local.as_slice() { [only] => Some((**only).clone()), _ => None },
             _ => None,
         }
     }
@@ -254,14 +236,8 @@ impl IdentityAdapter {
             return None;
         }
         let source = self.nodes.get(&node)?;
-        if self
-            .sources
-            .get(source)
-            .is_none_or(|nodes| nodes.as_slice() != [node])
-            || self
-                .aliases
-                .get(package)
-                .is_none_or(|packages| packages.as_slice() != [source.package])
+        if self.sources.get(source).is_none_or(|nodes| nodes.as_slice() != [node])
+            || self.aliases.get(package).is_none_or(|packages| packages.as_slice() != [source.package])
         {
             return None;
         }
@@ -271,37 +247,19 @@ impl IdentityAdapter {
         const MAX_OUTLINE_LOOKUP: usize = 16_384;
         let mut match_one = None;
         for (at, item) in tree.walk().enumerate() {
-            if at >= MAX_OUTLINE_LOOKUP {
-                return None;
-            }
+            if at >= MAX_OUTLINE_LOOKUP { return None; }
             let decl = &item.decl;
-            if decl.name.as_ref() != source.name.as_str() || decl.line != Some(source.line) {
-                continue;
-            }
-            let Some(path) = decl.path.as_deref() else {
-                continue;
-            };
+            if decl.name.as_ref() != source.name.as_str() || decl.line != Some(source.line) { continue; }
+            let Some(path) = decl.path.as_deref() else { continue };
             let candidate = Path::new(path);
             let candidate = if candidate.is_absolute() && package.is_local() {
                 let root = Path::new(package.as_str());
-                let Ok(relative) = candidate.strip_prefix(root) else {
-                    continue;
-                };
+                let Ok(relative) = candidate.strip_prefix(root) else { continue };
                 relative
-            } else {
-                candidate
-            };
-            if candidate != source.file.as_path()
-                && normalized(candidate).as_deref() != Some(source.file.as_path())
-            {
-                continue;
-            }
-            if decl.coordinate.package().as_ref() != Some(package) {
-                continue;
-            }
-            if match_one.is_some() {
-                return None;
-            }
+            } else { candidate };
+            if candidate != source.file.as_path() && normalized(candidate).as_deref() != Some(source.file.as_path()) { continue; }
+            if decl.coordinate.package().as_ref() != Some(package) { continue; }
+            if match_one.is_some() { return None; }
             match_one = Some(decl.coordinate.clone());
         }
         match_one
@@ -493,9 +451,7 @@ mod tests {
         // A node outside the currently viewed package uses the same exact
         // identity join; it must not be restricted to that package's outline.
         let foreign = row("pkg:cargo/two@2.0.0", "src/lib.rs", 7);
-        let resolved = adapter
-            .resolve(1, &[right, foreign.clone()])
-            .expect("foreign match");
+        let resolved = adapter.resolve(1, &[right, foreign.clone()]).expect("foreign match");
         assert_eq!(resolved.package.as_str(), "pkg:cargo/two@2.0.0");
         assert_eq!(resolved.symbol, foreign.decl.coordinate);
     }

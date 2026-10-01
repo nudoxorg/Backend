@@ -114,36 +114,16 @@ impl Refusal {
     pub(crate) fn says(&self) -> String {
         match self {
             Self::Empty => "Enter the path of a folder.".to_owned(),
-            Self::Relative => {
-                "Start the path at the root (/) or at your home folder (~).".to_owned()
+            Self::Relative => "Start the path at the root (/) or at your home folder (~).".to_owned(),
+            Self::Missing { path, nearest: Some(near) } => {
+                format!("There is no folder at {}. The nearest that exists is {}.", path.display(), near.display())
             }
-            Self::Missing {
-                path,
-                nearest: Some(near),
-            } => {
-                format!(
-                    "There is no folder at {}. The nearest that exists is {}.",
-                    path.display(),
-                    near.display()
-                )
-            }
-            Self::Missing {
-                path,
-                nearest: None,
-            } => format!("There is no folder at {}.", path.display()),
-            Self::File {
-                folder: Some(folder),
-            } => {
-                format!(
-                    "That is a file, not a folder. Its folder is {}.",
-                    folder.display()
-                )
+            Self::Missing { path, nearest: None } => format!("There is no folder at {}.", path.display()),
+            Self::File { folder: Some(folder) } => {
+                format!("That is a file, not a folder. Its folder is {}.", folder.display())
             }
             Self::File { folder: None } => "That is a file, not a folder.".to_owned(),
-            Self::Unreadable(path) => format!(
-                "Nudox cannot read {}. Check its permissions.",
-                path.display()
-            ),
+            Self::Unreadable(path) => format!("Nudox cannot read {}. Check its permissions.", path.display()),
             Self::Unspellable => "That path cannot be used.".to_owned(),
         }
     }
@@ -168,10 +148,7 @@ pub(crate) fn home() -> Option<PathBuf> {
 pub(crate) fn spell(text: &str, home: Option<&Path>) -> Result<PathBuf, Refusal> {
     let mut text = text.trim();
     for quote in ['"', '\''] {
-        if let Some(inner) = text
-            .strip_prefix(quote)
-            .and_then(|rest| rest.strip_suffix(quote))
-        {
+        if let Some(inner) = text.strip_prefix(quote).and_then(|rest| rest.strip_suffix(quote)) {
             text = inner.trim();
         }
     }
@@ -193,8 +170,7 @@ pub(crate) fn spell(text: &str, home: Option<&Path>) -> Result<PathBuf, Refusal>
             None => Some(PathBuf::from(text)),
         },
     };
-    path.filter(|path| path.is_absolute())
-        .ok_or(Refusal::Relative)
+    path.filter(|path| path.is_absolute()).ok_or(Refusal::Relative)
 }
 
 /// The path of a `file://` link's tail: `%20` and the like decoded.
@@ -225,33 +201,18 @@ fn unescape_link(link: &str) -> String {
 ///
 /// # Errors
 /// The refusal that says why the text names no folder.
-pub(crate) fn admit(
-    text: &str,
-    home: Option<&Path>,
-    shelf: &[LocalProjectId],
-) -> Result<Folder, Refusal> {
+pub(crate) fn admit(text: &str, home: Option<&Path>, shelf: &[LocalProjectId]) -> Result<Folder, Refusal> {
     let spelled = spell(text, home)?;
     let metadata = match std::fs::metadata(&spelled) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-            return Err(Refusal::Unreadable(spelled));
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return Err(Refusal::Unreadable(spelled)),
         Err(_) => {
-            let nearest = spelled
-                .ancestors()
-                .skip(1)
-                .find(|ancestor| ancestor.is_dir())
-                .map(Path::to_path_buf);
-            return Err(Refusal::Missing {
-                path: spelled,
-                nearest,
-            });
+            let nearest = spelled.ancestors().skip(1).find(|ancestor| ancestor.is_dir()).map(Path::to_path_buf);
+            return Err(Refusal::Missing { path: spelled, nearest });
         }
     };
     if !metadata.is_dir() {
-        return Err(Refusal::File {
-            folder: spelled.parent().map(Path::to_path_buf),
-        });
+        return Err(Refusal::File { folder: spelled.parent().map(Path::to_path_buf) });
     }
     if std::fs::read_dir(&spelled).is_err() {
         return Err(Refusal::Unreadable(spelled));
@@ -259,10 +220,7 @@ pub(crate) fn admit(
     let resolved = spelled.canonicalize().unwrap_or(spelled);
     let id = LocalProjectId::from_path(&resolved).map_err(|_| Refusal::Unspellable)?;
     Ok(Folder {
-        name: resolved.file_name().map_or_else(
-            || resolved.display().to_string(),
-            |name| name.to_string_lossy().into_owned(),
-        ),
+        name: resolved.file_name().map_or_else(|| resolved.display().to_string(), |name| name.to_string_lossy().into_owned()),
         project: Ecosystem::of(&resolved),
         on_shelf: shelf.contains(&id),
         id,
@@ -314,20 +272,10 @@ impl Completion {
         let first = self.shown.first()?;
         let mut prefix: Vec<char> = first.name.chars().collect();
         for other in &self.shown[1..] {
-            let shared = prefix
-                .iter()
-                .zip(other.name.chars())
-                .take_while(|(a, b)| a.eq_ignore_ascii_case(b))
-                .count();
+            let shared = prefix.iter().zip(other.name.chars()).take_while(|(a, b)| a.eq_ignore_ascii_case(b)).count();
             prefix.truncate(shared);
         }
-        (prefix.len() > self.typed).then(|| {
-            format!(
-                "{}{}",
-                self.head(text),
-                prefix.into_iter().collect::<String>()
-            )
-        })
+        (prefix.len() > self.typed).then(|| format!("{}{}", self.head(text), prefix.into_iter().collect::<String>()))
     }
 }
 
@@ -358,25 +306,16 @@ pub(crate) fn complete(text: &str, home: Option<&Path>) -> Completion {
         .take(MOST_ENTRIES)
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().into_owned();
-            let matches =
-                name.to_lowercase().starts_with(&wanted) && (hidden || !name.starts_with('.'));
-            (matches && entry.path().is_dir()).then(|| Suggestion {
-                ecosystem: Ecosystem::of(&entry.path()).map(|(kind, _)| kind),
-                name,
-            })
+            let matches = name.to_lowercase().starts_with(&wanted) && (hidden || !name.starts_with('.'));
+            (matches && entry.path().is_dir()).then(|| Suggestion { ecosystem: Ecosystem::of(&entry.path()).map(|(kind, _)| kind), name })
         })
         .collect();
     found.sort_by(|a, b| {
-        (a.ecosystem.is_none(), a.name.to_lowercase())
-            .cmp(&(b.ecosystem.is_none(), b.name.to_lowercase()))
+        (a.ecosystem.is_none(), a.name.to_lowercase()).cmp(&(b.ecosystem.is_none(), b.name.to_lowercase()))
     });
     let more = found.len().saturating_sub(MOST_SUGGESTIONS);
     found.truncate(MOST_SUGGESTIONS);
-    Completion {
-        typed: typed.chars().count(),
-        shown: found,
-        more,
-    }
+    Completion { typed: typed.chars().count(), shown: found, more }
 }
 
 #[cfg(test)]
@@ -390,10 +329,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|since| since.as_nanos())
             .unwrap_or_default();
-        let dir = std::env::temp_dir().join(format!(
-            "nudox-onboard-path-{tag}-{}-{nonce}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("nudox-onboard-path-{tag}-{}-{nonce}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("scratch dir");
         dir.canonicalize().expect("canonical scratch dir")
     }
@@ -411,19 +347,11 @@ mod tests {
             ("~", "/home/ana"),
         ];
         for (typed, meant) in cases {
-            assert_eq!(
-                spell(typed, Some(&home)),
-                Ok(PathBuf::from(meant)),
-                "{typed:?}"
-            );
+            assert_eq!(spell(typed, Some(&home)), Ok(PathBuf::from(meant)), "{typed:?}");
         }
         assert_eq!(spell("   ", Some(&home)), Err(Refusal::Empty));
         assert_eq!(spell("src/lib", Some(&home)), Err(Refusal::Relative));
-        assert_eq!(
-            spell("~/code", None),
-            Err(Refusal::Relative),
-            "no home, no tilde"
-        );
+        assert_eq!(spell("~/code", None), Err(Refusal::Relative), "no home, no tilde");
     }
 
     #[test]
@@ -433,24 +361,14 @@ mod tests {
         let missing = dir.join("nope").join("deeper");
         let cases = [
             (String::new(), "Enter the path of a folder.".to_owned()),
-            (
-                "code/app".to_owned(),
-                "Start the path at the root (/) or at your home folder (~).".to_owned(),
-            ),
+            ("code/app".to_owned(), "Start the path at the root (/) or at your home folder (~).".to_owned()),
             (
                 missing.display().to_string(),
-                format!(
-                    "There is no folder at {}. The nearest that exists is {}.",
-                    missing.display(),
-                    dir.display()
-                ),
+                format!("There is no folder at {}. The nearest that exists is {}.", missing.display(), dir.display()),
             ),
             (
                 dir.join("notes.txt").display().to_string(),
-                format!(
-                    "That is a file, not a folder. Its folder is {}.",
-                    dir.display()
-                ),
+                format!("That is a file, not a folder. Its folder is {}.", dir.display()),
             ),
         ];
         for (typed, says) in cases {
@@ -468,30 +386,14 @@ mod tests {
         std::fs::write(app.join("Cargo.toml"), "[package]\nname='app'\n").expect("manifest");
         let plain = admit(&app.display().to_string(), None, &[]).expect("folder");
         let roundabout = admit(&format!("{}/src/..", app.display()), None, &[]).expect("folder");
-        assert_eq!(
-            plain.id, roundabout.id,
-            "`..` and symlinks resolve to one identity"
-        );
+        assert_eq!(plain.id, roundabout.id, "`..` and symlinks resolve to one identity");
         assert_eq!(plain.name, "app");
         assert_eq!(plain.project, Some((Ecosystem::Rust, "Cargo.toml")));
         assert!(!plain.on_shelf);
-        let again = admit(
-            &app.display().to_string(),
-            None,
-            std::slice::from_ref(&plain.id),
-        )
-        .expect("folder");
+        let again = admit(&app.display().to_string(), None, std::slice::from_ref(&plain.id)).expect("folder");
         assert!(again.on_shelf, "a folder on the shelf says so");
-        let bare = admit(
-            &dir.join("app").join("src").display().to_string(),
-            None,
-            &[],
-        )
-        .expect("folder");
-        assert_eq!(
-            bare.project, None,
-            "a folder with no manifest is still a folder"
-        );
+        let bare = admit(&dir.join("app").join("src").display().to_string(), None, &[]).expect("folder");
+        assert_eq!(bare.project, None, "a folder with no manifest is still a folder");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -503,53 +405,18 @@ mod tests {
         }
         std::fs::write(dir.join("alpha.txt"), "not a folder").expect("file");
         std::fs::write(dir.join("zeta").join("go.mod"), "module zeta").expect("manifest");
-        let listed = |typed: &str| {
-            complete(typed, None)
-                .shown
-                .into_iter()
-                .map(|s| s.name)
-                .collect::<Vec<_>>()
-        };
+        let listed = |typed: &str| complete(typed, None).shown.into_iter().map(|s| s.name).collect::<Vec<_>>();
         let base = format!("{}/", dir.display());
-        assert_eq!(
-            listed(&format!("{base}al")),
-            ["alpha", "Alps"],
-            "case-blind prefix, folders only, sorted"
-        );
-        assert_eq!(
-            listed(&base),
-            ["zeta", "alpha", "Alps", "beta"],
-            "a project folder leads; dot folders stay hidden"
-        );
-        assert_eq!(
-            listed(&format!("{base}.")),
-            [".hidden"],
-            "a leading dot asks for them"
-        );
-        assert!(
-            listed("no-separator").is_empty(),
-            "with no `/` there is no parent to list"
-        );
+        assert_eq!(listed(&format!("{base}al")), ["alpha", "Alps"], "case-blind prefix, folders only, sorted");
+        assert_eq!(listed(&base), ["zeta", "alpha", "Alps", "beta"], "a project folder leads; dot folders stay hidden");
+        assert_eq!(listed(&format!("{base}.")), [".hidden"], "a leading dot asks for them");
+        assert!(listed("no-separator").is_empty(), "with no `/` there is no parent to list");
         let alps = complete(&format!("{base}al"), None);
-        assert_eq!(
-            alps.take(&format!("{base}al"), 1),
-            Some(format!("{base}Alps/"))
-        );
-        assert_eq!(
-            alps.common(&format!("{base}al")),
-            Some(format!("{base}alp")),
-            "Tab goes as far as alpha and Alps agree"
-        );
-        assert_eq!(
-            complete(&format!("{base}alp"), None).common(&format!("{base}alp")),
-            None,
-            "and no further than they agree"
-        );
+        assert_eq!(alps.take(&format!("{base}al"), 1), Some(format!("{base}Alps/")));
+        assert_eq!(alps.common(&format!("{base}al")), Some(format!("{base}alp")), "Tab goes as far as alpha and Alps agree");
+        assert_eq!(complete(&format!("{base}alp"), None).common(&format!("{base}alp")), None, "and no further than they agree");
         let zeta = complete(&format!("{base}ze"), None);
-        assert_eq!(
-            zeta.common(&format!("{base}ze")),
-            Some(format!("{base}zeta"))
-        );
+        assert_eq!(zeta.common(&format!("{base}ze")), Some(format!("{base}zeta")));
         std::fs::remove_dir_all(&dir).ok();
     }
 

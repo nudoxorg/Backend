@@ -8,7 +8,9 @@ fn relabel_owned(plan: &mut HydrationPlanView<'_, '_, ObjectDomain>) {
     plan.projection = Projection::CompleteGeneration;
 }
 
-fn relabel_borrowed(plan: &mut BorrowedHydrationPlanView<'_, '_, '_, '_, ObjectDomain>) {
+fn relabel_borrowed(
+    plan: &mut BorrowedHydrationPlanView<'_, '_, '_, '_, ObjectDomain>,
+) {
     plan.projection = Projection::CompleteGeneration;
 }
 

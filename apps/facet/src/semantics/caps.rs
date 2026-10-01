@@ -76,11 +76,7 @@ pub fn word(trait_name: &str) -> &str {
 }
 
 /// What each implied derive is implied by.
-const IMPLIED: [(&str, &[&str]); 3] = [
-    ("Clone", &["Copy"]),
-    ("PartialEq", &["Eq"]),
-    ("PartialOrd", &["Ord"]),
-];
+const IMPLIED: [(&str, &[&str]); 3] = [("Clone", &["Copy"]), ("PartialEq", &["Eq"]), ("PartialOrd", &["Ord"])];
 
 /// Derives without the ones another derive in the list implies, in order.
 /// `Copy` covers `Clone`; `Eq` covers `PartialEq`; `Ord` covers `PartialOrd`
@@ -145,12 +141,7 @@ pub fn caps<D: AsRef<str>, E: AsRef<str>>(
         push(trait_name(path.as_ref()), Arrives::Written, None, &mut out);
     }
     if out.iter().any(|c| c.trait_name.as_ref() == "Display") {
-        push(
-            "ToString",
-            Arrives::Via(SharedString::new_static("Display")),
-            None,
-            &mut out,
-        );
+        push("ToString", Arrives::Via(SharedString::new_static("Display")), None, &mut out);
     }
     out
 }

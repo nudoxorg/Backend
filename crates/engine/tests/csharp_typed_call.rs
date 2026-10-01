@@ -105,7 +105,11 @@ fn write_fixture(root: &Path) -> Result<(PathBuf, PathBuf), TestError> {
     Ok((service_path, weeks_path))
 }
 
-fn compile_fixture(source: &[u8], image: &[u8], work: &Path) -> Result<Vec<u8>, TestError> {
+fn compile_fixture(
+    source: &[u8],
+    image: &[u8],
+    work: &Path,
+) -> Result<Vec<u8>, TestError> {
     let cancelled = AtomicBool::new(false);
     let mut diagnostic = [0_u8; 4096];
     let mut output = vec![0_u8; 8 * 1024 * 1024];
@@ -177,8 +181,7 @@ fn namespace_method_calls<'fragment>(
 }
 
 #[test]
-fn weeks_cross_file_set_note_emits_namespace_foreign_key_with_method_span() -> Result<(), TestError>
-{
+fn weeks_cross_file_set_note_emits_namespace_foreign_key_with_method_span() -> Result<(), TestError> {
     let root = csharp_support::fresh_dir("typed-call")?;
     let (service_path, weeks_path) = write_fixture(&root)?;
     let roots = [root.as_path()];
@@ -210,15 +213,12 @@ fn weeks_cross_file_set_note_emits_namespace_foreign_key_with_method_span() -> R
                     ecosystem: "nuget",
                     namespace: "Demo.WorkoutService",
                 }
-            ) && *path == "SetNote"
-                && *display == "SetNote"
+            ) && *path == "SetNote" && *display == "SetNote"
         })
         .count();
     if set_note_calls != 1 {
         return Err(TestError::Fact {
-            message: format!(
-                "expected one Demo.WorkoutService SetNote MethodCall, saw {set_note_calls}"
-            ),
+            message: format!("expected one Demo.WorkoutService SetNote MethodCall, saw {set_note_calls}"),
         });
     }
     let write_line_calls = namespace_calls
@@ -230,15 +230,12 @@ fn weeks_cross_file_set_note_emits_namespace_foreign_key_with_method_span() -> R
                     ecosystem: "nuget",
                     namespace: "System.Console",
                 }
-            ) && *path == "WriteLine"
-                && *display == "WriteLine"
+            ) && *path == "WriteLine" && *display == "WriteLine"
         })
         .count();
     if write_line_calls != 1 {
         return Err(TestError::Fact {
-            message: format!(
-                "expected one System.Console WriteLine MethodCall, saw {write_line_calls}"
-            ),
+            message: format!("expected one System.Console WriteLine MethodCall, saw {write_line_calls}"),
         });
     }
     for (_, path, display) in &namespace_calls {
@@ -250,9 +247,8 @@ fn weeks_cross_file_set_note_emits_namespace_foreign_key_with_method_span() -> R
         }
         if *path == "service.SetNote" || *display == "service.SetNote" {
             return Err(TestError::Fact {
-                message:
-                    "receiver-qualified universe spelling must not survive as a MethodCall key"
-                        .to_owned(),
+                message: "receiver-qualified universe spelling must not survive as a MethodCall key"
+                    .to_owned(),
             });
         }
     }
@@ -313,7 +309,8 @@ fn weeks_cross_file_set_note_emits_namespace_foreign_key_with_method_span() -> R
     }
 
     let service_source = fs::read(&service_path).map_err(io)?;
-    let service_fragment = compile_fixture(service_source.as_slice(), &service_image, &work)?;
+    let service_fragment =
+        compile_fixture(service_source.as_slice(), &service_image, &work)?;
     let service_view = FragmentView::validate(service_fragment.as_slice())
         .map_err(|source| TestError::Fragment { source })?;
     let mut local_set_note = 0usize;
@@ -372,15 +369,14 @@ fn weeks_cross_file_set_note_emits_namespace_foreign_key_with_method_span() -> R
             continue;
         }
         if reference.spelling.bytes.contains(&b'.') {
-            let spelling =
-                std::str::from_utf8(reference.spelling.bytes).map_err(|_| TestError::Fact {
+            let spelling = std::str::from_utf8(reference.spelling.bytes).map_err(|_| {
+                TestError::Fact {
                     message: "invocation spelling is not UTF-8".to_owned(),
-                })?;
+                }
+            })?;
             if spelling == "this.service.SetNote" || spelling == "service.SetNote" {
                 return Err(TestError::Fact {
-                    message: format!(
-                        "authority image still carries whole-expression spelling {spelling}"
-                    ),
+                    message: format!("authority image still carries whole-expression spelling {spelling}"),
                 });
             }
         }

@@ -16,11 +16,11 @@ use super::super::{
     scoring::projected_score,
 };
 use super::request::{CollectionMetric, PayloadIndexDescriptor};
+use backend_semantic::ir::EntityId;
 use backend_semantic::graph_vector::{
     Metric as VectorMetric, ModelId, PartitionId, VectorAuthority, VectorSegmentDescriptor,
 };
 use backend_semantic::index_vocabulary::{IndexSnapshotId, VectorSegmentId};
-use backend_semantic::ir::EntityId;
 
 /// Decodes one JSON response into its endpoint-specific DTO.
 pub(crate) fn decode<'body, T: Deserialize<'body>>(

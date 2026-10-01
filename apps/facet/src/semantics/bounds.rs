@@ -27,10 +27,7 @@ pub struct Generic {
 #[must_use]
 pub fn generics(lists: &[&str], where_clause: &str) -> Vec<Generic> {
     let mut out: Vec<Generic> = Vec::new();
-    let put = |generic: Generic, out: &mut Vec<Generic>| match out
-        .iter_mut()
-        .find(|g| g.name == generic.name)
-    {
+    let put = |generic: Generic, out: &mut Vec<Generic>| match out.iter_mut().find(|g| g.name == generic.name) {
         Some(slot) => *slot = generic,
         None => out.push(generic),
     };
@@ -54,20 +51,14 @@ pub fn generics(lists: &[&str], where_clause: &str) -> Vec<Generic> {
         put(
             Generic {
                 name: name.to_owned(),
-                bounds: if constant {
-                    Vec::new()
-                } else {
-                    bound.clone().into_iter().collect()
-                },
+                bounds: if constant { Vec::new() } else { bound.clone().into_iter().collect() },
                 constant: if constant { bound } else { None },
             },
             &mut out,
         );
     }
     for part in split_top(where_clause, ',') {
-        let Some(colon) = super::types::name_colon(&part) else {
-            continue;
-        };
+        let Some(colon) = super::types::name_colon(&part) else { continue };
         let name = part[..colon].trim();
         if !is_ident(name) {
             continue;
@@ -75,11 +66,7 @@ pub fn generics(lists: &[&str], where_clause: &str) -> Vec<Generic> {
         let bound = part[colon + 1..].trim().to_owned();
         match out.iter_mut().find(|g| g.name == name) {
             Some(g) => g.bounds.push(bound),
-            None => out.push(Generic {
-                name: name.to_owned(),
-                bounds: vec![bound],
-                constant: None,
-            }),
+            None => out.push(Generic { name: name.to_owned(), bounds: vec![bound], constant: None }),
         }
     }
     out
@@ -102,9 +89,7 @@ fn without_default(s: &str) -> &str {
 
 fn is_ident(s: &str) -> bool {
     !s.is_empty()
-        && s.chars()
-            .next()
-            .is_some_and(|c| c.is_alphabetic() || c == '_')
+        && s.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
         && s.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 

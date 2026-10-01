@@ -24,9 +24,7 @@ enum TestError {
     ExpectedNameSpan,
 }
 
-fn field_annotation(
-    source: &[u8],
-) -> Result<backend_frontend_python::legacy::Annotation, TestError> {
+fn field_annotation(source: &[u8]) -> Result<backend_frontend_python::legacy::Annotation, TestError> {
     let facts = extract(source, PROFILE)?;
     let declaration = facts
         .declarations

@@ -256,7 +256,8 @@ fn compile_corpus_ir(body: &[u8]) -> Result<Ir, String> {
     };
     let outcome = (|| -> Result<Ir, String> {
         let tool = resolve_tool().ok_or_else(|| "missing-rustc".to_owned())?;
-        let toolchain = RustToolchain::discover(&tool).map_err(|_| "missing-rustc".to_owned())?;
+        let toolchain =
+            RustToolchain::discover(&tool).map_err(|_| "missing-rustc".to_owned())?;
         let source_path = root.join("src/lib.rs");
         let project =
             RustProject::open_with_source(&root, &source_path, &toolchain, RustEdition::Rust2024)
@@ -498,16 +499,12 @@ fn audit_selected(root: &Path, crate_name: &str) -> (PathBuf, Vec<u8>) {
     let mut files: Vec<(PathBuf, u64)> = Vec::new();
     let mut stack = vec![directory.clone()];
     while let Some(current) = stack.pop() {
-        let entries =
-            fs::read_dir(&current).unwrap_or_else(|error| panic!("{crate_name}: {error}"));
+        let entries = fs::read_dir(&current).unwrap_or_else(|error| panic!("{crate_name}: {error}"));
         for entry in entries.filter_map(Result::ok) {
             let path = entry.path();
             match entry.file_type() {
                 Ok(kind) if kind.is_dir() => stack.push(path),
-                Ok(kind)
-                    if kind.is_file()
-                        && path.extension().and_then(|ext| ext.to_str()) == Some("rs") =>
-                {
+                Ok(kind) if kind.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("rs") => {
                     let len = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
                     files.push((path, len));
                 }
@@ -706,19 +703,13 @@ fn rust_hrtb_where_predicates_lower_into_the_free_lane() {
         b"pub struct Wrap<L>(L);\ntrait Into { type Item; }\nimpl<L> Wrap<L> where for<'a> &'a L: Into<Item = u8> {\n    fn x(&self) -> u8 { 1 }\n}\n",
     );
     eprintln!("HRTB bound-binding => {outcome}");
-    assert_eq!(
-        outcome, "OK",
-        "a higher-ranked predicate with a bound binding must lower"
-    );
+    assert_eq!(outcome, "OK", "a higher-ranked predicate with a bound binding must lower");
     // A declared parameter alongside a higher-ranked predicate keeps both.
     let outcome = compile_corpus_file(
         b"pub struct Wrap<L>(L);\ntrait Into {}\nimpl<L: Into> Wrap<L> where for<'a> &'a L: Into {\n    fn x(&self) -> u8 { 1 }\n}\n",
     );
     eprintln!("HRTB with-parameter-row => {outcome}");
-    assert_eq!(
-        outcome, "OK",
-        "the parameter row must survive beside the free predicate"
-    );
+    assert_eq!(outcome, "OK", "the parameter row must survive beside the free predicate");
 
     let Some(root) = corpus_root() else {
         eprintln!("NUDOX_RUST_CORPUS_DIR unset; skipping hrtb corpus repro");
@@ -985,11 +976,7 @@ fn diag_bisect_ga() {
         if !name.ends_with(".rs") {
             continue;
         }
-        let index: usize = name
-            .trim_end_matches(".rs")
-            .trim_start_matches('p')
-            .parse()
-            .expect("idx");
+        let index: usize = name.trim_end_matches(".rs").trim_start_matches('p').parse().expect("idx");
         let bytes = fs::read(&path).expect("read");
         let outcome = compile_corpus_file(&bytes);
         if outcome != "OK" {

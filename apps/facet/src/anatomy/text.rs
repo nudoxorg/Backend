@@ -13,8 +13,8 @@ use crate::overlay::text::{Decor, Link, font, words};
 use crate::semantics::types::{Piece, Spelled, Target};
 use crate::tokens::{Palette, TypeRole};
 use gpui::{
-    AnyElement, ElementId, Hsla, InteractiveElement, IntoElement, MouseButton, MouseUpEvent,
-    ParentElement, SharedString, StyledText, TextRun,
+    AnyElement, ElementId, Hsla, InteractiveElement, IntoElement, MouseButton, MouseUpEvent, ParentElement,
+    SharedString, StyledText, TextRun,
 };
 use std::ops::Range;
 use std::rc::Rc;
@@ -54,10 +54,7 @@ impl Links {
     /// Links that are never yours and raise no peek (they still open).
     #[must_use]
     pub fn plain() -> Self {
-        Self {
-            yours: Rc::new(|_| false),
-            peek: Rc::new(|_| None),
-        }
+        Self { yours: Rc::new(|_| false), peek: Rc::new(|_| None) }
     }
 }
 
@@ -159,12 +156,7 @@ impl Line {
         }
         let f = font(role);
         match self.runs.last_mut() {
-            Some(last)
-                if last.font == f
-                    && last.color == color
-                    && last.underline.is_none()
-                    && last.strikethrough.is_none() =>
-            {
+            Some(last) if last.font == f && last.color == color && last.underline.is_none() && last.strikethrough.is_none() => {
                 last.len += text.len();
             }
             _ => self.runs.push(TextRun {
@@ -181,13 +173,7 @@ impl Line {
     }
 
     /// Appends a link to `target`.
-    pub fn link(
-        &mut self,
-        text: &str,
-        role: TypeRole,
-        color: Hsla,
-        target: Target,
-    ) -> Range<usize> {
+    pub fn link(&mut self, text: &str, role: TypeRole, color: Hsla, target: Target) -> Range<usize> {
         let range = self.push(text, role, color);
         self.links.push((range.clone(), target));
         range
@@ -210,12 +196,7 @@ impl Line {
         for run in self.runs.drain(..) {
             let (start, end) = (at, at + run.len);
             at = end;
-            let cuts = [
-                start,
-                range.start.clamp(start, end),
-                range.end.clamp(start, end),
-                end,
-            ];
+            let cuts = [start, range.start.clamp(start, end), range.end.clamp(start, end), end];
             for pair in cuts.windows(2) {
                 let (a, b) = (pair[0], pair[1]);
                 if a == b {
@@ -226,17 +207,10 @@ impl Line {
                 if a >= range.start && b <= range.end {
                     match deco {
                         Deco::Underline(color) => {
-                            piece.underline = Some(gpui::UnderlineStyle {
-                                thickness: gpui::px(1.5),
-                                color: Some(color),
-                                wavy: false,
-                            });
+                            piece.underline = Some(gpui::UnderlineStyle { thickness: gpui::px(1.5), color: Some(color), wavy: false });
                         }
                         Deco::Strike(color) => {
-                            piece.strikethrough = Some(gpui::StrikethroughStyle {
-                                thickness: gpui::px(1.0),
-                                color: Some(color),
-                            });
+                            piece.strikethrough = Some(gpui::StrikethroughStyle { thickness: gpui::px(1.0), color: Some(color) });
                         }
                     }
                 }
@@ -269,11 +243,7 @@ impl Line {
                     self.push(" ", ink.base, ink.words);
                 }
                 Piece::Name { text, target } => {
-                    let color = if (links.yours)(target) {
-                        ink.yours
-                    } else {
-                        ink.link
-                    };
+                    let color = if (links.yours)(target) { ink.yours } else { ink.link };
                     self.link(text, ink.base, color, target.clone());
                 }
             }
@@ -287,82 +257,39 @@ impl Line {
     /// The line as an element in `role` for `measure`: resting on a link
     /// raises its peek, clicking one dispatches [`Open`].
     #[must_use]
-    pub fn element(
-        self,
-        id: impl Into<ElementId>,
-        role: TypeRole,
-        measure: &Measure,
-        links: &Links,
-        palette: &Palette,
-    ) -> AnyElement {
+    pub fn element(self, id: impl Into<ElementId>, role: TypeRole, measure: &Measure, links: &Links, palette: &Palette) -> AnyElement {
         let id: ElementId = id.into();
         // The layout lints measure a line in one face; a line that mixes
         // faces (words in the UI face beside mono names) is not published,
         // since one face would misjudge its width. Break opportunities are
         // gpui's own (before punctuation that is not part of a word), so a
         // long code token is not mistaken for an unbreakable word.
-        let one_face = self
-            .roles
-            .windows(2)
-            .all(|w| w[0].face == w[1].face && w[0].italic == w[1].italic);
-        let probe_role = self
-            .roles
-            .iter()
-            .copied()
-            .max_by(|a, b| a.size.total_cmp(&b.size))
-            .unwrap_or(role);
+        let one_face = self.roles.windows(2).all(|w| w[0].face == w[1].face && w[0].italic == w[1].italic);
+        let probe_role = self.roles.iter().copied().max_by(|a, b| a.size.total_cmp(&b.size)).unwrap_or(role);
         let content = SharedString::from(wrap_units(&self.text));
         let text = StyledText::new(self.text).with_runs(self.runs);
         let layout = text.layout().clone();
         let mut rest = Vec::new();
         for (k, (range, target)) in self.links.iter().enumerate() {
-            let key = ElementId::NamedChild(
-                Arc::new(id.clone()),
-                SharedString::from(format!("link-{k}")),
-            );
+            let key = ElementId::NamedChild(Arc::new(id.clone()), SharedString::from(format!("link-{k}")));
             let request_key = key.clone();
             if let Some(card) = (links.peek)(target) {
-                rest.push((
-                    range.clone(),
-                    Link::new(key, move |rect| {
-                        peek::request(request_key.clone(), rect, card.clone())
-                    }),
-                ));
+                rest.push((range.clone(), Link::new(key, move |rect| peek::request(request_key.clone(), rect, card.clone()))));
             } else if let Target::Path(path) = target {
                 let label = SharedString::from(format!("Find {path} in the index"));
-                rest.push((
-                    range.clone(),
-                    Link::new(key, move |rect| {
-                        let label = label.clone();
-                        crate::overlay::float::FloatRequest::new(
-                            request_key.clone(),
-                            rect,
-                            crate::overlay::float::FloatKind::Tip,
-                            move |measure, _, cx| {
-                                use crate::theme::ActiveFacet;
-                                let palette = cx.facet().palette();
-                                gpui::div()
-                                    .set(roles::QUIET, measure)
-                                    .text_color(palette.ink1.hsla())
-                                    .p(super::k(measure, 8.0))
-                                    .child(label.clone())
-                                    .into_any_element()
-                            },
-                        )
-                    }),
-                ));
+                rest.push((range.clone(), Link::new(key, move |rect| {
+                    let label = label.clone();
+                    crate::overlay::float::FloatRequest::new(request_key.clone(), rect, crate::overlay::float::FloatKind::Tip, move |measure, _, cx| {
+                        use crate::theme::ActiveFacet;
+                        let palette = cx.facet().palette();
+                        gpui::div().set(roles::QUIET, measure).text_color(palette.ink1.hsla()).p(super::k(measure, 8.0)).child(label.clone()).into_any_element()
+                    })
+                })));
             }
         }
         let mut element = words(id.clone(), text, rest, palette);
         for (range, target) in &self.links {
-            element = element.decor(
-                range.clone(),
-                if matches!(target, Target::Path(_)) {
-                    Decor::Lookup
-                } else {
-                    Decor::Hairline
-                },
-            );
+            element = element.decor(range.clone(), if matches!(target, Target::Path(_)) { Decor::Lookup } else { Decor::Hairline });
         }
         let marks = self.marks;
         let targets = self.links;
@@ -370,45 +297,23 @@ impl Line {
         // than its box is a clip.
         let mut root = gpui::div().set(role, measure);
         root = if one_face {
-            root.child(crate::probe::text(
-                id.clone(),
-                content,
-                measure.role(probe_role),
-                1.0,
-                crate::probe::TextOverflow::Wrap,
-                element,
-            ))
+            root.child(crate::probe::text(id.clone(), content, measure.role(probe_role), 1.0, crate::probe::TextOverflow::Wrap, element))
         } else {
             root.child(element)
         };
         if !marks.is_empty() {
-            root = root.child(Marks {
-                layout: layout.clone(),
-                ranges: marks,
-                color: palette.peri.base.hsla(),
-            });
+            root = root.child(Marks { layout: layout.clone(), ranges: marks, color: palette.peri.base.hsla() });
         }
         if targets.is_empty() {
             return root.into_any_element();
         }
-        root.on_mouse_up(
-            MouseButton::Left,
-            move |event: &MouseUpEvent, window, cx| {
-                let Ok(index) = layout.index_for_position(event.position) else {
-                    return;
-                };
-                if let Some((_, target)) = targets.iter().find(|(range, _)| range.contains(&index))
-                {
-                    window.dispatch_action(
-                        Box::new(Open {
-                            target: target.clone(),
-                        }),
-                        cx,
-                    );
-                    cx.stop_propagation();
-                }
-            },
-        )
+        root.on_mouse_up(MouseButton::Left, move |event: &MouseUpEvent, window, cx| {
+            let Ok(index) = layout.index_for_position(event.position) else { return };
+            if let Some((_, target)) = targets.iter().find(|(range, _)| range.contains(&index)) {
+                window.dispatch_action(Box::new(Open { target: target.clone() }), cx);
+                cx.stop_propagation();
+            }
+        })
         .into_any_element()
     }
 }
@@ -419,25 +324,7 @@ impl Line {
 #[must_use]
 pub fn wrap_units(text: &str) -> String {
     let word = |c: char| {
-        c.is_alphanumeric()
-            || matches!(
-                c,
-                '-' | '_'
-                    | '.'
-                    | '\''
-                    | '’'
-                    | '‘'
-                    | '$'
-                    | '%'
-                    | '@'
-                    | '#'
-                    | '^'
-                    | '~'
-                    | ','
-                    | '='
-                    | ':'
-                    | ';'
-            )
+        c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '\'' | '’' | '‘' | '$' | '%' | '@' | '#' | '^' | '~' | ',' | '=' | ':' | ';')
     };
     let mut out = String::with_capacity(text.len() + 8);
     for c in text.chars() {
@@ -461,11 +348,7 @@ impl IntoElement for Marks {
     type Element = gpui::Canvas<()>;
 
     fn into_element(self) -> Self::Element {
-        let Self {
-            layout,
-            ranges,
-            color,
-        } = self;
+        let Self { layout, ranges, color } = self;
         gpui::canvas(
             |_, _, _| {},
             move |_, (), window, _| {

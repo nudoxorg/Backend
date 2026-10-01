@@ -166,10 +166,7 @@ impl Ty {
     /// A declared type that is just a word.
     #[must_use]
     pub fn plain(word: impl Into<String>) -> Self {
-        Self {
-            word: word.into(),
-            ..Self::default()
-        }
+        Self { word: word.into(), ..Self::default() }
     }
 
     /// The same type, read rather than declared.
@@ -337,12 +334,7 @@ impl Call {
     /// The outcome glyphs a row can wear, in order.
     #[must_use]
     pub fn outcomes(&self) -> Outcomes {
-        Outcomes {
-            fails: self.fails.is_some(),
-            none: self.none.is_some(),
-            later: self.later.is_some(),
-            many: self.gives.many,
-        }
+        Outcomes { fails: self.fails.is_some(), none: self.none.is_some(), later: self.later.is_some(), many: self.gives.many }
     }
 }
 
@@ -513,17 +505,11 @@ impl Yours {
     /// none when no place reaches it.
     #[must_use]
     pub fn says(self) -> Option<String> {
-        let parts: Vec<String> = [
-            (self.matched, "match"),
-            (self.made, "build"),
-            (self.read, "read"),
-            (self.changed, "change"),
-            (self.other, "use"),
-        ]
-        .into_iter()
-        .filter(|(n, _)| *n > 0)
-        .map(|(n, word)| format!("{word} it · {n}"))
-        .collect();
+        let parts: Vec<String> = [(self.matched, "match"), (self.made, "build"), (self.read, "read"), (self.changed, "change"), (self.other, "use")]
+            .into_iter()
+            .filter(|(n, _)| *n > 0)
+            .map(|(n, word)| format!("{word} it · {n}"))
+            .collect();
         (!parts.is_empty()).then(|| format!("you {}", parts.join(" · ")))
     }
 }
@@ -951,16 +937,12 @@ pub struct Listed {
 
 impl Listed {
     /// What the rail counts: the places that use it, in code or in tests.
-    pub const USES: Self = Self {
-        imports: ImportsListed::Hidden,
-        tests: TestsListed::Included,
-    };
+    pub const USES: Self = Self { imports: ImportsListed::Hidden, tests: TestsListed::Included };
 
     /// Whether `site` is listed.
     #[must_use]
     pub fn lists(self, site: &Use) -> bool {
-        (self.imports == ImportsListed::Shown || site.verb != Verb::Imports)
-            && (self.tests == TestsListed::Included || site.ctx != Ctx::Test)
+        (self.imports == ImportsListed::Shown || site.verb != Verb::Imports) && (self.tests == TestsListed::Included || site.ctx != Ctx::Test)
     }
 }
 
@@ -978,18 +960,10 @@ impl Uses {
                     entry.count += 1;
                     entry.verbs.insert(site.verb);
                 }
-                None => out.push(PackageUse {
-                    package: site.package.clone(),
-                    count: 1,
-                    verbs: BTreeSet::from([site.verb]),
-                }),
+                None => out.push(PackageUse { package: site.package.clone(), count: 1, verbs: BTreeSet::from([site.verb]) }),
             }
         }
-        out.sort_by(|a, b| {
-            b.count
-                .cmp(&a.count)
-                .then_with(|| a.package.cmp(&b.package))
-        });
+        out.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.package.cmp(&b.package)));
         out
     }
 
@@ -1009,11 +983,7 @@ impl Uses {
                         entry.packages.push(site.package.clone());
                     }
                 }
-                None => out.push(Fill {
-                    ty: fill.clone(),
-                    packages: vec![site.package.clone()],
-                    places: 1,
-                }),
+                None => out.push(Fill { ty: fill.clone(), packages: vec![site.package.clone()], places: 1 }),
             }
         }
         for fill in &mut out {
@@ -1032,21 +1002,13 @@ impl Uses {
             let at = match out.iter().position(|tally| tally.member == *member) {
                 Some(at) => at,
                 None => {
-                    out.push(Tally {
-                        member: member.clone(),
-                        yours: Yours::default(),
-                    });
+                    out.push(Tally { member: member.clone(), yours: Yours::default() });
                     out.len() - 1
                 }
             };
             out[at].yours.count(site.verb);
         }
-        out.sort_by(|a, b| {
-            b.yours
-                .total()
-                .cmp(&a.yours.total())
-                .then_with(|| a.member.cmp(&b.member))
-        });
+        out.sort_by(|a, b| b.yours.total().cmp(&a.yours.total()).then_with(|| a.member.cmp(&b.member)));
         out
     }
 }
@@ -1067,17 +1029,8 @@ impl Implementors {
             }
             out
         };
-        let types = if self.total == 1 {
-            "type implements"
-        } else {
-            "types implement"
-        };
-        let mut line = format!(
-            "{} {types} it across {} crate{} on this machine",
-            thousands(self.total),
-            thousands(self.crates),
-            if self.crates == 1 { "" } else { "s" }
-        );
+        let types = if self.total == 1 { "type implements" } else { "types implement" };
+        let mut line = format!("{} {types} it across {} crate{} on this machine", thousands(self.total), thousands(self.crates), if self.crates == 1 { "" } else { "s" });
         if let Some(derived) = self.derived {
             line.push_str(&format!(", {derived}% of them by derive"));
         }

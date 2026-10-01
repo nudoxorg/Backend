@@ -17,14 +17,14 @@
 use core::num::NonZeroU64;
 use std::time::Instant;
 
+use backend_version::{
+    ContentId, GenerationId, IndexExactSegmentDomain, IndexLexicalSegmentDomain,
+    derive_index_snapshot,
+};
 use backend_library::interface::{
     ClientIndex, ClientManifest, DemandSelection, LocalQueryTerminal, LocalSelection,
     ManifestEpoch, ManifestSegment, RemoteGeneration, RemoteManifest, SegmentDemand, SegmentId,
     SegmentRange, SelectionOutput, SelectionScratch, SyncCancellation,
-};
-use backend_version::{
-    ContentId, GenerationId, IndexExactSegmentDomain, IndexLexicalSegmentDomain,
-    derive_index_snapshot,
 };
 
 const LANE_LEN: usize = 8;
@@ -97,9 +97,7 @@ fn fixture() -> Fixture {
         .iter()
         .enumerate()
         .filter(|(index, _)| index % 2 == 0)
-        .map(|(_, segment)| {
-            backend_library::interface::ResidentRange::new(segment.id(), segment.full_range())
-        })
+        .map(|(_, segment)| backend_library::interface::ResidentRange::new(segment.id(), segment.full_range()))
         .collect();
     Fixture {
         exact,

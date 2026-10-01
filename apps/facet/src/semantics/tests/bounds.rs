@@ -18,38 +18,22 @@ fn sentences(lists: &[&str], wh: &str) -> Vec<String> {
 #[test]
 fn from_str_says_t_is_any_deserialize() {
     // serde_json::de::from_str: gen "'a, T", wh "T:de::Deserialize<'a>,"
-    assert_eq!(
-        sentences(&["'a, T"], "T:de::Deserialize<'a>,"),
-        ["T is any Deserialize"]
-    );
+    assert_eq!(sentences(&["'a, T"], "T:de::Deserialize<'a>,"), ["T is any Deserialize"]);
 }
 
 #[test]
 fn visitor_methods_take_their_bound_from_the_where_clause() {
     // serde_core::de::Visitor::visit_seq: gen "A", wh "A:SeqAccess<'de>,"
-    assert_eq!(
-        sentences(&["A"], "A:SeqAccess<'de>,"),
-        ["A is any SeqAccess"]
-    );
+    assert_eq!(sentences(&["A"], "A:SeqAccess<'de>,"), ["A is any SeqAccess"]);
     // visit_some: D:Deserializer<'de>
-    assert_eq!(
-        sentences(&["D"], "D:Deserializer<'de>,"),
-        ["D is any Deserializer"]
-    );
+    assert_eq!(sentences(&["D"], "D:Deserializer<'de>,"), ["D is any Deserializer"]);
 }
 
 #[test]
 fn parents_generics_join_and_several_bounds_read_with_and() {
     assert_eq!(
-        sentences(
-            &["F", "K: Ord + Clone, V"],
-            "F: Fn(&K) -> bool, V: ?Sized + Send"
-        ),
-        [
-            "F is a function of K → bool",
-            "K is any Ord and Clone",
-            "V is any Send"
-        ]
+        sentences(&["F", "K: Ord + Clone, V"], "F: Fn(&K) -> bool, V: ?Sized + Send"),
+        ["F is a function of K → bool", "K is any Ord and Clone", "V is any Send"]
     );
 }
 
@@ -62,14 +46,7 @@ fn an_unbounded_parameter_is_any_type_and_lifetimes_never_appear() {
 #[test]
 fn a_const_parameter_is_a_fixed_value() {
     let gs = generics(&["const N: usize, T = u8"], "");
-    assert_eq!(
-        gs[0],
-        Generic {
-            name: "N".into(),
-            bounds: vec![],
-            constant: Some("usize".into())
-        }
-    );
+    assert_eq!(gs[0], Generic { name: "N".into(), bounds: vec![], constant: Some("usize".into()) });
     assert_eq!(gs[1].name, "T");
     assert_eq!(sentences(&["const N: usize"], ""), ["N is a fixed usize"]);
 }

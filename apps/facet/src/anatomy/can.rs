@@ -11,8 +11,9 @@ use crate::overlay::text::{Link, words};
 use crate::semantics::caps::{Arrives, Cap};
 use crate::theme::ActiveFacet;
 use gpui::{
-    App, ElementId, InteractiveElement, IntoElement, ParentElement, PathBuilder, RenderOnce,
-    SharedString, Styled, StyledText, Window, canvas, div, point, px,
+    InteractiveElement,
+    App, ElementId, IntoElement, ParentElement, PathBuilder, RenderOnce, SharedString, Styled, StyledText, Window,
+    canvas, div, point, px,
 };
 use std::sync::Arc;
 
@@ -28,12 +29,7 @@ pub struct Can {
 /// The `can` line for `caps` at `measure` (nothing when there are none).
 #[must_use]
 pub fn can(id: impl Into<ElementId>, caps: Vec<Cap>, measure: &Measure) -> Can {
-    Can {
-        id: id.into(),
-        caps,
-        measure: *measure,
-        bare: false,
-    }
+    Can { id: id.into(), caps, measure: *measure, bare: false }
 }
 
 impl Can {
@@ -46,11 +42,7 @@ impl Can {
     }
 }
 
-fn mark(
-    arrives: &Arrives,
-    measure: &Measure,
-    palette: &crate::tokens::Palette,
-) -> impl IntoElement {
+fn mark(arrives: &Arrives, measure: &Measure, palette: &crate::tokens::Palette) -> impl IntoElement {
     let s = measure.scale();
     let (fill, stroke, dashed) = match arrives {
         Arrives::Derived => (None, Some(palette.ink3.hsla()), false),
@@ -103,30 +95,22 @@ impl RenderOnce for Can {
             return root;
         }
         let caps = self.caps.iter().enumerate().map(|(n, cap)| {
-            let key = ElementId::NamedChild(
-                Arc::new(self.id.clone()),
-                SharedString::from(format!("cap-{n}")),
-            );
+            let key = ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::from(format!("cap-{n}")));
             let word = cap.word.clone();
             let tip = SharedString::from(format!("{} — {}", cap.trait_name, cap.arrives.text()));
             let request_key = key.clone();
             let link = Link::new(key.clone(), move |rect| {
                 let tip = tip.clone();
-                FloatRequest::new(
-                    request_key.clone(),
-                    rect,
-                    FloatKind::Tip,
-                    move |measure, _, cx| {
-                        let palette = cx.facet().palette();
-                        div()
-                            .set(roles::QUIET, measure)
-                            .text_color(palette.ink1.hsla())
-                            .px(px(8.0 * measure.scale()))
-                            .py(px(4.0 * measure.scale()))
-                            .child(tip.clone())
-                            .into_any_element()
-                    },
-                )
+                FloatRequest::new(request_key.clone(), rect, FloatKind::Tip, move |measure, _, cx| {
+                    let palette = cx.facet().palette();
+                    div()
+                        .set(roles::QUIET, measure)
+                        .text_color(palette.ink1.hsla())
+                        .px(px(8.0 * measure.scale()))
+                        .py(px(4.0 * measure.scale()))
+                        .child(tip.clone())
+                        .into_any_element()
+                })
             });
             let len = word.len();
             div()
@@ -134,19 +118,11 @@ impl RenderOnce for Can {
                 .items_center()
                 .gap(k(&m, 7.0))
                 .child(mark(&cap.arrives, &m, palette))
-                .child(words(
-                    key,
-                    StyledText::new(word),
-                    vec![(0..len, link)],
-                    palette,
-                ))
+                .child(words(key, StyledText::new(word), vec![(0..len, link)], palette))
         });
         if !self.bare {
             root = root.child(heading(
-                ElementId::NamedChild(
-                    Arc::new(self.id.clone()),
-                    SharedString::new_static("heading"),
-                ),
+                ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::new_static("heading")),
                 "can",
                 &m,
                 palette,

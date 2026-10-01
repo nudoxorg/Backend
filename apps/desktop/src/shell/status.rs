@@ -3,18 +3,15 @@
 //! address left the foot (the jump bar says where you are; ⌘⇧C copies the
 //! `nudox://` address; hovering the jump bar's plate shows it).
 
-use super::jump::{self, Address};
 use super::region::{Links, Region, RegionCore};
 use super::text_fit::{text_width, wrap_identifier};
+use super::jump::{self, Address};
 use crate::model::AppSnapshot;
 use crate::runtime::store::{Branch, DataStore};
 use facet::tokens::{TypeRole, ty};
 use facet::{ActiveFacet as _, Measure, Space, Typeset as _};
-use gpui::{
-    App, Context, ElementId, IntoElement, ParentElement, Pixels, Render, SharedString, Styled,
-    Window, div, px,
-};
 use std::time::{Duration, Instant};
+use gpui::{App, Context, ElementId, IntoElement, ParentElement, Pixels, Render, SharedString, Styled, Window, div, px};
 
 /// The address for a status bar `width` wide, in the lines it is set in and
 /// the role it is set in. Whole when it fits; otherwise its path gives way
@@ -22,11 +19,7 @@ use std::time::{Duration, Instant};
 /// wider than the bar wraps at identifier boundaries. Never a cut name.
 ///
 /// The root sizes the bar from the same lines, in the same frame.
-pub(crate) fn address_lines(
-    snapshot: &AppSnapshot,
-    width: Pixels,
-    cx: &App,
-) -> (Vec<String>, TypeRole) {
+pub(crate) fn address_lines(snapshot: &AppSnapshot, width: Pixels, cx: &App) -> (Vec<String>, TypeRole) {
     let measure = Measure::new(width, &cx.facet());
     let role = measure.role(ty::MONO_SMALL);
     let room = (width - measure.space(Space::Roomy) * 2.0).max(px(1.0));
@@ -34,28 +27,15 @@ pub(crate) fn address_lines(
 }
 
 /// A graph focus has explicit fixture provenance, not an invented URL.
-pub(crate) fn display_lines(
-    snapshot: &AppSnapshot,
-    focus: Option<&crate::runtime::graph_focus::GraphFocus>,
-    width: Pixels,
-    cx: &App,
-) -> (Vec<String>, TypeRole) {
-    let Some(focus) = focus.filter(|focus| focus.active(snapshot)) else {
-        return address_lines(snapshot, width, cx);
-    };
+pub(crate) fn display_lines(snapshot: &AppSnapshot, focus: Option<&crate::runtime::graph_focus::GraphFocus>, width: Pixels, cx: &App) -> (Vec<String>, TypeRole) {
+    let Some(focus) = focus.filter(|focus| focus.active(snapshot)) else { return address_lines(snapshot, width, cx); };
     let measure = Measure::new(width, &cx.facet());
     let role = measure.role(ty::MONO_SMALL);
     let room = (width - measure.space(Space::Roomy) * 2.0).max(px(1.0));
     (wrap_identifier(&focus.status(), &role, room, cx), role)
 }
 
-pub(crate) fn feedback_lines(
-    snapshot: &AppSnapshot,
-    focus: Option<&crate::runtime::graph_focus::GraphFocus>,
-    notice: Option<&crate::runtime::graph_focus::Notice>,
-    width: Pixels,
-    cx: &App,
-) -> (Vec<String>, TypeRole) {
+pub(crate) fn feedback_lines(snapshot: &AppSnapshot, focus: Option<&crate::runtime::graph_focus::GraphFocus>, notice: Option<&crate::runtime::graph_focus::Notice>, width: Pixels, cx: &App) -> (Vec<String>, TypeRole) {
     if let Some(notice) = notice.filter(|notice| notice.active(snapshot)) {
         let measure = Measure::new(width, &cx.facet());
         let role = measure.role(ty::MONO_SMALL);
@@ -87,8 +67,7 @@ pub(crate) fn graph_speaks(
     focus: Option<&crate::runtime::graph_focus::GraphFocus>,
     notice: Option<&crate::runtime::graph_focus::Notice>,
 ) -> bool {
-    notice.is_some_and(|notice| notice.active(snapshot))
-        || focus.is_some_and(|focus| focus.active(snapshot))
+    notice.is_some_and(|notice| notice.active(snapshot)) || focus.is_some_and(|focus| focus.active(snapshot))
 }
 
 /// Where the hand's marks start: 20 px into the reader column, never past
@@ -165,15 +144,7 @@ fn whisper_left(since: Instant, now: Instant) -> Option<Duration> {
 impl Status {
     pub(crate) fn new(links: Links, store: &DataStore) -> Self {
         Self {
-            core: RegionCore::new(
-                store,
-                &[
-                    Branch::Route,
-                    Branch::Overlay,
-                    Branch::GraphFocus,
-                    Branch::Hand,
-                ],
-            ),
+            core: RegionCore::new(store, &[Branch::Route, Branch::Overlay, Branch::GraphFocus, Branch::Hand]),
             links,
             reader_left: px(0.0),
             whisper: None,
@@ -223,19 +194,10 @@ impl Render for Status {
         let palette = cx.facet().palette();
         let store = self.links.store.read(cx);
         let snapshot = store.snapshot();
-        let foot = div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .justify_center()
-            .border_t_1()
-            .border_color(palette.line1.hsla());
+        let foot = div().size_full().flex().flex_col().justify_center().border_t_1().border_color(palette.line1.hsla());
         if let Some(opening) = &self.opening {
-            return foot
-                .pl((self.reader_left + px(20.0 * measure.scale())).min(self.core.width() / 3.0))
-                .child(
-                    super::kit::text(ty::MONO_SMALL, &measure, palette.ink1).child(opening.clone()),
-                );
+            return foot.pl((self.reader_left + px(20.0 * measure.scale())).min(self.core.width() / 3.0))
+                .child(super::kit::text(ty::MONO_SMALL, &measure, palette.ink1).child(opening.clone()));
         }
         let (focus, notice) = (store.graph_focus().cloned(), store.notice().cloned());
         let speaks = graph_speaks(&snapshot, focus.as_ref(), notice.as_ref());
@@ -249,11 +211,7 @@ impl Render for Status {
             // the frame that first drew it.
             let now = facet::motion::now(cx);
             let whisper = snapshot.session().whisper.clone().and_then(|held| {
-                if !self
-                    .whisper
-                    .as_ref()
-                    .is_some_and(|seen| seen.held.same(&held))
-                {
+                if !self.whisper.as_ref().is_some_and(|seen| seen.held.same(&held)) {
                     // Heard from the frame that first drew it, for its time.
                     let timer = cx.spawn(async move |status, cx| {
                         cx.background_executor().timer(WHISPER).await;
@@ -264,11 +222,7 @@ impl Render for Status {
                             cx.notify();
                         });
                     });
-                    self.whisper = Some(Whisper {
-                        held: held.clone(),
-                        since: now,
-                        phase: WhisperPhase::Heard(timer),
-                    });
+                    self.whisper = Some(Whisper { held: held.clone(), since: now, phase: WhisperPhase::Heard(timer) });
                 }
                 let seen = self.whisper.as_mut()?;
                 match seen.phase {
@@ -294,57 +248,33 @@ impl Render for Status {
             });
             // The graph's line sits to the right of the marks, on their row.
             let said = speaks.then(|| {
-                let room = line_room(
-                    self.core.width(),
-                    self.reader_left,
-                    hand.held().len(),
-                    measure.scale(),
-                );
-                let (lines, role) =
-                    feedback_lines(&snapshot, focus.as_ref(), notice.as_ref(), room, cx);
-                div().flex().flex_col().min_w(px(0.0)).children(said_lines(
-                    lines,
-                    role,
-                    palette.ink3.hsla(),
-                ))
+                let room = line_room(self.core.width(), self.reader_left, hand.held().len(), measure.scale());
+                let (lines, role) = feedback_lines(&snapshot, focus.as_ref(), notice.as_ref(), room, cx);
+                div().flex().flex_col().min_w(px(0.0)).children(said_lines(lines, role, palette.ink3.hsla()))
             });
             return foot.pl(left).child(
                 div()
                     .flex()
                     .items_center()
                     .gap(measure.space(Space::Roomy))
-                    .children(
-                        self.marks
-                            .render(&view, &self.links, &measure, palette, window, cx),
-                    )
+                    .children(self.marks.render(&view, &self.links, &measure, palette, window, cx))
                     .children(words)
                     .children(said)
                     .children(retry),
             );
         }
-        let (lines, role) = feedback_lines(
-            &snapshot,
-            focus.as_ref(),
-            notice.as_ref(),
-            self.core.width(),
-            cx,
-        );
+        let (lines, role) = feedback_lines(&snapshot, focus.as_ref(), notice.as_ref(), self.core.width(), cx);
         if retry.is_some() {
             return foot.px(measure.space(Space::Roomy)).child(
                 div()
                     .flex()
                     .items_center()
                     .gap(measure.space(Space::Roomy))
-                    .child(div().flex().flex_col().min_w(px(0.0)).children(said_lines(
-                        lines,
-                        role,
-                        palette.ink3.hsla(),
-                    )))
+                    .child(div().flex().flex_col().min_w(px(0.0)).children(said_lines(lines, role, palette.ink3.hsla())))
                     .children(retry),
             );
         }
-        foot.px(measure.space(Space::Roomy))
-            .children(said_lines(lines, role, palette.ink3.hsla()))
+        foot.px(measure.space(Space::Roomy)).children(said_lines(lines, role, palette.ink3.hsla()))
     }
 }
 
@@ -369,26 +299,18 @@ fn retry_button(
 }
 
 /// The graph's line(s), each published to the probe as `address:{n}:…`.
-fn said_lines(
-    lines: Vec<String>,
-    role: facet::tokens::TypeRole,
-    color: gpui::Hsla,
-) -> impl Iterator<Item = gpui::AnyElement> {
+fn said_lines(lines: Vec<String>, role: facet::tokens::TypeRole, color: gpui::Hsla) -> impl Iterator<Item = gpui::AnyElement> {
     lines.into_iter().enumerate().map(move |(index, line)| {
-        let words = SharedString::from(line);
-        facet::probe::text(
-            ElementId::Name(format!("address:{index}:{words}").into()),
-            words.clone(),
-            role,
-            1.0,
-            facet::probe::TextOverflow::Clip,
-            div()
-                .whitespace_nowrap()
-                .typeset_at(role, 1.0)
-                .text_color(color)
-                .child(words),
-        )
-        .into_any_element()
+                let words = SharedString::from(line);
+                facet::probe::text(
+                    ElementId::Name(format!("address:{index}:{words}").into()),
+                    words.clone(),
+                    role,
+                    1.0,
+                    facet::probe::TextOverflow::Clip,
+                    div().whitespace_nowrap().typeset_at(role, 1.0).text_color(color).child(words),
+                )
+                .into_any_element()
     })
 }
 
@@ -402,24 +324,10 @@ mod tests {
     fn a_whisper_has_two_and_four_tenths_seconds() {
         let since = Instant::now();
         assert_eq!(whisper_left(since, since), Some(WHISPER));
-        assert_eq!(
-            whisper_left(since, since + Duration::from_millis(1_000)),
-            Some(Duration::from_millis(1_400))
-        );
-        assert_eq!(
-            whisper_left(since, since + WHISPER),
-            Some(Duration::ZERO),
-            "the last instant is still its own"
-        );
-        assert_eq!(
-            whisper_left(since, since + WHISPER + Duration::from_millis(1)),
-            None
-        );
+        assert_eq!(whisper_left(since, since + Duration::from_millis(1_000)), Some(Duration::from_millis(1_400)));
+        assert_eq!(whisper_left(since, since + WHISPER), Some(Duration::ZERO), "the last instant is still its own");
+        assert_eq!(whisper_left(since, since + WHISPER + Duration::from_millis(1)), None);
         let earlier = since.checked_sub(Duration::from_secs(1)).unwrap_or(since);
-        assert_eq!(
-            whisper_left(since, earlier),
-            Some(WHISPER),
-            "a clock that steps back does not stretch it"
-        );
+        assert_eq!(whisper_left(since, earlier), Some(WHISPER), "a clock that steps back does not stretch it");
     }
 }

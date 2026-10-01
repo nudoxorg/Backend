@@ -510,7 +510,8 @@ impl Pyrefly {
 
         let imports = resolve_imports(facts, source, &line_index, &rows)?;
         let symbols = resolve_symbols(facts, &line_index, &rows, &imports)?;
-        let inferences = self.infer_bindings(source, profile, facts, &workspace, package_root)?;
+        let inferences =
+            self.infer_bindings(source, profile, facts, &workspace, package_root)?;
 
         Ok(CheckerReport {
             inferences,

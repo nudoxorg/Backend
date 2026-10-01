@@ -1,3 +1,10 @@
+use backend_semantic::ir::{
+    BorrowedTree, CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts, EntityVersion,
+    FactAvailability, IrBuilder, ItemKind, ParentageAuthority, SemanticCoreReader,
+    SemanticImageIdentity, SemanticImageView, SemanticReader, SourceSpan, TreeItemInput,
+    VariantFingerprint, Visibility, encode_full_semantic_image, full_semantic_image_len,
+};
+use backend_version::{CompilePublicationDomain, ContentId, GenerationId};
 use backend_semantic::index_ingest::{
     Checkpoint, IngestedVersion, IngestedVersionFault, IngestionOrigin, MAX_RECONCILIATION_ROWS,
     ReconciliationFault, ReconciliationOperation, reconcile_into,
@@ -6,13 +13,6 @@ use backend_semantic::index_vocabulary::{
     CanonicalEntityLocator, IndexLocatorFacts, IndexSnapshotId, PackageCoordinate, PackageVersion,
     SemanticImageExtent, SemanticImageLocator, VerifiedSemanticPublication,
 };
-use backend_semantic::ir::{
-    BorrowedTree, CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts, EntityVersion,
-    FactAvailability, IrBuilder, ItemKind, ParentageAuthority, SemanticCoreReader,
-    SemanticImageIdentity, SemanticImageView, SemanticReader, SourceSpan, TreeItemInput,
-    VariantFingerprint, Visibility, encode_full_semantic_image, full_semantic_image_len,
-};
-use backend_version::{CompilePublicationDomain, ContentId, GenerationId};
 
 fn image() -> Result<(&'static SemanticImageView<'static>, SemanticImageLocator), String> {
     image_with_seed(1)
@@ -126,8 +126,7 @@ fn row<'a>(
     view: &'static SemanticImageView<'static>,
     image: SemanticImageLocator,
 ) -> Result<IngestedVersion<'a, 'static>, String> {
-    let lineage =
-        backend_semantic::ir::PackageLineage::new("cargo", name).map_err(|e| format!("{e:?}"))?;
+    let lineage = backend_semantic::ir::PackageLineage::new("cargo", name).map_err(|e| format!("{e:?}"))?;
     IngestedVersion::new(
         IngestionOrigin::RegistryUpdate,
         PackageCoordinate::new(

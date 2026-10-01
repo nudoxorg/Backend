@@ -16,12 +16,12 @@ use crate::server::{
     },
     scoring::projected_score,
 };
+use backend_semantic::ir::EntityId;
 use backend_semantic::graph_vector::{
     Metric, ModelId, PartitionId, ValidatedVectorSegment, VectorAuthority, VectorPoint,
     VectorSegmentError, exact_vector_query,
 };
 use backend_semantic::index_vocabulary::IndexSnapshotId;
-use backend_semantic::ir::EntityId;
 
 fn authority(byte: u8) -> VectorAuthority {
     VectorAuthority::new(

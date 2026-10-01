@@ -3,12 +3,12 @@
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 //! Canonical root-view integration coverage.
 
+use backend_version::{ContentId, ObjectDomain};
+use backend_version::object::{ObjectKind, ObjectRef};
 use backend_store::root::{
     GenerationRoot, RootBuildError, RootEntry, RootReadError, RootWriteError, ValidatedRoot,
 };
-use backend_version::object::{ObjectKind, ObjectRef};
 use backend_version::schema::SchemaId;
-use backend_version::{ContentId, ObjectDomain};
 use thiserror::Error;
 
 #[derive(Debug, Error)]

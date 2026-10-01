@@ -1,6 +1,4 @@
-use backend_semantic::vocabulary::{
-    Language, PackageType, PackageUrl, PackageUrlError, RegistryEcosystem,
-};
+use backend_semantic::vocabulary::{Language, PackageType, PackageUrl, PackageUrlError, RegistryEcosystem};
 
 #[test]
 fn one_owned_url_exposes_borrowed_typed_components() {

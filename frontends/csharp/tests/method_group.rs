@@ -74,10 +74,7 @@ fn publish_oracle(dotnet: &Path) -> Result<PathBuf, Box<dyn Error>> {
         .arg(&intermediate_arg)
         .current_dir(&helper_dir)
         .status()?;
-    assert!(
-        restored.success(),
-        "locked oracle restore failed: {restored}"
-    );
+    assert!(restored.success(), "locked oracle restore failed: {restored}");
     let published = Command::new(dotnet)
         .args([
             "publish",
@@ -220,7 +217,9 @@ fn invocations_owned_by<'a>(
 ) -> Vec<&'a ResolvedReference<'a>> {
     references
         .iter()
-        .filter(|reference| reference.kind == ReferenceTag::Invocation && reference.owner == owner)
+        .filter(|reference| {
+            reference.kind == ReferenceTag::Invocation && reference.owner == owner
+        })
         .collect()
 }
 
@@ -253,21 +252,17 @@ fn compiler_resolved_method_groups_emit_distinct_reference_rows() -> Result<(), 
         .ok_or("Widget class missing")?;
     let parse_method = find_member(&declarations, b"Parse", DeclarationKind::Method, "Widget")
         .ok_or("Widget.Parse method missing")?;
-    let length_method = find_member(&declarations, b"Length", DeclarationKind::Method, "Widget")
-        .ok_or("Widget.Length method missing")?;
-    let box_type =
-        find_type(&declarations, b"Box", DeclarationKind::Class).ok_or("Box class missing")?;
+    let length_method =
+        find_member(&declarations, b"Length", DeclarationKind::Method, "Widget")
+            .ok_or("Widget.Length method missing")?;
+    let box_type = find_type(&declarations, b"Box", DeclarationKind::Class).ok_or("Box class missing")?;
     let box_parse_method = find_member(&declarations, b"Parse", DeclarationKind::Method, "Box")
         .ok_or("Box.Parse instance method missing")?;
     let via_method = find_member(&declarations, b"Via", DeclarationKind::Method, "Box")
         .ok_or("Box.Via method missing")?;
-    let conditional_method = find_member(
-        &declarations,
-        b"Conditional",
-        DeclarationKind::Method,
-        "Box",
-    )
-    .ok_or("Box.Conditional method missing")?;
+    let conditional_method =
+        find_member(&declarations, b"Conditional", DeclarationKind::Method, "Box")
+            .ok_or("Box.Conditional method missing")?;
 
     let parse_row = declaration_index(&declarations, parse_method);
     let box_parse_row = declaration_index(&declarations, box_parse_method);
@@ -299,7 +294,10 @@ fn compiler_resolved_method_groups_emit_distinct_reference_rows() -> Result<(), 
     if bound_groups[0].start != bound_parse_start || bound_groups[0].end != bound_parse_end {
         return Err(format!(
             "bare Parse span {:?}..{:?}, expected {:?}..{:?}",
-            bound_groups[0].start, bound_groups[0].end, bound_parse_start, bound_parse_end
+            bound_groups[0].start,
+            bound_groups[0].end,
+            bound_parse_start,
+            bound_parse_end
         )
         .into());
     }
@@ -336,7 +334,10 @@ fn compiler_resolved_method_groups_emit_distinct_reference_rows() -> Result<(), 
     if length_groups[0].start != length_start || length_groups[0].end != length_end {
         return Err(format!(
             "qualified Length span {:?}..{:?}, expected {:?}..{:?}",
-            length_groups[0].start, length_groups[0].end, length_start, length_end
+            length_groups[0].start,
+            length_groups[0].end,
+            length_start,
+            length_end
         )
         .into());
     }
@@ -364,11 +365,7 @@ fn compiler_resolved_method_groups_emit_distinct_reference_rows() -> Result<(), 
         .filter(|reference| {
             reference.kind == ReferenceTag::Invocation
                 && reference.owner == via_row
-                && reference
-                    .spelling
-                    .bytes
-                    .windows(b"Parse".len())
-                    .any(|window| window == b"Parse")
+                && reference.spelling.bytes.windows(b"Parse".len()).any(|window| window == b"Parse")
                 && reference.start <= callee_start
                 && reference.end >= callee_end
         })
@@ -447,13 +444,7 @@ fn compiler_resolved_method_groups_emit_distinct_reference_rows() -> Result<(), 
     }
     let conditional_invocations = invocations_owned_by(&references, conditional_row)
         .into_iter()
-        .filter(|reference| {
-            reference
-                .spelling
-                .bytes
-                .windows(b"Parse".len())
-                .any(|w| w == b"Parse")
-        })
+        .filter(|reference| reference.spelling.bytes.windows(b"Parse".len()).any(|w| w == b"Parse"))
         .filter(|reference| {
             reference.start <= conditional_callee_start && reference.end >= conditional_callee_end
         })
@@ -466,7 +457,8 @@ fn compiler_resolved_method_groups_emit_distinct_reference_rows() -> Result<(), 
         .into());
     }
 
-    let (wrapped_parse_start, wrapped_parse_end) = span_after(source, b"(box?.Parse(", b"Parse");
+    let (wrapped_parse_start, wrapped_parse_end) =
+        span_after(source, b"(box?.Parse(", b"Parse");
     if !method_groups_at_span(
         &references,
         conditional_row,
@@ -479,13 +471,7 @@ fn compiler_resolved_method_groups_emit_distinct_reference_rows() -> Result<(), 
     }
     let wrapped_invocations = invocations_owned_by(&references, conditional_row)
         .into_iter()
-        .filter(|reference| {
-            reference
-                .spelling
-                .bytes
-                .windows(b"Parse".len())
-                .any(|w| w == b"Parse")
-        })
+        .filter(|reference| reference.spelling.bytes.windows(b"Parse".len()).any(|w| w == b"Parse"))
         .filter(|reference| {
             reference.start <= wrapped_parse_start && reference.end >= wrapped_parse_end
         })
@@ -498,8 +484,7 @@ fn compiler_resolved_method_groups_emit_distinct_reference_rows() -> Result<(), 
         .into());
     }
 
-    let (select_arg_start, select_arg_end) =
-        span_after(source, b"selected = items?.Select(", b"Parse");
+    let (select_arg_start, select_arg_end) = span_after(source, b"selected = items?.Select(", b"Parse");
     let select_arg_groups = references
         .iter()
         .filter(|reference| {

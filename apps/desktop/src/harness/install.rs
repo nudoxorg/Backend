@@ -27,14 +27,14 @@
 
 use super::{ROOT, endpoint_for, private_dir, private_umask, settings_intents};
 use crate::host::launch;
-use crate::model::PersistentState;
+use crate::runtime::{EngineClient, EngineDto, EngineFault, EngineRequest};
 use crate::model::{AppearancePreference, ContrastPreference, DensityPreference, MotionPreference};
 use crate::navigation::Intent;
 use crate::runtime::owner::{OwnerGate, OwnerState};
 use crate::runtime::reads::{ReadPool, SessionReader};
 use crate::runtime::store::DataStore;
 use crate::runtime::{DesktopRuntime, EngineActor, UiEntityGraph, UiRootEntity};
-use crate::runtime::{EngineClient, EngineDto, EngineFault, EngineRequest};
+use crate::model::PersistentState;
 use backend_gui_harness::Act;
 use backend_runtime::WorkspacePaths;
 use facet::ActiveFacet;
@@ -90,13 +90,10 @@ impl Global for Installed {}
 fn state_dir() -> Result<PathBuf, String> {
     let dir = std::env::var_os("NUDOX_HARNESS_STATE")
         .map(PathBuf::from)
-        .ok_or_else(|| {
-            "NUDOX_HARNESS_STATE must name the clean state directory this run owns".to_owned()
-        })?;
+        .ok_or_else(|| "NUDOX_HARNESS_STATE must name the clean state directory this run owns".to_owned())?;
     private_umask();
     private_dir(&dir).map_err(|error| format!("{}: {error}", dir.display()))?;
-    dir.canonicalize()
-        .map_err(|error| format!("{}: {error}", dir.display()))
+    dir.canonicalize().map_err(|error| format!("{}: {error}", dir.display()))
 }
 
 fn boot(window: &mut Window, cx: &mut App) -> Result<AnyView, String> {
@@ -109,38 +106,16 @@ fn boot(window: &mut Window, cx: &mut App) -> Result<AnyView, String> {
     let paths = WorkspacePaths::discover(Some(starter), Some(data), Some(endpoint))
         .map_err(|error| format!("workspace paths: {error}"))?;
     let launched = launch::prepare(Ok(paths), crate::host::owner::spawn);
-    let launch::Boot {
-        snapshot,
-        persistence,
-        client,
-        endpoint,
-        gate,
-        owner,
-        keep,
-        ..
-    } = launched;
-    let client = Refusing {
-        inner: client,
-        refuse: std::env::var_os("NUDOX_INSTALL_REFUSE").is_some(),
-    };
+    let launch::Boot { snapshot, persistence, client, endpoint, gate, owner, keep, .. } = launched;
+    let client = Refusing { inner: client, refuse: std::env::var_os("NUDOX_INSTALL_REFUSE").is_some() };
     let actor = EngineActor::start(client, 32).map_err(|error| format!("engine actor: {error}"))?;
     let runtime = DesktopRuntime::new(snapshot, actor);
     let reads = endpoint.and_then(|endpoint| {
         let sessions = gate.clone();
-        ReadPool::start(READ_SESSIONS, |_| {
-            SessionReader::gated(&endpoint, sessions.clone())
-        })
-        .ok()
+        ReadPool::start(READ_SESSIONS, |_| SessionReader::gated(&endpoint, sessions.clone())).ok()
     });
     let keep = keep.map(launch::SnapshotRead::joined);
-    let graph = UiEntityGraph::install_with_owner(
-        cx,
-        runtime,
-        persistence,
-        reads,
-        Some(gate.clone()),
-        keep,
-    );
+    let graph = UiEntityGraph::install_with_owner(cx, runtime, persistence, reads, Some(gate.clone()), keep);
     gallery::declare_quiet(quiet, cx);
     gallery::declare_adapter(adapt, cx);
     // The shot's facet becomes the product's settings, through its own intents.
@@ -150,12 +125,8 @@ fn boot(window: &mut Window, cx: &mut App) -> Result<AnyView, String> {
     }
     if let Some(folder) = std::env::var_os("NUDOX_INSTALL_ADD") {
         let project = crate::core::LocalProjectId::from_path(std::path::Path::new(&folder))
-            .map_err(|error| {
-                format!("NUDOX_INSTALL_ADD {}: {error:?}", folder.to_string_lossy())
-            })?;
-        graph.root.update(cx, |root, cx| {
-            root.dispatch(Intent::AddProject { project }, cx)
-        });
+            .map_err(|error| format!("NUDOX_INSTALL_ADD {}: {error:?}", folder.to_string_lossy()))?;
+        graph.root.update(cx, |root, cx| root.dispatch(Intent::AddProject { project }, cx));
     }
     let shell = ROOT(&graph, window, cx);
     // As `launch::open_the_window` does: a resize that rests is remembered.
@@ -163,16 +134,8 @@ fn boot(window: &mut Window, cx: &mut App) -> Result<AnyView, String> {
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let percent = (facet.text_scale * 100.0).round() as u16;
     let display = shell.read(cx).display_key();
-    graph.root.update(cx, |root, cx| {
-        root.dispatch(Intent::ZoomTo { display, percent }, cx)
-    });
-    cx.set_global(Installed {
-        graph,
-        shell: shell.clone(),
-        gate,
-        wait: Wait::from_env(),
-        _owner: owner,
-    });
+    graph.root.update(cx, |root, cx| root.dispatch(Intent::ZoomTo { display, percent }, cx));
+    cx.set_global(Installed { graph, shell: shell.clone(), gate, wait: Wait::from_env(), _owner: owner });
     Ok(shell.into())
 }
 
@@ -189,12 +152,10 @@ struct Refusing {
 impl EngineClient for Refusing {
     fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
         match request {
-            EngineRequest::IndexProject { project, .. } if self.refuse => {
-                Err(EngineFault::IndexFailed {
-                    project: project.clone(),
-                    error: crate::core::ErrorValue::new(crate::core::FaultCode::Protocol, REFUSAL),
-                })
-            }
+            EngineRequest::IndexProject { project, .. } if self.refuse => Err(EngineFault::IndexFailed {
+                project: project.clone(),
+                error: crate::core::ErrorValue::new(crate::core::FaultCode::Protocol, REFUSAL),
+            }),
             other => self.inner.execute(other),
         }
     }
@@ -211,23 +172,14 @@ fn await_install(enough: Option<usize>, root: &gpui::Entity<UiRootEntity>, cx: &
         crate::runtime::acquire::land_now(cx);
         let snapshot = root.read(cx).snapshot();
         let projects = &snapshot.workspace().projects;
-        let indexing = projects
-            .iter()
-            .any(|project| project.phase == crate::model::ProjectPhase::Indexing);
+        let indexing = projects.iter().any(|project| project.phase == crate::model::ProjectPhase::Indexing);
         let landed = projects
             .iter()
-            .filter_map(|project| {
-                crate::runtime::acquire::project_packages(
-                    &project.id,
-                    crate::runtime::offload::Asker::Everyone,
-                    cx,
-                )
-            })
+            .filter_map(|project| crate::runtime::acquire::project_packages(&project.id, crate::runtime::offload::Asker::Everyone, cx))
             .map(|packages| match packages {
-                crate::runtime::acquire::ProjectPackages::Read(found) => found
-                    .iter()
-                    .filter(|(_, stage)| stage.as_ref().is_some_and(|stage| !stage.working()))
-                    .count(),
+                crate::runtime::acquire::ProjectPackages::Read(found) => {
+                    found.iter().filter(|(_, stage)| stage.as_ref().is_some_and(|stage| !stage.working())).count()
+                }
                 _ => 0,
             })
             .sum::<usize>();
@@ -259,20 +211,15 @@ fn quiet(cx: &mut App) -> bool {
     let Some(installed) = cx.try_global::<Installed>() else {
         return true;
     };
-    let (store, root, shell, wait) = (
-        installed.graph.store.clone(),
-        installed.graph.root.clone(),
-        installed.shell.clone(),
-        installed.wait,
-    );
+    let (store, root, shell, wait) =
+        (installed.graph.store.clone(), installed.graph.root.clone(), installed.shell.clone(), installed.wait);
     if matches!(installed.gate.state(), OwnerState::Starting) {
         return false;
     }
     store.update(cx, |store, cx| {
         store.drain(cx);
     });
-    let ui_idle =
-        shell.read(cx).graph_ready(cx) && super::in_flight().iter().all(|(_, count)| *count == 0);
+    let ui_idle = shell.read(cx).graph_ready(cx) && super::in_flight().iter().all(|(_, count)| *count == 0);
     // The owner answers reads while it compiles (the compile runs off its
     // loop), so every read must have landed, whatever is being indexed; the
     // index requests themselves are what `settled` waits for.
@@ -285,8 +232,7 @@ fn quiet(cx: &mut App) -> bool {
         .any(|project| project.phase == crate::model::ProjectPhase::Indexing);
     // The packages a project builds with are indexed one by one after it.
     let adding = crate::runtime::acquire::working(cx);
-    let reads_landed =
-        store.read(cx).pool_load() == (0, 0) && !root.read(cx).has_pending_work_besides_indexing();
+    let reads_landed = store.read(cx).pool_load() == (0, 0) && !root.read(cx).has_pending_work_besides_indexing();
     match wait {
         Wait::Owner => ui_idle && reads_landed,
         Wait::Settled => ui_idle && !indexing && !adding && reads_landed,
@@ -312,11 +258,7 @@ fn adapt(act: &Act, _window: &mut Window, cx: &mut App) {
     let Some(installed) = cx.try_global::<Installed>() else {
         return;
     };
-    let (root, shell, store) = (
-        installed.graph.root.clone(),
-        installed.shell.clone(),
-        installed.graph.store.clone(),
-    );
+    let (root, shell, store) = (installed.graph.root.clone(), installed.shell.clone(), installed.graph.store.clone());
     let intent = match act {
         Act::Route { target } => {
             let words = target.split_whitespace().collect::<Vec<_>>();
@@ -325,8 +267,7 @@ fn adapt(act: &Act, _window: &mut Window, cx: &mut App) {
                 return;
             }
             if let ["open", path] = words.as_slice() {
-                let package = crate::core::PackageId::new(path)
-                    .unwrap_or_else(|error| panic!("route {target}: {error:?}"));
+                let package = crate::core::PackageId::new(path).unwrap_or_else(|error| panic!("route {target}: {error:?}"));
                 let route = crate::navigation::Route::Package(crate::navigation::PackageRoute {
                     project: None,
                     package,
@@ -338,31 +279,19 @@ fn adapt(act: &Act, _window: &mut Window, cx: &mut App) {
                 return;
             }
             if let ["release", version] = words.as_slice() {
-                let at = crate::navigation::ReleaseId::new(version)
-                    .unwrap_or_else(|error| panic!("route {target}: {error:?}"));
-                root.update(cx, |root, cx| {
-                    root.dispatch(Intent::SetRelease(Some(at)), cx)
-                });
+                let at = crate::navigation::ReleaseId::new(version).unwrap_or_else(|error| panic!("route {target}: {error:?}"));
+                root.update(cx, |root, cx| root.dispatch(Intent::SetRelease(Some(at)), cx));
                 return;
             }
             let enough = match words.as_slice() {
                 ["await", "install"] => None,
-                ["await", "packages", count] => Some(
-                    count
-                        .parse::<usize>()
-                        .unwrap_or_else(|_| panic!("route {target}: not a count")),
-                ),
-                _ => panic!(
-                    "route {target}: the install scene serves `await install`, `await packages N` and `await reads`"
-                ),
+                ["await", "packages", count] => Some(count.parse::<usize>().unwrap_or_else(|_| panic!("route {target}: not a count"))),
+                _ => panic!("route {target}: the install scene serves `await install`, `await packages N` and `await reads`"),
             };
             await_install(enough, &root, cx);
             return;
         }
-        Act::TextScale { percent } => Intent::ZoomTo {
-            display: shell.read(cx).display_key(),
-            percent: *percent,
-        },
+        Act::TextScale { percent } => Intent::ZoomTo { display: shell.read(cx).display_key(), percent: *percent },
         Act::Density { name } => Intent::SetDensity(match name.as_str() {
             "compact" => DensityPreference::Compact,
             "dense" => DensityPreference::Dense,
@@ -378,11 +307,7 @@ fn adapt(act: &Act, _window: &mut Window, cx: &mut App) {
         } else {
             ContrastPreference::Normal
         }),
-        Act::Motion { on } => Intent::SetMotion(if *on {
-            MotionPreference::Full
-        } else {
-            MotionPreference::Reduced
-        }),
+        Act::Motion { on } => Intent::SetMotion(if *on { MotionPreference::Full } else { MotionPreference::Reduced }),
         _ => return,
     };
     root.update(cx, |root, cx| root.dispatch(intent, cx));

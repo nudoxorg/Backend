@@ -207,9 +207,6 @@ impl Facts {
     /// The link for a type name, when the signature's tokens carry one.
     #[must_use]
     pub fn link(&self, name: &str) -> Option<&str> {
-        self.links
-            .iter()
-            .find(|(known, _)| known == name)
-            .map(|(_, address)| address.as_str())
+        self.links.iter().find(|(known, _)| known == name).map(|(_, address)| address.as_str())
     }
 }

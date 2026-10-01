@@ -9,11 +9,11 @@ pub mod reducer;
 pub mod route;
 mod workspace_reducer;
 
+pub use browse::{BrowseRoute, CompareError, CompareSet};
 pub use action::{
     AccessibilityRole, ActionId, ActionNode, ActionSpec, CommandPaletteState, KeyChord,
     SemanticFamily, SemanticState, VoiceChannel,
 };
-pub use browse::{BrowseRoute, CompareError, CompareSet};
 pub use history::{MAX_ROUTE_HISTORY, RouteHistory};
 pub use intent::{Effect, EngineCommand, FolderPickerOutcome, Intent, Reduction, RequestId};
 pub use reducer::reduce;

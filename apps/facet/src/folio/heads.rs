@@ -22,8 +22,8 @@ use crate::probe;
 use crate::theme::ActiveFacet;
 use crate::tokens::{Palette, TypeRole, ty};
 use gpui::{
-    AnyElement, App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels,
-    RenderOnce, SharedString, Styled, Window, deferred, div, px,
+    AnyElement, App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, RenderOnce, SharedString, Styled, Window,
+    deferred, div, px,
 };
 use std::rc::Rc;
 
@@ -98,22 +98,8 @@ pub struct Signals {
     pub env: Sighting,
 }
 
-fn finding(
-    glyph: Glyph,
-    tone: Tone,
-    word: &str,
-    why: &str,
-    count: Option<usize>,
-    places: &[Place],
-) -> Finding {
-    Finding {
-        glyph,
-        tone,
-        word: word.to_owned().into(),
-        why: why.to_owned().into(),
-        count,
-        places: places.to_vec(),
-    }
+fn finding(glyph: Glyph, tone: Tone, word: &str, why: &str, count: Option<usize>, places: &[Place]) -> Finding {
+    Finding { glyph, tone, word: word.to_owned().into(), why: why.to_owned().into(), count, places: places.to_vec() }
 }
 
 /// Every finding, most consequential first.
@@ -121,92 +107,32 @@ fn finding(
 pub fn findings(signals: &Signals) -> Vec<Finding> {
     let mut out = Vec::new();
     if signals.build == Build::Script {
-        out.push(finding(
-            Glyph::Build,
-            Tone::Warn,
-            "Runs code when you build",
-            "It has a build script (build.rs): code that runs on your machine at compile time.",
-            None,
-            &[],
-        ));
+        out.push(finding(Glyph::Build, Tone::Warn, "Runs code when you build", "It has a build script (build.rs): code that runs on your machine at compile time.", None, &[]));
     }
     if signals.library == Library::ProcMacro {
-        out.push(finding(
-            Glyph::MacroPkg,
-            Tone::Warn,
-            "Runs inside your compiler",
-            "It is a procedural macro: its code runs in rustc while your code compiles.",
-            None,
-            &[],
-        ));
+        out.push(finding(Glyph::MacroPkg, Tone::Warn, "Runs inside your compiler", "It is a procedural macro: its code runs in rustc while your code compiles.", None, &[]));
     }
     if signals.process.count > 0 {
-        out.push(finding(
-            Glyph::Process,
-            Tone::Warn,
-            "Starts programs",
-            "It spawns other programs.",
-            Some(signals.process.count),
-            &signals.process.places,
-        ));
+        out.push(finding(Glyph::Process, Tone::Warn, "Starts programs", "It spawns other programs.", Some(signals.process.count), &signals.process.places));
     }
     if signals.ffi.count > 0 {
-        out.push(finding(
-            Glyph::Ffi,
-            Tone::Warn,
-            "Calls C",
-            "It crosses into C code, where Rust's guarantees stop.",
-            Some(signals.ffi.count),
-            &signals.ffi.places,
-        ));
+        out.push(finding(Glyph::Ffi, Tone::Warn, "Calls C", "It crosses into C code, where Rust's guarantees stop.", Some(signals.ffi.count), &signals.ffi.places));
     }
     if signals.net.count > 0 {
-        out.push(finding(
-            Glyph::Net,
-            Tone::Note,
-            "Opens network connections",
-            "It names sockets or HTTP clients.",
-            Some(signals.net.count),
-            &signals.net.places,
-        ));
+        out.push(finding(Glyph::Net, Tone::Note, "Opens network connections", "It names sockets or HTTP clients.", Some(signals.net.count), &signals.net.places));
     }
     if signals.files.count > 0 {
-        out.push(finding(
-            Glyph::Files,
-            Tone::Note,
-            "Touches files",
-            "It reads or writes the file system.",
-            Some(signals.files.count),
-            &signals.files.places,
-        ));
+        out.push(finding(Glyph::Files, Tone::Note, "Touches files", "It reads or writes the file system.", Some(signals.files.count), &signals.files.places));
     }
     if signals.env.count > 0 {
-        out.push(finding(
-            Glyph::Env,
-            Tone::Note,
-            "Reads environment variables",
-            "Its behaviour can change with your environment.",
-            Some(signals.env.count),
-            &signals.env.places,
-        ));
+        out.push(finding(Glyph::Env, Tone::Note, "Reads environment variables", "Its behaviour can change with your environment.", Some(signals.env.count), &signals.env.places));
     }
     if signals.unsafe_code == Unsafe::Forbidden {
-        out.push(finding(
-            Glyph::Shield,
-            Tone::Good,
-            "Forbids unsafe code",
-            "#![forbid(unsafe_code)]: the compiler guarantees it has none.",
-            None,
-            &[],
-        ));
+        out.push(finding(Glyph::Shield, Tone::Good, "Forbids unsafe code", "#![forbid(unsafe_code)]: the compiler guarantees it has none.", None, &[]));
     } else if signals.unsafe_count > 0 {
         out.push(finding(
             Glyph::Unsafe,
-            if signals.unsafe_count > 50 {
-                Tone::Warn
-            } else {
-                Tone::Note
-            },
+            if signals.unsafe_count > 50 { Tone::Warn } else { Tone::Note },
             "Unsafe blocks",
             "Places where it promises what the compiler can't check.",
             Some(signals.unsafe_count),
@@ -237,22 +163,9 @@ fn edge_of(tone: Tone, palette: &Palette) -> Edge {
     }
 }
 
-const WORD: TypeRole = TypeRole {
-    weight: 600.0,
-    size: 12.0,
-    line: 16.0,
-    ..ty::SMALL
-};
-const COUNT: TypeRole = TypeRole {
-    size: 11.5,
-    line: 16.0,
-    ..ty::MONO_SMALL
-};
-const NOTHING: TypeRole = TypeRole {
-    size: 12.0,
-    line: 16.0,
-    ..ty::SMALL
-};
+const WORD: TypeRole = TypeRole { weight: 600.0, size: 12.0, line: 16.0, ..ty::SMALL };
+const COUNT: TypeRole = TypeRole { size: 11.5, line: 16.0, ..ty::MONO_SMALL };
+const NOTHING: TypeRole = TypeRole { size: 12.0, line: 16.0, ..ty::SMALL };
 
 /// The chip's height and the stack's overlap, px at 100 %.
 const CHIP: f32 = 28.0;
@@ -276,25 +189,8 @@ pub struct HeadsUp {
 /// The cell for `findings` of `package`, `width` px at rest and fanning out
 /// to at most `spread` px, `height` px tall at 100 %.
 #[must_use]
-pub fn heads(
-    id: impl Into<ElementId>,
-    package: impl Into<SharedString>,
-    findings: Rc<Vec<Finding>>,
-    width: Pixels,
-    spread: Pixels,
-    height: Nominal,
-    measure: &Measure,
-) -> HeadsUp {
-    HeadsUp {
-        id: id.into(),
-        findings,
-        package: package.into(),
-        measure: *measure,
-        width,
-        spread,
-        height,
-        held: Pose::Live,
-    }
+pub fn heads(id: impl Into<ElementId>, package: impl Into<SharedString>, findings: Rc<Vec<Finding>>, width: Pixels, spread: Pixels, height: Nominal, measure: &Measure) -> HeadsUp {
+    HeadsUp { id: id.into(), findings, package: package.into(), measure: *measure, width, spread, height, held: Pose::Live }
 }
 
 impl HeadsUp {
@@ -332,79 +228,30 @@ fn sheet_body(package: &str, findings: &[Finding], measure: &Measure, cx: &App) 
     let id: ElementId = ElementId::Name("heads-sheet".into());
     let mut column = div().flex().flex_col().gap(measure.space(Space::Base));
     if findings.is_empty() {
-        column = column.child(one(
-            key(&id, "none"),
-            "Nothing it does needs a heads-up.",
-            NOTHING,
-            palette.mint.base,
-            measure,
-        ));
+        column = column.child(one(key(&id, "none"), "Nothing it does needs a heads-up.", NOTHING, palette.mint.base, measure));
     }
     for (index, item) in findings.iter().enumerate() {
         let ink = ink_of(item.tone, palette);
-        let mut title = div()
-            .flex()
-            .items_baseline()
-            .gap(measure.space(Space::Snug))
-            .child(one(
-                key(&id, format!("w{index}")),
-                item.word.clone(),
-                TypeRole {
-                    size: 14.0,
-                    line: 20.0,
-                    ..WORD
-                },
-                palette.ink0,
-                measure,
-            ));
+        let mut title = div().flex().items_baseline().gap(measure.space(Space::Snug)).child(one(key(&id, format!("w{index}")), item.word.clone(), TypeRole { size: 14.0, line: 20.0, ..WORD }, palette.ink0, measure));
         if let Some(count) = item.count {
-            title = title.child(one(
-                key(&id, format!("n{index}")),
-                format!("{count} {}", if count == 1 { "place" } else { "places" }),
-                COUNT,
-                palette.ink3,
-                measure,
-            ));
+            title = title.child(one(key(&id, format!("n{index}")), format!("{count} {}", if count == 1 { "place" } else { "places" }), COUNT, palette.ink3, measure));
         }
-        let mut body = div()
-            .flex()
-            .flex_col()
-            .gap(measure.space(Space::Tight))
-            .min_w_0()
-            .flex_1()
-            .child(title)
-            .child(wrap(
-                key(&id, format!("why{index}")),
-                item.why.clone(),
-                TypeRole {
-                    size: 13.5,
-                    line: 19.0,
-                    ..ty::CAPTION
-                },
-                palette.ink2,
-                measure,
-                None,
-            ));
+        let mut body = div().flex().flex_col().gap(measure.space(Space::Tight)).min_w_0().flex_1().child(title).child(wrap(
+            key(&id, format!("why{index}")),
+            item.why.clone(),
+            TypeRole { size: 13.5, line: 19.0, ..ty::CAPTION },
+            palette.ink2,
+            measure,
+            None,
+        ));
         for (n, place) in item.places.iter().enumerate() {
             body = body.child(
                 div()
                     .flex()
                     .gap(measure.space(Space::Roomy))
                     .min_w_0()
-                    .child(one(
-                        key(&id, format!("p{index}-{n}")),
-                        format!("{}:{}", place.file, place.line),
-                        COUNT,
-                        palette.ink3,
-                        measure,
-                    ))
-                    .child(div().flex_1().min_w_0().flex().child(ellipsis(
-                        key(&id, format!("t{index}-{n}")),
-                        place.text.clone(),
-                        COUNT,
-                        palette.ink1,
-                        measure,
-                    ))),
+                    .child(one(key(&id, format!("p{index}-{n}")), format!("{}:{}", place.file, place.line), COUNT, palette.ink3, measure))
+                    .child(div().flex_1().min_w_0().flex().child(ellipsis(key(&id, format!("t{index}-{n}")), place.text.clone(), COUNT, palette.ink1, measure))),
             );
         }
         column = column.child(
@@ -439,15 +286,7 @@ impl RenderOnce for HeadsUp {
         let touch = Touch::read(&self.id, crate::controls::Look::LIVE, true, window, cx);
         let motion = touch.motion.clone();
         let wanted = touch.hovered || touch.focused || self.held == Pose::Held;
-        let open = motion
-            .animate(
-                track(&self.id, "open"),
-                if wanted { 1.0 } else { 0.0 },
-                super::state::plate(wanted),
-                window,
-                cx,
-            )
-            .clamp(0.0, 1.05);
+        let open = motion.animate(track(&self.id, "open"), if wanted { 1.0 } else { 0.0 }, super::state::plate(wanted), window, cx).clamp(0.0, 1.05);
         let findings = self.findings.clone();
         let warns = findings.iter().filter(|f| f.tone == Tone::Warn).count();
         let chip = CHIP * scale;
@@ -456,12 +295,7 @@ impl RenderOnce for HeadsUp {
         let pad = f32::from(measure.space(Space::Roomy));
         // The step from one chip to the next at rest: the glyphs stay whole
         // unless the cell is too narrow for that many, then they close up.
-        let step = rest_step(
-            findings.len(),
-            f32::from(self.width) - pad * 2.0,
-            chip,
-            overlap,
-        );
+        let step = rest_step(findings.len(), f32::from(self.width) - pad * 2.0, chip, overlap);
 
         // Each chip's full width when fanned out: glyph, word, count.
         let word_role = measure.role(WORD);
@@ -470,14 +304,7 @@ impl RenderOnce for HeadsUp {
             .iter()
             .map(|f| {
                 let word = f32::from(probe::natural_width(&f.word, word_role, 1.0, window));
-                let count = f.count.map_or(0.0, |n| {
-                    f32::from(probe::natural_width(
-                        &SharedString::from(n.to_string()),
-                        count_role,
-                        1.0,
-                        window,
-                    )) + gap
-                });
+                let count = f.count.map_or(0.0, |n| f32::from(probe::natural_width(&SharedString::from(n.to_string()), count_role, 1.0, window)) + gap);
                 (10.0 * scale + 14.0 * scale + gap + word + count + 10.0 * scale).max(chip)
             })
             .collect();
@@ -495,28 +322,14 @@ impl RenderOnce for HeadsUp {
         }
         // One finding alone says its words at rest, when its cell holds them: a
         // lone icon in an otherwise empty tile says nothing.
-        let lone = findings.len() == 1
-            && widths
-                .first()
-                .is_some_and(|w| *w <= f32::from(self.width) - pad * 2.0);
+        let lone = findings.len() == 1 && widths.first().is_some_and(|w| *w <= f32::from(self.width) - pad * 2.0);
         let rows = spots.last().map_or(1, |(_, r)| r + 1);
-        let spread_used = spots
-            .iter()
-            .zip(&widths)
-            .map(|((x, _), w)| x + w)
-            .fold(0.0, f32::max);
-        let plate_w = f32::from(self.width)
-            + (pad * 2.0 + spread_used - f32::from(self.width)).max(0.0) * open.min(1.0);
+        let spread_used = spots.iter().zip(&widths).map(|((x, _), w)| x + w).fold(0.0, f32::max);
+        let plate_w = f32::from(self.width) + (pad * 2.0 + spread_used - f32::from(self.width)).max(0.0) * open.min(1.0);
         let base_h = f32::from(self.height.at(scale));
         let extra = ((rows.saturating_sub(1)) as f32 * (chip + 4.0 * scale)) * open.min(1.0);
 
-        let mut hand = div()
-            .relative()
-            .h(px(chip
-                + (rows.saturating_sub(1)) as f32
-                    * (chip + 4.0 * scale)
-                    * open.min(1.0)))
-            .w_full();
+        let mut hand = div().relative().h(px(chip + (rows.saturating_sub(1)) as f32 * (chip + 4.0 * scale) * open.min(1.0))).w_full();
         if findings.is_empty() {
             hand = hand.child(
                 div()
@@ -528,13 +341,7 @@ impl RenderOnce for HeadsUp {
                     .items_center()
                     .gap(measure.space(Space::Snug))
                     .child(glyph(Glyph::Shield, 16.0 * scale, palette.mint.base))
-                    .child(one(
-                        key(&self.id, "nothing"),
-                        "Nothing to flag",
-                        NOTHING,
-                        palette.mint.base,
-                        &measure,
-                    )),
+                    .child(one(key(&self.id, "nothing"), "Nothing to flag", NOTHING, palette.mint.base, &measure)),
             );
         }
         for (i, item) in findings.iter().enumerate() {
@@ -546,29 +353,11 @@ impl RenderOnce for HeadsUp {
             let shown = if lone { 1.0 } else { open.min(1.0) };
             let w = chip + (widths[i] - chip) * shown;
             let ink = ink_of(item.tone, palette);
-            let mut inner = div()
-                .flex()
-                .items_center()
-                .h_full()
-                .gap(px(gap))
-                .pl(px((chip - 14.0 * scale) * 0.5))
-                .child(glyph(item.glyph, 14.0 * scale, ink));
+            let mut inner = div().flex().items_center().h_full().gap(px(gap)).pl(px((chip - 14.0 * scale) * 0.5)).child(glyph(item.glyph, 14.0 * scale, ink));
             if shown > 0.03 {
-                inner = inner.child(one(
-                    key(&self.id, format!("word-{i}")),
-                    item.word.clone(),
-                    WORD,
-                    palette.ink0,
-                    &measure,
-                ));
+                inner = inner.child(one(key(&self.id, format!("word-{i}")), item.word.clone(), WORD, palette.ink0, &measure));
                 if let Some(count) = item.count {
-                    inner = inner.child(one(
-                        key(&self.id, format!("count-{i}")),
-                        count.to_string(),
-                        COUNT,
-                        ink,
-                        &measure,
-                    ));
+                    inner = inner.child(one(key(&self.id, format!("count-{i}")), count.to_string(), COUNT, ink, &measure));
                 }
             }
             hand = hand.child(
@@ -591,53 +380,25 @@ impl RenderOnce for HeadsUp {
         edge.hi = palette.line3.into();
         edge.lo = palette.line2.into();
         let edge = edge.mix(Edge::of(Bevel::Peri, palette), open.min(1.0));
-        let plate = super::crest::cell(
-            &self.id,
-            "Heads-up",
-            (warns > 0).then(|| warns.to_string()),
-            Some("from its source"),
-            &measure,
-            palette,
-        )
-        .edge(edge)
-        .fill(mix(
-            palette.plate.into(),
-            palette.plate2.into(),
-            open.min(1.0),
-        ))
-        .w(px(plate_w))
-        .h(px(base_h + extra))
-        .child(hand)
-        .id(self.id.clone());
+        let plate = super::crest::cell(&self.id, "Heads-up", (warns > 0).then(|| warns.to_string()), Some("from its source"), &measure, palette)
+            .edge(edge)
+            .fill(mix(palette.plate.into(), palette.plate2.into(), open.min(1.0)))
+            .w(px(plate_w))
+            .h(px(base_h + extra))
+            .child(hand)
+            .id(self.id.clone());
         let package = self.package.clone();
         let for_sheet = findings.clone();
-        let plate = wire(
-            plate,
-            &touch,
-            Some(Rc::new(move |window: &mut Window, cx: &mut App| {
-                open_sheet(&package, for_sheet.clone(), window, cx)
-            })),
-        );
+        let plate = wire(plate, &touch, Some(Rc::new(move |window: &mut Window, cx: &mut App| open_sheet(&package, for_sheet.clone(), window, cx))));
         // The hover zone follows the plate as it grows.
         if open > 0.001 || touch.hovered || self.held == Pose::Held {
             // Fanned out it draws above its neighbours (drawn late, hit first).
             let zone = hover_zone(plate.absolute().top_0().left_0(), &touch, 9.0 * scale, true);
-            div()
-                .relative()
-                .flex_none()
-                .w(self.width)
-                .h(px(base_h))
-                .child(deferred(zone).with_priority(open_priority(open)))
-                .into_any_element()
+            div().relative().flex_none().w(self.width).h(px(base_h)).child(deferred(zone).with_priority(open_priority(open))).into_any_element()
         } else {
             // At rest it is part of the page's own flow, so a page change that
             // cuts the page cuts it too (a deferred draw would not be).
-            div()
-                .flex_none()
-                .w(self.width)
-                .h(px(base_h))
-                .child(hover_zone(plate, &touch, 9.0 * scale, true))
-                .into_any_element()
+            div().flex_none().w(self.width).h(px(base_h)).child(hover_zone(plate, &touch, 9.0 * scale, true)).into_any_element()
         }
     }
 }
@@ -647,11 +408,7 @@ impl RenderOnce for HeadsUp {
 /// close as the room asks (never under a quarter of a chip).
 fn rest_step(count: usize, room: f32, chip: f32, overlap: f32) -> f32 {
     let wide = chip - overlap;
-    match count
-        .checked_sub(1)
-        .and_then(|n| u16::try_from(n).ok())
-        .filter(|n| *n > 0)
-    {
+    match count.checked_sub(1).and_then(|n| u16::try_from(n).ok()).filter(|n| *n > 0) {
         Some(gaps) => wide.min(((room - chip) / f32::from(gaps)).max(chip * 0.25)),
         None => wide,
     }
@@ -672,10 +429,7 @@ mod tests {
     fn a_closed_hand_shows_every_glyph_whole_when_the_cell_holds_them() {
         for count in 1..=6 {
             let step = rest_step(count, 190.0, CHIP, OVERLAP);
-            assert!(
-                step >= 21.0,
-                "{count} chips step {step} px, which covers the glyph before it"
-            );
+            assert!(step >= 21.0, "{count} chips step {step} px, which covers the glyph before it");
         }
     }
 
@@ -684,9 +438,6 @@ mod tests {
     fn a_closed_hand_closes_up_in_a_narrow_cell_and_never_leaves_it() {
         let step = rest_step(6, 100.0, CHIP, OVERLAP);
         assert!(step < 21.0 && step >= CHIP * 0.25, "{step}");
-        assert!(
-            step * 5.0 + CHIP <= 100.0 + 0.01,
-            "six chips fit a 100 px cell at step {step}"
-        );
+        assert!(step * 5.0 + CHIP <= 100.0 + 0.01, "six chips fit a 100 px cell at step {step}");
     }
 }

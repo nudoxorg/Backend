@@ -28,10 +28,10 @@ mod ask;
 pub(crate) mod bodies;
 mod facet_sync;
 mod focus;
-mod frame;
 mod hand;
-mod hints;
+mod frame;
 mod jump;
+mod hints;
 mod keys;
 pub(crate) mod kit;
 mod onboard;
@@ -50,30 +50,30 @@ mod text_fit;
 mod titlebar;
 
 #[cfg(test)]
+pub(crate) mod tests;
+#[cfg(test)]
 mod anatomy_tests;
-#[cfg(test)]
-mod comb_tests;
-#[cfg(test)]
-mod fit_tests;
-#[cfg(test)]
-mod fluid_tests;
-#[cfg(test)]
-mod graph_tests;
-#[cfg(test)]
-mod hand_tests;
-#[cfg(test)]
-mod jump_tests;
 #[cfg(test)]
 mod motion_tests;
 #[cfg(test)]
 mod orbit_tests;
 #[cfg(test)]
+mod comb_tests;
+#[cfg(test)]
+mod hand_tests;
+#[cfg(test)]
+mod jump_tests;
+#[cfg(test)]
+mod graph_tests;
+#[cfg(test)]
 mod shelf_tests;
 #[cfg(test)]
-pub(crate) mod tests;
+mod fit_tests;
+#[cfg(test)]
+mod fluid_tests;
 
 pub use frame::{Frame, FrameInput, ShelfMode};
+pub use reader::Way;
 pub use keys::bindings as key_bindings;
 pub(crate) use keys::{Command as KeyCommand, TABLE as KEY_TABLE};
-pub use reader::Way;
 pub use root::{RenderCounts, Shell, open_shell};

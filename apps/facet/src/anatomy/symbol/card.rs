@@ -11,16 +11,13 @@ use super::host::{Act, Change};
 use super::ink::{G, mark};
 use super::key::{Key, Part, Sec, Slot};
 use super::kit::{Env, ink, pill_frame, roles, wrapped_in};
-use super::view::{Fails, Fill, Uses, View};
 use crate::anatomy::k;
+use super::view::{Fails, Fill, Uses, View};
 use crate::measure::{Measure, Set};
 use crate::overlay::float::{self, FloatKind, FloatRequest};
 use crate::theme::ActiveFacet;
 use crate::tokens::{Palette, TypeRole};
-use gpui::{
-    AnyElement, App, Bounds, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels,
-    SharedString, StatefulInteractiveElement, Styled, Window, div, px,
-};
+use gpui::{AnyElement, App, Bounds, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, SharedString, StatefulInteractiveElement, Styled, Window, div, px};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
@@ -69,10 +66,7 @@ pub(super) fn prepare(env: &Env<'_>, view: &View, uses: &Uses) -> Cards {
             .take(7)
             .map(|fill| {
                 // Choosing a type filters the list to those places and takes you there.
-                let (filter, reveal) = (
-                    env.host.change(Change::Fill(Some(fill.ty.clone()))),
-                    env.host.reveal(Sec::Uses),
-                );
+                let (filter, reveal) = (env.host.change(Change::Fill(Some(fill.ty.clone()))), env.host.reveal(Sec::Uses));
                 let act: Act = Rc::new(move |window, cx| {
                     filter(window, cx);
                     reveal(window, cx);
@@ -84,37 +78,21 @@ pub(super) fn prepare(env: &Env<'_>, view: &View, uses: &Uses) -> Cards {
             name: generic.name.clone(),
             role: generic.role.says(),
             says: generic.says.clone(),
-            bounds: generic
-                .bounds
-                .iter()
-                .map(|b| (b.name.clone(), b.means.clone()))
-                .collect(),
+            bounds: generic.bounds.iter().map(|b| (b.name.clone(), b.means.clone())).collect(),
             fills,
             elsewhere: Vec::new(),
         });
-        cards.generics.insert(
-            generic.name.clone(),
-            request(move |m, window, cx| generic_card(&data, m, window, cx)),
-        );
+        cards.generics.insert(generic.name.clone(), request(move |m, window, cx| generic_card(&data, m, window, cx)));
     }
     if let Some(fails) = &view.fails {
         let data = Rc::new(fails.clone());
-        cards.error = Some(request(move |m, window, cx| {
-            error_card(&data, m, window, cx)
-        }));
+        cards.error = Some(request(move |m, window, cx| error_card(&data, m, window, cx)));
     } else if let Some(call) = &view.call
         && let Some(fail) = &call.fails
     {
         // No section: the card still names the error and says when.
-        let data = Rc::new(Fails {
-            ty: fail.ty.clone(),
-            when: fail.when.clone(),
-            kinds: Vec::new(),
-            tells: None,
-        });
-        cards.error = Some(request(move |m, window, cx| {
-            error_card(&data, m, window, cx)
-        }));
+        let data = Rc::new(Fails { ty: fail.ty.clone(), when: fail.when.clone(), kinds: Vec::new(), tells: None });
+        cards.error = Some(request(move |m, window, cx| error_card(&data, m, window, cx)));
     }
     cards
 }
@@ -123,39 +101,16 @@ fn request(content: impl Fn(&Measure, &mut Window, &mut App) -> AnyElement + 'st
     let content = Rc::new(content);
     Rc::new(move |trigger, anchor| {
         let content = Rc::clone(&content);
-        FloatRequest::new(
-            trigger.id(),
-            anchor,
-            FloatKind::Peek,
-            move |m, window, cx| content(m, window, cx),
-        )
-        .hang_from_start()
-        .quick()
+        FloatRequest::new(trigger.id(), anchor, FloatKind::Peek, move |m, window, cx| content(m, window, cx)).hang_from_start().quick()
     })
 }
 
-fn text(
-    m: &Measure,
-    key: &Key,
-    role: TypeRole,
-    color: Hsla,
-    content: impl Into<SharedString>,
-) -> AnyElement {
+fn text(m: &Measure, key: &Key, role: TypeRole, color: Hsla, content: impl Into<SharedString>) -> AnyElement {
     wrapped_in(m, key, content, role, color)
 }
 
 fn label(m: &Measure, key: &Key, color: Hsla, content: &str) -> AnyElement {
-    div()
-        .mt(k(m, 12.0))
-        .mb(k(m, 6.0))
-        .child(text(
-            m,
-            key,
-            roles::CARD_LABEL,
-            color,
-            content.to_uppercase(),
-        ))
-        .into_any_element()
+    div().mt(k(m, 12.0)).mb(k(m, 6.0)).child(text(m, key, roles::CARD_LABEL, color, content.to_uppercase())).into_any_element()
 }
 
 fn pill(m: &Measure, p: &Palette, name: &str) -> AnyElement {
@@ -168,15 +123,7 @@ fn pill(m: &Measure, p: &Palette, name: &str) -> AnyElement {
 
 fn frame(m: &Measure, body: Vec<AnyElement>) -> AnyElement {
     let width = k(m, 360.0).min(m.width());
-    div()
-        .w(width)
-        .flex()
-        .flex_col()
-        .pt(k(m, 12.0))
-        .px(k(m, 14.0))
-        .pb(k(m, 12.0))
-        .children(body)
-        .into_any_element()
+    div().w(width).flex().flex_col().pt(k(m, 12.0)).px(k(m, 14.0)).pb(k(m, 12.0)).children(body).into_any_element()
 }
 
 fn generic_card(data: &GenericCard, m: &Measure, window: &mut Window, cx: &mut App) -> AnyElement {
@@ -191,27 +138,10 @@ fn generic_card(data: &GenericCard, m: &Measure, window: &mut Window, cx: &mut A
             .items_center()
             .gap(k(m, 9.0))
             .child(pill(m, p, &data.name))
-            .child(text(
-                m,
-                &key.field(Slot::Title),
-                roles::CARD_TITLE,
-                i.ink0,
-                data.role,
-            ))
+            .child(text(m, &key.field(Slot::Title), roles::CARD_TITLE, i.ink0, data.role))
             .into_any_element(),
     );
-    body.push(
-        div()
-            .mt(k(m, 6.0))
-            .child(text(
-                m,
-                &key.field(Slot::Says),
-                roles::BODY,
-                i.ink1,
-                data.says.clone(),
-            ))
-            .into_any_element(),
-    );
+    body.push(div().mt(k(m, 6.0)).child(text(m, &key.field(Slot::Says), roles::BODY, i.ink1, data.says.clone())).into_any_element());
     if !data.bounds.is_empty() {
         body.push(label(m, &key.field(Slot::Must), i.ink3, "It must be"));
         for (n, (name, means)) in data.bounds.iter().enumerate() {
@@ -223,56 +153,19 @@ fn generic_card(data: &GenericCard, m: &Measure, window: &mut Window, cx: &mut A
                     .items_center()
                     .gap(k(m, 8.0))
                     .min_h(k(m, 24.0))
-                    .child(mark(
-                        G::Verb(super::view::Verb::Implements),
-                        p,
-                        14.0 * m.scale(),
-                    ))
-                    .child(text(
-                        m,
-                        &bound.field(Slot::Name),
-                        roles::PACKAGE,
-                        i.ink0,
-                        name.clone(),
-                    ))
-                    .child(text(
-                        m,
-                        &bound.field(Slot::Means),
-                        roles::DOC,
-                        i.ink2,
-                        means.clone(),
-                    ))
+                    .child(mark(G::Verb(super::view::Verb::Implements), p, 14.0 * m.scale()))
+                    .child(text(m, &bound.field(Slot::Name), roles::PACKAGE, i.ink0, name.clone()))
+                    .child(text(m, &bound.field(Slot::Means), roles::DOC, i.ink2, means.clone()))
                     .into_any_element(),
             );
         }
     }
     if !data.fills.is_empty() {
-        body.push(label(
-            m,
-            &key.field(Slot::Chooses),
-            i.ink3,
-            "Your workspace chooses",
-        ));
-        let most = data
-            .fills
-            .iter()
-            .map(|(fill, _)| fill.places)
-            .max()
-            .unwrap_or(1)
-            .max(1);
+        body.push(label(m, &key.field(Slot::Chooses), i.ink3, "Your workspace chooses"));
+        let most = data.fills.iter().map(|(fill, _)| fill.places).max().unwrap_or(1).max(1);
         for (n, (fill, act)) in data.fills.iter().enumerate() {
-            let shown = fill
-                .packages
-                .iter()
-                .take(3)
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", ");
-            let shown = if fill.packages.len() > 3 {
-                format!("{shown}…")
-            } else {
-                shown
-            };
+            let shown = fill.packages.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+            let shown = if fill.packages.len() > 3 { format!("{shown}…") } else { shown };
             let act = Rc::clone(act);
             let bar = (40.0 * m.scale() * fill.places as f32 / most as f32).max(2.0);
             let row = key.field(Slot::Fill).at(n);
@@ -286,65 +179,19 @@ fn generic_card(data: &GenericCard, m: &Measure, window: &mut Window, cx: &mut A
                     .cursor_pointer()
                     .hover(|style| style.bg(i.g3))
                     .on_click(move |_, window, cx| act(window, cx))
-                    .child(text(
-                        m,
-                        &row.field(Slot::Type),
-                        roles::PACKAGE,
-                        i.ink0,
-                        fill.ty.clone(),
-                    ))
-                    .child(div().min_w_0().flex_1().child(text(
-                        m,
-                        &row.field(Slot::Packages),
-                        roles::WRITTEN,
-                        i.mint,
-                        shown,
-                    )))
+                    .child(text(m, &row.field(Slot::Type), roles::PACKAGE, i.ink0, fill.ty.clone()))
+                    .child(div().min_w_0().flex_1().child(text(m, &row.field(Slot::Packages), roles::WRITTEN, i.mint, shown)))
                     .child(div().h(px(5.0)).w(px(bar)).bg(i.violet))
-                    .child(text(
-                        m,
-                        &row.field(Slot::Places),
-                        roles::WRITTEN,
-                        i.ink1,
-                        fill.places.to_string(),
-                    ))
+                    .child(text(m, &row.field(Slot::Places), roles::WRITTEN, i.ink1, fill.places.to_string()))
                     .into_any_element(),
             );
         }
-        body.push(
-            div()
-                .mt(k(m, 8.0))
-                .child(text(
-                    m,
-                    &key.field(Slot::Click),
-                    roles::ASIDE_SMALL,
-                    i.ink3,
-                    "Click a type to see those places.",
-                ))
-                .into_any_element(),
-        );
+        body.push(div().mt(k(m, 8.0)).child(text(m, &key.field(Slot::Click), roles::ASIDE_SMALL, i.ink3, "Click a type to see those places.")).into_any_element());
     }
     if !data.elsewhere.is_empty() {
-        body.push(label(
-            m,
-            &key.field(Slot::ElsewhereHead),
-            i.ink3,
-            "Elsewhere in the registry",
-        ));
-        let line = data
-            .elsewhere
-            .iter()
-            .take(6)
-            .map(|(ty, n)| format!("{ty} {n}"))
-            .collect::<Vec<_>>()
-            .join(" · ");
-        body.push(text(
-            m,
-            &key.field(Slot::Elsewhere),
-            roles::ASIDE_SMALL,
-            i.ink3,
-            line,
-        ));
+        body.push(label(m, &key.field(Slot::ElsewhereHead), i.ink3, "Elsewhere in the registry"));
+        let line = data.elsewhere.iter().take(6).map(|(ty, n)| format!("{ty} {n}")).collect::<Vec<_>>().join(" · ");
+        body.push(text(m, &key.field(Slot::Elsewhere), roles::ASIDE_SMALL, i.ink3, line));
     }
     frame(m, body)
 }
@@ -361,31 +208,15 @@ fn error_card(data: &Fails, m: &Measure, window: &mut Window, cx: &mut App) -> A
             .items_center()
             .gap(k(m, 9.0))
             .child(mark(G::Fail, p, 14.0 * m.scale()))
-            .child(text(
-                m,
-                &key.field(Slot::Title),
-                roles::CARD_TITLE,
-                i.coral,
-                data.ty.word.clone(),
-            ))
+            .child(text(m, &key.field(Slot::Title), roles::CARD_TITLE, i.coral, data.ty.word.clone()))
             .into_any_element(),
     );
     if !data.when.trim().is_empty() {
         let plain = crate::anatomy::symbol::derive::plain_text(&data.when);
-        body.push(
-            div()
-                .mt(k(m, 6.0))
-                .child(text(m, &key.field(Slot::When), roles::BODY, i.ink1, plain))
-                .into_any_element(),
-        );
+        body.push(div().mt(k(m, 6.0)).child(text(m, &key.field(Slot::When), roles::BODY, i.ink1, plain)).into_any_element());
     }
     if !data.kinds.is_empty() {
-        body.push(label(
-            m,
-            &key.field(Slot::Which),
-            i.ink3,
-            "It tells you which",
-        ));
+        body.push(label(m, &key.field(Slot::Which), i.ink3, "It tells you which"));
         for (n, kind) in data.kinds.iter().enumerate() {
             let dim = kind.impossible.is_some();
             let row = key.field(Slot::Kind).at(n);
@@ -396,25 +227,9 @@ fn error_card(data: &Fails, m: &Measure, window: &mut Window, cx: &mut App) -> A
                     .items_center()
                     .gap(k(m, 8.0))
                     .min_h(k(m, 24.0))
-                    .child(mark(
-                        if dim { G::Impossible } else { G::Fail },
-                        p,
-                        11.0 * m.scale(),
-                    ))
-                    .child(text(
-                        m,
-                        &row.field(Slot::Name),
-                        roles::PACKAGE,
-                        if dim { i.ink3 } else { i.ink0 },
-                        kind.name.clone(),
-                    ))
-                    .child(text(
-                        m,
-                        &row.field(Slot::Doc),
-                        roles::DOC,
-                        if dim { i.ink3 } else { i.ink2 },
-                        kind.doc.clone(),
-                    ))
+                    .child(mark(if dim { G::Impossible } else { G::Fail }, p, 11.0 * m.scale()))
+                    .child(text(m, &row.field(Slot::Name), roles::PACKAGE, if dim { i.ink3 } else { i.ink0 }, kind.name.clone()))
+                    .child(text(m, &row.field(Slot::Doc), roles::DOC, if dim { i.ink3 } else { i.ink2 }, kind.doc.clone()))
                     .into_any_element(),
             );
         }

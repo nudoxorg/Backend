@@ -96,11 +96,7 @@ pub fn content(text: TipText) -> impl Fn(&Measure, &mut Window, &mut App) -> Any
 }
 
 /// A tip request for `key` at `anchor`.
-pub fn request(
-    key: impl Into<ElementId>,
-    anchor: gpui::Bounds<gpui::Pixels>,
-    text: TipText,
-) -> FloatRequest {
+pub fn request(key: impl Into<ElementId>, anchor: gpui::Bounds<gpui::Pixels>, text: TipText) -> FloatRequest {
     FloatRequest::new(key, anchor, FloatKind::Tip, content(text)).side(Side::Above)
 }
 
@@ -109,12 +105,7 @@ pub trait Tipped: Sized {
     /// A one-line tip.
     fn tip(self, text: impl Into<SharedString>) -> Trigger;
     /// A title, a body and a key chord.
-    fn tip_rich(
-        self,
-        title: impl Into<SharedString>,
-        body: impl Into<SharedString>,
-        chord: &[&str],
-    ) -> Trigger;
+    fn tip_rich(self, title: impl Into<SharedString>, body: impl Into<SharedString>, chord: &[&str]) -> Trigger;
     /// Any tip text.
     fn tip_text(self, text: TipText) -> Trigger;
 }
@@ -132,19 +123,11 @@ where
         })
     }
 
-    fn tip_rich(
-        self,
-        title: impl Into<SharedString>,
-        body: impl Into<SharedString>,
-        chord: &[&str],
-    ) -> Trigger {
+    fn tip_rich(self, title: impl Into<SharedString>, body: impl Into<SharedString>, chord: &[&str]) -> Trigger {
         self.tip_text(TipText {
             title: Some(title.into()),
             body: body.into(),
-            chord: chord
-                .iter()
-                .map(|key| SharedString::from((*key).to_owned()))
-                .collect(),
+            chord: chord.iter().map(|key| SharedString::from((*key).to_owned())).collect(),
         })
     }
 

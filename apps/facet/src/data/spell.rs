@@ -18,9 +18,9 @@ use crate::paint::hatch::Hatch;
 use crate::theme::ActiveFacet;
 use crate::tokens::TypeRole;
 use gpui::{
-    AnyElement, App, AvailableSpace, Bounds, Element, ElementId, Entity, GlobalElementId, Hitbox,
-    Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, SharedString, Size, Style,
-    TransformationMatrix, Window, point, px, size,
+    AnyElement, App, AvailableSpace, Bounds, Element, ElementId, Entity, GlobalElementId, Hitbox, Hsla,
+    InspectorElementId, IntoElement, LayoutId, Pixels, SharedString, Size, Style, Window,
+    TransformationMatrix, point, px, size,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -155,12 +155,7 @@ impl Spell {
 
     /// Appends words.
     #[must_use]
-    pub fn text(
-        self,
-        text: impl Into<SharedString>,
-        role: TypeRole,
-        color: impl Into<Hsla>,
-    ) -> Self {
+    pub fn text(self, text: impl Into<SharedString>, role: TypeRole, color: impl Into<Hsla>) -> Self {
         self.seg(Seg::Text {
             text: text.into(),
             role,
@@ -279,11 +274,7 @@ fn flow(placed: &[Placed], max: Option<f32>, row_gap: f32) -> Flow {
     let is_sep = |i: usize| matches!(placed[i].seg, Seg::Sep);
     let unit_width = |(a, b, w): (usize, usize, f32), leading: bool| {
         // A separator at a unit's start is dropped when the unit opens a line.
-        if leading && a < b && is_sep(a) {
-            w - placed[a].width
-        } else {
-            w
-        }
+        if leading && a < b && is_sep(a) { w - placed[a].width } else { w }
     };
     let mut lines: Vec<Vec<(usize, usize)>> = vec![Vec::new()];
     let mut used = 0.0_f32;
@@ -395,13 +386,7 @@ impl Element for Spell {
                         ..
                     } => {
                         let w = width * scale;
-                        let shaped = super::text::shape_fit(
-                            text,
-                            self.measure.role(*role),
-                            *color,
-                            w,
-                            window,
-                        );
+                        let shaped = super::text::shape_fit(text, self.measure.role(*role), *color, w, window);
                         let (a, d) = (shaped.ascent(), shaped.descent());
                         (Some(shaped), w, a, d)
                     }
@@ -412,38 +397,18 @@ impl Element for Spell {
                     }
                     Seg::Chip { size, .. } | Seg::Icon { size, .. } => {
                         let edge = size * scale;
-                        (
-                            None,
-                            edge,
-                            edge * 0.5 + base.size * 0.32,
-                            edge * 0.5 - base.size * 0.32,
-                        )
+                        (None, edge, edge * 0.5 + base.size * 0.32, edge * 0.5 - base.size * 0.32)
                     }
                     Seg::Gap(w) => (None, w * scale, 0.0, 0.0),
                     Seg::Compass { size, .. } => {
                         let edge = size.edge() * scale;
-                        (
-                            None,
-                            edge,
-                            edge * 0.5 + base.size * 0.32,
-                            edge * 0.5 - base.size * 0.32,
-                        )
+                        (None, edge, edge * 0.5 + base.size * 0.32, edge * 0.5 - base.size * 0.32)
                     }
                     Seg::Line { width, height, .. } => {
                         let h = height * scale;
-                        (
-                            None,
-                            width * scale,
-                            h * 0.5 + base.size * 0.32,
-                            h * 0.5 - base.size * 0.32,
-                        )
+                        (None, width * scale, h * 0.5 + base.size * 0.32, h * 0.5 - base.size * 0.32)
                     }
-                    Seg::Sep => (
-                        None,
-                        36.0 * scale * self.measure.density().space(),
-                        0.0,
-                        0.0,
-                    ),
+                    Seg::Sep => (None, 36.0 * scale * self.measure.density().space(), 0.0, 0.0),
                     Seg::Break => (None, 0.0, 0.0, 0.0),
                 };
                 Placed {
@@ -465,36 +430,35 @@ impl Element for Spell {
             .iter()
             .map(|p| (p.seg.clone(), p.width, p.ascent, p.descent))
             .collect();
-        let leaf =
-            window.request_measured_layout(Style::default(), move |known, available, _, _| {
-                let max = match (known.width, available.width) {
-                    (Some(w), _) => Some(f32::from(w)),
-                    (None, AvailableSpace::Definite(w)) if wrap => Some(f32::from(w)),
-                    // Min-content is the widest unit that cannot break: without
-                    // this a flex item's automatic minimum is the whole line, and
-                    // the line never shrinks to its room (so never wraps).
-                    (None, AvailableSpace::MinContent) if wrap => Some(0.0),
-                    _ => None,
-                };
-                let proxies: Vec<Placed> = sizes
-                    .iter()
-                    .map(|(seg, width, ascent, descent)| Placed {
-                        seg: seg.clone(),
-                        part: None,
-                        shaped: None,
-                        width: *width,
-                        ascent: *ascent,
-                        descent: *descent,
-                    })
-                    .collect();
-                let laid = flow(&proxies, if wrap { max } else { None }, row_gap);
-                let out = Size {
-                    width: px(laid.width),
-                    height: px(laid.height),
-                };
-                *cell.borrow_mut() = laid;
-                out
-            });
+        let leaf = window.request_measured_layout(Style::default(), move |known, available, _, _| {
+            let max = match (known.width, available.width) {
+                (Some(w), _) => Some(f32::from(w)),
+                (None, AvailableSpace::Definite(w)) if wrap => Some(f32::from(w)),
+                // Min-content is the widest unit that cannot break: without
+                // this a flex item's automatic minimum is the whole line, and
+                // the line never shrinks to its room (so never wraps).
+                (None, AvailableSpace::MinContent) if wrap => Some(0.0),
+                _ => None,
+            };
+            let proxies: Vec<Placed> = sizes
+                .iter()
+                .map(|(seg, width, ascent, descent)| Placed {
+                    seg: seg.clone(),
+                    part: None,
+                    shaped: None,
+                    width: *width,
+                    ascent: *ascent,
+                    descent: *descent,
+                })
+                .collect();
+            let laid = flow(&proxies, if wrap { max } else { None }, row_gap);
+            let out = Size {
+                width: px(laid.width),
+                height: px(laid.height),
+            };
+            *cell.borrow_mut() = laid;
+            out
+        });
         // The words are a measured leaf; the focus child (when the line has
         // doors) sits over it, absolutely.
         let (keys, mut kids) = live::keys_for(live.as_ref(), window, cx);
@@ -528,26 +492,17 @@ impl Element for Spell {
         // Re-flow against the width actually granted (the measure closure may
         // have run for a different probe width).
         let leaf = window.layout_bounds(layout.leaf);
-        let laid = flow(
-            &layout.placed,
-            self.wrap.then(|| f32::from(leaf.size.width)),
-            row_gap,
-        );
+        let laid = flow(&layout.placed, self.wrap.then(|| f32::from(leaf.size.width)), row_gap);
         let origin = bounds.origin;
         let mut rects: Vec<(usize, Bounds<Pixels>)> = Vec::new();
         for &(i, x, line) in &laid.at {
-            let Some(part) = layout.placed[i].part else {
-                continue;
-            };
+            let Some(part) = layout.placed[i].part else { continue };
             let (top, _, height) = laid.lines[line];
             let rect = Bounds::new(
                 point(origin.x + px(x), origin.y + px(top)),
                 size(px(layout.placed[i].width), px(height)),
             );
-            match rects
-                .iter_mut()
-                .find(|(p, r)| *p == part && (r.origin.y - rect.origin.y).abs() < px(0.5))
-            {
+            match rects.iter_mut().find(|(p, r)| *p == part && (r.origin.y - rect.origin.y).abs() < px(0.5)) {
                 Some((_, r)) => *r = r.union(&rect),
                 None => rects.push((part, rect)),
             }
@@ -609,19 +564,11 @@ impl Element for Spell {
                 }
                 Seg::Cell { right, .. } => {
                     if let Some(shaped) = &p.shaped {
-                        let at = if *right {
-                            x + p.width - shaped.width()
-                        } else {
-                            x
-                        };
+                        let at = if *right { x + p.width - shaped.width() } else { x };
                         shaped.paint(at, baseline, window, cx);
                     }
                 }
-                Seg::Diamond {
-                    size,
-                    color,
-                    filled,
-                } => {
+                Seg::Diamond { size, color, filled } => {
                     let half = size * std::f32::consts::SQRT_2 * scale * 0.5;
                     let c = pt(x + half, mid);
                     let d = Poly::new([
@@ -640,17 +587,12 @@ impl Element for Spell {
                     }
                     fill.paint(window, *color);
                 }
-                Seg::Chip {
-                    size,
-                    color,
-                    hatched,
-                } => {
+                Seg::Chip { size, color, hatched } => {
                     let e = size * scale;
                     let chip = Poly::chamfer(x, mid - e * 0.5, e, e, 2.5 * scale);
                     if *hatched {
                         let frame = Bounds::new(point(px(x), px(mid - e * 0.5)), size_px(e, e));
-                        Hatch::vertical(1.5 * scale, 3.5 * scale)
-                            .paint(window, &chip, frame, *color);
+                        Hatch::vertical(1.5 * scale, 3.5 * scale).paint(window, &chip, frame, *color);
                     } else {
                         let mut fill = Fill::new();
                         fill.poly(&chip);
@@ -661,14 +603,7 @@ impl Element for Spell {
                     let e = size * scale;
                     let at = Bounds::new(point(px(x), px(mid - e * 0.5)), size_px(e, e));
                     window
-                        .paint_svg(
-                            at,
-                            path.clone(),
-                            None,
-                            TransformationMatrix::unit(),
-                            *color,
-                            cx,
-                        )
+                        .paint_svg(at, path.clone(), None, TransformationMatrix::unit(), *color, cx)
                         .ok();
                 }
                 Seg::Compass { dirs, size } => {
@@ -676,11 +611,7 @@ impl Element for Spell {
                     let at = Bounds::new(point(px(x), px(mid - e * 0.5)), size_px(e, e));
                     paint_arms(window, at, *size, *dirs, scale, None, palette);
                 }
-                Seg::Line {
-                    parts,
-                    width,
-                    height,
-                } => {
+                Seg::Line { parts, width, height } => {
                     let (w, h) = (width * scale, height * scale);
                     let total: f32 = parts.iter().map(|p| p.0.max(0.0)).sum::<f32>().max(1e-3);
                     let gaps = (parts.len().saturating_sub(1)) as f32 * scale;
@@ -689,10 +620,8 @@ impl Element for Spell {
                         let seg_w = (w - gaps) * weight.max(0.0) / total;
                         let rect = Poly::rect(cx0, mid - h * 0.5, seg_w, h);
                         if *hatched {
-                            let frame =
-                                Bounds::new(point(px(cx0), px(mid - h * 0.5)), size_px(seg_w, h));
-                            Hatch::diagonal(2.0 * scale, 4.0 * scale)
-                                .paint(window, &rect, frame, *color);
+                            let frame = Bounds::new(point(px(cx0), px(mid - h * 0.5)), size_px(seg_w, h));
+                            Hatch::diagonal(2.0 * scale, 4.0 * scale).paint(window, &rect, frame, *color);
                         } else {
                             let mut fill = Fill::new();
                             fill.poly(&rect);
@@ -726,27 +655,16 @@ impl Element for Spell {
             }
             let weight = if walk { 2.0 } else { 1.0 } * scale.max(1.0);
             let y = f32::from(rect.origin.y + rect.size.height) - weight;
-            let line = Poly::rect(
-                f32::from(rect.origin.x),
-                y,
-                f32::from(rect.size.width),
-                weight,
-            );
+            let line = Poly::rect(f32::from(rect.origin.x), y, f32::from(rect.size.width), weight);
             let mut fill = Fill::new();
             fill.poly(&line);
             fill.paint(
                 window,
-                Hsla::from(if walk {
-                    palette.peri_hi
-                } else {
-                    palette.peri.base
-                }),
+                Hsla::from(if walk { palette.peri_hi } else { palette.peri.base }),
             );
         }
         drop(flow);
-        if let (Some(live), Some(keys), Some(hitbox)) =
-            (&layout.live, layout.keys.as_mut(), &pre.hitbox)
-        {
+        if let (Some(live), Some(keys), Some(hitbox)) = (&layout.live, layout.keys.as_mut(), &pre.hitbox) {
             let rects = pre.rects.clone();
             let hit_rects = rects.clone();
             let parts: Vec<usize> = {
@@ -758,10 +676,7 @@ impl Element for Spell {
             let count = parts.last().map_or(0, |p| p + 1);
             live::paint(
                 Hooks {
-                    mark: self
-                        .id
-                        .clone()
-                        .unwrap_or_else(|| ElementId::Name("spell".into())),
+                    mark: self.id.clone().unwrap_or_else(|| ElementId::Name("spell".into())),
                     live: live.clone(),
                     door: self.door.clone(),
                     side: self.side,

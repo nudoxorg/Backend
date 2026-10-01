@@ -65,11 +65,8 @@ fn stage_flow_module() -> Result<(PathBuf, PathBuf, PathBuf), String> {
         std::process::id()
     ));
     fs::create_dir_all(&root).map_err(|error| error.to_string())?;
-    fs::write(
-        root.join("go.mod"),
-        b"module flow.example/fixture\n\ngo 1.22\n",
-    )
-    .map_err(|error| error.to_string())?;
+    fs::write(root.join("go.mod"), b"module flow.example/fixture\n\ngo 1.22\n")
+        .map_err(|error| error.to_string())?;
     fs::write(root.join("blank.go"), BLANK_GO).map_err(|error| error.to_string())?;
     let use_path = root.join("use.go");
     fs::write(&use_path, USE_GO).map_err(|error| error.to_string())?;

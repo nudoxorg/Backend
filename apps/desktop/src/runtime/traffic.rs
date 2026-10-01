@@ -31,10 +31,7 @@ fn epoch() -> Instant {
 
 impl Traffic {
     const fn new() -> Self {
-        Self {
-            in_flight: AtomicUsize::new(0),
-            changed: AtomicU64::new(0),
-        }
+        Self { in_flight: AtomicUsize::new(0), changed: AtomicU64::new(0) }
     }
 
     fn mark(&self) {
@@ -100,25 +97,16 @@ mod tests {
         let calm = Duration::from_millis(60);
         let reading = TRAFFIC.begin();
         let started = Instant::now();
-        assert!(
-            !TRAFFIC.yield_to_reads(calm, Duration::from_millis(200)),
-            "a read in flight holds the worker until the deadline"
-        );
+        assert!(!TRAFFIC.yield_to_reads(calm, Duration::from_millis(200)), "a read in flight holds the worker until the deadline");
         assert!(started.elapsed() >= Duration::from_millis(200));
         let release = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(100));
             drop(reading);
         });
         let started = Instant::now();
-        assert!(
-            TRAFFIC.yield_to_reads(calm, Duration::from_secs(5)),
-            "the reads went quiet"
-        );
+        assert!(TRAFFIC.yield_to_reads(calm, Duration::from_secs(5)), "the reads went quiet");
         let waited = started.elapsed();
-        assert!(
-            waited >= Duration::from_millis(150),
-            "it waited for the read and then a calm moment: {waited:?}"
-        );
+        assert!(waited >= Duration::from_millis(150), "it waited for the read and then a calm moment: {waited:?}");
         release.join().expect("release");
     }
 }

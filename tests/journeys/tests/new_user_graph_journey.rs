@@ -81,11 +81,7 @@ impl ChildGuard {
 impl Drop for ChildGuard {
     fn drop(&mut self) {
         if let Some(child) = self.child.as_mut() {
-            if child
-                .try_wait()
-                .expect("poll locald during cleanup")
-                .is_none()
-            {
+            if child.try_wait().expect("poll locald during cleanup").is_none() {
                 let _ = child.kill();
             }
             let _ = child.wait();
@@ -141,7 +137,8 @@ fn launch(
     authority: &Path,
     registry_endpoint: &str,
 ) -> ChildGuard {
-    let mut args = surface_matrix::locald_args(endpoint, workspace, authority, Some(0), false);
+    let mut args =
+        surface_matrix::locald_args(endpoint, workspace, authority, Some(0), false);
     args.extend([
         OsString::from("--registry-endpoint"),
         OsString::from(registry_endpoint),
@@ -256,11 +253,7 @@ fn digest_reply(label: &'static str, reply: &Value) -> TokenDigest {
     let bytes = serde_json::to_vec(reply).expect("serialize reply").len();
     let tokens = backend_present::estimate_tokens(bytes);
     eprintln!("new-user-graph-journey step={label} bytes={bytes} tokens={tokens}");
-    TokenDigest {
-        label,
-        bytes,
-        tokens,
-    }
+    TokenDigest { label, bytes, tokens }
 }
 
 fn assert_nonempty_reply(digest: &TokenDigest, structured: &Value) {
@@ -305,10 +298,7 @@ fn assert_nonempty_reply(digest: &TokenDigest, structured: &Value) {
                 digest.label
             );
         }
-        other => panic!(
-            "{} returned unexpected answer kind {other:?}: {structured}",
-            digest.label
-        ),
+        other => panic!("{} returned unexpected answer kind {other:?}: {structured}", digest.label),
     }
 }
 
@@ -332,11 +322,12 @@ fn wait_for_search(
                 "20".to_owned(),
             ],
         );
-        if let Some(record) = search["records"].as_array().and_then(|records| {
-            records
-                .iter()
-                .find(|record| record["identity"]["name"] == name)
-        }) {
+        if let Some(record) = search["records"]
+            .as_array()
+            .and_then(|records| {
+                records.iter().find(|record| record["identity"]["name"] == name)
+            })
+        {
             return record.clone();
         }
         assert!(
@@ -350,7 +341,12 @@ fn wait_for_search(
 fn wait_for_index(endpoint: &Path, workspace: &Path, project: &Path) {
     let end = Instant::now() + INDEX_DEADLINE;
     loop {
-        let health = cli_json(endpoint, workspace, project, &["health".to_owned()]);
+        let health = cli_json(
+            endpoint,
+            workspace,
+            project,
+            &["health".to_owned()],
+        );
         if health["rows"].as_u64().unwrap_or(0) > 1 {
             return;
         }
@@ -378,12 +374,15 @@ fn wait_for_registry_symbol(
                 "20".to_owned(),
             ],
         );
-        if let Some(coordinate) = search["records"].as_array().and_then(|records| {
-            records
-                .iter()
-                .find(|record| record["identity"]["name"] == name)
-                .and_then(|record| record["identity"]["coordinate"].as_str())
-        }) {
+        if let Some(coordinate) = search["records"]
+            .as_array()
+            .and_then(|records| {
+                records
+                    .iter()
+                    .find(|record| record["identity"]["name"] == name)
+                    .and_then(|record| record["identity"]["coordinate"].as_str())
+            })
+        {
             return coordinate.to_owned();
         }
         assert!(
@@ -431,10 +430,7 @@ fn relation_names_by_label(page: &Value, label: &str) -> Vec<String> {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one conversation exercises the full graph journey"
-)]
+#[allow(clippy::too_many_lines, reason = "one conversation exercises the full graph journey")]
 fn new_user_graph_journey_covers_index_graph_impact_search_add_and_upgrade_diff() {
     let root = unique_root("journey");
     let project = fixture_app();
@@ -485,13 +481,7 @@ fn new_user_graph_journey_covers_index_graph_impact_search_add_and_upgrade_diff(
     assert_nonempty_reply(&add_v1_digest, &add_helper_v1);
     wait_for_registry_symbol(&endpoint, &workspace, &project, "helper_value");
 
-    let parse_config = wait_for_search(
-        &endpoint,
-        &workspace,
-        &project,
-        "parse_config",
-        "parse_config",
-    );
+    let parse_config = wait_for_search(&endpoint, &workspace, &project, "parse_config", "parse_config");
     let run_app = wait_for_search(&endpoint, &workspace, &project, "run_app", "run_app");
     let parse_coordinate = parse_config["identity"]["coordinate"]
         .as_str()
@@ -534,9 +524,7 @@ fn new_user_graph_journey_covers_index_graph_impact_search_add_and_upgrade_diff(
     let graph_digest = digest_reply("graph-run-app", &graph_run);
     assert_nonempty_reply(&graph_digest, &graph_run);
     assert!(
-        record_names(&graph_run)
-            .iter()
-            .any(|name| name == "parse_config"),
+        record_names(&graph_run).iter().any(|name| name == "parse_config"),
         "graph of run_app did not reach parse_config: {graph_run}"
     );
 
@@ -550,9 +538,7 @@ fn new_user_graph_journey_covers_index_graph_impact_search_add_and_upgrade_diff(
     let related_digest = digest_reply("related-parse-config", &related_parse);
     assert_nonempty_reply(&related_digest, &related_parse);
     assert!(
-        record_names(&related_parse)
-            .iter()
-            .any(|name| name == "run_app"),
+        record_names(&related_parse).iter().any(|name| name == "run_app"),
         "related on parse_config did not reach caller run_app: {related_parse}"
     );
 
@@ -571,9 +557,7 @@ fn new_user_graph_journey_covers_index_graph_impact_search_add_and_upgrade_diff(
     let error_digest = digest_reply("search-error-handling", &error_search);
     assert_nonempty_reply(&error_digest, &error_search);
     assert!(
-        record_names(&error_search)
-            .iter()
-            .any(|name| name == "parse_config"),
+        record_names(&error_search).iter().any(|name| name == "parse_config"),
         "search `error handling` did not name parse_config: {error_search}"
     );
 
@@ -632,16 +616,9 @@ fn new_user_graph_journey_covers_index_graph_impact_search_add_and_upgrade_diff(
         diff_digest,
     ];
     for digest in &token_digests {
-        assert!(
-            digest.tokens >= 1,
-            "token digest missing for {}",
-            digest.label
-        );
+        assert!(digest.tokens >= 1, "token digest missing for {}", digest.label);
     }
-    let total_tokens = token_digests
-        .iter()
-        .map(|digest| digest.tokens)
-        .sum::<usize>();
+    let total_tokens = token_digests.iter().map(|digest| digest.tokens).sum::<usize>();
     assert!(
         total_tokens >= token_digests.len(),
         "conversation token total regressed: {total_tokens}"

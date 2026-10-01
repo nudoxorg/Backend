@@ -124,12 +124,13 @@ impl LocalEngineClient {
     }
 
     fn catalog(&mut self) -> Result<Arc<[PackageSummary]>, EngineFault> {
-        let reply = self.with_reconnect(|session| {
-            session.surface(SurfaceCommand::Explore {
-                query: None,
-                limit: 64,
-            })
-        });
+        let reply = self
+            .with_reconnect(|session| {
+                session.surface(SurfaceCommand::Explore {
+                    query: None,
+                    limit: 64,
+                })
+            });
         Self::catalog_from_reply(reply)
     }
 
@@ -142,11 +143,13 @@ impl LocalEngineClient {
                 "the local service returned a non-Explore reply for the catalog request",
             )));
         };
-        Ok(records
-            .iter()
-            .filter_map(package_summary)
-            .collect::<Vec<_>>()
-            .into())
+        Ok(
+            records
+                .iter()
+                .filter_map(package_summary)
+                .collect::<Vec<_>>()
+                .into(),
+        )
     }
 
     fn request_surface(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
@@ -383,9 +386,10 @@ mod tests {
 
     #[test]
     fn catalog_rejects_a_reply_from_the_wrong_surface_command() {
-        let observed =
-            LocalEngineClient::catalog_from_reply(Ok(SurfaceReply::Projects(Box::new([]))))
-                .expect_err("a non-Explore reply is a protocol fault");
+        let observed = LocalEngineClient::catalog_from_reply(Ok(SurfaceReply::Projects(
+            Box::new([]),
+        )))
+        .expect_err("a non-Explore reply is a protocol fault");
         assert!(matches!(
             observed,
             EngineFault::Failed(error) if error.code() == FaultCode::Protocol

@@ -196,19 +196,14 @@ const FINDER_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
 #[test]
 #[ignore = "run by a_finder_launch_compiles_rust_with_the_rust_the_person_installed, in a Finder launch's environment"]
 fn finder_launch_child() {
-    assert!(
-        std::env::var_os("NUDOX_RUSTC").is_none(),
-        "a Finder launch names no compiler"
-    );
+    assert!(std::env::var_os("NUDOX_RUSTC").is_none(), "a Finder launch names no compiler");
     let root = scratch("finder");
     // `NX_FINDER_PROJECT` indexes that folder instead (a project with
     // registry dependencies, run by hand).
     let project = match std::env::var_os("NX_FINDER_PROJECT") {
         Some(project) => {
             super::private_dir(&root).expect("private scratch root");
-            PathBuf::from(project)
-                .canonicalize()
-                .expect("NX_FINDER_PROJECT")
+            PathBuf::from(project).canonicalize().expect("NX_FINDER_PROJECT")
         }
         None => rust_project(&root),
     };
@@ -218,33 +213,17 @@ fn finder_launch_child() {
     println!("FINDER-WORDS {}", report.words());
     let mut session = Session::connect(host.endpoint()).expect("session");
     let indexed = session.index(project.to_str().expect("UTF-8 project path"));
-    assert!(
-        indexed.is_ok(),
-        "the owner refused a plain Rust crate on a Finder launch: {indexed:?}"
-    );
+    assert!(indexed.is_ok(), "the owner refused a plain Rust crate on a Finder launch: {indexed:?}");
     let canonical = project.canonicalize().expect("canonical project");
-    assert_eq!(
-        listed(&mut session),
-        vec![(canonical.to_string_lossy().into_owned(), RowState::Ready)]
-    );
+    assert_eq!(listed(&mut session), vec![(canonical.to_string_lossy().into_owned(), RowState::Ready)]);
     let rows = session.health().expect("health").row_count();
     println!("FINDER-ROWS {rows}");
     if std::env::var_os("NX_FINDER_PROJECT").is_some() {
         // The packages the owner reads for the project, as the install reads them.
-        let source =
-            super::registry::CargoCache::from_env(root.join("unpacked")).expect("a cargo home");
-        let found = crate::runtime::acquire::dependencies(&mut session, &source, &canonical)
-            .expect("the owner reads the project's packages");
+        let source = super::registry::CargoCache::from_env(root.join("unpacked")).expect("a cargo home");
+        let found = crate::runtime::acquire::dependencies(&mut session, &source, &canonical).expect("the owner reads the project's packages");
         // As `cargo tree -f {p}` spells a package: `name vVERSION`.
-        let names = found
-            .iter()
-            .map(|dependency| {
-                format!(
-                    "{} v{}",
-                    dependency.release.name, dependency.release.version
-                )
-            })
-            .collect::<Vec<_>>();
+        let names = found.iter().map(|dependency| format!("{} v{}", dependency.release.name, dependency.release.version)).collect::<Vec<_>>();
         println!("FINDER-PACKAGES {} {}", found.len(), names.join(","));
     }
     drop(session);
@@ -262,30 +241,15 @@ fn a_finder_launch_compiles_rust_with_the_rust_the_person_installed() {
             _ => None,
         },
         &[
-            (
-                PathBuf::from("/opt/homebrew/bin"),
-                super::toolchain::Place::Homebrew,
-            ),
-            (
-                PathBuf::from("/usr/local/bin"),
-                super::toolchain::Place::Homebrew,
-            ),
+            (PathBuf::from("/opt/homebrew/bin"), super::toolchain::Place::Homebrew),
+            (PathBuf::from("/usr/local/bin"), super::toolchain::Place::Homebrew),
         ],
     );
-    let super::toolchain::Rust::Found {
-        rustc: expected, ..
-    } = expected
-    else {
+    let super::toolchain::Rust::Found { rustc: expected, .. } = expected else {
         panic!("this machine has no Rust a person installed (rustup or Homebrew): {expected:?}")
     };
     let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
-        .args([
-            "--exact",
-            "host::embedded_owner_tests::finder_launch_child",
-            "--ignored",
-            "--nocapture",
-            "--test-threads=1",
-        ])
+        .args(["--exact", "host::embedded_owner_tests::finder_launch_child", "--ignored", "--nocapture", "--test-threads=1"])
         .env_clear()
         .env("HOME", &home)
         .env("PATH", FINDER_PATH)
@@ -293,21 +257,10 @@ fn a_finder_launch_compiles_rust_with_the_rust_the_person_installed() {
         .expect("the child runs");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "the Finder launch failed:\n{stdout}\n{stderr}"
-    );
-    assert!(
-        stdout.contains("1 passed"),
-        "the child ran its test: {stdout}"
-    );
+    assert!(output.status.success(), "the Finder launch failed:\n{stdout}\n{stderr}");
+    assert!(stdout.contains("1 passed"), "the child ran its test: {stdout}");
     // libtest prints `test NAME ... ` before the test's own output, on one line.
-    let said = |tag: &str| {
-        stdout
-            .lines()
-            .find_map(|line| line.find(tag).map(|at| line[at..].to_owned()))
-            .unwrap_or_default()
-    };
+    let said = |tag: &str| stdout.lines().find_map(|line| line.find(tag).map(|at| line[at..].to_owned())).unwrap_or_default();
     let selected = said("FINDER-RUST");
     assert!(
         selected.contains(&format!("rustc: {:?}", expected)),
@@ -315,49 +268,23 @@ fn a_finder_launch_compiles_rust_with_the_rust_the_person_installed() {
         expected.display()
     );
     let words = said("FINDER-WORDS");
-    assert!(
-        words.contains(&format!("at {}", expected.display())),
-        "the window can say which Rust: {words}"
-    );
+    assert!(words.contains(&format!("at {}", expected.display())), "the window can say which Rust: {words}");
 }
 
 #[test]
 fn a_finder_launch_reads_a_projects_packages_as_cargo_resolves_them() {
     let home = std::env::var_os("HOME").expect("HOME");
-    let project = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../frontends/rust/fixtures/toml_pin")
-        .canonicalize()
-        .expect("toml_pin");
+    let project = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../frontends/rust/fixtures/toml_pin").canonicalize().expect("toml_pin");
     // What a build here compiles, as Cargo says it in the development shell.
     let rustc = std::env::var_os("NUDOX_RUSTC").expect("the dev shell exports NUDOX_RUSTC");
     let tree = std::process::Command::new(Path::new(&rustc).with_file_name("cargo"))
-        .args([
-            "tree",
-            "--offline",
-            "--locked",
-            "--prefix",
-            "none",
-            "-e",
-            "normal,build",
-            "-f",
-            "{p}",
-        ])
+        .args(["tree", "--offline", "--locked", "--prefix", "none", "-e", "normal,build", "-f", "{p}"])
         .current_dir(&project)
         .output()
         .expect("cargo tree");
-    let built = String::from_utf8_lossy(&tree.stdout)
-        .lines()
-        .filter(|line| !line.contains('('))
-        .map(str::to_owned)
-        .collect::<std::collections::BTreeSet<_>>();
+    let built = String::from_utf8_lossy(&tree.stdout).lines().filter(|line| !line.contains('(')).map(str::to_owned).collect::<std::collections::BTreeSet<_>>();
     let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
-        .args([
-            "--exact",
-            "host::embedded_owner_tests::finder_launch_child",
-            "--ignored",
-            "--nocapture",
-            "--test-threads=1",
-        ])
+        .args(["--exact", "host::embedded_owner_tests::finder_launch_child", "--ignored", "--nocapture", "--test-threads=1"])
         .env_clear()
         .env("HOME", &home)
         .env("PATH", FINDER_PATH)
@@ -365,39 +292,16 @@ fn a_finder_launch_reads_a_projects_packages_as_cargo_resolves_them() {
         .output()
         .expect("the child runs");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        output.status.success(),
-        "the Finder launch failed:\n{stdout}\n{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let said = stdout
-        .lines()
-        .find_map(|line| line.find("FINDER-PACKAGES").map(|at| line[at..].to_owned()))
-        .unwrap_or_default();
-    let read = said
-        .splitn(3, ' ')
-        .nth(2)
-        .unwrap_or_default()
-        .split(',')
-        .map(str::to_owned)
-        .collect::<std::collections::BTreeSet<_>>();
-    let pinned = std::fs::read_to_string(project.join("Cargo.lock"))
-        .expect("Cargo.lock")
-        .matches("[[package]]")
-        .count()
-        - 1;
+    assert!(output.status.success(), "the Finder launch failed:\n{stdout}\n{}", String::from_utf8_lossy(&output.stderr));
+    let said = stdout.lines().find_map(|line| line.find("FINDER-PACKAGES").map(|at| line[at..].to_owned())).unwrap_or_default();
+    let read = said.splitn(3, ' ').nth(2).unwrap_or_default().split(',').map(str::to_owned).collect::<std::collections::BTreeSet<_>>();
+    let pinned = std::fs::read_to_string(project.join("Cargo.lock")).expect("Cargo.lock").matches("[[package]]").count() - 1;
     let missing = built.difference(&read).collect::<Vec<_>>();
-    assert!(
-        missing.is_empty(),
-        "a Finder launch reads every package a build here compiles; missing {missing:?}: {said}"
-    );
+    assert!(missing.is_empty(), "a Finder launch reads every package a build here compiles; missing {missing:?}: {said}");
     // Before: every one of the lockfile's pins (cargo could not find `rustc`
     // on the Finder's PATH and the read fell back to the bare lockfile),
     // including what serde pins behind `cfg(any())`.
-    assert!(
-        read.len() < pinned,
-        "a Finder launch reads what Cargo resolves for this host, not the lockfile's {pinned} pins: {said}"
-    );
+    assert!(read.len() < pinned, "a Finder launch reads what Cargo resolves for this host, not the lockfile's {pinned} pins: {said}");
 }
 
 /// A C# project. The owner has no C# authority unless `NUDOX_ROSLYN_HELPER`

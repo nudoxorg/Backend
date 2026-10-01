@@ -24,9 +24,7 @@ use crate::data::text::{Shaped, shape};
 use crate::motion::Camera;
 use crate::paint::geom::{Fill, Poly, Pt, pt};
 use crate::tokens::{Face, Palette, Tone, TypeRole};
-use gpui::{
-    App, Bounds, Hsla, LayerTransform, Pixels, SharedString, Window, fill, point, px, size,
-};
+use gpui::{App, Bounds, Hsla, LayerTransform, Pixels, SharedString, Window, fill, point, px, size};
 
 /// How symbols reach the GPU (kept switchable so the choice stays measured,
 /// see CHECKPOINT-2).
@@ -770,8 +768,7 @@ pub(super) fn paint_star_bank(window: &mut Window, batch: Fill, color: Hsla) -> 
     let Some(mut path) = batch.into_path() else {
         return false;
     };
-    let Some(bounds) =
-        star_copy_bounds(path.bounds, window.layer_transform(), window.scale_factor())
+    let Some(bounds) = star_copy_bounds(path.bounds, window.layer_transform(), window.scale_factor())
     else {
         return false;
     };
@@ -1863,11 +1860,7 @@ pub fn paint_with_regions(look: &Look<'_>, window: &mut Window, cx: &mut App) ->
             let size_px = (12.0 + pxs / 40.0).min(22.0).round() as f32;
             let r = scaled(role(Face::Display, 620.0, size_px), ts);
             let name = world.package_short(p);
-            let c = crate::paint::mix(
-                tone(palette.g0, 1.0),
-                tone(if yours_pkg(p) { mint } else { ink }, 1.0),
-                if yours_pkg(p) { 0.9 } else { 0.75 },
-            );
+            let c = crate::paint::mix(tone(palette.g0, 1.0), tone(if yours_pkg(p) { mint } else { ink }, 1.0), if yours_pkg(p) { 0.9 } else { 0.75 });
             let label = shape(SharedString::from(name.to_owned()), r, c, window);
             let w = label.width();
             let x = sx(t.x) - w / 2.0;
@@ -1969,11 +1962,7 @@ pub fn paint_with_regions(look: &Look<'_>, window: &mut Window, cx: &mut App) ->
             let label = shape(
                 name,
                 scaled(roles::MODULE, ts),
-                crate::paint::mix(
-                    tone(palette.g0, 1.0),
-                    tone(ink, 1.0),
-                    (0.42_f32 * if look.focus.is_some() { 0.6 } else { 1.0 }).max(LABEL_FLOOR),
-                ),
+                crate::paint::mix(tone(palette.g0, 1.0), tone(ink, 1.0), (0.42_f32 * if look.focus.is_some() { 0.6 } else { 1.0 }).max(LABEL_FLOOR)),
                 window,
             );
             let w = label.width();
@@ -2066,11 +2055,7 @@ pub fn paint_with_regions(look: &Look<'_>, window: &mut Window, cx: &mut App) ->
             let mut rest = if focused || sought || (reached && !world.yours(i)) {
                 tone(peri, 1.0)
             } else {
-                crate::paint::mix(
-                    tone(palette.g0, 1.0),
-                    tone(if yours { mint } else { ink }, 1.0),
-                    a,
-                )
+                crate::paint::mix(tone(palette.g0, 1.0), tone(if yours { mint } else { ink }, 1.0), a)
             };
             // Labels admitted only by hover have no resting text. Existing
             // labels keep their font, shape anchor and occupancy throughout

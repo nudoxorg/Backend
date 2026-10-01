@@ -6,24 +6,16 @@ use crate::semantics::usage::{Needle, find, mine};
 use std::path::PathBuf;
 
 fn registry(file: &str) -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("src/semantics/tests/fixtures/src/registry")
-        .join(file);
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/semantics/tests/fixtures/src/registry").join(file);
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
 fn free(name: &str) -> Needle {
-    Needle {
-        name: name.into(),
-        member: false,
-    }
+    Needle { name: name.into(), member: false }
 }
 
 fn member(name: &str) -> Needle {
-    Needle {
-        name: name.into(),
-        member: true,
-    }
+    Needle { name: name.into(), member: true }
 }
 
 #[test]
@@ -32,10 +24,7 @@ fn raw_value_from_string_uses_from_str_in_its_first_statement() {
     let source = registry("serde_json-1.0.151/src/raw.rs");
     let got = mine(&source, 186, 192, &free("from_str")).expect("a use");
     assert_eq!(got.line, 187);
-    assert_eq!(
-        got.text(),
-        "let borrowed = tri!(crate::from_str::<&Self>(&json));"
-    );
+    assert_eq!(got.text(), "let borrowed = tri!(crate::from_str::<&Self>(&json));");
     assert_eq!(&got.lines[got.hit][got.mark.clone()], "from_str");
 }
 
@@ -69,10 +58,7 @@ const QDRANT: &str = "pub(crate) fn decode<'body, T: Deserialize<'body>>(
 fn qdrant_decode_uses_serde_json_from_str() {
     let got = mine(QDRANT, 1, 6, &free("from_str")).expect("a use");
     assert_eq!(got.line, 5);
-    assert_eq!(
-        got.text(),
-        "serde_json::from_str(body).map_err(|source| QdrantError::Decode { phase, source })"
-    );
+    assert_eq!(got.text(), "serde_json::from_str(body).map_err(|source| QdrantError::Decode { phase, source })");
     assert_eq!(got.mark, 12..20);
 }
 
@@ -112,10 +98,7 @@ fn needles_respect_word_boundaries() {
     assert_eq!(find("let x = from_str_lossy(s);", &free("from_str")), None);
     assert_eq!(find("let x = my_from_str(s);", &free("from_str")), None);
     assert_eq!(find("x.from_str(s)", &free("from_str")), Some(2..10));
-    assert_eq!(
-        find("renew(x); Group::new(y)", &member("new")),
-        Some(17..20)
-    );
+    assert_eq!(find("renew(x); Group::new(y)", &member("new")), Some(17..20));
     assert_eq!(find("let new = 1;", &member("new")), None);
     assert_eq!(find("é new", &free("new")), Some(3..6));
 }
@@ -144,8 +127,5 @@ fn a_parameter_line_of_the_signature_never_counts_as_a_use() {
     serde_json::from_str(body)
 }";
     let got = mine(source, 1, 7, &free("RequestPhase")).expect("a use");
-    assert_eq!(
-        (got.line, got.lines[0].as_str()),
-        (5, "let phase = RequestPhase::Decode;")
-    );
+    assert_eq!((got.line, got.lines[0].as_str()), (5, "let phase = RequestPhase::Decode;"));
 }

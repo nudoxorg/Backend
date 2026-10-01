@@ -20,8 +20,7 @@ use backend_semantic::vocabulary::{LanguageProfile, Stage, TypeScriptSource};
 #[path = "use_case_support/mod.rs"]
 mod use_case_support;
 
-const SOURCE: &[u8] =
-    br#"export class Box<T> { constructor(value: T) { this.read = null as (left: T) => void; } }
+const SOURCE: &[u8] = br#"export class Box<T> { constructor(value: T) { this.read = null as (left: T) => void; } }
 export function take(input: Box<string>): Box<number> { return null as Box<number>; }
 "#;
 
@@ -133,13 +132,19 @@ fn parameter_count(view: &FragmentView<'_>, name: &[u8]) -> usize {
         .count()
 }
 
-fn declared_fact<'a>(view: &'a FragmentView<'a>, owner: u32) -> Option<DecodedTypeFact<'a>> {
-    facts(view)
-        .into_iter()
-        .find(|fact| fact.owner.raw == owner && fact.segment == TypeFactSegment::Declared)
+fn declared_fact<'a>(
+    view: &'a FragmentView<'a>,
+    owner: u32,
+) -> Option<DecodedTypeFact<'a>> {
+    facts(view).into_iter().find(|fact| {
+        fact.owner.raw == owner && fact.segment == TypeFactSegment::Declared
+    })
 }
 
-fn child_type_fact<'a>(view: &'a FragmentView<'a>, type_id: u32) -> Option<DecodedTypeFact<'a>> {
+fn child_type_fact<'a>(
+    view: &'a FragmentView<'a>,
+    type_id: u32,
+) -> Option<DecodedTypeFact<'a>> {
     declared_fact(view, type_id)
 }
 
@@ -190,7 +195,8 @@ fn cross_file_bindings() {
     let authority = match Checker::default().run(TypeScriptSource::TypeScript, SOURCE) {
         Ok(report) => report,
         Err(error) if checker_missing(&error) => {
-            use_case_support::skip("typescript", "cross-file-bindings", "checker-missing").unwrap();
+            use_case_support::skip("typescript", "cross-file-bindings", "checker-missing")
+                .unwrap();
             return;
         }
         Err(error) => panic!("checker failed: {error}"),
@@ -206,14 +212,8 @@ fn cross_file_bindings() {
 
     let decoded = view(SOURCE, &authority);
     assert_eq!(parameter_count(&decoded, b"left"), 1);
-    assert_eq!(
-        use_case_support::count_named(ir, EntityKind::Record, b"Box"),
-        1
-    );
-    assert_eq!(
-        use_case_support::count_named(ir, EntityKind::Function, b"take"),
-        1
-    );
+    assert_eq!(use_case_support::count_named(ir, EntityKind::Record, b"Box"), 1);
+    assert_eq!(use_case_support::count_named(ir, EntityKind::Function, b"take"), 1);
 
     let box_owner = named(&decoded, b"Box").0;
     let input_owner = named(&decoded, b"input").0;

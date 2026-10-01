@@ -181,10 +181,7 @@ fn generic_box_flow() {
         ),
         other => panic!("missing dependency must be UnresolvedDependencies, not {other:?}"),
     }
-    assert!(
-        output.is_empty(),
-        "no authority image on unresolved imports"
-    );
+    assert!(output.is_empty(), "no authority image on unresolved imports");
 
     use_case_support::finish("java", "generic-box", compile_elapsed, &ir)
         .expect("use-case bench report");

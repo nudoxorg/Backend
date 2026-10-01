@@ -23,24 +23,15 @@ pub(super) fn of(page: &SymbolPage) -> Vec<DeclRef> {
     if page.identity.language.name() != "go" || page.identity.kind != Some(DeclarationKind::Type) {
         return Vec::new();
     }
-    let Some(outline) = page.outline.known() else {
-        return Vec::new();
-    };
-    let Some(at) = outline.index.or_else(|| {
-        outline
-            .siblings
-            .iter()
-            .position(|sibling| sibling.coordinate == page.identity.coordinate)
-    }) else {
+    let Some(outline) = page.outline.known() else { return Vec::new() };
+    let Some(at) = outline.index.or_else(|| outline.siblings.iter().position(|sibling| sibling.coordinate == page.identity.coordinate)) else {
         return Vec::new();
     };
     outline
         .siblings
         .iter()
         .skip(at + 1)
-        .take_while(|sibling| {
-            sibling.kind == Some(DeclarationKind::Constant) && sibling.path == page.identity.path
-        })
+        .take_while(|sibling| sibling.kind == Some(DeclarationKind::Constant) && sibling.path == page.identity.path)
         .take(64)
         .cloned()
         .collect()
@@ -56,46 +47,26 @@ impl Global for Watching {}
 /// Asks the store for `companions` and keeps the reader repainting as each
 /// lands. Returns their pages as the store has them now, in order (`None`
 /// for one still on its way).
-pub(super) fn gather(
-    companions: &[DeclRef],
-    links: &Links,
-    active: bool,
-    cx: &mut Context<Reader>,
-) -> Vec<(DeclRef, Option<SymbolPage>)> {
-    let keys = companions
-        .iter()
-        .map(|decl| PageKey::Symbol(decl.coordinate.clone()))
-        .collect::<Vec<_>>();
+pub(super) fn gather(companions: &[DeclRef], links: &Links, active: bool, cx: &mut Context<Reader>) -> Vec<(DeclRef, Option<SymbolPage>)> {
+    let keys = companions.iter().map(|decl| PageKey::Symbol(decl.coordinate.clone())).collect::<Vec<_>>();
     if active {
         watch(&keys, links, cx);
     }
     let store = links.store.read(cx);
     companions
         .iter()
-        .map(|decl| {
-            (
-                decl.clone(),
-                store.symbol(&decl.coordinate).loaded_value().cloned(),
-            )
-        })
+        .map(|decl| (decl.clone(), store.symbol(&decl.coordinate).loaded_value().cloned()))
         .collect()
 }
 
 fn watch(keys: &[PageKey], links: &Links, cx: &mut Context<Reader>) {
     let reader = cx.entity_id();
-    let same = cx
-        .try_global::<Watching>()
-        .and_then(|watching| watching.readers.get(&reader))
-        .is_some_and(|(watched, _)| watched == keys);
+    let same = cx.try_global::<Watching>().and_then(|watching| watching.readers.get(&reader)).is_some_and(|(watched, _)| watched == keys);
     if same {
         return;
     }
     if keys.is_empty() {
-        if let Some(watching) = cx
-            .try_global::<Watching>()
-            .is_some()
-            .then(|| cx.global_mut::<Watching>())
-        {
+        if let Some(watching) = cx.try_global::<Watching>().is_some().then(|| cx.global_mut::<Watching>()) {
             watching.readers.remove(&reader);
         }
         return;
@@ -106,9 +77,7 @@ fn watch(keys: &[PageKey], links: &Links, cx: &mut Context<Reader>) {
             cx.notify();
         }
     });
-    cx.default_global::<Watching>()
-        .readers
-        .insert(reader, (keys.to_vec(), subscription));
+    cx.default_global::<Watching>().readers.insert(reader, (keys.to_vec(), subscription));
     let keys = keys.to_vec();
     links.store.update(cx, |store, cx| {
         for key in keys {

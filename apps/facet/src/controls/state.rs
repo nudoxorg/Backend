@@ -305,8 +305,7 @@ impl Global for PointerAway {}
 /// Whether the pointer has left `window`.
 pub(crate) fn pointer_away(window: &Window, cx: &App) -> bool {
     let id = window.window_handle().window_id();
-    cx.try_global::<PointerAway>()
-        .is_some_and(|away| away.0.contains(&id))
+    cx.try_global::<PointerAway>().is_some_and(|away| away.0.contains(&id))
 }
 
 /// Keeps [`pointer_away`] true to the pointer (every live control's paint
@@ -324,9 +323,7 @@ pub(crate) fn watch_pointer(window: &mut Window) {
     window.on_mouse_event(|_: &MouseMoveEvent, phase, window, cx| {
         if phase == DispatchPhase::Capture && pointer_away(window, cx) {
             let id = window.window_handle().window_id();
-            cx.default_global::<PointerAway>()
-                .0
-                .retain(|away| *away != id);
+            cx.default_global::<PointerAway>().0.retain(|away| *away != id);
         }
     });
 }

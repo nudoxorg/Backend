@@ -894,17 +894,9 @@ fn a_live_subscription_resumes_across_a_daemon_crash() {
         .expect("resume the live subscription after the crash");
     match read {
         backend_library::CursorRead::Events { cursor: after, .. } => {
-            assert_eq!(
-                after.root(),
-                before.root(),
-                "events resumed on another root"
-            );
+            assert_eq!(after.root(), before.root(), "events resumed on another root");
         }
-        backend_library::CursorRead::Reset {
-            cursor: after,
-            root,
-            ..
-        } => {
+        backend_library::CursorRead::Reset { cursor: after, root, .. } => {
             assert_eq!(after.root(), root.root());
             assert!(
                 root.rows().iter().any(|row| row.label == coordinate),

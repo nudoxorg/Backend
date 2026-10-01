@@ -98,14 +98,7 @@ impl Facts {
                 Run::Yours(w) => self.line.part_text(part, w, YOURS, p.mint.base),
                 Run::Mark { path, color } => self
                     .line
-                    .part(
-                        part,
-                        Seg::Icon {
-                            path,
-                            size: 12.0,
-                            color,
-                        },
-                    )
+                    .part(part, Seg::Icon { path, size: 12.0, color })
                     .part(part, Seg::Gap(5.0)),
             };
         }
@@ -192,12 +185,7 @@ pub struct LensBar {
 
 /// A lens bar of `tabs` with `current` selected, as wide as `measure`.
 #[must_use]
-pub fn lens_bar(
-    id: impl Into<ElementId>,
-    tabs: impl Into<Rc<[Tab]>>,
-    current: usize,
-    measure: &Measure,
-) -> LensBar {
+pub fn lens_bar(id: impl Into<ElementId>, tabs: impl Into<Rc<[Tab]>>, current: usize, measure: &Measure) -> LensBar {
     LensBar {
         id: id.into(),
         tabs: tabs.into(),
@@ -275,9 +263,10 @@ impl Element for LensBar {
                 (
                     shape(t.word.clone(), role, palette.ink3.into(), window),
                     shape(t.word.clone(), role, palette.ink0.into(), window),
-                    t.count.clone().filter(|_| spell_counts).map(|c| {
-                        shape(c, self.measure.role(TAB_COUNT), palette.ink4.into(), window)
-                    }),
+                    t.count
+                        .clone()
+                        .filter(|_| spell_counts)
+                        .map(|c| shape(c, self.measure.role(TAB_COUNT), palette.ink4.into(), window)),
                 )
             })
             .collect();
@@ -345,21 +334,10 @@ impl Element for LensBar {
         rule.paint(window, Hsla::from(palette.line1));
         // The current tab's mint rule slides to its tab.
         if let Some(&(tx, tw)) = spans.get(self.current) {
-            let rx = motion.animate(
-                live::key(&self.id, "rule-x"),
-                tx - x0,
-                spec::LIFT,
-                window,
-                cx,
-            );
+            let rx = motion.animate(live::key(&self.id, "rule-x"), tx - x0, spec::LIFT, window, cx);
             let rw = motion.animate(live::key(&self.id, "rule-w"), tw, spec::LIFT, window, cx);
             let mut mint = Fill::new();
-            mint.poly(&Poly::rect(
-                x0 + rx,
-                y0 + h - 2.0 * s.max(1.0),
-                rw,
-                2.0 * s.max(1.0),
-            ));
+            mint.poly(&Poly::rect(x0 + rx, y0 + h - 2.0 * s.max(1.0), rw, 2.0 * s.max(1.0)));
             mint.paint(window, Hsla::from(palette.mint.base));
         }
         if let Some(&(tx, tw)) = walk.and_then(|i| spans.get(i)) {
@@ -379,9 +357,7 @@ impl Element for LensBar {
                 count: spans.len(),
                 hit: Rc::new(move |p: Point<Pixels>| {
                     let px_ = f32::from(p.x);
-                    let i = hit_spans
-                        .partition_point(|(x, _)| *x - half <= px_)
-                        .checked_sub(1)?;
+                    let i = hit_spans.partition_point(|(x, _)| *x - half <= px_).checked_sub(1)?;
                     let (x, tw) = hit_spans[i];
                     (px_ <= x + tw + half).then_some(i)
                 }),

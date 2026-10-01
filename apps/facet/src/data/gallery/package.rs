@@ -30,14 +30,10 @@ pub(crate) const MODULES: [(&str, usize, usize); 10] = [
 
 /// A deterministic spread of `k` reached items among `n` for `name`.
 fn reached(name: &str, n: usize, k: usize) -> Vec<usize> {
-    let mut seed = name.bytes().fold(0x9e37_79b9_u64, |h, b| {
-        h.wrapping_mul(31).wrapping_add(u64::from(b))
-    });
+    let mut seed = name.bytes().fold(0x9e37_79b9_u64, |h, b| h.wrapping_mul(31).wrapping_add(u64::from(b)));
     let mut out: Vec<usize> = Vec::with_capacity(k);
     while out.len() < k.min(n) {
-        seed = seed
-            .wrapping_mul(6_364_136_223_846_793_005)
-            .wrapping_add(1_442_695_040_888_963_407);
+        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
         #[allow(clippy::cast_possible_truncation)]
         let i = ((seed >> 33) as usize) % n;
         if !out.contains(&i) {
@@ -52,11 +48,7 @@ pub(crate) fn regions() -> Vec<Region> {
         .iter()
         .map(|&(name, n, k)| {
             let region = Region::new(name, n).reached(reached(name, n, k));
-            if name.starts_with("__") {
-                region.private()
-            } else {
-                region
-            }
+            if name.starts_with("__") { region.private() } else { region }
         })
         .collect()
 }
@@ -151,11 +143,7 @@ pub(crate) fn folio(width: f32, rested: Option<Spot>, cx: &mut App) -> AnyElemen
         };
     }
     let releases = comb("releases", ticks, &m)
-        .caption([
-            ("19 releases since your pin, ", false),
-            ("2", true),
-            (" touch your code", false),
-        ])
+        .caption([("19 releases since your pin, ", false), ("2", true), (" touch your code", false)])
         .door(lens::door(|i| {
             Some(Lens::release(
                 format!("1.0.{}", 147 + i),
@@ -167,15 +155,9 @@ pub(crate) fn folio(width: f32, rested: Option<Spot>, cx: &mut App) -> AnyElemen
                     (" places".into(), false),
                 ],
                 vec![
-                    LensItem::new("SerializeMap::serialize_key")
-                        .kind(Kind::Method)
-                        .sigil(lens::Sigil::Added),
-                    LensItem::new("IgnoredAny")
-                        .kind(Kind::Struct)
-                        .sigil(lens::Sigil::Added),
-                    LensItem::new("de::from_str")
-                        .kind(Kind::Function)
-                        .sigil(lens::Sigil::Changed),
+                    LensItem::new("SerializeMap::serialize_key").kind(Kind::Method).sigil(lens::Sigil::Added),
+                    LensItem::new("IgnoredAny").kind(Kind::Struct).sigil(lens::Sigil::Added),
+                    LensItem::new("de::from_str").kind(Kind::Function).sigil(lens::Sigil::Changed),
                     LensItem::new("a"),
                     LensItem::new("b"),
                     LensItem::new("c"),
@@ -243,3 +225,4 @@ pub(crate) fn folio(width: f32, rested: Option<Spot>, cx: &mut App) -> AnyElemen
         .typeset(ty::BODY, &facet)
         .into_any_element()
 }
+

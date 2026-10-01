@@ -5,13 +5,6 @@
 
 use std::time::Duration;
 
-use backend_library::interface::{
-    ApplicationOutcome, ApplicationReply, CompilerAttempt, CompilerCause, CompilerDiagnostic,
-    CompilerTerminal, CorrelationId, Diagnostic, DiagnosticCode, DiagnosticDetail,
-    DurableReceiptAuthority, GeneratedArtifact, GenerationAuthority, NativeIoFact, NativeIoPhase,
-    PublicationAuthority, ReplyBody, SemanticImageAuthority, SourceAuthority,
-};
-use backend_library::protocol::encode_cli_reply;
 use backend_semantic::vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, CompileRecipeFact, Language, LanguageProfile,
     NativeTool, RustEdition, Stage,
@@ -22,6 +15,13 @@ use backend_version::{
     IrManifestEncoding, IrSemanticImageDomain, IrSemanticImageEncoding, SourceFactDomain,
     ToolchainDomain,
 };
+use backend_library::interface::{
+    ApplicationOutcome, ApplicationReply, CompilerAttempt, CompilerCause, CompilerDiagnostic,
+    CompilerTerminal, CorrelationId, Diagnostic, DiagnosticCode, DiagnosticDetail,
+    DurableReceiptAuthority, GeneratedArtifact, GenerationAuthority, NativeIoFact, NativeIoPhase,
+    PublicationAuthority, ReplyBody, SemanticImageAuthority, SourceAuthority,
+};
+use backend_library::protocol::encode_cli_reply;
 use serde_json::Value;
 
 #[derive(Debug, thiserror::Error)]

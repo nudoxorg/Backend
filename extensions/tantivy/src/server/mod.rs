@@ -24,7 +24,8 @@ use backend_semantic::index_core::{
 use tantivy::collector::{Collector, SegmentCollector};
 use tantivy::columnar::Column;
 use tantivy::{
-    DocId, Index, IndexReader, Score, TantivyDocument, doc,
+    DocId, Index, IndexReader, Score, TantivyDocument,
+    doc,
     query::{QueryParser, QueryParserError},
     schema::{FAST, Field, STORED, Schema, TEXT, Value},
 };
@@ -507,39 +508,31 @@ fn validate_ordinals(
             if segment_reader.is_deleted(doc) {
                 continue;
             }
-            live = live
-                .checked_add(1)
-                .ok_or(TantivyAdapterError::DocumentLimit {
-                    limit: identities.len(),
-                    observed: identities.len(),
-                })?;
-            let ordinal = ordinals
-                .first(doc)
-                .ok_or(TantivyAdapterError::StoredIdentity {
-                    segment: segment_ord,
-                    document: doc,
-                    source: StoredIdentityError::Missing,
-                })?;
+            live = live.checked_add(1).ok_or(TantivyAdapterError::DocumentLimit {
+                limit: identities.len(),
+                observed: identities.len(),
+            })?;
+            let ordinal = ordinals.first(doc).ok_or(TantivyAdapterError::StoredIdentity {
+                segment: segment_ord,
+                document: doc,
+                source: StoredIdentityError::Missing,
+            })?;
             let index = usize::try_from(ordinal).map_err(|source| {
                 TantivyAdapterError::DocumentCountOverflow {
                     observed: ordinal,
                     source,
                 }
             })?;
-            let expected =
-                identities
-                    .get(index)
-                    .copied()
-                    .ok_or(TantivyAdapterError::OrdinalIdentity {
-                        segment: segment_ord,
-                        document: doc,
-                    })?;
-            let slot = seen
-                .get_mut(index)
-                .ok_or(TantivyAdapterError::OrdinalIdentity {
+            let expected = identities.get(index).copied().ok_or(
+                TantivyAdapterError::OrdinalIdentity {
                     segment: segment_ord,
                     document: doc,
-                })?;
+                },
+            )?;
+            let slot = seen.get_mut(index).ok_or(TantivyAdapterError::OrdinalIdentity {
+                segment: segment_ord,
+                document: doc,
+            })?;
             if *slot {
                 return Err(TantivyAdapterError::OrdinalIdentity {
                     segment: segment_ord,

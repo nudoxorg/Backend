@@ -246,10 +246,7 @@ fn cold_open_syncs_a_hard_exited_writer_suffix_before_returning_the_cursor() {
     )
     .expect("cold replay crosses durability barrier");
     assert_eq!(scan.last_sequence, Some(1));
-    assert_eq!(
-        *replayed.borrow(),
-        vec![b"first".to_vec(), b"cold-replay".to_vec()]
-    );
+    assert_eq!(*replayed.borrow(), vec![b"first".to_vec(), b"cold-replay".to_vec()]);
     assert_eq!(*order.borrow(), vec!["visitor", "visitor", "sync"]);
     drop(journal);
     remove(&candidate_path);

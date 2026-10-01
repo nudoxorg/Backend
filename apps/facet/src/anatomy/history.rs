@@ -64,29 +64,20 @@ impl History {
     /// Whether there is a history to draw.
     #[must_use]
     pub fn drawn(&self) -> bool {
-        self.releases
-            .iter()
-            .filter(|release| !release.at.is_empty())
-            .count()
-            >= 2
+        self.releases.iter().filter(|release| !release.at.is_empty()).count() >= 2
     }
 
     /// The releases the index has read.
     #[must_use]
     pub fn read(&self) -> impl Iterator<Item = &Release> {
-        self.releases
-            .iter()
-            .filter(|release| release.was != Was::Unread)
+        self.releases.iter().filter(|release| release.was != Was::Unread)
     }
 
     /// The caption: what the read releases say together.
     #[must_use]
     pub fn caption(&self) -> String {
         let read: Vec<&Release> = self.read().collect();
-        let differs = read
-            .iter()
-            .filter(|release| matches!(release.was, Was::Differs(_)))
-            .count();
+        let differs = read.iter().filter(|release| matches!(release.was, Was::Differs(_))).count();
         if read.len() <= 1 {
             "only your pin is on disk: other releases not read".to_owned()
         } else if differs > 0 {
@@ -104,9 +95,7 @@ impl History {
     /// lifetimes differ`.
     #[must_use]
     pub fn label(&self, index: usize) -> String {
-        let Some(release) = self.releases.get(index) else {
-            return String::new();
-        };
+        let Some(release) = self.releases.get(index) else { return String::new() };
         let mut parts = vec![release.version.clone()];
         if !release.at.is_empty() {
             parts.push(release.at.clone());
@@ -131,48 +120,22 @@ mod tests {
     use super::*;
 
     fn release(version: &str, at: &str, was: Was) -> Release {
-        Release {
-            version: version.to_owned(),
-            at: at.to_owned(),
-            was,
-            ..Release::default()
-        }
+        Release { version: version.to_owned(), at: at.to_owned(), was, ..Release::default() }
     }
 
     #[test]
     fn a_history_of_reads_says_how_the_symbol_moved() {
-        let mut history = History {
-            releases: vec![
-                release("0.5.11", "2022-01-12", Was::Same),
-                release(
-                    "0.6.0",
-                    "2023-01-01",
-                    Was::Differs("its signature changed".to_owned()),
-                ),
-                release("0.8.23", "2025-01-13", Was::Pinned),
-            ],
-        };
+        let mut history = History { releases: vec![release("0.5.11", "2022-01-12", Was::Same), release("0.6.0", "2023-01-01", Was::Differs("its signature changed".to_owned())), release("0.8.23", "2025-01-13", Was::Pinned)] };
         assert_eq!(history.caption(), "different at 1 of 3 releases read");
-        assert_eq!(
-            history.label(1),
-            "0.6.0 · 2023-01-01 · its signature changed"
-        );
+        assert_eq!(history.label(1), "0.6.0 · 2023-01-01 · its signature changed");
         history.releases[1].was = Was::Same;
         assert_eq!(history.caption(), "the same at all 3 releases read");
     }
 
     #[test]
     fn a_history_nobody_read_says_so_and_is_not_drawn_without_dates() {
-        let history = History {
-            releases: vec![
-                release("0.1.0", "2020-01-01", Was::Unread),
-                release("0.2.0", "2021-01-01", Was::Pinned),
-            ],
-        };
-        assert_eq!(
-            history.caption(),
-            "only your pin is on disk: other releases not read"
-        );
+        let history = History { releases: vec![release("0.1.0", "2020-01-01", Was::Unread), release("0.2.0", "2021-01-01", Was::Pinned)] };
+        assert_eq!(history.caption(), "only your pin is on disk: other releases not read");
         assert!(history.drawn());
         assert!(!History::default().drawn());
     }

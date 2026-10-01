@@ -24,9 +24,8 @@ use crate::paint::geom::{Fill, Poly, Pt, pt};
 use crate::theme::ActiveFacet;
 use crate::tokens::{Palette, TypeRole, ty};
 use gpui::{
-    AnyElement, App, Bounds, ColorExt, Element, ElementId, Entity, GlobalElementId, Hitbox, Hsla,
-    InspectorElementId, IntoElement, LayoutId, Pixels, Point, SharedString, Style, Window, point,
-    px, size,
+    AnyElement, App, Bounds, ColorExt, Element, ElementId, Entity, GlobalElementId, Hitbox, Hsla, InspectorElementId,
+    IntoElement, LayoutId, Pixels, Point, SharedString, Style, Window, point, px, size,
 };
 use std::rc::Rc;
 
@@ -149,12 +148,7 @@ impl Directions {
     /// The largest count (at least 1).
     #[must_use]
     pub fn max(&self) -> usize {
-        Dir::ALL
-            .iter()
-            .map(|d| self.get(*d))
-            .max()
-            .unwrap_or(0)
-            .max(1)
+        Dir::ALL.iter().map(|d| self.get(*d)).max().unwrap_or(0).max(1)
     }
 
     /// "is 3 · made of 3 · from 9 · to 4", zeros omitted (tooltips, a11y).
@@ -289,9 +283,7 @@ pub fn paint_arms(
     palette: &Palette,
 ) {
     let m = size.metrics();
-    let k = scale
-        * (f32::from(bounds.size.width).min(f32::from(bounds.size.height)) / (m.edge * scale))
-            .min(1.0);
+    let k = scale * (f32::from(bounds.size.width).min(f32::from(bounds.size.height)) / (m.edge * scale)).min(1.0);
     let cx = f32::from(bounds.origin.x) + f32::from(bounds.size.width) * 0.5;
     let cy = f32::from(bounds.origin.y) + f32::from(bounds.size.height) * 0.5;
 
@@ -304,10 +296,7 @@ pub fn paint_arms(
         pt(cx - half, cy),
     ]);
     let mut rim = Fill::new();
-    for quad in diamond
-        .offset(-m.stroke * k * 0.5)
-        .stroke_ring(m.stroke * k)
-    {
+    for quad in diamond.offset(-m.stroke * k * 0.5).stroke_ring(m.stroke * k) {
         rim.poly(&quad);
     }
     rim.paint(window, Hsla::from(palette.ink3));
@@ -328,13 +317,7 @@ pub fn paint_arms(
             Some(l) if lit && l.walk => palette.peri_hi.into(),
             _ => dir.color(palette),
         };
-        let alpha = if dim {
-            0.32
-        } else if lit {
-            1.0
-        } else {
-            0.9
-        };
+        let alpha = if dim { 0.32 } else if lit { 1.0 } else { 0.9 };
         let mut arm = Fill::new();
         arm.poly(&segment(start, end, width));
         arm.paint(window, color.opacity(alpha));
@@ -468,17 +451,7 @@ impl Element for Compass {
             Dir::ALL
                 .iter()
                 .filter(|d| self.dirs.get(**d) > 0)
-                .map(|d| {
-                    (
-                        *d,
-                        shape(
-                            self.dirs.get(*d).to_string(),
-                            role,
-                            d.color(palette),
-                            window,
-                        ),
-                    )
-                })
+                .map(|d| (*d, shape(self.dirs.get(*d).to_string(), role, d.color(palette), window)))
                 .collect()
         } else {
             Vec::new()
@@ -489,10 +462,7 @@ impl Element for Compass {
         style.size.width = px(edge + text).into();
         style.size.height = px(edge).into();
         style.flex_shrink = 0.0;
-        (
-            window.request_layout(style, kids, cx),
-            CompassLayout { live, keys, counts },
-        )
+        (window.request_layout(style, kids, cx), CompassLayout { live, keys, counts })
     }
 
     fn prepaint(
@@ -525,10 +495,7 @@ impl Element for Compass {
         let edge = self.size.edge() * scale;
         let mark = Bounds::new(bounds.origin, size(px(edge), px(edge)));
         let (hover, walk) = match &layout.live {
-            Some(live) => (
-                live.read(cx).hover.or(self.rest),
-                live::walking(live, window, cx),
-            ),
+            Some(live) => (live.read(cx).hover.or(self.rest), live::walking(live, window, cx)),
             None => (self.rest, None),
         };
         let light = walk
@@ -537,20 +504,16 @@ impl Element for Compass {
         paint_arms(window, mark, self.size, self.dirs, scale, light, palette);
 
         // X-ray: the counts, each in its direction's ink, beside the mark.
-        let baseline =
-            f32::from(bounds.origin.y) + edge * 0.5 + self.measure.role(ty::MONO_SMALL).size * 0.36;
+        let baseline = f32::from(bounds.origin.y) + edge * 0.5 + self.measure.role(ty::MONO_SMALL).size * 0.36;
         let mut x = f32::from(bounds.origin.x) + edge + 4.0 * scale;
         for (_, shaped) in &layout.counts {
             shaped.paint(x, baseline, window, cx);
             x += shaped.width() + 4.0 * scale;
         }
 
-        if let (Some(live), Some(keys), Some(hitbox), Some(id)) = (
-            &layout.live,
-            layout.keys.as_mut(),
-            hitbox.as_ref(),
-            &self.id,
-        ) {
+        if let (Some(live), Some(keys), Some(hitbox), Some(id)) =
+            (&layout.live, layout.keys.as_mut(), hitbox.as_ref(), &self.id)
+        {
             let c = pt(
                 f32::from(mark.origin.x) + edge * 0.5,
                 f32::from(mark.origin.y) + edge * 0.5,
@@ -786,10 +749,7 @@ impl Element for CompassBar {
         style.size.width = gpui::relative(1.0).into();
         style.size.height = px(height).into();
         style.min_size.width = px(0.0).into();
-        (
-            window.request_layout(style, kids, cx),
-            BarLayout { live, keys },
-        )
+        (window.request_layout(style, kids, cx), BarLayout { live, keys })
     }
 
     fn prepaint(
@@ -823,10 +783,7 @@ impl Element for CompassBar {
         let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
         let (top, _, pad_x, gap) = self.metrics();
         let (hover, walk) = match &layout.live {
-            Some(live) => (
-                live.read(cx).hover.or(self.rest),
-                live::walking(live, window, cx),
-            ),
+            Some(live) => (live.read(cx).hover.or(self.rest), live::walking(live, window, cx)),
             None => (self.rest, None),
         };
         // The grid: 1 px line1 between and around four plate cells.
@@ -875,12 +832,7 @@ impl Element for CompassBar {
             let num_top = cy0 + top + m.role(BAR_LABEL).line + gap;
             let num_base = num_top + num.ascent();
             num.paint(cx0 + pad_x, num_base, window, cx);
-            let unit = shape(
-                self.units[i].clone(),
-                m.role(BAR_UNIT),
-                palette.ink3.into(),
-                window,
-            );
+            let unit = shape(self.units[i].clone(), m.role(BAR_UNIT), palette.ink3.into(), window);
             let unit_x = cx0 + pad_x + num.width() + 5.0 * m.scale();
             if unit_x + unit.width() <= cx0 + cell_w - 2.0 {
                 unit.paint(unit_x, num_base, window, cx);
@@ -895,24 +847,13 @@ impl Element for CompassBar {
             let share = n as f32 / max as f32;
             if share > 0.0 {
                 let mut fill = Fill::new();
-                fill.poly(&Poly::rect(
-                    cx0 + pad_x,
-                    bar_y,
-                    (bar_w * share).max(1.0),
-                    bar_h,
-                ));
-                fill.paint(
-                    window,
-                    dir.color(palette).opacity(if lit { 1.0 } else { 0.85 }),
-                );
+                fill.poly(&Poly::rect(cx0 + pad_x, bar_y, (bar_w * share).max(1.0), bar_h));
+                fill.paint(window, dir.color(palette).opacity(if lit { 1.0 } else { 0.85 }));
             }
         }
-        if let (Some(live), Some(keys), Some(hitbox), Some(id)) = (
-            &layout.live,
-            layout.keys.as_mut(),
-            hitbox.as_ref(),
-            &self.id,
-        ) {
+        if let (Some(live), Some(keys), Some(hitbox), Some(id)) =
+            (&layout.live, layout.keys.as_mut(), hitbox.as_ref(), &self.id)
+        {
             live::paint(
                 Hooks {
                     mark: id.clone(),
@@ -962,18 +903,9 @@ mod tests {
     fn hit_test_finds_the_arm_under_the_pointer_and_skips_empty_arms() {
         let dirs = Directions::new(3, 0, 9, 4);
         let c = pt(100.0, 100.0);
-        assert_eq!(
-            arm_at(point(px(100.0), px(93.0)), c, 9.0, dirs),
-            Some(Dir::Is.index())
-        );
-        assert_eq!(
-            arm_at(point(px(92.0), px(101.0)), c, 9.0, dirs),
-            Some(Dir::From.index())
-        );
-        assert_eq!(
-            arm_at(point(px(107.0), px(99.0)), c, 9.0, dirs),
-            Some(Dir::To.index())
-        );
+        assert_eq!(arm_at(point(px(100.0), px(93.0)), c, 9.0, dirs), Some(Dir::Is.index()));
+        assert_eq!(arm_at(point(px(92.0), px(101.0)), c, 9.0, dirs), Some(Dir::From.index()));
+        assert_eq!(arm_at(point(px(107.0), px(99.0)), c, 9.0, dirs), Some(Dir::To.index()));
         // "made of" is zero: nothing is drawn there, so nothing opens.
         assert_eq!(arm_at(point(px(100.0), px(107.0)), c, 9.0, dirs), None);
         assert_eq!(arm_at(point(px(130.0), px(100.0)), c, 9.0, dirs), None);

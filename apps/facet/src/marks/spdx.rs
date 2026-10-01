@@ -28,10 +28,7 @@ pub enum Expr {
 /// binds tighter than `OR`. Empty input is `None`.
 #[must_use]
 pub fn parse(spdx: &str) -> Option<Expr> {
-    let spaced = spdx
-        .replace('/', " OR ")
-        .replace('(', " ( ")
-        .replace(')', " ) ");
+    let spaced = spdx.replace('/', " OR ").replace('(', " ( ").replace(')', " ) ");
     let toks: Vec<&str> = spaced.split_whitespace().collect();
     if toks.is_empty() {
         return None;
@@ -63,11 +60,7 @@ fn and(toks: &[&str], i: &mut usize) -> Expr {
         *i += 1;
         all.push(atom(toks, i));
     }
-    if all.len() == 1 {
-        all.remove(0)
-    } else {
-        Expr::And(all)
-    }
+    if all.len() == 1 { all.remove(0) } else { Expr::And(all) }
 }
 
 fn or(toks: &[&str], i: &mut usize) -> Expr {
@@ -76,11 +69,7 @@ fn or(toks: &[&str], i: &mut usize) -> Expr {
         *i += 1;
         any.push(and(toks, i));
     }
-    if any.len() == 1 {
-        any.remove(0)
-    } else {
-        Expr::Or(any)
-    }
+    if any.len() == 1 { any.remove(0) } else { Expr::Or(any) }
 }
 
 /// Every license id in the expression, in order.
@@ -100,10 +89,7 @@ pub fn options(e: &Expr) -> Vec<Vec<String>> {
         Expr::Or(any) => any.iter().flat_map(options).collect(),
         Expr::And(all) => all.iter().map(options).fold(vec![Vec::new()], |acc, opts| {
             acc.iter()
-                .flat_map(|a| {
-                    opts.iter()
-                        .map(move |b| a.iter().chain(b).cloned().collect())
-                })
+                .flat_map(|a| opts.iter().map(move |b| a.iter().chain(b).cloned().collect()))
                 .collect()
         }),
     }
@@ -113,16 +99,12 @@ pub fn options(e: &Expr) -> Vec<Vec<String>> {
 #[must_use]
 pub fn short_id(id: &str) -> String {
     let id = id.split(" WITH ").next().unwrap_or(id);
-    id.trim_end_matches("-only")
-        .trim_end_matches("-or-later")
-        .to_owned()
+    id.trim_end_matches("-only").trim_end_matches("-or-later").to_owned()
 }
 
 fn base_id(id: &str) -> &str {
     let id = id.trim_end_matches('+');
-    id.strip_suffix("-only")
-        .or_else(|| id.strip_suffix("-or-later"))
-        .unwrap_or(id)
+    id.strip_suffix("-only").or_else(|| id.strip_suffix("-or-later")).unwrap_or(id)
 }
 
 /// The mark's word: `MIT/Apache-2.0`, `MIT/Apache-2.0 +1`, `MPL-2.0`.
@@ -267,106 +249,28 @@ pub fn terms(id: &str) -> Option<Terms> {
         Some(match id {
             "MIT" => t("MIT License", Permissive, BASE, NOTICE_ONLY, LW),
             "MIT-0" => t("MIT No Attribution", Permissive, BASE, &[], LW),
-            "Apache-2.0" => t(
-                "Apache License 2.0",
-                Permissive,
-                BASE_PATENT,
-                &[NOTICE, CHANGES],
-                &[TRADEMARK, LIABILITY, WARRANTY],
-            ),
+            "Apache-2.0" => t("Apache License 2.0", Permissive, BASE_PATENT, &[NOTICE, CHANGES], &[TRADEMARK, LIABILITY, WARRANTY]),
             "BSD-1-Clause" => t("BSD 1-Clause", Permissive, BASE, NOTICE_ONLY, LW),
             "BSD-2-Clause" => t("BSD 2-Clause", Permissive, BASE, NOTICE_ONLY, LW),
             "BSD-3-Clause" => t("BSD 3-Clause", Permissive, BASE, NOTICE_ONLY, LW),
             "0BSD" => t("Zero-Clause BSD", Permissive, BASE, &[], LW),
             "ISC" => t("ISC License", Permissive, BASE, NOTICE_ONLY, LW),
             "Zlib" => t("zlib License", Permissive, BASE, &[NOTICE, CHANGES], LW),
-            "zlib-acknowledgement" => t(
-                "zlib/libpng with acknowledgement",
-                Permissive,
-                BASE,
-                &[NOTICE, CHANGES],
-                LW,
-            ),
-            "BSL-1.0" => t(
-                "Boost Software License 1.0",
-                Permissive,
-                BASE,
-                NOTICE_ONLY,
-                LW,
-            ),
+            "zlib-acknowledgement" => t("zlib/libpng with acknowledgement", Permissive, BASE, &[NOTICE, CHANGES], LW),
+            "BSL-1.0" => t("Boost Software License 1.0", Permissive, BASE, NOTICE_ONLY, LW),
             "Unicode-3.0" => t("Unicode License v3", Permissive, BASE, NOTICE_ONLY, LW),
             "Unicode-DFS-2016" => t("Unicode License 2016", Permissive, BASE, NOTICE_ONLY, LW),
-            "NCSA" => t(
-                "University of Illinois/NCSA",
-                Permissive,
-                BASE,
-                NOTICE_ONLY,
-                LW,
-            ),
-            "CDLA-Permissive-2.0" => t(
-                "Community Data License, Permissive 2.0",
-                Permissive,
-                BASE,
-                NOTICE_ONLY,
-                LW,
-            ),
-            "MPL-2.0" => t(
-                "Mozilla Public License 2.0",
-                Weak,
-                BASE_PATENT,
-                &[SOURCE, NOTICE, SAME_FILE],
-                &[TRADEMARK, LIABILITY, WARRANTY],
-            ),
-            "LGPL-2.1" => t(
-                "GNU LGPL v2.1",
-                Weak,
-                BASE,
-                &[SOURCE, NOTICE, SAME_LIB, CHANGES],
-                LW,
-            ),
-            "LGPL-3.0" => t(
-                "GNU LGPL v3.0",
-                Weak,
-                BASE_PATENT,
-                &[SOURCE, NOTICE, SAME_LIB, CHANGES],
-                LW,
-            ),
-            "EPL-2.0" => t(
-                "Eclipse Public License 2.0",
-                Weak,
-                BASE_PATENT,
-                &[SOURCE, NOTICE, SAME_FILE],
-                &[TRADEMARK, LIABILITY, WARRANTY],
-            ),
-            "GPL-2.0" => t(
-                "GNU GPL v2.0",
-                Strong,
-                BASE,
-                &[SOURCE, NOTICE, SAME, CHANGES],
-                LW,
-            ),
-            "GPL-3.0" => t(
-                "GNU GPL v3.0",
-                Strong,
-                BASE_PATENT,
-                &[SOURCE, NOTICE, SAME, CHANGES],
-                LW,
-            ),
-            "AGPL-3.0" => t(
-                "GNU AGPL v3.0",
-                Strong,
-                BASE_PATENT,
-                &[SOURCE, NOTICE, SAME, CHANGES, NETWORK],
-                LW,
-            ),
+            "NCSA" => t("University of Illinois/NCSA", Permissive, BASE, NOTICE_ONLY, LW),
+            "CDLA-Permissive-2.0" => t("Community Data License, Permissive 2.0", Permissive, BASE, NOTICE_ONLY, LW),
+            "MPL-2.0" => t("Mozilla Public License 2.0", Weak, BASE_PATENT, &[SOURCE, NOTICE, SAME_FILE], &[TRADEMARK, LIABILITY, WARRANTY]),
+            "LGPL-2.1" => t("GNU LGPL v2.1", Weak, BASE, &[SOURCE, NOTICE, SAME_LIB, CHANGES], LW),
+            "LGPL-3.0" => t("GNU LGPL v3.0", Weak, BASE_PATENT, &[SOURCE, NOTICE, SAME_LIB, CHANGES], LW),
+            "EPL-2.0" => t("Eclipse Public License 2.0", Weak, BASE_PATENT, &[SOURCE, NOTICE, SAME_FILE], &[TRADEMARK, LIABILITY, WARRANTY]),
+            "GPL-2.0" => t("GNU GPL v2.0", Strong, BASE, &[SOURCE, NOTICE, SAME, CHANGES], LW),
+            "GPL-3.0" => t("GNU GPL v3.0", Strong, BASE_PATENT, &[SOURCE, NOTICE, SAME, CHANGES], LW),
+            "AGPL-3.0" => t("GNU AGPL v3.0", Strong, BASE_PATENT, &[SOURCE, NOTICE, SAME, CHANGES, NETWORK], LW),
             "Unlicense" => t("The Unlicense", Public, BASE, &[], LW),
-            "CC0-1.0" => t(
-                "Creative Commons Zero",
-                Public,
-                BASE,
-                &[],
-                &[LIABILITY, TRADEMARK, NO_PATENT, WARRANTY],
-            ),
+            "CC0-1.0" => t("Creative Commons Zero", Public, BASE, &[], &[LIABILITY, TRADEMARK, NO_PATENT, WARRANTY]),
             _ => return None,
         })
     };
@@ -463,16 +367,8 @@ fn fit_one(ids: &[String], yours: &[String], project: &str) -> One {
 #[must_use]
 pub fn fit(expr: Option<&Expr>, yours: &str, project: &str) -> Fit {
     let your_expr = parse(yours);
-    let your_word = your_expr
-        .as_ref()
-        .map_or_else(|| yours.to_owned(), rest_word);
-    let your_ids: Vec<String> = your_expr
-        .as_ref()
-        .map(ids)
-        .unwrap_or_default()
-        .iter()
-        .map(|i| base_id(i).to_owned())
-        .collect();
+    let your_word = your_expr.as_ref().map_or_else(|| yours.to_owned(), rest_word);
+    let your_ids: Vec<String> = your_expr.as_ref().map(ids).unwrap_or_default().iter().map(|i| base_id(i).to_owned()).collect();
     let Some(expr) = expr else {
         return Fit {
             level: 3,
@@ -489,12 +385,7 @@ pub fn fit(expr: Option<&Expr>, yours: &str, project: &str) -> Fit {
             (ids, one)
         })
         .collect();
-    let name = |ids: &[String]| {
-        ids.iter()
-            .map(|i| short_id(i))
-            .collect::<Vec<_>>()
-            .join(" + ")
-    };
+    let name = |ids: &[String]| ids.iter().map(|i| short_id(i)).collect::<Vec<_>>().join(" + ");
     if rated.len() == 1 {
         let (ids, one) = &rated[0];
         let line = if one.level == 0 {
@@ -515,51 +406,26 @@ pub fn fit(expr: Option<&Expr>, yours: &str, project: &str) -> Fit {
         };
     }
     let best = rated.iter().map(|(_, one)| one.level).min().unwrap_or(3);
-    let good: Vec<&(Vec<String>, One)> =
-        rated.iter().filter(|(_, one)| one.level == best).collect();
+    let good: Vec<&(Vec<String>, One)> = rated.iter().filter(|(_, one)| one.level == best).collect();
     let bad: Vec<&(Vec<String>, One)> = rated.iter().filter(|(_, one)| one.level > best).collect();
     // The option assumed is the first that fits best, in the expression's
     // own order: that is how a lockfile-wide reading counts it. What every
     // option shares (an `AND`'s fixed part) is not a choice.
     let pick = good[0];
-    let chose: Vec<String> = pick
-        .0
-        .iter()
-        .filter(|i| !rated.iter().all(|(ids, _)| ids.contains(i)))
-        .cloned()
-        .collect();
+    let chose: Vec<String> = pick.0.iter().filter(|i| !rated.iter().all(|(ids, _)| ids.contains(i))).cloned().collect();
     if best == 0 && bad.is_empty() && matches!(expr, Expr::And(_)) {
-        let always: Vec<String> = pick
-            .0
-            .iter()
-            .filter(|i| rated.iter().all(|(ids, _)| ids.contains(i)))
-            .cloned()
-            .collect();
-        let mut rest: Vec<String> = rated
-            .iter()
-            .flat_map(|(ids, _)| ids.iter().filter(|i| !always.contains(i)).cloned())
-            .collect();
+        let always: Vec<String> = pick.0.iter().filter(|i| rated.iter().all(|(ids, _)| ids.contains(i))).cloned().collect();
+        let mut rest: Vec<String> = rated.iter().flat_map(|(ids, _)| ids.iter().filter(|i| !always.contains(i)).cloned()).collect();
         rest.dedup();
         let mut seen = Vec::new();
-        rest.retain(|r| {
-            if seen.contains(r) {
-                false
-            } else {
-                seen.push(r.clone());
-                true
-            }
-        });
+        rest.retain(|r| if seen.contains(r) { false } else { seen.push(r.clone()); true });
         let always_words: Vec<String> = always.iter().map(|i| short_id(i)).collect();
         let rest_words: Vec<String> = rest.iter().map(|i| short_id(i)).collect();
         let line = format!(
             "{} always {}; for the rest, {}. All of it fits your {your_word} project.",
             list(&always_words, "and"),
             if always.len() > 1 { "apply" } else { "applies" },
-            if rest.len() > 1 {
-                format!("either of {}", list(&rest_words, "or"))
-            } else {
-                rest_words.join("")
-            },
+            if rest.len() > 1 { format!("either of {}", list(&rest_words, "or")) } else { rest_words.join("") },
         );
         return Fit {
             level: 0,
@@ -570,16 +436,10 @@ pub fn fit(expr: Option<&Expr>, yours: &str, project: &str) -> Fit {
         };
     }
     if best == 0 && bad.is_empty() {
-        let patent = good.iter().find(|(ids, _)| {
-            ids.iter()
-                .any(|i| terms(i).is_some_and(|t| t.permissions.contains(&PATENT)))
-        });
+        let patent = good.iter().find(|(ids, _)| ids.iter().any(|i| terms(i).is_some_and(|t| t.permissions.contains(&PATENT))));
         let line = format!(
             "Either fits your {your_word} project{}.",
-            patent.map_or_else(String::new, |(ids, _)| format!(
-                "; {} adds a patent grant",
-                name(ids)
-            ))
+            patent.map_or_else(String::new, |(ids, _)| format!("; {} adds a patent grant", name(ids)))
         );
         return Fit {
             level: 0,
@@ -590,18 +450,11 @@ pub fn fit(expr: Option<&Expr>, yours: &str, project: &str) -> Fit {
         };
     }
     let lead = if best == 0 {
-        format!(
-            "Choose {}: it fits your {your_word} project.",
-            name(&pick.0)
-        )
+        format!("Choose {}: it fits your {your_word} project.", name(&pick.0))
     } else {
         format!("Choose {}. {}.", name(&pick.0), pick.1.words)
     };
-    let tail = bad
-        .iter()
-        .map(|(ids, one)| format!("{} {}", name(ids), one.short))
-        .collect::<Vec<_>>()
-        .join("; ");
+    let tail = bad.iter().map(|(ids, one)| format!("{} {}", name(ids), one.short)).collect::<Vec<_>>().join("; ");
     Fit {
         level: best,
         line: format!("{lead} {tail}."),
@@ -615,18 +468,10 @@ pub fn fit(expr: Option<&Expr>, yours: &str, project: &str) -> Fit {
 #[must_use]
 pub fn assumption(fit: &Fit) -> Option<String> {
     fit.assumed.then(|| {
-        let named = if fit.chose.is_empty() {
-            &fit.choice
-        } else {
-            &fit.chose
-        };
+        let named = if fit.chose.is_empty() { &fit.choice } else { &fit.chose };
         format!(
             "assuming you take it under {}",
-            named
-                .iter()
-                .map(|i| short_id(i))
-                .collect::<Vec<_>>()
-                .join(" + ")
+            named.iter().map(|i| short_id(i)).collect::<Vec<_>>().join(" + ")
         )
     })
 }
@@ -683,27 +528,12 @@ pub fn tree_summary(tree: &TreeLicenses) -> (String, Option<String>) {
     let parts: Vec<String> = by
         .iter()
         .map(|(lic, xs)| {
-            let run: Vec<&str> = xs
-                .iter()
-                .filter(|x| !x.build_only)
-                .map(|x| x.krate.as_str())
-                .collect();
-            let built: Vec<&str> = xs
-                .iter()
-                .filter(|x| x.build_only)
-                .map(|x| x.krate.as_str())
-                .collect();
+            let run: Vec<&str> = xs.iter().filter(|x| !x.build_only).map(|x| x.krate.as_str()).collect();
+            let built: Vec<&str> = xs.iter().filter(|x| x.build_only).map(|x| x.krate.as_str()).collect();
             if lic == "custom" {
-                format!(
-                    "custom terms in {}",
-                    list(if run.is_empty() { &built } else { &run }, "and")
-                )
+                format!("custom terms in {}", list(if run.is_empty() { &built } else { &run }, "and"))
             } else {
-                let tail = if built.is_empty() {
-                    String::new()
-                } else {
-                    format!(" ({} too, at build time only)", list(&built, "and"))
-                };
+                let tail = if built.is_empty() { String::new() } else { format!(" ({} too, at build time only)", list(&built, "and")) };
                 format!("{lic} in {}{tail}", list(&run, "and"))
             }
         })
@@ -711,18 +541,9 @@ pub fn tree_summary(tree: &TreeLicenses) -> (String, Option<String>) {
     let line = format!(
         "{}: permissive throughout{}.",
         plural(tree.total, "package", "packages"),
-        if parts.is_empty() {
-            String::new()
-        } else {
-            format!(", plus {}", list(&parts, "and"))
-        }
+        if parts.is_empty() { String::new() } else { format!(", plus {}", list(&parts, "and")) }
     );
-    let unread = (tree.unread > 0).then(|| {
-        format!(
-            "{} are not unpacked here, so unread.",
-            thousands(tree.unread)
-        )
-    });
+    let unread = (tree.unread > 0).then(|| format!("{} are not unpacked here, so unread.", thousands(tree.unread)));
     (line, unread)
 }
 
@@ -730,11 +551,7 @@ pub fn tree_summary(tree: &TreeLicenses) -> (String, Option<String>) {
 /// are not permissive: whether it brings a new kind of terms, or the tree
 /// already carries them. The bool says "new".
 #[must_use]
-pub fn tree_line(
-    expr: &Expr,
-    tree: &TreeLicenses,
-    package: Option<&str>,
-) -> Option<(String, bool)> {
+pub fn tree_line(expr: &Expr, tree: &TreeLicenses, package: Option<&str>) -> Option<(String, bool)> {
     let eff = options(expr)
         .iter()
         .map(|o| o.iter().map(|i| rank(family(i))).max().unwrap_or(0))
@@ -743,66 +560,28 @@ pub fn tree_line(
     if eff < 2 {
         return None;
     }
-    let fam = [Family::Weak, Family::Strong, Family::Unknown]
-        .into_iter()
-        .find(|f| rank(*f) == eff)?;
+    let fam = [Family::Weak, Family::Strong, Family::Unknown].into_iter().find(|f| rank(*f) == eff)?;
     let all: Vec<&Notable> = tree.notable.iter().filter(|n| n.family == fam).collect();
-    let carried: Vec<&Notable> = all
-        .iter()
-        .copied()
-        .filter(|n| Some(n.krate.as_str()) != package)
-        .collect();
+    let carried: Vec<&Notable> = all.iter().copied().filter(|n| Some(n.krate.as_str()) != package).collect();
     if package.is_some() && carried.len() < all.len() {
-        let build = |n: &Notable| {
-            if n.build_only {
-                format!("{} (build-time only)", n.krate)
-            } else {
-                n.krate.clone()
-            }
-        };
+        let build = |n: &Notable| if n.build_only { format!("{} (build-time only)", n.krate) } else { n.krate.clone() };
         let names: Vec<String> = carried.iter().map(|n| build(n)).collect();
         return Some((
             if carried.is_empty() {
                 format!("The only package in your tree with {}.", fam.terms())
             } else {
-                format!(
-                    "One of {} packages in your tree with {}; the others are {}.",
-                    word(all.len()),
-                    fam.terms(),
-                    list(&names, "and")
-                )
+                format!("One of {} packages in your tree with {}; the others are {}.", word(all.len()), fam.terms(), list(&names, "and"))
             },
             false,
         ));
     }
-    let lic: Vec<String> = ids(expr)
-        .iter()
-        .map(|i| short_id(i))
-        .filter(|i| rank(family(i)) >= 2)
-        .collect();
-    let lic = if lic.is_empty() {
-        "these terms".to_owned()
-    } else {
-        lic.join(", ")
-    };
+    let lic: Vec<String> = ids(expr).iter().map(|i| short_id(i)).filter(|i| rank(family(i)) >= 2).collect();
+    let lic = if lic.is_empty() { "these terms".to_owned() } else { lic.join(", ") };
     Some(if carried.is_empty() {
-        (
-            format!(
-                "Adding it brings {lic} into a tree with no {} today.",
-                fam.terms()
-            ),
-            true,
-        )
+        (format!("Adding it brings {lic} into a tree with no {} today.", fam.terms()), true)
     } else {
         let names: Vec<&str> = carried.iter().take(3).map(|n| n.krate.as_str()).collect();
-        (
-            format!(
-                "Your tree already has {} in {}; this adds no new kind.",
-                fam.terms(),
-                list(&names, "and")
-            ),
-            false,
-        )
+        (format!("Your tree already has {} in {}; this adds no new kind.", fam.terms(), list(&names, "and")), false)
     })
 }
 
@@ -813,57 +592,25 @@ mod tests {
     #[test]
     fn expressions_parse_with_and_binding_tighter() {
         let e = parse("(MIT OR Apache-2.0) AND Unicode-3.0").expect("parses");
-        assert_eq!(
-            options(&e),
-            vec![
-                vec!["MIT".to_owned(), "Unicode-3.0".to_owned()],
-                vec!["Apache-2.0".to_owned(), "Unicode-3.0".to_owned()]
-            ]
-        );
+        assert_eq!(options(&e), vec![vec!["MIT".to_owned(), "Unicode-3.0".to_owned()], vec![
+            "Apache-2.0".to_owned(),
+            "Unicode-3.0".to_owned()
+        ]]);
         assert_eq!(rest_word(&e), "MIT/Apache-2.0 +1");
-        assert_eq!(
-            parse("MIT/Apache-2.0"),
-            Some(Expr::Or(vec![
-                Expr::Id("MIT".into()),
-                Expr::Id("Apache-2.0".into())
-            ]))
-        );
-        assert_eq!(
-            rest_word(&parse("MIT OR Apache-2.0 OR LGPL-2.1-or-later").expect("parses")),
-            "MIT/Apache-2.0 +1"
-        );
+        assert_eq!(parse("MIT/Apache-2.0"), Some(Expr::Or(vec![Expr::Id("MIT".into()), Expr::Id("Apache-2.0".into())])));
+        assert_eq!(rest_word(&parse("MIT OR Apache-2.0 OR LGPL-2.1-or-later").expect("parses")), "MIT/Apache-2.0 +1");
         assert_eq!(family("GPL-2.0-only"), Family::Strong);
         assert_eq!(family("Apache-2.0 WITH LLVM-exception"), Family::Permissive);
     }
 
     #[test]
     fn an_or_fits_and_names_what_it_assumed() {
-        let toml = fit(
-            parse("MIT OR Apache-2.0").as_ref(),
-            "MIT OR Apache-2.0",
-            "present",
-        );
-        assert_eq!(
-            toml.line,
-            "Either fits your MIT/Apache-2.0 project; Apache-2.0 adds a patent grant."
-        );
-        assert_eq!(
-            assumption(&toml).as_deref(),
-            Some("assuming you take it under MIT")
-        );
-        let cell = fit(
-            parse("Apache-2.0 OR GPL-2.0-only").as_ref(),
-            "MIT OR Apache-2.0",
-            "present",
-        );
-        assert_eq!(
-            cell.line,
-            "Choose Apache-2.0: it fits your MIT/Apache-2.0 project. GPL-2.0 would make present GPL-2.0."
-        );
-        assert_eq!(
-            assumption(&cell).as_deref(),
-            Some("assuming you take it under Apache-2.0")
-        );
+        let toml = fit(parse("MIT OR Apache-2.0").as_ref(), "MIT OR Apache-2.0", "present");
+        assert_eq!(toml.line, "Either fits your MIT/Apache-2.0 project; Apache-2.0 adds a patent grant.");
+        assert_eq!(assumption(&toml).as_deref(), Some("assuming you take it under MIT"));
+        let cell = fit(parse("Apache-2.0 OR GPL-2.0-only").as_ref(), "MIT OR Apache-2.0", "present");
+        assert_eq!(cell.line, "Choose Apache-2.0: it fits your MIT/Apache-2.0 project. GPL-2.0 would make present GPL-2.0.");
+        assert_eq!(assumption(&cell).as_deref(), Some("assuming you take it under Apache-2.0"));
         let mpl = fit(parse("MPL-2.0").as_ref(), "MIT OR Apache-2.0", "present");
         assert_eq!(mpl.level, 1);
         assert_eq!(assumption(&mpl), None, "no choice, nothing assumed");

@@ -449,15 +449,7 @@ fn paint_float_shadow(
         spread_radius: px(0.0),
         inset: false,
     };
-    window.paint_chamfer_shadows(
-        bounds,
-        Corners {
-            top_left: px(chamfer),
-            bottom_right: px(chamfer),
-            ..Corners::default()
-        },
-        &[shadow],
-    );
+    window.paint_chamfer_shadows(bounds, Corners { top_left: px(chamfer), bottom_right: px(chamfer), ..Corners::default() }, &[shadow]);
 }
 
 /// How the bevel is chosen: a named state resolved against the active

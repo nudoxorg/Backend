@@ -27,7 +27,8 @@ const STATUS: &str = "package demo;\npublic enum Status { Active, Done }\n";
 const DRIVE: &str =
     "package demo;\npublic final class Drive {\n  Status run() { return Status.Active; }\n}\n";
 
-const LOCAL: &str = "package demo;\nenum Status { Active, Done }\npublic final class Drive {\n  Status run() { return Status.Active; }\n}\n";
+const LOCAL: &str =
+    "package demo;\nenum Status { Active, Done }\npublic final class Drive {\n  Status run() { return Status.Active; }\n}\n";
 
 fn jdk_ready() -> Option<JdkToolchain<'static>> {
     let root = std::env::var_os("NUDOX_JDK")?;
@@ -82,7 +83,12 @@ fn compile_drive(image: &[u8], source: &[u8]) -> Vec<u8> {
 
 fn lane(bytes: &[u8]) -> (FragmentView<'_>, Vec<DecodedOccurrence<'_>>) {
     let view = FragmentView::validate(bytes).expect("validate fragment");
-    let occurrences = view.occurrences().into_iter().flatten().flatten().collect();
+    let occurrences = view
+        .occurrences()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .collect();
     (view, occurrences)
 }
 
@@ -116,7 +122,10 @@ fn occurrence_span_text<'a>(
     source.get(start..end)
 }
 
-fn authority_image(jdk: &JdkToolchain<'_>, sources: &[JavaSource<'_>]) -> Vec<u8> {
+fn authority_image(
+    jdk: &JdkToolchain<'_>,
+    sources: &[JavaSource<'_>],
+) -> Vec<u8> {
     let mut harness = Harness::new().expect("harness");
     harness.prepare(jdk).expect("prepare doclet");
     let mut image = Vec::new();
@@ -191,7 +200,8 @@ fn cross_file_enum_constant_read_targets_declaring_enum_namespace_key() {
         namespace_reads.len(),
         1,
         "expected exactly one maven demo.Status Active variant read, saw {:#?}",
-        occs.iter()
+        occs
+            .iter()
             .map(|row| (row.occurrence.kind, row.occurrence.target))
             .collect::<Vec<_>>()
     );
@@ -242,8 +252,7 @@ fn same_file_enum_constant_read_stays_local() {
                 .occurrence
                 .span
                 .end
-                .checked_sub(row.occurrence.span.start)
-                == Some(6)
+                .checked_sub(row.occurrence.span.start) == Some(6)
     });
     assert!(local_active, "same-file Status.Active must stay Local");
 

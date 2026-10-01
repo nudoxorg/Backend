@@ -16,12 +16,7 @@
 //! owner compiles it and serves typed relations and source-verified
 //! (`SemanticConfidence::Compiler`) references.
 
-#![allow(
-    clippy::expect_used,
-    clippy::panic,
-    clippy::too_many_lines,
-    missing_docs
-)]
+#![allow(clippy::expect_used, clippy::panic, clippy::too_many_lines, missing_docs)]
 
 use backend_client::{LocalSubscriptionTransport, Session};
 use backend_desktop::core::{LocalProjectId, VersionedRoot};
@@ -95,11 +90,7 @@ fn serve(projects: &[&Path]) -> (backend_desktop::DesktopHost, PathBuf, PathBuf)
             _ => false,
         };
         let rows = session.health().map_or(0, |health| health.row_count());
-        stable = if ready && rows > 0 && rows == last_rows {
-            stable + 1
-        } else {
-            0
-        };
+        stable = if ready && rows > 0 && rows == last_rows { stable + 1 } else { 0 };
         last_rows = rows;
         if stable >= 3 {
             break;
@@ -123,12 +114,7 @@ impl Plane {
 
     /// Runs the UI executor until `done` holds; worker threads land results
     /// through the store's wake task in between.
-    fn until<T>(
-        &self,
-        cx: &mut TestAppContext,
-        what: &str,
-        read: impl Fn(&DataStore) -> Option<T>,
-    ) -> T {
+    fn until<T>(&self, cx: &mut TestAppContext, what: &str, read: impl Fn(&DataStore) -> Option<T>) -> T {
         let started = Instant::now();
         loop {
             cx.run_until_parked();
@@ -140,11 +126,7 @@ impl Plane {
         }
     }
 
-    fn search(
-        &self,
-        cx: &mut TestAppContext,
-        text: &str,
-    ) -> backend_desktop::model::pages::SearchPage {
+    fn search(&self, cx: &mut TestAppContext, text: &str) -> backend_desktop::model::pages::SearchPage {
         let query = SearchQuery::new(text, 200).expect("query");
         self.ensure(cx, PageKey::Search(query.clone()));
         self.until(cx, text, |store| {
@@ -156,13 +138,7 @@ impl Plane {
 
     /// Searches `name`, picks the row of `kind` whose coordinate contains
     /// `within`, and returns its exact coordinate.
-    fn find(
-        &self,
-        cx: &mut TestAppContext,
-        name: &str,
-        kind: DeclarationKind,
-        within: &str,
-    ) -> SymbolRef {
+    fn find(&self, cx: &mut TestAppContext, name: &str, kind: DeclarationKind, within: &str) -> SymbolRef {
         let page = self.search(cx, name);
         page.rows
             .iter()
@@ -234,9 +210,7 @@ fn workspace_version(repo: &Path) -> String {
         .to_owned()
 }
 
-fn names<'a>(
-    members: impl Iterator<Item = &'a backend_desktop::model::pages::Member>,
-) -> Vec<String> {
+fn names<'a>(members: impl Iterator<Item = &'a backend_desktop::model::pages::Member>) -> Vec<String> {
     members.map(|member| member.decl.name.to_string()).collect()
 }
 
@@ -258,8 +232,7 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
     let actor = EngineActor::start(LocalEngineClient::new(&endpoint, project), 32).expect("actor");
     let runtime = DesktopRuntime::new(snapshot, actor);
     let reader_endpoint = endpoint.clone();
-    let pool =
-        ReadPool::start(3, move |_| SessionReader::connect(&reader_endpoint)).expect("read pool");
+    let pool = ReadPool::start(3, move |_| SessionReader::connect(&reader_endpoint)).expect("read pool");
     let graph = cx.update(|cx| UiEntityGraph::install_with_reads(cx, runtime, None, Some(pool)));
     let plane = Plane {
         store: graph.store.clone(),
@@ -274,17 +247,10 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
             .find(|package| package.package.as_str() == utf8(root))
             .unwrap_or_else(|| panic!("{name} is not on the shelf"));
         assert_eq!(row.name.as_ref(), name);
-        assert_eq!(
-            row.readiness,
-            backend_desktop::model::pages::Readiness::Ready
-        );
+        assert_eq!(row.readiness, backend_desktop::model::pages::Readiness::Ready);
     }
     let health = plane.until(cx, "health", |store| store.health().loaded_value().cloned());
-    assert!(
-        health.rows > 1_000,
-        "the owner committed {} rows",
-        health.rows
-    );
+    assert!(health.rows > 1_000, "the owner committed {} rows", health.rows);
     assert!(health.ingest.files_indexed >= 20, "{:?}", health.ingest);
 
     // ── Search: ranked rows with a reason each.
@@ -292,19 +258,14 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
     let engine_row = search
         .rows
         .iter()
-        .find(|row| {
-            row.decl.name.as_ref() == "Engine" && row.decl.kind == Some(DeclarationKind::Trait)
-        })
+        .find(|row| row.decl.name.as_ref() == "Engine" && row.decl.kind == Some(DeclarationKind::Trait))
         .expect("the Engine trait is a search result");
     assert_eq!(engine_row.reason, MatchReason::ExactName);
     assert_eq!(
         engine_row.snippet.as_deref(),
         Some("Whatever a surface talks to in order to read an admitted reply.")
     );
-    assert_eq!(
-        engine_row.score.gap().map(|gap| gap.reason),
-        Some(GapReason::NotServed)
-    );
+    assert_eq!(engine_row.score.gap().map(|gap| gap.reason), Some(GapReason::NotServed));
 
     // ── A trait page (structural projection).
     let engine = engine_row.decl.coordinate.clone();
@@ -312,10 +273,7 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
     assert_eq!(trait_page.identity.kind, Some(DeclarationKind::Trait));
     assert_eq!(trait_page.identity.path.as_deref(), Some("drive.rs"));
     assert_eq!(
-        trait_page
-            .signature
-            .known()
-            .map(|signature| signature.text.to_string()),
+        trait_page.signature.known().map(|signature| signature.text.to_string()),
         Some("pub trait Engine".to_owned())
     );
     let docs = DocFragment::plain_text(&trait_page.docs);
@@ -323,17 +281,11 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
         docs.starts_with("Whatever a surface talks to in order to read an admitted reply."),
         "{docs}"
     );
-    assert!(
-        docs.contains("Nothing\nin this crate knows which it is holding."),
-        "{docs}"
-    );
+    assert!(docs.contains("Nothing\nin this crate knows which it is holding."), "{docs}");
     let members = trait_page.members.known().expect("trait members");
     let methods = names(members.all());
     for method in ["revision", "health", "probe", "probe_page", "surface"] {
-        assert!(
-            methods.contains(&method.to_owned()),
-            "{method} missing from {methods:?}"
-        );
+        assert!(methods.contains(&method.to_owned()), "{method} missing from {methods:?}");
     }
     let changes = members
         .does
@@ -343,11 +295,7 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
     assert!(names(changes.members.iter()).contains(&"probe".to_owned()));
     let outline = trait_page.outline.known().expect("outline position");
     assert_eq!(
-        outline
-            .ancestors
-            .iter()
-            .map(|decl| decl.name.to_string())
-            .collect::<Vec<_>>(),
+        outline.ancestors.iter().map(|decl| decl.name.to_string()).collect::<Vec<_>>(),
         ["drive.rs"]
     );
     // The workspace-member crate has no compiler publication: typed
@@ -360,10 +308,7 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
     );
     // `Engine` is a trait: nothing "calls" it, so the structural lane finds
     // no incoming `Calls` edge. The reply is still `Ok` — empty, not a gap.
-    let engine_references = trait_page
-        .references
-        .known()
-        .expect("references from the structural lane");
+    let engine_references = trait_page.references.known().expect("references from the structural lane");
     assert!(
         engine_references.is_empty(),
         "a trait has no structural call site: {engine_references:?}"
@@ -378,10 +323,7 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
     let intent_site = &intent_references[0];
     assert_eq!(intent_site.site.name.as_ref(), "answer");
     assert_eq!(intent_site.relation, SemanticLinkKind::Calls);
-    assert_eq!(
-        intent_site.confidence,
-        backend_library::SemanticConfidence::Syntactic
-    );
+    assert_eq!(intent_site.confidence, backend_library::SemanticConfidence::Syntactic);
     let intent_span = intent_site.span.known().expect("intent call span");
     assert_eq!(intent_span.file.as_ref(), "drive.rs");
     // The structural lane finds a real match (a non-zero start, not the
@@ -406,10 +348,7 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
         "{intent_span:?}"
     );
     let down = trait_page.rose.down.known().expect("containment");
-    assert!(
-        down.iter()
-            .any(|relation| relation.decl.name.as_ref() == "probe")
-    );
+    assert!(down.iter().any(|relation| relation.decl.name.as_ref() == "probe"));
 
     // ── The package dossier (a local project, no registry claims). The engine
     // indexed this crate, and its canonical-graph record is kept ahead of a
@@ -424,20 +363,10 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
         Some(workspace_version(&repo)),
         "the dossier's version string is the crate's resolved version"
     );
-    assert_eq!(
-        record.downloads.gap().map(|gap| gap.reason),
-        Some(GapReason::LocalProject)
-    );
-    assert_eq!(
-        dossier.versions.gap().map(|gap| gap.reason),
-        Some(GapReason::LocalProject)
-    );
+    assert_eq!(record.downloads.gap().map(|gap| gap.reason), Some(GapReason::LocalProject));
+    assert_eq!(dossier.versions.gap().map(|gap| gap.reason), Some(GapReason::LocalProject));
     let dependencies = dossier.dependencies.known().expect("manifest dependencies");
-    assert!(
-        dependencies
-            .iter()
-            .any(|dependency| dependency.name.as_ref() == "backend-library")
-    );
+    assert!(dependencies.iter().any(|dependency| dependency.name.as_ref() == "backend-library"));
     let tree = dossier.outline.known().expect("mosaic tree");
     assert!(tree.complete, "every outline page was read");
     let drive = tree
@@ -445,13 +374,10 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
         .iter()
         .find(|node| node.decl.name.as_ref() == "drive.rs")
         .expect("drive.rs module");
-    assert!(
-        drive
-            .children
-            .iter()
-            .any(|node| node.decl.name.as_ref() == "Engine"
-                && node.decl.kind == Some(DeclarationKind::Trait))
-    );
+    assert!(drive
+        .children
+        .iter()
+        .any(|node| node.decl.name.as_ref() == "Engine" && node.decl.kind == Some(DeclarationKind::Trait)));
     assert!(tree.count() > 1_000, "{} declarations", tree.count());
 
     // ── A struct page, reached through the mosaic: members ledger,
@@ -459,41 +385,20 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
     let page_struct = in_tree(tree, "Page", DeclarationKind::Struct, Some("page.rs"));
     let struct_page = plane.symbol(cx, &page_struct);
     assert_eq!(
-        struct_page
-            .signature
-            .known()
-            .map(|signature| signature.text.to_string()),
+        struct_page.signature.known().map(|signature| signature.text.to_string()),
         Some("pub struct Page".to_owned())
     );
-    assert_eq!(
-        DocFragment::plain_text(&struct_page.docs),
-        "One complete declaration page."
-    );
+    assert_eq!(DocFragment::plain_text(&struct_page.docs), "One complete declaration page.");
     let members = struct_page.members.known().expect("struct members");
     let fields = names(members.made_of.iter());
-    for field in [
-        "identity",
-        "prose",
-        "members",
-        "relations",
-        "source",
-        "notes",
-    ] {
-        assert!(
-            fields.contains(&field.to_owned()),
-            "{field} missing from {fields:?}"
-        );
+    for field in ["identity", "prose", "members", "relations", "source", "notes"] {
+        assert!(fields.contains(&field.to_owned()), "{field} missing from {fields:?}");
     }
     let receiver_of = |name: &str| {
         members
             .does
             .iter()
-            .find(|group| {
-                group
-                    .members
-                    .iter()
-                    .any(|member| member.decl.name.as_ref() == name)
-            })
+            .find(|group| group.members.iter().any(|member| member.decl.name.as_ref() == name))
             .map(|group| group.receiver)
     };
     assert_eq!(receiver_of("with_prose"), Some(Receiver::Consumes));
@@ -503,21 +408,13 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
         .all()
         .find(|member| member.decl.name.as_ref() == "new")
         .expect("Page::new");
-    let signature = constructor
-        .signature
-        .known()
-        .expect("constructor signature");
+    let signature = constructor.signature.known().expect("constructor signature");
     let identity_link = signature
         .links()
         .find(|token| signature.token_text(token) == "Identity")
         .and_then(|token| token.link.as_ref())
         .expect("Identity in Page::new links by name");
-    assert!(
-        identity_link
-            .target
-            .as_str()
-            .starts_with(&format!("{}::identity.rs:", utf8(&present)))
-    );
+    assert!(identity_link.target.as_str().starts_with(&format!("{}::identity.rs:", utf8(&present))));
     assert_eq!(identity_link.provenance, Provenance::ByName);
 
     // ── The source view: the whole local file, verified against the excerpt.
@@ -550,30 +447,17 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
     // ── Semantic crate: typed relations, derived impl, exact reference spans.
     let marker = plane.find(cx, "Marker", DeclarationKind::Trait, "rich_project");
     let marker_page = plane.symbol(cx, &marker);
-    assert!(
-        marker_page.identity.semantic,
-        "compiler-addressed coordinate"
-    );
+    assert!(marker_page.identity.semantic, "compiler-addressed coordinate");
     assert_eq!(
-        marker_page
-            .signature
-            .known()
-            .map(|signature| signature.text.to_string()),
+        marker_page.signature.known().map(|signature| signature.text.to_string()),
         Some("pub trait Marker".to_owned())
     );
-    let implementors = marker_page
-        .rose
-        .implemented_by
-        .known()
-        .expect("implementors");
+    let implementors = marker_page.rose.implemented_by.known().expect("implementors");
     let implementor = implementors
         .iter()
         .find(|relation| relation.decl.name.as_ref() == "Boxed")
         .expect("Boxed implements Marker");
-    assert_eq!(
-        implementor.kind,
-        RelationKind::Semantic(SemanticLinkKind::Implements)
-    );
+    assert_eq!(implementor.kind, RelationKind::Semantic(SemanticLinkKind::Implements));
     assert!(matches!(
         implementor.provenance,
         Provenance::Derived {
@@ -587,18 +471,11 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
         .find(|site| site.site.name.as_ref() == "Boxed")
         .expect("the impl block uses Marker");
     assert_eq!(site.relation, SemanticLinkKind::TypeReference);
-    assert_eq!(
-        site.confidence,
-        backend_library::SemanticConfidence::Compiler
-    );
+    assert_eq!(site.confidence, backend_library::SemanticConfidence::Compiler);
     let span = site.span.known().expect("reference span");
     assert_eq!(span.file.as_ref(), "src/lib.rs");
     let bytes = std::fs::read(rich.join(span.file.as_ref())).expect("fixture source");
-    assert_eq!(
-        &bytes[span.bytes.range()],
-        b"Marker",
-        "the span covers the use exactly"
-    );
+    assert_eq!(&bytes[span.bytes.range()], b"Marker", "the span covers the use exactly");
 
     let boxed = plane.find(cx, "Boxed", DeclarationKind::Struct, "rich_project");
     let boxed_page = plane.symbol(cx, &boxed);
@@ -607,15 +484,9 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
         .iter()
         .find(|relation| relation.decl.name.as_ref() == "Marker")
         .expect("Boxed is Marker");
-    assert_eq!(
-        is_marker.kind,
-        RelationKind::Semantic(SemanticLinkKind::Implements)
-    );
+    assert_eq!(is_marker.kind, RelationKind::Semantic(SemanticLinkKind::Implements));
     assert!(is_marker.via.is_some(), "derived through the impl block");
-    let fields = boxed_page
-        .members
-        .known()
-        .map(|members| names(members.made_of.iter()));
+    let fields = boxed_page.members.known().map(|members| names(members.made_of.iter()));
     assert_eq!(fields, Some(vec!["value".to_owned()]));
     assert_eq!(
         boxed_page.signature.gap().map(|gap| gap.reason),
@@ -628,24 +499,18 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
     let get_page = plane.symbol(cx, &get);
     let callers = get_page.rose.left.known().expect("callers");
     assert!(
-        callers
-            .iter()
-            .any(|relation| relation.decl.name.as_ref() == "compute"
-                && relation.kind == RelationKind::Semantic(SemanticLinkKind::MethodCall)),
+        callers.iter().any(|relation| relation.decl.name.as_ref() == "compute"
+            && relation.kind == RelationKind::Semantic(SemanticLinkKind::MethodCall)),
         "compute() calls get()"
     );
     let reads = get_page.rose.right.known().expect("outgoing");
-    assert!(
-        reads
-            .iter()
-            .any(|relation| relation.decl.name.as_ref() == "value"
-                && relation.kind == RelationKind::Semantic(SemanticLinkKind::Reads))
-    );
+    assert!(reads.iter().any(|relation| relation.decl.name.as_ref() == "value"
+        && relation.kind == RelationKind::Semantic(SemanticLinkKind::Reads)));
 
     // Leave the lead a plain-text view of every model the store holds.
-    let text = plane.store.read_with(cx, |store, _| {
-        backend_desktop::runtime::debug_page::render_text(store)
-    });
+    let text = plane
+        .store
+        .read_with(cx, |store, _| backend_desktop::runtime::debug_page::render_text(store));
     let out = std::env::var("NUDOX_DEBUG_PAGE_OUT").map_or_else(
         |_| std::env::temp_dir().join("nudox-debug-page.txt"),
         PathBuf::from,

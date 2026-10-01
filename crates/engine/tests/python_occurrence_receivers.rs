@@ -91,6 +91,7 @@ fn failure_label(failure: &CompileFailure<'_>) -> &'static str {
     }
 }
 
+
 /// A resolved binding is right at either evidence tier: `Index` from the
 /// syntax lane alone, or `Oracle` when pyrefly is on PATH and confirms the
 /// site. These laws are about the binding, so they hold on machines with and
@@ -3475,17 +3476,13 @@ class Child(Base):
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == other_note
     ) {
-        return Err(TestError::Falsified(
-            "super().note must not resolve to Other.note",
-        ));
+        return Err(TestError::Falsified("super().note must not resolve to Other.note"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "super().note must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("super().note must not resolve to Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -3551,9 +3548,7 @@ class Child(Base):
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_score
     ) {
-        return Err(TestError::Falsified(
-            "super().score must not resolve to Child.score",
-        ));
+        return Err(TestError::Falsified("super().score must not resolve to Child.score"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -3594,9 +3589,7 @@ class Child(Base):
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "super().note must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("super().note must not resolve to Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -3636,17 +3629,13 @@ class Child(Base):
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == base_note
     ) {
-        return Err(TestError::Falsified(
-            "two-arg super must not bind Base.note",
-        ));
+        return Err(TestError::Falsified("two-arg super must not bind Base.note"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "two-arg super must not bind Child.note",
-        ));
+        return Err(TestError::Falsified("two-arg super must not bind Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -3684,9 +3673,7 @@ class Child(Left, Right):
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == right_note
     ) {
-        return Err(TestError::Falsified(
-            "super().note must not resolve to Right.note",
-        ));
+        return Err(TestError::Falsified("super().note must not resolve to Right.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -3727,9 +3714,7 @@ class D(B, C):
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == root_note
     ) {
-        return Err(TestError::Falsified(
-            "super().note must not resolve to A.note",
-        ));
+        return Err(TestError::Falsified("super().note must not resolve to A.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -3758,17 +3743,13 @@ def read():
     }
     assert_universe_method(calls[0], "module-level super stays a universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "module-level super confidence is Index",
-        ));
+        return Err(TestError::Falsified("module-level super confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == base_note
     ) {
-        return Err(TestError::Falsified(
-            "module-level super must not bind Base.note",
-        ));
+        return Err(TestError::Falsified("module-level super must not bind Base.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -3926,9 +3907,7 @@ class Child(mod.Base):
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == base_note
     ) {
-        return Err(TestError::Falsified(
-            "qualified base must not bind Base.note",
-        ));
+        return Err(TestError::Falsified("qualified base must not bind Base.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -4031,11 +4010,7 @@ class Child(A7):
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        base_note,
-        "eighth base link resolves to Base.note",
-    )?;
+    assert_local_index(calls[0], base_note, "eighth base link resolves to Base.note")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -4094,9 +4069,7 @@ class Child(A8):
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == base_note
     ) {
-        return Err(TestError::Falsified(
-            "ninth base link must not bind Base.note",
-        ));
+        return Err(TestError::Falsified("ninth base link must not bind Base.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -4130,25 +4103,19 @@ class Child(Base):
     }
     assert_universe_method(calls[0], "ambiguous base methods stay a universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "ambiguous base methods confidence is Index",
-        ));
+        return Err(TestError::Falsified("ambiguous base methods confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == first_note
     ) {
-        return Err(TestError::Falsified(
-            "super().note must not bind first Base.note",
-        ));
+        return Err(TestError::Falsified("super().note must not bind first Base.note"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == second_note
     ) {
-        return Err(TestError::Falsified(
-            "super().note must not bind second Base.note",
-        ));
+        return Err(TestError::Falsified("super().note must not bind second Base.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -4183,18 +4150,12 @@ class Child(Base):
     if reads.len() != 1 {
         return Err(TestError::Falsified("read owns one FieldAccess"));
     }
-    assert_local_index(
-        reads[0],
-        note_field,
-        "super().note resolves to Base.note field",
-    )?;
+    assert_local_index(reads[0], note_field, "super().note resolves to Base.note field")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == note_method
     ) {
-        return Err(TestError::Falsified(
-            "super().note must not resolve to Base.note method",
-        ));
+        return Err(TestError::Falsified("super().note must not resolve to Base.note method"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -4225,18 +4186,12 @@ class Child(Base):
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        note_method,
-        "super().note() resolves to Base.note method",
-    )?;
+    assert_local_index(calls[0], note_method, "super().note() resolves to Base.note method")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == note_field
     ) {
-        return Err(TestError::Falsified(
-            "super().note() must not resolve to Base.note field",
-        ));
+        return Err(TestError::Falsified("super().note() must not resolve to Base.note field"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -4405,25 +4360,19 @@ class Child(Base):
     }
     assert_universe_method(calls[0], "super(Base, self).note stays a universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "super(Base, self).note confidence is Index",
-        ));
+        return Err(TestError::Falsified("super(Base, self).note confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == base_note
     ) {
-        return Err(TestError::Falsified(
-            "super(Base, self).note must not bind Base.note",
-        ));
+        return Err(TestError::Falsified("super(Base, self).note must not bind Base.note"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "super(Base, self).note must not bind Child.note",
-        ));
+        return Err(TestError::Falsified("super(Base, self).note must not bind Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -4541,9 +4490,7 @@ class Child(Base):
         "super(Base, self).score stays a universe field key",
     )?;
     if !index_or_oracle(reads[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "super(Base, self).score confidence is Index",
-        ));
+        return Err(TestError::Falsified("super(Base, self).score confidence is Index"));
     }
     if matches!(
         &reads[0].occurrence.target,
@@ -4641,9 +4588,7 @@ class Child(Base):
     }
     assert_universe_method(calls[0], "super(Other, self).note stays a universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "super(Other, self).note confidence is Index",
-        ));
+        return Err(TestError::Falsified("super(Other, self).note confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
@@ -4689,9 +4634,7 @@ class Child(Base):
     }
     assert_universe_method(calls[0], "super(Child, obj).note stays a universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "super(Child, obj).note confidence is Index",
-        ));
+        return Err(TestError::Falsified("super(Child, obj).note confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
@@ -4729,17 +4672,13 @@ class Child(Base):
     }
     assert_universe_method(calls[0], "super(Child).note stays a universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "super(Child).note confidence is Index",
-        ));
+        return Err(TestError::Falsified("super(Child).note confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == base_note
     ) {
-        return Err(TestError::Falsified(
-            "super(Child).note must not bind Base.note",
-        ));
+        return Err(TestError::Falsified("super(Child).note must not bind Base.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -4825,17 +4764,13 @@ class Child(Base):
     }
     assert_universe_method(inner_calls[0], "nested explicit super stays a universe key")?;
     if !index_or_oracle(inner_calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "nested explicit super confidence is Index",
-        ));
+        return Err(TestError::Falsified("nested explicit super confidence is Index"));
     }
     if matches!(
         &inner_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == base_note
     ) {
-        return Err(TestError::Falsified(
-            "nested explicit super must not bind Base.note",
-        ));
+        return Err(TestError::Falsified("nested explicit super must not bind Base.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -4916,10 +4851,7 @@ class Child(A7):
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_universe_method(
-        calls[0],
-        "super(Base, self) after last link stays a universe key",
-    )?;
+    assert_universe_method(calls[0], "super(Base, self) after last link stays a universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
         return Err(TestError::Falsified(
             "super(Base, self) after last link confidence is Index",
@@ -4963,18 +4895,12 @@ def read(service: Child[int]):
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "service.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "service.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "service.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("service.note() must not resolve to Decoy.note"));
     }
     let reads = read_field_accesses(&view, read_owner)?;
     if !reads.is_empty() {
@@ -5019,9 +4945,7 @@ def read(service: Child[int]):
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "service.note must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("service.note must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -5055,18 +4979,12 @@ def read(service: Child[int]):
     if reads.len() != 1 {
         return Err(TestError::Falsified("read owns one FieldAccess"));
     }
-    assert_local_index(
-        reads[0],
-        child_score,
-        "service.score resolves to Child.score",
-    )?;
+    assert_local_index(reads[0], child_score, "service.score resolves to Child.score")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_score
     ) {
-        return Err(TestError::Falsified(
-            "service.score must not resolve to Decoy.score",
-        ));
+        return Err(TestError::Falsified("service.score must not resolve to Decoy.score"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -5128,9 +5046,7 @@ def read(service: list[Child]):
     }
     assert_universe_method(calls[0], "list[Child] receiver stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "list[Child] universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("list[Child] universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
@@ -5163,22 +5079,15 @@ def read(service: pkg.Child[int]):
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_universe_method(
-        calls[0],
-        "pkg.Child[int] receiver stays a pypi universe key",
-    )?;
+    assert_universe_method(calls[0], "pkg.Child[int] receiver stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "pkg.Child[int] universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("pkg.Child[int] universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "pkg.Child[int] must not bind Child.note",
-        ));
+        return Err(TestError::Falsified("pkg.Child[int] must not bind Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -5205,11 +5114,7 @@ def read(service: \"Child\"):
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "quoted Child annotation resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "quoted Child annotation resolves to Child.note")?;
     let reads = read_field_accesses(&view, read_owner)?;
     if !reads.is_empty() {
         return Err(TestError::Falsified("read owns zero FieldAccess rows"));
@@ -5246,18 +5151,12 @@ def read(service: Child[int]):
     if reads.len() != 1 {
         return Err(TestError::Falsified("read owns one FieldAccess"));
     }
-    assert_local_index(
-        reads[0],
-        note_field,
-        "service.note resolves to Child.note field",
-    )?;
+    assert_local_index(reads[0], note_field, "service.note resolves to Child.note field")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == note_method
     ) {
-        return Err(TestError::Falsified(
-            "service.note must not resolve to Child.note method",
-        ));
+        return Err(TestError::Falsified("service.note must not resolve to Child.note method"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -5287,18 +5186,12 @@ def read(service: Child[int]):
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        note_method,
-        "service.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], note_method, "service.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == note_field
     ) {
-        return Err(TestError::Falsified(
-            "service.note() must not resolve to Child.note field",
-        ));
+        return Err(TestError::Falsified("service.note() must not resolve to Child.note field"));
     }
     let reads = read_field_accesses(&view, read_owner)?;
     if !reads.is_empty() {
@@ -5346,14 +5239,10 @@ def read(service: WorkoutService[int]):
         ));
     }
     if !index_or_oracle(reads[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "service.score package field confidence is Index",
-        ));
+        return Err(TestError::Falsified("service.score package field confidence is Index"));
     }
     if matches!(&reads[0].occurrence.target, OccurrenceTarget::Local(_)) {
-        return Err(TestError::Falsified(
-            "service.score must not resolve locally",
-        ));
+        return Err(TestError::Falsified("service.score must not resolve locally"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -5393,14 +5282,10 @@ def read(service: WorkoutService[int]):
         ));
     }
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "service.note() package method confidence is Index",
-        ));
+        return Err(TestError::Falsified("service.note() package method confidence is Index"));
     }
     if matches!(&calls[0].occurrence.target, OccurrenceTarget::Local(_)) {
-        return Err(TestError::Falsified(
-            "service.note() must not resolve locally",
-        ));
+        return Err(TestError::Falsified("service.note() must not resolve locally"));
     }
     let reads = read_field_accesses(&view, read_owner)?;
     if !reads.is_empty() {
@@ -5436,18 +5321,12 @@ def read(service: Child | None):
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "service.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "service.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "service.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("service.note() must not resolve to Decoy.note"));
     }
     let reads = read_field_accesses(&view, read_owner)?;
     if !reads.is_empty() {
@@ -5492,9 +5371,7 @@ def read(service: Child | None):
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "service.note must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("service.note must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -5528,18 +5405,12 @@ def read(service: Child | None):
     if reads.len() != 1 {
         return Err(TestError::Falsified("read owns one FieldAccess"));
     }
-    assert_local_index(
-        reads[0],
-        child_score,
-        "service.score resolves to Child.score",
-    )?;
+    assert_local_index(reads[0], child_score, "service.score resolves to Child.score")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_score
     ) {
-        return Err(TestError::Falsified(
-            "service.score must not resolve to Decoy.score",
-        ));
+        return Err(TestError::Falsified("service.score must not resolve to Decoy.score"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -5566,11 +5437,7 @@ def read(service: None | Child):
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "service.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "service.note() resolves to Child.note")?;
     let reads = read_field_accesses(&view, read_owner)?;
     if !reads.is_empty() {
         return Err(TestError::Falsified("read owns zero FieldAccess rows"));
@@ -5640,9 +5507,7 @@ def read(service: Left | Right):
     }
     assert_universe_method(calls[0], "Left | Right receiver stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "Left | Right universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("Left | Right universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
@@ -5654,9 +5519,7 @@ def read(service: Left | Right):
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == right_note
     ) {
-        return Err(TestError::Falsified(
-            "Left | Right must not bind Right.note",
-        ));
+        return Err(TestError::Falsified("Left | Right must not bind Right.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -5702,17 +5565,13 @@ def read(service: Left | Right):
         ));
     }
     if !index_or_oracle(reads[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "Left | Right universe field confidence is Index",
-        ));
+        return Err(TestError::Falsified("Left | Right universe field confidence is Index"));
     }
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == left_score
     ) {
-        return Err(TestError::Falsified(
-            "Left | Right must not bind Left.score",
-        ));
+        return Err(TestError::Falsified("Left | Right must not bind Left.score"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -5739,11 +5598,7 @@ def read(service: Optional[Child]):
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "service.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "service.note() resolves to Child.note")?;
     let reads = read_field_accesses(&view, read_owner)?;
     if !reads.is_empty() {
         return Err(TestError::Falsified("read owns zero FieldAccess rows"));
@@ -5773,11 +5628,7 @@ def read(service: typing.Optional[Child]):
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "service.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "service.note() resolves to Child.note")?;
     let reads = read_field_accesses(&view, read_owner)?;
     if reads.len() != 1 {
         return Err(TestError::Falsified("read owns one FieldAccess"));
@@ -5832,11 +5683,7 @@ def read(service: Union[Child, None]):
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "service.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "service.note() resolves to Child.note")?;
     let reads = read_field_accesses(&view, read_owner)?;
     if !reads.is_empty() {
         return Err(TestError::Falsified("read owns zero FieldAccess rows"));
@@ -5866,11 +5713,7 @@ def read(service: Child[int] | None):
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "service.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "service.note() resolves to Child.note")?;
     let reads = read_field_accesses(&view, read_owner)?;
     if !reads.is_empty() {
         return Err(TestError::Falsified("read owns zero FieldAccess rows"));
@@ -5902,9 +5745,7 @@ def read(service: Child | int):
     }
     assert_universe_method(calls[0], "Child | int receiver stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "Child | int universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("Child | int universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
@@ -5939,9 +5780,7 @@ def read(service: list[Child]):
     }
     assert_universe_method(calls[0], "list[Child] receiver stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "list[Child] universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("list[Child] universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
@@ -5981,18 +5820,12 @@ def read(service: Child | None):
     if reads.len() != 1 {
         return Err(TestError::Falsified("read owns one FieldAccess"));
     }
-    assert_local_index(
-        reads[0],
-        note_field,
-        "service.note resolves to Child.note field",
-    )?;
+    assert_local_index(reads[0], note_field, "service.note resolves to Child.note field")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == note_method
     ) {
-        return Err(TestError::Falsified(
-            "service.note must not resolve to Child.note method",
-        ));
+        return Err(TestError::Falsified("service.note must not resolve to Child.note method"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -6036,14 +5869,10 @@ def read(service: WorkoutService | None):
         ));
     }
     if !index_or_oracle(reads[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "service.score package field confidence is Index",
-        ));
+        return Err(TestError::Falsified("service.score package field confidence is Index"));
     }
     if matches!(&reads[0].occurrence.target, OccurrenceTarget::Local(_)) {
-        return Err(TestError::Falsified(
-            "service.score must not resolve locally",
-        ));
+        return Err(TestError::Falsified("service.score must not resolve locally"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -6080,9 +5909,7 @@ def read():
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "Child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("Child.note() must not resolve to Decoy.note"));
     }
     let reads = read_field_accesses(&view, read_owner)?;
     if !reads.is_empty() {
@@ -6123,9 +5950,7 @@ class Child:
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "Child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("Child.note() must not resolve to Decoy.note"));
     }
     let reads = read_field_accesses(&view, read_owner)?;
     if !reads.is_empty() {
@@ -6170,9 +5995,7 @@ def read():
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "Child.note must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("Child.note must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -6211,9 +6034,7 @@ def read():
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_score
     ) {
-        return Err(TestError::Falsified(
-            "Child.score must not resolve to Decoy.score",
-        ));
+        return Err(TestError::Falsified("Child.score must not resolve to Decoy.score"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -6252,9 +6073,7 @@ class Child:
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_score
     ) {
-        return Err(TestError::Falsified(
-            "Child.score must not resolve to Decoy.score",
-        ));
+        return Err(TestError::Falsified("Child.score must not resolve to Decoy.score"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -6294,9 +6113,7 @@ def read():
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "Child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("Child.note() must not resolve to Decoy.note"));
     }
     let reads = read_field_accesses(&view, read_owner)?;
     if !reads.is_empty() {
@@ -6342,9 +6159,7 @@ def read():
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_score
     ) {
-        return Err(TestError::Falsified(
-            "Child.score must not resolve to Decoy.score",
-        ));
+        return Err(TestError::Falsified("Child.score must not resolve to Decoy.score"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -6378,18 +6193,12 @@ def read():
     if reads.len() != 1 {
         return Err(TestError::Falsified("read owns one FieldAccess"));
     }
-    assert_local_index(
-        reads[0],
-        note_field,
-        "Child.note resolves to Child.note field",
-    )?;
+    assert_local_index(reads[0], note_field, "Child.note resolves to Child.note field")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == note_method
     ) {
-        return Err(TestError::Falsified(
-            "Child.note must not resolve to Child.note method",
-        ));
+        return Err(TestError::Falsified("Child.note must not resolve to Child.note method"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -6419,18 +6228,12 @@ def read():
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        note_method,
-        "Child.note() resolves to Child.note method",
-    )?;
+    assert_local_index(calls[0], note_method, "Child.note() resolves to Child.note method")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == note_field
     ) {
-        return Err(TestError::Falsified(
-            "Child.note() must not resolve to Child.note field",
-        ));
+        return Err(TestError::Falsified("Child.note() must not resolve to Child.note field"));
     }
     let reads = read_field_accesses(&view, read_owner)?;
     if !reads.is_empty() {
@@ -6466,18 +6269,12 @@ def read():
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "Child().note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "Child().note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "Child().note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("Child().note() must not resolve to Decoy.note"));
     }
     let reads = read_field_accesses(&view, read_owner)?;
     if !reads.is_empty() {
@@ -6513,18 +6310,12 @@ class Child:
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "Child().note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "Child().note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "Child().note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("Child().note() must not resolve to Decoy.note"));
     }
     let reads = read_field_accesses(&view, read_owner)?;
     if !reads.is_empty() {
@@ -6569,9 +6360,7 @@ def read():
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "Child().note must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("Child().note must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -6605,18 +6394,12 @@ def read():
     if reads.len() != 1 {
         return Err(TestError::Falsified("read owns one FieldAccess"));
     }
-    assert_local_index(
-        reads[0],
-        child_score,
-        "Child().score resolves to Child.score",
-    )?;
+    assert_local_index(reads[0], child_score, "Child().score resolves to Child.score")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_score
     ) {
-        return Err(TestError::Falsified(
-            "Child().score must not resolve to Decoy.score",
-        ));
+        return Err(TestError::Falsified("Child().score must not resolve to Decoy.score"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -6656,9 +6439,7 @@ def read():
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "Child().note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("Child().note() must not resolve to Decoy.note"));
     }
     let reads = read_field_accesses(&view, read_owner)?;
     if !reads.is_empty() {
@@ -6696,18 +6477,12 @@ def read():
     if reads.len() != 1 {
         return Err(TestError::Falsified("read owns one FieldAccess"));
     }
-    assert_local_index(
-        reads[0],
-        note_field,
-        "Child().note resolves to Child.note field",
-    )?;
+    assert_local_index(reads[0], note_field, "Child().note resolves to Child.note field")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == note_method
     ) {
-        return Err(TestError::Falsified(
-            "Child().note must not resolve to Child.note method",
-        ));
+        return Err(TestError::Falsified("Child().note must not resolve to Child.note method"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -6737,18 +6512,12 @@ def read():
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        note_method,
-        "Child().note() resolves to Child.note method",
-    )?;
+    assert_local_index(calls[0], note_method, "Child().note() resolves to Child.note method")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == note_field
     ) {
-        return Err(TestError::Falsified(
-            "Child().note() must not resolve to Child.note field",
-        ));
+        return Err(TestError::Falsified("Child().note() must not resolve to Child.note field"));
     }
     let reads = read_field_accesses(&view, read_owner)?;
     if !reads.is_empty() {
@@ -6784,17 +6553,13 @@ def read():
     }
     assert_universe_method(calls[0], "factory().note() stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "factory().note() universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("factory().note() universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "factory().note() must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("factory().note() must not resolve to Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -6826,17 +6591,13 @@ def read():
     }
     assert_universe_method(calls[0], "Child().note() stays an attribute universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "Child().note() universe confidence is Index",
-        ));
+        return Err(TestError::Falsified("Child().note() universe confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "Child().note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("Child().note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -6867,17 +6628,13 @@ def read():
     }
     assert_universe_method(calls[0], "pkg.Child().note() stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "pkg.Child().note() universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("pkg.Child().note() universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "pkg.Child().note() must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("pkg.Child().note() must not resolve to Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -6909,17 +6666,13 @@ def read():
     }
     assert_universe_method(calls[0], "Child.note() stays an attribute universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "Child.note() universe confidence is Index",
-        ));
+        return Err(TestError::Falsified("Child.note() universe confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "Child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("Child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -6951,18 +6704,12 @@ def read():
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "Child[int]().note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "Child[int]().note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "Child[int]().note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("Child[int]().note() must not resolve to Decoy.note"));
     }
     let reads = read_field_accesses(&view, read_owner)?;
     if !reads.is_empty() {
@@ -6998,18 +6745,12 @@ class Child:
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "Child[int]().note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "Child[int]().note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "Child[int]().note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("Child[int]().note() must not resolve to Decoy.note"));
     }
     let reads = read_field_accesses(&view, read_owner)?;
     if !reads.is_empty() {
@@ -7049,18 +6790,12 @@ def read():
     if reads.len() != 1 {
         return Err(TestError::Falsified("read owns one FieldAccess"));
     }
-    assert_local_index(
-        reads[0],
-        child_note,
-        "Child[int]().note resolves to Child.note",
-    )?;
+    assert_local_index(reads[0], child_note, "Child[int]().note resolves to Child.note")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "Child[int]().note must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("Child[int]().note must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -7094,18 +6829,12 @@ def read():
     if reads.len() != 1 {
         return Err(TestError::Falsified("read owns one FieldAccess"));
     }
-    assert_local_index(
-        reads[0],
-        child_score,
-        "Child[int]().score resolves to Child.score",
-    )?;
+    assert_local_index(reads[0], child_score, "Child[int]().score resolves to Child.score")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_score
     ) {
-        return Err(TestError::Falsified(
-            "Child[int]().score must not resolve to Decoy.score",
-        ));
+        return Err(TestError::Falsified("Child[int]().score must not resolve to Decoy.score"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -7140,18 +6869,12 @@ def read():
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        base_note,
-        "Child[int]().note() resolves to Base.note",
-    )?;
+    assert_local_index(calls[0], base_note, "Child[int]().note() resolves to Base.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "Child[int]().note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("Child[int]().note() must not resolve to Decoy.note"));
     }
     let reads = read_field_accesses(&view, read_owner)?;
     if !reads.is_empty() {
@@ -7189,18 +6912,12 @@ def read():
     if reads.len() != 1 {
         return Err(TestError::Falsified("read owns one FieldAccess"));
     }
-    assert_local_index(
-        reads[0],
-        score_field,
-        "Child[int]().score resolves to Child.score field",
-    )?;
+    assert_local_index(reads[0], score_field, "Child[int]().score resolves to Child.score field")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == score_method
     ) {
-        return Err(TestError::Falsified(
-            "Child[int]().score must not resolve to Child.score method",
-        ));
+        return Err(TestError::Falsified("Child[int]().score must not resolve to Child.score method"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -7230,18 +6947,12 @@ def read():
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        note_method,
-        "Child[int]().note() resolves to Child.note method",
-    )?;
+    assert_local_index(calls[0], note_method, "Child[int]().note() resolves to Child.note method")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == note_field
     ) {
-        return Err(TestError::Falsified(
-            "Child[int]().note() must not resolve to Child.note field",
-        ));
+        return Err(TestError::Falsified("Child[int]().note() must not resolve to Child.note field"));
     }
     let reads = read_field_accesses(&view, read_owner)?;
     if !reads.is_empty() {
@@ -7277,18 +6988,12 @@ def read():
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "Child[int][str]().note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "Child[int][str]().note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "Child[int][str]().note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("Child[int][str]().note() must not resolve to Decoy.note"));
     }
     let reads = read_field_accesses(&view, read_owner)?;
     if !reads.is_empty() {
@@ -7324,18 +7029,12 @@ def read():
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "Child[int, str]().note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "Child[int, str]().note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "Child[int, str]().note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("Child[int, str]().note() must not resolve to Decoy.note"));
     }
     let reads = read_field_accesses(&view, read_owner)?;
     if !reads.is_empty() {
@@ -7371,18 +7070,12 @@ def read():
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "Child[int]().note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "Child[int]().note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "Child[int]().note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("Child[int]().note() must not resolve to Decoy.note"));
     }
     let reads = read_field_accesses(&view, read_owner)?;
     if !reads.is_empty() {
@@ -7418,18 +7111,12 @@ def read():
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "Child[int].note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "Child[int].note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "Child[int].note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("Child[int].note() must not resolve to Decoy.note"));
     }
     let reads = read_field_accesses(&view, read_owner)?;
     if !reads.is_empty() {
@@ -7467,18 +7154,12 @@ def read():
     if reads.len() != 1 {
         return Err(TestError::Falsified("read owns one FieldAccess"));
     }
-    assert_local_index(
-        reads[0],
-        child_score,
-        "Child[int].score resolves to Child.score",
-    )?;
+    assert_local_index(reads[0], child_score, "Child[int].score resolves to Child.score")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_score
     ) {
-        return Err(TestError::Falsified(
-            "Child[int].score must not resolve to Decoy.score",
-        ));
+        return Err(TestError::Falsified("Child[int].score must not resolve to Decoy.score"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -7514,18 +7195,12 @@ def read():
     if reads.len() != 1 {
         return Err(TestError::Falsified("read owns one FieldAccess"));
     }
-    assert_local_index(
-        reads[0],
-        child_note,
-        "Child[int].note resolves to Child.note",
-    )?;
+    assert_local_index(reads[0], child_note, "Child[int].note resolves to Child.note")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "Child[int].note must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("Child[int].note must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -7554,17 +7229,13 @@ def read():
     }
     assert_universe_method(calls[0], "list[Child]().note() stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "list[Child]().note() universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("list[Child]().note() universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "list[Child]().note() must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("list[Child]().note() must not resolve to Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -7593,22 +7264,15 @@ def read():
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_universe_method(
-        calls[0],
-        "pkg.Child[int]().note() stays a pypi universe key",
-    )?;
+    assert_universe_method(calls[0], "pkg.Child[int]().note() stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "pkg.Child[int]().note() universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("pkg.Child[int]().note() universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "pkg.Child[int]().note() must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("pkg.Child[int]().note() must not resolve to Child.note"));
     }
     let reads = read_field_accesses(&view, read_owner)?;
     if reads.len() != 1 {
@@ -7631,9 +7295,7 @@ def read():
         ));
     }
     if !index_or_oracle(reads[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "pkg.Child package field confidence is Index",
-        ));
+        return Err(TestError::Falsified("pkg.Child package field confidence is Index"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -7665,17 +7327,13 @@ def read():
     }
     assert_universe_method(calls[0], "factory[int]().note() stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "factory[int]().note() universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("factory[int]().note() universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "factory[int]().note() must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("factory[int]().note() must not resolve to Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -7705,22 +7363,15 @@ def read():
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_universe_method(
-        calls[0],
-        "Child[int]().note() stays an attribute universe key",
-    )?;
+    assert_universe_method(calls[0], "Child[int]().note() stays an attribute universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "Child[int]().note() universe confidence is Index",
-        ));
+        return Err(TestError::Falsified("Child[int]().note() universe confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "Child[int]().note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("Child[int]().note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -7750,22 +7401,15 @@ def read():
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_universe_method(
-        calls[0],
-        "Child[int].note() stays an attribute universe key",
-    )?;
+    assert_universe_method(calls[0], "Child[int].note() stays an attribute universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "Child[int].note() universe confidence is Index",
-        ));
+        return Err(TestError::Falsified("Child[int].note() universe confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "Child[int].note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("Child[int].note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -7800,25 +7444,19 @@ def read():
     }
     assert_universe_method(calls[0], "Child[int]().note() stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "Child[int]().note() universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("Child[int]().note() universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == module_note
     ) {
-        return Err(TestError::Falsified(
-            "Child[int]().note() must not resolve to module Child.note",
-        ));
+        return Err(TestError::Falsified("Child[int]().note() must not resolve to module Child.note"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == nested_note
     ) {
-        return Err(TestError::Falsified(
-            "Child[int]().note() must not resolve to nested Child.note",
-        ));
+        return Err(TestError::Falsified("Child[int]().note() must not resolve to nested Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -7856,9 +7494,7 @@ def read():
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -7896,9 +7532,7 @@ class Child:
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -7940,9 +7574,7 @@ def read():
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -7982,9 +7614,7 @@ def read():
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_score
     ) {
-        return Err(TestError::Falsified(
-            "obj.score must not resolve to Decoy.score",
-        ));
+        return Err(TestError::Falsified("obj.score must not resolve to Decoy.score"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -8025,9 +7655,7 @@ def read():
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -8062,18 +7690,12 @@ def read():
     if reads.len() != 1 {
         return Err(TestError::Falsified("read owns one FieldAccess"));
     }
-    assert_local_index(
-        reads[0],
-        score_field,
-        "obj.score resolves to Child.score field",
-    )?;
+    assert_local_index(reads[0], score_field, "obj.score resolves to Child.score field")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == score_method
     ) {
-        return Err(TestError::Falsified(
-            "obj.score must not resolve to Child.score method",
-        ));
+        return Err(TestError::Falsified("obj.score must not resolve to Child.score method"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -8104,18 +7726,12 @@ def read():
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        note_method,
-        "obj.note() resolves to Child.note method",
-    )?;
+    assert_local_index(calls[0], note_method, "obj.note() resolves to Child.note method")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == note_field
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Child.note field",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Child.note field"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -8153,9 +7769,7 @@ def read():
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -8193,9 +7807,7 @@ def read():
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -8233,9 +7845,7 @@ def read():
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -8273,9 +7883,7 @@ def read():
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -8303,14 +7911,9 @@ def read():
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_universe_method(
-        calls[0],
-        "list[Child] local annotation stays a pypi universe key",
-    )?;
+    assert_universe_method(calls[0], "list[Child] local annotation stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "list[Child] universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("list[Child] universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
@@ -8364,14 +7967,10 @@ def read():
                         if lineage.ecosystem == "pypi" && lineage.name == "pkg"
                 )
     ) {
-        return Err(TestError::Falsified(
-            "pkg.Child stays a pypi package field key",
-        ));
+        return Err(TestError::Falsified("pkg.Child stays a pypi package field key"));
     }
     if !index_or_oracle(reads[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "pkg.Child package field confidence is Index",
-        ));
+        return Err(TestError::Falsified("pkg.Child package field confidence is Index"));
     }
     if !matches!(
         &reads[1].occurrence.target,
@@ -8381,30 +7980,22 @@ def read():
                 && key.kind == Some(EntityKind::Field)
                 && matches!(key.origin, ForeignOrigin::Universe { ecosystem: "pypi" })
     ) {
-        return Err(TestError::Falsified(
-            "obj.score stays a pypi universe field key",
-        ));
+        return Err(TestError::Falsified("obj.score stays a pypi universe field key"));
     }
     if !index_or_oracle(reads[1].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "obj.score universe field confidence is Index",
-        ));
+        return Err(TestError::Falsified("obj.score universe field confidence is Index"));
     }
     if matches!(
         &reads[1].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == module_score
     ) {
-        return Err(TestError::Falsified(
-            "obj.score must not resolve to module score",
-        ));
+        return Err(TestError::Falsified("obj.score must not resolve to module score"));
     }
     if matches!(
         &reads[1].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_score
     ) {
-        return Err(TestError::Falsified(
-            "obj.score must not resolve to Child.score",
-        ));
+        return Err(TestError::Falsified("obj.score must not resolve to Child.score"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -8440,9 +8031,7 @@ def read():
     }
     assert_universe_method(calls[0], "two local annotations stay a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "two local annotations universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("two local annotations universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
@@ -8492,9 +8081,7 @@ def read(obj: Decoy):
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -8529,18 +8116,12 @@ def outer():
     if calls.len() != 1 {
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "inner obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "inner obj.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("inner obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -8577,18 +8158,12 @@ def outer():
     if reads.len() != 1 {
         return Err(TestError::Falsified("inner owns one FieldAccess"));
     }
-    assert_local_index(
-        reads[0],
-        child_score,
-        "inner obj.score resolves to Child.score",
-    )?;
+    assert_local_index(reads[0], child_score, "inner obj.score resolves to Child.score")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_score
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.score must not resolve to Decoy.score",
-        ));
+        return Err(TestError::Falsified("inner obj.score must not resolve to Decoy.score"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -8627,18 +8202,12 @@ def outer():
     if reads.len() != 1 {
         return Err(TestError::Falsified("inner owns one FieldAccess"));
     }
-    assert_local_index(
-        reads[0],
-        child_note,
-        "inner obj.note resolves to Child.note",
-    )?;
+    assert_local_index(reads[0], child_note, "inner obj.note resolves to Child.note")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("inner obj.note must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -8676,18 +8245,12 @@ def outer():
     if calls.len() != 1 {
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        base_note,
-        "inner obj.note() resolves to Base.note",
-    )?;
+    assert_local_index(calls[0], base_note, "inner obj.note() resolves to Base.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("inner obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -8722,18 +8285,12 @@ def outer():
     if calls.len() != 1 {
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "inner obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "inner obj.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("inner obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -8768,18 +8325,12 @@ def outer():
     if calls.len() != 1 {
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "inner obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "inner obj.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("inner obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -8814,18 +8365,12 @@ def outer():
     if calls.len() != 1 {
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "inner obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "inner obj.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("inner obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -8861,18 +8406,12 @@ def outer():
     if calls.len() != 1 {
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "inner obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "inner obj.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("inner obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -8907,17 +8446,13 @@ def outer():
     }
     assert_universe_method(calls[0], "intervening assignment stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "intervening assignment universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("intervening assignment universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note() must not bind Child.note",
-        ));
+        return Err(TestError::Falsified("inner obj.note() must not bind Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -8955,18 +8490,12 @@ def outer():
     if calls.len() != 1 {
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "inner obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "inner obj.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("inner obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -8996,22 +8525,15 @@ def outer():
     if calls.len() != 1 {
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
-    assert_universe_method(
-        calls[0],
-        "annotation after nested def stays a pypi universe key",
-    )?;
+    assert_universe_method(calls[0], "annotation after nested def stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "annotation after nested def universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("annotation after nested def universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note() must not bind Child.note",
-        ));
+        return Err(TestError::Falsified("inner obj.note() must not bind Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -9047,25 +8569,19 @@ def outer():
     }
     assert_universe_field(reads[0], "list[Child] read stays a pypi universe field key")?;
     if !index_or_oracle(reads[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "list[Child] read universe field confidence is Index",
-        ));
+        return Err(TestError::Falsified("list[Child] read universe field confidence is Index"));
     }
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == holder_note
     ) {
-        return Err(TestError::Falsified(
-            "list[Child] read must not take Holder.note",
-        ));
+        return Err(TestError::Falsified("list[Child] read must not take Holder.note"));
     }
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "list[Child] read must not bind Child.note",
-        ));
+        return Err(TestError::Falsified("list[Child] read must not bind Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -9099,17 +8615,13 @@ def outer():
     }
     assert_universe_method(calls[0], "dotted annotation stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "dotted annotation universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("dotted annotation universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note() must not bind Child.note",
-        ));
+        return Err(TestError::Falsified("inner obj.note() must not bind Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -9144,17 +8656,13 @@ def outer():
     }
     assert_universe_method(calls[0], "missing member stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "missing member universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("missing member universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("inner obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -9191,18 +8699,12 @@ def outer():
     if reads.len() != 1 {
         return Err(TestError::Falsified("inner owns one FieldAccess"));
     }
-    assert_local_index(
-        reads[0],
-        score_field,
-        "inner obj.score resolves to Child.score field",
-    )?;
+    assert_local_index(reads[0], score_field, "inner obj.score resolves to Child.score field")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == score_method
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.score must not resolve to Child.score method",
-        ));
+        return Err(TestError::Falsified("inner obj.score must not resolve to Child.score method"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -9235,18 +8737,12 @@ def outer():
     if calls.len() != 1 {
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        note_method,
-        "inner obj.note() resolves to Child.note method",
-    )?;
+    assert_local_index(calls[0], note_method, "inner obj.note() resolves to Child.note method")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == note_field
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note() must not resolve to Child.note field",
-        ));
+        return Err(TestError::Falsified("inner obj.note() must not resolve to Child.note field"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -9279,18 +8775,12 @@ def outer(obj: Child):
     if calls.len() != 1 {
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "inner obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "inner obj.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("inner obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -9325,18 +8815,12 @@ def outer(obj: Child):
     if reads.len() != 1 {
         return Err(TestError::Falsified("inner owns one FieldAccess"));
     }
-    assert_local_index(
-        reads[0],
-        child_score,
-        "inner obj.score resolves to Child.score",
-    )?;
+    assert_local_index(reads[0], child_score, "inner obj.score resolves to Child.score")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_score
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.score must not resolve to Decoy.score",
-        ));
+        return Err(TestError::Falsified("inner obj.score must not resolve to Decoy.score"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -9373,18 +8857,12 @@ def outer(obj: Child):
     if reads.len() != 1 {
         return Err(TestError::Falsified("inner owns one FieldAccess"));
     }
-    assert_local_index(
-        reads[0],
-        child_note,
-        "inner obj.note resolves to Child.note",
-    )?;
+    assert_local_index(reads[0], child_note, "inner obj.note resolves to Child.note")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("inner obj.note must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -9420,18 +8898,12 @@ def outer(obj: Child):
     if calls.len() != 1 {
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        base_note,
-        "inner obj.note() resolves to Base.note",
-    )?;
+    assert_local_index(calls[0], base_note, "inner obj.note() resolves to Base.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("inner obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -9464,18 +8936,12 @@ def outer(obj: Child[int]):
     if calls.len() != 1 {
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "inner obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "inner obj.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("inner obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -9508,18 +8974,12 @@ def outer(obj: Child | None):
     if calls.len() != 1 {
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "inner obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "inner obj.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("inner obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -9552,18 +9012,12 @@ def outer(obj: \"Child\"):
     if calls.len() != 1 {
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "inner obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "inner obj.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("inner obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -9597,18 +9051,12 @@ def outer(obj: Child):
     if calls.len() != 1 {
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "inner obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "inner obj.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("inner obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -9641,17 +9089,13 @@ def outer(obj: Child):
     }
     assert_universe_method(calls[0], "intervening assignment stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "intervening assignment universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("intervening assignment universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note() must not bind Child.note",
-        ));
+        return Err(TestError::Falsified("inner obj.note() must not bind Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -9685,18 +9129,12 @@ def outer(obj: Decoy):
     if calls.len() != 1 {
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "inner obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "inner obj.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("inner obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -9732,18 +9170,12 @@ def outer(obj: Decoy):
     if calls.len() != 1 {
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "inner obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "inner obj.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("inner obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -9777,25 +9209,19 @@ def outer(obj: list[Child]):
     }
     assert_universe_field(reads[0], "list[Child] read stays a pypi universe field key")?;
     if !index_or_oracle(reads[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "list[Child] read universe field confidence is Index",
-        ));
+        return Err(TestError::Falsified("list[Child] read universe field confidence is Index"));
     }
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == holder_note
     ) {
-        return Err(TestError::Falsified(
-            "list[Child] read must not take Holder.note",
-        ));
+        return Err(TestError::Falsified("list[Child] read must not take Holder.note"));
     }
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "list[Child] read must not bind Child.note",
-        ));
+        return Err(TestError::Falsified("list[Child] read must not bind Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -9827,17 +9253,13 @@ def outer(obj: pkg.Child):
     }
     assert_universe_method(calls[0], "dotted annotation stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "dotted annotation universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("dotted annotation universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note() must not bind Child.note",
-        ));
+        return Err(TestError::Falsified("inner obj.note() must not bind Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -9870,17 +9292,13 @@ def outer(obj: Child):
     }
     assert_universe_method(calls[0], "missing member stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "missing member universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("missing member universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("inner obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -9915,18 +9333,12 @@ def outer(obj: Child):
     if reads.len() != 1 {
         return Err(TestError::Falsified("inner owns one FieldAccess"));
     }
-    assert_local_index(
-        reads[0],
-        score_field,
-        "inner obj.score resolves to Child.score field",
-    )?;
+    assert_local_index(reads[0], score_field, "inner obj.score resolves to Child.score field")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == score_method
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.score must not resolve to Child.score method",
-        ));
+        return Err(TestError::Falsified("inner obj.score must not resolve to Child.score method"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -9957,18 +9369,12 @@ def outer(obj: Child):
     if calls.len() != 1 {
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        note_method,
-        "inner obj.note() resolves to Child.note method",
-    )?;
+    assert_local_index(calls[0], note_method, "inner obj.note() resolves to Child.note method")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == note_field
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note() must not resolve to Child.note field",
-        ));
+        return Err(TestError::Falsified("inner obj.note() must not resolve to Child.note field"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -10003,25 +9409,19 @@ def outer(obj: Child | Decoy):
     }
     assert_universe_method(calls[0], "ambiguous union stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "ambiguous union universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("ambiguous union universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("inner obj.note() must not resolve to Decoy.note"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note() must not bind Child.note",
-        ));
+        return Err(TestError::Falsified("inner obj.note() must not bind Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -10051,17 +9451,13 @@ def read():
     }
     assert_universe_method(calls[0], "use before assignment stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "use before assignment universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("use before assignment universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() before assignment must not bind Child.note",
-        ));
+        return Err(TestError::Falsified("obj.note() before assignment must not bind Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -10094,17 +9490,13 @@ def read():
     }
     assert_universe_method(calls[0], "missing member stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "missing member universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("missing member universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -10143,9 +9535,7 @@ class Box:
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -10181,25 +9571,19 @@ def read():
     }
     assert_universe_method(calls[0], "two Child classes stay a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "two Child classes universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("two Child classes universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == module_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not bind module Child.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not bind module Child.note"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == nested_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not bind nested Child.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not bind nested Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -10239,30 +9623,22 @@ def read():
                 && key.kind == Some(EntityKind::Field)
                 && matches!(key.origin, ForeignOrigin::Universe { ecosystem: "pypi" })
     ) {
-        return Err(TestError::Falsified(
-            "list[Child] read stays a pypi universe field key",
-        ));
+        return Err(TestError::Falsified("list[Child] read stays a pypi universe field key"));
     }
     if !index_or_oracle(reads[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "list[Child] read universe field confidence is Index",
-        ));
+        return Err(TestError::Falsified("list[Child] read universe field confidence is Index"));
     }
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == holder_note
     ) {
-        return Err(TestError::Falsified(
-            "list[Child] read must not take Holder.note",
-        ));
+        return Err(TestError::Falsified("list[Child] read must not take Holder.note"));
     }
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "list[Child] read must not bind Child.note",
-        ));
+        return Err(TestError::Falsified("list[Child] read must not bind Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -10298,9 +9674,7 @@ def read():
     }
     assert_universe_method(calls[0], "nested class field stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "nested class field universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("nested class field universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
@@ -10351,9 +9725,7 @@ def read():
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -10394,9 +9766,7 @@ def read():
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_score
     ) {
-        return Err(TestError::Falsified(
-            "obj.score must not resolve to Decoy.score",
-        ));
+        return Err(TestError::Falsified("obj.score must not resolve to Decoy.score"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -10439,9 +9809,7 @@ def read():
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -10480,9 +9848,7 @@ class Child:
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -10524,9 +9890,7 @@ def read():
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -10565,9 +9929,7 @@ def read():
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -10606,9 +9968,7 @@ def read():
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -10647,9 +10007,7 @@ def read():
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -10681,9 +10039,7 @@ def read():
     }
     assert_universe_method(calls[0], "assignment shadows module annotation")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "assignment universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("assignment universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
@@ -10729,17 +10085,13 @@ def read():
     }
     assert_universe_field(reads[0], "assignment read stays a pypi universe field key")?;
     if !index_or_oracle(reads[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "assignment read universe field confidence is Index",
-        ));
+        return Err(TestError::Falsified("assignment read universe field confidence is Index"));
     }
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == holder_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note must not resolve to Holder.note",
-        ));
+        return Err(TestError::Falsified("obj.note must not resolve to Holder.note"));
     }
     if matches!(
         &reads[0].occurrence.target,
@@ -10778,17 +10130,13 @@ def read():
     }
     assert_universe_method(calls[0], "for-target obj stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "for-target universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("for-target universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "for-target obj.note() must not bind Child.note",
-        ));
+        return Err(TestError::Falsified("for-target obj.note() must not bind Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -10820,9 +10168,7 @@ def read():
     }
     assert_universe_method(calls[0], "augassign shadows module annotation")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "augassign universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("augassign universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
@@ -10862,17 +10208,13 @@ def outer():
     }
     assert_universe_method(calls[0], "outer assignment shadows module annotation")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "nested assignment universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("nested assignment universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note() must not bind Child.note",
-        ));
+        return Err(TestError::Falsified("inner obj.note() must not bind Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -10907,18 +10249,12 @@ def outer():
     if calls.len() != 1 {
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "inner obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "inner obj.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("inner obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -10953,35 +10289,22 @@ def read(items):
     if calls.len() != 2 {
         return Err(TestError::Falsified("read owns two MethodCalls"));
     }
-    assert_universe_method(
-        calls[0],
-        "comprehension obj.note() stays a pypi universe key",
-    )?;
+    assert_universe_method(calls[0], "comprehension obj.note() stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "comprehension universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("comprehension universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "comprehension obj.note() must not bind Child.note",
-        ));
+        return Err(TestError::Falsified("comprehension obj.note() must not bind Child.note"));
     }
-    assert_local_index(
-        calls[1],
-        child_note,
-        "return obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[1], child_note, "return obj.note() resolves to Child.note")?;
     if matches!(
         &calls[1].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "return obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("return obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -11022,9 +10345,7 @@ def read():
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -11060,18 +10381,12 @@ def read():
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "global obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "global obj.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -11106,17 +10421,13 @@ def outer():
     }
     assert_universe_method(calls[0], "nonlocal shadows module annotation")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "nonlocal universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("nonlocal universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "inner obj.note() must not bind Child.note",
-        ));
+        return Err(TestError::Falsified("inner obj.note() must not bind Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -11152,25 +10463,19 @@ def read():
     }
     assert_universe_method(calls[0], "lambda parameter shadows module annotation")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "lambda parameter universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("lambda parameter universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "lambda obj.note() must not bind Child.note",
-        ));
+        return Err(TestError::Falsified("lambda obj.note() must not bind Child.note"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "lambda obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("lambda obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -11204,18 +10509,12 @@ def read():
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "lambda obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "lambda obj.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "lambda obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("lambda obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -11258,9 +10557,7 @@ def read():
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "lambda default obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("lambda default obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -11301,30 +10598,22 @@ def read():
                 && key.kind == Some(EntityKind::Field)
                 && matches!(key.origin, ForeignOrigin::Universe { ecosystem: "pypi" })
     ) {
-        return Err(TestError::Falsified(
-            "list[Child] read stays a pypi universe field key",
-        ));
+        return Err(TestError::Falsified("list[Child] read stays a pypi universe field key"));
     }
     if !index_or_oracle(reads[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "list[Child] read universe field confidence is Index",
-        ));
+        return Err(TestError::Falsified("list[Child] read universe field confidence is Index"));
     }
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == holder_note
     ) {
-        return Err(TestError::Falsified(
-            "list[Child] read must not take Holder.note",
-        ));
+        return Err(TestError::Falsified("list[Child] read must not take Holder.note"));
     }
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "list[Child] read must not bind Child.note",
-        ));
+        return Err(TestError::Falsified("list[Child] read must not bind Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -11371,30 +10660,22 @@ def read():
                 && key.kind == Some(EntityKind::Field)
                 && matches!(key.origin, ForeignOrigin::Universe { ecosystem: "pypi" })
     ) {
-        return Err(TestError::Falsified(
-            "obj.score stays a pypi universe field key",
-        ));
+        return Err(TestError::Falsified("obj.score stays a pypi universe field key"));
     }
     if !index_or_oracle(reads[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "obj.score universe field confidence is Index",
-        ));
+        return Err(TestError::Falsified("obj.score universe field confidence is Index"));
     }
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == module_score
     ) {
-        return Err(TestError::Falsified(
-            "obj.score must not resolve to module score",
-        ));
+        return Err(TestError::Falsified("obj.score must not resolve to module score"));
     }
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_score
     ) {
-        return Err(TestError::Falsified(
-            "obj.score must not resolve to Child.score",
-        ));
+        return Err(TestError::Falsified("obj.score must not resolve to Child.score"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -11472,17 +10753,13 @@ def read():
     }
     assert_universe_method(calls[0], "missing member stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "missing member universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("missing member universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -11522,9 +10799,7 @@ class Box:
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -11563,9 +10838,7 @@ def read(obj: Decoy):
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -11599,18 +10872,12 @@ class Holder:
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "self.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "self.child.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -11644,22 +10911,14 @@ class Holder:
     }
     let reads = field_accesses_with_path(&view, run_owner, b"score")?;
     if reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path score",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path score"));
     }
-    assert_local_index(
-        reads[0],
-        child_score,
-        "self.child.score resolves to Child.score",
-    )?;
+    assert_local_index(reads[0], child_score, "self.child.score resolves to Child.score")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_score
     ) {
-        return Err(TestError::Falsified(
-            "self.child.score must not resolve to Decoy.score",
-        ));
+        return Err(TestError::Falsified("self.child.score must not resolve to Decoy.score"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -11695,22 +10954,14 @@ class Holder:
     }
     let reads = field_accesses_with_path(&view, run_owner, b"note")?;
     if reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path note",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path note"));
     }
-    assert_local_index(
-        reads[0],
-        child_note,
-        "self.child.note resolves to Child.note",
-    )?;
+    assert_local_index(reads[0], child_note, "self.child.note resolves to Child.note")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.note must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -11746,18 +10997,12 @@ class Holder(Base):
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "self.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "self.child.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -11794,18 +11039,12 @@ class Holder:
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        base_note,
-        "self.child.note() resolves to Base.note",
-    )?;
+    assert_local_index(calls[0], base_note, "self.child.note() resolves to Base.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -11839,18 +11078,12 @@ class Holder:
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "self.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "self.child.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -11884,18 +11117,12 @@ class Holder:
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "self.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "self.child.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -11929,18 +11156,12 @@ class Holder:
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "self.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "self.child.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -11975,18 +11196,12 @@ class Holder:
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "cls.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "cls.child.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "cls.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("cls.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -12024,9 +11239,7 @@ class Holder:
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -12067,9 +11280,7 @@ class Holder(Base):
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -12113,17 +11324,13 @@ class Holder(Left, Right):
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -12156,31 +11363,23 @@ class Holder:
     }
     let reads = field_accesses_with_path(&view, run_owner, b"note")?;
     if reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path note",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path note"));
     }
     assert_universe_field(reads[0], "list[Child] read stays a pypi universe field key")?;
     if !index_or_oracle(reads[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "list[Child] universe field confidence is Index",
-        ));
+        return Err(TestError::Falsified("list[Child] universe field confidence is Index"));
     }
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == holder_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note must not resolve to Holder.note",
-        ));
+        return Err(TestError::Falsified("self.child.note must not resolve to Holder.note"));
     }
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("self.child.note must not resolve to Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -12215,17 +11414,12 @@ class Holder:
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_universe_method(
-        calls[0],
-        "dotted field annotation stays a pypi universe key",
-    )?;
+    assert_universe_method(calls[0], "dotted field annotation stays a pypi universe key")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -12262,9 +11456,7 @@ class Holder:
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -12298,22 +11490,14 @@ class Holder:
     }
     let reads = field_accesses_with_path(&view, run_owner, b"score")?;
     if reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path score",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path score"));
     }
-    assert_local_index(
-        reads[0],
-        score_field,
-        "self.child.score resolves to Child.score field",
-    )?;
+    assert_local_index(reads[0], score_field, "self.child.score resolves to Child.score field")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == score_method
     ) {
-        return Err(TestError::Falsified(
-            "self.child.score must not resolve to Child.score method",
-        ));
+        return Err(TestError::Falsified("self.child.score must not resolve to Child.score method"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -12345,18 +11529,12 @@ class Holder:
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        note_method,
-        "self.child.note() resolves to Child.note method",
-    )?;
+    assert_local_index(calls[0], note_method, "self.child.note() resolves to Child.note method")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == note_field
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Child.note field",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Child.note field"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -12396,9 +11574,7 @@ class Holder:
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -12435,24 +11611,16 @@ class Holder:
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "self.child.other.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "self.child.other.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.other.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.other.note() must not resolve to Decoy.note"));
     }
     let child_reads = field_accesses_with_path(&view, run_owner, b"child")?;
     if child_reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path child",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path child"));
     }
     assert_local_index(
         child_reads[0],
@@ -12461,9 +11629,7 @@ class Holder:
     )?;
     let other_reads = field_accesses_with_path(&view, run_owner, b"other")?;
     if other_reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path other",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path other"));
     }
     assert_local_index(
         other_reads[0],
@@ -12503,24 +11669,16 @@ class Holder:
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "self.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "self.child.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
     }
     let child_reads = field_accesses_with_path(&view, run_owner, b"child")?;
     if child_reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path child",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path child"));
     }
     assert_local_index(
         child_reads[0],
@@ -12532,8 +11690,7 @@ class Holder:
 }
 
 #[test]
-fn py_instance_attribute_annotated_name_prefix_still_targets_holder_child() -> Result<(), TestError>
-{
+fn py_instance_attribute_annotated_name_prefix_still_targets_holder_child() -> Result<(), TestError> {
     const SOURCE: &[u8] = b"\
 class Decoy:
     def note(self):
@@ -12560,9 +11717,7 @@ def run(obj: Holder):
     let holder_child = entity_ordinal_at_index(&view, b"child", EntityKind::Field, 0)?;
     let child_reads = field_accesses_with_path(&view, run_owner, b"child")?;
     if child_reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path child",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path child"));
     }
     assert_local_index(
         child_reads[0],
@@ -12573,18 +11728,12 @@ def run(obj: Holder):
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "obj.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "obj.child.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -12620,24 +11769,16 @@ def run(obj: Holder):
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "obj.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "obj.child.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.child.note() must not resolve to Decoy.note"));
     }
     let child_reads = field_accesses_with_path(&view, run_owner, b"child")?;
     if child_reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path child",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path child"));
     }
     assert_local_index(
         child_reads[0],
@@ -12678,18 +11819,12 @@ def run():
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "obj.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "obj.child.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -12726,18 +11861,12 @@ def run():
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "obj.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "obj.child.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -12773,18 +11902,12 @@ def outer(obj: Holder):
     if calls.len() != 1 {
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "obj.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "obj.child.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -12819,22 +11942,14 @@ def run(obj: Holder):
     }
     let reads = field_accesses_with_path(&view, run_owner, b"score")?;
     if reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path score",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path score"));
     }
-    assert_local_index(
-        reads[0],
-        child_score,
-        "obj.child.score resolves to Child.score",
-    )?;
+    assert_local_index(reads[0], child_score, "obj.child.score resolves to Child.score")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_score
     ) {
-        return Err(TestError::Falsified(
-            "obj.child.score must not resolve to Decoy.score",
-        ));
+        return Err(TestError::Falsified("obj.child.score must not resolve to Decoy.score"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -12871,22 +11986,14 @@ def run(obj: Holder):
     }
     let reads = field_accesses_with_path(&view, run_owner, b"note")?;
     if reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path note",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path note"));
     }
-    assert_local_index(
-        reads[0],
-        child_note,
-        "obj.child.note resolves to Child.note",
-    )?;
+    assert_local_index(reads[0], child_note, "obj.child.note resolves to Child.note")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.child.note must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.child.note must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -12924,18 +12031,12 @@ def run(obj: Holder):
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "obj.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "obj.child.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -12973,18 +12074,12 @@ def run(obj: Holder):
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        base_note,
-        "obj.child.note() resolves to Base.note",
-    )?;
+    assert_local_index(calls[0], base_note, "obj.child.note() resolves to Base.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -13019,18 +12114,12 @@ def run():
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "Holder.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "Holder.child.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "Holder.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("Holder.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -13067,17 +12156,13 @@ def run():
     }
     assert_universe_method(calls[0], "shadowed Holder stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "shadowed Holder universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("shadowed Holder universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "Holder.child.note() must not bind Child.note",
-        ));
+        return Err(TestError::Falsified("Holder.child.note() must not bind Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -13113,17 +12198,13 @@ def run(obj: Holder):
     }
     assert_universe_method(calls[0], "unannotated child stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "unannotated child universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("unannotated child universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.child.note() must not bind Child.note",
-        ));
+        return Err(TestError::Falsified("obj.child.note() must not bind Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -13164,30 +12245,21 @@ def run(obj: Holder):
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_universe_method(
-        calls[0],
-        "two bases with same annotation stay a pypi universe key",
-    )?;
+    assert_universe_method(calls[0], "two bases with same annotation stay a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "two bases universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("two bases universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.child.note() must not resolve to Decoy.note"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.child.note() must not bind Child.note",
-        ));
+        return Err(TestError::Falsified("obj.child.note() must not bind Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -13234,18 +12306,12 @@ def run(obj: Holder):
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "obj.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "obj.child.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -13279,31 +12345,23 @@ def run(obj: Holder):
     }
     let reads = field_accesses_with_path(&view, run_owner, b"note")?;
     if reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path note",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path note"));
     }
     assert_universe_field(reads[0], "list[Child] read stays a pypi universe field key")?;
     if !index_or_oracle(reads[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "list[Child] universe field confidence is Index",
-        ));
+        return Err(TestError::Falsified("list[Child] universe field confidence is Index"));
     }
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == holder_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.child.note must not resolve to Holder.note",
-        ));
+        return Err(TestError::Falsified("obj.child.note must not resolve to Holder.note"));
     }
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.child.note must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("obj.child.note must not resolve to Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -13339,17 +12397,12 @@ def run(obj: Holder):
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_universe_method(
-        calls[0],
-        "dotted field annotation stays a pypi universe key",
-    )?;
+    assert_universe_method(calls[0], "dotted field annotation stays a pypi universe key")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.child.note() must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("obj.child.note() must not resolve to Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -13387,9 +12440,7 @@ def run(obj: Holder):
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -13427,30 +12478,20 @@ def run(obj: Holder):
     }
     let reads = field_accesses_with_path(&view, run_owner, b"score")?;
     if reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path score",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path score"));
     }
-    assert_local_index(
-        reads[0],
-        child_score,
-        "obj.child.score resolves to Child.score field",
-    )?;
+    assert_local_index(reads[0], child_score, "obj.child.score resolves to Child.score field")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_score
     ) {
-        return Err(TestError::Falsified(
-            "obj.child.score must not resolve to Decoy.score",
-        ));
+        return Err(TestError::Falsified("obj.child.score must not resolve to Decoy.score"));
     }
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_score_method
     ) {
-        return Err(TestError::Falsified(
-            "obj.child.score must not resolve to Child.score method",
-        ));
+        return Err(TestError::Falsified("obj.child.score must not resolve to Child.score method"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -13487,26 +12528,18 @@ def run(obj: Holder):
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "obj.child.note() resolves to Child.note method",
-    )?;
+    assert_local_index(calls[0], child_note, "obj.child.note() resolves to Child.note method")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.child.note() must not resolve to Decoy.note"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note_field
     ) {
-        return Err(TestError::Falsified(
-            "obj.child.note() must not resolve to Child.note field",
-        ));
+        return Err(TestError::Falsified("obj.child.note() must not resolve to Child.note field"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -13544,24 +12577,16 @@ def run(obj: Holder):
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "obj.child.other.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "obj.child.other.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.child.other.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.child.other.note() must not resolve to Decoy.note"));
     }
     let child_reads = field_accesses_with_path(&view, run_owner, b"child")?;
     if child_reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path child",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path child"));
     }
     assert_local_index(
         child_reads[0],
@@ -13570,9 +12595,7 @@ def run(obj: Holder):
     )?;
     let other_reads = field_accesses_with_path(&view, run_owner, b"other")?;
     if other_reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path other",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path other"));
     }
     assert_local_index(
         other_reads[0],
@@ -13614,25 +12637,19 @@ def run(obj: Holder | Decoy):
     }
     assert_universe_method(calls[0], "ambiguous union stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "ambiguous union universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("ambiguous union universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.child.note() must not resolve to Decoy.note"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.child.note() must not bind Child.note",
-        ));
+        return Err(TestError::Falsified("obj.child.note() must not bind Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -13679,17 +12696,13 @@ class Holder(Left, Right):
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -13731,18 +12744,12 @@ class Holder(Left, Right):
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "self.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "self.child.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -13787,18 +12794,12 @@ class Holder(Mid):
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "self.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "self.child.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -13835,24 +12836,16 @@ class Holder:
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "self.child.other.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "self.child.other.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.other.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.other.note() must not resolve to Decoy.note"));
     }
     let child_reads = field_accesses_with_path(&view, run_owner, b"child")?;
     if child_reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path child",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path child"));
     }
     assert_local_index(
         child_reads[0],
@@ -13861,9 +12854,7 @@ class Holder:
     )?;
     let other_reads = field_accesses_with_path(&view, run_owner, b"other")?;
     if other_reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path other",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path other"));
     }
     assert_local_index(
         other_reads[0],
@@ -13906,24 +12897,16 @@ def run(obj: Holder):
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "obj.child.other.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "obj.child.other.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.child.other.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.child.other.note() must not resolve to Decoy.note"));
     }
     let child_reads = field_accesses_with_path(&view, run_owner, b"child")?;
     if child_reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path child",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path child"));
     }
     assert_local_index(
         child_reads[0],
@@ -13932,9 +12915,7 @@ def run(obj: Holder):
     )?;
     let other_reads = field_accesses_with_path(&view, run_owner, b"other")?;
     if other_reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path other",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path other"));
     }
     assert_local_index(
         other_reads[0],
@@ -14026,18 +13007,12 @@ def outer(obj: Holder):
     if calls.len() != 1 {
         return Err(TestError::Falsified("inner owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "obj.child.other.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "obj.child.other.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.child.other.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.child.other.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -14075,17 +13050,13 @@ class Holder:
     }
     assert_universe_method(calls[0], "nested self stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "nested self universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("nested self universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.other.note() must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("self.child.other.note() must not resolve to Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -14122,25 +13093,19 @@ class Holder:
     }
     assert_universe_method(calls[0], "unannotated middle stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "unannotated middle universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("unannotated middle universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.other.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.other.note() must not resolve to Decoy.note"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.other.note() must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("self.child.other.note() must not resolve to Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -14185,25 +13150,19 @@ class Holder:
     }
     assert_universe_method(calls[0], "two-base second hop stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "two-base second hop universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("two-base second hop universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.other.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.other.note() must not resolve to Decoy.note"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.other.note() must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("self.child.other.note() must not resolve to Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -14249,18 +13208,12 @@ class Holder:
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "self.child.item.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "self.child.item.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.item.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.item.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -14295,22 +13248,14 @@ class Holder:
     }
     let reads = field_accesses_with_path(&view, run_owner, b"score")?;
     if reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path score",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path score"));
     }
-    assert_local_index(
-        reads[0],
-        child_score,
-        "self.child.other.score resolves to Child.score",
-    )?;
+    assert_local_index(reads[0], child_score, "self.child.other.score resolves to Child.score")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_score
     ) {
-        return Err(TestError::Falsified(
-            "self.child.other.score must not resolve to Decoy.score",
-        ));
+        return Err(TestError::Falsified("self.child.other.score must not resolve to Decoy.score"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -14347,22 +13292,14 @@ class Holder:
     }
     let reads = field_accesses_with_path(&view, run_owner, b"note")?;
     if reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path note",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path note"));
     }
-    assert_local_index(
-        reads[0],
-        child_note,
-        "self.child.other.note resolves to Child.note",
-    )?;
+    assert_local_index(reads[0], child_note, "self.child.other.note resolves to Child.note")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.other.note must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.other.note must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -14396,34 +13333,23 @@ class Holder:
     }
     let reads = field_accesses_with_path(&view, run_owner, b"note")?;
     if reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path note",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path note"));
     }
-    assert_universe_field(
-        reads[0],
-        "list[Child] middle stays a pypi universe field key",
-    )?;
+    assert_universe_field(reads[0], "list[Child] middle stays a pypi universe field key")?;
     if !index_or_oracle(reads[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "list[Child] universe field confidence is Index",
-        ));
+        return Err(TestError::Falsified("list[Child] universe field confidence is Index"));
     }
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == holder_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.other.note must not resolve to Holder.note",
-        ));
+        return Err(TestError::Falsified("self.child.other.note must not resolve to Holder.note"));
     }
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note_fn
     ) {
-        return Err(TestError::Falsified(
-            "self.child.other.note must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("self.child.other.note must not resolve to Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -14461,17 +13387,13 @@ class Holder:
     }
     assert_universe_method(calls[0], "dotted middle stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "dotted middle universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("dotted middle universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.other.note must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("self.child.other.note must not resolve to Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -14508,17 +13430,13 @@ class Holder:
     }
     assert_universe_method(calls[0], "missing member stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "missing member universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("missing member universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.other.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.other.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -14553,22 +13471,14 @@ class Holder:
     }
     let reads = field_accesses_with_path(&view, run_owner, b"score")?;
     if reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path score",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path score"));
     }
-    assert_local_index(
-        reads[0],
-        score_field,
-        "self.child.other.score resolves to Child.score field",
-    )?;
+    assert_local_index(reads[0], score_field, "self.child.other.score resolves to Child.score field")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == score_method
     ) {
-        return Err(TestError::Falsified(
-            "self.child.other.score must not resolve to Child.score method",
-        ));
+        return Err(TestError::Falsified("self.child.other.score must not resolve to Child.score method"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -14601,18 +13511,12 @@ class Holder:
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        note_method,
-        "self.child.other.note() resolves to Child.note method",
-    )?;
+    assert_local_index(calls[0], note_method, "self.child.other.note() resolves to Child.note method")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == note_field
     ) {
-        return Err(TestError::Falsified(
-            "self.child.other.note() must not resolve to Child.note field",
-        ));
+        return Err(TestError::Falsified("self.child.other.note() must not resolve to Child.note field"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -14648,17 +13552,13 @@ class Holder:
     }
     assert_universe_method(calls[0], "subscript middle stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "subscript middle universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("subscript middle universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.other[0].note() must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("self.child.other[0].note() must not resolve to Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -14693,24 +13593,16 @@ class Holder:
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "self.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "self.child.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
     }
     let child_reads = field_accesses_with_path(&view, run_owner, b"child")?;
     if child_reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path child",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path child"));
     }
     assert_universe_field_named(
         child_reads[0],
@@ -14750,18 +13642,12 @@ class Holder:
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "obj.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "obj.child.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -14798,24 +13684,16 @@ class Holder:
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "self.child.other.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "self.child.other.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.other.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.other.note() must not resolve to Decoy.note"));
     }
     let child_reads = field_accesses_with_path(&view, run_owner, b"child")?;
     if child_reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path child",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path child"));
     }
     assert_universe_field_named(
         child_reads[0],
@@ -14824,9 +13702,7 @@ class Holder:
     )?;
     let other_reads = field_accesses_with_path(&view, run_owner, b"other")?;
     if other_reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path other",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path other"));
     }
     assert_local_index(
         other_reads[0],
@@ -14865,18 +13741,12 @@ class Holder:
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "self.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "self.child.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -14913,18 +13783,12 @@ class Holder:
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "self.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "self.child.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -14961,30 +13825,21 @@ class Holder:
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_universe_method(
-        calls[0],
-        "conflicting instance annotations stay a pypi universe key",
-    )?;
+    assert_universe_method(calls[0], "conflicting instance annotations stay a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "conflicting instance annotation universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("conflicting instance annotation universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Child.note"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -15020,18 +13875,12 @@ class Holder:
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        decoy_note,
-        "self.child.note() resolves to Decoy.note",
-    )?;
+    assert_local_index(calls[0], decoy_note, "self.child.note() resolves to Decoy.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -15065,22 +13914,15 @@ class Holder:
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_universe_method(
-        calls[0],
-        "unannotated class-body child stays a pypi universe key",
-    )?;
+    assert_universe_method(calls[0], "unannotated class-body child stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "unannotated class-body child universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("unannotated class-body child universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -15117,18 +13959,12 @@ class Holder(Base):
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "self.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "self.child.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -15164,18 +14000,12 @@ class Holder(Base):
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "self.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "self.child.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -15219,42 +14049,30 @@ class Holder:
         "Holder.run without instance annotation stays a pypi universe key",
     )?;
     if !index_or_oracle(holder_calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "Holder.run universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("Holder.run universe method confidence is Index"));
     }
     if matches!(
         &holder_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "Holder.run must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("Holder.run must not resolve to Decoy.note"));
     }
     if matches!(
         &holder_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "Holder.run must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("Holder.run must not resolve to Child.note"));
     }
     let inner_calls = read_method_calls(&view, inner_run)?;
     if inner_calls.len() != 1 {
         return Err(TestError::Falsified("Inner.run owns one MethodCall"));
     }
-    assert_local_index(
-        inner_calls[0],
-        decoy_note,
-        "Inner.run self.child.note() resolves to Decoy.note",
-    )?;
+    assert_local_index(inner_calls[0], decoy_note, "Inner.run self.child.note() resolves to Decoy.note")?;
     if matches!(
         &inner_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "Inner.run must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("Inner.run must not resolve to Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -15289,18 +14107,12 @@ class Holder:
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "self.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "self.child.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -15335,18 +14147,12 @@ class Holder:
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "self.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "self.child.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -15381,18 +14187,12 @@ class Holder:
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "self.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "self.child.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -15426,31 +14226,23 @@ class Holder:
     }
     let reads = field_accesses_with_path(&view, run_owner, b"note")?;
     if reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path note",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path note"));
     }
     assert_universe_field(reads[0], "list[Child] read stays a pypi universe field key")?;
     if !index_or_oracle(reads[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "list[Child] universe field confidence is Index",
-        ));
+        return Err(TestError::Falsified("list[Child] universe field confidence is Index"));
     }
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == holder_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note must not resolve to Holder.note",
-        ));
+        return Err(TestError::Falsified("self.child.note must not resolve to Holder.note"));
     }
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("self.child.note must not resolve to Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -15488,23 +14280,17 @@ class Holder:
     }
     let reads = field_accesses_with_path(&view, run_owner, b"note")?;
     if reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path note",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path note"));
     }
     assert_universe_field(reads[0], "pkg.Child read stays a pypi universe field key")?;
     if !index_or_oracle(reads[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "pkg.Child universe read confidence is Index",
-        ));
+        return Err(TestError::Falsified("pkg.Child universe read confidence is Index"));
     }
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note must not resolve to Child.note",
-        ));
+        return Err(TestError::Falsified("self.child.note must not resolve to Child.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -15539,17 +14325,13 @@ class Holder:
     }
     assert_universe_method(calls[0], "Child without note stays a pypi universe key")?;
     if !index_or_oracle(calls[0].occurrence.confidence) {
-        return Err(TestError::Falsified(
-            "missing member universe method confidence is Index",
-        ));
+        return Err(TestError::Falsified("missing member universe method confidence is Index"));
     }
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -15584,22 +14366,14 @@ class Holder:
     }
     let reads = field_accesses_with_path(&view, run_owner, b"score")?;
     if reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path score",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path score"));
     }
-    assert_local_index(
-        reads[0],
-        score_field,
-        "self.child.score resolves to Child.score field",
-    )?;
+    assert_local_index(reads[0], score_field, "self.child.score resolves to Child.score field")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == score_method
     ) {
-        return Err(TestError::Falsified(
-            "self.child.score must not resolve to Child.score method",
-        ));
+        return Err(TestError::Falsified("self.child.score must not resolve to Child.score method"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -15632,18 +14406,12 @@ class Holder:
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        note_method,
-        "self.child.note() resolves to Child.note method",
-    )?;
+    assert_local_index(calls[0], note_method, "self.child.note() resolves to Child.note method")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == note_field
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Child.note field",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Child.note field"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -15679,18 +14447,12 @@ class Holder:
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "self.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "self.child.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -15727,18 +14489,12 @@ class Holder:
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "self.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "self.child.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -15775,18 +14531,12 @@ class Holder:
     if calls.len() != 1 {
         return Err(TestError::Falsified("run owns one MethodCall"));
     }
-    assert_local_index(
-        calls[0],
-        child_note,
-        "self.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(calls[0], child_note, "self.child.note() resolves to Child.note")?;
     if matches!(
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -15820,34 +14570,20 @@ class Holder:
     let holder_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "self.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "self.note().extra() resolves to Child.extra")?;
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not resolve to Decoy.extra"));
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        holder_note,
-        "self.note() resolves to Holder.note",
-    )?;
+    assert_local_index(note_calls[0], holder_note, "self.note() resolves to Holder.note")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -15880,34 +14616,20 @@ class Holder:
     let holder_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "obj.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "obj.note().extra() resolves to Child.extra")?;
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "obj.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("obj.note().extra() must not resolve to Decoy.extra"));
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        holder_note,
-        "obj.note() resolves to Holder.note",
-    )?;
+    assert_local_index(note_calls[0], holder_note, "obj.note() resolves to Holder.note")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -15939,22 +14661,14 @@ def run():
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "note().extra() resolves to Child.extra")?;
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("note().extra() must not resolve to Decoy.extra"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -15990,34 +14704,20 @@ def outer(obj: Holder):
     let holder_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, inner_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "inner owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("inner owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "obj.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "obj.note().extra() resolves to Child.extra")?;
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "obj.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("obj.note().extra() must not resolve to Decoy.extra"));
     }
     let note_calls = method_calls_with_path(&view, inner_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "inner owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("inner owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        holder_note,
-        "obj.note() resolves to Holder.note",
-    )?;
+    assert_local_index(note_calls[0], holder_note, "obj.note() resolves to Holder.note")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -16052,34 +14752,20 @@ class Holder(Base):
     let base_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "self.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "self.note().extra() resolves to Child.extra")?;
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not resolve to Decoy.extra"));
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        base_note,
-        "self.note() resolves to Base.note",
-    )?;
+    assert_local_index(note_calls[0], base_note, "self.note() resolves to Base.note")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -16111,22 +14797,14 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "self.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "self.note().extra() resolves to Child.extra")?;
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not resolve to Decoy.extra"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -16159,22 +14837,14 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "self.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "self.note().extra() resolves to Child.extra")?;
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not resolve to Decoy.extra"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -16207,22 +14877,14 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "self.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "self.note().extra() resolves to Child.extra")?;
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not resolve to Decoy.extra"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -16254,9 +14916,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -16267,9 +14927,7 @@ class Holder:
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not resolve to Child.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not resolve to Child.extra"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -16305,34 +14963,20 @@ class Holder:
     let holder_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "obj.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "obj.note().extra() resolves to Child.extra")?;
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "obj.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("obj.note().extra() must not resolve to Decoy.extra"));
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        holder_note,
-        "obj.note() resolves to Holder.note",
-    )?;
+    assert_local_index(note_calls[0], holder_note, "obj.note() resolves to Holder.note")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -16366,34 +15010,20 @@ class Holder:
     let holder_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "obj.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "obj.note().extra() resolves to Child.extra")?;
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "obj.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("obj.note().extra() must not resolve to Decoy.extra"));
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        holder_note,
-        "obj.note() resolves to Holder.note",
-    )?;
+    assert_local_index(note_calls[0], holder_note, "obj.note() resolves to Holder.note")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -16425,9 +15055,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -16438,9 +15066,7 @@ class Holder:
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_extra
     ) {
-        return Err(TestError::Falsified(
-            "obj.note().extra() must not resolve to Child.extra",
-        ));
+        return Err(TestError::Falsified("obj.note().extra() must not resolve to Child.extra"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -16479,9 +15105,7 @@ class Holder(Left, Right):
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -16492,17 +15116,13 @@ class Holder(Left, Right):
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not resolve to Child.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not resolve to Child.extra"));
     }
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not resolve to Decoy.extra"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -16547,34 +15167,20 @@ class Holder(Mid):
     let base_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "self.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "self.note().extra() resolves to Child.extra")?;
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not resolve to Decoy.extra"));
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        base_note,
-        "self.note() resolves to Base.note",
-    )?;
+    assert_local_index(note_calls[0], base_note, "self.note() resolves to Base.note")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -16607,15 +15213,11 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if !extra_calls.is_empty() {
-        return Err(TestError::Falsified(
-            "run owns zero MethodCalls with path extra",
-        ));
+        return Err(TestError::Falsified("run owns zero MethodCalls with path extra"));
     }
     let reads = field_accesses_with_path(&view, run_owner, b"extra")?;
     if reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path extra"));
     }
     assert_universe_field_named(
         reads[0],
@@ -16626,9 +15228,7 @@ class Holder:
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra must not resolve to Child.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra must not resolve to Child.extra"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -16662,9 +15262,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -16675,9 +15273,7 @@ class Holder:
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not resolve to Child.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not resolve to Child.extra"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -16708,9 +15304,7 @@ class Holder:
     let decoy_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -16721,9 +15315,7 @@ class Holder:
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not resolve to Decoy.extra"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -16753,28 +15345,18 @@ class Holder:
     let child_score_method = entity_ordinal_at_index(&view, b"score", EntityKind::Function, 0)?;
     let score_calls = method_calls_with_path(&view, run_owner, b"score")?;
     if !score_calls.is_empty() {
-        return Err(TestError::Falsified(
-            "run owns zero MethodCalls with path score",
-        ));
+        return Err(TestError::Falsified("run owns zero MethodCalls with path score"));
     }
     let reads = field_accesses_with_path(&view, run_owner, b"score")?;
     if reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path score",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path score"));
     }
-    assert_local_index(
-        reads[0],
-        child_score_field,
-        "self.note().score resolves to Child.score field",
-    )?;
+    assert_local_index(reads[0], child_score_field, "self.note().score resolves to Child.score field")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_score_method
     ) {
-        return Err(TestError::Falsified(
-            "self.note().score must not resolve to Child.score method",
-        ));
+        return Err(TestError::Falsified("self.note().score must not resolve to Child.score method"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -16804,30 +15386,21 @@ class Holder:
     let child_extra_method = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra_method,
-        "self.note().extra() resolves to Child.extra method",
-    )?;
+    assert_local_index(extra_calls[0], child_extra_method, "self.note().extra() resolves to Child.extra method")?;
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_extra_field
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not resolve to Child.extra field",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not resolve to Child.extra field"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
 
 #[test]
-fn py_call_return_instance_attribute_chain_targets_child_extra_not_decoy() -> Result<(), TestError>
-{
+fn py_call_return_instance_attribute_chain_targets_child_extra_not_decoy() -> Result<(), TestError> {
     const SOURCE: &[u8] = b"\
 class Decoy:
     def extra(self):
@@ -16856,9 +15429,7 @@ class Holder:
     let holder_child = entity_ordinal_at_index(&view, b"child", EntityKind::Field, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -16869,26 +15440,16 @@ class Holder:
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("self.child.note().extra() must not resolve to Decoy.extra"));
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "self.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "self.child.note() resolves to Child.note")?;
     let child_reads = field_accesses_with_path(&view, run_owner, b"child")?;
     if child_reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path child",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path child"));
     }
     assert_local_index(
         child_reads[0],
@@ -16927,9 +15488,7 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -16940,21 +15499,13 @@ class Holder:
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "Child().note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("Child().note().extra() must not resolve to Decoy.extra"));
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "Child().note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "Child().note() resolves to Child.note")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -16988,9 +15539,7 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -17001,21 +15550,13 @@ class Holder:
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "obj.child.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("obj.child.note().extra() must not resolve to Decoy.extra"));
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "obj.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "obj.child.note() resolves to Child.note")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -17049,9 +15590,7 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -17062,21 +15601,13 @@ class Holder:
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "Holder.child.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("Holder.child.note().extra() must not resolve to Decoy.extra"));
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "Holder.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "Holder.child.note() resolves to Child.note")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -17111,9 +15642,7 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -17124,21 +15653,13 @@ class Holder:
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "cls.child.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("cls.child.note().extra() must not resolve to Decoy.extra"));
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "cls.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "cls.child.note() resolves to Child.note")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -17177,9 +15698,7 @@ class Holder:
     let mid_other = entity_ordinal_at_index(&view, b"other", EntityKind::Field, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -17196,9 +15715,7 @@ class Holder:
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
     assert_local_index(
         note_calls[0],
@@ -17207,9 +15724,7 @@ class Holder:
     )?;
     let child_reads = field_accesses_with_path(&view, run_owner, b"child")?;
     if child_reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path child",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path child"));
     }
     assert_local_index(
         child_reads[0],
@@ -17218,9 +15733,7 @@ class Holder:
     )?;
     let other_reads = field_accesses_with_path(&view, run_owner, b"other")?;
     if other_reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path other",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path other"));
     }
     assert_local_index(
         other_reads[0],
@@ -17263,9 +15776,7 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -17282,9 +15793,7 @@ class Holder:
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
     assert_local_index(
         note_calls[0],
@@ -17326,9 +15835,7 @@ def outer(obj: Holder):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, inner_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "inner owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("inner owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -17345,9 +15852,7 @@ def outer(obj: Holder):
     }
     let note_calls = method_calls_with_path(&view, inner_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "inner owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("inner owns one MethodCall with path note"));
     }
     assert_local_index(
         note_calls[0],
@@ -17359,8 +15864,7 @@ def outer(obj: Holder):
 }
 
 #[test]
-fn py_call_return_instance_annotation_chain_targets_child_extra_not_decoy() -> Result<(), TestError>
-{
+fn py_call_return_instance_annotation_chain_targets_child_extra_not_decoy() -> Result<(), TestError> {
     const SOURCE: &[u8] = b"\
 class Decoy:
     def extra(self):
@@ -17388,9 +15892,7 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -17407,15 +15909,9 @@ class Holder:
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "self.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "self.child.note() resolves to Child.note")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -17451,9 +15947,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -17509,9 +16003,7 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -17536,15 +16028,9 @@ class Holder:
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "self.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "self.child.note() resolves to Child.note")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -17579,9 +16065,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -17638,9 +16122,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -17697,15 +16179,11 @@ class Holder:
     let child_extra_method = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if !extra_calls.is_empty() {
-        return Err(TestError::Falsified(
-            "run owns zero MethodCalls with path extra",
-        ));
+        return Err(TestError::Falsified("run owns zero MethodCalls with path extra"));
     }
     let reads = field_accesses_with_path(&view, run_owner, b"extra")?;
     if reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path extra"));
     }
     assert_universe_field_named(
         reads[0],
@@ -17758,9 +16236,7 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -17777,15 +16253,9 @@ class Holder:
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "self.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "self.child.note() resolves to Child.note")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -17819,9 +16289,7 @@ class Holder:
     let child_extra_method = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 0)?;
     let reads = field_accesses_with_path(&view, run_owner, b"extra")?;
     if reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path extra"));
     }
     assert_local_index(
         reads[0],
@@ -17877,9 +16345,7 @@ class Holder:
     let child_extra_method = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -17935,9 +16401,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -17995,9 +16459,7 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -18014,15 +16476,9 @@ class Holder:
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "obj.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "obj.child.note() resolves to Child.note")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -18064,9 +16520,7 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -18083,20 +16537,12 @@ class Holder:
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "self.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "self.child.note() resolves to Child.note")?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
     assert_local_index(
         more_calls[0],
@@ -18144,9 +16590,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, inner_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "inner owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("inner owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -18209,9 +16653,7 @@ class Holder:
     let more_more = entity_ordinal_at_index(&view, b"more", EntityKind::Function, 1)?;
     let more_calls = method_calls_with_path(&view, inner_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "inner owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("inner owns one MethodCall with path more"));
     }
     assert_universe_method_named(
         more_calls[0],
@@ -18266,9 +16708,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -18324,9 +16764,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -18390,9 +16828,7 @@ class Holder(Left, Right):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -18409,15 +16845,9 @@ class Holder(Left, Right):
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "self.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "self.child.note() resolves to Child.note")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -18455,9 +16885,7 @@ class Holder(Left, Right):
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -18520,39 +16948,23 @@ class Holder:
     let holder_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "self.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "self.note().extra() resolves to Child.extra")?;
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not resolve to Decoy.extra"));
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        holder_note,
-        "self.note() resolves to Holder.note",
-    )?;
+    assert_local_index(note_calls[0], holder_note, "self.note() resolves to Holder.note")?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
     assert_local_index(
         more_calls[0],
@@ -18563,9 +16975,7 @@ class Holder:
         &more_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_more
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra().more() must not resolve to Decoy.more",
-        ));
+        return Err(TestError::Falsified("self.note().extra().more() must not resolve to Decoy.more"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -18607,44 +17017,24 @@ class Holder:
     let holder_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "cls.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "cls.note().extra() resolves to Child.extra")?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        holder_note,
-        "cls.note() resolves to Holder.note",
-    )?;
+    assert_local_index(note_calls[0], holder_note, "cls.note() resolves to Holder.note")?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
-    assert_local_index(
-        more_calls[0],
-        more_more,
-        "cls.note().extra().more() resolves to More.more",
-    )?;
+    assert_local_index(more_calls[0], more_more, "cls.note().extra().more() resolves to More.more")?;
     if matches!(
         &more_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_more
     ) {
-        return Err(TestError::Falsified(
-            "cls.note().extra().more() must not resolve to Decoy.more",
-        ));
+        return Err(TestError::Falsified("cls.note().extra().more() must not resolve to Decoy.more"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -18685,44 +17075,24 @@ class Holder:
     let holder_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "obj.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "obj.note().extra() resolves to Child.extra")?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        holder_note,
-        "obj.note() resolves to Holder.note",
-    )?;
+    assert_local_index(note_calls[0], holder_note, "obj.note() resolves to Holder.note")?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
-    assert_local_index(
-        more_calls[0],
-        more_more,
-        "obj.note().extra().more() resolves to More.more",
-    )?;
+    assert_local_index(more_calls[0], more_more, "obj.note().extra().more() resolves to More.more")?;
     if matches!(
         &more_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_more
     ) {
-        return Err(TestError::Falsified(
-            "obj.note().extra().more() must not resolve to Decoy.more",
-        ));
+        return Err(TestError::Falsified("obj.note().extra().more() must not resolve to Decoy.more"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -18762,33 +17132,19 @@ def run():
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "note().extra() resolves to Child.extra")?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
-    assert_local_index(
-        more_calls[0],
-        more_more,
-        "note().extra().more() resolves to More.more",
-    )?;
+    assert_local_index(more_calls[0], more_more, "note().extra().more() resolves to More.more")?;
     if matches!(
         &more_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_more
     ) {
-        return Err(TestError::Falsified(
-            "note().extra().more() must not resolve to Decoy.more",
-        ));
+        return Err(TestError::Falsified("note().extra().more() must not resolve to Decoy.more"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -18829,44 +17185,24 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "Child().note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "Child().note().extra() resolves to Child.extra")?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "Child().note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "Child().note() resolves to Child.note")?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
-    assert_local_index(
-        more_calls[0],
-        more_more,
-        "Child().note().extra().more() resolves to More.more",
-    )?;
+    assert_local_index(more_calls[0], more_more, "Child().note().extra().more() resolves to More.more")?;
     if matches!(
         &more_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_more
     ) {
-        return Err(TestError::Falsified(
-            "Child().note().extra().more() must not resolve to Decoy.more",
-        ));
+        return Err(TestError::Falsified("Child().note().extra().more() must not resolve to Decoy.more"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -18908,52 +17244,31 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "obj.child.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "obj.child.note().extra() resolves to Child.extra")?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "obj.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "obj.child.note() resolves to Child.note")?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
-    assert_local_index(
-        more_calls[0],
-        more_more,
-        "obj.child.note().extra().more() resolves to More.more",
-    )?;
+    assert_local_index(more_calls[0], more_more, "obj.child.note().extra().more() resolves to More.more")?;
     if matches!(
         &more_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_more
     ) {
-        return Err(TestError::Falsified(
-            "obj.child.note().extra().more() must not resolve to Decoy.more",
-        ));
+        return Err(TestError::Falsified("obj.child.note().extra().more() must not resolve to Decoy.more"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
 
 #[test]
-fn py_call_return_double_hop_class_name_chain_targets_more_more_not_decoy() -> Result<(), TestError>
-{
+fn py_call_return_double_hop_class_name_chain_targets_more_more_not_decoy() -> Result<(), TestError> {
     const SOURCE: &[u8] = b"\
 class Decoy:
     def extra(self):
@@ -18988,44 +17303,24 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "Holder.child.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "Holder.child.note().extra() resolves to Child.extra")?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "Holder.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "Holder.child.note() resolves to Child.note")?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
-    assert_local_index(
-        more_calls[0],
-        more_more,
-        "Holder.child.note().extra().more() resolves to More.more",
-    )?;
+    assert_local_index(more_calls[0], more_more, "Holder.child.note().extra().more() resolves to More.more")?;
     if matches!(
         &more_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_more
     ) {
-        return Err(TestError::Falsified(
-            "Holder.child.note().extra().more() must not resolve to Decoy.more",
-        ));
+        return Err(TestError::Falsified("Holder.child.note().extra().more() must not resolve to Decoy.more"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -19070,44 +17365,24 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "self.child.other.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "self.child.other.note().extra() resolves to Child.extra")?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "self.child.other.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "self.child.other.note() resolves to Child.note")?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
-    assert_local_index(
-        more_calls[0],
-        more_more,
-        "self.child.other.note().extra().more() resolves to More.more",
-    )?;
+    assert_local_index(more_calls[0], more_more, "self.child.other.note().extra().more() resolves to More.more")?;
     if matches!(
         &more_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_more
     ) {
-        return Err(TestError::Falsified(
-            "self.child.other.note().extra().more() must not resolve to Decoy.more",
-        ));
+        return Err(TestError::Falsified("self.child.other.note().extra().more() must not resolve to Decoy.more"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -19150,44 +17425,24 @@ def outer(obj: Holder):
     let holder_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, inner_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "inner owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("inner owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "obj.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "obj.note().extra() resolves to Child.extra")?;
     let note_calls = method_calls_with_path(&view, inner_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "inner owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("inner owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        holder_note,
-        "obj.note() resolves to Holder.note",
-    )?;
+    assert_local_index(note_calls[0], holder_note, "obj.note() resolves to Holder.note")?;
     let more_calls = method_calls_with_path(&view, inner_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "inner owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("inner owns one MethodCall with path more"));
     }
-    assert_local_index(
-        more_calls[0],
-        more_more,
-        "obj.note().extra().more() resolves to More.more",
-    )?;
+    assert_local_index(more_calls[0], more_more, "obj.note().extra().more() resolves to More.more")?;
     if matches!(
         &more_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_more
     ) {
-        return Err(TestError::Falsified(
-            "obj.note().extra().more() must not resolve to Decoy.more",
-        ));
+        return Err(TestError::Falsified("obj.note().extra().more() must not resolve to Decoy.more"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -19236,63 +17491,35 @@ class Holder:
     let holder_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        holder_note,
-        "self.note() resolves to Holder.note",
-    )?;
+    assert_local_index(note_calls[0], holder_note, "self.note() resolves to Holder.note")?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "self.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "self.note().extra() resolves to Child.extra")?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
-    assert_local_index(
-        more_calls[0],
-        more_more,
-        "self.note().extra().more() resolves to More.more",
-    )?;
+    assert_local_index(more_calls[0], more_more, "self.note().extra().more() resolves to More.more")?;
     if matches!(
         &more_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_more
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra().more() must not resolve to Decoy.more",
-        ));
+        return Err(TestError::Falsified("self.note().extra().more() must not resolve to Decoy.more"));
     }
     let again_calls = method_calls_with_path(&view, run_owner, b"again")?;
     if again_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path again",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path again"));
     }
-    assert_local_index(
-        again_calls[0],
-        again_again,
-        "self.note().extra().more().again() resolves to Again.again",
-    )?;
+    assert_local_index(again_calls[0], again_again, "self.note().extra().more().again() resolves to Again.again")?;
     if matches!(
         &again_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_again
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra().more().again() must not resolve to Decoy.again",
-        ));
+        return Err(TestError::Falsified("self.note().extra().more().again() must not resolve to Decoy.again"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -19330,36 +17557,24 @@ class Holder:
     let more_more_method = entity_ordinal_at_index(&view, b"more", EntityKind::Function, 0)?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if !more_calls.is_empty() {
-        return Err(TestError::Falsified(
-            "run owns zero MethodCalls with path more",
-        ));
+        return Err(TestError::Falsified("run owns zero MethodCalls with path more"));
     }
     let reads = field_accesses_with_path(&view, run_owner, b"more")?;
     if reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path more",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path more"));
     }
-    assert_local_index(
-        reads[0],
-        more_more_field,
-        "self.note().extra().more resolves to More.more field",
-    )?;
+    assert_local_index(reads[0], more_more_field, "self.note().extra().more resolves to More.more field")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == more_more_method
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra().more must not resolve to More.more method",
-        ));
+        return Err(TestError::Falsified("self.note().extra().more must not resolve to More.more method"));
     }
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_more_field
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra().more must not resolve to Decoy.more field",
-        ));
+        return Err(TestError::Falsified("self.note().extra().more must not resolve to Decoy.more field"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -19397,30 +17612,20 @@ class Holder:
     let more_more_method = entity_ordinal_at_index(&view, b"more", EntityKind::Function, 0)?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
-    assert_local_index(
-        more_calls[0],
-        more_more_method,
-        "self.note().extra().more() resolves to More.more method",
-    )?;
+    assert_local_index(more_calls[0], more_more_method, "self.note().extra().more() resolves to More.more method")?;
     if matches!(
         &more_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == more_more_field
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra().more() must not resolve to More.more field",
-        ));
+        return Err(TestError::Falsified("self.note().extra().more() must not resolve to More.more field"));
     }
     if matches!(
         &more_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_more_field
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra().more() must not resolve to Decoy.more field",
-        ));
+        return Err(TestError::Falsified("self.note().extra().more() must not resolve to Decoy.more field"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -19467,44 +17672,24 @@ class Holder(Left, Right):
     let holder_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        base_extra,
-        "self.note().extra() resolves to Base.extra",
-    )?;
+    assert_local_index(extra_calls[0], base_extra, "self.note().extra() resolves to Base.extra")?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        holder_note,
-        "self.note() resolves to Holder.note",
-    )?;
+    assert_local_index(note_calls[0], holder_note, "self.note() resolves to Holder.note")?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
-    assert_local_index(
-        more_calls[0],
-        more_more,
-        "self.note().extra().more() resolves to More.more",
-    )?;
+    assert_local_index(more_calls[0], more_more, "self.note().extra().more() resolves to More.more")?;
     if matches!(
         &more_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_more
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra().more() must not resolve to Decoy.more",
-        ));
+        return Err(TestError::Falsified("self.note().extra().more() must not resolve to Decoy.more"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -19545,30 +17730,20 @@ class Holder:
     let more_more = entity_ordinal_at_index(&view, b"more", EntityKind::Function, 1)?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
-    assert_universe_method_named(
-        more_calls[0],
-        b"more",
-        "unannotated middle extra stays a pypi universe key",
-    )?;
+    assert_universe_method_named(more_calls[0], b"more", "unannotated middle extra stays a pypi universe key")?;
     if matches!(
         &more_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == more_more
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra().more() must not resolve to More.more",
-        ));
+        return Err(TestError::Falsified("self.note().extra().more() must not resolve to More.more"));
     }
     if matches!(
         &more_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_more
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra().more() must not resolve to Decoy.more",
-        ));
+        return Err(TestError::Falsified("self.note().extra().more() must not resolve to Decoy.more"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -19609,30 +17784,20 @@ class Holder:
     let more_more = entity_ordinal_at_index(&view, b"more", EntityKind::Function, 1)?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
-    assert_universe_method_named(
-        more_calls[0],
-        b"more",
-        "dotted extra return stays a pypi universe key",
-    )?;
+    assert_universe_method_named(more_calls[0], b"more", "dotted extra return stays a pypi universe key")?;
     if matches!(
         &more_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == more_more
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra().more() must not resolve to More.more",
-        ));
+        return Err(TestError::Falsified("self.note().extra().more() must not resolve to More.more"));
     }
     if matches!(
         &more_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_more
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra().more() must not resolve to Decoy.more",
-        ));
+        return Err(TestError::Falsified("self.note().extra().more() must not resolve to Decoy.more"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -19671,47 +17836,29 @@ class Holder:
     let more_more_field = entity_ordinal_at_index(&view, b"more", EntityKind::Field, 0)?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if !more_calls.is_empty() {
-        return Err(TestError::Falsified(
-            "run owns zero MethodCalls with path more",
-        ));
+        return Err(TestError::Falsified("run owns zero MethodCalls with path more"));
     }
     let reads = field_accesses_with_path(&view, run_owner, b"more")?;
     if reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path more",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path more"));
     }
-    assert_universe_field_named(
-        reads[0],
-        b"more",
-        "list[More] read through double hop stays a pypi universe field key",
-    )?;
+    assert_universe_field_named(reads[0], b"more", "list[More] read through double hop stays a pypi universe field key")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == more_more_field
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra().more must not resolve to More.more field",
-        ));
+        return Err(TestError::Falsified("self.note().extra().more must not resolve to More.more field"));
     }
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "self.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "self.note().extra() resolves to Child.extra")?;
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not resolve to Decoy.extra"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -19752,30 +17899,20 @@ class Holder:
     let more_more = entity_ordinal_at_index(&view, b"more", EntityKind::Function, 1)?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
-    assert_universe_method_named(
-        more_calls[0],
-        b"more",
-        "two sibling extra methods stay a pypi universe key",
-    )?;
+    assert_universe_method_named(more_calls[0], b"more", "two sibling extra methods stay a pypi universe key")?;
     if matches!(
         &more_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == more_more
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra().more() must not resolve to More.more",
-        ));
+        return Err(TestError::Falsified("self.note().extra().more() must not resolve to More.more"));
     }
     if matches!(
         &more_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_more
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra().more() must not resolve to Decoy.more",
-        ));
+        return Err(TestError::Falsified("self.note().extra().more() must not resolve to Decoy.more"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -19815,30 +17952,20 @@ class Holder:
     let more_more = entity_ordinal_at_index(&view, b"more", EntityKind::Function, 1)?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
-    assert_universe_method_named(
-        more_calls[0],
-        b"more",
-        "obj reassignment stays a pypi universe key",
-    )?;
+    assert_universe_method_named(more_calls[0], b"more", "obj reassignment stays a pypi universe key")?;
     if matches!(
         &more_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == more_more
     ) {
-        return Err(TestError::Falsified(
-            "obj.note().extra().more() must not resolve to More.more",
-        ));
+        return Err(TestError::Falsified("obj.note().extra().more() must not resolve to More.more"));
     }
     if matches!(
         &more_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_more
     ) {
-        return Err(TestError::Falsified(
-            "obj.note().extra().more() must not resolve to Decoy.more",
-        ));
+        return Err(TestError::Falsified("obj.note().extra().more() must not resolve to Decoy.more"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -19881,9 +18008,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
     assert_local_index(
         more_calls[0],
@@ -19894,32 +18019,18 @@ class Holder:
         &more_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_more
     ) {
-        return Err(TestError::Falsified(
-            "obj.note().extra().more() must not resolve to Decoy.more",
-        ));
+        return Err(TestError::Falsified("obj.note().extra().more() must not resolve to Decoy.more"));
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        holder_note,
-        "obj.note() resolves to Holder.note",
-    )?;
+    assert_local_index(note_calls[0], holder_note, "obj.note() resolves to Holder.note")?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "obj.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "obj.note().extra() resolves to Child.extra")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -19958,30 +18069,20 @@ class Holder:
     let more_more = entity_ordinal_at_index(&view, b"more", EntityKind::Function, 1)?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
-    assert_universe_method_named(
-        more_calls[0],
-        b"more",
-        "subscript double hop stays a pypi universe key",
-    )?;
+    assert_universe_method_named(more_calls[0], b"more", "subscript double hop stays a pypi universe key")?;
     if matches!(
         &more_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == more_more
     ) {
-        return Err(TestError::Falsified(
-            "self.child[0].note().extra().more() must not resolve to More.more",
-        ));
+        return Err(TestError::Falsified("self.child[0].note().extra().more() must not resolve to More.more"));
     }
     if matches!(
         &more_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_more
     ) {
-        return Err(TestError::Falsified(
-            "self.child[0].note().extra().more() must not resolve to Decoy.more",
-        ));
+        return Err(TestError::Falsified("self.child[0].note().extra().more() must not resolve to Decoy.more"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -20019,34 +18120,20 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
-    assert_universe_method_named(
-        more_calls[0],
-        b"more",
-        "missing More.more stays a pypi universe key",
-    )?;
+    assert_universe_method_named(more_calls[0], b"more", "missing More.more stays a pypi universe key")?;
     if matches!(
         &more_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_more
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra().more() must not resolve to Decoy.more",
-        ));
+        return Err(TestError::Falsified("self.note().extra().more() must not resolve to Decoy.more"));
     }
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "self.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "self.note().extra() resolves to Child.extra")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -20088,30 +18175,20 @@ class Holder(Left, Right):
     let more_more = entity_ordinal_at_index(&view, b"more", EntityKind::Function, 1)?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
-    assert_universe_method_named(
-        more_calls[0],
-        b"more",
-        "two base extra methods stay a pypi universe key",
-    )?;
+    assert_universe_method_named(more_calls[0], b"more", "two base extra methods stay a pypi universe key")?;
     if matches!(
         &more_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == more_more
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra().more() must not resolve to More.more",
-        ));
+        return Err(TestError::Falsified("self.note().extra().more() must not resolve to More.more"));
     }
     if matches!(
         &more_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_more
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra().more() must not resolve to Decoy.more",
-        ));
+        return Err(TestError::Falsified("self.note().extra().more() must not resolve to Decoy.more"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -20152,61 +18229,37 @@ class Holder:
     let holder_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_universe_method_named(
-        extra_calls[0],
-        b"extra",
-        "missing Child.extra stays a pypi universe key",
-    )?;
+    assert_universe_method_named(extra_calls[0], b"extra", "missing Child.extra stays a pypi universe key")?;
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not resolve to Decoy.extra"));
     }
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
-    assert_universe_method_named(
-        more_calls[0],
-        b"more",
-        "failed earlier hop stays a pypi universe key",
-    )?;
+    assert_universe_method_named(more_calls[0], b"more", "failed earlier hop stays a pypi universe key")?;
     if matches!(
         &more_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == more_more
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra().more() must not resolve to More.more",
-        ));
+        return Err(TestError::Falsified("self.note().extra().more() must not resolve to More.more"));
     }
     if matches!(
         &more_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_more
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra().more() must not resolve to Decoy.more",
-        ));
+        return Err(TestError::Falsified("self.note().extra().more() must not resolve to Decoy.more"));
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        holder_note,
-        "self.note() resolves to Holder.note",
-    )?;
+    assert_local_index(note_calls[0], holder_note, "self.note() resolves to Holder.note")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -20235,33 +18288,16 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "py_subscript_element_self_call_targets_child_note_not_decoy binds Child.note",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note)
-    {
-        return Err(TestError::Falsified(
-            "py_subscript_element_self_call_targets_child_note_not_decoy must not resolve to Decoy.note",
-        ));
+    assert_local_index(note_calls[0], child_note, "py_subscript_element_self_call_targets_child_note_not_decoy binds Child.note")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note) {
+        return Err(TestError::Falsified("py_subscript_element_self_call_targets_child_note_not_decoy must not resolve to Decoy.note"));
     }
     let holder_child = entity_ordinal_at_index(&view, b"child", EntityKind::Field, 0)?;
     let child_reads = field_accesses_with_path(&view, run_owner, b"child")?;
-    if child_reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path child",
-        ));
-    }
-    assert_local_index(
-        child_reads[0],
-        holder_child,
-        "self.child resolves to Holder.child",
-    )?;
+    if child_reads.len() != 1 { return Err(TestError::Falsified("run owns one FieldAccess with path child")); }
+    assert_local_index(child_reads[0], holder_child, "self.child resolves to Holder.child")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -20291,20 +18327,11 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "py_subscript_element_cls_call_targets_child_note_not_decoy binds Child.note",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note)
-    {
-        return Err(TestError::Falsified(
-            "py_subscript_element_cls_call_targets_child_note_not_decoy must not resolve to Decoy.note",
-        ));
+    assert_local_index(note_calls[0], child_note, "py_subscript_element_cls_call_targets_child_note_not_decoy binds Child.note")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note) {
+        return Err(TestError::Falsified("py_subscript_element_cls_call_targets_child_note_not_decoy must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -20334,20 +18361,11 @@ def run(obj: Holder):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "py_subscript_element_named_call_targets_child_note_not_decoy binds Child.note",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note)
-    {
-        return Err(TestError::Falsified(
-            "py_subscript_element_named_call_targets_child_note_not_decoy must not resolve to Decoy.note",
-        ));
+    assert_local_index(note_calls[0], child_note, "py_subscript_element_named_call_targets_child_note_not_decoy binds Child.note")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note) {
+        return Err(TestError::Falsified("py_subscript_element_named_call_targets_child_note_not_decoy must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -20377,28 +18395,18 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "py_subscript_element_live_class_call_targets_child_note_not_decoy binds Child.note",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note)
-    {
-        return Err(TestError::Falsified(
-            "py_subscript_element_live_class_call_targets_child_note_not_decoy must not resolve to Decoy.note",
-        ));
+    assert_local_index(note_calls[0], child_note, "py_subscript_element_live_class_call_targets_child_note_not_decoy binds Child.note")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note) {
+        return Err(TestError::Falsified("py_subscript_element_live_class_call_targets_child_note_not_decoy must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
 
 #[test]
-fn py_subscript_element_field_before_index_call_targets_child_note_not_decoy()
--> Result<(), TestError> {
+fn py_subscript_element_field_before_index_call_targets_child_note_not_decoy() -> Result<(), TestError> {
     const SOURCE: &[u8] = b"\
 class Decoy:
     def note(self):
@@ -20423,20 +18431,11 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "py_subscript_element_field_before_index_call_targets_child_note_not_decoy binds Child.note",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note)
-    {
-        return Err(TestError::Falsified(
-            "py_subscript_element_field_before_index_call_targets_child_note_not_decoy must not resolve to Decoy.note",
-        ));
+    assert_local_index(note_calls[0], child_note, "py_subscript_element_field_before_index_call_targets_child_note_not_decoy binds Child.note")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note) {
+        return Err(TestError::Falsified("py_subscript_element_field_before_index_call_targets_child_note_not_decoy must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -20468,20 +18467,11 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "py_subscript_element_middle_index_call_targets_child_note_not_decoy binds Child.note",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note)
-    {
-        return Err(TestError::Falsified(
-            "py_subscript_element_middle_index_call_targets_child_note_not_decoy must not resolve to Decoy.note",
-        ));
+    assert_local_index(note_calls[0], child_note, "py_subscript_element_middle_index_call_targets_child_note_not_decoy binds Child.note")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note) {
+        return Err(TestError::Falsified("py_subscript_element_middle_index_call_targets_child_note_not_decoy must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -20511,20 +18501,11 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "py_subscript_element_double_index_call_targets_child_note_not_decoy binds Child.note",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note)
-    {
-        return Err(TestError::Falsified(
-            "py_subscript_element_double_index_call_targets_child_note_not_decoy must not resolve to Decoy.note",
-        ));
+    assert_local_index(note_calls[0], child_note, "py_subscript_element_double_index_call_targets_child_note_not_decoy binds Child.note")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note) {
+        return Err(TestError::Falsified("py_subscript_element_double_index_call_targets_child_note_not_decoy must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -20552,20 +18533,11 @@ def run(items: list[Child]):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "py_subscript_element_parameter_call_targets_child_note_not_decoy binds Child.note",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note)
-    {
-        return Err(TestError::Falsified(
-            "py_subscript_element_parameter_call_targets_child_note_not_decoy must not resolve to Decoy.note",
-        ));
+    assert_local_index(note_calls[0], child_note, "py_subscript_element_parameter_call_targets_child_note_not_decoy binds Child.note")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note) {
+        return Err(TestError::Falsified("py_subscript_element_parameter_call_targets_child_note_not_decoy must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -20594,29 +18566,17 @@ def outer(items: list[Child]):
     let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, inner_owner, b"note")?;
-    if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "inner owns one MethodCall with path note",
-        ));
-    }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "closure items[0].note() resolves to Child.note",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note)
-    {
-        return Err(TestError::Falsified(
-            "closure must not resolve to Decoy.note",
-        ));
+    if note_calls.len() != 1 { return Err(TestError::Falsified("inner owns one MethodCall with path note")); }
+    assert_local_index(note_calls[0], child_note, "closure items[0].note() resolves to Child.note")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note) {
+        return Err(TestError::Falsified("closure must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
 
 #[test]
-fn py_subscript_element_instance_annotation_call_targets_child_note_not_decoy()
--> Result<(), TestError> {
+fn py_subscript_element_instance_annotation_call_targets_child_note_not_decoy() -> Result<(), TestError> {
     const SOURCE: &[u8] = b"\
 class Decoy:
     def note(self):
@@ -20639,20 +18599,11 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "py_subscript_element_instance_annotation_call_targets_child_note_not_decoy binds Child.note",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note)
-    {
-        return Err(TestError::Falsified(
-            "py_subscript_element_instance_annotation_call_targets_child_note_not_decoy must not resolve to Decoy.note",
-        ));
+    assert_local_index(note_calls[0], child_note, "py_subscript_element_instance_annotation_call_targets_child_note_not_decoy binds Child.note")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note) {
+        return Err(TestError::Falsified("py_subscript_element_instance_annotation_call_targets_child_note_not_decoy must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -20682,28 +18633,18 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "py_subscript_element_union_none_call_targets_child_note_not_decoy binds Child.note",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note)
-    {
-        return Err(TestError::Falsified(
-            "py_subscript_element_union_none_call_targets_child_note_not_decoy must not resolve to Decoy.note",
-        ));
+    assert_local_index(note_calls[0], child_note, "py_subscript_element_union_none_call_targets_child_note_not_decoy binds Child.note")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note) {
+        return Err(TestError::Falsified("py_subscript_element_union_none_call_targets_child_note_not_decoy must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
 
 #[test]
-fn py_subscript_element_typing_optional_call_targets_child_note_not_decoy() -> Result<(), TestError>
-{
+fn py_subscript_element_typing_optional_call_targets_child_note_not_decoy() -> Result<(), TestError> {
     const SOURCE: &[u8] = b"\
 from typing import Optional
 class Decoy:
@@ -20727,28 +18668,18 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "py_subscript_element_typing_optional_call_targets_child_note_not_decoy binds Child.note",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note)
-    {
-        return Err(TestError::Falsified(
-            "py_subscript_element_typing_optional_call_targets_child_note_not_decoy must not resolve to Decoy.note",
-        ));
+    assert_local_index(note_calls[0], child_note, "py_subscript_element_typing_optional_call_targets_child_note_not_decoy binds Child.note")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note) {
+        return Err(TestError::Falsified("py_subscript_element_typing_optional_call_targets_child_note_not_decoy must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
 
 #[test]
-fn py_subscript_element_optional_element_call_targets_child_note_not_decoy() -> Result<(), TestError>
-{
+fn py_subscript_element_optional_element_call_targets_child_note_not_decoy() -> Result<(), TestError> {
     const SOURCE: &[u8] = b"\
 from typing import Optional
 class Decoy:
@@ -20772,20 +18703,11 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "py_subscript_element_optional_element_call_targets_child_note_not_decoy binds Child.note",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note)
-    {
-        return Err(TestError::Falsified(
-            "py_subscript_element_optional_element_call_targets_child_note_not_decoy must not resolve to Decoy.note",
-        ));
+    assert_local_index(note_calls[0], child_note, "py_subscript_element_optional_element_call_targets_child_note_not_decoy binds Child.note")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note) {
+        return Err(TestError::Falsified("py_subscript_element_optional_element_call_targets_child_note_not_decoy must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -20820,20 +18742,11 @@ class Holder(Left, Right):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "py_subscript_element_diamond_call_targets_child_note_not_decoy binds Child.note",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note)
-    {
-        return Err(TestError::Falsified(
-            "py_subscript_element_diamond_call_targets_child_note_not_decoy must not resolve to Decoy.note",
-        ));
+    assert_local_index(note_calls[0], child_note, "py_subscript_element_diamond_call_targets_child_note_not_decoy binds Child.note")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note) {
+        return Err(TestError::Falsified("py_subscript_element_diamond_call_targets_child_note_not_decoy must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -20867,31 +18780,14 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
-    if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
-    }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "self.child[0].note().extra() resolves to Child.extra",
-    )?;
-    if matches!(&extra_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_extra)
-    {
+    if extra_calls.len() != 1 { return Err(TestError::Falsified("run owns one MethodCall with path extra")); }
+    assert_local_index(extra_calls[0], child_extra, "self.child[0].note().extra() resolves to Child.extra")?;
+    if matches!(&extra_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_extra) {
         return Err(TestError::Falsified("must not resolve to Decoy.extra"));
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
-    if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
-    }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "note in chain resolves to Child.note",
-    )?;
+    if note_calls.len() != 1 { return Err(TestError::Falsified("run owns one MethodCall with path note")); }
+    assert_local_index(note_calls[0], child_note, "note in chain resolves to Child.note")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -20922,29 +18818,15 @@ class Holder:
     let child_note_field = entity_ordinal_at_index(&view, b"note", EntityKind::Field, 1)?;
     let child_note_fn = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let calls = read_method_calls(&view, run_owner)?;
-    if !calls.is_empty() {
-        return Err(TestError::Falsified("run owns zero MethodCalls"));
-    }
+    if !calls.is_empty() { return Err(TestError::Falsified("run owns zero MethodCalls")); }
     let reads = field_accesses_with_path(&view, run_owner, b"note")?;
-    if reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path note",
-        ));
-    }
-    assert_local_index(
-        reads[0],
-        child_note_field,
-        "field read resolves to Child.note field",
-    )?;
-    if matches!(&reads[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note_field)
-    {
+    if reads.len() != 1 { return Err(TestError::Falsified("run owns one FieldAccess with path note")); }
+    assert_local_index(reads[0], child_note_field, "field read resolves to Child.note field")?;
+    if matches!(&reads[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note_field) {
         return Err(TestError::Falsified("must not resolve to Decoy.note field"));
     }
-    if matches!(&reads[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note_fn)
-    {
-        return Err(TestError::Falsified(
-            "field read must not resolve to Child.note method",
-        ));
+    if matches!(&reads[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note_fn) {
+        return Err(TestError::Falsified("field read must not resolve to Child.note method"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -20976,27 +18858,13 @@ class Holder:
     let child_note_fn = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let child_note_field = entity_ordinal_at_index(&view, b"note", EntityKind::Field, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
-    if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+    if note_calls.len() != 1 { return Err(TestError::Falsified("run owns one MethodCall with path note")); }
+    assert_local_index(note_calls[0], child_note_fn, "method call resolves to Child.note method")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note) {
+        return Err(TestError::Falsified("must not resolve to Decoy.note method"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note_fn,
-        "method call resolves to Child.note method",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note)
-    {
-        return Err(TestError::Falsified(
-            "must not resolve to Decoy.note method",
-        ));
-    }
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note_field)
-    {
-        return Err(TestError::Falsified(
-            "method call must not resolve to Child.note field",
-        ));
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note_field) {
+        return Err(TestError::Falsified("method call must not resolve to Child.note field"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -21027,20 +18895,11 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "py_subscript_element_sequence_call_targets_child_note_not_decoy binds Child.note",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note)
-    {
-        return Err(TestError::Falsified(
-            "py_subscript_element_sequence_call_targets_child_note_not_decoy must not resolve to Decoy.note",
-        ));
+    assert_local_index(note_calls[0], child_note, "py_subscript_element_sequence_call_targets_child_note_not_decoy binds Child.note")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == decoy_note) {
+        return Err(TestError::Falsified("py_subscript_element_sequence_call_targets_child_note_not_decoy must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -21069,19 +18928,11 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_universe_method(
-        note_calls[0],
-        "py_subscript_element_plain_class_stays_universe stays universe",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note)
-    {
-        return Err(TestError::Falsified(
-            "py_subscript_element_plain_class_stays_universe must not bind locally",
-        ));
+    assert_universe_method(note_calls[0], "py_subscript_element_plain_class_stays_universe stays universe")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note) {
+        return Err(TestError::Falsified("py_subscript_element_plain_class_stays_universe must not bind locally"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -21110,19 +18961,11 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_universe_method(
-        note_calls[0],
-        "py_subscript_element_list_no_subscript_stays_universe stays universe",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note)
-    {
-        return Err(TestError::Falsified(
-            "py_subscript_element_list_no_subscript_stays_universe must not bind locally",
-        ));
+    assert_universe_method(note_calls[0], "py_subscript_element_list_no_subscript_stays_universe stays universe")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note) {
+        return Err(TestError::Falsified("py_subscript_element_list_no_subscript_stays_universe must not bind locally"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -21148,19 +18991,11 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_universe_method(
-        note_calls[0],
-        "py_subscript_element_slice_range_stays_universe stays universe",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note)
-    {
-        return Err(TestError::Falsified(
-            "py_subscript_element_slice_range_stays_universe must not bind locally",
-        ));
+    assert_universe_method(note_calls[0], "py_subscript_element_slice_range_stays_universe stays universe")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note) {
+        return Err(TestError::Falsified("py_subscript_element_slice_range_stays_universe must not bind locally"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -21186,19 +19021,11 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_universe_method(
-        note_calls[0],
-        "py_subscript_element_slice_full_stays_universe stays universe",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note)
-    {
-        return Err(TestError::Falsified(
-            "py_subscript_element_slice_full_stays_universe must not bind locally",
-        ));
+    assert_universe_method(note_calls[0], "py_subscript_element_slice_full_stays_universe stays universe")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note) {
+        return Err(TestError::Falsified("py_subscript_element_slice_full_stays_universe must not bind locally"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -21224,19 +19051,11 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_universe_method(
-        note_calls[0],
-        "py_subscript_element_dict_value_stays_universe stays universe",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note)
-    {
-        return Err(TestError::Falsified(
-            "py_subscript_element_dict_value_stays_universe must not bind locally",
-        ));
+    assert_universe_method(note_calls[0], "py_subscript_element_dict_value_stays_universe stays universe")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note) {
+        return Err(TestError::Falsified("py_subscript_element_dict_value_stays_universe must not bind locally"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -21265,19 +19084,11 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_universe_method(
-        note_calls[0],
-        "py_subscript_element_tuple_two_args_stays_universe stays universe",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note)
-    {
-        return Err(TestError::Falsified(
-            "py_subscript_element_tuple_two_args_stays_universe must not bind locally",
-        ));
+    assert_universe_method(note_calls[0], "py_subscript_element_tuple_two_args_stays_universe stays universe")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note) {
+        return Err(TestError::Falsified("py_subscript_element_tuple_two_args_stays_universe must not bind locally"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -21306,19 +19117,11 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_universe_method(
-        note_calls[0],
-        "py_subscript_element_union_element_stays_universe stays universe",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note)
-    {
-        return Err(TestError::Falsified(
-            "py_subscript_element_union_element_stays_universe must not bind locally",
-        ));
+    assert_universe_method(note_calls[0], "py_subscript_element_union_element_stays_universe stays universe")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note) {
+        return Err(TestError::Falsified("py_subscript_element_union_element_stays_universe must not bind locally"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -21345,19 +19148,11 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_universe_method(
-        note_calls[0],
-        "py_subscript_element_qualified_element_stays_universe stays universe",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note)
-    {
-        return Err(TestError::Falsified(
-            "py_subscript_element_qualified_element_stays_universe must not bind locally",
-        ));
+    assert_universe_method(note_calls[0], "py_subscript_element_qualified_element_stays_universe stays universe")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note) {
+        return Err(TestError::Falsified("py_subscript_element_qualified_element_stays_universe must not bind locally"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -21383,19 +19178,11 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_universe_method(
-        note_calls[0],
-        "py_subscript_element_extra_index_stays_universe stays universe",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note)
-    {
-        return Err(TestError::Falsified(
-            "py_subscript_element_extra_index_stays_universe must not bind locally",
-        ));
+    assert_universe_method(note_calls[0], "py_subscript_element_extra_index_stays_universe stays universe")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note) {
+        return Err(TestError::Falsified("py_subscript_element_extra_index_stays_universe must not bind locally"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -21423,19 +19210,11 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_universe_method(
-        note_calls[0],
-        "py_subscript_element_two_own_generic_bases_stay_universe stays universe",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note)
-    {
-        return Err(TestError::Falsified(
-            "py_subscript_element_two_own_generic_bases_stay_universe must not bind locally",
-        ));
+    assert_universe_method(note_calls[0], "py_subscript_element_two_own_generic_bases_stay_universe stays universe")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note) {
+        return Err(TestError::Falsified("py_subscript_element_two_own_generic_bases_stay_universe must not bind locally"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -21464,19 +19243,11 @@ class Holder(Left, Right):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_universe_method(
-        note_calls[0],
-        "py_subscript_element_diamond_two_bases_stay_universe stays universe",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note)
-    {
-        return Err(TestError::Falsified(
-            "py_subscript_element_diamond_two_bases_stay_universe must not bind locally",
-        ));
+    assert_universe_method(note_calls[0], "py_subscript_element_diamond_two_bases_stay_universe stays universe")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note) {
+        return Err(TestError::Falsified("py_subscript_element_diamond_two_bases_stay_universe must not bind locally"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -21503,19 +19274,11 @@ def run(obj: Holder):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_universe_method(
-        note_calls[0],
-        "py_subscript_element_assigned_shadow_stays_universe stays universe",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note)
-    {
-        return Err(TestError::Falsified(
-            "py_subscript_element_assigned_shadow_stays_universe must not bind locally",
-        ));
+    assert_universe_method(note_calls[0], "py_subscript_element_assigned_shadow_stays_universe stays universe")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note) {
+        return Err(TestError::Falsified("py_subscript_element_assigned_shadow_stays_universe must not bind locally"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -21549,9 +19312,7 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
     assert_local_index(
         note_calls[0],
@@ -21562,9 +19323,7 @@ class Holder:
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj == 1 must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj == 1 must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -21592,19 +19351,11 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let note_calls = method_calls_with_path(&view, inner_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_universe_method(
-        note_calls[0],
-        "py_subscript_element_nested_self_stays_universe stays universe",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note)
-    {
-        return Err(TestError::Falsified(
-            "py_subscript_element_nested_self_stays_universe must not bind locally",
-        ));
+    assert_universe_method(note_calls[0], "py_subscript_element_nested_self_stays_universe stays universe")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note) {
+        return Err(TestError::Falsified("py_subscript_element_nested_self_stays_universe must not bind locally"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -21633,17 +19384,10 @@ class Holder:
     let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
-    if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
-    }
+    if extra_calls.len() != 1 { return Err(TestError::Falsified("run owns one MethodCall with path extra")); }
     assert_universe_method_named(extra_calls[0], b"extra", "subscript of call stays universe")?;
-    if matches!(&extra_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_extra)
-    {
-        return Err(TestError::Falsified(
-            "self.note()[0].extra() must not resolve to Child.extra",
-        ));
+    if matches!(&extra_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_extra) {
+        return Err(TestError::Falsified("self.note()[0].extra() must not resolve to Child.extra"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -21666,11 +19410,7 @@ class Holder:
     let view = fragment.view()?;
     let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
-    if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
-    }
+    if note_calls.len() != 1 { return Err(TestError::Falsified("run owns one MethodCall with path note")); }
     assert_universe_method(note_calls[0], "missing Child.note stays universe")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -21696,19 +19436,11 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_universe_method(
-        note_calls[0],
-        "py_subscript_element_class_subscript_stays_universe stays universe",
-    )?;
-    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note)
-    {
-        return Err(TestError::Falsified(
-            "py_subscript_element_class_subscript_stays_universe must not bind locally",
-        ));
+    assert_universe_method(note_calls[0], "py_subscript_element_class_subscript_stays_universe stays universe")?;
+    if matches!(&note_calls[0].occurrence.target, OccurrenceTarget::Local(target) if target.raw == child_note) {
+        return Err(TestError::Falsified("py_subscript_element_class_subscript_stays_universe must not bind locally"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -21739,9 +19471,7 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
     assert_local_index(
         note_calls[0],
@@ -21752,17 +19482,14 @@ class Holder:
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "items[index].note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("items[index].note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
 
 #[test]
-fn py_subscript_element_numeric_class_subscript_does_not_bind_class_note() -> Result<(), TestError>
-{
+fn py_subscript_element_numeric_class_subscript_does_not_bind_class_note() -> Result<(), TestError> {
     const SOURCE: &[u8] = b"\
 class Decoy:
     def note(self):
@@ -21784,26 +19511,23 @@ class Holder:
     let holder_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_universe_method(note_calls[0], "Holder[0].note() stays a pypi universe key")?;
+    assert_universe_method(
+        note_calls[0],
+        "Holder[0].note() stays a pypi universe key",
+    )?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == holder_note
     ) {
-        return Err(TestError::Falsified(
-            "Holder[0].note() must not resolve to Holder.note",
-        ));
+        return Err(TestError::Falsified("Holder[0].note() must not resolve to Holder.note"));
     }
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "Holder[0].note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("Holder[0].note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -22019,9 +19743,7 @@ class Holder:
     let holder_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -22038,15 +19760,9 @@ class Holder:
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        holder_note,
-        "self.note() resolves to Holder.note",
-    )?;
+    assert_local_index(note_calls[0], holder_note, "self.note() resolves to Holder.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
@@ -22086,9 +19802,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -22132,9 +19846,7 @@ def run(obj: Holder):
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -22177,9 +19889,7 @@ def run():
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -22199,8 +19909,7 @@ def run():
 }
 
 #[test]
-fn py_subscript_call_instance_attribute_chain_targets_child_extra_not_decoy()
--> Result<(), TestError> {
+fn py_subscript_call_instance_attribute_chain_targets_child_extra_not_decoy() -> Result<(), TestError> {
     const SOURCE: &[u8] = b"\
 class Decoy:
     def extra(self):
@@ -22226,9 +19935,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -22274,9 +19981,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -22320,9 +20025,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -22366,9 +20069,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -22413,9 +20114,7 @@ def outer(obj: Holder):
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, inner_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "inner owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("inner owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -22461,9 +20160,7 @@ def outer():
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, inner_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "inner owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("inner owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -22507,9 +20204,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -22554,9 +20249,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -22601,9 +20294,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -22648,9 +20339,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -22699,9 +20388,7 @@ class Holder(Left, Right):
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -22752,9 +20439,7 @@ class Holder:
     let more_more = entity_ordinal_at_index(&view, b"more", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -22771,9 +20456,7 @@ class Holder:
     }
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
     assert_local_index(
         more_calls[0],
@@ -22818,9 +20501,7 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -22837,9 +20518,7 @@ class Holder:
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
     assert_local_index(
         note_calls[0],
@@ -22877,15 +20556,11 @@ class Holder:
     let child_score = entity_ordinal_at_index(&view, b"score", EntityKind::Field, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
     let reads = field_accesses_with_path(&view, run_owner, b"score")?;
     if reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path score",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path score"));
     }
     assert_local_index(
         reads[0],
@@ -22932,9 +20607,7 @@ class Holder:
     let child_extra_field = entity_ordinal_at_index(&view, b"extra", EntityKind::Field, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -22988,9 +20661,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -23033,9 +20704,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -23075,9 +20744,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -23120,9 +20787,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -23165,9 +20830,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -23208,9 +20871,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -23250,9 +20911,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -23292,9 +20951,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -23334,9 +20991,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -23382,9 +21037,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -23431,9 +21084,7 @@ class Holder(Left, Right):
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -23477,9 +21128,7 @@ def run(obj: Holder):
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -23521,9 +21170,7 @@ class Holder:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, inner_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "inner owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("inner owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -23561,9 +21208,7 @@ class Holder:
     let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -23602,9 +21247,7 @@ class Holder:
     let holder_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 2)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -23675,9 +21318,7 @@ class Holder:
     let more_more = entity_ordinal_at_index(&view, b"more", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
     assert_local_index(
         note_calls[0],
@@ -23694,9 +21335,7 @@ class Holder:
     }
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -23713,9 +21352,7 @@ class Holder:
     }
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
     assert_local_index(
         more_calls[0],
@@ -23768,9 +21405,7 @@ class Holder:
     let more_more = entity_ordinal_at_index(&view, b"more", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -23787,9 +21422,7 @@ class Holder:
     }
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
     assert_local_index(
         more_calls[0],
@@ -23840,9 +21473,7 @@ def run(obj: Holder):
     let more_more = entity_ordinal_at_index(&view, b"more", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -23859,9 +21490,7 @@ def run(obj: Holder):
     }
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
     assert_local_index(
         more_calls[0],
@@ -23911,9 +21540,7 @@ def run():
     let more_more = entity_ordinal_at_index(&view, b"more", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -23930,9 +21557,7 @@ def run():
     }
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
     assert_local_index(
         more_calls[0],
@@ -23952,8 +21577,7 @@ def run():
 }
 
 #[test]
-fn py_subscript_call_successive_closure_ann_assign_targets_more_more_not_decoy()
--> Result<(), TestError> {
+fn py_subscript_call_successive_closure_ann_assign_targets_more_more_not_decoy() -> Result<(), TestError> {
     const SOURCE: &[u8] = b"\
 class Decoy:
     def extra(self):
@@ -23986,9 +21610,7 @@ def outer():
     let more_more = entity_ordinal_at_index(&view, b"more", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, inner_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "inner owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("inner owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -24005,9 +21627,7 @@ def outer():
     }
     let more_calls = method_calls_with_path(&view, inner_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "inner owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("inner owns one MethodCall with path more"));
     }
     assert_local_index(
         more_calls[0],
@@ -24058,9 +21678,7 @@ class Holder:
     let more_more = entity_ordinal_at_index(&view, b"more", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -24077,9 +21695,7 @@ class Holder:
     }
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
     assert_local_index(
         more_calls[0],
@@ -24135,9 +21751,7 @@ class Holder(Left, Right):
     let more_more = entity_ordinal_at_index(&view, b"more", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -24154,9 +21768,7 @@ class Holder(Left, Right):
     }
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
     assert_local_index(
         more_calls[0],
@@ -24176,8 +21788,7 @@ class Holder(Left, Right):
 }
 
 #[test]
-fn py_subscript_call_successive_triple_subscript_targets_again_again_not_decoy()
--> Result<(), TestError> {
+fn py_subscript_call_successive_triple_subscript_targets_again_again_not_decoy() -> Result<(), TestError> {
     const SOURCE: &[u8] = b"\
 class Decoy:
     def again(self):
@@ -24207,9 +21818,7 @@ class Holder:
     let again_again = entity_ordinal_at_index(&view, b"again", EntityKind::Function, 1)?;
     let again_calls = method_calls_with_path(&view, run_owner, b"again")?;
     if again_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path again",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path again"));
     }
     assert_local_index(
         again_calls[0],
@@ -24229,8 +21838,7 @@ class Holder:
 }
 
 #[test]
-fn py_subscript_call_successive_subscript_then_call_targets_again_again_not_decoy()
--> Result<(), TestError> {
+fn py_subscript_call_successive_subscript_then_call_targets_again_again_not_decoy() -> Result<(), TestError> {
     const SOURCE: &[u8] = b"\
 class Decoy:
     def again(self):
@@ -24260,9 +21868,7 @@ class Holder:
     let again_again = entity_ordinal_at_index(&view, b"again", EntityKind::Function, 1)?;
     let again_calls = method_calls_with_path(&view, run_owner, b"again")?;
     if again_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path again",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path again"));
     }
     assert_local_index(
         again_calls[0],
@@ -24307,9 +21913,7 @@ class Holder:
     let more_score = entity_ordinal_at_index(&view, b"score", EntityKind::Field, 1)?;
     let reads = field_accesses_with_path(&view, run_owner, b"score")?;
     if reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path score",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path score"));
     }
     assert_local_index(
         reads[0],
@@ -24362,9 +21966,7 @@ class Holder:
     let more_more = entity_ordinal_at_index(&view, b"more", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -24381,9 +21983,7 @@ class Holder:
     }
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
     assert_local_index(
         more_calls[0],
@@ -24433,9 +22033,7 @@ class Holder:
     let child_more = entity_ordinal_at_index(&view, b"more", EntityKind::Function, 2)?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
     assert_universe_method_named(
         more_calls[0],
@@ -24504,9 +22102,7 @@ class Holder:
     let holder_more = entity_ordinal_at_index(&view, b"more", EntityKind::Function, 3)?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
     assert_universe_method_named(
         more_calls[0],
@@ -24573,9 +22169,7 @@ class Holder:
     let more_more = entity_ordinal_at_index(&view, b"more", EntityKind::Function, 0)?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
     assert_universe_method_named(
         more_calls[0],
@@ -24618,9 +22212,7 @@ class Holder:
     let more_more = entity_ordinal_at_index(&view, b"more", EntityKind::Function, 0)?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
     assert_universe_method_named(
         more_calls[0],
@@ -24670,9 +22262,7 @@ class Holder:
     let more_more = entity_ordinal_at_index(&view, b"more", EntityKind::Function, 1)?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
     assert_universe_method_named(
         more_calls[0],
@@ -24731,9 +22321,7 @@ class Holder(Left, Right):
     let more_more = entity_ordinal_at_index(&view, b"more", EntityKind::Function, 1)?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
     assert_universe_method_named(
         more_calls[0],
@@ -24789,9 +22377,7 @@ def run(obj: Holder):
     let more_more = entity_ordinal_at_index(&view, b"more", EntityKind::Function, 1)?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
     assert_universe_method_named(
         more_calls[0],
@@ -24844,9 +22430,7 @@ class Holder:
     let more_more = entity_ordinal_at_index(&view, b"more", EntityKind::Function, 0)?;
     let more_calls = method_calls_with_path(&view, inner_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "inner owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("inner owns one MethodCall with path more"));
     }
     assert_universe_method_named(
         more_calls[0],
@@ -24887,9 +22471,7 @@ class Holder:
     let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
     assert_universe_method_named(
         more_calls[0],
@@ -24926,22 +22508,14 @@ def run(obj: Item):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "obj.note() resolves to Child.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -24973,22 +22547,14 @@ def run(items: Items):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "items[0].note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "items[0].note() resolves to Child.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "items[0].note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("items[0].note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -25020,22 +22586,14 @@ def run(items: Items, index: int):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "items[index].note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "items[index].note() resolves to Child.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "items[index].note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("items[index].note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -25069,22 +22627,14 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "self.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "self.child.note() resolves to Child.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -25118,22 +22668,14 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "self.child[0].note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "self.child[0].note() resolves to Child.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child[0].note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child[0].note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -25169,34 +22711,20 @@ class Holder:
     let holder_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "self.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "self.note().extra() resolves to Child.extra")?;
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not resolve to Decoy.extra"));
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        holder_note,
-        "self.note() resolves to Holder.note",
-    )?;
+    assert_local_index(note_calls[0], holder_note, "self.note() resolves to Holder.note")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -25231,9 +22759,7 @@ class Holder:
     let holder_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -25244,21 +22770,13 @@ class Holder:
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note()[0].extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("self.note()[0].extra() must not resolve to Decoy.extra"));
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        holder_note,
-        "self.note() resolves to Holder.note",
-    )?;
+    assert_local_index(note_calls[0], holder_note, "self.note() resolves to Holder.note")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -25293,22 +22811,14 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, inner_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "inner owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("inner owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "obj.note() resolves to Child.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -25341,22 +22851,14 @@ def run(obj: Item):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "obj.note() resolves to Child.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -25388,22 +22890,14 @@ def run(obj: Item):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "obj.note() resolves to Child.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -25435,22 +22929,14 @@ def run(items: Items):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "items[0].note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "items[0].note() resolves to Child.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "items[0].note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("items[0].note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -25482,22 +22968,14 @@ def run(items: Items):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "items[0].note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "items[0].note() resolves to Child.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "items[0].note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("items[0].note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -25529,22 +23007,14 @@ def run(obj: Item):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "obj.note() resolves to Child.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -25577,22 +23047,14 @@ class Holder(Base):
     let left_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        left_note,
-        "self.note() resolves to Left.note",
-    )?;
+    assert_local_index(note_calls[0], left_note, "self.note() resolves to Left.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -25626,22 +23088,14 @@ def run(obj: Item):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "obj.note() resolves to Child.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -25673,29 +23127,20 @@ def run(items: Items, key: str):
     let holder_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_universe_method(
-        note_calls[0],
-        "dict[str, Child] receiver stays a pypi universe key",
-    )?;
+    assert_universe_method(note_calls[0], "dict[str, Child] receiver stays a pypi universe key")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "items[key].note() must not bind Child.note",
-        ));
+        return Err(TestError::Falsified("items[key].note() must not bind Child.note"));
     }
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == holder_note
     ) {
-        return Err(TestError::Falsified(
-            "items[key].note() must not bind Holder.note",
-        ));
+        return Err(TestError::Falsified("items[key].note() must not bind Holder.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -25727,14 +23172,9 @@ def run(obj: Item):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_universe_method(
-        note_calls[0],
-        "Child | Decoy alias stays a pypi universe key",
-    )?;
+    assert_universe_method(note_calls[0], "Child | Decoy alias stays a pypi universe key")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
@@ -25772,9 +23212,7 @@ def run(obj: Item):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
     assert_universe_method(note_calls[0], "pkg.Child alias stays a pypi universe key")?;
     if matches!(
@@ -25814,9 +23252,7 @@ def run(obj: Item):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
     assert_universe_method(note_calls[0], "two Item aliases stay a pypi universe key")?;
     if matches!(
@@ -25857,9 +23293,7 @@ def run(obj: A):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
     assert_universe_method(note_calls[0], "cyclic aliases stay a pypi universe key")?;
     if matches!(
@@ -25873,8 +23307,7 @@ def run(obj: A):
 }
 
 #[test]
-fn py_type_alias_class_wins_over_alias_call_targets_child_note_not_decoy() -> Result<(), TestError>
-{
+fn py_type_alias_class_wins_over_alias_call_targets_child_note_not_decoy() -> Result<(), TestError> {
     const SOURCE: &[u8] = b"\
 class Decoy:
     def note(self):
@@ -25899,22 +23332,14 @@ def run(obj: Child):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "obj.note() resolves to Child.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -25946,9 +23371,7 @@ def run(items: Child):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
     assert_universe_method(
         note_calls[0],
@@ -26001,9 +23424,7 @@ def run(obj: Item):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
     assert_universe_method(note_calls[0], "assignment shadow stays a pypi universe key")?;
     if matches!(
@@ -26051,9 +23472,7 @@ def run(obj: Item):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, inner_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "inner owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("inner owns one MethodCall with path note"));
     }
     assert_universe_method(
         note_calls[0],
@@ -26106,9 +23525,7 @@ def outer():
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, inner_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "inner owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("inner owns one MethodCall with path note"));
     }
     assert_universe_method(note_calls[0], "nested type alias stays a pypi universe key")?;
     if matches!(
@@ -26146,14 +23563,9 @@ def run(obj: Item):
     let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_universe_method(
-        note_calls[0],
-        "missing note member stays a pypi universe key",
-    )?;
+    assert_universe_method(note_calls[0], "missing note member stays a pypi universe key")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -26184,22 +23596,14 @@ def run(obj: Item):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "obj.note() resolves to Child.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -26231,22 +23635,14 @@ def run(items: Items):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "items[0].note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "items[0].note() resolves to Child.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "items[0].note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("items[0].note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -26279,22 +23675,14 @@ def run(items: Items, index: int):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "items[index].note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "items[index].note() resolves to Child.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "items[index].note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("items[index].note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -26328,22 +23716,14 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "self.child.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "self.child.note() resolves to Child.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -26377,22 +23757,14 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "self.child[0].note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "self.child[0].note() resolves to Child.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.child[0].note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.child[0].note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -26428,34 +23800,20 @@ class Holder:
     let holder_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "self.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "self.note().extra() resolves to Child.extra")?;
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not resolve to Decoy.extra"));
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        holder_note,
-        "self.note() resolves to Holder.note",
-    )?;
+    assert_local_index(note_calls[0], holder_note, "self.note() resolves to Holder.note")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -26490,9 +23848,7 @@ class Holder:
     let holder_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -26503,21 +23859,13 @@ class Holder:
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note()[0].extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("self.note()[0].extra() must not resolve to Decoy.extra"));
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        holder_note,
-        "self.note() resolves to Holder.note",
-    )?;
+    assert_local_index(note_calls[0], holder_note, "self.note() resolves to Holder.note")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -26553,22 +23901,14 @@ class Holder:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, inner_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "inner owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("inner owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "obj.note() resolves to Child.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -26601,22 +23941,14 @@ def run(obj: Item):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "obj.note() resolves to Child.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -26648,22 +23980,14 @@ def run(obj: Item):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "obj.note() resolves to Child.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -26695,22 +24019,14 @@ def run(items: Items):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "items[0].note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "items[0].note() resolves to Child.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "items[0].note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("items[0].note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -26742,22 +24058,14 @@ def run(items: Items):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "items[0].note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "items[0].note() resolves to Child.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "items[0].note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("items[0].note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -26789,22 +24097,14 @@ def run(obj: Item):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "obj.note() resolves to Child.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -26836,22 +24136,14 @@ def run(obj: Item):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "obj.note() resolves to Child.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -26883,22 +24175,14 @@ def run(obj: Item):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "obj.note() resolves to Child.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -26931,22 +24215,14 @@ class Holder(Base):
     let left_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        left_note,
-        "self.note() resolves to Left.note",
-    )?;
+    assert_local_index(note_calls[0], left_note, "self.note() resolves to Left.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "self.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("self.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -26980,22 +24256,14 @@ def run(obj: Item):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "obj.note() resolves to Child.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -27027,29 +24295,20 @@ def run(items: Items, key: str):
     let holder_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_universe_method(
-        note_calls[0],
-        "dict[str, Child] receiver stays a pypi universe key",
-    )?;
+    assert_universe_method(note_calls[0], "dict[str, Child] receiver stays a pypi universe key")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified(
-            "items[key].note() must not bind Child.note",
-        ));
+        return Err(TestError::Falsified("items[key].note() must not bind Child.note"));
     }
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == holder_note
     ) {
-        return Err(TestError::Falsified(
-            "items[key].note() must not bind Holder.note",
-        ));
+        return Err(TestError::Falsified("items[key].note() must not bind Holder.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -27081,14 +24340,9 @@ def run(obj: Item):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_universe_method(
-        note_calls[0],
-        "Child | Decoy alias stays a pypi universe key",
-    )?;
+    assert_universe_method(note_calls[0], "Child | Decoy alias stays a pypi universe key")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
@@ -27126,9 +24380,7 @@ def run(obj: Item):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
     assert_universe_method(note_calls[0], "pkg.Child alias stays a pypi universe key")?;
     if matches!(
@@ -27168,14 +24420,9 @@ def run(obj: Item):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_universe_method(
-        note_calls[0],
-        "two Item assignments stay a pypi universe key",
-    )?;
+    assert_universe_method(note_calls[0], "two Item assignments stay a pypi universe key")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
@@ -27219,14 +24466,9 @@ def run(obj: Item):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_universe_method(
-        note_calls[0],
-        "type and assignment aliases stay a pypi universe key",
-    )?;
+    assert_universe_method(note_calls[0], "type and assignment aliases stay a pypi universe key")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
@@ -27265,9 +24507,7 @@ def run(obj: A):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
     assert_universe_method(note_calls[0], "cyclic aliases stay a pypi universe key")?;
     if matches!(
@@ -27307,22 +24547,14 @@ def run(obj: Child):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "obj.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "obj.note() resolves to Child.note")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified(
-            "obj.note() must not resolve to Decoy.note",
-        ));
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -27354,9 +24586,7 @@ def run(items: Child):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
     assert_universe_method(
         note_calls[0],
@@ -27408,9 +24638,7 @@ def run(obj: Item):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
     assert_universe_method(note_calls[0], "Item = Child() stays a pypi universe key")?;
     if matches!(
@@ -27450,9 +24678,7 @@ def run(obj: Item):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
     assert_universe_method(note_calls[0], "Item = 1 stays a pypi universe key")?;
     if matches!(
@@ -27492,9 +24718,7 @@ def run(obj: Item):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
     assert_universe_method(note_calls[0], "assignment shadow stays a pypi universe key")?;
     if matches!(
@@ -27542,9 +24766,7 @@ def run(obj: Item):
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, inner_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "inner owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("inner owns one MethodCall with path note"));
     }
     assert_universe_method(
         note_calls[0],
@@ -27597,14 +24819,9 @@ def outer():
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
     let note_calls = method_calls_with_path(&view, inner_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "inner owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("inner owns one MethodCall with path note"));
     }
-    assert_universe_method(
-        note_calls[0],
-        "a function-local assignment stays a pypi universe key",
-    )?;
+    assert_universe_method(note_calls[0], "a function-local assignment stays a pypi universe key")?;
     if matches!(
         &note_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
@@ -27640,14 +24857,9 @@ def run(obj: Item):
     let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_universe_method(
-        note_calls[0],
-        "missing note member stays a pypi universe key",
-    )?;
+    assert_universe_method(note_calls[0], "missing note member stays a pypi universe key")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -27680,34 +24892,20 @@ class Child:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "self.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "self.note().extra() resolves to Child.extra")?;
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not resolve to Decoy.extra"));
     }
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "self.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "self.note() resolves to Child.note")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -27739,22 +24937,14 @@ class Child:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "cls.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "cls.note().extra() resolves to Child.extra")?;
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "cls.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("cls.note().extra() must not resolve to Decoy.extra"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -27787,22 +24977,14 @@ def run(obj: Child):
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "obj.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "obj.note().extra() resolves to Child.extra")?;
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "obj.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("obj.note().extra() must not resolve to Decoy.extra"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -27835,9 +25017,7 @@ def run():
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -27888,9 +25068,7 @@ class Child(Left):
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 2)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_local_index(
         extra_calls[0],
@@ -27901,17 +25079,13 @@ class Child(Left):
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == left_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not resolve to Left.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not resolve to Left.extra"));
     }
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not resolve to Decoy.extra"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -27944,22 +25118,14 @@ class Child:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "self.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "self.note().extra() resolves to Child.extra")?;
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not resolve to Decoy.extra"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -27992,22 +25158,14 @@ class Child:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "self.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "self.note().extra() resolves to Child.extra")?;
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not resolve to Decoy.extra"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -28040,22 +25198,14 @@ class Child:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "self.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "self.note().extra() resolves to Child.extra")?;
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not resolve to Decoy.extra"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -28088,22 +25238,14 @@ class Child:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "self.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "self.note().extra() resolves to Child.extra")?;
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not resolve to Decoy.extra"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -28136,22 +25278,14 @@ class Child:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "self.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "self.note().extra() resolves to Child.extra")?;
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not resolve to Decoy.extra"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -28189,9 +25323,7 @@ class Child:
     let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
     let more_calls = method_calls_with_path(&view, run_owner, b"more")?;
     if more_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path more",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path more"));
     }
     assert_local_index(
         more_calls[0],
@@ -28208,26 +25340,14 @@ class Child:
     }
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "self.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "self.note().extra() resolves to Child.extra")?;
     let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
     if note_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path note",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
     }
-    assert_local_index(
-        note_calls[0],
-        child_note,
-        "self.note() resolves to Child.note",
-    )?;
+    assert_local_index(note_calls[0], child_note, "self.note() resolves to Child.note")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -28257,22 +25377,14 @@ class Child:
     let child_label = entity_ordinal_at_index(&view, b"label", EntityKind::Field, 1)?;
     let label_reads = field_accesses_with_path(&view, run_owner, b"label")?;
     if label_reads.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one FieldAccess with path label",
-        ));
+        return Err(TestError::Falsified("run owns one FieldAccess with path label"));
     }
-    assert_local_index(
-        label_reads[0],
-        child_label,
-        "self.note().label resolves to Child.label",
-    )?;
+    assert_local_index(label_reads[0], child_label, "self.note().label resolves to Child.label")?;
     if matches!(
         &label_reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_label
     ) {
-        return Err(TestError::Falsified(
-            "self.note().label must not resolve to Decoy.label",
-        ));
+        return Err(TestError::Falsified("self.note().label must not resolve to Decoy.label"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -28307,22 +25419,14 @@ def run(obj: Child):
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "obj.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "obj.note().extra() resolves to Child.extra")?;
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "obj.note().extra() must not resolve to Decoy.extra",
-        ));
+        return Err(TestError::Falsified("obj.note().extra() must not resolve to Decoy.extra"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -28355,22 +25459,14 @@ class Child:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_local_index(
-        extra_calls[0],
-        child_extra,
-        "self.note().extra() resolves to Child.extra",
-    )?;
+    assert_local_index(extra_calls[0], child_extra, "self.note().extra() resolves to Child.extra")?;
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == self_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not resolve to Self.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not resolve to Self.extra"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -28403,30 +25499,20 @@ class Child:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_universe_method_named(
-        extra_calls[0],
-        b"extra",
-        "Self | Decoy stays a pypi universe key",
-    )?;
+    assert_universe_method_named(extra_calls[0], b"extra", "Self | Decoy stays a pypi universe key")?;
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not bind Child.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not bind Child.extra"));
     }
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not bind Decoy.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not bind Decoy.extra"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -28462,9 +25548,7 @@ class Child:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -28475,17 +25559,13 @@ class Child:
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not bind Child.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not bind Child.extra"));
     }
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "self.note().extra() must not bind Decoy.extra",
-        ));
+        return Err(TestError::Falsified("self.note().extra() must not bind Decoy.extra"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -28519,30 +25599,20 @@ def run(obj: Child):
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_universe_method_named(
-        extra_calls[0],
-        b"extra",
-        "assignment shadow stays a pypi universe key",
-    )?;
+    assert_universe_method_named(extra_calls[0], b"extra", "assignment shadow stays a pypi universe key")?;
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_extra
     ) {
-        return Err(TestError::Falsified(
-            "obj.note().extra() must not bind Child.extra",
-        ));
+        return Err(TestError::Falsified("obj.note().extra() must not bind Child.extra"));
     }
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "obj.note().extra() must not bind Decoy.extra",
-        ));
+        return Err(TestError::Falsified("obj.note().extra() must not bind Decoy.extra"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -28577,9 +25647,7 @@ class Child:
     let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
     let extra_calls = method_calls_with_path(&view, inner_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "inner owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("inner owns one MethodCall with path extra"));
     }
     assert_universe_method_named(
         extra_calls[0],
@@ -28590,17 +25658,13 @@ class Child:
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_extra
     ) {
-        return Err(TestError::Falsified(
-            "inner extra() must not bind Child.extra",
-        ));
+        return Err(TestError::Falsified("inner extra() must not bind Child.extra"));
     }
     if matches!(
         &extra_calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_extra
     ) {
-        return Err(TestError::Falsified(
-            "inner extra() must not bind Decoy.extra",
-        ));
+        return Err(TestError::Falsified("inner extra() must not bind Decoy.extra"));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -28624,15 +25688,9 @@ class Child:
     let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
     let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
     if extra_calls.len() != 1 {
-        return Err(TestError::Falsified(
-            "run owns one MethodCall with path extra",
-        ));
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
     }
-    assert_universe_method_named(
-        extra_calls[0],
-        b"extra",
-        "missing extra member stays a pypi universe key",
-    )?;
+    assert_universe_method_named(extra_calls[0], b"extra", "missing extra member stays a pypi universe key")?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }

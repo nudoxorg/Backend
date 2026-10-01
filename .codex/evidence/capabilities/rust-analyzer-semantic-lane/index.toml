@@ -6,7 +6,7 @@ baseline_tree = "trunk 309acc8f1 — computed-type segment + geometry 1024 + jou
 candidate_commit = ""
 candidate_tree = ""
 testing_path = ""
-testing_sha256 = ""                                                                                                                                                                            # TESTING.md does not exist in this repository; evidenced exclusion in brief.md
+testing_sha256 = "" # TESTING.md does not exist in this repository; evidenced exclusion in brief.md
 
 # Wave-4 frozen per-file formatted LOC + sha256 (2026-09-03), independent of
 # git status. compile.rs is a shared driver file recorded because

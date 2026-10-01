@@ -1207,10 +1207,7 @@ mod tests {
         let sessions = fs::read_dir(test.path.join("staging").join("artifacts"))
             .expect("read staging sessions")
             .count();
-        assert_eq!(
-            sessions, 0,
-            "the dead process's session is recovered at open"
-        );
+        assert_eq!(sessions, 0, "the dead process's session is recovered at open");
     }
 
     #[test]

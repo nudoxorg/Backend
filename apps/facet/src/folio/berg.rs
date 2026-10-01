@@ -25,9 +25,8 @@ use crate::probe::{self, TextOverflow, TextSample};
 use crate::theme::ActiveFacet;
 use crate::tokens::{Face, TypeRole, ty};
 use gpui::{
-    App, Bounds, ColorExt as _, DispatchPhase, Element, ElementId, Entity, GlobalElementId, Hitbox,
-    HitboxBehavior, Hsla, InspectorElementId, InteractiveElement, IntoElement, LayoutId,
-    MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, ParentElement, Pixels, RenderOnce,
+    App, Bounds, ColorExt as _, DispatchPhase, Element, ElementId, Entity, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId,
+    InteractiveElement, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, ParentElement, Pixels, RenderOnce,
     SharedString, Style, Styled, Window, canvas, px,
 };
 use std::rc::Rc;
@@ -155,12 +154,7 @@ impl BergFacts {
     /// The lines `index` carries: itself and everything under it.
     #[must_use]
     pub fn carried(&self, index: usize) -> usize {
-        self.blocks[index].sloc
-            + self
-                .keel(index)
-                .iter()
-                .map(|k| self.blocks[*k].sloc)
-                .sum::<usize>()
+        self.blocks[index].sloc + self.keel(index).iter().map(|k| self.blocks[*k].sloc).sum::<usize>()
     }
 }
 
@@ -185,15 +179,7 @@ pub struct Placed {
 pub fn doors(facts: &BergFacts, measure: &Measure) -> Vec<Bounds<Pixels>> {
     let s = measure.scale();
     let (placed, _) = place(facts, f32::from(measure.width()) / s);
-    placed
-        .iter()
-        .map(|p| {
-            Bounds::new(
-                gpui::point(px(p.x * s), px(p.y * s)),
-                gpui::size(px(p.w * s), px(p.h * s)),
-            )
-        })
-        .collect()
+    placed.iter().map(|p| Bounds::new(gpui::point(px(p.x * s), px(p.y * s)), gpui::size(px(p.w * s), px(p.h * s)))).collect()
 }
 
 /// The waterline's y, px at scale 1.
@@ -206,12 +192,7 @@ const ROW_GAP: f32 = 2.0;
 /// wide as the square root of its lines.
 #[must_use]
 pub fn place(facts: &BergFacts, width: f32) -> (Vec<Placed>, f32) {
-    let layers = facts
-        .blocks
-        .iter()
-        .map(|b| b.layer)
-        .max()
-        .map_or(0, |m| m + 1);
+    let layers = facts.blocks.iter().map(|b| b.layer).max().map_or(0, |m| m + 1);
     let max_w = width - 20.0;
     let weight = |b: &BergBlock| {
         #[allow(clippy::cast_precision_loss)]
@@ -225,19 +206,9 @@ pub fn place(facts: &BergFacts, width: f32) -> (Vec<Placed>, f32) {
         widest = widest.max(total);
     }
     let scale = if widest > 0.0 { max_w / widest } else { 1.0 };
-    let mut out = vec![
-        Placed {
-            x: 0.0,
-            y: 0.0,
-            w: 0.0,
-            h: ROW
-        };
-        facts.blocks.len()
-    ];
+    let mut out = vec![Placed { x: 0.0, y: 0.0, w: 0.0, h: ROW }; facts.blocks.len()];
     for layer in 0..layers {
-        let mut row: Vec<usize> = (0..facts.blocks.len())
-            .filter(|i| facts.blocks[*i].layer == layer)
-            .collect();
+        let mut row: Vec<usize> = (0..facts.blocks.len()).filter(|i| facts.blocks[*i].layer == layer).collect();
         row.sort_by(|a, b| facts.blocks[*b].sloc.cmp(&facts.blocks[*a].sloc));
         // Heaviest at the centre, the rest alternating outwards.
         let mut order: Vec<usize> = Vec::new();
@@ -248,21 +219,13 @@ pub fn place(facts: &BergFacts, width: f32) -> (Vec<Placed>, f32) {
                 order.insert(0, i);
             }
         }
-        let widths: Vec<f32> = order
-            .iter()
-            .map(|i| (weight(&facts.blocks[*i]) * scale).max(2.0))
-            .collect();
+        let widths: Vec<f32> = order.iter().map(|i| (weight(&facts.blocks[*i]) * scale).max(2.0)).collect();
         #[allow(clippy::cast_precision_loss)]
         let total: f32 = widths.iter().sum::<f32>() + (order.len().saturating_sub(1)) as f32 * 1.5;
         let mut x = width / 2.0 - total / 2.0;
         #[allow(clippy::cast_precision_loss)]
         for (i, w) in order.iter().zip(&widths) {
-            out[*i] = Placed {
-                x,
-                y: WATERLINE + 4.0 + layer as f32 * (ROW + ROW_GAP),
-                w: *w,
-                h: ROW,
-            };
+            out[*i] = Placed { x, y: WATERLINE + 4.0 + layer as f32 * (ROW + ROW_GAP), w: *w, h: ROW };
             x += w + 1.5;
         }
     }
@@ -273,27 +236,9 @@ pub fn place(facts: &BergFacts, width: f32) -> (Vec<Placed>, f32) {
 
 // ---------------------------------------------------------------- the glyph cell
 
-const NUMBER: TypeRole = TypeRole {
-    face: Face::Mono,
-    weight: 700.0,
-    size: 13.0,
-    line: 16.0,
-    tracking: 0.0,
-    italic: false,
-};
-const OWN: TypeRole = TypeRole {
-    face: Face::Mono,
-    weight: 500.0,
-    size: 10.5,
-    line: 14.0,
-    tracking: 0.0,
-    italic: false,
-};
-const CAPTION: TypeRole = TypeRole {
-    size: 12.0,
-    line: 16.0,
-    ..ty::SMALL
-};
+const NUMBER: TypeRole = TypeRole { face: Face::Mono, weight: 700.0, size: 13.0, line: 16.0, tracking: 0.0, italic: false };
+const OWN: TypeRole = TypeRole { face: Face::Mono, weight: 500.0, size: 10.5, line: 14.0, tracking: 0.0, italic: false };
+const CAPTION: TypeRole = TypeRole { size: 12.0, line: 16.0, ..ty::SMALL };
 
 /// The weight cell (see [`weight`]).
 #[derive(IntoElement)]
@@ -309,23 +254,8 @@ pub struct WeightCell {
 
 /// The weight cell for `facts`: `open` when the full berg is showing.
 #[must_use]
-pub fn weight(
-    id: impl Into<ElementId>,
-    facts: Rc<BergFacts>,
-    width: Pixels,
-    height: Nominal,
-    fold: Fold,
-    measure: &Measure,
-) -> WeightCell {
-    WeightCell {
-        id: id.into(),
-        facts,
-        measure: *measure,
-        width,
-        height,
-        fold,
-        on_toggle: None,
-    }
+pub fn weight(id: impl Into<ElementId>, facts: Rc<BergFacts>, width: Pixels, height: Nominal, fold: Fold, measure: &Measure) -> WeightCell {
+    WeightCell { id: id.into(), facts, measure: *measure, width, height, fold, on_toggle: None }
 }
 
 impl WeightCell {
@@ -343,17 +273,7 @@ impl RenderOnce for WeightCell {
         let measure = self.measure;
         let scale = measure.scale();
         let touch = Touch::read(&self.id, crate::controls::Look::LIVE, true, window, cx);
-        let hover = touch.motion.animate(
-            track(&self.id, "hover"),
-            if touch.hovered || self.fold == Fold::Open {
-                1.0
-            } else {
-                0.0
-            },
-            spec::HOVER,
-            window,
-            cx,
-        );
+        let hover = touch.motion.animate(track(&self.id, "hover"), if touch.hovered || self.fold == Fold::Open { 1.0 } else { 0.0 }, spec::HOVER, window, cx);
         let facts = self.facts.clone();
         let own = lines(facts.own);
         let beneath = lines(facts.below());
@@ -366,24 +286,10 @@ impl RenderOnce for WeightCell {
                 let (ox, oy) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
                 let at = |x: f32, y: f32| pt(ox + x * k, oy + y * k);
                 let mut tip = Fill::new();
-                tip.poly(&Poly::new([
-                    at(26.0, 24.0),
-                    at(36.0, 24.0 - tip_h),
-                    at(41.0, 24.0 - tip_h * 0.75),
-                    at(50.0, 24.0),
-                ]));
+                tip.poly(&Poly::new([at(26.0, 24.0), at(36.0, 24.0 - tip_h), at(41.0, 24.0 - tip_h * 0.75), at(50.0, 24.0)]));
                 tip.paint(window, Hsla::from(hi));
                 let mut mass = Fill::new();
-                let outline = Poly::new([
-                    at(14.0, 24.0),
-                    at(62.0, 24.0),
-                    at(70.0, 36.0),
-                    at(60.0, 52.0),
-                    at(44.0, 61.0),
-                    at(28.0, 60.0),
-                    at(12.0, 50.0),
-                    at(6.0, 36.0),
-                ]);
+                let outline = Poly::new([at(14.0, 24.0), at(62.0, 24.0), at(70.0, 36.0), at(60.0, 52.0), at(44.0, 61.0), at(28.0, 60.0), at(12.0, 50.0), at(6.0, 36.0)]);
                 mass.poly(&outline);
                 mass.paint(window, Hsla::from(peri).opacity(0.16 + 0.12 * hover));
                 let mut edge = Fill::new();
@@ -399,48 +305,17 @@ impl RenderOnce for WeightCell {
                     x += 4.0;
                 }
                 line.paint(window, Hsla::from(peri));
-                let number = shape(
-                    beneath.clone(),
-                    TypeRole {
-                        size: 13.0 * k,
-                        line: 16.0 * k,
-                        ..NUMBER
-                    },
-                    ink0.into(),
-                    window,
-                );
-                number.paint_centered(
-                    ox + 38.0 * k,
-                    oy + 44.0 * k + number.ascent() * 0.4,
-                    window,
-                    cx,
-                );
-                let tiny = shape(
-                    own.clone(),
-                    TypeRole {
-                        size: 10.5 * k,
-                        line: 14.0 * k,
-                        ..OWN
-                    },
-                    hi.into(),
-                    window,
-                );
-                tiny.paint(
-                    ox + 53.0 * k,
-                    oy + (24.0 - tip_h).max(9.0) * k + 4.0 * k,
-                    window,
-                    cx,
-                );
+                let number = shape(beneath.clone(), TypeRole { size: 13.0 * k, line: 16.0 * k, ..NUMBER }, ink0.into(), window);
+                number.paint_centered(ox + 38.0 * k, oy + 44.0 * k + number.ascent() * 0.4, window, cx);
+                let tiny = shape(own.clone(), TypeRole { size: 10.5 * k, line: 14.0 * k, ..OWN }, hi.into(), window);
+                tiny.paint(ox + 53.0 * k, oy + (24.0 - tip_h).max(9.0) * k + 4.0 * k, window, cx);
             },
         )
         .flex_none()
         .w(px(76.0 * scale))
         .h(px(64.0 * scale));
         let count = facts.blocks.len();
-        let mut words = format!(
-            "{count} {} beneath",
-            if count == 1 { "package" } else { "packages" }
-        );
+        let mut words = format!("{count} {} beneath", if count == 1 { "package" } else { "packages" });
         if let Some(basis) = facts.basis {
             words = format!("{words} · {}", basis.words());
         }
@@ -451,28 +326,14 @@ impl RenderOnce for WeightCell {
         edge.hi = palette.line3.into();
         edge.lo = palette.line2.into();
         let edge = edge.mix(Edge::of(Bevel::Peri, palette), hover);
-        let plate = super::crest::cell(
-            &self.id,
-            "Weight",
-            None,
-            Some("from its source"),
-            &measure,
-            palette,
-        )
-        .edge(edge)
-        .fill(mix(palette.plate.into(), palette.plate2.into(), hover))
-        .w(self.width)
-        .h(self.height.at(scale))
-        .child(glyph)
-        .child(super::text::wrap(
-            key(&self.id, "caption"),
-            words,
-            CAPTION,
-            palette.ink2,
-            &measure,
-            Some(3),
-        ))
-        .id(self.id.clone());
+        let plate = super::crest::cell(&self.id, "Weight", None, Some("from its source"), &measure, palette)
+            .edge(edge)
+            .fill(mix(palette.plate.into(), palette.plate2.into(), hover))
+            .w(self.width)
+            .h(self.height.at(scale))
+            .child(glyph)
+            .child(super::text::wrap(key(&self.id, "caption"), words, CAPTION, palette.ink2, &measure, Some(3)))
+            .id(self.id.clone());
         let plate = wire(plate, &touch, self.on_toggle.clone());
         hover_zone(plate, &touch, 9.0 * scale, true)
     }
@@ -496,13 +357,7 @@ pub struct Berg {
 /// The berg of `facts`, as wide as `measure` gives it.
 #[must_use]
 pub fn berg(id: impl Into<ElementId>, facts: Rc<BergFacts>, measure: &Measure) -> Berg {
-    Berg {
-        id: id.into(),
-        facts,
-        measure: *measure,
-        rest: None,
-        on_go: None,
-    }
+    Berg { id: id.into(), facts, measure: *measure, rest: None, on_go: None }
 }
 
 impl Berg {
@@ -521,12 +376,7 @@ impl Berg {
     }
 
     fn height(&self) -> f32 {
-        place(
-            &self.facts,
-            f32::from(self.measure.width()) / self.measure.scale(),
-        )
-        .1 * self.measure.scale()
-            + 26.0 * self.measure.scale()
+        place(&self.facts, f32::from(self.measure.width()) / self.measure.scale()).1 * self.measure.scale() + 26.0 * self.measure.scale()
     }
 }
 
@@ -554,13 +404,7 @@ impl Element for Berg {
         None
     }
 
-    fn request_layout(
-        &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, BergLayout) {
+    fn request_layout(&mut self, _id: Option<&GlobalElementId>, _inspector_id: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, BergLayout) {
         let state = window.use_keyed_state("berg", cx, |_, _| State { hover: None });
         let mut style = Style::default();
         style.size.width = px(f32::from(self.measure.width())).into();
@@ -569,29 +413,12 @@ impl Element for Berg {
         (window.request_layout(style, [], cx), BergLayout { state })
     }
 
-    fn prepaint(
-        &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _layout: &mut BergLayout,
-        window: &mut Window,
-        _cx: &mut App,
-    ) -> Hitbox {
+    fn prepaint(&mut self, _id: Option<&GlobalElementId>, _inspector_id: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _layout: &mut BergLayout, window: &mut Window, _cx: &mut App) -> Hitbox {
         window.insert_hitbox(bounds, HitboxBehavior::Normal)
     }
 
     #[allow(clippy::too_many_lines)]
-    fn paint(
-        &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        layout: &mut BergLayout,
-        hitbox: &mut Hitbox,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
+    fn paint(&mut self, _id: Option<&GlobalElementId>, _inspector_id: Option<&InspectorElementId>, bounds: Bounds<Pixels>, layout: &mut BergLayout, hitbox: &mut Hitbox, window: &mut Window, cx: &mut App) {
         let palette = cx.palette();
         let s = self.measure.scale();
         let (ox, oy) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
@@ -611,12 +438,7 @@ impl Element for Berg {
         let tip_h = (6.0 + share * 90.0).clamp(8.0, WATERLINE - 8.0) * s;
         let cx0 = ox + width * 0.5;
         let mut tip = Fill::new();
-        tip.poly(&Poly::new([
-            pt(cx0 - tip_w * 0.5, wl),
-            pt(cx0 - tip_w * 0.18, wl - tip_h),
-            pt(cx0 + tip_w * 0.1, wl - tip_h * 0.8),
-            pt(cx0 + tip_w * 0.5, wl),
-        ]));
+        tip.poly(&Poly::new([pt(cx0 - tip_w * 0.5, wl), pt(cx0 - tip_w * 0.18, wl - tip_h), pt(cx0 + tip_w * 0.1, wl - tip_h * 0.8), pt(cx0 + tip_w * 0.5, wl)]));
         tip.paint(window, Hsla::from(palette.peri_hi));
         let mut line = Fill::new();
         let mut x = 0.0;
@@ -629,13 +451,10 @@ impl Element for Berg {
         // The blocks.
         let mut batches: Vec<(Hsla, Fill)> = Vec::new();
         let mut put = |colour: Hsla, poly: &Poly| {
-            let at = batches
-                .iter()
-                .position(|(c, _)| *c == colour)
-                .unwrap_or_else(|| {
-                    batches.push((colour, Fill::new()));
-                    batches.len() - 1
-                });
+            let at = batches.iter().position(|(c, _)| *c == colour).unwrap_or_else(|| {
+                batches.push((colour, Fill::new()));
+                batches.len() - 1
+            });
             batches[at].1.poly(poly);
         };
         for (i, p) in placed.iter().enumerate() {
@@ -650,62 +469,39 @@ impl Element for Berg {
             } else {
                 Hsla::from(palette.ink3).opacity(alpha)
             };
-            put(
-                colour,
-                &Poly::rect(ox + p.x * s, oy + p.y * s, p.w * s, p.h * s),
-            );
+            put(colour, &Poly::rect(ox + p.x * s, oy + p.y * s, p.w * s, p.h * s));
         }
         for (colour, fill) in batches {
             fill.paint(window, colour);
         }
 
         // The tip's own words.
-        let own_role = self.measure.role(TypeRole {
-            size: 11.0,
-            line: 15.0,
-            ..OWN
-        });
+        let own_role = self.measure.role(TypeRole { size: 11.0, line: 15.0, ..OWN });
         let own_words: SharedString = format!("its own · {}", lines(facts.own)).into();
         let own = shape(own_words.clone(), own_role, palette.peri_hi.into(), window);
         let own_x = cx0 + tip_w * 0.5 + 6.0 * s;
         own.paint(own_x, wl - 6.0 * s, window, cx);
-        let mut published: Vec<(Bounds<Pixels>, SharedString, TypeRole, f32, &'static str)> =
-            vec![(
-                Bounds::new(
-                    gpui::point(px(own_x), px(wl - 6.0 * s - own.ascent())),
-                    gpui::size(px(own.width()), px(own_role.line)),
-                ),
-                own_words,
-                own_role,
-                own.width(),
-                "own",
-            )];
+        let mut published: Vec<(Bounds<Pixels>, SharedString, TypeRole, f32, &'static str)> = vec![(
+            Bounds::new(gpui::point(px(own_x), px(wl - 6.0 * s - own.ascent())), gpui::size(px(own.width()), px(own_role.line))),
+            own_words,
+            own_role,
+            own.width(),
+            "own",
+        )];
 
         // The surfaced block: its plate above the waterline, a dashed line up to it.
         if let Some(h) = hot.filter(|h| *h < placed.len()) {
             let p = placed[h];
-            let plate_role = self.measure.role(TypeRole {
-                weight: 500.0,
-                size: 11.5,
-                line: 16.0,
-                ..OWN
-            });
-            let words: SharedString =
-                format!("{} · {}", facts.blocks[h].name, lines(facts.blocks[h].sloc)).into();
+            let plate_role = self.measure.role(TypeRole { weight: 500.0, size: 11.5, line: 16.0, ..OWN });
+            let words: SharedString = format!("{} · {}", facts.blocks[h].name, lines(facts.blocks[h].sloc)).into();
             let text = shape(words.clone(), plate_role, palette.ink0.into(), window);
             let (pw, ph) = (text.width() + 16.0 * s, 20.0 * s);
-            let px_ = (ox + (p.x + p.w * 0.5) * s - pw * 0.5)
-                .clamp(ox + 4.0, (ox + width - pw - 4.0).max(ox + 4.0));
+            let px_ = (ox + (p.x + p.w * 0.5) * s - pw * 0.5).clamp(ox + 4.0, (ox + width - pw - 4.0).max(ox + 4.0));
             let py = wl - ph - 6.0 * s;
             let mut rise = Fill::new();
             let mut y = oy + p.y * s;
             while y > wl - 4.0 * s {
-                rise.poly(&Poly::rect(
-                    ox + (p.x + p.w * 0.5) * s - 0.6,
-                    y - 2.0 * s,
-                    1.2,
-                    2.0 * s,
-                ));
+                rise.poly(&Poly::rect(ox + (p.x + p.w * 0.5) * s - 0.6, y - 2.0 * s, 1.2, 2.0 * s));
                 y -= 4.0 * s;
             }
             rise.paint(window, Hsla::from(palette.peri_hi));
@@ -721,10 +517,7 @@ impl Element for Berg {
             let baseline = py + (ph - plate_role.line) * 0.5 + text.ascent();
             text.paint(px_ + 8.0 * s, baseline, window, cx);
             published.push((
-                Bounds::new(
-                    gpui::point(px(px_ + 8.0 * s), px(baseline - text.ascent())),
-                    gpui::size(px(text.width()), px(plate_role.line)),
-                ),
+                Bounds::new(gpui::point(px(px_ + 8.0 * s), px(baseline - text.ascent())), gpui::size(px(text.width()), px(plate_role.line))),
                 words,
                 plate_role,
                 text.width(),
@@ -744,20 +537,14 @@ impl Element for Berg {
             segments.push((facts.blocks[h].name.to_string(), true));
             segments.push((" carries ".to_owned(), false));
             segments.push((format!("{share:.0}%"), true));
-            segments.push((
-                format!(" of the weight beneath ({} lines", lines(carried)),
-                false,
-            ));
+            segments.push((format!(" of the weight beneath ({} lines", lines(carried)), false));
             if !keel.is_empty() {
                 segments.push((format!(", {} under it", pluralise(keel.len())), false));
             }
             segments.push((")".to_owned(), false));
             let chain = facts.chain(h);
             if chain.len() > 1 {
-                let via: Vec<String> = chain[..chain.len() - 1]
-                    .iter()
-                    .map(|i| facts.blocks[*i].name.to_string())
-                    .collect();
+                let via: Vec<String> = chain[..chain.len() - 1].iter().map(|i| facts.blocks[*i].name.to_string()).collect();
                 segments.push((format!("  reached via {}", via.join(" › ")), false));
             } else {
                 segments.push(("  it rests on it directly".to_owned(), false));
@@ -771,33 +558,20 @@ impl Element for Berg {
             segments.push((format!("{above:.0}%"), true));
             segments.push((" above water · ".to_owned(), false));
             segments.push((lines(below), true));
-            segments.push((
-                format!(" lines beneath in {}", pluralise(facts.blocks.len())),
-                false,
-            ));
+            segments.push((format!(" lines beneath in {}", pluralise(facts.blocks.len())), false));
         }
         let mut x = ox;
         let mut joined = String::new();
         for (words, strong) in &segments {
             let ink = if *strong { palette.ink0 } else { palette.ink3 };
-            let role = if *strong {
-                TypeRole {
-                    weight: 560.0,
-                    ..caption_role
-                }
-            } else {
-                caption_role
-            };
+            let role = if *strong { TypeRole { weight: 560.0, ..caption_role } } else { caption_role };
             let text = shape_fit(words, role, ink.into(), (ox + width - x).max(20.0), window);
             text.paint(x, caption_y + caption_role.size, window, cx);
             x += text.width();
             joined.push_str(words);
         }
         published.push((
-            Bounds::new(
-                gpui::point(px(ox), px(caption_y)),
-                gpui::size(px(x - ox), px(caption_role.line)),
-            ),
+            Bounds::new(gpui::point(px(ox), px(caption_y)), gpui::size(px(x - ox), px(caption_role.line))),
             joined.into(),
             caption_role,
             x - ox,
@@ -811,13 +585,7 @@ impl Element for Berg {
                     at,
                     TextSample {
                         key: String::new(),
-                        bounds: probe::BoundsSample {
-                            key: String::new(),
-                            x: 0.0,
-                            y: 0.0,
-                            width: 0.0,
-                            height: 0.0,
-                        },
+                        bounds: probe::BoundsSample { key: String::new(), x: 0.0, y: 0.0, width: 0.0, height: 0.0 },
                         paint_clip: None,
                         natural_width: natural,
                         overflow: TextOverflow::Clip,
@@ -833,14 +601,8 @@ impl Element for Berg {
             for (i, p) in placed.iter().enumerate() {
                 probe::record_bounds(
                     cx,
-                    &ElementId::NamedChild(
-                        Arc::new(self.id.clone()),
-                        SharedString::from(format!("block-{i}")),
-                    ),
-                    Bounds::new(
-                        gpui::point(px(ox + p.x * s), px(oy + p.y * s)),
-                        gpui::size(px(p.w * s), px(p.h * s)),
-                    ),
+                    &ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::from(format!("block-{i}"))),
+                    Bounds::new(gpui::point(px(ox + p.x * s), px(oy + p.y * s)), gpui::size(px(p.w * s), px(p.h * s))),
                 );
             }
         }
@@ -849,12 +611,7 @@ impl Element for Berg {
         let hit = {
             let placed = placed.clone();
             Rc::new(move |x: f32, y: f32| -> Option<usize> {
-                placed.iter().position(|p| {
-                    x >= ox + p.x * s - 1.0
-                        && x <= ox + (p.x + p.w) * s + 1.0
-                        && y >= oy + p.y * s - 1.0
-                        && y <= oy + (p.y + p.h) * s + 1.0
-                })
+                placed.iter().position(|p| x >= ox + p.x * s - 1.0 && x <= ox + (p.x + p.w) * s + 1.0 && y >= oy + p.y * s - 1.0 && y <= oy + (p.y + p.h) * s + 1.0)
             })
         };
         {
@@ -863,10 +620,7 @@ impl Element for Berg {
                 if phase != DispatchPhase::Capture {
                     return;
                 }
-                let next = hitbox
-                    .is_hovered(window)
-                    .then(|| hit(f32::from(event.position.x), f32::from(event.position.y)))
-                    .flatten();
+                let next = hitbox.is_hovered(window).then(|| hit(f32::from(event.position.x), f32::from(event.position.y))).flatten();
                 if state.read(cx).hover != next {
                     state.update(cx, |state, cx| {
                         state.hover = next;
@@ -892,8 +646,7 @@ impl Element for Berg {
                 if phase == DispatchPhase::Bubble
                     && event.button == MouseButton::Left
                     && hitbox.is_hovered(window)
-                    && let Some(block) =
-                        hit(f32::from(event.position.x), f32::from(event.position.y))
+                    && let Some(block) = hit(f32::from(event.position.x), f32::from(event.position.y))
                 {
                     go(block, window, cx);
                 }
@@ -910,21 +663,8 @@ fn pluralise(n: usize) -> String {
 mod tests {
     use super::{BergBlock, BergFacts, lines, place};
 
-    fn block(
-        name: &str,
-        sloc: usize,
-        layer: usize,
-        parent: Option<usize>,
-        deps: &[usize],
-    ) -> BergBlock {
-        BergBlock {
-            name: name.to_owned().into(),
-            version: "1.0.0".into(),
-            sloc,
-            layer,
-            parent,
-            deps: deps.to_vec(),
-        }
+    fn block(name: &str, sloc: usize, layer: usize, parent: Option<usize>, deps: &[usize]) -> BergBlock {
+        BergBlock { name: name.to_owned().into(), version: "1.0.0".into(), sloc, layer, parent, deps: deps.to_vec() }
     }
 
     fn sample() -> BergFacts {
@@ -961,11 +701,7 @@ mod tests {
         assert_eq!(facts.chain(0), [0]);
         assert_eq!(facts.carried(1), 20_000 + 200_000 + 300_000);
         assert_eq!(facts.below(), 12_000 + 20_000 + 1_000 + 200_000 + 300_000);
-        assert!(
-            facts.share() > 0.08 && facts.share() < 0.1,
-            "{}",
-            facts.share()
-        );
+        assert!(facts.share() > 0.08 && facts.share() < 0.1, "{}", facts.share());
     }
 
     #[test]
@@ -975,26 +711,16 @@ mod tests {
             let (placed, height) = place(&facts, width);
             assert!(height >= 150.0);
             for (i, a) in placed.iter().enumerate() {
-                assert!(
-                    a.x >= 0.0 && a.x + a.w <= width + 0.01,
-                    "{width}: block {i} leaves the berg"
-                );
+                assert!(a.x >= 0.0 && a.x + a.w <= width + 0.01, "{width}: block {i} leaves the berg");
                 for (j, b) in placed.iter().enumerate().skip(i + 1) {
                     if (a.y - b.y).abs() < 0.01 {
-                        assert!(
-                            a.x + a.w <= b.x + 0.01 || b.x + b.w <= a.x + 0.01,
-                            "{width}: blocks {i} and {j} overlap"
-                        );
+                        assert!(a.x + a.w <= b.x + 0.01 || b.x + b.w <= a.x + 0.01, "{width}: blocks {i} and {j} overlap");
                     }
                 }
             }
             // The heaviest of a layer sits at the centre.
             let centre = |i: usize| placed[i].x + placed[i].w * 0.5;
-            assert!(
-                (centre(4) - width * 0.5).abs() < placed[4].w,
-                "{width}: windows-sys is not central: {}",
-                centre(4)
-            );
+            assert!((centre(4) - width * 0.5).abs() < placed[4].w, "{width}: windows-sys is not central: {}", centre(4));
         }
     }
 }

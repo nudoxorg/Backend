@@ -37,8 +37,8 @@ pub mod flow;
 pub mod keys;
 pub mod presence;
 pub mod print;
-pub mod pulse;
 pub mod shared;
+pub mod pulse;
 mod spring;
 mod store;
 #[cfg(test)]
@@ -49,16 +49,16 @@ pub(crate) mod gallery;
 #[cfg(feature = "gallery")]
 pub(crate) mod lab;
 
-pub use carry::{CARRY, Carry, band};
 pub use curve::{EASE, LINEAR};
 pub use element::{Offset, Reveal, offset, posed, reveal};
+pub use keys::{Keys, Mix, Pose};
 pub use flight::{Camera, Flights, Shot};
 pub use flow::{Flow, Resize};
-pub use keys::{Keys, Mix, Pose};
+pub use carry::{CARRY, Carry, band};
 pub use presence::{Presence, act};
 pub use print::{Edge, masked, print};
-pub use pulse::Pulse;
 pub use shared::{Fit, shared};
+pub use pulse::Pulse;
 pub use spring::{BOUNCY, GENTLE, Phase, SNAPPY, Spring};
 pub use store::{Motion, Spec, frames_requested, request_frame};
 

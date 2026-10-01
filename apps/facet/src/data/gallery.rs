@@ -20,7 +20,9 @@ use crate::measure::Rung;
 use crate::paint::gallery::{board, canvas, doc, text};
 use crate::theme::ActiveFacet;
 use crate::tokens::{Appearance, Face, Family, TypeRole, ty};
-use gpui::{AnyElement, AnyView, App, Div, IntoElement, ParentElement, Styled, Window, div, px};
+use gpui::{
+    AnyElement, AnyView, App, Div, IntoElement, ParentElement, Styled, Window, div, px,
+};
 
 pub(crate) const SCENES: &[Scene] = &[
     Scene {
@@ -57,14 +59,7 @@ pub(crate) const SCENES: &[Scene] = &[
         id: "film-rose",
         title: "Film: rest on the rose's 'to' strands, then on group_head (peek), then leave",
         size: (1176, 1000),
-        build: |_, cx| {
-            stage::stage(
-                None,
-                &films::ROSE_POKES,
-                |w, _, cx| symbol::folio(w, None, cx),
-                cx,
-            )
-        },
+        build: |_, cx| stage::stage(None, &films::ROSE_POKES, |w, _, cx| symbol::folio(w, None, cx), cx),
     },
     Scene {
         id: "film-mosaic",
@@ -154,27 +149,13 @@ pub(crate) const SCENES: &[Scene] = &[
         id: "package",
         title: "Package folio (calm): facts, release comb + caption, lens bar, start line, territory; the reader column at 1176 (1440 window)",
         size: (1176, 1000),
-        build: |_, cx| {
-            stage::stage(
-                None,
-                &[],
-                |w, _, cx| package::folio(w, Some(super::Spot::Region(0)), cx),
-                cx,
-            )
-        },
+        build: |_, cx| stage::stage(None, &[], |w, _, cx| package::folio(w, Some(super::Spot::Region(0)), cx), cx),
     },
     Scene {
         id: "package-900",
         title: "Package folio at a 900 window (reader 858)",
         size: (858, 1100),
-        build: |_, cx| {
-            stage::stage(
-                None,
-                &[],
-                |w, _, cx| package::folio(w, Some(super::Spot::Region(0)), cx),
-                cx,
-            )
-        },
+        build: |_, cx| stage::stage(None, &[], |w, _, cx| package::folio(w, Some(super::Spot::Region(0)), cx), cx),
     },
     Scene {
         id: "upgrade-toml",
@@ -244,9 +225,7 @@ pub(crate) fn releases() -> Vec<Tick> {
     let mut rng = 7_u64;
     (0..64)
         .map(|i: usize| {
-            rng = rng
-                .wrapping_mul(6_364_136_223_846_793_005)
-                .wrapping_add(1_442_695_040_888_963_407);
+            rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
             #[allow(clippy::cast_precision_loss)]
             let mut tick = Tick::new(6.0 + ((rng >> 33) % 10) as f32)
                 .label(format!("1.0.{}", 147 + i))
@@ -338,17 +317,9 @@ fn marks(_window: &mut Window, cx: &mut App) -> AnyElement {
     let row = || div().flex().flex_wrap().gap(px(36.0 * s)).items_end();
 
     let compasses = row()
-        .child(cell(
-            cx,
-            "16",
-            compass(dirs, &m(400.0)).size(super::CompassSize::S16),
-        ))
+        .child(cell(cx, "16", compass(dirs, &m(400.0)).size(super::CompassSize::S16)))
         .child(cell(cx, "18", compass(dirs, &m(400.0))))
-        .child(cell(
-            cx,
-            "30",
-            compass(dirs, &m(400.0)).size(super::CompassSize::S30),
-        ))
+        .child(cell(cx, "30", compass(dirs, &m(400.0)).size(super::CompassSize::S30)))
         .child(cell(
             cx,
             "rest: from",
@@ -380,11 +351,7 @@ fn marks(_window: &mut Window, cx: &mut App) -> AnyElement {
             row()
                 .child(cell(cx, "mark", comb("r-mark", ticks.clone(), &m(80.0))))
                 .child(cell(cx, "tag", comb("r-tag", ticks.clone(), &m(150.0))))
-                .child(cell(
-                    cx,
-                    "row",
-                    comb("r-row", ticks.clone(), &m(300.0)).rest(Some(46)),
-                ))
+                .child(cell(cx, "row", comb("r-row", ticks.clone(), &m(300.0)).rest(Some(46))))
                 .child(cell(
                     cx,
                     "files",
@@ -406,44 +373,32 @@ fn marks(_window: &mut Window, cx: &mut App) -> AnyElement {
             cx,
             "card",
             comb("r-card", ticks.clone(), &m(800.0))
-                .caption([
-                    ("19 releases since your pin, ", false),
-                    ("2", true),
-                    (" touch your code", false),
-                ])
+                .caption([("19 releases since your pin, ", false), ("2", true), (" touch your code", false)])
                 .door(tip.clone()),
         ));
 
     let mosaics = row()
-        .child(cell(
-            cx,
-            "rest",
-            mosaic("mo-a", stones(96, 3), &m(260.0))
-                .door(tip.clone())
-                .rest(Some(26)),
-        ))
-        .child(cell(
-            cx,
-            "⌥ only yours",
-            mosaic("mo-b", stones(96, 4), &m(260.0)).dimmed(true),
-        ))
+        .child(cell(cx, "rest", mosaic("mo-a", stones(96, 3), &m(260.0)).door(tip.clone()).rest(Some(26))))
+        .child(cell(cx, "⌥ only yours", mosaic("mo-b", stones(96, 4), &m(260.0)).dimmed(true)))
         .child(
-            div().h(px(120.0 * s)).child(
-                comb(
-                    "spine",
-                    (0..40usize)
-                        .map(|i| {
-                            #[allow(clippy::cast_precision_loss)]
-                            Tick::new(6.0 + ((i * 11) % 14) as f32)
-                        })
-                        .collect::<Vec<_>>(),
-                    &m(28.0),
-                )
-                .orientation(CombOrientation::Vertical)
-                .rung(Rung::Row)
-                .thickness(28.0)
-                .rest(Some(22)),
-            ),
+            div()
+                .h(px(120.0 * s))
+                .child(
+                    comb(
+                        "spine",
+                        (0..40usize)
+                            .map(|i| {
+                                #[allow(clippy::cast_precision_loss)]
+                                Tick::new(6.0 + ((i * 11) % 14) as f32)
+                            })
+                            .collect::<Vec<_>>(),
+                        &m(28.0),
+                    )
+                    .orientation(CombOrientation::Vertical)
+                    .rung(Rung::Row)
+                    .thickness(28.0)
+                    .rest(Some(22)),
+                ),
         );
 
     let st = |states: &[(St, f32)]| -> Vec<Stage> {
@@ -454,58 +409,21 @@ fn marks(_window: &mut Window, cx: &mut App) -> AnyElement {
             .collect()
     };
     let gems = row()
-        .child(cell(
-            cx,
-            "to do",
-            gem_progress("g0", Kind::Struct, st(&[(St::Todo, 0.0); 4]), &m(200.0)).size(40.0),
-        ))
+        .child(cell(cx, "to do", gem_progress("g0", Kind::Struct, st(&[(St::Todo, 0.0); 4]), &m(200.0)).size(40.0)))
         .child(cell(
             cx,
             "fetching",
-            gem_progress(
-                "g1",
-                Kind::Struct,
-                st(&[
-                    (St::Done, 1.0),
-                    (St::Now, 0.5),
-                    (St::Todo, 0.0),
-                    (St::Todo, 0.0),
-                ]),
-                &m(200.0),
-            )
-            .size(40.0),
+            gem_progress("g1", Kind::Struct, st(&[(St::Done, 1.0), (St::Now, 0.5), (St::Todo, 0.0), (St::Todo, 0.0)]), &m(200.0)).size(40.0),
         ))
         .child(cell(
             cx,
             "stalled",
-            gem_progress(
-                "g2",
-                Kind::Struct,
-                st(&[
-                    (St::Done, 1.0),
-                    (St::Done, 1.0),
-                    (St::Stall, 0.4),
-                    (St::Todo, 0.0),
-                ]),
-                &m(200.0),
-            )
-            .size(40.0),
+            gem_progress("g2", Kind::Struct, st(&[(St::Done, 1.0), (St::Done, 1.0), (St::Stall, 0.4), (St::Todo, 0.0)]), &m(200.0)).size(40.0),
         ))
         .child(cell(
             cx,
             "failed",
-            gem_progress(
-                "g3",
-                Kind::Struct,
-                st(&[
-                    (St::Done, 1.0),
-                    (St::Bad, 1.0),
-                    (St::Todo, 0.0),
-                    (St::Todo, 0.0),
-                ]),
-                &m(200.0),
-            )
-            .size(40.0),
+            gem_progress("g3", Kind::Struct, st(&[(St::Done, 1.0), (St::Bad, 1.0), (St::Todo, 0.0), (St::Todo, 0.0)]), &m(200.0)).size(40.0),
         ))
         .child(cell(
             cx,
@@ -523,45 +441,16 @@ fn marks(_window: &mut Window, cx: &mut App) -> AnyElement {
                 .flex()
                 .flex_col()
                 .gap(px(8.0 * s))
-                .child(seam(
-                    "s1",
-                    st(&[
-                        (St::Done, 1.0),
-                        (St::Now, 0.5),
-                        (St::Todo, 0.0),
-                        (St::Todo, 0.0),
-                    ]),
-                    &m(300.0),
-                ))
-                .child(seam(
-                    "s2",
-                    st(&[
-                        (St::Done, 1.0),
-                        (St::Done, 1.0),
-                        (St::Stall, 0.4),
-                        (St::Todo, 0.0),
-                    ]),
-                    &m(300.0),
-                ))
-                .child(seam(
-                    "s3",
-                    st(&[
-                        (St::Done, 1.0),
-                        (St::Bad, 1.0),
-                        (St::Todo, 0.0),
-                        (St::Todo, 0.0),
-                    ]),
-                    &m(300.0),
-                )),
+                .child(seam("s1", st(&[(St::Done, 1.0), (St::Now, 0.5), (St::Todo, 0.0), (St::Todo, 0.0)]), &m(300.0)))
+                .child(seam("s2", st(&[(St::Done, 1.0), (St::Done, 1.0), (St::Stall, 0.4), (St::Todo, 0.0)]), &m(300.0)))
+                .child(seam("s3", st(&[(St::Done, 1.0), (St::Bad, 1.0), (St::Todo, 0.0), (St::Todo, 0.0)]), &m(300.0))),
         ));
 
     let lines = row()
         .child(cell(
             cx,
             "caps (RelationLabel, from semantics::caps), rest: hash",
-            caps("caps", &relation_label_caps(), false, &m(300.0))
-                .door(tip.clone())
-                .rest(Some(2)),
+            caps("caps", &relation_label_caps(), false, &m(300.0)).door(tip.clone()).rest(Some(2)),
         ))
         .child(cell(
             cx,
@@ -572,15 +461,9 @@ fn marks(_window: &mut Window, cx: &mut App) -> AnyElement {
             cx,
             "facts, rest: since",
             facts(&m(420.0), palette)
-                .fact([
-                    Run::Words("enum in ".into()),
-                    Run::Mono("present::glyph".into()),
-                ])
+                .fact([Run::Words("enum in ".into()), Run::Mono("present::glyph".into())])
                 .fact([Run::Words("since ".into()), Run::Mono("0.3.0".into())])
-                .fact([
-                    Run::Yours("9".into()),
-                    Run::Words(" uses in your code".into()),
-                ])
+                .fact([Run::Yours("9".into()), Run::Words(" uses in your code".into())])
                 .door("facts", tip.clone())
                 .rest(Some(1)),
         ))
@@ -589,12 +472,7 @@ fn marks(_window: &mut Window, cx: &mut App) -> AnyElement {
             "lens bar, rest: usage",
             lens_bar(
                 "tabs",
-                vec![
-                    Tab::new("Reference"),
-                    Tab::new("Relations").count("19"),
-                    Tab::new("Usage").count("9"),
-                    Tab::new("History").count("3"),
-                ],
+                vec![Tab::new("Reference"), Tab::new("Relations").count("19"), Tab::new("Usage").count("9"), Tab::new("History").count("3")],
                 0,
                 &m(420.0),
             )
@@ -646,9 +524,7 @@ fn dense_with(doors: bool, width: f32, _window: &mut Window, cx: &mut App) -> An
         })
         .collect();
     let tip = Door::tip(|_, _, _, _| div().into_any_element());
-    let mut c = comb("dense-comb", ticks, &m)
-        .thickness(60.0)
-        .rung(Rung::Row);
+    let mut c = comb("dense-comb", ticks, &m).thickness(60.0).rung(Rung::Row);
     let mut mo = mosaic("dense-mosaic", stones(2000, 5), &m);
     if doors {
         c = c.door(tip.clone());
@@ -693,8 +569,7 @@ fn dense_map_with(doors: bool, _width: f32, _window: &mut Window, cx: &mut App) 
     let regions: Vec<super::Region> = (0..400_usize)
         .map(|i| {
             let n = 10 + (i * 37) % 81;
-            super::Region::new(format!("mod{i}"), n)
-                .reached((0..n).filter(|k| (k * 7 + i) % 23 == 0).collect::<Vec<_>>())
+            super::Region::new(format!("mod{i}"), n).reached((0..n).filter(|k| (k * 7 + i) % 23 == 0).collect::<Vec<_>>())
         })
         .collect();
     let total: usize = regions.iter().map(|r| r.items).sum();

@@ -13,9 +13,7 @@ use super::reads::ReadPool;
 use super::store::DataStore;
 use crate::core::{IntentDispatcher, SnapshotReadModel};
 use crate::model::{AppSnapshot, PersistentState};
-use crate::navigation::{
-    FolderPickerOutcome, Intent, OrbitRoute, PackageLane, PackageRoute, Route, View,
-};
+use crate::navigation::{FolderPickerOutcome, Intent, OrbitRoute, PackageLane, PackageRoute, Route, View};
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, PathPromptOptions, Task};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -24,17 +22,9 @@ use std::sync::Arc;
 /// A native view request carries the graph visit it belongs to. The map
 /// resolves its visible selection rather than the route's original symbol.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum GraphDestination {
-    Page,
-    Code,
-}
+pub(crate) enum GraphDestination { Page, Code }
 impl GraphDestination {
-    pub(crate) const fn view(self) -> View {
-        match self {
-            Self::Page => View::Page,
-            Self::Code => View::Code,
-        }
-    }
+    pub(crate) const fn view(self) -> View { match self { Self::Page => View::Page, Self::Code => View::Code } }
 }
 #[derive(Clone, Debug)]
 pub(crate) struct GraphViewRequest {
@@ -130,9 +120,7 @@ impl UiRootEntity {
         self.reduced
     }
 
-    pub(crate) const fn graph_view_generation(&self) -> u64 {
-        self.graph_view_generation
-    }
+    pub(crate) const fn graph_view_generation(&self) -> u64 { self.graph_view_generation }
 
     /// Returns whether engine work is in flight or waiting to be drained.
     #[must_use]
@@ -197,11 +185,8 @@ impl UiRootEntity {
         {
             return;
         }
-        if self.published.as_ref().is_some_and(|previous| {
-            previous.route() != snapshot.route()
-                || previous.key() != snapshot.key()
-                || previous.overlay() != snapshot.overlay()
-        }) {
+        if self.published.as_ref().is_some_and(|previous| previous.route() != snapshot.route()
+            || previous.key() != snapshot.key() || previous.overlay() != snapshot.overlay()) {
             self.graph_view_generation = self.graph_view_generation.wrapping_add(1);
         }
         self.published = Some(Arc::clone(&snapshot));
@@ -229,23 +214,11 @@ impl UiRootEntity {
         match intent {
             Intent::SetView(view @ (View::Page | View::Code))
                 if self.snapshot().overlay().is_none()
-                    && matches!(
-                        self.snapshot().route(),
-                        Route::World
-                            | Route::Symbol(crate::navigation::SymbolRoute {
-                                view: View::Graph,
-                                ..
-                            })
-                    ) =>
-            {
+                    && matches!(self.snapshot().route(), Route::World | Route::Symbol(crate::navigation::SymbolRoute { view: View::Graph, .. })) => {
                 let snapshot = self.snapshot();
                 self.graph_view_generation = self.graph_view_generation.wrapping_add(1);
                 cx.emit(GraphViewRequest {
-                    target: if view == View::Page {
-                        GraphDestination::Page
-                    } else {
-                        GraphDestination::Code
-                    },
+                    target: if view == View::Page { GraphDestination::Page } else { GraphDestination::Code },
                     route: snapshot.route().clone(),
                     root: snapshot.key(),
                     sequence: self.graph_view_generation,
@@ -330,22 +303,11 @@ impl UiRootEntity {
     ) {
         self.dispatch_runtime(Intent::OwnerReady { key, mode }, cx);
         let request = self.runtime.allocate_request();
-        self.dispatch_runtime(
-            Intent::RefreshRoot {
-                basis: key,
-                request,
-            },
-            cx,
-        );
+        self.dispatch_runtime(Intent::RefreshRoot { basis: key, request }, cx);
         // An index an earlier build wrote was set aside while the owner
         // started: say so, and index the shelf's projects again.
         if let Some(moved) = crate::host::aside::take() {
-            self.dispatch(
-                Intent::LibraryRebuilding {
-                    kept_at: Arc::from(moved.display().to_string()),
-                },
-                cx,
-            );
+            self.dispatch(Intent::LibraryRebuilding { kept_at: Arc::from(moved.display().to_string()) }, cx);
         }
         // Packages an earlier launch was still adding are added now.
         super::acquire::resume(&self.snapshot(), cx.weak_entity(), cx);
@@ -355,13 +317,7 @@ impl UiRootEntity {
     /// changed what it serves (a release added to the library).
     pub(crate) fn refresh_root(&mut self, cx: &mut Context<Self>) {
         let request = self.runtime.allocate_request();
-        self.dispatch_runtime(
-            Intent::RefreshRoot {
-                basis: self.snapshot().key(),
-                request,
-            },
-            cx,
-        );
+        self.dispatch_runtime(Intent::RefreshRoot { basis: self.snapshot().key(), request }, cx);
     }
 
     fn dispatch_runtime(&mut self, intent: Intent, cx: &mut Context<Self>) {
@@ -401,11 +357,7 @@ impl UiRootEntity {
     /// the journey harness's one allowed substitution. The answer takes the
     /// task's own path (`folder_picker_outcome`, then the same queued intent).
     /// `false`: no panel is open.
-    pub(crate) fn answer_folder_picker(
-        &mut self,
-        chosen: Option<Vec<PathBuf>>,
-        cx: &mut Context<Self>,
-    ) -> bool {
+    pub(crate) fn answer_folder_picker(&mut self, chosen: Option<Vec<PathBuf>>, cx: &mut Context<Self>) -> bool {
         if self.folder_picker_task.take().is_none() {
             return false;
         }
@@ -482,12 +434,7 @@ impl UiRootEntity {
         }
         self.publish_snapshot(cx);
         // A project the owner just indexed brings the packages it builds with.
-        super::acquire::follow_indexed_projects(
-            before.as_deref(),
-            &self.snapshot(),
-            cx.weak_entity(),
-            cx,
-        );
+        super::acquire::follow_indexed_projects(before.as_deref(), &self.snapshot(), cx.weak_entity(), cx);
         // Cold restart restores durable Indexing rows without an ephemeral
         // request; reattach them once through the typed intent path.
         self.schedule_pending_indexes(cx);
@@ -526,6 +473,7 @@ impl UiRootEntity {
             cx,
         );
     }
+
 }
 
 fn folder_picker_outcome(paths: Vec<PathBuf>) -> FolderPickerOutcome {
@@ -622,8 +570,7 @@ impl UiEntityGraph {
         gate: Option<super::owner::OwnerGate>,
         keep: Option<super::snapshot::Keep>,
     ) -> Self {
-        let store =
-            DataStore::install_with_owner(cx, runtime.snapshot(), reads, gate.clone(), keep);
+        let store = DataStore::install_with_owner(cx, runtime.snapshot(), reads, gate.clone(), keep);
         let attached = store.clone();
         let root = cx.new(|cx| {
             let mut root = UiRootEntity::new(runtime, persistence);

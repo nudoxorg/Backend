@@ -15,12 +15,7 @@
 //!
 //! `NUDOX_CAPTURE_ONLY=<substring>` limits the run to matching shots.
 
-#![allow(
-    clippy::expect_used,
-    clippy::panic,
-    clippy::too_many_lines,
-    missing_docs
-)]
+#![allow(clippy::expect_used, clippy::panic, clippy::too_many_lines, missing_docs)]
 
 use backend_client::Session;
 use backend_desktop::core::{LocalProjectId, PackageId, VersionedRoot};
@@ -30,9 +25,7 @@ use backend_desktop::model::{
 use backend_desktop::navigation::{
     Coordinate, Intent, OrbitRoute, PackageLane, PackageRoute, Route, SymbolRoute, View,
 };
-use backend_desktop::runtime::actor::{
-    EngineActor, EngineClient, EngineDto, EngineFault, EngineRequest,
-};
+use backend_desktop::runtime::actor::{EngineActor, EngineClient, EngineDto, EngineFault, EngineRequest};
 use backend_desktop::runtime::reads::{ReadPool, SessionReader};
 use backend_desktop::runtime::store::DataStore;
 use backend_desktop::runtime::{DesktopRuntime, UiEntityGraph};
@@ -69,9 +62,7 @@ impl EngineClient for Idle {
 
 /// Starts (or reattaches to) an embedded owner over `crates/present`.
 fn serve(project: &Path) -> (backend_desktop::DesktopHost, PathBuf) {
-    let state = PathBuf::from(
-        std::env::var("NUDOX_CAPTURE_STATE").unwrap_or_else(|_| "/tmp/nx-shell-cap".to_owned()),
-    );
+    let state = PathBuf::from(std::env::var("NUDOX_CAPTURE_STATE").unwrap_or_else(|_| "/tmp/nx-shell-cap".to_owned()));
     let endpoint = PathBuf::from(format!("{}.sock", state.display()));
     std::fs::create_dir_all(state.join("data")).expect("state dir");
     let paths = backend_runtime::WorkspacePaths::discover(
@@ -93,11 +84,7 @@ fn serve(project: &Path) -> (backend_desktop::DesktopHost, PathBuf) {
                 if snapshot.root.rows().iter().any(|row| row.label == root && row.state == RowState::Ready)
         );
         let rows = session.health().map_or(0, |health| health.row_count());
-        stable = if ready && rows > 0 && rows == last {
-            stable + 1
-        } else {
-            0
-        };
+        stable = if ready && rows > 0 && rows == last { stable + 1 } else { 0 };
         last = rows;
         if stable >= 3 {
             eprintln!("index ready: {rows} rows after {:?}", started.elapsed());
@@ -192,11 +179,7 @@ fn land(store: &Entity<DataStore>, cx: &mut App) {
             store.drain(cx);
         });
         let (queued, running) = store.read(cx).pool_load();
-        let loading = store
-            .read(cx)
-            .focused()
-            .iter()
-            .any(|key| store.read(cx).is_loading(key));
+        let loading = store.read(cx).focused().iter().any(|key| store.read(cx).is_loading(key));
         if queued == 0 && running == 0 && !loading {
             return;
         }
@@ -216,15 +199,11 @@ fn capture(shot: &Shot, endpoint: &Path, snapshot_key: VersionedRoot, out: &Path
             time_ms: *time,
         })
         .collect::<Vec<_>>();
-    let graph_slot: Rc<RefCell<Option<(UiEntityGraph, Entity<Shell>)>>> =
-        Rc::new(RefCell::new(None));
+    let graph_slot: Rc<RefCell<Option<(UiEntityGraph, Entity<Shell>)>>> = Rc::new(RefCell::new(None));
     let build_slot = Rc::clone(&graph_slot);
     let hook_slot = Rc::clone(&graph_slot);
     let last_slot = Rc::clone(&graph_slot);
-    let last_label = frames
-        .last()
-        .map(|frame| frame.label.clone())
-        .unwrap_or_default();
+    let last_label = frames.last().map(|frame| frame.label.clone()).unwrap_or_default();
     let built = Rc::new(std::cell::Cell::new(false));
     let built_mark = Rc::clone(&built);
     let endpoint = endpoint.to_path_buf();
@@ -232,13 +211,7 @@ fn capture(shot: &Shot, endpoint: &Path, snapshot_key: VersionedRoot, out: &Path
     let shot_hook = shot.clone();
     // The window narrows through 900 (the shelf becomes a spine) at 100 ms.
     let actions = if shot.script == Script::Narrow {
-        vec![
-            InputStep::Wait { milliseconds: 100 },
-            InputStep::Resize {
-                width: 880,
-                height: shot.height,
-            },
-        ]
+        vec![InputStep::Wait { milliseconds: 100 }, InputStep::Resize { width: 880, height: shot.height }]
     } else {
         Vec::new()
     };
@@ -251,47 +224,26 @@ fn capture(shot: &Shot, endpoint: &Path, snapshot_key: VersionedRoot, out: &Path
             asset_source: std::sync::Arc::new(facet::icons::Assets),
             ..GpuiCaptureOptions::default()
         },
-        move |frame: &AnimationFrame,
-              window: &mut Window,
-              cx: &mut App|
-              -> Result<(), CaptureError> {
+        move |frame: &AnimationFrame, window: &mut Window, cx: &mut App| -> Result<(), CaptureError> {
             let slot = hook_slot.borrow();
             let (graph, shell) = slot.as_ref().expect("built");
             let index = frames_index(&frame.label);
             match (shot_hook.script, index) {
                 (Script::Descent, 1) => {
-                    graph.root.update(cx, |root, cx| {
-                        root.dispatch(Intent::Navigate(shot_hook.route.clone()), cx)
-                    });
+                    graph.root.update(cx, |root, cx| root.dispatch(Intent::Navigate(shot_hook.route.clone()), cx));
                     land(&graph.store, cx);
                 }
                 (Script::Descent, 7) => {
-                    graph
-                        .root
-                        .update(cx, |root, cx| root.dispatch(Intent::ZoomOut, cx));
+                    graph.root.update(cx, |root, cx| root.dispatch(Intent::ZoomOut, cx));
                     land(&graph.store, cx);
                 }
                 (Script::HoldCommand, 1) => shell.update(cx, |shell, cx| {
-                    shell.modifiers(
-                        Modifiers {
-                            platform: true,
-                            ..Modifiers::default()
-                        },
-                        cx,
-                    );
+                    shell.modifiers(Modifiers { platform: true, ..Modifiers::default() }, cx);
                 }),
                 (Script::HoldOption, 1) => shell.update(cx, |shell, cx| {
-                    shell.modifiers(
-                        Modifiers {
-                            alt: true,
-                            ..Modifiers::default()
-                        },
-                        cx,
-                    );
+                    shell.modifiers(Modifiers { alt: true, ..Modifiers::default() }, cx);
                 }),
-                (Script::Walk, index) if index > 0 => {
-                    shell.update(cx, |shell, cx| shell.walk(1, window, cx))
-                }
+                (Script::Walk, index) if index > 0 => shell.update(cx, |shell, cx| shell.walk(1, window, cx)),
                 _ => {}
             }
             land(&graph.store, cx);
@@ -341,19 +293,15 @@ fn capture(shot: &Shot, endpoint: &Path, snapshot_key: VersionedRoot, out: &Path
             let actor = EngineActor::start(Idle, 8).expect("actor");
             let runtime = DesktopRuntime::new(snapshot, actor);
             let reader_endpoint = endpoint.clone();
-            let pool = ReadPool::start(3, move |_| SessionReader::connect(&reader_endpoint))
-                .expect("pool");
+            let pool = ReadPool::start(3, move |_| SessionReader::connect(&reader_endpoint)).expect("pool");
             let graph = UiEntityGraph::install_with_reads(cx, runtime, None, Some(pool));
             let shell = backend_desktop::shell::open_shell(&graph, window, cx);
             // Text size is the system's plus this display's ⌘± zoom.
             let display = shell.read(cx).display_key();
             let percent = shot_build.percent;
-            graph.root.update(cx, |root, cx| {
-                root.dispatch(Intent::ZoomTo { display, percent }, cx)
-            });
+            graph.root.update(cx, |root, cx| root.dispatch(Intent::ZoomTo { display, percent }, cx));
             land(&graph.store, cx);
-            let root =
-                cx.new(|cx| gpui_component::Root::new(shell.clone(), window, cx).bordered(false));
+            let root = cx.new(|cx| gpui_component::Root::new(shell.clone(), window, cx).bordered(false));
             *build_slot.borrow_mut() = Some((graph, shell));
             root
         },
@@ -370,13 +318,7 @@ fn capture(shot: &Shot, endpoint: &Path, snapshot_key: VersionedRoot, out: &Path
         record.image.save(&path).expect("png");
     }
     if set.frames.len() > 1 {
-        strip(
-            &set.frames
-                .iter()
-                .map(|record| &record.image)
-                .collect::<Vec<_>>(),
-            &out.join(format!("{}-strip.png", shot.name)),
-        );
+        strip(&set.frames.iter().map(|record| &record.image).collect::<Vec<_>>(), &out.join(format!("{}-strip.png", shot.name)));
     }
     assert!(built.get(), "the shell was built and released");
     eprintln!("captured {} ({} frames)", shot.name, set.frames.len());
@@ -390,23 +332,11 @@ fn frames_index(label: &str) -> usize {
 fn strip(frames: &[&image::RgbaImage], path: &Path) {
     let scaled = frames
         .iter()
-        .map(|frame| {
-            image::imageops::resize(
-                *frame,
-                frame.width() / 2,
-                frame.height() / 2,
-                image::imageops::FilterType::Triangle,
-            )
-        })
+        .map(|frame| image::imageops::resize(*frame, frame.width() / 2, frame.height() / 2, image::imageops::FilterType::Triangle))
         .collect::<Vec<_>>();
     let gap = 8;
-    let width =
-        scaled.iter().map(image::RgbaImage::width).sum::<u32>() + gap * (scaled.len() as u32 - 1);
-    let height = scaled
-        .iter()
-        .map(image::RgbaImage::height)
-        .max()
-        .unwrap_or(1);
+    let width = scaled.iter().map(image::RgbaImage::width).sum::<u32>() + gap * (scaled.len() as u32 - 1);
+    let height = scaled.iter().map(image::RgbaImage::height).max().unwrap_or(1);
     let mut canvas = image::RgbaImage::from_pixel(width, height, image::Rgba([12, 12, 16, 255]));
     let mut x = 0;
     for frame in &scaled {
@@ -427,131 +357,39 @@ fn capture_the_shell_over_a_real_index() {
     std::fs::create_dir_all(&out).expect("out");
     let project = repo().join("crates/present");
     let (host, endpoint) = serve(&project);
-    let mut subscription =
-        backend_client::LocalSubscriptionTransport::connect(&endpoint).expect("subscription");
+    let mut subscription = backend_client::LocalSubscriptionTransport::connect(&endpoint).expect("subscription");
     let (_, revision) = subscription.bootstrap_root().expect("root");
     let key = VersionedRoot::from_revision(1, revision, 0);
     let places = places(&endpoint, &project);
     let only = std::env::var("NUDOX_CAPTURE_ONLY").ok();
-    let still =
-        |name: &str, width: u32, height: u32, percent: u16, density, appearance, route: &Route| {
-            Shot {
-                name: name.to_owned(),
-                width,
-                height,
-                percent,
-                density,
-                appearance,
-                route: route.clone(),
-                frames: vec![700],
-                script: Script::Still,
-            }
-        };
+    let still = |name: &str, width: u32, height: u32, percent: u16, density, appearance, route: &Route| Shot {
+        name: name.to_owned(),
+        width,
+        height,
+        percent,
+        density,
+        appearance,
+        route: route.clone(),
+        frames: vec![700],
+        script: Script::Still,
+    };
     use AppearancePreference::{Abyss, Glacier};
     use DensityPreference::{Comfortable, Compact, Dense};
     let mut shots = vec![
-        still(
-            "flow-2560",
-            2560,
-            1440,
-            100,
-            Comfortable,
-            Abyss,
-            &places.page,
-        ),
-        still(
-            "flow-1440",
-            1440,
-            900,
-            100,
-            Comfortable,
-            Abyss,
-            &places.page,
-        ),
-        still(
-            "flow-1100",
-            1100,
-            900,
-            100,
-            Comfortable,
-            Abyss,
-            &places.page,
-        ),
+        still("flow-2560", 2560, 1440, 100, Comfortable, Abyss, &places.page),
+        still("flow-1440", 1440, 900, 100, Comfortable, Abyss, &places.page),
+        still("flow-1100", 1100, 900, 100, Comfortable, Abyss, &places.page),
         still("flow-760", 760, 900, 100, Comfortable, Abyss, &places.page),
         still("flow-480", 480, 900, 100, Comfortable, Abyss, &places.page),
-        still(
-            "flow-1440-200pct",
-            1440,
-            900,
-            200,
-            Comfortable,
-            Abyss,
-            &places.page,
-        ),
-        still(
-            "density-comfortable",
-            1440,
-            1100,
-            100,
-            Comfortable,
-            Abyss,
-            &places.page,
-        ),
-        still(
-            "density-compact",
-            1440,
-            1100,
-            100,
-            Compact,
-            Abyss,
-            &places.page,
-        ),
+        still("flow-1440-200pct", 1440, 900, 200, Comfortable, Abyss, &places.page),
+        still("density-comfortable", 1440, 1100, 100, Comfortable, Abyss, &places.page),
+        still("density-compact", 1440, 1100, 100, Compact, Abyss, &places.page),
         still("density-dense", 1440, 1100, 100, Dense, Abyss, &places.page),
-        still(
-            "glacier-1440",
-            1440,
-            900,
-            100,
-            Comfortable,
-            Glacier,
-            &places.page,
-        ),
-        still(
-            "glacier-760",
-            760,
-            900,
-            100,
-            Comfortable,
-            Glacier,
-            &places.page,
-        ),
-        still(
-            "glacier-480-200pct",
-            480,
-            900,
-            200,
-            Comfortable,
-            Glacier,
-            &places.page,
-        ),
-        still(
-            "package-1440",
-            1440,
-            900,
-            100,
-            Comfortable,
-            Abyss,
-            &places.package,
-        ),
-        still(
-            "orbit-1440",
-            1440,
-            900,
-            100,
-            Comfortable,
-            Abyss,
-            &Route::Orbit(OrbitRoute::Home),
-        ),
+        still("glacier-1440", 1440, 900, 100, Comfortable, Glacier, &places.page),
+        still("glacier-760", 760, 900, 100, Comfortable, Glacier, &places.page),
+        still("glacier-480-200pct", 480, 900, 200, Comfortable, Glacier, &places.page),
+        still("package-1440", 1440, 900, 100, Comfortable, Abyss, &places.package),
+        still("orbit-1440", 1440, 900, 100, Comfortable, Abyss, &Route::Orbit(OrbitRoute::Home)),
     ];
     let film = |name: &str, script, frames: Vec<u64>| Shot {
         name: name.to_owned(),
@@ -564,39 +402,16 @@ fn capture_the_shell_over_a_real_index() {
         frames,
         script,
     };
-    shots.push(film(
-        "film-descent",
-        Script::Descent,
-        vec![0, 0, 60, 120, 200, 320, 700, 700, 760, 820, 900, 1400],
-    ));
-    shots.push(film(
-        "film-hold-cmd",
-        Script::HoldCommand,
-        vec![0, 0, 120, 240, 280, 360, 520],
-    ));
-    shots.push(film(
-        "film-hold-opt",
-        Script::HoldOption,
-        vec![0, 0, 240, 280, 360, 520],
-    ));
-    shots.push(film(
-        "film-walk",
-        Script::Walk,
-        vec![0, 60, 120, 180, 240, 300, 360, 420, 900],
-    ));
+    shots.push(film("film-descent", Script::Descent, vec![0, 0, 60, 120, 200, 320, 700, 700, 760, 820, 900, 1400]));
+    shots.push(film("film-hold-cmd", Script::HoldCommand, vec![0, 0, 120, 240, 280, 360, 520]));
+    shots.push(film("film-hold-opt", Script::HoldOption, vec![0, 0, 240, 280, 360, 520]));
+    shots.push(film("film-walk", Script::Walk, vec![0, 60, 120, 180, 240, 300, 360, 420, 900]));
     shots.push(Shot {
         width: 1100,
-        ..film(
-            "film-narrow",
-            Script::Narrow,
-            vec![0, 100, 116, 148, 196, 260, 360, 520, 900],
-        )
+        ..film("film-narrow", Script::Narrow, vec![0, 100, 116, 148, 196, 260, 360, 520, 900])
     });
     for shot in shots {
-        if only
-            .as_ref()
-            .is_some_and(|only| !shot.name.contains(only.as_str()))
-        {
+        if only.as_ref().is_some_and(|only| !shot.name.contains(only.as_str())) {
             continue;
         }
         capture(&shot, &endpoint, key, &out);

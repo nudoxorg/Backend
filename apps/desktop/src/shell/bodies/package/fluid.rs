@@ -52,9 +52,7 @@ pub(super) fn layout(measure: &Measure, crest: Crest, epoch: Epoch) -> Tracks {
     let gap = f32::from(measure.space(Space::Roomy));
     let (stamp, cell, spread) = match crest {
         Crest::Four => {
-            let stamp = (width * STAMP_SHARE)
-                .clamp(STAMP_MIN * scale, STAMP_MAX * scale)
-                .min(width);
+            let stamp = (width * STAMP_SHARE).clamp(STAMP_MIN * scale, STAMP_MAX * scale).min(width);
             let cell = ((width - stamp - gap * 3.0) / 3.0).max(0.0);
             (stamp, cell, width - stamp - gap)
         }
@@ -64,14 +62,7 @@ pub(super) fn layout(measure: &Measure, crest: Crest, epoch: Epoch) -> Tracks {
         }
         Crest::One => (width, width, width),
     };
-    Tracks {
-        crest,
-        epoch,
-        gap: px(gap),
-        stamp: px(stamp),
-        cell: px(cell),
-        spread: px(spread),
-    }
+    Tracks { crest, epoch, gap: px(gap), stamp: px(stamp), cell: px(cell), spread: px(spread) }
 }
 
 #[cfg(test)]
@@ -94,23 +85,14 @@ mod tests {
                 Crest::Two => 2.0 * cell + gap,
                 Crest::One => cell,
             };
-            assert!(
-                used <= width as f32 + 0.5,
-                "{width}px: {:?} uses {used}px",
-                t.crest
-            );
-            assert!(
-                f32::from(t.spread) <= width as f32 + 0.5,
-                "{width}px: the hand may fan {:?}px",
-                t.spread
-            );
+            assert!(used <= width as f32 + 0.5, "{width}px: {:?} uses {used}px", t.crest);
+            assert!(f32::from(t.spread) <= width as f32 + 0.5, "{width}px: the hand may fan {:?}px", t.spread);
             assert!(cell >= 0.0 && stamp > 0.0);
         }
     }
 
     #[test]
-    fn growing_the_window_moves_every_edge_a_little_and_changes_the_arrangement_only_at_its_edges()
-    {
+    fn growing_the_window_moves_every_edge_a_little_and_changes_the_arrangement_only_at_its_edges() {
         let modes = Modes::new();
         let mut last: Option<Tracks> = None;
         let mut changes = Vec::new();
@@ -119,30 +101,15 @@ mod tests {
             if let Some(before) = last {
                 if before.crest == t.crest {
                     // Within an arrangement a pixel of window is at most a pixel and a bit of any cell.
-                    assert!(
-                        (f32::from(t.cell) - f32::from(before.cell)).abs() <= 1.0,
-                        "{width}px: a cell jumped {:?} to {:?}",
-                        before.cell,
-                        t.cell
-                    );
-                    assert!(
-                        (f32::from(t.stamp) - f32::from(before.stamp)).abs() <= 1.0,
-                        "{width}px: the stamp jumped"
-                    );
+                    assert!((f32::from(t.cell) - f32::from(before.cell)).abs() <= 1.0, "{width}px: a cell jumped {:?} to {:?}", before.cell, t.cell);
+                    assert!((f32::from(t.stamp) - f32::from(before.stamp)).abs() <= 1.0, "{width}px: the stamp jumped");
                 } else {
                     changes.push((width, before.crest, t.crest));
                 }
             }
             last = Some(t);
         }
-        assert_eq!(
-            changes
-                .iter()
-                .map(|(_, from, to)| (*from, *to))
-                .collect::<Vec<_>>(),
-            [(Crest::One, Crest::Two), (Crest::Two, Crest::Four)],
-            "{changes:?}"
-        );
+        assert_eq!(changes.iter().map(|(_, from, to)| (*from, *to)).collect::<Vec<_>>(), [(Crest::One, Crest::Two), (Crest::Two, Crest::Four)], "{changes:?}");
     }
 
     #[test]
@@ -152,17 +119,8 @@ mod tests {
             let modes = Modes::new();
             let start = at(edge + band * 0.25, &modes).crest;
             for step in 0..200 {
-                let width = edge
-                    + if step % 2 == 0 {
-                        -band * 0.25
-                    } else {
-                        band * 0.25
-                    };
-                assert_eq!(
-                    at(width, &modes).crest,
-                    start,
-                    "{width}px flipped a window resting on {edge}px"
-                );
+                let width = edge + if step % 2 == 0 { -band * 0.25 } else { band * 0.25 };
+                assert_eq!(at(width, &modes).crest, start, "{width}px flipped a window resting on {edge}px");
             }
         }
     }
@@ -172,15 +130,7 @@ mod tests {
         let wide = 1400.0;
         assert_eq!(at(wide, &Modes::new()).crest, Crest::Four);
         // 200 % text scales widths, so the same 1400 px reads as 700 effective px.
-        let big = tracks(
-            &Facet {
-                text_scale: 2.0,
-                ..Facet::default()
-            }
-            .measure(px(wide)),
-            &Modes::new(),
-        )
-        .crest;
+        let big = tracks(&Facet { text_scale: 2.0, ..Facet::default() }.measure(px(wide)), &Modes::new()).crest;
         assert_eq!(big, Crest::Two);
     }
 }

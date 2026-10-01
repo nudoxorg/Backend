@@ -9,6 +9,11 @@ use std::{
 };
 
 use backend_engine::driver::{CompiledFragment, CompiledSemantic};
+use backend_semantic::ir::{AtomId, TypeId};
+use backend_semantic::ir::{
+    AtomInput, EntityKind, EntityRecord, FragmentRangeManifest, FragmentView, IrBuilder,
+    PackageLineage, PreparedFragment, PrimitiveType, SemanticCoreReader, SourceIdentity, TypeNode,
+};
 use backend_engine::publication::binding::{COMPILATION_BINDING_BYTES, CompilationBindingView};
 use backend_engine::publication::{
     OpenPublicationScratch, OpenSemanticPublicationScratch, OpenedFragment, OpenedFragmentCursor,
@@ -18,16 +23,9 @@ use backend_engine::publication::{
     manifest::SemanticImageRegion,
     publication::{open_published, open_published_semantic, publish_compiled, publish_semantic},
 };
-use backend_semantic::ir::{AtomId, TypeId};
-use backend_semantic::ir::{
-    AtomInput, EntityKind, EntityRecord, FragmentRangeManifest, FragmentView, IrBuilder,
-    PackageLineage, PreparedFragment, PrimitiveType, SemanticCoreReader, SourceIdentity, TypeNode,
-};
-use backend_semantic::vocabulary::{
-    CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage,
-};
-use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
+use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
+use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use thiserror::Error;
 
 static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
@@ -521,10 +519,8 @@ fn semantic_publication_is_order_stable_and_rejects_corrupted_paired_image() -> 
         ),
         Err(
             backend_engine::publication::publication::OpenPublishedError::ManifestFormat {
-                expected:
-                    backend_engine::publication::manifest::CompilationManifestFormat::CompactV1,
-                observed:
-                    backend_engine::publication::manifest::CompilationManifestFormat::SemanticV2,
+                expected: backend_engine::publication::manifest::CompilationManifestFormat::CompactV1,
+                observed: backend_engine::publication::manifest::CompilationManifestFormat::SemanticV2,
             }
         )
     ));
@@ -591,15 +587,9 @@ fn semantic_publication_is_order_stable_and_rejects_corrupted_paired_image() -> 
             },
         ),
         Err(
-            backend_engine::publication::publication::OpenPublishedError::SemanticImage {
-                ordinal: 0,
-                ..
-            }
+            backend_engine::publication::publication::OpenPublishedError::SemanticImage { ordinal: 0, .. }
         ) | Err(
-            backend_engine::publication::publication::OpenPublishedError::SemanticImage {
-                ordinal: 1,
-                ..
-            }
+            backend_engine::publication::publication::OpenPublishedError::SemanticImage { ordinal: 1, .. }
         )
     ));
     publisher.shutdown()?;

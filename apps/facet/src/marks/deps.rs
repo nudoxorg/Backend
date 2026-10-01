@@ -27,8 +27,8 @@ use crate::probe;
 use crate::theme::ActiveFacet;
 use crate::tokens::motion::GLIDE;
 use gpui::{
-    AnyElement, App, ClickEvent, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement,
-    RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, canvas, div, px,
+    AnyElement, App, ClickEvent, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce,
+    SharedString, StatefulInteractiveElement, Styled, Window, canvas, div, px,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -134,17 +134,9 @@ impl DepFacts {
             }
         }
         match (self.uses, top.is_empty()) {
-            (Some(_), false) => format!(
-                "Mostly {}.",
-                top.iter()
-                    .map(|t| format!("`{t}`"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
+            (Some(_), false) => format!("Mostly {}.", top.iter().map(|t| format!("`{t}`")).collect::<Vec<_>>().join(", ")),
             (None, _) => match self.kind {
-                DepKind::Dev => {
-                    "Dev-only: its uses are in files the package does not ship.".to_owned()
-                }
+                DepKind::Dev => "Dev-only: its uses are in files the package does not ship.".to_owned(),
                 DepKind::Build => "Build-only: its uses are in its build script.".to_owned(),
                 DepKind::Normal => "What it is used for is not known yet.".to_owned(),
             },
@@ -182,11 +174,7 @@ impl DepFacts {
                     (_, Some(false)) => "off by default",
                     (_, None) => "optional",
                 };
-                let features = if self.features.is_empty() {
-                    self.name.to_string()
-                } else {
-                    self.features.join(", ")
-                };
+                let features = if self.features.is_empty() { self.name.to_string() } else { self.features.join(", ") };
                 format!("optional · {state} · {features}")
             }
         }
@@ -195,13 +183,7 @@ impl DepFacts {
     /// The version row (`^0.22.27 → 0.22.27`), when anything is known.
     #[must_use]
     pub fn version(&self) -> Option<String> {
-        let req = self.req.as_ref().map(|r| {
-            if r.starts_with(|c: char| c.is_ascii_digit()) {
-                format!("^{r}")
-            } else {
-                r.clone()
-            }
-        });
+        let req = self.req.as_ref().map(|r| if r.starts_with(|c: char| c.is_ascii_digit()) { format!("^{r}") } else { r.clone() });
         let got = self
             .resolved
             .as_ref()
@@ -209,11 +191,7 @@ impl DepFacts {
             .or_else(|| self.newest.as_ref().map(|v| format!(" · newest {v}")));
         match (req, got) {
             (None, None) => None,
-            (req, got) => Some(
-                format!("{}{}", req.unwrap_or_default(), got.unwrap_or_default())
-                    .trim()
-                    .to_owned(),
-            ),
+            (req, got) => Some(format!("{}{}", req.unwrap_or_default(), got.unwrap_or_default()).trim().to_owned()),
         }
     }
 
@@ -224,64 +202,34 @@ impl DepFacts {
             return "yours, in this workspace".to_owned();
         }
         let Some(it) = &self.in_tree else {
-            return self
-                .tree_note
-                .clone()
-                .unwrap_or_else(|| "not in your tree".to_owned());
+            return self.tree_note.clone().unwrap_or_else(|| "not in your tree".to_owned());
         };
         if self.off() {
-            let feature = self
-                .features
-                .first()
-                .cloned()
-                .unwrap_or_else(|| self.name.to_string());
-            let here = it
-                .versions
-                .last()
-                .map(|v| semver::short(v).to_owned())
-                .unwrap_or_default();
-            return format!(
-                "turning on {feature} costs nothing: {} {here} is already here",
-                self.name
-            );
+            let feature = self.features.first().cloned().unwrap_or_else(|| self.name.to_string());
+            let here = it.versions.last().map(|v| semver::short(v).to_owned()).unwrap_or_default();
+            return format!("turning on {feature} costs nothing: {} {here} is already here", self.name);
         }
         if !it.yours.is_empty() {
-            return format!(
-                "{} use it too",
-                plural(it.yours.len(), "of your packages", "of your packages")
-            );
+            return format!("{} use it too", plural(it.yours.len(), "of your packages", "of your packages"));
         }
         if it.versions.len() > 1 {
             let versions: Vec<&str> = it.versions.iter().map(|v| semver::short(v)).collect();
-            return format!(
-                "{} versions: {}",
-                word(it.versions.len()),
-                versions.join(", ")
-            );
+            return format!("{} versions: {}", word(it.versions.len()), versions.join(", "));
         }
         let others: Vec<&String> = it.via.iter().filter(|x| x.as_str() != parent).collect();
-        let total = it
-            .via_count
-            .unwrap_or(it.via.len())
-            .saturating_sub(it.via.len() - others.len());
+        let total = it.via_count.unwrap_or(it.via.len()).saturating_sub(it.via.len() - others.len());
         if others.is_empty() {
             return format!("only through {parent}: it leaves with it");
         }
         let names: Vec<String> = others.iter().take(2).map(|s| (*s).clone()).collect();
-        let who = if total > 2 {
-            format!("{} and {} more", names.join(", "), total - 2)
-        } else {
-            list(&names, "and")
-        };
+        let who = if total > 2 { format!("{} and {} more", names.join(", "), total - 2) } else { list(&names, "and") };
         format!("also through {who}: it stays if {parent} goes")
     }
 }
 
 fn capitalise(s: &str) -> String {
     let mut chars = s.chars();
-    chars.next().map_or_else(String::new, |c| {
-        c.to_uppercase().collect::<String>() + chars.as_str()
-    })
+    chars.next().map_or_else(String::new, |c| c.to_uppercase().collect::<String>() + chars.as_str())
 }
 
 type Open = Rc<dyn Fn(&SharedString, &mut Window, &mut App)>;
@@ -299,12 +247,7 @@ pub struct DepLink {
 
 /// A link to `facts`, a dependency of `parent`.
 #[must_use]
-pub fn dep_link(
-    id: impl Into<ElementId>,
-    facts: DepFacts,
-    parent: impl Into<SharedString>,
-    measure: &Measure,
-) -> DepLink {
+pub fn dep_link(id: impl Into<ElementId>, facts: DepFacts, parent: impl Into<SharedString>, measure: &Measure) -> DepLink {
     DepLink {
         id: id.into(),
         facts: Rc::new(facts),
@@ -318,10 +261,7 @@ pub fn dep_link(
 impl DepLink {
     /// Where following the link goes: called with its target.
     #[must_use]
-    pub fn on_open(
-        mut self,
-        open: impl Fn(&SharedString, &mut Window, &mut App) + 'static,
-    ) -> Self {
+    pub fn on_open(mut self, open: impl Fn(&SharedString, &mut Window, &mut App) + 'static) -> Self {
         self.on_open = Some(Rc::new(open));
         self
     }
@@ -362,13 +302,10 @@ fn diamond_ink(facts: &DepFacts, palette: &crate::tokens::Palette) -> Hsla {
 }
 
 fn diamond_element(kind: Diamond, size: f32, ink: Hsla) -> AnyElement {
-    canvas(
-        |_, _, _| {},
-        move |bounds, (), window, _| glyph::diamond(kind, bounds, ink, window),
-    )
-    .size(px(size))
-    .flex_none()
-    .into_any_element()
+    canvas(|_, _, _| {}, move |bounds, (), window, _| glyph::diamond(kind, bounds, ink, window))
+        .size(px(size))
+        .flex_none()
+        .into_any_element()
 }
 
 impl RenderOnce for DepLink {
@@ -378,55 +315,30 @@ impl RenderOnce for DepLink {
         let s = measure.scale();
         let key = ElementId::NamedChild(Arc::new(self.id.clone()), "card".into());
         let live = card::live(&self.id, &key, window, cx);
-        let diamond = diamond_element(
-            diamond_kind(&self.facts),
-            6.5 * s,
-            diamond_ink(&self.facts, palette),
-        );
+        let diamond = diamond_element(diamond_kind(&self.facts), 6.5 * s, diamond_ink(&self.facts, palette));
         let name_key = ElementId::NamedChild(Arc::new(self.id.clone()), "name".into());
         let Some(target) = self.facts.target.clone() else {
             // Dead end #15 (`shell/kit.rs`): a link without a place is
             // drawn as text, never as a control that looks live but goes
             // nowhere: no underline, no click, no card.
-            let name = text(
-                name_key,
-                self.facts.name.clone(),
-                card::DEP,
-                &measure,
-                palette.ink3,
-            );
-            let row = div()
-                .flex()
-                .items_center()
-                .gap(px(7.0 * s))
-                .child(diamond)
-                .child(name);
+            let name = text(name_key, self.facts.name.clone(), card::DEP, &measure, palette.ink3);
+            let row = div().flex().items_center().gap(px(7.0 * s)).child(diamond).child(name);
             return card::door(&self.id, &key, &live, None, self.sheet, None, row);
         };
         let quiet = self.facts.off() || self.facts.kind != DepKind::Normal;
-        let rest: Hsla = if quiet {
-            palette.ink3.into()
-        } else {
-            palette.ink1.into()
-        };
+        let rest: Hsla = if quiet { palette.ink3.into() } else { palette.ink1.into() };
         let ink = mix(rest, palette.ink0.into(), live.lit);
         let underline = crate::controls::with_alpha(palette.peri.base.into(), live.lit);
-        let name = div().border_b_1().border_color(underline).child(text(
-            name_key,
-            self.facts.name.clone(),
-            card::DEP,
-            &measure,
-            ink,
-        ));
+        let name = div()
+            .border_b_1()
+            .border_color(underline)
+            .child(text(name_key, self.facts.name.clone(), card::DEP, &measure, ink));
         let open = self.on_open.clone();
         let click_target = target.clone();
         // A link is a target a finger or pointer can hit: at least 24 px
         // tall, its words centred in it.
         let link = div()
-            .id(ElementId::NamedChild(
-                Arc::new(self.id.clone()),
-                "link".into(),
-            ))
+            .id(ElementId::NamedChild(Arc::new(self.id.clone()), "link".into()))
             .flex()
             .items_center()
             .min_h(px(24.0 * s))
@@ -444,106 +356,60 @@ impl RenderOnce for DepLink {
             Rc::new(move |window: &mut Window, cx: &mut App| open(&target, window, cx)) as Activate
         });
         let content = dep_card(self.facts.clone(), self.parent.clone());
-        card::door(
-            &self.id,
-            &key,
-            &live,
-            Some(content),
-            self.sheet,
-            activate,
-            link,
-        )
+        card::door(&self.id, &key, &live, Some(content), self.sheet, activate, link)
     }
 }
 
 fn dep_card(facts: Rc<DepFacts>, parent: SharedString) -> Content {
-    Rc::new(
-        move |measure: &Measure, _window: &mut Window, cx: &mut App| {
-            let palette = cx.facet().palette();
-            let s = measure.scale();
-            let head = div()
-                .flex()
-                .items_center()
-                .gap(k(measure, 8.0))
-                .child(diamond_element(
-                    diamond_kind(&facts),
-                    6.5 * s,
-                    diamond_ink(&facts, palette),
-                ))
-                .child(div().flex_1().min_w_0().child(text(
-                    "mk-dep-title",
-                    facts.name.clone(),
-                    card::TITLE_MONO,
-                    measure,
-                    palette.ink0,
-                )))
-                .children(facts.resolved.as_ref().map(|v| {
-                    text(
-                        "mk-dep-v",
-                        semver::short(v).to_owned(),
-                        card::CODE,
+    Rc::new(move |measure: &Measure, _window: &mut Window, cx: &mut App| {
+        let palette = cx.facet().palette();
+        let s = measure.scale();
+        let head = div()
+            .flex()
+            .items_center()
+            .gap(k(measure, 8.0))
+            .child(diamond_element(diamond_kind(&facts), 6.5 * s, diamond_ink(&facts, palette)))
+            .child(div().flex_1().min_w_0().child(text("mk-dep-title", facts.name.clone(), card::TITLE_MONO, measure, palette.ink0)))
+            .children(facts.resolved.as_ref().map(|v| text("mk-dep-v", semver::short(v).to_owned(), card::CODE, measure, palette.ink3)));
+        let mut body = card::body(348.0, measure).child(head);
+        body = body.child(div().mt(k(measure, 6.0)).child(sentence(&facts.sentence(), measure, palette)));
+        body = body.child(uses(&facts, measure, palette));
+        let mut rows: Vec<(&'static str, String)> = vec![("needed", facts.needed())];
+        if let Some(version) = facts.version() {
+            rows.push(("version", version));
+        }
+        rows.push(("your tree", facts.tree(&parent)));
+        let mut kv = div()
+            .mt(k(measure, 10.0))
+            .pt(k(measure, 9.0))
+            .border_t_1()
+            .border_color(palette.line1.hsla())
+            .flex()
+            .flex_col()
+            .gap(k(measure, 5.0));
+        for (i, (key, value)) in rows.into_iter().enumerate() {
+            let mint = value.contains("costs nothing") || value.starts_with("yours");
+            kv = kv.child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(k(measure, 14.0))
+                    .child(div().w(k(measure, 62.0)).flex_none().child(text(("mk-dep-k", i), key, card::FACT, measure, palette.ink3)))
+                    .child(div().flex_1().min_w_0().child(text(
+                        ("mk-dep-kv", i),
+                        value,
+                        card::FACT,
                         measure,
-                        palette.ink3,
-                    )
-                }));
-            let mut body = card::body(348.0, measure).child(head);
-            body = body.child(div().mt(k(measure, 6.0)).child(sentence(
-                &facts.sentence(),
-                measure,
-                palette,
-            )));
-            body = body.child(uses(&facts, measure, palette));
-            let mut rows: Vec<(&'static str, String)> = vec![("needed", facts.needed())];
-            if let Some(version) = facts.version() {
-                rows.push(("version", version));
-            }
-            rows.push(("your tree", facts.tree(&parent)));
-            let mut kv = div()
-                .mt(k(measure, 10.0))
-                .pt(k(measure, 9.0))
-                .border_t_1()
-                .border_color(palette.line1.hsla())
-                .flex()
-                .flex_col()
-                .gap(k(measure, 5.0));
-            for (i, (key, value)) in rows.into_iter().enumerate() {
-                let mint = value.contains("costs nothing") || value.starts_with("yours");
-                kv = kv.child(
-                    div()
-                        .flex()
-                        .items_start()
-                        .gap(k(measure, 14.0))
-                        .child(div().w(k(measure, 62.0)).flex_none().child(text(
-                            ("mk-dep-k", i),
-                            key,
-                            card::FACT,
-                            measure,
-                            palette.ink3,
-                        )))
-                        .child(div().flex_1().min_w_0().child(text(
-                            ("mk-dep-kv", i),
-                            value,
-                            card::FACT,
-                            measure,
-                            if mint {
-                                palette.mint.base
-                            } else {
-                                palette.ink1
-                            },
-                        ))),
-                );
-            }
-            body.child(kv).into_any_element()
-        },
-    )
+                        if mint { palette.mint.base } else { palette.ink1 },
+                    ))),
+            );
+        }
+        body.child(kv).into_any_element()
+    })
 }
 
 /// The sentence, with `code` spans in mono.
-fn sentence(
-    markup: &str,
-    measure: &Measure,
-    palette: &'static crate::tokens::Palette,
-) -> AnyElement {
+fn sentence(markup: &str, measure: &Measure, palette: &'static crate::tokens::Palette) -> AnyElement {
     let plain: String = markup.replace('`', "");
     probe::text(
         "mk-dep-say",
@@ -559,71 +425,24 @@ fn sentence(
 }
 
 /// "**88** uses · most through `ser::ValueSerializer` 58".
-fn uses(
-    facts: &DepFacts,
-    measure: &Measure,
-    palette: &'static crate::tokens::Palette,
-) -> AnyElement {
-    let row = div()
-        .mt(k(measure, 7.0))
-        .flex()
-        .flex_wrap()
-        .items_baseline()
-        .gap(k(measure, 5.0));
+fn uses(facts: &DepFacts, measure: &Measure, palette: &'static crate::tokens::Palette) -> AnyElement {
+    let row = div().mt(k(measure, 7.0)).flex().flex_wrap().items_baseline().gap(k(measure, 5.0));
     let Some(n) = facts.uses else {
         let words = facts.unknown_uses().unwrap_or_default();
-        return row
-            .child(text(
-                "mk-dep-uses",
-                words,
-                card::FACT,
-                measure,
-                palette.ink3,
-            ))
-            .into_any_element();
+        return row.child(text("mk-dep-uses", words, card::FACT, measure, palette.ink3)).into_any_element();
     };
     let mut row = row
-        .child(text(
-            "mk-dep-n",
-            thousands(n),
-            card::FACT_NUM,
-            measure,
-            palette.ink0,
-        ))
-        .child(text(
-            "mk-dep-unit",
-            if n == 1 { "use" } else { "uses" },
-            card::FACT,
-            measure,
-            palette.ink2,
-        ));
+        .child(text("mk-dep-n", thousands(n), card::FACT_NUM, measure, palette.ink0))
+        .child(text("mk-dep-unit", if n == 1 { "use" } else { "uses" }, card::FACT, measure, palette.ink2));
     if let Some((item, count)) = facts.items.first() {
         let more = facts.items.len() > 1 && *count < n;
         row = row.child(text("mk-dep-dot", "·", card::FACT, measure, palette.ink4));
         if more {
-            row = row.child(text(
-                "mk-dep-through",
-                "most through",
-                card::FACT,
-                measure,
-                palette.ink2,
-            ));
+            row = row.child(text("mk-dep-through", "most through", card::FACT, measure, palette.ink2));
         }
-        row = row.child(text(
-            "mk-dep-item",
-            item.clone(),
-            card::CODE,
-            measure,
-            palette.ink1,
-        ));
+        row = row.child(text("mk-dep-item", item.clone(), card::CODE, measure, palette.ink1));
         if more {
-            row = row.child(text(
-                "mk-dep-count",
-                count.to_string(),
-                card::FACT,
-                measure,
-                palette.ink2,
-            ));
+            row = row.child(text("mk-dep-count", count.to_string(), card::FACT, measure, palette.ink2));
         }
     }
     row.into_any_element()
@@ -644,12 +463,7 @@ pub struct DepLine {
 
 /// The dependency line of `parent` over `deps`, as wide as `measure`.
 #[must_use]
-pub fn dep_line(
-    id: impl Into<ElementId>,
-    deps: impl Into<Rc<[DepFacts]>>,
-    parent: impl Into<SharedString>,
-    measure: &Measure,
-) -> DepLine {
+pub fn dep_line(id: impl Into<ElementId>, deps: impl Into<Rc<[DepFacts]>>, parent: impl Into<SharedString>, measure: &Measure) -> DepLine {
     DepLine {
         id: id.into(),
         deps: deps.into(),
@@ -674,10 +488,7 @@ impl DepLine {
 
     /// Where following a link goes: called with its target.
     #[must_use]
-    pub fn on_open(
-        mut self,
-        open: impl Fn(&SharedString, &mut Window, &mut App) + 'static,
-    ) -> Self {
+    pub fn on_open(mut self, open: impl Fn(&SharedString, &mut Window, &mut App) + 'static) -> Self {
         self.on_open = Some(Rc::new(open));
         self
     }
@@ -750,17 +561,10 @@ impl RenderOnce for DepLine {
         let measure = self.measure;
         let s = measure.scale();
         let xray = measure.reveal().xray;
-        let ordered: Vec<&DepFacts> = order(&self.deps)
-            .into_iter()
-            .filter(|d| xray || d.kind == DepKind::Normal)
-            .collect();
-        let state = window.use_keyed_state(
-            ElementId::NamedChild(Arc::new(self.id.clone()), "fold".into()),
-            cx,
-            |_, _| FoldState {
-                opened: Rc::new(Cell::new(None)),
-            },
-        );
+        let ordered: Vec<&DepFacts> = order(&self.deps).into_iter().filter(|d| xray || d.kind == DepKind::Normal).collect();
+        let state = window.use_keyed_state(ElementId::NamedChild(Arc::new(self.id.clone()), "fold".into()), cx, |_, _| FoldState {
+            opened: Rc::new(Cell::new(None)),
+        });
         let opened_cell = state.read(cx).opened.clone();
         if self.open_look && opened_cell.get().is_none() {
             // A sheet shows it open and settled.
@@ -771,32 +575,16 @@ impl RenderOnce for DepLine {
         let word_role = measure.role(card::WORD);
         let widths: Vec<f32> = ordered
             .iter()
-            .map(|d| {
-                6.5 * s + 7.0 * s + f32::from(probe::natural_width(&d.name, dep_role, 1.0, window))
-            })
+            .map(|d| 6.5 * s + 7.0 * s + f32::from(probe::natural_width(&d.name, dep_role, 1.0, window)))
             .collect();
-        let on_w = f32::from(probe::natural_width(
-            &SharedString::new_static("on"),
-            word_role,
-            1.0,
-            window,
-        )) + 10.0 * s;
+        let on_w = f32::from(probe::natural_width(&SharedString::new_static("on"), word_role, 1.0, window)) + 10.0 * s;
         let fold_words = |n: usize| format!("and {n} more");
-        let fold_w = |n: usize| {
-            f32::from(probe::natural_width(
-                &SharedString::from(fold_words(n)),
-                word_role,
-                1.0,
-                window,
-            ))
-        };
+        let fold_w = |n: usize| f32::from(probe::natural_width(&SharedString::from(fold_words(n)), word_role, 1.0, window));
         let room = f32::from(measure.width()) - on_w;
         let shown = fold_at(&widths, room, gap, fold_w);
         let hidden = ordered.len() - shown;
         let now = motion::now(cx);
-        let open_t = opened_cell
-            .get()
-            .map(|at| now.saturating_duration_since(at).as_secs_f32() * 1000.0);
+        let open_t = opened_cell.get().map(|at| now.saturating_duration_since(at).as_secs_f32() * 1000.0);
         let open = open_t.is_some();
         let mut line = div()
             .id(self.id.clone())
@@ -820,10 +608,7 @@ impl RenderOnce for DepLine {
         let mut live = false;
         for (i, dep) in ordered.iter().take(count).enumerate() {
             let mut link = dep_link(
-                ElementId::NamedChild(
-                    Arc::new(self.id.clone()),
-                    SharedString::from(format!("dep-{}-{}", dep.name, i)),
-                ),
+                ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::from(format!("dep-{}-{}", dep.name, i))),
                 (*dep).clone(),
                 self.parent.clone(),
                 &measure,
@@ -841,11 +626,7 @@ impl RenderOnce for DepLine {
             let element = if i >= shown {
                 // Uncovered in reading order: 140 ms each, 20 ms apart.
                 let t = open_t.unwrap_or(0.0) - 20.0 * (i - shown) as f32;
-                let u = if motion::reduced(cx) {
-                    1.0
-                } else {
-                    GLIDE.ease((t / 140.0).clamp(0.0, 1.0))
-                };
+                let u = if motion::reduced(cx) { 1.0 } else { GLIDE.ease((t / 140.0).clamp(0.0, 1.0)) };
                 live |= u < 1.0;
                 motion::reveal(link).right(1.0 - u).into_any_element()
             } else {
@@ -857,10 +638,7 @@ impl RenderOnce for DepLine {
             let opened = opened_cell.clone();
             line = line.child(
                 div()
-                    .id(ElementId::NamedChild(
-                        Arc::new(self.id.clone()),
-                        "more".into(),
-                    ))
+                    .id(ElementId::NamedChild(Arc::new(self.id.clone()), "more".into()))
                     .cursor_pointer()
                     .child(text(
                         ElementId::NamedChild(Arc::new(self.id.clone()), "more-words".into()),
@@ -909,27 +687,11 @@ mod tests {
 
     #[test]
     fn unknown_uses_say_why_for_every_kind_and_never_go_blank() {
-        assert_eq!(
-            unread(DepKind::Normal).unknown_uses(),
-            Some("uses unknown: not read yet")
-        );
-        assert_eq!(
-            unread(DepKind::Dev).unknown_uses(),
-            Some("uses unknown: its tests are not shipped")
-        );
-        assert_eq!(
-            unread(DepKind::Build).unknown_uses(),
-            Some("uses unknown: its build script is not read")
-        );
-        let known = DepFacts {
-            uses: Some(3),
-            ..unread(DepKind::Normal)
-        };
-        assert_eq!(
-            known.unknown_uses(),
-            None,
-            "known uses are counted, not excused"
-        );
+        assert_eq!(unread(DepKind::Normal).unknown_uses(), Some("uses unknown: not read yet"));
+        assert_eq!(unread(DepKind::Dev).unknown_uses(), Some("uses unknown: its tests are not shipped"));
+        assert_eq!(unread(DepKind::Build).unknown_uses(), Some("uses unknown: its build script is not read"));
+        let known = DepFacts { uses: Some(3), ..unread(DepKind::Normal) };
+        assert_eq!(known.unknown_uses(), None, "known uses are counted, not excused");
     }
 
     #[test]

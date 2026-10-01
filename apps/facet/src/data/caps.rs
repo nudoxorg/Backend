@@ -26,8 +26,8 @@ use crate::semantics::caps::{Arrives, Cap};
 use crate::theme::ActiveFacet;
 use gpui::{
     AnyElement, App, Bounds, Element, ElementId, Entity, GlobalElementId, Hitbox, Hsla,
-    InspectorElementId, IntoElement, LayoutId, Pixels, Point, SharedString, Style,
-    TransformationMatrix, Window, point, px, size,
+    InspectorElementId, IntoElement, LayoutId, Pixels, Point, SharedString, Style, TransformationMatrix,
+    Window, point, px, size,
 };
 use std::rc::Rc;
 
@@ -97,9 +97,7 @@ const fn strength(arrives: &Arrives) -> u8 {
 pub fn slots(caps: &[Cap], xray: bool) -> Vec<Slot> {
     let mut present: Vec<(Glyph, Arrives, Vec<String>)> = Vec::new();
     for cap in caps {
-        let Some(g) = glyph(&cap.trait_name) else {
-            continue;
-        };
+        let Some(g) = glyph(&cap.trait_name) else { continue };
         match present.iter_mut().find(|(p, _, _)| *p == g) {
             Some((_, arrives, traits)) => {
                 if strength(&cap.arrives) > strength(arrives) {
@@ -232,10 +230,7 @@ impl Element for Caps {
         style.size.width = px(((CELL + GAP) * n - GAP).max(0.0) * s).into();
         style.size.height = px(CELL * s).into();
         style.flex_shrink = 0.0;
-        (
-            window.request_layout(style, [kid], cx),
-            CapsLayout { live, keys },
-        )
+        (window.request_layout(style, [kid], cx), CapsLayout { live, keys })
     }
 
     fn prepaint(
@@ -264,20 +259,10 @@ impl Element for Caps {
         let s = self.measure.scale();
         let (x0, y0) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
         let live = layout.live.clone();
-        let active = live
-            .read(cx)
-            .hover
-            .or(self.rest)
-            .or(live::walking(&live, window, cx));
+        let active = live.read(cx).hover.or(self.rest).or(live::walking(&live, window, cx));
         let pitch = (CELL + GAP) * s;
         #[allow(clippy::cast_precision_loss)]
-        let (at, _, strength) = live::wave(
-            &self.id,
-            &live,
-            active.map(|i| (i as f32 * pitch, 0.0)),
-            window,
-            cx,
-        );
+        let (at, _, strength) = live::wave(&self.id, &live, active.map(|i| (i as f32 * pitch, 0.0)), window, cx);
         let centre = at / pitch;
         for (i, slot) in self.slots.iter().enumerate() {
             #[allow(clippy::cast_precision_loss)]
@@ -301,20 +286,9 @@ impl Element for Caps {
                 point(px(cx0 - e * 0.5), px(y0 + CELL * s * 0.5 - e * 0.5 - lift)),
                 size(px(e), px(e)),
             );
-            let stroke = Stroke {
-                width: 1.5,
-                facet: Some(facet),
-                dashed,
-            };
+            let stroke = Stroke { width: 1.5, facet: Some(facet), dashed };
             window
-                .paint_svg(
-                    at,
-                    variant_path(slot.glyph.path(), stroke),
-                    None,
-                    TransformationMatrix::unit(),
-                    ink,
-                    cx,
-                )
+                .paint_svg(at, variant_path(slot.glyph.path(), stroke), None, TransformationMatrix::unit(), ink, cx)
                 .ok();
         }
         let n = self.slots.len();
@@ -336,12 +310,7 @@ impl Element for Caps {
                 }),
                 anchor: Rc::new(move |i| {
                     #[allow(clippy::cast_precision_loss)]
-                    (i < n).then(|| {
-                        Bounds::new(
-                            point(px(x0 + i as f32 * pitch), px(y0)),
-                            size(px(CELL * s), px(CELL * s)),
-                        )
-                    })
+                    (i < n).then(|| Bounds::new(point(px(x0 + i as f32 * pitch), px(y0)), size(px(CELL * s), px(CELL * s))))
                 }),
                 step: Rc::new(live::linear),
             },
@@ -372,20 +341,13 @@ mod tests {
     /// `Clone, Copy, Debug, Eq, PartialEq, Hash`, a hand-written `Display`
     /// (which gives `ToString`).
     fn relation_label() -> Vec<crate::semantics::caps::Cap> {
-        caps(
-            &["Clone", "Copy", "Debug", "Eq", "PartialEq", "Hash"],
-            &[(SharedString::new_static("Display"), None)],
-            &[] as &[&str],
-        )
+        caps(&["Clone", "Copy", "Debug", "Eq", "PartialEq", "Hash"], &[(SharedString::new_static("Display"), None)], &[] as &[&str])
     }
 
     #[test]
     fn glyphs_say_how_each_capability_arrives() {
         let row = slots(&relation_label(), false);
-        let drawn: Vec<(Glyph, &Has, &str)> = row
-            .iter()
-            .map(|s| (s.glyph, &s.has, s.says.as_ref()))
-            .collect();
+        let drawn: Vec<(Glyph, &Has, &str)> = row.iter().map(|s| (s.glyph, &s.has, s.says.as_ref())).collect();
         assert_eq!(
             drawn,
             [
@@ -393,17 +355,9 @@ mod tests {
                 (Glyph::Eq, &Has::Is(Arrives::Derived), "Eq — derived"),
                 (Glyph::Hash, &Has::Is(Arrives::Derived), "Hash — derived"),
                 (Glyph::Debug, &Has::Is(Arrives::Derived), "Debug — derived"),
-                (
-                    Glyph::Display,
-                    &Has::Is(Arrives::Written),
-                    "Display — written"
-                ),
+                (Glyph::Display, &Has::Is(Arrives::Written), "Display — written"),
                 // `ToString` arrives through `Display`: dashed.
-                (
-                    Glyph::Convert,
-                    &Has::Is(Arrives::Via(SharedString::new_static("Display"))),
-                    "ToString — via Display"
-                ),
+                (Glyph::Convert, &Has::Is(Arrives::Via(SharedString::new_static("Display"))), "ToString — via Display"),
             ]
         );
     }
@@ -413,23 +367,8 @@ mod tests {
         let at_rest = slots(&relation_label(), false);
         assert!(at_rest.iter().all(|s| s.has != Has::Missing), "{at_rest:?}");
         let xray = slots(&relation_label(), true);
-        let missing: Vec<Glyph> = xray
-            .iter()
-            .filter(|s| s.has == Has::Missing)
-            .map(|s| s.glyph)
-            .collect();
+        let missing: Vec<Glyph> = xray.iter().filter(|s| s.has == Has::Missing).map(|s| s.glyph).collect();
         // `Clone` is implied by `Copy`: never missing.
-        assert_eq!(
-            missing,
-            [
-                Glyph::Ord,
-                Glyph::Thread,
-                Glyph::Default,
-                Glyph::Serde,
-                Glyph::Iter,
-                Glyph::Deref,
-                Glyph::Error
-            ]
-        );
+        assert_eq!(missing, [Glyph::Ord, Glyph::Thread, Glyph::Default, Glyph::Serde, Glyph::Iter, Glyph::Deref, Glyph::Error]);
     }
 }

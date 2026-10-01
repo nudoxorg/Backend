@@ -28,11 +28,7 @@ pub(crate) fn text_width(text: &str, role: &TypeRole, cx: &App) -> Pixels {
         features: fonts::features(*role),
         fallbacks: None,
         weight: FontWeight(role.weight),
-        style: if role.italic {
-            FontStyle::Italic
-        } else {
-            FontStyle::Normal
-        },
+        style: if role.italic { FontStyle::Italic } else { FontStyle::Normal },
     };
     let id = system.resolve_font(&font);
     let size = px(role.size);
@@ -63,8 +59,7 @@ pub(crate) fn identifier_segments(name: &str) -> Vec<&str> {
                 || previous.is_ascii_digit()
                 || (previous.is_uppercase() && next.is_some_and(char::is_lowercase)));
         let after_underscore = previous == '_' && current != '_';
-        let after_path =
-            previous == ':' && current != ':' && window >= 2 && chars[window - 2].1 == ':';
+        let after_path = previous == ':' && current != ':' && window >= 2 && chars[window - 2].1 == ':';
         let after_dot = previous == '.' && current != '.';
         if hump || after_underscore || after_path || after_dot {
             cuts.push(at);
@@ -81,13 +76,7 @@ pub(crate) fn identifier_segments(name: &str) -> Vec<&str> {
 }
 
 /// Fits a name into `width`: its lines, and the role they are set in.
-pub(crate) fn fit_name(
-    name: &str,
-    base: TypeRole,
-    measure: &Measure,
-    width: Pixels,
-    cx: &App,
-) -> (Vec<String>, TypeRole) {
+pub(crate) fn fit_name(name: &str, base: TypeRole, measure: &Measure, width: Pixels, cx: &App) -> (Vec<String>, TypeRole) {
     let resolved = measure.role(base);
     let width = width * 0.98;
     let segments = identifier_segments(name);
@@ -149,30 +138,19 @@ fn pack(segments: &[&str], role: &TypeRole, width: Pixels, split: bool, cx: &App
 }
 
 /// A name set in its fitted lines, one text per line.
-pub(crate) fn name_lines(
-    lines: &[String],
-    role: TypeRole,
-    color: impl Into<gpui::Hsla>,
-) -> gpui::Div {
+pub(crate) fn name_lines(lines: &[String], role: TypeRole, color: impl Into<gpui::Hsla>) -> gpui::Div {
     use gpui::{ParentElement as _, Styled as _};
     let color = color.into();
-    gpui::div()
-        .flex()
-        .flex_col()
-        .children(lines.iter().enumerate().map(|(index, line)| {
-            facet::probe::text(
-                gpui::ElementId::Name(SharedString::from(format!("name:{index}:{line}"))),
-                SharedString::from(line.clone()),
-                role,
-                1.0,
-                facet::probe::TextOverflow::Clip,
-                gpui::div()
-                    .whitespace_nowrap()
-                    .typeset_at(role, 1.0)
-                    .text_color(color)
-                    .child(line.clone()),
-            )
-        }))
+    gpui::div().flex().flex_col().children(lines.iter().enumerate().map(|(index, line)| {
+        facet::probe::text(
+            gpui::ElementId::Name(SharedString::from(format!("name:{index}:{line}"))),
+            SharedString::from(line.clone()),
+            role,
+            1.0,
+            facet::probe::TextOverflow::Clip,
+            gpui::div().whitespace_nowrap().typeset_at(role, 1.0).text_color(color).child(line.clone()),
+        )
+    }))
 }
 
 /// One visual line of wrapped code.
@@ -200,11 +178,7 @@ pub(crate) fn columns(width: Pixels, role: &TypeRole, cx: &App) -> usize {
 /// Soft-wraps `text` (with `runs` over its whole byte range) into lines of
 /// at most `columns` characters at token boundaries, continuation lines
 /// hanging four columns past their source line's indent.
-pub(crate) fn wrap_code(
-    text: &str,
-    runs: &[(Range<usize>, HighlightStyle)],
-    columns: usize,
-) -> Vec<CodeLine> {
+pub(crate) fn wrap_code(text: &str, runs: &[(Range<usize>, HighlightStyle)], columns: usize) -> Vec<CodeLine> {
     let mut out = Vec::new();
     let mut offset = 0;
     for (source, raw) in text.split('\n').enumerate() {
@@ -222,11 +196,7 @@ pub(crate) fn wrap_code(
         let mut start = 0;
         let mut first = true;
         loop {
-            let room = if first {
-                columns
-            } else {
-                columns.saturating_sub(hang.len()).max(8)
-            };
+            let room = if first { columns } else { columns.saturating_sub(hang.len()).max(8) };
             let rest = &line[start..];
             let (piece_end, done) = if rest.chars().count() <= room {
                 (line.len(), true)
@@ -234,28 +204,15 @@ pub(crate) fn wrap_code(
                 (start + break_at(rest, room), false)
             };
             let piece = &line[start..piece_end];
-            let (prefix, shift) = if first {
-                (String::new(), 0)
-            } else {
-                (hang.clone(), hang.len())
-            };
-            let piece_text = if first {
-                piece.to_owned()
-            } else {
-                piece.trim_start().to_owned()
-            };
+            let (prefix, shift) = if first { (String::new(), 0) } else { (hang.clone(), hang.len()) };
+            let piece_text = if first { piece.to_owned() } else { piece.trim_start().to_owned() };
             let trimmed = piece.len() - piece_text.len();
             let runs = line_runs
                 .iter()
                 .filter_map(|(range, style)| {
                     let from = range.start.max(start + trimmed);
                     let to = range.end.min(piece_end);
-                    (from < to).then(|| {
-                        (
-                            from - start - trimmed + shift..to - start - trimmed + shift,
-                            *style,
-                        )
-                    })
+                    (from < to).then(|| (from - start - trimmed + shift..to - start - trimmed + shift, *style))
                 })
                 .collect();
             out.push(CodeLine {
@@ -278,10 +235,7 @@ pub(crate) fn wrap_code(
 /// Where to end a piece of at most `room` characters: after the last token
 /// boundary inside it, or at `room` characters when there is none.
 fn break_at(rest: &str, room: usize) -> usize {
-    let limit = rest
-        .char_indices()
-        .nth(room)
-        .map_or(rest.len(), |(at, _)| at);
+    let limit = rest.char_indices().nth(room).map_or(rest.len(), |(at, _)| at);
     let bytes = rest.as_bytes();
     let mut best = None;
     for (at, character) in rest[..limit].char_indices() {
@@ -310,16 +264,10 @@ mod tests {
     fn identifiers_split_where_the_eye_does() {
         assert_eq!(identifier_segments("RelationLabel"), ["Relation", "Label"]);
         assert_eq!(identifier_segments("as_str"), ["as_", "str"]);
-        assert_eq!(
-            identifier_segments("Page::relations"),
-            ["Page::", "relations"]
-        );
+        assert_eq!(identifier_segments("Page::relations"), ["Page::", "relations"]);
         assert_eq!(identifier_segments("HTTPServer"), ["HTTP", "Server"]);
         assert_eq!(identifier_segments("x"), ["x"]);
-        assert_eq!(
-            identifier_segments("parse_json_into_struct").concat(),
-            "parse_json_into_struct"
-        );
+        assert_eq!(identifier_segments("parse_json_into_struct").concat(), "parse_json_into_struct");
     }
 
     #[test]
@@ -327,29 +275,14 @@ mod tests {
         let line = "    Typed(SemanticLinkKind, RelationDirection),";
         let lines = wrap_code(line, &[], 30);
         assert!(lines.len() > 1, "{lines:?}");
-        assert!(
-            lines.iter().all(|line| line.text.chars().count() <= 30),
-            "{lines:?}"
-        );
+        assert!(lines.iter().all(|line| line.text.chars().count() <= 30), "{lines:?}");
         assert!(!lines[0].continued && lines[1].continued);
-        assert!(
-            lines[1].text.starts_with("        "),
-            "hangs past the indent: {lines:?}"
-        );
+        assert!(lines[1].text.starts_with("        "), "hangs past the indent: {lines:?}");
         // Nothing is lost: the pieces, unhung, are the line.
-        let joined = lines
-            .iter()
-            .map(|line| line.text.trim_start().to_owned())
-            .collect::<Vec<_>>()
-            .join("");
+        let joined = lines.iter().map(|line| line.text.trim_start().to_owned()).collect::<Vec<_>>().join("");
         assert_eq!(joined.replace(' ', ""), line.replace(' ', ""));
         // No break inside a token when a boundary exists.
-        assert!(
-            lines
-                .iter()
-                .all(|line| !line.text.trim_end().ends_with("SemanticLinkKi")),
-            "{lines:?}"
-        );
+        assert!(lines.iter().all(|line| !line.text.trim_end().ends_with("SemanticLinkKi")), "{lines:?}");
     }
 
     #[test]
@@ -360,11 +293,7 @@ mod tests {
         let lines = wrap_code(text, &[(start..start + "RelationLabel".len(), style)], 24);
         let marked = lines
             .iter()
-            .flat_map(|line| {
-                line.runs
-                    .iter()
-                    .map(move |(range, _)| line.text[range.clone()].to_owned())
-            })
+            .flat_map(|line| line.runs.iter().map(move |(range, _)| line.text[range.clone()].to_owned()))
             .collect::<Vec<_>>();
         assert_eq!(marked.concat(), "RelationLabel");
     }

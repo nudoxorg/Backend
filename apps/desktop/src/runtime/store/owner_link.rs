@@ -6,8 +6,8 @@
 //! that does not exist yet, and never asked at a root nobody served. A failed
 //! owner is a fault on every page, in its own words.
 
-use crate::model::pages::PageKey;
 use crate::runtime::owner::{OwnerFault, OwnerGate, OwnerState};
+use crate::model::pages::PageKey;
 use std::collections::BTreeSet;
 
 /// Whether the owner behind this window's reads is answering.
@@ -33,11 +33,7 @@ pub(super) struct OwnerLink {
 impl OwnerLink {
     /// An owner that is already answering (the harness and tests).
     pub(super) const fn serving() -> Self {
-        Self {
-            phase: OwnerPhase::Serving,
-            gate: None,
-            held: BTreeSet::new(),
-        }
+        Self { phase: OwnerPhase::Serving, gate: None, held: BTreeSet::new() }
     }
 
     /// The link to the owner `gate` says it is now.
@@ -47,11 +43,7 @@ impl OwnerLink {
             OwnerState::Ready { .. } => OwnerPhase::Serving,
             OwnerState::Failed(fault) => OwnerPhase::Failed(fault),
         };
-        Self {
-            phase,
-            gate: Some(gate),
-            held: BTreeSet::new(),
-        }
+        Self { phase, gate: Some(gate), held: BTreeSet::new() }
     }
 
     pub(super) const fn phase(&self) -> &OwnerPhase {

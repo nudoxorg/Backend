@@ -24,16 +24,16 @@ use super::{muted, with_alpha};
 use crate::Set;
 use crate::icons::{Icon, IconSize, ui};
 use crate::measure::{Control, Measure};
-use crate::motion::EASE;
 use crate::motion::{Spec, pulse, spec};
-use crate::paint::{Bevel, Chamfer, Edge, Hatch, Plate, cut, hatch_fill, mix};
+use crate::paint::{Chamfer, Edge, Bevel, Hatch, Plate, cut, hatch_fill, mix};
 use crate::theme::ActiveFacet;
+use crate::motion::EASE;
 use crate::tokens::motion::EMPH;
 use crate::tokens::{Face, Palette, TypeRole};
 use gpui::{
-    App, ClickEvent, ColorExt, ElementId, Hsla, InteractiveElement, IntoElement, KeyDownEvent,
-    KeyUpEvent, MouseButton, ParentElement, RenderOnce, SharedString, StatefulInteractiveElement,
-    Styled, Window, div, layer, px,
+    App, ClickEvent, ColorExt, ElementId, Hsla, InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent,
+    MouseButton, ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, Styled,
+    Window, div, layer, px,
 };
 use std::rc::Rc;
 
@@ -75,11 +75,7 @@ pub struct Button {
 
 /// A default-intent, medium button reading `label`, sized for `measure`.
 #[must_use]
-pub fn button(
-    id: impl Into<ElementId>,
-    label: impl Into<SharedString>,
-    measure: &Measure,
-) -> Button {
+pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, measure: &Measure) -> Button {
     Button {
         id: id.into(),
         label: Some(label.into()),
@@ -234,6 +230,7 @@ struct Tones {
     light: f32,
 }
 
+
 fn tones(intent: Intent, palette: &Palette) -> Tones {
     let rest = Edge::of(Bevel::Rest, palette);
     let hi: Hsla = palette.bevel_hi.into();
@@ -301,6 +298,7 @@ pub(crate) fn sunk(edge: Edge) -> Edge {
     }
 }
 
+
 /// Wires pointer, keyboard and focus onto a control's plate: press on
 /// pointer down, release on up anywhere, activate on click and on
 /// Enter (down) / Space (up), flashing the press while the key is held.
@@ -359,14 +357,12 @@ where
         }
     });
     if let Some(activate) = activate {
-        element = element.on_click(
-            move |_event: &ClickEvent, window: &mut Window, cx: &mut App| {
-                // A keyboard "click" is handled by the key listeners above.
-                if !window.last_input_was_keyboard() {
-                    activate(window, cx);
-                }
-            },
-        );
+        element = element.on_click(move |_event: &ClickEvent, window: &mut Window, cx: &mut App| {
+            // A keyboard "click" is handled by the key listeners above.
+            if !window.last_input_was_keyboard() {
+                activate(window, cx);
+            }
+        });
     }
     element
 }
@@ -421,11 +417,7 @@ impl RenderOnce for Button {
         let lift = motion.animate(
             track(&id, "lift"),
             lift_target,
-            if touch.pressed {
-                spec::PRESS
-            } else {
-                spec::LIFT
-            },
+            if touch.pressed { spec::PRESS } else { spec::LIFT },
             window,
             cx,
         );
@@ -553,7 +545,9 @@ impl RenderOnce for Button {
             plate = plate.child(key_badge(key, &motion, &id, &measure));
         }
 
-        let plate = plate.id(id).opacity(if self.disabled { 0.42 } else { 1.0 });
+        let plate = plate
+            .id(id)
+            .opacity(if self.disabled { 0.42 } else { 1.0 });
         let plate = if active {
             wire(plate, &touch, self.on_click).into_any_element()
         } else {

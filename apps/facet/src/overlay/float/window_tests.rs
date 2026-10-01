@@ -343,13 +343,7 @@ fn a_card_opened_by_a_word_with_another_key_closes_when_the_pointer_leaves_the_w
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
-        set_facet(
-            Facet {
-                reduced_motion: true,
-                ..Facet::default()
-            },
-            cx,
-        );
+        set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx);
     });
     let (_view, cx) = cx.add_window_view(|_, _| Door);
     cx.simulate_resize(size(px(900.0), px(700.0)));
@@ -357,10 +351,7 @@ fn a_card_opened_by_a_word_with_another_key_closes_when_the_pointer_leaves_the_w
     let card = || -> gpui::ElementId { "peek:word".into() };
     cx.simulate_mouse_move(point(px(120.0), px(110.0)), None, gpui::Modifiers::none());
     advance(cx, 400);
-    assert!(
-        cx.update(|window, cx| super::is_open(&card(), window, cx)),
-        "a rest on the word opens its card"
-    );
+    assert!(cx.update(|window, cx| super::is_open(&card(), window, cx)), "a rest on the word opens its card");
     cx.simulate_mouse_move(point(px(800.0), px(600.0)), None, gpui::Modifiers::none());
     advance(cx, 500);
     draw(cx);

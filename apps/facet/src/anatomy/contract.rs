@@ -12,9 +12,7 @@ use crate::semantics::model::{Contract, Row};
 use crate::theme::ActiveFacet;
 use crate::tokens::Palette;
 use gpui::{
-    App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
-    Styled, Window, div,
-};
+    InteractiveElement,App, ElementId, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, div};
 use std::sync::Arc;
 
 /// A contract. Build with [`contract`].
@@ -28,18 +26,8 @@ pub struct ContractView {
 
 /// The contract for `contract` at `measure`.
 #[must_use]
-pub fn contract(
-    id: impl Into<ElementId>,
-    contract: Contract,
-    measure: &Measure,
-    links: &Links,
-) -> ContractView {
-    ContractView {
-        id: id.into(),
-        contract,
-        measure: *measure,
-        links: links.clone(),
-    }
+pub fn contract(id: impl Into<ElementId>, contract: Contract, measure: &Measure, links: &Links) -> ContractView {
+    ContractView { id: id.into(), contract, measure: *measure, links: links.clone() }
 }
 
 fn rows(
@@ -62,10 +50,7 @@ fn rows(
         .flex_col()
         .child(bracket(measure, color.hsla(), dashed))
         .children(list.iter().enumerate().map(|(n, r)| {
-            let key = ElementId::NamedChild(
-                Arc::new(id.clone()),
-                SharedString::from(format!("{part}-{n}")),
-            );
+            let key = ElementId::NamedChild(Arc::new(id.clone()), SharedString::from(format!("{part}-{n}")));
             row(key, r, None, &inner, links, palette)
         }))
 }
@@ -78,44 +63,22 @@ impl RenderOnce for ContractView {
         if !self.contract.write.is_empty() {
             root = root
                 .child(heading(
-                    ElementId::NamedChild(
-                        Arc::new(self.id.clone()),
-                        SharedString::new_static("write-heading"),
-                    ),
+                    ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::new_static("write-heading")),
                     "you write",
                     &m,
                     palette,
                 ))
-                .child(rows(
-                    &self.id,
-                    "write",
-                    &self.contract.write,
-                    true,
-                    &m,
-                    &self.links,
-                    palette,
-                ));
+                .child(rows(&self.id, "write", &self.contract.write, true, &m, &self.links, palette));
         }
         if !self.contract.get.is_empty() {
             root = root
                 .child(heading(
-                    ElementId::NamedChild(
-                        Arc::new(self.id.clone()),
-                        SharedString::new_static("get-heading"),
-                    ),
+                    ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::new_static("get-heading")),
                     "you get",
                     &m,
                     palette,
                 ))
-                .child(rows(
-                    &self.id,
-                    "get",
-                    &self.contract.get,
-                    false,
-                    &m,
-                    &self.links,
-                    palette,
-                ));
+                .child(rows(&self.id, "get", &self.contract.get, false, &m, &self.links, palette));
         }
         let n = self.contract.implementors;
         if n > 0 {
@@ -123,10 +86,7 @@ impl RenderOnce for ContractView {
                 div()
                     .set(roles::QUIET, &m)
                     .text_color(palette.ink3.hsla())
-                    .child(SharedString::from(format!(
-                        "{n} type{} in this world do it",
-                        if n == 1 { "" } else { "s" }
-                    ))),
+                    .child(SharedString::from(format!("{n} type{} in this world do it", if n == 1 { "" } else { "s" }))),
             );
         }
         root

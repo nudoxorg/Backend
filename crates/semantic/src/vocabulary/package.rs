@@ -4,8 +4,8 @@
 //! ranges into that allocation. Downstream code borrows typed components; it
 //! never reparses or allocates normalized copies.
 
-use core::{fmt, ops::Deref, ops::Index};
 use std::{boxed::Box, string::String};
+use core::{fmt, ops::Deref, ops::Index};
 
 use backend_version::{CompilationTargetDomain, ContentId};
 use serde::{Deserialize, Serialize};

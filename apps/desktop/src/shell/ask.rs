@@ -24,9 +24,9 @@ use facet::icons::{self, KindSize};
 use facet::tokens::ty;
 use facet::{ActiveFacet as _, Measure, Space};
 use gpui::{
-    AnyElement, App, AppContext as _, ClickEvent, Context, Entity, InteractiveElement, IntoElement,
-    ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, Task, Window, div, px,
+    AnyElement, App, AppContext as _, ClickEvent, Context, Entity, InteractiveElement,
+    IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
+    Subscription, Task, Window, ScrollHandle, div, px,
 };
 use gpui_component::input::{InputEvent, InputState};
 use std::time::Duration;
@@ -78,18 +78,14 @@ pub(crate) struct Ask {
 impl Ask {
     pub(crate) fn new(links: Links, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Find a name, or ask"));
-        let typed = cx.subscribe_in(
-            &input,
-            window,
-            |ask: &mut Self, input, event: &InputEvent, window, cx| match event {
-                InputEvent::Change => {
-                    let text = input.read(cx).value().to_string();
-                    ask.typed(text, cx);
-                }
-                InputEvent::PressEnter { .. } => ask.choose(window, cx),
-                InputEvent::Focus | InputEvent::Blur => {}
-            },
-        );
+        let typed = cx.subscribe_in(&input, window, |ask: &mut Self, input, event: &InputEvent, window, cx| match event {
+            InputEvent::Change => {
+                let text = input.read(cx).value().to_string();
+                ask.typed(text, cx);
+            }
+            InputEvent::PressEnter { .. } => ask.choose(window, cx),
+            InputEvent::Focus | InputEvent::Blur => {}
+        });
         let store = links.store.clone();
         let landed = cx.subscribe(&store, |ask: &mut Self, _, event: &StoreEvent, cx| {
             if let (StoreEvent::Resource(PageKey::Search(query)), Some(mine)) = (event, &ask.query)
@@ -167,13 +163,7 @@ impl Ask {
         if choices.is_empty() {
             return;
         }
-        let next = if self.walked {
-            self.selected
-                .saturating_add_signed(delta)
-                .min(choices.len() - 1)
-        } else {
-            self.selected
-        };
+        let next = if self.walked { self.selected.saturating_add_signed(delta).min(choices.len() - 1) } else { self.selected };
         self.selected = next;
         self.walked = true;
         self.scroll.scroll_to_item(self.selected);
@@ -188,14 +178,10 @@ impl Ask {
     /// Notice says there is nowhere to go.
     pub(crate) fn choose(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let choices = self.choices(cx);
-        let Some(choice) = choices.get(self.selected) else {
-            return;
-        };
+        let Some(choice) = choices.get(self.selected) else { return };
         let previewing = self.links.snapshot(cx).session().preview.is_some();
         match choice.route.clone() {
-            Some(route)
-                if previewing && self.walked && self.links.snapshot(cx).route() == &route =>
-            {
+            Some(route) if previewing && self.walked && self.links.snapshot(cx).route() == &route => {
                 self.links.dispatch(Intent::CommitPreview, cx);
                 self.links.dispatch(Intent::DismissOverlay, cx);
             }
@@ -212,18 +198,14 @@ impl Ask {
                     message: format!("{} has no page yet", choice.name).into(),
                     retry: None,
                 };
-                self.links
-                    .store
-                    .update(cx, |store, cx| store.set_notice(Some(notice), cx));
+                self.links.store.update(cx, |store, cx| store.set_notice(Some(notice), cx));
             }
         }
     }
 
     /// The route for "every result, as a page" (⌘↵).
     pub(crate) fn all_results(&self) -> Option<Route> {
-        self.query
-            .clone()
-            .map(|query| Route::Orbit(OrbitRoute::Browse(BrowseRoute::Find(query))))
+        self.query.clone().map(|query| Route::Orbit(OrbitRoute::Browse(BrowseRoute::Find(query))))
     }
 
     /// What the jump bar says at the query's end: how many, and where.
@@ -235,10 +217,7 @@ impl Ask {
             return "…".into();
         }
         let choices = self.choices(cx);
-        let here = choices
-            .iter()
-            .filter(|choice| choice.group == Group::Here)
-            .count();
+        let here = choices.iter().filter(|choice| choice.group == Group::Here).count();
         let everywhere = choices.len() - here;
         match (here, everywhere) {
             (0, 0) => "nothing".into(),
@@ -254,31 +233,19 @@ impl Ask {
     }
 
     fn choices(&self, cx: &App) -> Vec<Choice> {
-        let Some(query) = &self.query else {
-            return Vec::new();
-        };
+        let Some(query) = &self.query else { return Vec::new() };
         let snapshot = self.links.snapshot(cx);
         let here = route_package(snapshot.committed_route()).map(str::to_owned);
         let store = self.links.store.read(cx);
         let results = store.search(query);
-        let Some(page) = results.loaded_value() else {
-            return Vec::new();
-        };
-        let mut rows: Vec<Choice> = page
-            .rows
-            .iter()
-            .map(|row| result_choice(row, &query.text, here.as_deref()))
-            .collect();
+        let Some(page) = results.loaded_value() else { return Vec::new() };
+        let mut rows: Vec<Choice> = page.rows.iter().map(|row| result_choice(row, &query.text, here.as_deref())).collect();
         // Stable: the producer's order within each group.
         rows.sort_by_key(|choice| choice.group == Group::Everywhere);
         let mut shown = Vec::with_capacity(rows.len());
         let (mut in_here, mut elsewhere) = (0, 0);
         for row in rows {
-            let count = if row.group == Group::Here {
-                &mut in_here
-            } else {
-                &mut elsewhere
-            };
+            let count = if row.group == Group::Here { &mut in_here } else { &mut elsewhere };
             if *count < PER_GROUP {
                 *count += 1;
                 shown.push(row);
@@ -289,9 +256,9 @@ impl Ask {
 
     /// Whether a search for the current query is still on its way.
     fn searching(&self, cx: &App) -> bool {
-        self.query.as_ref().is_some_and(|query| {
-            self.pending.is_some() && !self.links.store.read(cx).search(query).is_loaded()
-        })
+        self.query
+            .as_ref()
+            .is_some_and(|query| self.pending.is_some() && !self.links.store.read(cx).search(query).is_loaded())
     }
 }
 
@@ -322,10 +289,7 @@ fn result_choice(row: &SearchRow, query: &str, here: Option<&str>) -> Choice {
     let place = row.package.as_ref().map_or_else(
         || row.decl.path.as_deref().unwrap_or_default().to_owned(),
         |package| {
-            let name = crate::model::pages::PackageRef::parse(package).map_or_else(
-                |_| package.to_string(),
-                |package| package.display_name().to_owned(),
-            );
+            let name = crate::model::pages::PackageRef::parse(package).map_or_else(|_| package.to_string(), |package| package.display_name().to_owned());
             match (&row.decl.path, group) {
                 // In the package you are reading, the package goes without saying.
                 (Some(path), Group::Here) => path.clone().to_string(),
@@ -403,14 +367,8 @@ impl Ask {
         let measure = Measure::new(viewport.width, &facet);
         let choices = self.choices(cx);
         let searching = self.searching(cx);
-        let mut list = div()
-            .id("ask-results")
-            .flex()
-            .flex_col()
-            .pt(measure.space(Space::Tight))
-            .size_full()
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll);
+        let mut list = div().id("ask-results").flex().flex_col().pt(measure.space(Space::Tight))
+            .size_full().overflow_y_scroll().track_scroll(&self.scroll);
         if let Some(status) = self.query.as_ref().and_then(|query| {
             self.links
                 .store
@@ -423,10 +381,7 @@ impl Ask {
                 div()
                     .px(measure.space(Space::Gutter))
                     .py(measure.space(Space::Snug))
-                    .child(
-                        text(ty::MONO_SMALL, &measure, palette.ink3)
-                            .child(semantic_search_label(status)),
-                    ),
+                    .child(text(ty::MONO_SMALL, &measure, palette.ink3).child(semantic_search_label(status))),
             );
         }
         let mut group = None;
@@ -436,73 +391,37 @@ impl Ask {
                 let (words, count) = match choice.group {
                     Group::Here => (
                         route_package(self.links.snapshot(cx).committed_route())
-                            .and_then(|package| {
-                                crate::model::pages::PackageRef::parse(package).ok()
-                            })
-                            .map_or_else(
-                                || "here".to_owned(),
-                                |package| format!("in {}", package.display_name()),
-                            ),
+                            .and_then(|package| crate::model::pages::PackageRef::parse(package).ok())
+                            .map_or_else(|| "here".to_owned(), |package| format!("in {}", package.display_name())),
                         choices.iter().filter(|c| c.group == Group::Here).count(),
                     ),
-                    Group::Everywhere => (
-                        "everywhere".to_owned(),
-                        choices
-                            .iter()
-                            .filter(|c| c.group == Group::Everywhere)
-                            .count(),
-                    ),
+                    Group::Everywhere => ("everywhere".to_owned(), choices.iter().filter(|c| c.group == Group::Everywhere).count()),
                 };
                 list = list.child(group_head(words, count, &measure, palette));
             }
             list = list.child(self.row(index, choice, &measure, palette));
         }
-        if choices.is_empty()
-            && let Some(query) = &self.query
-        {
+        if choices.is_empty() && let Some(query) = &self.query {
             // Never an empty plate: what the search is doing, or why it
             // could not answer.
             let terminal = self.links.store.read(cx).search(query).terminal().clone();
             let words: SharedString = match terminal {
-                crate::core::ResourceTerminal::Fault(error) => {
-                    format!("The index could not search: {}", error.message()).into()
-                }
-                crate::core::ResourceTerminal::Unavailable(_) => {
-                    "The index does not search yet.".into()
-                }
-                crate::core::ResourceTerminal::Complete if searching => {
-                    "Searching the library…".into()
-                }
+                crate::core::ResourceTerminal::Fault(error) => format!("The index could not search: {}", error.message()).into(),
+                crate::core::ResourceTerminal::Unavailable(_) => "The index does not search yet.".into(),
+                crate::core::ResourceTerminal::Complete if searching => "Searching the library…".into(),
                 crate::core::ResourceTerminal::Complete => "Nothing matches that yet.".into(),
             };
-            list = list.child(
-                div()
-                    .id("ask-said")
-                    .px(measure.space(Space::Gutter))
-                    .py(measure.space(Space::Roomy))
-                    .child(super::kit::quiet(words, &measure, palette)),
-            );
+            list = list.child(div().id("ask-said").px(measure.space(Space::Gutter)).py(measure.space(Space::Roomy)).child(super::kit::quiet(words, &measure, palette)));
         }
         if let Some(route) = self.all_results().filter(|_| !choices.is_empty()) {
             let links = self.links.clone();
             list = list.child(
-                div()
-                    .id("ask-find-page")
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(measure.space(Space::Roomy))
-                    .h(measure.row() + measure.space(Space::Snug))
-                    .px(measure.space(Space::Gutter))
-                    .mt(measure.space(Space::Tight))
-                    .border_t_1()
-                    .border_color(palette.line1.hsla())
-                    .hover(|style| style.bg(palette.tint))
-                    .cursor_pointer()
+                div().id("ask-find-page").flex().flex_none().items_center().gap(measure.space(Space::Roomy))
+                    .h(measure.row() + measure.space(Space::Snug)).px(measure.space(Space::Gutter)).mt(measure.space(Space::Tight))
+                    .border_t_1().border_color(palette.line1.hsla())
+                    .hover(|style| style.bg(palette.tint)).cursor_pointer()
                     .child(text(ty::SMALL, &measure, palette.ink2).child("every result, as a page"))
-                    .on_click(move |_: &ClickEvent, _, cx| {
-                        links.dispatch(Intent::Navigate(route.clone()), cx)
-                    }),
+                    .on_click(move |_: &ClickEvent, _, cx| links.dispatch(Intent::Navigate(route.clone()), cx)),
             );
         }
         div()
@@ -515,29 +434,15 @@ impl Ask {
             .into_any_element()
     }
 
-    fn row(
-        &self,
-        index: usize,
-        choice: &Choice,
-        measure: &Measure,
-        palette: &facet::Palette,
-    ) -> AnyElement {
+    fn row(&self, index: usize, choice: &Choice, measure: &Measure, palette: &facet::Palette) -> AnyElement {
         let on = index == self.selected && (self.walked || index == 0);
         let has_place = choice.route.is_some();
-        let ink = if on {
-            palette.ink0.hsla()
-        } else {
-            super::kit::link_ink(has_place, palette)
-        };
+        let ink = if on { palette.ink0.hsla() } else { super::kit::link_ink(has_place, palette) };
         let name = &choice.name;
         let mut words = div().flex().items_baseline().min_w(px(0.0)).flex_none();
         match choice.matched.clone() {
             Some(range) => {
-                let (before, hit, after) = (
-                    &name[..range.start],
-                    &name[range.clone()],
-                    &name[range.end..],
-                );
+                let (before, hit, after) = (&name[..range.start], &name[range.clone()], &name[range.end..]);
                 if !before.is_empty() {
                     words = words.child(text(ty::MONO_ROW, measure, ink).child(before.to_owned()));
                 }
@@ -561,18 +466,9 @@ impl Ask {
             .gap(measure.space(Space::Roomy))
             .h(measure.row() + measure.space(Space::Snug))
             .px(measure.space(Space::Gutter))
-            .child(super::kit::kind_mark(
-                choice.kind,
-                KindSize::Sm,
-                measure,
-                palette,
-            ))
+            .child(super::kit::kind_mark(choice.kind, KindSize::Sm, measure, palette))
             .child(words)
-            .children(choice.reason.clone().map(|reason| {
-                text(ty::MONO_SMALL, measure, palette.ink3)
-                    .flex_none()
-                    .child(reason)
-            }))
+            .children(choice.reason.clone().map(|reason| text(ty::MONO_SMALL, measure, palette.ink3).flex_none().child(reason)))
             .child(
                 text(ty::MONO_SMALL, measure, palette.ink3)
                     .flex_1()
@@ -585,34 +481,20 @@ impl Ask {
             );
         if on {
             row = row.bg(palette.plate2).child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .top_0()
-                    .bottom_0()
-                    .w(px(2.0 * measure.scale()))
-                    .bg(palette.peri.base.hsla()),
+                div().absolute().left_0().top_0().bottom_0().w(px(2.0 * measure.scale())).bg(palette.peri.base.hsla()),
             );
         }
         if let Some(route) = choice.route.clone() {
             let links = self.links.clone();
-            row = row
-                .cursor_pointer()
-                .hover(|style| style.bg(palette.tint))
-                .on_click(move |_: &ClickEvent, _, cx| {
-                    links.dispatch(Intent::Navigate(route.clone()), cx);
-                });
+            row = row.cursor_pointer().hover(|style| style.bg(palette.tint)).on_click(move |_: &ClickEvent, _, cx| {
+                links.dispatch(Intent::Navigate(route.clone()), cx);
+            });
         }
         row.into_any_element()
     }
 }
 
-fn group_head(
-    words: String,
-    count: usize,
-    measure: &Measure,
-    palette: &facet::Palette,
-) -> AnyElement {
+fn group_head(words: String, count: usize, measure: &Measure, palette: &facet::Palette) -> AnyElement {
     div()
         .flex()
         .items_center()
@@ -620,25 +502,15 @@ fn group_head(
         .h(measure.row())
         .px(measure.space(Space::Gutter))
         .mt(measure.space(Space::Tight))
-        .child(
-            text(ty::LABEL, measure, palette.ink3)
-                .flex_none()
-                .child(words),
-        )
+        .child(text(ty::LABEL, measure, palette.ink3).flex_none().child(words))
         .child(div().flex_1().h(px(1.0)).bg(palette.line1.hsla()))
-        .child(
-            text(ty::MONO_SMALL, measure, palette.ink3)
-                .flex_none()
-                .child(count.to_string()),
-        )
+        .child(text(ty::MONO_SMALL, measure, palette.ink3).flex_none().child(count.to_string()))
         .into_any_element()
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::model::pages::{
-        DeclRef, Gap, GapReason, Known, MatchReason, PageValue, ReadFailure, SearchPage, SearchRow,
-    };
+    use crate::model::pages::{DeclRef, Gap, GapReason, Known, MatchReason, PageValue, ReadFailure, SearchPage, SearchRow};
     use crate::runtime::reads::{PageReader, ReadContext, ReadPool, ReadRequest};
     use crate::shell::tests::{Fixture, page_route, rig_with_reads};
     use backend_library::DeclarationKind;
@@ -649,23 +521,14 @@ mod tests {
     /// a bare declaration the index cannot place (dead end #14).
     struct NoPlaceSearch;
     impl PageReader for NoPlaceSearch {
-        fn read(
-            &mut self,
-            request: &ReadRequest,
-            context: &ReadContext<'_>,
-        ) -> Result<PageValue, ReadFailure> {
+        fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
             if let ReadRequest::Search(query) | ReadRequest::SearchMore { query, .. } = request {
                 // A label with an empty project part (`::Mystery`) is the
                 // one shape whose `coordinate.package()` is genuinely
                 // `None`: a bare name (no `::`) is itself admitted as a
                 // local project reference, so it is NOT enough on its own.
-                let decl =
-                    DeclRef::from_label("::Mystery", None, Some(DeclarationKind::Struct), None)
-                        .expect("decl");
-                debug_assert!(
-                    decl.coordinate.package().is_none(),
-                    "the fixture's row must have no place"
-                );
+                let decl = DeclRef::from_label("::Mystery", None, Some(DeclarationKind::Struct), None).expect("decl");
+                debug_assert!(decl.coordinate.package().is_none(), "the fixture's row must have no place");
                 return Ok(PageValue::Search(SearchPage {
                     query: Arc::clone(&query.text),
                     rows: Arc::from([SearchRow {
@@ -695,63 +558,29 @@ mod tests {
         // Open with nothing typed, Ask is its field: no plate is drawn, and
         // none is said to be (the page under the veil is what shows).
         let dialogs = |ledger: &facet::probe::Ledger| -> Vec<String> {
-            ledger
-                .stacks
-                .iter()
-                .flat_map(|stack| &stack.entries)
-                .filter(|entry| entry.kind == "dialog")
-                .map(|entry| entry.key.clone())
-                .collect()
+            ledger.stacks.iter().flat_map(|stack| &stack.entries).filter(|entry| entry.kind == "dialog").map(|entry| entry.key.clone()).collect()
         };
         rig.cx.update(|_, cx| facet::probe::enable(cx));
         rig.repaint();
         let empty = rig.cx.update(|_, cx| facet::probe::take(cx));
         assert_eq!(dialogs(&empty), ["ask-field"], "no query, no plate");
         let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
-        rig.cx
-            .update(|_, cx| ask.update(cx, |ask, cx| ask.typed("mystery".to_owned(), cx)));
+        rig.cx.update(|_, cx| ask.update(cx, |ask, cx| ask.typed("mystery".to_owned(), cx)));
         rig.frame(120);
         rig.settle();
         // Ask's words are its own region (its plate hides the shelf's words
         // under it: the harness neither reads nor lints those).
         rig.repaint();
         let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
-        assert_eq!(
-            dialogs(&ledger),
-            ["ask-field", "ask-plate"],
-            "a query draws the plate"
-        );
-        let mystery = ledger
-            .texts
-            .iter()
-            .find(|text| text.content == "Mystery")
-            .unwrap_or_else(|| {
-                panic!(
-                    "the row is painted: {:?}",
-                    ledger.texts.iter().map(|t| &t.content).collect::<Vec<_>>()
-                )
-            });
-        assert_eq!(
-            mystery.region.as_deref(),
-            Some("ask"),
-            "Ask's row is in Ask's region"
-        );
+        assert_eq!(dialogs(&ledger), ["ask-field", "ask-plate"], "a query draws the plate");
+        let mystery = ledger.texts.iter().find(|text| text.content == "Mystery").unwrap_or_else(|| panic!("the row is painted: {:?}", ledger.texts.iter().map(|t| &t.content).collect::<Vec<_>>()));
+        assert_eq!(mystery.region.as_deref(), Some("ask"), "Ask's row is in Ask's region");
         let route_before = rig.route();
-        rig.cx
-            .update(|window, cx| ask.update(cx, |ask, cx| ask.choose(window, cx)));
-        assert_eq!(
-            rig.route(),
-            route_before,
-            "a row with no place does not move the page"
-        );
+        rig.cx.update(|window, cx| ask.update(cx, |ask, cx| ask.choose(window, cx)));
+        assert_eq!(rig.route(), route_before, "a row with no place does not move the page");
         let (ask_open, _, _) = rig.shell.read_with(rig.cx, |shell, _| shell.transients());
-        assert!(
-            !ask_open,
-            "Ask closes so the Notice (a page-foot fixture) is visible"
-        );
-        let message = rig.graph.store.read_with(rig.cx, |store, _| {
-            store.notice().map(|notice| notice.message.to_string())
-        });
+        assert!(!ask_open, "Ask closes so the Notice (a page-foot fixture) is visible");
+        let message = rig.graph.store.read_with(rig.cx, |store, _| store.notice().map(|notice| notice.message.to_string()));
         assert_eq!(message.as_deref(), Some("Mystery has no page yet"));
     }
 }

@@ -318,9 +318,7 @@ fn prepared(certificate: &crate::WireCertificate, regime: Regime) {
     match regime {
         Regime::Hashed => {}
         Regime::AllCollide => certificate.index_with(|_| 0),
-        Regime::ThreeBuckets => certificate.index_with(|id| {
-            id.len() as u64 % 3 + u64::from(id.as_bytes().first().copied().unwrap_or(0) % 3)
-        }),
+        Regime::ThreeBuckets => certificate.index_with(|id| id.len() as u64 % 3 + u64::from(id.as_bytes().first().copied().unwrap_or(0) % 3)),
         Regime::Scanned => certificate.scan_only(),
     }
 }
@@ -332,22 +330,13 @@ fn prepared(certificate: &crate::WireCertificate, regime: Regime) {
 fn every_index_regime_reproduces_the_scanning_goldens() {
     let root = small_frame();
     let capability = super::tests::capability(root.basis().object);
-    for regime in [
-        Regime::Hashed,
-        Regime::AllCollide,
-        Regime::ThreeBuckets,
-        Regime::Scanned,
-    ] {
+    for regime in [Regime::Hashed, Regime::AllCollide, Regime::ThreeBuckets, Regime::Scanned] {
         for ((name, certificate), ((_, frame_golden), (_, lookup_golden))) in variants(&root)
             .into_iter()
             .zip(GOLDEN.iter().zip(LOOKUP_GOLDEN.iter()))
         {
             prepared(&certificate, regime);
-            assert_eq!(
-                lookups(&certificate),
-                *lookup_golden,
-                "{regime:?} {name} lookups"
-            );
+            assert_eq!(lookups(&certificate), *lookup_golden, "{regime:?} {name} lookups");
             let wire = super::reply::view_root_to_wire(&root);
             let admitted = super::reply::view_root_from_wire_with_admission(
                 &wire,
@@ -371,14 +360,7 @@ fn a_replaced_claim_list_is_never_answered_from_the_old_index() {
     let root = small_frame();
     let variants = variants(&root);
     let mut certificate = variants[0].1.clone();
-    assert!(
-        lookups(&certificate).starts_with("ok ObjectKey"),
-        "the index is built"
-    );
+    assert!(lookups(&certificate).starts_with("ok ObjectKey"), "the index is built");
     certificate.claims = variants[1].1.claims.clone();
-    assert_eq!(
-        lookups(&certificate),
-        LOOKUP_GOLDEN[1].1,
-        "the duplicate is seen"
-    );
+    assert_eq!(lookups(&certificate), LOOKUP_GOLDEN[1].1, "the duplicate is seen");
 }

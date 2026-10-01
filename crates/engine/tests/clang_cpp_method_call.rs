@@ -5,7 +5,9 @@ use backend_engine::driver::{
     SemanticAuthorityInput, ToolchainSelection, compile,
 };
 use backend_frontend_clang::ClangProject;
-use backend_semantic::ir::{EntityKind, ForeignOrigin, FragmentView, OccurrenceTarget};
+use backend_semantic::ir::{
+    EntityKind, ForeignOrigin, FragmentView, OccurrenceTarget,
+};
 use backend_semantic::vocabulary::{CxxStandard, LanguageProfile, NativeTool, Stage};
 use backend_version::{ContentId, ToolchainDomain};
 use std::{
@@ -139,9 +141,7 @@ fn entity_of(
 #[test]
 fn cross_file_cpp_method_call_joins_on_header_package_key() -> Result<(), TestError> {
     if !clang_available() {
-        eprintln!(
-            "clang unavailable; skipping cross_file_cpp_method_call_joins_on_header_package_key"
-        );
+        eprintln!("clang unavailable; skipping cross_file_cpp_method_call_joins_on_header_package_key");
         return Ok(());
     }
 

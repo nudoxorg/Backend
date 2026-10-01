@@ -6,6 +6,11 @@
 )]
 
 use super::*;
+use backend_version::{
+    AuthorityScopeClaim, Coverage, CoverageWitness, ProducerObservationClaims,
+    ProducerObservationVerifier, RelationState, ScopeRoot, UntrustedProducerObservation,
+    WorkspaceManifest, WorkspaceRoot, admit_complete_scope, admit_producer_observation,
+};
 use backend_semantic::ir::{
     DeclarationFamilyId, DeclarationIdentity, ExternalFragmentId, ExternalTarget,
     ExternalTargetIdentity, IrBuilder, SemanticCoreReader as _, SourceIdentity, StableRef,
@@ -14,13 +19,8 @@ use backend_semantic::ir::{
 use backend_semantic::vocabulary::{
     CompileRecipeFact, LanguageProfile, NativeTool, PackageUrl, RustEdition, Stage,
 };
-use backend_version::{
-    AuthorityScopeClaim, Coverage, CoverageWitness, ProducerObservationClaims,
-    ProducerObservationVerifier, RelationState, ScopeRoot, UntrustedProducerObservation,
-    WorkspaceManifest, WorkspaceRoot, admit_complete_scope, admit_producer_observation,
-};
-use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use futures_util::StreamExt as _;
+use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use std::collections::BTreeMap;
 
 struct FixtureCoverageVerifier {

@@ -19,8 +19,8 @@ use facet::icons::{Icon, IconSize, ui};
 use facet::tokens::ty;
 use facet::{ActiveFacet as _, Measure, Palette, Space};
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, InteractiveElement, IntoElement,
-    KeyDownEvent, ParentElement, Render, SharedString, Styled, Subscription, Task, Window, div, px,
+    AnyElement, App, AppContext as _, Context, Entity, InteractiveElement, IntoElement, KeyDownEvent, ParentElement,
+    Render, SharedString, Styled, Subscription, Task, Window, div, px,
 };
 use gpui_component::input::{InputEvent, InputState};
 
@@ -64,20 +64,15 @@ pub(crate) struct Form {
 
 impl Form {
     pub(crate) fn new(links: Links, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Path to a project folder"));
-        let events = cx.subscribe_in(
-            &input,
-            window,
-            |add: &mut Self, input, event: &InputEvent, window, cx| match event {
-                InputEvent::Change => {
-                    let typed = input.read(cx).value().to_string();
-                    add.edited(typed, cx);
-                }
-                InputEvent::PressEnter { .. } => add.submit(window, cx),
-                InputEvent::Focus | InputEvent::Blur => {}
-            },
-        );
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Path to a project folder"));
+        let events = cx.subscribe_in(&input, window, |add: &mut Self, input, event: &InputEvent, window, cx| match event {
+            InputEvent::Change => {
+                let typed = input.read(cx).value().to_string();
+                add.edited(typed, cx);
+            }
+            InputEvent::PressEnter { .. } => add.submit(window, cx),
+            InputEvent::Focus | InputEvent::Blur => {}
+        });
         Self {
             links,
             input,
@@ -143,13 +138,8 @@ impl Form {
                 .background_executor()
                 .spawn(async move {
                     let home = path::home();
-                    let admitted = (!asked.trim().is_empty())
-                        .then(|| path::admit(&asked, home.as_deref(), &shelf));
-                    Probe {
-                        completion: path::complete(&asked, home.as_deref()),
-                        admitted,
-                        text: asked,
-                    }
+                    let admitted = (!asked.trim().is_empty()).then(|| path::admit(&asked, home.as_deref(), &shelf));
+                    Probe { completion: path::complete(&asked, home.as_deref()), admitted, text: asked }
                 })
                 .await;
             let _ = add.update(cx, |add, cx| {
@@ -164,13 +154,7 @@ impl Form {
     }
 
     fn shelf(&self, cx: &App) -> Vec<LocalProjectId> {
-        self.links
-            .snapshot(cx)
-            .workspace()
-            .projects
-            .iter()
-            .map(|project| project.id.clone())
-            .collect()
+        self.links.snapshot(cx).workspace().projects.iter().map(|project| project.id.clone()).collect()
     }
 
     /// ↑ ↓: walks the suggestions.
@@ -197,12 +181,8 @@ impl Form {
             None if self.probe.completion.shown.len() == 1 => self.probe.completion.take(&typed, 0),
             None => self.probe.completion.common(&typed),
         };
-        let Some(continued) = continued else {
-            return false;
-        };
-        self.input.update(cx, |input, cx| {
-            input.set_value(continued.clone(), window, cx)
-        });
+        let Some(continued) = continued else { return false };
+        self.input.update(cx, |input, cx| input.set_value(continued.clone(), window, cx));
         self.edited(continued, cx);
         true
     }
@@ -218,17 +198,14 @@ impl Form {
             Ok(folder) if folder.on_shelf => {
                 self.landed = true;
                 self.links.dispatch(Intent::ActivateProject(folder.id), cx);
-                self.links
-                    .dispatch(Intent::Navigate(Route::Orbit(OrbitRoute::Home)), cx);
+                self.links.dispatch(Intent::Navigate(Route::Orbit(OrbitRoute::Home)), cx);
             }
             Ok(folder) => {
                 self.landed = true;
-                self.links
-                    .dispatch(Intent::AddProject { project: folder.id }, cx);
+                self.links.dispatch(Intent::AddProject { project: folder.id }, cx);
                 // The Library is where a new project shows what it is doing;
                 // arriving there also closes the dialog.
-                self.links
-                    .dispatch(Intent::Navigate(Route::Orbit(OrbitRoute::Home)), cx);
+                self.links.dispatch(Intent::Navigate(Route::Orbit(OrbitRoute::Home)), cx);
             }
             Err(refusal) => {
                 self.said = Some(refusal);
@@ -241,23 +218,10 @@ impl Form {
     fn verdict(&self, measure: &Measure, palette: &Palette) -> Option<AnyElement> {
         let folder = self.probe.admitted.as_ref()?.as_ref().ok()?;
         let (words, ink) = match (folder.on_shelf, folder.project) {
-            (true, _) => (
-                format!("{} is on your shelf already. ↵ goes to it.", folder.name),
-                palette.ink1,
-            ),
-            (false, Some((ecosystem, marker))) => (
-                format!(
-                    "{} · a {} project ({marker})",
-                    folder.name,
-                    ecosystem.name()
-                ),
-                palette.ink0,
-            ),
+            (true, _) => (format!("{} is on your shelf already. ↵ goes to it.", folder.name), palette.ink1),
+            (false, Some((ecosystem, marker))) => (format!("{} · a {} project ({marker})", folder.name, ecosystem.name()), palette.ink0),
             (false, None) => (
-                format!(
-                    "{} · no project file here; Nudox reads the source it recognises",
-                    folder.name
-                ),
+                format!("{} · no project file here; Nudox reads the source it recognises", folder.name),
                 palette.ink1,
             ),
         };
@@ -268,14 +232,7 @@ impl Form {
                 .gap(measure.space(Space::Roomy))
                 .h(measure.row())
                 .child(ui(Icon::Folder, IconSize::S14, palette.mint.base).size(measure.icon(14.0)))
-                .child(
-                    text(ty::ROW, measure, ink)
-                        .min_w(px(0.0))
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis()
-                        .child(words),
-                )
+                .child(text(ty::ROW, measure, ink).min_w(px(0.0)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(words))
                 .into_any_element(),
         )
     }
@@ -294,23 +251,15 @@ impl Form {
                 .px(measure.space(Space::Base))
                 .child(ui(Icon::Folder, IconSize::S14, palette.ink3).size(measure.icon(14.0)))
                 .child(
-                    text(
-                        ty::MONO_ROW,
-                        measure,
-                        if on { palette.ink0 } else { palette.ink1 },
-                    )
-                    .min_w(px(0.0))
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .child(suggestion.name.clone()),
+                    text(ty::MONO_ROW, measure, if on { palette.ink0 } else { palette.ink1 })
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(suggestion.name.clone()),
                 );
             if let Some(ecosystem) = suggestion.ecosystem {
-                row = row.child(
-                    text(ty::SMALL, measure, palette.ink3)
-                        .flex_none()
-                        .child(ecosystem.name()),
-                );
+                row = row.child(text(ty::SMALL, measure, palette.ink3).flex_none().child(ecosystem.name()));
             }
             if on {
                 row = row.bg(palette.plate2);
@@ -324,10 +273,7 @@ impl Form {
                     .px(measure.space(Space::Base))
                     .flex()
                     .items_center()
-                    .child(text(ty::SMALL, measure, palette.ink3).child(format!(
-                        "and {} more: keep typing",
-                        self.probe.completion.more
-                    )))
+                    .child(text(ty::SMALL, measure, palette.ink3).child(format!("and {} more: keep typing", self.probe.completion.more)))
                     .into_any_element(),
             );
         }
@@ -350,11 +296,7 @@ impl Form {
             .items_center()
             .gap_x(measure.space(Space::Wide))
             .gap_y(measure.space(Space::Snug))
-            .child(
-                text(ty::SMALL, measure, palette.ink2)
-                    .w_full()
-                    .child("Type or paste the path of a folder."),
-            )
+            .child(text(ty::SMALL, measure, palette.ink2).w_full().child("Type or paste the path of a folder."))
             .child(entry("↵", "add it"))
             .child(entry("Tab", "complete"))
             .child(entry("↑↓", "choose"))
@@ -369,11 +311,7 @@ impl Render for Form {
         let palette = facet.palette();
         let measure = self.measure.unwrap_or_else(|| facet.measure(px(440.0)));
         let typed_nothing = self.typed(cx).trim().is_empty();
-        let mut below = div()
-            .flex()
-            .flex_col()
-            .gap(measure.space(Space::Tight))
-            .min_h(measure.row() * RESERVED_ROWS);
+        let mut below = div().flex().flex_col().gap(measure.space(Space::Tight)).min_h(measure.row() * RESERVED_ROWS);
         let verdict = self.verdict(&measure, palette);
         let suggestions = self.suggestions(&measure, palette);
         if typed_nothing {
@@ -394,9 +332,7 @@ impl Render for Form {
             .flex_col()
             .gap(measure.space(Space::Roomy))
             .capture_key_down(cx.listener(|add, event: &KeyDownEvent, window, cx| {
-                let plain = !event.keystroke.modifiers.platform
-                    && !event.keystroke.modifiers.control
-                    && !event.keystroke.modifiers.alt;
+                let plain = !event.keystroke.modifiers.platform && !event.keystroke.modifiers.control && !event.keystroke.modifiers.alt;
                 match event.keystroke.key.as_str() {
                     "down" if plain => add.walk(1, cx),
                     "up" if plain => add.walk(-1, cx),
@@ -428,16 +364,12 @@ impl Render for Form {
                         div()
                             .flex()
                             .gap(measure.space(Space::Base))
-                            .child(button("add-folder-cancel", "Cancel", &measure).on_click(
-                                move |_, cx| cancelled.dispatch(Intent::DismissOverlay, cx),
-                            ))
+                            .child(button("add-folder-cancel", "Cancel", &measure).on_click(move |_, cx| cancelled.dispatch(Intent::DismissOverlay, cx)))
                             .child(
                                 button("add-folder-add", "Add", &measure)
                                     .primary()
                                     .disabled(typed_nothing)
-                                    .on_click(move |window, cx| {
-                                        chosen.update(cx, |add, cx| add.submit(window, cx))
-                                    }),
+                                    .on_click(move |window, cx| chosen.update(cx, |add, cx| add.submit(window, cx))),
                             ),
                     ),
             )

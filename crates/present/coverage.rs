@@ -15,7 +15,9 @@
 //! failed, simply not observed. That distinction is the whole point — an empty
 //! complete result and an unavailable lane must never look the same.
 
-use backend_library::{Coverage, Lane, Reason, SemanticSearchReason, SemanticSearchStatus};
+use backend_library::{
+    Coverage, Lane, Reason, SemanticSearchReason, SemanticSearchStatus,
+};
 use core::fmt;
 use core::fmt::Write as _;
 
@@ -139,8 +141,8 @@ impl CoverageLine {
     #[must_use]
     pub fn new(coverage: &[Coverage], rows: Option<u64>) -> Self {
         let complete = coverage.iter().any(|entry| entry.is_complete());
-        let lanes =
-            [Lane::Exact, Lane::Names, Lane::Graph, Lane::Semantic].map(|lane| LaneCoverage {
+        let lanes = [Lane::Exact, Lane::Names, Lane::Graph, Lane::Semantic]
+            .map(|lane| LaneCoverage {
                 lane,
                 state: lane_state(coverage, lane, complete),
             });
@@ -187,28 +189,16 @@ impl CoverageLine {
             // Unconfigured is outside the declared scope and counts as
             // complete; it must never erase a partial or failed observation.
             let gravity = |state: LaneState| match state {
-                LaneState::Complete
-                | LaneState::Unavailable {
-                    reason: Reason::Unconfigured,
-                } => 0,
+                LaneState::Complete | LaneState::Unavailable { reason: Reason::Unconfigured } => 0,
                 LaneState::Unobserved => 1,
                 LaneState::Partial { .. } => 2,
                 LaneState::Unavailable { .. } => 3,
             };
-            let state = if gravity(earlier.state) >= gravity(later.state) {
-                earlier.state
-            } else {
-                later.state
-            };
-            LaneCoverage {
-                lane: earlier.lane,
-                state,
-            }
+            let state = if gravity(earlier.state) >= gravity(later.state) { earlier.state } else { later.state };
+            LaneCoverage { lane: earlier.lane, state }
         });
         let rows = match (self.rows, next.rows) {
-            (Some(earlier), Some(later)) => {
-                earlier.get().checked_add(later.get()).map(RowCount::new)
-            }
+            (Some(earlier), Some(later)) => earlier.get().checked_add(later.get()).map(RowCount::new),
             _ => None,
         };
         let semantic_search = match (self.semantic_search, next.semantic_search) {
@@ -423,26 +413,13 @@ mod page_tests {
 
     #[test]
     fn later_complete_page_cannot_erase_earlier_partial_coverage() {
-        let partial = CoverageLine::new(
-            &[Coverage::Partial {
-                lane: Lane::Exact,
-                completed: 1,
-                total: 2,
-            }],
-            Some(2),
-        );
+        let partial = CoverageLine::new(&[Coverage::Partial { lane: Lane::Exact, completed: 1, total: 2 }], Some(2));
         let complete = CoverageLine::new(&[Coverage::Complete], Some(3));
         let merged = partial.across_pages(complete);
         assert!(!merged.is_complete());
-        assert!(matches!(
-            merged.lanes()[0].state(),
-            LaneState::Partial { .. }
-        ));
+        assert!(matches!(merged.lanes()[0].state(), LaneState::Partial { .. }));
         assert_eq!(merged.rows().map(RowCount::get), Some(5));
-        assert!(
-            !complete.across_pages(partial).is_complete(),
-            "page order cannot fabricate completeness"
-        );
+        assert!(!complete.across_pages(partial).is_complete(), "page order cannot fabricate completeness");
     }
 
     #[test]
@@ -457,17 +434,10 @@ mod page_tests {
     fn page_combination_never_erases_incomplete_or_failed_lane() {
         let states = [
             LaneState::Complete,
-            LaneState::Unavailable {
-                reason: Reason::Unconfigured,
-            },
+            LaneState::Unavailable { reason: Reason::Unconfigured },
             LaneState::Unobserved,
-            LaneState::Partial {
-                completed: LaneShards::new(1),
-                total: LaneShards::new(2),
-            },
-            LaneState::Unavailable {
-                reason: Reason::Offline,
-            },
+            LaneState::Partial { completed: LaneShards::new(1), total: LaneShards::new(2) },
+            LaneState::Unavailable { reason: Reason::Offline },
         ];
         let page = |state| {
             let mut complete = CoverageLine::new(&[Coverage::Complete], Some(1));
@@ -477,32 +447,13 @@ mod page_tests {
         for left in states {
             for right in states {
                 let merged = page(left).across_pages(page(right));
-                assert_eq!(
-                    merged.is_complete(),
-                    page(left).is_complete() && page(right).is_complete(),
-                    "{left:?} then {right:?}"
-                );
+                assert_eq!(merged.is_complete(), page(left).is_complete() && page(right).is_complete(),
+                    "{left:?} then {right:?}");
                 let reverse = page(right).across_pages(page(left));
-                assert_eq!(
-                    reverse.is_complete(),
-                    merged.is_complete(),
-                    "{right:?} then {left:?}"
-                );
-                if matches!(
-                    left,
-                    LaneState::Unavailable {
-                        reason: Reason::Offline
-                    }
-                ) || matches!(
-                    right,
-                    LaneState::Unavailable {
-                        reason: Reason::Offline
-                    }
-                ) {
-                    assert!(
-                        merged.has_failed_lane(),
-                        "failed lane erased by {left:?} / {right:?}"
-                    );
+                assert_eq!(reverse.is_complete(), merged.is_complete(), "{right:?} then {left:?}");
+                if matches!(left, LaneState::Unavailable { reason: Reason::Offline })
+                    || matches!(right, LaneState::Unavailable { reason: Reason::Offline }) {
+                    assert!(merged.has_failed_lane(), "failed lane erased by {left:?} / {right:?}");
                 }
             }
         }

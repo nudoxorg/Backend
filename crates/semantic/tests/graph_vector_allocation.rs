@@ -9,13 +9,13 @@ use core::{
 use std::hint::black_box;
 
 use allocation_counter::{AllocationInfo, measure};
+use backend_semantic::ir::EntityId;
 use backend_semantic::graph_vector::{
     Cancellation, GraphAuthority, GraphEdge, GraphLease, GraphRow, LeaseCapacity, Metric, ModelId,
     PartitionId, ProjectionId, TraceProbe, ValidatedGraphView, ValidatedVectorSegment,
     VectorAuthority, VectorPoint, exact_vector_query,
 };
 use backend_semantic::index_vocabulary::IndexSnapshotId;
-use backend_semantic::ir::EntityId;
 
 fn snapshot(byte: u8) -> IndexSnapshotId {
     IndexSnapshotId::from_canonical_bytes(&[byte; 32])

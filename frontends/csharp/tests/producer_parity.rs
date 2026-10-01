@@ -205,10 +205,7 @@ fn dotnet_regeneration_is_byte_exact_and_deterministic() -> Result<(), Box<dyn E
         .arg(&intermediate_arg)
         .current_dir(&helper_dir)
         .status()?;
-    assert!(
-        restored.success(),
-        "locked oracle restore failed: {restored}"
-    );
+    assert!(restored.success(), "locked oracle restore failed: {restored}");
     // `UseSharedCompilation=false`: see this file's doc comment above — the
     // isolated `obj/`/`bin/` directories rule out a file-system race, but
     // MSBuild's ambient VBCSCompiler node is shared across every concurrent

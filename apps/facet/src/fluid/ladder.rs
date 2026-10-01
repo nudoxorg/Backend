@@ -152,10 +152,7 @@ impl<M: Copy + PartialEq + 'static> Ladder<M> {
     #[must_use]
     pub(crate) const fn new(id: ModeId, rungs: &'static [Rung<M>]) -> Self {
         assert!(!rungs.is_empty(), "a ladder needs a mode");
-        assert!(
-            rungs[0].from.get() == 0.0,
-            "a ladder's first mode holds from 0"
-        );
+        assert!(rungs[0].from.get() == 0.0, "a ladder's first mode holds from 0");
         let mut i = 1;
         while i < rungs.len() {
             assert!(
@@ -223,13 +220,9 @@ impl<M: Copy + PartialEq + 'static> Ladder<M> {
     }
 
     pub(crate) fn settle_index(&self, held: Option<usize>, room: Room) -> usize {
-        settle_index(
-            held,
-            self.rungs.len(),
-            room.design().get(),
-            self.band.get(),
-            |index| self.rungs[index].from.get(),
-        )
+        settle_index(held, self.rungs.len(), room.design().get(), self.band.get(), |index| {
+            self.rungs[index].from.get()
+        })
     }
 }
 

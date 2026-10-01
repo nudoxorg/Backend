@@ -56,8 +56,9 @@ pub use protocol::{
 };
 pub use service::{
     CommandOutcome, CompletionAdmission, DeferredCommands, Handled, LocaldOwner, LocaldService,
-    NoCompletionAdmission, NoReplicationAdmission, NoSemanticRangeAdmission, OwnerService,
-    ReplicationAdmission, SemanticRangeAdmission, ServiceError,
+    NoCompletionAdmission, NoReplicationAdmission,
+    NoSemanticRangeAdmission, OwnerService, ReplicationAdmission, SemanticRangeAdmission,
+    ServiceError,
 };
 
 /// Versioned request body sent through the local transport boundary.

@@ -3,8 +3,8 @@
 
 use super::{Ctx, Leaf};
 use crate::shell::kit::{quiet, text};
-use facet::Space;
 use facet::tokens::ty;
+use facet::Space;
 use gpui::{ParentElement, Styled, div};
 
 pub(super) fn body(ctx: &mut Ctx<'_>) -> Vec<Leaf> {

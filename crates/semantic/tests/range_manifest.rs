@@ -7,9 +7,7 @@ use backend_semantic::ir::{
     FragmentRangeVerifyError, FragmentView, PreparedFragment, PrimitiveType, SectionKind,
     SourceIdentity, TypeNode,
 };
-use backend_semantic::vocabulary::{
-    CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage,
-};
+use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 

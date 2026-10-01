@@ -33,26 +33,25 @@
 
 use super::bodies::{self, Ctx, Lens, Pages};
 use super::focus::Targets;
-use super::jump::{route_package, route_symbol};
 use super::kit::HoverIntent;
 use super::region::{Links, Region, RegionCore};
+use super::jump::{route_package, route_symbol};
 use crate::model::AppSnapshot;
 use crate::model::pages::PageKey;
 use crate::navigation::{Overlay, Route, View};
 use crate::runtime::store::{Branch, DataStore, StoreEvent};
 use facet::anatomy::symbol::key::FoldKey;
 use facet::motion::{Carry, Edge, Presence, band, masked, offset, print};
-use facet::tokens::fluid::{NOTES, Notes, READER_PAD, READER_TOP, WIDE_FOLIO};
 use facet::tokens::ty;
+use facet::tokens::fluid::{NOTES, Notes, READER_PAD, READER_TOP, WIDE_FOLIO};
 use facet::{ActiveFacet as _, Measure, Space};
 use gpui::{
-    AppContext as _, Bounds, Context, ElementId, Entity, InteractiveElement, IntoElement,
-    ParentElement, Pixels, Point, Render, ScrollHandle, SharedString, StatefulInteractiveElement,
-    Styled, Window, div, point, px, size,
+    AppContext as _, Bounds, Context, ElementId, Entity, InteractiveElement, IntoElement, ParentElement, Pixels, Point,
+    Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Window, div, point, px, size,
 };
 use std::cell::Cell;
-use std::collections::BTreeSet;
 use std::rc::Rc;
+use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 /// Kept per declaration across lens changes; bounded to protect long sessions.
@@ -90,32 +89,18 @@ impl SymbolDisclosure {
         // `lands_lines`: a part that changes line (the rail going under the
         // page) lands there, never flying across the page's words; nothing
         // waits, so words the owner sends are shown the frame they land.
-        Self {
-            scope: symbol.as_str().to_owned(),
-            flow: facet::motion::Flow::new(format!("symbol-page-{}", symbol.as_str()))
-                .lands_lines(),
-            ..Self::default()
-        }
+        Self { scope: symbol.as_str().to_owned(), flow: facet::motion::Flow::new(format!("symbol-page-{}", symbol.as_str())).lands_lines(), ..Self::default() }
     }
-    pub(crate) fn is_open(&self, fold: &FoldKey) -> bool {
-        self.open.contains(fold)
-    }
+    pub(crate) fn is_open(&self, fold: &FoldKey) -> bool { self.open.contains(fold) }
     pub(crate) fn unroll(&self, fold: FoldKey) -> Presence {
         let mut unrolls = self.unrolls.borrow_mut();
         if unrolls.len() >= 128 && !unrolls.contains_key(&fold) {
-            if let Some(key) = unrolls.keys().next().cloned() {
-                unrolls.remove(&key);
-            }
+            if let Some(key) = unrolls.keys().next().cloned() { unrolls.remove(&key); }
         }
-        unrolls
-            .entry(fold.clone())
-            .or_insert_with(|| Presence::new(format!("symbol-unroll-{}-{fold:?}", self.scope)))
-            .clone()
+        unrolls.entry(fold.clone()).or_insert_with(|| Presence::new(format!("symbol-unroll-{}-{fold:?}", self.scope))).clone()
     }
     fn toggle(&mut self, fold: FoldKey) {
-        if !self.open.remove(&fold) && self.open.len() < 128 {
-            self.open.insert(fold);
-        }
+        if !self.open.remove(&fold) && self.open.len() < 128 { self.open.insert(fold); }
     }
 }
 
@@ -236,11 +221,7 @@ impl Transit {
             (_, Some((at, from))) => Some(from - height / FOLD * since(at)),
             (Verb::Open | Verb::Unfold, None) => {
                 let started = self.start + self.print_after;
-                let ms = if now >= started {
-                    since(started)
-                } else {
-                    -(started.saturating_duration_since(now).as_secs_f32() * 1000.0)
-                };
+                let ms = if now >= started { since(started) } else { -(started.saturating_duration_since(now).as_secs_f32() * 1000.0) };
                 Some(PRINT_SPEED * ms)
             }
             (Verb::Close | Verb::Fold, None) => None,
@@ -253,10 +234,7 @@ impl Transit {
         let p = self.carry.value(now);
         match self.verb {
             Verb::Open | Verb::Unfold => {
-                p >= 0.94
-                    && self
-                        .edge_local(now, f32::from(reader.size.height))
-                        .is_none_or(|edge| edge >= f32::from(reader.size.height))
+                p >= 0.94 && self.edge_local(now, f32::from(reader.size.height)).is_none_or(|edge| edge >= f32::from(reader.size.height))
             }
             Verb::Close | Verb::Fold => p <= LANDED && now >= self.start + CLOSE_AFTER,
         }
@@ -304,21 +282,13 @@ impl Course {
         let (low, high) = ((p - STEP).max(0.0), (p + STEP).min(1.0));
         let span = (high - low).max(1e-6);
         let (a, b) = (edges(at(low)), edges(at(high)));
-        Self {
-            to: at(target),
-            per_p: [0, 1, 2, 3].map(|index| (b[index] - a[index]) / span),
-        }
+        Self { to: at(target), per_p: [0, 1, 2, 3].map(|index| (b[index] - a[index]) / span) }
     }
 }
 
 /// A rectangle's edges: left, top, right, bottom.
 fn edges(rect: Bounds<Pixels>) -> [f32; 4] {
-    [
-        f32::from(rect.left()),
-        f32::from(rect.top()),
-        f32::from(rect.right()),
-        f32::from(rect.bottom()),
-    ]
+    [f32::from(rect.left()), f32::from(rect.top()), f32::from(rect.right()), f32::from(rect.bottom())]
 }
 
 /// The row a Close came back to, tinted periwinkle for a moment.
@@ -359,10 +329,7 @@ fn lerp(a: Pixels, b: Pixels, t: f32) -> Pixels {
 fn lerp_rect(a: Bounds<Pixels>, b: Bounds<Pixels>, t: f32) -> Bounds<Pixels> {
     Bounds::from_corners(
         point(lerp(a.left(), b.left(), t), lerp(a.top(), b.top(), t)),
-        point(
-            lerp(a.right(), b.right(), t),
-            lerp(a.bottom(), b.bottom(), t),
-        ),
+        point(lerp(a.right(), b.right(), t), lerp(a.bottom(), b.bottom(), t)),
     )
 }
 
@@ -371,12 +338,7 @@ fn lerp_rect(a: Bounds<Pixels>, b: Bounds<Pixels>, t: f32) -> Bounds<Pixels> {
 /// one; without a row, its left edge crosses the reader from the right.
 /// Monotone in `p`, so a plate that opens never shrinks and one that
 /// closes never grows.
-fn plate_at(
-    reader: Bounds<Pixels>,
-    column: (Pixels, Pixels),
-    row: Option<Bounds<Pixels>>,
-    p: f32,
-) -> Bounds<Pixels> {
+fn plate_at(reader: Bounds<Pixels>, column: (Pixels, Pixels), row: Option<Bounds<Pixels>>, p: f32) -> Bounds<Pixels> {
     let side = band(p, LANDED, 0.9);
     let floor = band(p, LANDED, 0.94);
     let (left, top, right, bottom) = match row {
@@ -386,12 +348,7 @@ fn plate_at(
             lerp(column.1.max(row.right()), reader.right(), side),
             lerp(row.bottom(), reader.bottom(), floor),
         ),
-        None => (
-            lerp(reader.right(), reader.left(), floor),
-            reader.top(),
-            reader.right(),
-            reader.bottom(),
-        ),
+        None => (lerp(reader.right(), reader.left(), floor), reader.top(), reader.right(), reader.bottom()),
     };
     Bounds::from_corners(point(left, top), point(right.max(left), bottom.max(top)))
 }
@@ -401,23 +358,11 @@ fn uncovered(reader: Bounds<Pixels>, plate: Bounds<Pixels>, has_row: bool) -> [B
     let none = Bounds::new(reader.origin, size(Pixels::ZERO, Pixels::ZERO));
     if has_row {
         [
-            Bounds::from_corners(
-                reader.origin,
-                point(reader.right(), plate.top().max(reader.top())),
-            ),
-            Bounds::from_corners(
-                point(reader.left(), plate.bottom().min(reader.bottom())),
-                reader.bottom_right(),
-            ),
+            Bounds::from_corners(reader.origin, point(reader.right(), plate.top().max(reader.top()))),
+            Bounds::from_corners(point(reader.left(), plate.bottom().min(reader.bottom())), reader.bottom_right()),
         ]
     } else {
-        [
-            Bounds::from_corners(
-                reader.origin,
-                point(plate.left().max(reader.left()), reader.bottom()),
-            ),
-            none,
-        ]
+        [Bounds::from_corners(reader.origin, point(plate.left().max(reader.left()), reader.bottom())), none]
     }
 }
 
@@ -480,12 +425,7 @@ impl Reader {
         Self {
             core: RegionCore::new(
                 store,
-                &[
-                    Branch::Route,
-                    Branch::Overlay,
-                    Branch::Workspace,
-                    Branch::Settings,
-                ],
+                &[Branch::Route, Branch::Overlay, Branch::Workspace, Branch::Settings],
             ),
             links,
             map: None,
@@ -508,9 +448,7 @@ impl Reader {
             places: vec![Place {
                 key: 0,
                 route: snapshot.route().clone(),
-                overlay: snapshot
-                    .overlay()
-                    .filter(|overlay| matches!(overlay, Overlay::Settings(_) | Overlay::Inbox)),
+                overlay: snapshot.overlay().filter(|overlay| matches!(overlay, Overlay::Settings(_) | Overlay::Inbox)),
                 way: Way::Across,
                 lens: Lens::Reference,
                 from: None,
@@ -536,92 +474,53 @@ impl Reader {
     }
 
     pub(crate) fn graph_report(&self, cx: &gpui::App) -> String {
-        self.map
-            .as_ref()
-            .map_or_else(|| "not mounted".into(), |map| map.read(cx).report(cx))
+        self.map.as_ref().map_or_else(|| "not mounted".into(), |map| map.read(cx).report(cx))
     }
 
     #[cfg(feature = "visual-harness")]
     pub(crate) fn graph_state(&self, cx: &gpui::App) -> facet::gallery::json::Json {
-        self.map
-            .as_ref()
-            .map_or(facet::gallery::json::Json::Null, |map| {
-                map.read(cx).inspection(cx)
-            })
+        self.map.as_ref().map_or(facet::gallery::json::Json::Null, |map| map.read(cx).inspection(cx))
     }
 
     pub(crate) fn reset_world(&mut self, cx: &mut Context<Self>) {
-        if let Some(map) = &self.map {
-            map.update(cx, bodies::graph::Map::reset_world);
-        }
+        if let Some(map) = &self.map { map.update(cx, bodies::graph::Map::reset_world); }
     }
 
     pub(crate) fn graph_focus_glyph(&self, cx: &gpui::App) -> Option<gpui::Bounds<Pixels>> {
-        self.map
-            .as_ref()
-            .and_then(|map| map.read(cx).focus_glyph(cx))
+        self.map.as_ref().and_then(|map| map.read(cx).focus_glyph(cx))
     }
 
     pub(crate) fn graph_focused(&self, cx: &gpui::App) -> bool {
-        self.map
-            .as_ref()
-            .is_some_and(|map| map.read(cx).focused(cx))
+        self.map.as_ref().is_some_and(|map| map.read(cx).focused(cx))
     }
 
-    pub(crate) fn open_graph_current(
-        &mut self,
-        target: bodies::graph::OpenView,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(map) = &self.map {
-            map.update(cx, |map, cx| map.open_current(target, window, cx));
-        }
+    pub(crate) fn open_graph_current(&mut self, target: bodies::graph::OpenView, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(map) = &self.map { map.update(cx, |map, cx| map.open_current(target, window, cx)); }
     }
 
     #[cfg(test)]
     pub(crate) fn graph_entity(&self, cx: &gpui::App) -> Option<Entity<facet::graph::GraphView>> {
-        self.map
-            .as_ref()
-            .and_then(|map| map.read(cx).graph_entity())
+        self.map.as_ref().and_then(|map| map.read(cx).graph_entity())
     }
 
     #[cfg(test)]
-    pub(crate) fn graph_canvas_geometry(
-        &self,
-        node: facet::graph::NodeId,
-        cx: &gpui::App,
-    ) -> (
-        Option<gpui::Bounds<Pixels>>,
-        Option<gpui::Bounds<Pixels>>,
-        gpui::LayerTransform,
-    ) {
-        self.map
-            .as_ref()
-            .map_or((None, None, gpui::LayerTransform::IDENTITY), |map| {
-                map.read(cx).canvas_geometry(node, cx)
-            })
+    pub(crate) fn graph_canvas_geometry(&self, node: facet::graph::NodeId, cx: &gpui::App) -> (Option<gpui::Bounds<Pixels>>, Option<gpui::Bounds<Pixels>>, gpui::LayerTransform) {
+        self.map.as_ref().map_or((None, None, gpui::LayerTransform::IDENTITY), |map| map.read(cx).canvas_geometry(node, cx))
     }
 
     #[cfg(test)]
     pub(crate) fn graph_gem_morphing(&self, cx: &gpui::App) -> bool {
-        self.map
-            .as_ref()
-            .is_some_and(|map| map.read(cx).gem_morphing())
+        self.map.as_ref().is_some_and(|map| map.read(cx).gem_morphing())
     }
 
     #[cfg(test)]
     pub(crate) fn graph_find_state(&self, window: &Window, cx: &gpui::App) -> (bool, bool) {
-        self.map
-            .as_ref()
-            .map_or((false, false), |map| map.read(cx).find_state(window, cx))
+        self.map.as_ref().map_or((false, false), |map| map.read(cx).find_state(window, cx))
     }
 
     #[cfg(test)]
     pub(crate) fn focus_graph_node(&mut self, node: facet::graph::NodeId, cx: &mut Context<Self>) {
-        if let Some(map) = &self.map {
-            map.update(cx, |map, cx| map.focus_node(node, cx));
-        }
+        if let Some(map) = &self.map { map.update(cx, |map, cx| map.focus_node(node, cx)); }
     }
 
     pub(crate) const fn renders(&self) -> u64 {
@@ -656,68 +555,31 @@ impl Reader {
     }
 
     /// The disclosure of `symbol`, made when there is none.
-    pub(crate) fn symbol_disclosure(
-        &mut self,
-        symbol: &crate::model::pages::SymbolRef,
-    ) -> SymbolDisclosure {
-        if let Some((_, state)) = self
-            .symbol_disclosures
-            .iter()
-            .find(|(key, _)| key == symbol)
-        {
-            return state.clone();
-        }
+    pub(crate) fn symbol_disclosure(&mut self, symbol: &crate::model::pages::SymbolRef) -> SymbolDisclosure {
+        if let Some((_, state)) = self.symbol_disclosures.iter().find(|(key, _)| key == symbol) { return state.clone(); }
         let state = SymbolDisclosure::for_symbol(symbol);
-        self.symbol_disclosures
-            .push((symbol.clone(), state.clone()));
-        if self.symbol_disclosures.len() > 24 {
-            self.symbol_disclosures.remove(0);
-        }
+        self.symbol_disclosures.push((symbol.clone(), state.clone()));
+        if self.symbol_disclosures.len() > 24 { self.symbol_disclosures.remove(0); }
         state
     }
 
     /// Changes `symbol`'s disclosure (kept most recent last, at most 24) and repaints.
-    fn with_disclosure(
-        &mut self,
-        symbol: crate::model::pages::SymbolRef,
-        change: impl FnOnce(&mut SymbolDisclosure),
-        cx: &mut Context<Self>,
-    ) {
-        let mut state = self
-            .symbol_disclosures
-            .iter()
-            .position(|(key, _)| key == &symbol)
-            .map(|at| self.symbol_disclosures.remove(at).1)
-            .unwrap_or_else(|| SymbolDisclosure::for_symbol(&symbol));
+    fn with_disclosure(&mut self, symbol: crate::model::pages::SymbolRef, change: impl FnOnce(&mut SymbolDisclosure), cx: &mut Context<Self>) {
+        let mut state = self.symbol_disclosures.iter().position(|(key, _)| key == &symbol)
+            .map(|at| self.symbol_disclosures.remove(at).1).unwrap_or_else(|| SymbolDisclosure::for_symbol(&symbol));
         change(&mut state);
         self.symbol_disclosures.push((symbol, state));
-        if self.symbol_disclosures.len() > 24 {
-            self.symbol_disclosures.remove(0);
-        }
+        if self.symbol_disclosures.len() > 24 { self.symbol_disclosures.remove(0); }
         cx.notify();
     }
 
-    pub(crate) fn toggle_symbol(
-        &mut self,
-        symbol: crate::model::pages::SymbolRef,
-        fold: FoldKey,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn toggle_symbol(&mut self, symbol: crate::model::pages::SymbolRef, fold: FoldKey, cx: &mut Context<Self>) {
         self.with_disclosure(symbol, |state| state.toggle(fold), cx);
     }
 
     /// Applies a change to the simple page's state (its filters).
-    pub(crate) fn change_symbol(
-        &mut self,
-        symbol: crate::model::pages::SymbolRef,
-        change: &facet::anatomy::symbol::Change,
-        cx: &mut Context<Self>,
-    ) {
-        self.with_disclosure(
-            symbol,
-            |state| state.ui = state.ui.clone().apply(change),
-            cx,
-        );
+    pub(crate) fn change_symbol(&mut self, symbol: crate::model::pages::SymbolRef, change: &facet::anatomy::symbol::Change, cx: &mut Context<Self>) {
+        self.with_disclosure(symbol, |state| state.ui = state.ui.clone().apply(change), cx);
     }
 
     pub(crate) fn toggle_package_outline(&mut self, cx: &mut Context<Self>) {
@@ -727,19 +589,11 @@ impl Reader {
         }
     }
 
-    pub(crate) fn set_find_held(
-        &mut self,
-        held: Vec<facet::browse::find::HeldPackage>,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn set_find_held(&mut self, held: Vec<facet::browse::find::HeldPackage>, cx: &mut Context<Self>) {
         let mut unique: Vec<facet::browse::find::HeldPackage> = Vec::with_capacity(4);
         for package in held {
-            if !unique.iter().any(|item| item.key == package.key) {
-                unique.push(package);
-            }
-            if unique.len() == 4 {
-                break;
-            }
+            if !unique.iter().any(|item| item.key == package.key) { unique.push(package); }
+            if unique.len() == 4 { break; }
         }
         if self.find_held != unique {
             self.find_held = unique;
@@ -753,10 +607,7 @@ impl Reader {
         if let Some(bounds) = self.targets.bounds_of(id) {
             let offset = self.scroll.offset();
             let top = self.scroll.bounds().origin.y + px(24.0);
-            self.scroll.set_offset(point(
-                offset.x,
-                (offset.y + top - bounds.origin.y).min(px(0.0)),
-            ));
+            self.scroll.set_offset(point(offset.x, (offset.y + top - bounds.origin.y).min(px(0.0))));
             cx.notify();
         }
     }
@@ -789,11 +640,7 @@ impl Reader {
         }
         let view_switch = overlay == self.overlay && self.route.same_place(next);
         let way = if view_switch {
-            if bodies::graph::is_graph(&self.route) && !bodies::graph::is_graph(next) {
-                Way::GraphPage
-            } else {
-                Way::View
-            }
+            if bodies::graph::is_graph(&self.route) && !bodies::graph::is_graph(next) { Way::GraphPage } else { Way::View }
         } else {
             match (self.route.depth(), next.depth()) {
                 (Some(from), Some(to)) if to > from => Way::Down,
@@ -801,23 +648,13 @@ impl Reader {
                 _ => Way::Across,
             }
         };
-        let way = if overlay != self.overlay && self.route == *next {
-            Way::Across
-        } else {
-            way
-        };
+        let way = if overlay != self.overlay && self.route == *next { Way::Across } else { way };
         if !collapsed && let Some(current) = self.places.last_mut() {
             current.lens = self.lens;
         }
         let arrival = self.plan(next, overlay, way);
-        let hop_forward = arrival
-            .as_ref()
-            .is_some_and(|arrival| arrival.verb == Verb::Open);
-        self.graph_source = if self.overlay.is_none() {
-            immediate_page_source(&self.route, next)
-        } else {
-            None
-        };
+        let hop_forward = arrival.as_ref().is_some_and(|arrival| arrival.verb == Verb::Open);
+        self.graph_source = if self.overlay.is_none() { immediate_page_source(&self.route, next) } else { None };
         let from = (self.route.clone(), self.overlay);
         self.route = next.clone();
         self.overlay = overlay;
@@ -836,19 +673,11 @@ impl Reader {
         if !view_switch {
             self.lens = Lens::Reference;
             // Back puts the parent where it was, so its row is where you left it.
-            let back = arrival
-                .as_ref()
-                .filter(|arrival| arrival.verb == Verb::Close);
-            let scroll = back
-                .and_then(|_| self.places.iter().rev().nth(1))
-                .and_then(|leaving| leaving.opened.clone().flatten());
-            self.scroll
-                .set_offset(scroll.map_or(point(px(0.0), px(0.0)), |origin| origin.scroll));
+            let back = arrival.as_ref().filter(|arrival| arrival.verb == Verb::Close);
+            let scroll = back.and_then(|_| self.places.iter().rev().nth(1)).and_then(|leaving| leaving.opened.clone().flatten());
+            self.scroll.set_offset(scroll.map_or(point(px(0.0), px(0.0)), |origin| origin.scroll));
         }
-        self.arrival = arrival.map(|arrival| Arrival {
-            key: self.descents,
-            ..arrival
-        });
+        self.arrival = arrival.map(|arrival| Arrival { key: self.descents, ..arrival });
         self.targets.new_page();
     }
 
@@ -880,21 +709,13 @@ impl Reader {
         if matches!(way, Way::View | Way::GraphPage) {
             return None;
         }
-        let leaving = place_keys(&current.route, current.overlay)
-            .into_iter()
-            .next();
+        let leaving = place_keys(&current.route, current.overlay).into_iter().next();
         // Back to the page this one opened from: close into its row (or
         // into whichever row there links here).
         if let Some(opened) = &current.opened
-            && current
-                .from
-                .as_ref()
-                .is_some_and(|(route, from_overlay)| route == next && *from_overlay == overlay)
+            && current.from.as_ref().is_some_and(|(route, from_overlay)| route == next && *from_overlay == overlay)
         {
-            let rows: Vec<_> = opened
-                .iter()
-                .map(|origin| (origin.id.clone(), origin.rect))
-                .collect();
+            let rows: Vec<_> = opened.iter().map(|origin| (origin.id.clone(), origin.rect)).collect();
             let find = rows.is_empty().then(|| leaving.clone()).flatten();
             return Some(arrival(Verb::Close, rows, find));
         }
@@ -918,85 +739,46 @@ impl Reader {
     /// its painted openness and velocity).
     fn begin(&mut self, arrival: Arrival, reader: Bounds<Pixels>, window: &Window, cx: &gpui::App) {
         let now = facet::motion::now(cx);
-        let live = self
-            .transit
-            .take()
-            .filter(|transit| !transit.done(now, reader));
+        let live = self.transit.take().filter(|transit| !transit.done(now, reader));
         let route_of = |places: &[Place], key: u64| {
-            places
-                .iter()
-                .find(|place| place.key == key)
-                .map(|place| (place.route.clone(), place.overlay))
+            places.iter().find(|place| place.key == key).map(|place| (place.route.clone(), place.overlay))
         };
         let arriving = route_of(&self.places, arrival.key);
         if facet::motion::reduced(cx) {
             // A cut; the row you came back to still holds the mark.
             if let (Verb::Close, Some((id, _))) = (arrival.verb, arrival.rows.first()) {
-                self.tint = Some(Tint {
-                    id: id.clone(),
-                    start: now,
-                    reduced: true,
-                });
+                self.tint = Some(Tint { id: id.clone(), start: now, reduced: true });
             }
             return;
         }
         let shown = |rect: &Bounds<Pixels>| {
-            rect.size.height > Pixels::ZERO
-                && rect.top() >= reader.top() - px(1.0)
-                && rect.bottom() <= reader.bottom() + px(1.0)
+            rect.size.height > Pixels::ZERO && rect.top() >= reader.top() - px(1.0) && rect.bottom() <= reader.bottom() + px(1.0)
         };
         match arrival.verb {
             Verb::Open => {
                 // The row under the pointer, else the one the keyboard stood
                 // on, else the first on screen that links here.
                 let mouse = window.mouse_position();
-                let rows: Vec<&(SharedString, Bounds<Pixels>)> = arrival
-                    .rows
-                    .iter()
-                    .filter(|(_, rect)| shown(rect))
-                    .collect();
+                let rows: Vec<&(SharedString, Bounds<Pixels>)> = arrival.rows.iter().filter(|(_, rect)| shown(rect)).collect();
                 let row = rows
                     .iter()
                     .find(|(_, rect)| rect.contains(&mouse))
-                    .or_else(|| {
-                        rows.iter()
-                            .find(|(id, _)| arrival.focused.as_ref() == Some(id))
-                    })
+                    .or_else(|| rows.iter().find(|(id, _)| arrival.focused.as_ref() == Some(id)))
                     .or_else(|| rows.first())
-                    .map(|(id, rect)| Origin {
-                        id: id.clone(),
-                        rect: *rect,
-                        scroll: arrival.scroll,
-                    });
+                    .map(|(id, rect)| Origin { id: id.clone(), rect: *rect, scroll: arrival.scroll });
                 let reversed = live.as_ref().filter(|transit| {
-                    transit.verb == Verb::Close
-                        && route_of(&self.places, transit.inside) == arriving
+                    transit.verb == Verb::Close && route_of(&self.places, transit.inside) == arriving
                 });
                 // An Open still in flight from the same page goes on to the newer
                 // route: the plate keeps opening and the page on it is the new one.
-                let retargeted = live.as_ref().filter(|transit| {
-                    transit.verb == Verb::Open && transit.outside == arrival.leaving
-                });
+                let retargeted = live.as_ref().filter(|transit| transit.verb == Verb::Open && transit.outside == arrival.leaving);
                 let transit = match (reversed, retargeted) {
                     (Some(transit), _) => {
                         let mut carry = transit.carry;
                         carry.retarget(1.0, now);
-                        Transit {
-                            verb: Verb::Open,
-                            inside: arrival.key,
-                            find: None,
-                            row_id: None,
-                            carry,
-                            start: now,
-                            fold: None,
-                            print_after: PRINT_AFTER,
-                            ..transit.clone()
-                        }
+                        Transit { verb: Verb::Open, inside: arrival.key, find: None, row_id: None, carry, start: now, fold: None, print_after: PRINT_AFTER, ..transit.clone() }
                     }
-                    (None, Some(transit)) => Transit {
-                        inside: arrival.key,
-                        ..transit.clone()
-                    },
+                    (None, Some(transit)) => Transit { inside: arrival.key, ..transit.clone() },
                     (None, None) => Transit {
                         verb: Verb::Open,
                         inside: arrival.key,
@@ -1014,51 +796,27 @@ impl Reader {
                     },
                 };
                 let opened = match reversed {
-                    Some(_) => self
-                        .places
-                        .iter()
-                        .find(|place| {
-                            Some((place.route.clone(), place.overlay)) == arriving
-                                && place.opened.is_some()
-                        })
-                        .and_then(|place| place.opened.clone())
-                        .unwrap_or(None),
+                    Some(_) => self.places.iter().find(|place| Some((place.route.clone(), place.overlay)) == arriving && place.opened.is_some())
+                        .and_then(|place| place.opened.clone()).unwrap_or(None),
                     None => row,
                 };
-                if let Some(place) = self
-                    .places
-                    .iter_mut()
-                    .find(|place| place.key == arrival.key)
-                {
+                if let Some(place) = self.places.iter_mut().find(|place| place.key == arrival.key) {
                     place.opened = Some(opened);
                 }
                 self.transit = Some(transit);
             }
             Verb::Close => {
                 let reversed = live.as_ref().filter(|transit| {
-                    transit.verb == Verb::Open
-                        && route_of(&self.places, transit.outside) == arriving
+                    transit.verb == Verb::Open && route_of(&self.places, transit.outside) == arriving
                 });
                 let height = f32::from(reader.size.height);
                 let transit = match reversed {
                     Some(transit) => {
                         // Fold what has printed so far, from its edge.
-                        let edge = transit
-                            .edge_local(now, height)
-                            .unwrap_or(height)
-                            .clamp(0.0, height);
+                        let edge = transit.edge_local(now, height).unwrap_or(height).clamp(0.0, height);
                         let mut carry = transit.carry;
                         carry.retarget(0.0, now);
-                        Transit {
-                            verb: Verb::Close,
-                            outside: arrival.key,
-                            find: None,
-                            row_id: None,
-                            carry,
-                            start: now,
-                            fold: Some((now, edge)),
-                            ..transit.clone()
-                        }
+                        Transit { verb: Verb::Close, outside: arrival.key, find: None, row_id: None, carry, start: now, fold: Some((now, edge)), ..transit.clone() }
                     }
                     None => Transit {
                         verb: Verb::Close,
@@ -1077,11 +835,7 @@ impl Reader {
                     },
                 };
                 if let Some((id, _)) = arrival.rows.first() {
-                    self.tint = Some(Tint {
-                        id: id.clone(),
-                        start: now,
-                        reduced: false,
-                    });
+                    self.tint = Some(Tint { id: id.clone(), start: now, reduced: false });
                 }
                 self.transit = Some(transit);
             }
@@ -1091,17 +845,9 @@ impl Reader {
                 // (the world), out through the right edge. The hero gem
                 // travels into the node from where it was painted.
                 let height = f32::from(reader.size.height);
-                let symbol = self
-                    .places
-                    .iter()
-                    .find(|place| place.key == arrival.leaving)
-                    .and_then(|place| route_symbol(&place.route));
+                let symbol = self.places.iter().find(|place| place.key == arrival.leaving).and_then(|place| route_symbol(&place.route));
                 let gem = symbol.as_ref().and_then(|symbol| {
-                    let rect = facet::motion::shared::last_bounds(
-                        crate::shell::kit::shared_id(symbol),
-                        window,
-                        cx,
-                    )?;
+                    let rect = facet::motion::shared::last_bounds(crate::shell::kit::shared_id(symbol), window, cx)?;
                     Some((self.kind_of(symbol, cx)?, rect))
                 });
                 self.transit = Some(Transit {
@@ -1126,9 +872,7 @@ impl Reader {
                 // right edge as an Open does.
                 let node = self.graph_focus_glyph(cx).filter(|node| shown(node));
                 let symbol = arriving.as_ref().and_then(|(route, _)| route_symbol(route));
-                let gem = node
-                    .zip(symbol.as_ref())
-                    .and_then(|(node, symbol)| Some((self.kind_of(symbol, cx)?, node)));
+                let gem = node.zip(symbol.as_ref()).and_then(|(node, symbol)| Some((self.kind_of(symbol, cx)?, node)));
                 self.transit = Some(Transit {
                     verb: Verb::Unfold,
                     inside: arrival.key,
@@ -1140,11 +884,7 @@ impl Reader {
                     start: now,
                     scroll: Point::default(),
                     fold: None,
-                    print_after: if node.is_some() {
-                        UNFOLD_PRINT_AFTER
-                    } else {
-                        PRINT_AFTER
-                    },
+                    print_after: if node.is_some() { UNFOLD_PRINT_AFTER } else { PRINT_AFTER },
                     gem,
                     symbol: symbol.filter(|_| node.is_some()),
                 });
@@ -1153,11 +893,7 @@ impl Reader {
     }
 
     /// A declaration's kind, for the gem that carries it.
-    fn kind_of(
-        &self,
-        symbol: &crate::model::pages::SymbolRef,
-        cx: &gpui::App,
-    ) -> Option<facet::icons::Kind> {
+    fn kind_of(&self, symbol: &crate::model::pages::SymbolRef, cx: &gpui::App) -> Option<facet::icons::Kind> {
         let resource = self.links.store.read(cx).symbol(symbol);
         let page = resource.loaded_value()?;
         Some(crate::shell::kit::kind_of(page.identity.kind))
@@ -1168,16 +904,8 @@ impl Reader {
     /// plate leaves through the right edge and keeps to it.
     fn follow_node(&mut self, reader: Bounds<Pixels>, cx: &gpui::App) {
         let now = facet::motion::now(cx);
-        let node = self
-            .graph_focus_glyph(cx)
-            .filter(|node| node.size.height > Pixels::ZERO && reader.intersects(node));
-        let Some(transit) = self
-            .transit
-            .as_mut()
-            .filter(|transit| transit.verb == Verb::Fold)
-        else {
-            return;
-        };
+        let node = self.graph_focus_glyph(cx).filter(|node| node.size.height > Pixels::ZERO && reader.intersects(node));
+        let Some(transit) = self.transit.as_mut().filter(|transit| transit.verb == Verb::Fold) else { return };
         if transit.row.is_some() || now < transit.start + CLOSE_AFTER {
             if let Some(node) = node {
                 transit.row = Some(node);
@@ -1188,12 +916,8 @@ impl Reader {
     /// While an Unfold runs, the arriving page's own gem is held at its
     /// layout (the reader's gem travels there); released once it lands.
     fn hold_gem(&mut self, transit: Option<&Transit>, window: &Window, cx: &mut gpui::App) {
-        let held = transit
-            .filter(|transit| transit.verb == Verb::Unfold)
-            .and_then(|transit| transit.symbol.clone().zip(transit.row));
-        let key = held
-            .as_ref()
-            .map(|(symbol, _)| crate::shell::kit::shared_id(symbol));
+        let held = transit.filter(|transit| transit.verb == Verb::Unfold).and_then(|transit| transit.symbol.clone().zip(transit.row));
+        let key = held.as_ref().map(|(symbol, _)| crate::shell::kit::shared_id(symbol));
         if let Some(previous) = self.held.take()
             && Some(&previous) != key.as_ref()
         {
@@ -1224,13 +948,8 @@ impl Reader {
         // A declaration page (the simple symbol page) lays out its own
         // column and rail from the whole room; every other page reads at the
         // folio's measure.
-        let own_width = matches!(snapshot.route(), Route::Symbol(route) if route.view == View::Page)
-            && snapshot.overlay().is_none();
-        let folio = if own_width {
-            content
-        } else {
-            px(FOLIO * scale).min((content - beside).max(px(0.0)))
-        };
+        let own_width = matches!(snapshot.route(), Route::Symbol(route) if route.view == View::Page) && snapshot.overlay().is_none();
+        let folio = if own_width { content } else { px(FOLIO * scale).min((content - beside).max(px(0.0))) };
         Layout {
             pad,
             top: READER_TOP.at(room),
@@ -1262,51 +981,27 @@ impl Reader {
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         let body = self.body(place, false, snapshot, layout, facet, edge, cx);
-        div()
-            .absolute()
-            .top_0()
-            .left_0()
-            .right_0()
-            .bottom_0()
-            .child(masked(
-                mask,
-                offset(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .right_0()
-                        .top(scroll.y)
-                        .px(layout.pad)
-                        .pt(layout.top)
-                        .child(
-                            div()
-                                .relative()
-                                .w_full()
-                                .flex()
-                                .justify_center()
-                                .child(body),
-                        ),
-                )
-                .x(drift),
-            ))
+        div().absolute().top_0().left_0().right_0().bottom_0().child(masked(
+            mask,
+            offset(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .top(scroll.y)
+                    .px(layout.pad)
+                    .pt(layout.top)
+                    .child(div().relative().w_full().flex().justify_center().child(body)),
+            )
+            .x(drift),
+        ))
     }
 
     /// This frame of the change in flight, in window space (and the change
     /// dropped once it has landed).
-    fn stage(
-        &mut self,
-        reader: Bounds<Pixels>,
-        column: (Pixels, Pixels),
-        scale: f32,
-        window: &Window,
-        cx: &gpui::App,
-    ) -> Option<Staged> {
+    fn stage(&mut self, reader: Bounds<Pixels>, column: (Pixels, Pixels), scale: f32, window: &Window, cx: &gpui::App) -> Option<Staged> {
         let now = facet::motion::now(cx);
-        if self
-            .transit
-            .as_ref()
-            .is_some_and(|transit| transit.done(now, reader))
-        {
+        if self.transit.as_ref().is_some_and(|transit| transit.done(now, reader)) {
             self.transit = None;
         }
         if facet::motion::reduced(cx) {
@@ -1322,18 +1017,12 @@ impl Reader {
             _ => column,
         };
         let plate = plate_at(reader, column, transit.row, p);
-        let plate_course = Course::of(
-            |p| plate_at(reader, column, transit.row, p),
-            p,
-            transit.carry.target(),
-        );
+        let plate_course = Course::of(|p| plate_at(reader, column, transit.row, p), p, transit.carry.target());
         let height = f32::from(reader.size.height);
         let edge = transit.edge_local(now, height).map(|local| {
             let y = reader.top() + px(local);
             match transit.verb {
-                Verb::Open | Verb::Unfold => {
-                    Edge::down(y, px(PRINT_SETTLE * scale), px(PRINT_SPEED * scale * 32.0))
-                }
+                Verb::Open | Verb::Unfold => Edge::down(y, px(PRINT_SETTLE * scale), px(PRINT_SPEED * scale * 32.0)),
                 Verb::Close | Verb::Fold => Edge::fold(y),
             }
         });
@@ -1345,25 +1034,12 @@ impl Reader {
             (Verb::Unfold, Some((kind, node)), _) => transit
                 .symbol
                 .as_ref()
-                .and_then(|symbol| {
-                    facet::motion::shared::last_bounds(
-                        crate::shell::kit::shared_id(symbol),
-                        window,
-                        cx,
-                    )
-                })
+                .and_then(|symbol| facet::motion::shared::last_bounds(crate::shell::kit::shared_id(symbol), window, cx))
                 .map(|hero| (kind, node, hero)),
             _ => None,
         };
-        let gem =
-            ends.map(|(kind, node, hero)| (kind, lerp_rect(node, hero, band(p, LANDED, 0.9))));
-        let gem_course = ends.map(|(_, node, hero)| {
-            Course::of(
-                |p| lerp_rect(node, hero, band(p, LANDED, 0.9)),
-                p,
-                transit.carry.target(),
-            )
-        });
+        let gem = ends.map(|(kind, node, hero)| (kind, lerp_rect(node, hero, band(p, LANDED, 0.9))));
+        let gem_course = ends.map(|(_, node, hero)| Course::of(|p| lerp_rect(node, hero, band(p, LANDED, 0.9)), p, transit.carry.target()));
         let drift = if graph { 0.0 } else { DRIFT * scale };
         Some(Staged {
             verb: transit.verb,
@@ -1375,8 +1051,7 @@ impl Reader {
             outside_drift: px(-drift * p),
             moving: band(p, LANDED, 0.94) < 1.0 && band(p, LANDED, 0.94) > 0.0,
             has_row: transit.row.is_some(),
-            covered: plate.size.width >= reader.size.width - px(0.5)
-                && plate.size.height >= reader.size.height - px(0.5),
+            covered: plate.size.width >= reader.size.width - px(0.5) && plate.size.height >= reader.size.height - px(0.5),
             gem,
             plate_course,
             gem_course,
@@ -1389,29 +1064,13 @@ impl Reader {
     /// registered its targets (their bounds are the last layout's).
     fn follow(&mut self, reader: Bounds<Pixels>, cx: &gpui::App) {
         let now = facet::motion::now(cx);
-        let Some(transit) = self
-            .transit
-            .as_mut()
-            .filter(|transit| transit.verb == Verb::Close)
-        else {
-            return;
-        };
-        if now >= transit.start + CLOSE_AFTER
-            || (transit.row_id.is_none() && transit.find.is_none())
-        {
+        let Some(transit) = self.transit.as_mut().filter(|transit| transit.verb == Verb::Close) else { return };
+        if now >= transit.start + CLOSE_AFTER || (transit.row_id.is_none() && transit.find.is_none()) {
             return;
         }
-        let shown = |rect: &Bounds<Pixels>| {
-            rect.top() >= reader.top()
-                && rect.bottom() <= reader.bottom()
-                && rect.size.height > Pixels::ZERO
-        };
+        let shown = |rect: &Bounds<Pixels>| rect.top() >= reader.top() && rect.bottom() <= reader.bottom() && rect.size.height > Pixels::ZERO;
         let found = match (&transit.row_id, &transit.find) {
-            (Some(id), _) => self
-                .targets
-                .bounds_of(id)
-                .filter(shown)
-                .map(|rect| (id.clone(), rect)),
+            (Some(id), _) => self.targets.bounds_of(id).filter(shown).map(|rect| (id.clone(), rect)),
             (None, Some(find)) => self
                 .targets
                 .placed()
@@ -1424,23 +1083,14 @@ impl Reader {
         if let Some((id, _)) = found {
             let start = transit.start;
             if self.tint.as_ref().is_none_or(|tint| tint.id != id) {
-                self.tint = Some(Tint {
-                    id,
-                    start,
-                    reduced: false,
-                });
+                self.tint = Some(Tint { id, start, reduced: false });
             }
         }
     }
 
     /// Lays a body's leaves out: notes beside their block when wide,
     /// under it otherwise.
-    fn compose(
-        leaves: Vec<bodies::Leaf>,
-        layout: &Layout,
-        palette: &facet::Palette,
-        edge: Option<Edge>,
-    ) -> gpui::Div {
+    fn compose(leaves: Vec<bodies::Leaf>, layout: &Layout, palette: &facet::Palette, edge: Option<Edge>) -> gpui::Div {
         let Layout {
             pad: _,
             top: _,
@@ -1460,17 +1110,8 @@ impl Reader {
         // centred in it.
         let any_wide = leaves.iter().any(|leaf| leaf.wide);
         let reading = folio + beside;
-        let column_width = if any_wide {
-            wide_measure.width().max(reading).min(content)
-        } else {
-            reading
-        };
-        let mut column = div()
-            .flex()
-            .flex_col()
-            .gap(gap)
-            .w(column_width)
-            .max_w(content);
+        let column_width = if any_wide { wide_measure.width().max(reading).min(content) } else { reading };
+        let mut column = div().flex().flex_col().gap(gap).w(column_width).max_w(content);
         for leaf in leaves {
             let is_wide = leaf.wide;
             // Each block prints under the one edge (reading order, by clip).
@@ -1500,12 +1141,8 @@ impl Reader {
                             .flex()
                             .gap(folio_measure.space(Space::Base))
                             .child(
-                                facet::icons::ui(
-                                    facet::icons::Icon::Diamond,
-                                    facet::icons::IconSize::S12,
-                                    palette.ink4,
-                                )
-                                .size(folio_measure.icon(10.0)),
+                                facet::icons::ui(facet::icons::Icon::Diamond, facet::icons::IconSize::S12, palette.ink4)
+                                    .size(folio_measure.icon(10.0)),
                             )
                             .child(div().flex_1().min_w(px(0.0)).child(note)),
                     )
@@ -1513,12 +1150,7 @@ impl Reader {
                 (None, _) => leaf.main,
             };
             let block = if any_wide && !is_wide {
-                div()
-                    .w(reading)
-                    .max_w_full()
-                    .mx_auto()
-                    .child(block)
-                    .into_any_element()
+                div().w(reading).max_w_full().mx_auto().child(block).into_any_element()
             } else {
                 block
             };
@@ -1548,11 +1180,7 @@ fn content_loaded(store: &DataStore, keys: &[PageKey]) -> bool {
 
 fn drop_unpainted(places: &mut Vec<Place>, painted: Option<u64>) -> bool {
     let mut dropped = false;
-    while places.len() > 1
-        && places
-            .last()
-            .is_some_and(|place| Some(place.key) != painted)
-    {
+    while places.len() > 1 && places.last().is_some_and(|place| Some(place.key) != painted) {
         places.pop();
         dropped = true;
     }
@@ -1607,17 +1235,13 @@ impl Region for Reader {
     fn observe(&mut self, event: &StoreEvent, store: &DataStore) {
         if event.is_branch(Branch::Route) || event.is_branch(Branch::Overlay) {
             let snapshot = store.snapshot();
-            let overlay = snapshot
-                .overlay()
-                .filter(|overlay| matches!(overlay, Overlay::Settings(_) | Overlay::Inbox));
+            let overlay = snapshot.overlay().filter(|overlay| matches!(overlay, Overlay::Settings(_) | Overlay::Inbox));
             if *snapshot.route() != self.route || overlay != self.overlay {
                 if overlay == self.overlay && find_refinement(&self.route, snapshot.route()) {
                     // Typing refines one place. Keeping its keyed surface
                     // holds the live input and selection while results reflow.
                     self.route = snapshot.route().clone();
-                    if let Some(current) = self.places.last_mut() {
-                        current.route = self.route.clone();
-                    }
+                    if let Some(current) = self.places.last_mut() { current.route = self.route.clone(); }
                     return;
                 }
                 // (A release change or a view switch replaces the entry; it
@@ -1629,30 +1253,16 @@ impl Region for Reader {
 }
 
 fn find_refinement(previous: &Route, next: &Route) -> bool {
-    let find = |route: &Route| {
-        matches!(
-            route,
-            Route::Orbit(crate::navigation::OrbitRoute::Browse(
-                crate::navigation::BrowseRoute::FindHome | crate::navigation::BrowseRoute::Find(_)
-            ))
-        )
-    };
+    let find = |route: &Route| matches!(route,
+        Route::Orbit(crate::navigation::OrbitRoute::Browse(crate::navigation::BrowseRoute::FindHome | crate::navigation::BrowseRoute::Find(_))));
     find(previous) && find(next)
 }
 
 /// Only an immediately preceding page of this exact typed declaration owns
 /// an incoming hero. Code, overlays and another graph have no page endpoint.
 fn immediate_page_source(previous: &Route, next: &Route) -> Option<crate::model::pages::SymbolRef> {
-    if !matches!(
-        previous,
-        Route::Symbol(crate::navigation::SymbolRoute {
-            view: View::Page,
-            ..
-        })
-    ) || !bodies::graph::is_graph(next)
-    {
-        return None;
-    }
+    if !matches!(previous, Route::Symbol(crate::navigation::SymbolRoute { view: View::Page, .. }))
+        || !bodies::graph::is_graph(next) { return None; }
     let previous = route_symbol(previous)?;
     (route_symbol(next).as_ref() == Some(&previous)).then_some(previous)
 }
@@ -1680,31 +1290,17 @@ impl Reader {
         let keys = place_keys(&place.route, place.overlay);
         let pages = Pages::gather(self.links.store.read(cx), &keys);
         let links = self.links.clone();
-        let targets = if current {
-            self.targets.clone()
-        } else {
-            Targets::default()
-        };
+        let targets = if current { self.targets.clone() } else { Targets::default() };
         let mut said = Vec::new();
         let mut hero = Vec::new();
         let mut scratch_hover = HoverIntent::default();
-        let mut hover = if current {
-            std::mem::take(&mut self.hover)
-        } else {
-            HoverIntent::default()
-        };
+        let mut hover = if current { std::mem::take(&mut self.hover) } else { HoverIntent::default() };
         let leaves = {
-            let symbol_disclosure = route_symbol(&place.route)
-                .map(|symbol| self.symbol_disclosure(&symbol))
-                .unwrap_or_default();
+            let symbol_disclosure = route_symbol(&place.route).map(|symbol| self.symbol_disclosure(&symbol)).unwrap_or_default();
             let mut ctx = Ctx {
                 active: current,
                 measure: layout.folio_measure,
-                note: if layout.wide {
-                    Measure::new(layout.margin, facet)
-                } else {
-                    layout.folio_measure
-                },
+                note: if layout.wide { Measure::new(layout.margin, facet) } else { layout.folio_measure },
                 wide: layout.wide_measure,
                 content: Measure::new(layout.content, facet),
                 modes: self.core.modes().clone(),
@@ -1721,31 +1317,13 @@ impl Reader {
                 package_outline_expanded: self.package_outline_expanded,
                 find_held: self.find_held.clone(),
                 // A hop forward from another declaration: it is ringed on this page.
-                arrived_from: place
-                    .hop
-                    .then(|| {
-                        place
-                            .from
-                            .as_ref()
-                            .and_then(|(route, _)| route_symbol(route))
-                    })
+                arrived_from: place.hop
+                    .then(|| place.from.as_ref().and_then(|(route, _)| route_symbol(route)))
                     .flatten()
                     .filter(|from| route_symbol(&place.route).as_ref() != Some(from)),
             };
-            let hover = if current {
-                &mut hover
-            } else {
-                &mut scratch_hover
-            };
-            bodies::build(
-                &place.route,
-                place.overlay,
-                snapshot,
-                &pages,
-                &mut ctx,
-                hover,
-                cx,
-            )
+            let hover = if current { &mut hover } else { &mut scratch_hover };
+            bodies::build(&place.route, place.overlay, snapshot, &pages, &mut ctx, hover, cx)
         };
         if current {
             self.hover = hover;
@@ -1764,20 +1342,12 @@ fn place_keys(route: &Route, overlay: Option<Overlay>) -> Vec<PageKey> {
         _ => {}
     }
     match route {
-        Route::Orbit(crate::navigation::OrbitRoute::Browse(browse)) => {
-            vec![PageKey::Browse(browse.into())]
-        }
+        Route::Orbit(crate::navigation::OrbitRoute::Browse(browse)) => vec![PageKey::Browse(browse.into())],
         Route::Orbit(_) => vec![PageKey::Orbit, PageKey::Health],
         Route::World => Vec::new(),
-        Route::Package(_) => route_package(route)
-            .map(PageKey::Package)
-            .into_iter()
-            .collect(),
+        Route::Package(_) => route_package(route).map(PageKey::Package).into_iter().collect(),
         Route::Symbol(symbol) => match symbol.view {
-            View::Page | View::Graph => route_symbol(route)
-                .map(PageKey::Symbol)
-                .into_iter()
-                .collect(),
+            View::Page | View::Graph => route_symbol(route).map(PageKey::Symbol).into_iter().collect(),
             View::Code => route_symbol(route)
                 .map(|id| vec![PageKey::Source(id.clone()), PageKey::Symbol(id)])
                 .unwrap_or_default(),
@@ -1793,14 +1363,8 @@ impl Render for Reader {
         let facet = cx.facet();
         // A reflow moves whatever the keyboard stands on: bring it back
         // into view in the same frame.
-        let laid_out = (
-            self.core.width(),
-            window.viewport_size().height,
-            facet.text_scale,
-            facet.density,
-        );
-        let reflowed =
-            self.laid_out.is_some_and(|last| last != laid_out) && self.targets.focused().is_some();
+        let laid_out = (self.core.width(), window.viewport_size().height, facet.text_scale, facet.density);
+        let reflowed = self.laid_out.is_some_and(|last| last != laid_out) && self.targets.focused().is_some();
         if reflowed {
             self.reveal.set(true);
         }
@@ -1813,14 +1377,7 @@ impl Render for Reader {
         }
         let on_graph = bodies::graph::is_graph(snapshot.route()) && snapshot.overlay().is_none();
         let layout = self.layout(&snapshot, &measure, &facet);
-        let Layout {
-            pad,
-            top,
-            folio,
-            beside,
-            content,
-            ..
-        } = layout;
+        let Layout { pad, top, folio, beside, content, .. } = layout;
         let scale = measure.scale();
         let Some(current) = self.places.last().cloned() else {
             return div();
@@ -1828,10 +1385,7 @@ impl Render for Reader {
         // A page counts as painted once it drew its content: a skeleton "on its
         // way" is not a page that can leave (a route that supersedes it cuts
         // past it, and the change in flight goes on to the newer route).
-        if content_loaded(
-            self.links.store.read(cx),
-            &place_keys(&current.route, current.overlay),
-        ) {
+        if content_loaded(self.links.store.read(cx), &place_keys(&current.route, current.overlay)) {
             self.painted = Some(current.key);
         }
         // The place change in flight, this frame (window space).
@@ -1849,19 +1403,12 @@ impl Render for Reader {
             let left = reader.left() + pad + (content - used) / 2.0;
             (left, left + used)
         });
-        let staged = reader
-            .zip(column)
-            .and_then(|(reader, column)| self.stage(reader, column, scale, window, cx));
+        let staged = reader.zip(column).and_then(|(reader, column)| self.stage(reader, column, scale, window, cx));
         if staged.is_some() || self.tint.is_some() {
             facet::motion::request_frame(window, cx);
         }
         let transit = self.transit.clone().filter(|_| staged.is_some());
-        let keep = |key: u64| {
-            key == current.key
-                || transit
-                    .as_ref()
-                    .is_some_and(|t| t.inside == key || t.outside == key)
-        };
+        let keep = |key: u64| key == current.key || transit.as_ref().is_some_and(|t| t.inside == key || t.outside == key);
         self.places.retain(|place| keep(place.key));
         // The page drawn away from the scroller this frame (the one leaving
         // an Open, the one folding on a Close's or a Fold's plate).
@@ -1913,22 +1460,14 @@ impl Render for Reader {
         };
 
         if on_graph {
-            let map = self
-                .map
-                .get_or_insert_with(|| {
-                    let links = self.links.clone();
-                    cx.new(|cx| bodies::graph::Map::new(links, window, cx))
-                })
-                .clone();
+            let map = self.map.get_or_insert_with(|| {
+                let links = self.links.clone();
+                cx.new(|cx| bodies::graph::Map::new(links, window, cx))
+            }).clone();
             // A Fold carries the gem itself; the map's own handoff would
             // draw a second one.
-            let source = self
-                .graph_source
-                .take()
-                .filter(|_| !transit.as_ref().is_some_and(|t| t.verb == Verb::Fold));
-            map.update(cx, |map, cx| {
-                map.show(snapshot.route(), source.as_ref(), window, cx)
-            });
+            let source = self.graph_source.take().filter(|_| !transit.as_ref().is_some_and(|t| t.verb == Verb::Fold));
+            map.update(cx, |map, cx| map.show(snapshot.route(), source.as_ref(), window, cx));
             self.said = vec!["Graph fixture · pages resolve through your local index".into()];
             self.hero.clear();
             let tint = self.tint_now(cx);
@@ -1941,15 +1480,9 @@ impl Render for Reader {
                 land: Vec::new(),
                 child: div().size_full().child(map.clone()).into_any_element(),
             };
-            let mut root = div()
-                .relative()
-                .size_full()
-                .text_color(palette.ink1.hsla())
-                .font_family(facet::fonts::family(ty::BODY));
+            let mut root = div().relative().size_full().text_color(palette.ink1.hsla()).font_family(facet::fonts::family(ty::BODY));
             match (staged, transit.as_ref(), leaving, reader) {
-                (Some(staged), Some(transit), Some(leaving), Some(reader))
-                    if staged.verb == Verb::Fold =>
-                {
+                (Some(staged), Some(transit), Some(leaving), Some(reader)) if staged.verb == Verb::Fold => {
                     // The graph was always behind the page: it is uncovered
                     // around the plate once the page has folded off it.
                     let map_mask = if staged.edge.is_some_and(|edge| edge.y > reader.top()) {
@@ -1960,51 +1493,26 @@ impl Render for Reader {
                         staged.outside[0]
                     };
                     root = root.child(masked(map_mask, framed));
-                    let page = self.still_page(
-                        &leaving,
-                        transit.scroll,
-                        staged.plate,
-                        staged.edge,
-                        Pixels::ZERO,
-                        &snapshot,
-                        &layout,
-                        &facet,
-                        cx,
-                    );
+                    let page = self.still_page(&leaving, transit.scroll, staged.plate, staged.edge, Pixels::ZERO, &snapshot, &layout, &facet, cx);
                     root = root
                         .child(plate_ground(&staged))
-                        .child(
-                            div()
-                                .id("folding-plate")
-                                .absolute()
-                                .top_0()
-                                .left_0()
-                                .size_full()
-                                .child(page),
-                        )
+                        .child(div().id("folding-plate").absolute().top_0().left_0().size_full().child(page))
                         .children(gem(&staged));
                 }
                 _ => root = root.child(framed),
             }
             return root;
         }
-        if let Some(map) = &self.map {
-            map.update(cx, |map, cx| map.suspend(window, cx));
-        }
+        if let Some(map) = &self.map { map.update(cx, |map, cx| map.suspend(window, cx)); }
 
         // The current page, in the scroller: inside the plate when it opens
         // or unfolds, outside it (above) when the plate closes over it.
-        let current_edge = staged
-            .filter(|staged| matches!(staged.verb, Verb::Open | Verb::Unfold))
-            .and_then(|staged| staged.edge);
+        let current_edge = staged.filter(|staged| matches!(staged.verb, Verb::Open | Verb::Unfold)).and_then(|staged| staged.edge);
         // The Library's ring is the live ring only on the Library: away from
         // it, the ring forgets where its names were, so they stand where they
         // lay out when it comes back (never flying from a place last seen
         // before the page left).
-        let on_the_library = !matches!(
-            current.overlay,
-            Some(Overlay::Settings(_) | Overlay::Inbox)
-        ) && matches!(&current.route, Route::Orbit(orbit) if !matches!(orbit, crate::navigation::OrbitRoute::Browse(_)));
+        let on_the_library = !matches!(current.overlay, Some(Overlay::Settings(_) | Overlay::Inbox)) && matches!(&current.route, Route::Orbit(orbit) if !matches!(orbit, crate::navigation::OrbitRoute::Browse(_)));
         if !on_the_library {
             self.ring_flow.forget(cx);
         }
@@ -2030,14 +1538,7 @@ impl Render for Reader {
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
-            .child(
-                div()
-                    .w_full()
-                    .px(pad)
-                    .pt(top)
-                    .pb(px(96.0 * scale))
-                    .child(stack),
-            );
+            .child(div().w_full().px(pad).pt(top).pb(px(96.0 * scale)).child(stack));
         // A reflow that scrolls to keep the focus in view lands the page's
         // moving parts: a flight from where they were would carry the focus
         // back off screen.
@@ -2070,10 +1571,7 @@ impl Render for Reader {
                     .top(local(tint.0).origin.y)
                     .w(tint.0.size.width)
                     .h(tint.0.size.height)
-                    .bg(gpui::Hsla {
-                        alpha: TINT_ALPHA * tint.1,
-                        ..palette.peri.base.hsla()
-                    }),
+                    .bg(gpui::Hsla { alpha: TINT_ALPHA * tint.1, ..palette.peri.base.hsla() }),
             );
         }
         match (staged, transit.as_ref(), leaving) {
@@ -2082,31 +1580,11 @@ impl Render for Reader {
                 // the plate has not reached; the new page is on the plate.
                 for (index, mask) in staged.outside.into_iter().enumerate() {
                     if mask.size.height > Pixels::ZERO && mask.size.width > Pixels::ZERO {
-                        let page = self.still_page(
-                            &leaving,
-                            transit.scroll,
-                            mask,
-                            None,
-                            staged.outside_drift,
-                            &snapshot,
-                            &layout,
-                            &facet,
-                            cx,
-                        );
-                        root = root.child(
-                            div()
-                                .id(("leaving", index))
-                                .absolute()
-                                .top_0()
-                                .left_0()
-                                .size_full()
-                                .child(page),
-                        );
+                        let page = self.still_page(&leaving, transit.scroll, mask, None, staged.outside_drift, &snapshot, &layout, &facet, cx);
+                        root = root.child(div().id(("leaving", index)).absolute().top_0().left_0().size_full().child(page));
                     }
                 }
-                root = root
-                    .child(plate_ground(&staged))
-                    .child(masked(staged.plate, scroller));
+                root = root.child(plate_ground(&staged)).child(masked(staged.plate, scroller));
             }
             (Some(staged), Some(transit), Some(leaving)) if staged.verb == Verb::Close => {
                 // The parent is uncovered around the closing plate; the page
@@ -2114,26 +1592,8 @@ impl Render for Reader {
                 let [above, below] = staged.outside;
                 root = root.child(masked(above, scroller));
                 if below.size.height > Pixels::ZERO && below.size.width > Pixels::ZERO {
-                    let page = self.still_page(
-                        &current,
-                        self.scroll.offset(),
-                        below,
-                        None,
-                        staged.outside_drift,
-                        &snapshot,
-                        &layout,
-                        &facet,
-                        cx,
-                    );
-                    root = root.child(
-                        div()
-                            .id("parent-below")
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .size_full()
-                            .child(page),
-                    );
+                    let page = self.still_page(&current, self.scroll.offset(), below, None, staged.outside_drift, &snapshot, &layout, &facet, cx);
+                    root = root.child(div().id("parent-below").absolute().top_0().left_0().size_full().child(page));
                 }
                 // What the fold has taken from the plate is the parent, not an
                 // empty ground: the page it came back from shows through as the
@@ -2141,56 +1601,15 @@ impl Render for Reader {
                 // reader between the one and the other.
                 let folded = staged.edge.map(|edge| {
                     let top = edge.y.max(staged.plate.top()).min(staged.plate.bottom());
-                    Bounds::from_corners(
-                        point(staged.plate.left(), top),
-                        staged.plate.bottom_right(),
-                    )
+                    Bounds::from_corners(point(staged.plate.left(), top), staged.plate.bottom_right())
                 });
-                let page = self.still_page(
-                    &leaving,
-                    transit.scroll,
-                    staged.plate,
-                    staged.edge,
-                    staged.inside_drift,
-                    &snapshot,
-                    &layout,
-                    &facet,
-                    cx,
-                );
+                let page = self.still_page(&leaving, transit.scroll, staged.plate, staged.edge, staged.inside_drift, &snapshot, &layout, &facet, cx);
                 root = root.child(plate_ground(&staged));
-                if let Some(folded) = folded.filter(|folded| {
-                    folded.size.height > Pixels::ZERO && folded.size.width > Pixels::ZERO
-                }) {
-                    let parent = self.still_page(
-                        &current,
-                        self.scroll.offset(),
-                        folded,
-                        None,
-                        staged.outside_drift,
-                        &snapshot,
-                        &layout,
-                        &facet,
-                        cx,
-                    );
-                    root = root.child(
-                        div()
-                            .id("parent-folded")
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .size_full()
-                            .child(parent),
-                    );
+                if let Some(folded) = folded.filter(|folded| folded.size.height > Pixels::ZERO && folded.size.width > Pixels::ZERO) {
+                    let parent = self.still_page(&current, self.scroll.offset(), folded, None, staged.outside_drift, &snapshot, &layout, &facet, cx);
+                    root = root.child(div().id("parent-folded").absolute().top_0().left_0().size_full().child(parent));
                 }
-                root = root.child(
-                    div()
-                        .id("leaving-plate")
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full()
-                        .child(page),
-                );
+                root = root.child(div().id("leaving-plate").absolute().top_0().left_0().size_full().child(page));
             }
             (Some(staged), Some(_), _) if staged.verb == Verb::Unfold => {
                 // The node's plate opens into the page over the graph; the
@@ -2204,30 +1623,16 @@ impl Render for Reader {
                     } else {
                         staged.outside[0]
                     };
-                    root = root.child(
-                        div()
-                            .id("unfolding-map")
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .size_full()
-                            .child(masked(map_mask, div().size_full().child(map.clone()))),
-                    );
+                    root = root.child(div().id("unfolding-map").absolute().top_0().left_0().size_full().child(masked(map_mask, div().size_full().child(map.clone()))));
                 }
-                root = root
-                    .child(plate_ground(&staged))
-                    .child(masked(staged.plate, scroller))
-                    .children(gem(&staged));
+                root = root.child(plate_ground(&staged)).child(masked(staged.plate, scroller)).children(gem(&staged));
             }
             _ => root = root.child(scroller),
         }
-        root.child(super::kit::scroll_probe(
-            "reader-scroll",
-            self.scroll.clone(),
-        ))
-        .child(glow)
-        .text_color(palette.ink1.hsla())
-        .font_family(facet::fonts::family(ty::BODY))
+        root.child(super::kit::scroll_probe("reader-scroll", self.scroll.clone()))
+            .child(glow)
+            .text_color(palette.ink1.hsla())
+            .font_family(facet::fonts::family(ty::BODY))
     }
 }
 
@@ -2246,13 +1651,7 @@ impl Reader {
             self.tint = None;
             return None;
         }
-        let strength = if ms < from {
-            0.0
-        } else if ms < hold {
-            1.0
-        } else {
-            1.0 - (ms - hold) / release
-        };
+        let strength = if ms < from { 0.0 } else if ms < hold { 1.0 } else { 1.0 - (ms - hold) / release };
         let rect = self.targets.bounds_of(&tint.id)?;
         Some((rect, strength))
     }
@@ -2270,13 +1669,7 @@ impl Reader {
         let epoch = facet::motion::epoch(cx);
         let millis = |at: Instant| at.saturating_duration_since(epoch).as_secs_f64() * 1000.0;
         let at_ms = millis(now);
-        let track = |key: String,
-                     value: f32,
-                     target: f32,
-                     velocity: f32,
-                     started_ms: f64,
-                     budget_ms: f64,
-                     group: Option<&str>| facet::probe::TrackSample {
+        let track = |key: String, value: f32, target: f32, velocity: f32, started_ms: f64, budget_ms: f64, group: Option<&str>| facet::probe::TrackSample {
             key,
             kind: facet::probe::TrackKind::Spring,
             value,
@@ -2298,11 +1691,7 @@ impl Reader {
             // and the gem's edges are painted, and their last step is judged.
             let ended = std::mem::take(&mut *self.in_flight.borrow_mut());
             for mut sample in ended {
-                sample.kind = if sample.key == "reader.carry" {
-                    facet::probe::TrackKind::Snap
-                } else {
-                    facet::probe::TrackKind::Spring
-                };
+                sample.kind = if sample.key == "reader.carry" { facet::probe::TrackKind::Snap } else { facet::probe::TrackKind::Spring };
                 sample.value = sample.target;
                 sample.velocity = 0.0;
                 sample.live = false;
@@ -2315,37 +1704,17 @@ impl Reader {
             let (value, velocity) = transit.carry.sample(now);
             let started = millis(transit.carry.start());
             let budget = transit.carry.budget(0.001).as_secs_f64() * 1000.0;
-            let mut samples = vec![track(
-                "reader.carry".to_owned(),
-                value,
-                transit.carry.target(),
-                velocity,
-                started,
-                budget,
-                Some("reader.transit"),
-            )];
+            let mut samples = vec![track("reader.carry".to_owned(), value, transit.carry.target(), velocity, started, budget, Some("reader.transit"))];
             // The plate's and the gem's edges ride the driver through their
             // own bands (the plate's floor lags its sides): each is told its
             // own target and speed, and none claims lockstep with the driver.
             const NAMES: [&str; 4] = ["left", "top", "right", "bottom"];
-            let publish_course =
-                |name: &str,
-                 rect: Bounds<Pixels>,
-                 course: Course,
-                 samples: &mut Vec<facet::probe::TrackSample>| {
-                    let (at, to) = (edges(rect), edges(course.to));
-                    for index in 0..4 {
-                        samples.push(track(
-                            format!("reader.{name}.{}", NAMES[index]),
-                            at[index],
-                            to[index],
-                            course.per_p[index] * velocity,
-                            started,
-                            budget,
-                            None,
-                        ));
-                    }
-                };
+            let publish_course = |name: &str, rect: Bounds<Pixels>, course: Course, samples: &mut Vec<facet::probe::TrackSample>| {
+                let (at, to) = (edges(rect), edges(course.to));
+                for index in 0..4 {
+                    samples.push(track(format!("reader.{name}.{}", NAMES[index]), at[index], to[index], course.per_p[index] * velocity, started, budget, None));
+                }
+            };
             publish_course("plate", staged.plate, staged.plate_course, &mut samples);
             if let (Some((_, gem)), Some(gem_course)) = (staged.gem, staged.gem_course) {
                 publish_course("gem", gem, gem_course, &mut samples);
@@ -2357,9 +1726,7 @@ impl Reader {
             // judged against where that one was.)
             // (A render may publish its frame twice: the birth frame stays a
             // birth, or the probe keeps the later sample and loses it.)
-            let born = self.in_flight.borrow().first().is_none_or(|last| {
-                last.kind == facet::probe::TrackKind::Snap && (last.at_ms - at_ms).abs() < 1e-6
-            });
+            let born = self.in_flight.borrow().first().is_none_or(|last| last.kind == facet::probe::TrackKind::Snap && (last.at_ms - at_ms).abs() < 1e-6);
             if born {
                 for sample in &mut samples {
                     sample.kind = facet::probe::TrackKind::Snap;
@@ -2371,15 +1738,7 @@ impl Reader {
             }
         }
         if let (Some(tint), Some(strength)) = (&self.tint, tint) {
-            let sample = track(
-                format!("reader.tint.{}", tint.id),
-                strength,
-                0.0,
-                0.0,
-                millis(tint.start),
-                0.0,
-                Some("reader.transit"),
-            );
+            let sample = track(format!("reader.tint.{}", tint.id), strength, 0.0, 0.0, millis(tint.start), 0.0, Some("reader.transit"));
             facet::probe::record_track(cx, || sample);
         }
     }
@@ -2441,8 +1800,7 @@ impl gpui::Element for Reveal {
         window: &mut Window,
         cx: &mut gpui::App,
     ) {
-        self.frame
-            .set(Some(window.layer_transform().apply_bounds(view)));
+        self.frame.set(Some(window.layer_transform().apply_bounds(view)));
         if self.pending.take()
             && let Some(layout) = self.targets.focused_layout()
         {
@@ -2512,16 +1870,7 @@ mod transit_tests {
 
     /// A place in the reader's list, for the list's own rules.
     fn place(key: u64, route: Route) -> super::Place {
-        super::Place {
-            key,
-            route,
-            overlay: None,
-            way: super::Way::Across,
-            lens: super::Lens::Reference,
-            from: None,
-            opened: None,
-            hop: false,
-        }
+        super::Place { key, route, overlay: None, way: super::Way::Across, lens: super::Lens::Reference, from: None, opened: None, hop: false }
     }
 
     /// Three routes in one turn (A painted, then B, then C, no frame between)
@@ -2530,39 +1879,18 @@ mod transit_tests {
     /// a place the last frame drew is kept.
     #[test]
     fn a_place_no_frame_drew_is_not_a_page_to_leave() {
-        let (a, b, c) = (
-            place(1, Route::World),
-            place(2, package()),
-            place(3, Route::World),
-        );
+        let (a, b, c) = (place(1, Route::World), place(2, package()), place(3, Route::World));
         let mut places = vec![a.clone(), b.clone(), c.clone()];
-        assert!(
-            super::drop_unpainted(&mut places, Some(1)),
-            "B and C were never drawn"
-        );
-        assert_eq!(
-            places.iter().map(|place| place.key).collect::<Vec<_>>(),
-            vec![1],
-            "only A, the last page painted, is left to leave"
-        );
+        assert!(super::drop_unpainted(&mut places, Some(1)), "B and C were never drawn");
+        assert_eq!(places.iter().map(|place| place.key).collect::<Vec<_>>(), vec![1], "only A, the last page painted, is left to leave");
         let mut places = vec![a.clone(), b.clone(), c.clone()];
         assert!(super::drop_unpainted(&mut places, Some(2)));
-        assert_eq!(
-            places.iter().map(|place| place.key).collect::<Vec<_>>(),
-            vec![1, 2],
-            "B was drawn, C was not"
-        );
+        assert_eq!(places.iter().map(|place| place.key).collect::<Vec<_>>(), vec![1, 2], "B was drawn, C was not");
         let mut places = vec![a.clone()];
-        assert!(
-            !super::drop_unpainted(&mut places, None),
-            "the first place stays, drawn or not"
-        );
+        assert!(!super::drop_unpainted(&mut places, None), "the first place stays, drawn or not");
         assert_eq!(places.len(), 1);
         let mut places = vec![a, b, c];
-        assert!(
-            !super::drop_unpainted(&mut places, Some(3)),
-            "the current place was drawn: nothing to drop"
-        );
+        assert!(!super::drop_unpainted(&mut places, Some(3)), "the current place was drawn: nothing to drop");
         assert_eq!(places.len(), 3);
     }
 
@@ -2577,10 +1905,7 @@ mod transit_tests {
     }
 
     fn bounds(sample: &facet::probe::BoundsSample) -> Bounds<Pixels> {
-        Bounds::new(
-            point(px(sample.x), px(sample.y)),
-            size(px(sample.width), px(sample.height)),
-        )
+        Bounds::new(point(px(sample.x), px(sample.y)), size(px(sample.width), px(sample.height)))
     }
 
     /// Draws the frame the platform would draw `ms` from now.
@@ -2595,39 +1920,14 @@ mod transit_tests {
             window.refresh();
             window.draw(cx).clear(cx);
         });
-        let (ledger, texts) = rig
-            .cx
-            .update(|window, cx| (facet::probe::take(cx), window.painted_texts().to_vec()));
-        let track = |key: &str| {
-            ledger
-                .tracks
-                .iter()
-                .rev()
-                .find(|track| track.key == key)
-                .map(|track| track.value)
-        };
-        let plate = match (
-            track("reader.plate.left"),
-            track("reader.plate.top"),
-            track("reader.plate.right"),
-            track("reader.plate.bottom"),
-        ) {
-            (Some(l), Some(t), Some(r), Some(b)) => Some(Bounds::from_corners(
-                point(px(l), px(t)),
-                point(px(r), px(b)),
-            )),
+        let (ledger, texts) = rig.cx.update(|window, cx| (facet::probe::take(cx), window.painted_texts().to_vec()));
+        let track = |key: &str| ledger.tracks.iter().rev().find(|track| track.key == key).map(|track| track.value);
+        let plate = match (track("reader.plate.left"), track("reader.plate.top"), track("reader.plate.right"), track("reader.plate.bottom")) {
+            (Some(l), Some(t), Some(r), Some(b)) => Some(Bounds::from_corners(point(px(l), px(t)), point(px(r), px(b)))),
             _ => None,
         };
-        let gem = match (
-            track("reader.gem.left"),
-            track("reader.gem.top"),
-            track("reader.gem.right"),
-            track("reader.gem.bottom"),
-        ) {
-            (Some(l), Some(t), Some(r), Some(b)) => Some(Bounds::from_corners(
-                point(px(l), px(t)),
-                point(px(r), px(b)),
-            )),
+        let gem = match (track("reader.gem.left"), track("reader.gem.top"), track("reader.gem.right"), track("reader.gem.bottom")) {
+            (Some(l), Some(t), Some(r), Some(b)) => Some(Bounds::from_corners(point(px(l), px(t)), point(px(r), px(b)))),
             _ => None,
         };
         Shot {
@@ -2638,18 +1938,9 @@ mod transit_tests {
             tint: ledger
                 .tracks
                 .iter()
-                .filter_map(|track| {
-                    track
-                        .key
-                        .strip_prefix("reader.tint.")
-                        .map(|id| (id.to_owned(), track.value))
-                })
+                .filter_map(|track| track.key.strip_prefix("reader.tint.").map(|id| (id.to_owned(), track.value)))
                 .collect(),
-            targets: ledger
-                .targets
-                .iter()
-                .map(|target| (target.key.clone(), bounds(&target.bounds)))
-                .collect(),
+            targets: ledger.targets.iter().map(|target| (target.key.clone(), bounds(&target.bounds))).collect(),
             texts,
         }
     }
@@ -2710,10 +2001,7 @@ mod transit_tests {
     /// Words only one page says.
     fn only(a: &[String], b: &[String]) -> BTreeSet<String> {
         let b: BTreeSet<&String> = b.iter().collect();
-        a.iter()
-            .filter(|line| !b.contains(line) && line.chars().count() > 2)
-            .cloned()
-            .collect()
+        a.iter().filter(|line| !b.contains(line) && line.chars().count() > 2).cloned().collect()
     }
 
     /// Enter on a row of the package page: the row's plate opens. Frame 0's
@@ -2730,57 +2018,29 @@ mod transit_tests {
         let before = shoot(&mut rig, 0, 0);
         // The package page's cards paint their words themselves (they are not
         // in `said`): what the old page says includes what it painted.
-        let old: Vec<String> = old
-            .into_iter()
-            .chain(reading(&before).map(|text| text.text.to_string()))
-            .collect();
-        let (_, focused) = rig
-            .shell
-            .read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+        let old: Vec<String> = old.into_iter().chain(reading(&before).map(|text| text.text.to_string())).collect();
+        let (_, focused) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
         let row_id = focused.expect("j focuses a row").to_string();
-        let row = before
-            .targets
-            .iter()
-            .find(|(key, _)| *key == row_id)
-            .map(|(_, at)| *at)
-            .expect("the row is drawn");
+        let row = before.targets.iter().find(|(key, _)| *key == row_id).map(|(_, at)| *at).expect("the row is drawn");
         let shots = film(&mut rig, |rig| rig.cx.simulate_keystrokes("enter"), 400);
-        assert!(
-            matches!(rig.route(), Route::Symbol(_)),
-            "enter opened a page"
-        );
+        assert!(matches!(rig.route(), Route::Symbol(_)), "enter opened a page");
         rig.settle();
         // The symbol page paints its words itself too (its crumb names the
         // package): what the new page says includes what it paints.
         let landed = shoot(&mut rig, 0, 0);
-        let new: Vec<String> = rig
-            .said()
-            .into_iter()
-            .chain(reading(&landed).map(|text| text.text.to_string()))
-            .collect();
+        let new: Vec<String> = rig.said().into_iter().chain(reading(&landed).map(|text| text.text.to_string())).collect();
         let old_only = only(&old, &new);
         assert!(!old_only.is_empty(), "the pages differ: {old:?}");
 
         let first = shots[0].plate.expect("frame 0 has a plate");
-        assert_eq!(
-            (first.top(), first.bottom()),
-            (row.top(), row.bottom()),
-            "frame 0's plate is the row's band: {first:?} vs {row:?}"
-        );
-        assert!(
-            first.left() <= row.left() && first.right() >= row.right(),
-            "it spans the row: {first:?} vs {row:?}"
-        );
+        assert_eq!((first.top(), first.bottom()), (row.top(), row.bottom()), "frame 0's plate is the row's band: {first:?} vs {row:?}");
+        assert!(first.left() <= row.left() && first.right() >= row.right(), "it spans the row: {first:?} vs {row:?}");
         let new_only = only(&new, &old);
         let (mut printed, mut outside) = (BTreeSet::new(), BTreeSet::new());
         let mut last = first;
         for shot in &shots {
             let Some(plate) = shot.plate else { continue };
-            assert!(
-                inside(last, plate),
-                "the plate never shrinks: {last:?} then {plate:?} at {} ms",
-                shot.at
-            );
+            assert!(inside(last, plate), "the plate never shrinks: {last:?} then {plate:?} at {} ms", shot.at);
             last = plate;
             for text in &shot.texts {
                 let content = text.text.to_string();
@@ -2788,11 +2048,7 @@ mod transit_tests {
                     outside.insert(content.clone());
                 }
                 if new_only.contains(&content) {
-                    assert!(
-                        inside(text.bounds, plate),
-                        "`{content}` (the new page's) is painted outside the plate at {} ms",
-                        shot.at
-                    );
+                    assert!(inside(text.bounds, plate), "`{content}` (the new page's) is painted outside the plate at {} ms", shot.at);
                     printed.insert((shot.at, content.clone()));
                 }
                 if crosses(text.bounds, plate) {
@@ -2813,35 +2069,14 @@ mod transit_tests {
         }
         // Not vacuous: the old page stayed readable outside the plate while
         // it opened, and the new page printed on it, top first.
-        assert!(
-            outside.len() >= 3,
-            "the old page is seen outside the plate: {outside:?}"
-        );
-        let first_print = printed
-            .iter()
-            .map(|(at, _)| *at)
-            .min()
-            .expect("the new page prints on the plate");
-        assert!(
-            (96..=160).contains(&first_print),
-            "printing starts after the plate has cleared the top: {first_print} ms"
-        );
-        let landed = shots
-            .iter()
-            .find(|shot| shot.at == 240)
-            .and_then(|shot| shot.p)
-            .expect("the driver at 240 ms");
+        assert!(outside.len() >= 3, "the old page is seen outside the plate: {outside:?}");
+        let first_print = printed.iter().map(|(at, _)| *at).min().expect("the new page prints on the plate");
+        assert!((96..=160).contains(&first_print), "printing starts after the plate has cleared the top: {first_print} ms");
+        let landed = shots.iter().find(|shot| shot.at == 240).and_then(|shot| shot.p).expect("the driver at 240 ms");
         assert!(landed >= 0.97, "the plate lands by 240 ms: p = {landed:.3}");
-        let early = shots
-            .iter()
-            .find(|shot| shot.at == 80)
-            .and_then(|shot| shot.p)
-            .expect("the driver at 80 ms");
+        let early = shots.iter().find(|shot| shot.at == 80).and_then(|shot| shot.p).expect("the driver at 80 ms");
         assert!((early - 0.54).abs() < 0.02, "CARRY: p(80 ms) = {early:.3}");
-        assert!(
-            shots.last().is_some_and(|shot| shot.plate.is_none()),
-            "the change is over by 400 ms"
-        );
+        assert!(shots.last().is_some_and(|shot| shot.plate.is_none()), "the change is over by 400 ms");
     }
 
     /// ⌘[ back to the package page: the body folds, then the plate closes
@@ -2853,58 +2088,32 @@ mod transit_tests {
         let mut rig = start(cx);
         open_first_module(&mut rig);
         rig.keys("j");
-        let (_, focused) = rig
-            .shell
-            .read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+        let (_, focused) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
         let row_id = focused.expect("j focuses a row").to_string();
         let parent = rig.said();
         rig.keys("enter");
         // The symbol page paints its words itself (they are not all in
         // `said`): what the page says includes what it painted.
         let opened = shoot(&mut rig, 0, 0);
-        let page: Vec<String> = rig
-            .said()
-            .into_iter()
-            .chain(reading(&opened).map(|text| text.text.to_string()))
-            .collect();
+        let page: Vec<String> = rig.said().into_iter().chain(reading(&opened).map(|text| text.text.to_string())).collect();
         let shots = film(&mut rig, |rig| rig.cx.simulate_keystrokes("cmd-["), 1000);
         assert!(matches!(rig.route(), Route::Package(_)), "back came home");
         // The package page's cards paint their words themselves (they are not
         // in `said`): what the parent says includes what it painted once home.
-        let parent: Vec<String> = parent
-            .into_iter()
-            .chain(
-                shots
-                    .last()
-                    .into_iter()
-                    .flat_map(|shot| reading(shot).map(|text| text.text.to_string())),
-            )
-            .collect();
+        let parent: Vec<String> = parent.into_iter().chain(shots.last().into_iter().flat_map(|shot| reading(shot).map(|text| text.text.to_string()))).collect();
         let page_only = only(&page, &parent);
         let row = shots
             .last()
-            .and_then(|shot| {
-                shot.targets
-                    .iter()
-                    .find(|(key, _)| *key == row_id)
-                    .map(|(_, at)| *at)
-            })
+            .and_then(|shot| shot.targets.iter().find(|(key, _)| *key == row_id).map(|(_, at)| *at))
             .expect("the row is drawn again");
         let parent_only = only(&parent, &page);
-        assert!(
-            !page_only.is_empty() && !parent_only.is_empty(),
-            "the pages differ"
-        );
+        assert!(!page_only.is_empty() && !parent_only.is_empty(), "the pages differ");
         let (mut folding, mut uncovered) = (0, BTreeSet::new());
         let mut last: Option<Bounds<Pixels>> = None;
         for shot in &shots {
             let Some(plate) = shot.plate else { continue };
             if let Some(last) = last {
-                assert!(
-                    inside(plate, last),
-                    "the plate never grows: {last:?} then {plate:?} at {} ms",
-                    shot.at
-                );
+                assert!(inside(plate, last), "the plate never grows: {last:?} then {plate:?} at {} ms", shot.at);
             }
             last = Some(plate);
             // What the fold has taken from the plate shows the parent (so no
@@ -2913,20 +2122,13 @@ mod transit_tests {
             let floor = shot
                 .texts
                 .iter()
-                .filter(|text| {
-                    page_only.contains(text.text.as_ref()) && text.bounds.size.height > px(1.0)
-                })
+                .filter(|text| page_only.contains(text.text.as_ref()) && text.bounds.size.height > px(1.0))
                 .map(|text| text.bounds.bottom())
                 .fold(plate.top(), Pixels::max);
             for text in &shot.texts {
                 let content = text.text.to_string();
                 if page_only.contains(&content) && text.bounds.size.height > px(1.0) {
-                    assert!(
-                        inside(text.bounds, plate),
-                        "`{content}` (the page's) is painted outside the plate at {} ms: {:?} vs {plate:?}",
-                        shot.at,
-                        text.bounds
-                    );
+                    assert!(inside(text.bounds, plate), "`{content}` (the page's) is painted outside the plate at {} ms: {:?} vs {plate:?}", shot.at, text.bounds);
                     folding += 1;
                 }
                 if parent_only.contains(&content) {
@@ -2945,46 +2147,23 @@ mod transit_tests {
         }
         // Not vacuous: the page was seen folding, and the parent uncovered.
         assert!(folding > 0, "the page is seen on the plate as it folds");
+        assert!(uncovered.len() >= 3, "the parent is seen around the closing plate: {uncovered:?}");
+        let closing = shots.iter().filter(|shot| shot.plate.is_some()).last().and_then(|shot| shot.plate).expect("a plate");
         assert!(
-            uncovered.len() >= 3,
-            "the parent is seen around the closing plate: {uncovered:?}"
-        );
-        let closing = shots
-            .iter()
-            .filter(|shot| shot.plate.is_some())
-            .last()
-            .and_then(|shot| shot.plate)
-            .expect("a plate");
-        assert!(
-            (closing.top() - row.top()).abs() < px(3.0)
-                && (closing.bottom() - row.bottom()).abs() < px(3.0),
+            (closing.top() - row.top()).abs() < px(3.0) && (closing.bottom() - row.bottom()).abs() < px(3.0),
             "the plate closes onto the row's band: {closing:?} vs {row:?}"
         );
         // The fold comes first: the plate holds until CLOSE_AFTER.
-        let held = shots
-            .iter()
-            .filter(|shot| shot.at < CLOSE_AFTER.as_millis() as u64)
-            .filter_map(|shot| shot.p);
+        let held = shots.iter().filter(|shot| shot.at < CLOSE_AFTER.as_millis() as u64).filter_map(|shot| shot.p);
         for p in held {
-            assert!(
-                (p - 1.0).abs() < 1e-4,
-                "the plate waits for the fold: p = {p}"
-            );
+            assert!((p - 1.0).abs() < 1e-4, "the plate waits for the fold: p = {p}");
         }
         let tint = |at: u64| {
-            shots
-                .iter()
-                .find(|shot| shot.at == at)
-                .and_then(|shot| shot.tint.iter().find(|(id, _)| *id == row_id))
-                .map(|(_, v)| *v)
+            shots.iter().find(|shot| shot.at == at).and_then(|shot| shot.tint.iter().find(|(id, _)| *id == row_id)).map(|(_, v)| *v)
         };
         assert_eq!(tint(160), Some(0.0), "no tint before 180 ms");
         assert_eq!(tint(400), Some(1.0), "the row holds the tint at 400 ms");
-        assert!(
-            tint(800).is_some_and(|v| v > 0.0 && v < 1.0),
-            "it lets go after 700 ms: {:?}",
-            tint(800)
-        );
+        assert!(tint(800).is_some_and(|v| v > 0.0 && v < 1.0), "it lets go after 700 ms: {:?}", tint(800));
         assert_eq!(tint(960), None, "gone by 940 ms");
     }
 
@@ -2997,17 +2176,14 @@ mod transit_tests {
     #[ignore = "writes the storyboard films: NUDOX_TRANSIT_FILM=DIR … -- --ignored"]
     fn film_the_storyboard_pair(cx: &mut TestAppContext) {
         use crate::shell::tests::page_route;
-        let Some(dir) = std::env::var_os("NUDOX_TRANSIT_FILM") else {
-            return;
-        };
+        let Some(dir) = std::env::var_os("NUDOX_TRANSIT_FILM") else { return };
         let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
         rig.cx.update(|_, cx| {
             facet::probe::enable(cx);
             cx.set_global(gpui::TextTrace);
         });
         let rest = shoot(&mut rig, 0, 0);
-        let want =
-            std::env::var("NUDOX_TRANSIT_LINK").unwrap_or_else(|_| "SemanticLinkKind".to_owned());
+        let want = std::env::var("NUDOX_TRANSIT_LINK").unwrap_or_else(|_| "SemanticLinkKind".to_owned());
         let link = rest
             .texts
             .iter()
@@ -3016,37 +2192,19 @@ mod transit_tests {
             .or_else(|| {
                 rest.texts.iter().find(|text| {
                     text.bounds.origin.x > px(300.0)
-                        && rest.targets.iter().any(|(key, at)| {
-                            key.starts_with("sym") && at.contains(&text.bounds.center())
-                        })
+                        && rest.targets.iter().any(|(key, at)| key.starts_with("sym") && at.contains(&text.bounds.center()))
                 })
             })
             .map(|text| text.bounds.center())
             .expect("a link on the page");
-        rig.cx
-            .simulate_mouse_move(link, None, gpui::Modifiers::none());
+        rig.cx.simulate_mouse_move(link, None, gpui::Modifiers::none());
         rig.cx.run_until_parked();
         let _ = shoot(&mut rig, 0, 0);
-        let open = film_at(
-            &mut rig,
-            |rig| rig.cx.simulate_click(link, gpui::Modifiers::none()),
-            &[0, 40, 80, 120, 160, 240, 320, 400],
-        );
+        let open = film_at(&mut rig, |rig| rig.cx.simulate_click(link, gpui::Modifiers::none()), &[0, 40, 80, 120, 160, 240, 320, 400]);
         rig.settle();
-        let close = film_at(
-            &mut rig,
-            |rig| rig.cx.simulate_keystrokes("cmd-["),
-            &[0, 40, 80, 120, 160, 240, 320, 700, 1000],
-        );
+        let close = film_at(&mut rig, |rig| rig.cx.simulate_keystrokes("cmd-["), &[0, 40, 80, 120, 160, 240, 320, 700, 1000]);
         let frame = |shot: &Shot| {
-            let rect = |b: Bounds<Pixels>| {
-                serde_json::json!([
-                    f32::from(b.origin.x),
-                    f32::from(b.origin.y),
-                    f32::from(b.size.width),
-                    f32::from(b.size.height)
-                ])
-            };
+            let rect = |b: Bounds<Pixels>| serde_json::json!([f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height)]);
             serde_json::json!({
                 "t": shot.at,
                 "p": shot.p,
@@ -3075,12 +2233,7 @@ mod transit_tests {
     fn page_over_graph(cx: &mut TestAppContext) -> Rig {
         use crate::navigation::{Intent, View};
         use crate::shell::tests::{page_route, view_route};
-        let mut rig = rig(
-            cx,
-            Some(view_route("RelationLabel", View::Graph)),
-            1440.0,
-            900.0,
-        );
+        let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
         rig.go(Intent::Navigate(page_route("RelationLabel")));
         rig.cx.update(|_, cx| {
             facet::probe::enable(cx);
@@ -3090,30 +2243,19 @@ mod transit_tests {
     }
 
     fn set_view(view: crate::navigation::View) -> impl FnOnce(&mut Rig) {
-        move |rig: &mut Rig| {
-            rig.graph.root.update(rig.cx, |root, cx| {
-                root.queue(crate::navigation::Intent::SetView(view), cx)
-            })
-        }
+        move |rig: &mut Rig| rig.graph.root.update(rig.cx, |root, cx| root.queue(crate::navigation::Intent::SetView(view), cx))
     }
 
     /// The reader's texts in a frame (the shelf and titlebar are not the
     /// reader's).
     fn reading(shot: &Shot) -> impl Iterator<Item = &PaintedText> {
-        shot.texts
-            .iter()
-            .filter(|text| text.bounds.origin.x >= px(264.0) && text.bounds.origin.y >= px(50.0))
+        shot.texts.iter().filter(|text| text.bounds.origin.x >= px(264.0) && text.bounds.origin.y >= px(50.0))
     }
 
     fn near(a: Bounds<Pixels>, b: Bounds<Pixels>, within: f32) -> bool {
-        [
-            (a.left(), b.left()),
-            (a.top(), b.top()),
-            (a.right(), b.right()),
-            (a.bottom(), b.bottom()),
-        ]
-        .iter()
-        .all(|(x, y)| (*x - *y).abs() <= px(within))
+        [(a.left(), b.left()), (a.top(), b.top()), (a.right(), b.right()), (a.bottom(), b.bottom())]
+            .iter()
+            .all(|(x, y)| (*x - *y).abs() <= px(within))
     }
 
     /// G on a page: the page folds on its plate first, with the graph not
@@ -3124,37 +2266,23 @@ mod transit_tests {
     fn a_page_folds_into_its_node_and_the_graph_is_uncovered_around_it(cx: &mut TestAppContext) {
         use crate::navigation::View;
         let mut rig = page_over_graph(cx);
-        let page: BTreeSet<String> = reading(&shoot(&mut rig, 0, 0))
-            .map(|text| text.text.to_string())
-            .collect();
+        let page: BTreeSet<String> = reading(&shoot(&mut rig, 0, 0)).map(|text| text.text.to_string()).collect();
         let shots = film(&mut rig, set_view(View::Graph), 480);
         rig.settle();
-        let node = rig
-            .shell
-            .read_with(rig.cx, |shell, cx| shell.graph_focus_glyph(cx))
-            .expect("the graph focuses the node");
+        let node = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_focus_glyph(cx)).expect("the graph focuses the node");
         let (mut folding, mut uncovered) = (0, BTreeSet::new());
         let mut last: Option<Bounds<Pixels>> = None;
         for shot in &shots {
             let Some(plate) = shot.plate else { continue };
             if let Some(last) = last {
-                assert!(
-                    inside(plate, last),
-                    "the plate never grows: {last:?} then {plate:?} at {} ms",
-                    shot.at
-                );
+                assert!(inside(plate, last), "the plate never grows: {last:?} then {plate:?} at {} ms", shot.at);
             }
             last = Some(plate);
             let held = shot.p.is_some_and(|p| p >= 0.999);
             for text in reading(shot) {
                 let content = text.text.to_string();
                 if held {
-                    assert!(
-                        page.contains(&content),
-                        "`{content}` (not the page's) is painted while the page folds, at {} ms: {:?}",
-                        shot.at,
-                        text.bounds
-                    );
+                    assert!(page.contains(&content), "`{content}` (not the page's) is painted while the page folds, at {} ms: {:?}", shot.at, text.bounds);
                     folding += 1;
                 } else {
                     if !page.contains(&content) {
@@ -3164,48 +2292,16 @@ mod transit_tests {
             }
             if !held {
                 // The page has folded off its plate before the plate moves.
-                let on_plate: Vec<_> = reading(shot)
-                    .filter(|text| {
-                        page.contains(&text.text.to_string())
-                            && inside(text.bounds, plate)
-                            && plate.size.width < px(1170.0)
-                    })
-                    .map(|text| text.text.to_string())
-                    .collect();
-                assert!(
-                    on_plate.is_empty(),
-                    "the page is still on the moving plate at {} ms: {on_plate:?}",
-                    shot.at
-                );
+                let on_plate: Vec<_> = reading(shot).filter(|text| page.contains(&text.text.to_string()) && inside(text.bounds, plate) && plate.size.width < px(1170.0)).map(|text| text.text.to_string()).collect();
+                assert!(on_plate.is_empty(), "the page is still on the moving plate at {} ms: {on_plate:?}", shot.at);
             }
         }
         assert!(folding > 0, "the page is seen folding");
-        assert!(
-            !uncovered.is_empty(),
-            "the graph is uncovered around the plate"
-        );
-        let landing = shots
-            .iter()
-            .filter(|shot| shot.plate.is_some())
-            .last()
-            .expect("a plate");
-        assert!(
-            near(landing.plate.expect("plate"), node, 2.0),
-            "the plate closes onto the node: {:?} vs {node:?}",
-            landing.plate
-        );
-        assert!(
-            near(landing.gem.expect("the gem travels"), node, 2.0),
-            "the gem lands on the node: {:?} vs {node:?}",
-            landing.gem
-        );
-        assert!(
-            shots
-                .iter()
-                .find(|shot| shot.at == 400)
-                .is_some_and(|shot| shot.plate.is_none()),
-            "landed by 400 ms"
-        );
+        assert!(!uncovered.is_empty(), "the graph is uncovered around the plate");
+        let landing = shots.iter().filter(|shot| shot.plate.is_some()).last().expect("a plate");
+        assert!(near(landing.plate.expect("plate"), node, 2.0), "the plate closes onto the node: {:?} vs {node:?}", landing.plate);
+        assert!(near(landing.gem.expect("the gem travels"), node, 2.0), "the gem lands on the node: {:?} vs {node:?}", landing.gem);
+        assert!(shots.iter().find(|shot| shot.at == 400).is_some_and(|shot| shot.plate.is_none()), "landed by 400 ms");
     }
 
     /// Back to the page from its node: the plate opens from the node's
@@ -3216,96 +2312,44 @@ mod transit_tests {
     fn a_node_unfolds_into_its_page_which_prints_once_the_plate_covers(cx: &mut TestAppContext) {
         use crate::navigation::View;
         let mut rig = page_over_graph(cx);
-        let page: BTreeSet<String> = reading(&shoot(&mut rig, 0, 0))
-            .map(|text| text.text.to_string())
-            .collect();
+        let page: BTreeSet<String> = reading(&shoot(&mut rig, 0, 0)).map(|text| text.text.to_string()).collect();
         set_view(View::Graph)(&mut rig);
         rig.settle();
         let rest = shoot(&mut rig, 0, 0);
-        let graph: BTreeSet<String> = reading(&rest)
-            .map(|text| text.text.to_string())
-            .filter(|text| !page.contains(text))
-            .collect();
-        let page_only: BTreeSet<String> = page
-            .iter()
-            .filter(|text| !reading(&rest).any(|seen| seen.text.as_ref() == text.as_str()))
-            .cloned()
-            .collect();
-        assert!(
-            !graph.is_empty() && !page_only.is_empty(),
-            "the views differ: {graph:?}"
-        );
-        let node = rig
-            .shell
-            .read_with(rig.cx, |shell, cx| shell.graph_focus_glyph(cx))
-            .expect("a focused node");
+        let graph: BTreeSet<String> = reading(&rest).map(|text| text.text.to_string()).filter(|text| !page.contains(text)).collect();
+        let page_only: BTreeSet<String> = page.iter().filter(|text| !reading(&rest).any(|seen| seen.text.as_ref() == text.as_str())).cloned().collect();
+        assert!(!graph.is_empty() && !page_only.is_empty(), "the views differ: {graph:?}");
+        let node = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_focus_glyph(cx)).expect("a focused node");
         let shots = film(&mut rig, set_view(View::Page), 480);
         rig.settle();
         let hero = rig
             .cx
-            .update(|window, cx| {
-                facet::motion::shared::last_bounds(
-                    crate::shell::kit::shared_id(&crate::shell::tests::symbol("RelationLabel")),
-                    window,
-                    cx,
-                )
-            })
+            .update(|window, cx| facet::motion::shared::last_bounds(crate::shell::kit::shared_id(&crate::shell::tests::symbol("RelationLabel")), window, cx))
             .expect("the page paints its hero");
         let first = &shots[0];
-        assert!(
-            near(first.plate.expect("a plate"), node, 1.0),
-            "frame 0's plate is the node: {:?} vs {node:?}",
-            first.plate
-        );
-        assert!(
-            near(first.gem.expect("a gem"), node, 1.0),
-            "frame 0's gem is the node: {:?} vs {node:?}",
-            first.gem
-        );
+        assert!(near(first.plate.expect("a plate"), node, 1.0), "frame 0's plate is the node: {:?} vs {node:?}", first.plate);
+        assert!(near(first.gem.expect("a gem"), node, 1.0), "frame 0's gem is the node: {:?} vs {node:?}", first.gem);
         let (mut printed, mut behind) = (0, 0);
         let mut last = first.plate.expect("a plate");
         for shot in &shots {
             let Some(plate) = shot.plate else { continue };
-            assert!(
-                inside(last, plate),
-                "the plate never shrinks: {last:?} then {plate:?} at {} ms",
-                shot.at
-            );
+            assert!(inside(last, plate), "the plate never shrinks: {last:?} then {plate:?} at {} ms", shot.at);
             last = plate;
             let covered = plate.size.width >= px(1175.0) && plate.size.height >= px(823.5);
             for text in reading(shot) {
                 let content = text.text.to_string();
                 if covered {
-                    assert!(
-                        !graph.contains(&content),
-                        "`{content}` (the graph's) is painted over the covered reader at {} ms",
-                        shot.at
-                    );
+                    assert!(!graph.contains(&content), "`{content}` (the graph's) is painted over the covered reader at {} ms", shot.at);
                     printed += usize::from(page_only.contains(&content));
                 } else {
-                    assert!(
-                        !page_only.contains(&content),
-                        "`{content}` (the page's) is painted before the plate covers, at {} ms: {plate:?}",
-                        shot.at
-                    );
+                    assert!(!page_only.contains(&content), "`{content}` (the page's) is painted before the plate covers, at {} ms: {plate:?}", shot.at);
                     behind += usize::from(graph.contains(&content));
                 }
             }
         }
-        assert!(
-            printed > 0 && behind > 0,
-            "the graph is seen around the plate ({behind}) and the page prints on it ({printed})"
-        );
-        let landing = shots
-            .iter()
-            .filter(|shot| shot.gem.is_some())
-            .last()
-            .expect("a gem");
-        assert!(
-            near(landing.gem.expect("gem"), hero, 1.0),
-            "the gem lands on the hero: {:?} vs {hero:?}",
-            landing.gem
-        );
+        assert!(printed > 0 && behind > 0, "the graph is seen around the plate ({behind}) and the page prints on it ({printed})");
+        let landing = shots.iter().filter(|shot| shot.gem.is_some()).last().expect("a gem");
+        assert!(near(landing.gem.expect("gem"), hero, 1.0), "the gem lands on the hero: {:?} vs {hero:?}", landing.gem);
     }
 
     /// Films the Fold and the Unfold at the storyboard's t values into
@@ -3315,9 +2359,7 @@ mod transit_tests {
     #[ignore = "writes the fold films: NUDOX_TRANSIT_FILM=DIR … -- --ignored"]
     fn film_the_fold_pair(cx: &mut TestAppContext) {
         use crate::navigation::View;
-        let Some(dir) = std::env::var_os("NUDOX_TRANSIT_FILM") else {
-            return;
-        };
+        let Some(dir) = std::env::var_os("NUDOX_TRANSIT_FILM") else { return };
         let mut rig = page_over_graph(cx);
         let rest = shoot(&mut rig, 0, 0);
         let times = [0, 40, 80, 120, 160, 240, 320, 480];
@@ -3325,14 +2367,7 @@ mod transit_tests {
         rig.settle();
         let unfold = film_at(&mut rig, set_view(View::Page), &times);
         let frame = |shot: &Shot| {
-            let rect = |b: Bounds<Pixels>| {
-                serde_json::json!([
-                    f32::from(b.origin.x),
-                    f32::from(b.origin.y),
-                    f32::from(b.size.width),
-                    f32::from(b.size.height)
-                ])
-            };
+            let rect = |b: Bounds<Pixels>| serde_json::json!([f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height)]);
             serde_json::json!({
                 "t": shot.at,
                 "p": shot.p,
@@ -3364,24 +2399,15 @@ mod transit_tests {
         assert!(before > 0.6 && before < 0.8, "p(112) = {before}");
         rig.cx.simulate_keystrokes("cmd-[");
         shots.push(shoot(&mut rig, 128, 16));
-        let turned = shots
-            .last()
-            .and_then(|shot| shot.p)
-            .expect("the same driver");
-        assert!(
-            (turned - before).abs() < 0.12,
-            "no jump: {before:.3} then {turned:.3}"
-        );
+        let turned = shots.last().and_then(|shot| shot.p).expect("the same driver");
+        assert!((turned - before).abs() < 0.12, "no jump: {before:.3} then {turned:.3}");
         let mut last = turned;
         let mut at = 128;
         while at < 600 {
             at += 16;
             let shot = shoot(&mut rig, at, 16);
             let Some(p) = shot.p else { break };
-            assert!(
-                p <= last + 0.02,
-                "it heads home: {last:.3} then {p:.3} at {at} ms"
-            );
+            assert!(p <= last + 0.02, "it heads home: {last:.3} then {p:.3} at {at} ms");
             last = p;
         }
         assert!(last < 0.1, "it closed: p = {last}");
@@ -3420,20 +2446,12 @@ mod transit_ledger {
         let mut seen: BTreeMap<String, usize> = BTreeMap::new();
         texts
             .into_iter()
-            .filter(|text| {
-                text.bounds.origin.x >= px(264.0)
-                    && text.bounds.origin.y >= px(50.0)
-                    && text.alpha > 0.0
-            })
+            .filter(|text| text.bounds.origin.x >= px(264.0) && text.bounds.origin.y >= px(50.0) && text.alpha > 0.0)
             .map(|text| {
                 let content = text.text.to_string();
                 let n = seen.entry(content.clone()).or_default();
                 *n += 1;
-                let key = if *n == 1 {
-                    content
-                } else {
-                    format!("{content}#{n}")
-                };
+                let key = if *n == 1 { content } else { format!("{content}#{n}") };
                 (key, text.bounds, text.alpha)
             })
             .collect()
@@ -3448,37 +2466,21 @@ mod transit_ledger {
     /// at alpha ≥ .25, and not crossing at rest), faded runs (alpha in
     /// .05..<.95 for more than two frames), and how long text of the page
     /// that left is still drawn.
-    fn judge(
-        label: &str,
-        film: &[Vec<(String, Bounds<Pixels>, f32)>],
-        before: &BTreeSet<String>,
-    ) -> (bool, String) {
+    fn judge(label: &str, film: &[Vec<(String, Bounds<Pixels>, f32)>], before: &BTreeSet<String>) -> (bool, String) {
         let rest = film.last().cloned().unwrap_or_default();
         let after: BTreeSet<String> = rest.iter().map(|(key, ..)| key.clone()).collect();
         // A pair that also crosses once everything is still is a layout
         // overlap, not motion (counted apart, as the pixel check does). It
         // is matched by content: occurrence keys shift as labels come and go.
-        let content = |key: &str| {
-            key.rsplit_once('#')
-                .filter(|(_, n)| n.parse::<usize>().is_ok())
-                .map_or(key, |(text, _)| text)
-                .to_owned()
-        };
+        let content = |key: &str| key.rsplit_once('#').filter(|(_, n)| n.parse::<usize>().is_ok()).map_or(key, |(text, _)| text).to_owned();
         let at_rest = |a: &str, b: &str| {
             let (a, b) = (content(a), content(b));
             rest.iter().enumerate().any(|(i, (x, xb, _))| {
-                content(x) == a
-                    && rest
-                        .iter()
-                        .enumerate()
-                        .any(|(j, (y, yb, _))| i != j && content(y) == b && crossing(*xb, *yb))
+                content(x) == a && rest.iter().enumerate().any(|(j, (y, yb, _))| i != j && content(y) == b && crossing(*xb, *yb))
             })
         };
         let mut layout = BTreeSet::new();
-        let (mut overlap, mut faded): (
-            BTreeMap<(String, String), Vec<usize>>,
-            BTreeMap<String, Vec<usize>>,
-        ) = Default::default();
+        let (mut overlap, mut faded): (BTreeMap<(String, String), Vec<usize>>, BTreeMap<String, Vec<usize>>) = Default::default();
         let mut lingers = 0;
         for (index, texts) in film.iter().enumerate() {
             for (i, (a, at, alpha)) in texts.iter().enumerate() {
@@ -3490,11 +2492,7 @@ mod transit_ledger {
                 }
                 for (b, bt, beta) in &texts[i + 1..] {
                     if *alpha >= 0.25 && *beta >= 0.25 && crossing(*at, *bt) {
-                        let pair = if a <= b {
-                            (a.clone(), b.clone())
-                        } else {
-                            (b.clone(), a.clone())
-                        };
+                        let pair = if a <= b { (a.clone(), b.clone()) } else { (b.clone(), a.clone()) };
                         if at_rest(a, b) {
                             layout.insert((content(&pair.0), content(&pair.1)));
                         } else {
@@ -3514,18 +2512,10 @@ mod transit_ledger {
             }
             runs
         };
-        let overlaps: Vec<_> = overlap
-            .iter()
-            .flat_map(|(pair, frames)| runs(frames).into_iter().map(move |run| (pair.clone(), run)))
-            .collect();
+        let overlaps: Vec<_> = overlap.iter().flat_map(|(pair, frames)| runs(frames).into_iter().map(move |run| (pair.clone(), run))).collect();
         let fades: Vec<_> = faded
             .iter()
-            .flat_map(|(key, frames)| {
-                runs(frames)
-                    .into_iter()
-                    .filter(|(a, b)| b - a + 1 > 2)
-                    .map(move |run| (key.clone(), run))
-            })
+            .flat_map(|(key, frames)| runs(frames).into_iter().filter(|(a, b)| b - a + 1 > 2).map(move |run| (key.clone(), run)))
             .collect();
         let pass = overlaps.is_empty() && fades.is_empty();
         let mut out = format!(
@@ -3541,12 +2531,7 @@ mod transit_ledger {
         let mut worst = overlaps.clone();
         worst.sort_by_key(|(_, (a, b))| std::cmp::Reverse(b - a));
         for ((a, b), (from, to)) in worst {
-            let _ = writeln!(
-                out,
-                "      overlap {}..{} ms: `{a}` × `{b}`",
-                from * 16,
-                to * 16
-            );
+            let _ = writeln!(out, "      overlap {}..{} ms: `{a}` × `{b}`", from * 16, to * 16);
         }
         for (key, (from, to)) in fades {
             let _ = writeln!(out, "      faded   {}..{} ms: `{key}`", from * 16, to * 16);
@@ -3560,9 +2545,7 @@ mod transit_ledger {
     #[gpui::test]
     #[ignore = "the route film's box ledger: NUDOX_TRANSIT_LEDGER=DIR … -- --ignored"]
     fn route_film(cx: &mut TestAppContext) {
-        let Some(dir) = std::env::var_os("NUDOX_TRANSIT_LEDGER") else {
-            return;
-        };
+        let Some(dir) = std::env::var_os("NUDOX_TRANSIT_LEDGER") else { return };
         let package = Route::Package(crate::navigation::PackageRoute {
             project: None,
             at: None,
@@ -3573,41 +2556,21 @@ mod transit_ledger {
         let mut rig = rig(cx, None, 1440.0, 900.0);
         rig.cx.update(|_, cx| cx.set_global(gpui::TextTrace));
         type Act = Box<dyn Fn(&mut Rig)>;
-        let navigate = |route: Route| -> Act {
-            Box::new(move |rig: &mut Rig| {
-                rig.graph.root.update(rig.cx, |root, cx| {
-                    root.queue(Intent::Navigate(route.clone()), cx)
-                })
-            })
-        };
-        let key = |keys: &'static str| -> Act {
-            Box::new(move |rig: &mut Rig| rig.cx.simulate_keystrokes(keys))
-        };
+        let navigate = |route: Route| -> Act { Box::new(move |rig: &mut Rig| rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(route.clone()), cx))) };
+        let key = |keys: &'static str| -> Act { Box::new(move |rig: &mut Rig| rig.cx.simulate_keystrokes(keys)) };
         let acts: Vec<(&str, Act)> = vec![
             ("route-down orbit→package", navigate(package.clone())),
-            (
-                "route-down package→symbol (RelationLabel)",
-                navigate(page_route("RelationLabel")),
-            ),
+            ("route-down package→symbol (RelationLabel)", navigate(page_route("RelationLabel"))),
             ("back symbol→package (⌘[)", key("cmd-[")),
             ("forward package→symbol (⌘])", key("cmd-]")),
-            (
-                "across symbol→symbol (KindGlyph)",
-                navigate(page_route("KindGlyph")),
-            ),
+            ("across symbol→symbol (KindGlyph)", navigate(page_route("KindGlyph"))),
             ("back across (⌘[)", key("cmd-[")),
             ("view page→code (⌘.)", key("cmd-.")),
             ("view code→page (⌘.)", key("cmd-.")),
             ("route-up (⌘↑)", key("cmd-up")),
-            (
-                "route-down package→symbol (again)",
-                navigate(page_route("RelationLabel")),
-            ),
+            ("route-down package→symbol (again)", navigate(page_route("RelationLabel"))),
             ("graph-enter (G)", key("g")),
-            (
-                "graph-exit (route view=page)",
-                navigate(page_route("RelationLabel")),
-            ),
+            ("graph-exit (route view=page)", navigate(page_route("RelationLabel"))),
             ("route world", navigate(Route::World)),
             ("world→package", navigate(package.clone())),
         ];
@@ -3615,10 +2578,7 @@ mod transit_ledger {
         let mut passed = 0;
         for (label, act) in &acts {
             rig.settle();
-            let before: BTreeSet<String> = frame(&mut rig, 0)
-                .into_iter()
-                .map(|(key, ..)| key)
-                .collect();
+            let before: BTreeSet<String> = frame(&mut rig, 0).into_iter().map(|(key, ..)| key).collect();
             act(&mut rig);
             let mut film = vec![frame(&mut rig, 0)];
             for _ in 0..50 {
@@ -3628,11 +2588,7 @@ mod transit_ledger {
             passed += usize::from(pass);
             ledger.push_str(&text);
         }
-        let _ = writeln!(
-            ledger,
-            "route film: {passed} of {} transitions pass",
-            acts.len()
-        );
+        let _ = writeln!(ledger, "route film: {passed} of {} transitions pass", acts.len());
         let path = std::path::PathBuf::from(dir).join("route-film.ledger");
         std::fs::write(&path, &ledger).expect("write the ledger");
         eprint!("{ledger}");

@@ -75,20 +75,13 @@ pub struct Listed {
 
 impl Listed {
     fn of(kinds: &[NodeId], at_most: usize) -> Self {
-        Self {
-            shown: kinds.iter().copied().take(at_most).collect(),
-            more: kinds.len().saturating_sub(at_most),
-        }
+        Self { shown: kinds.iter().copied().take(at_most).collect(), more: kinds.len().saturating_sub(at_most) }
     }
 
     /// `Io, Spawn, DaemonExited or StartTimeout and 2 more`.
     #[must_use]
     pub fn words(&self, world: &World) -> String {
-        let names: Vec<&str> = self
-            .shown
-            .iter()
-            .map(|&v| world.node(v).name.as_ref())
-            .collect();
+        let names: Vec<&str> = self.shown.iter().map(|&v| world.node(v).name.as_ref()).collect();
         let mut out = match names.split_last() {
             Some((last, rest)) if !rest.is_empty() => format!("{} or {last}", rest.join(", ")),
             _ => names.concat(),
@@ -142,11 +135,7 @@ impl KindsLine {
             parts.push(self.own.words(world));
         }
         for c in &self.carried {
-            parts.push(format!(
-                "{} through {}",
-                c.kinds.words(world),
-                world.node(c.via).name
-            ));
+            parts.push(format!("{} through {}", c.kinds.words(world), world.node(c.via).name));
         }
         format!("{} {}", parts.join(" · "), self.count())
     }
@@ -184,18 +173,9 @@ impl Section {
     /// 10 kinds apart`.
     #[must_use]
     pub fn foot(&self) -> String {
-        let mut out = format!(
-            "{} call{} in this world can fail with it",
-            self.can,
-            if self.can == 1 { "" } else { "s" }
-        );
+        let mut out = format!("{} call{} in this world can fail with it", self.can, if self.can == 1 { "" } else { "s" });
         if self.told > 0 {
-            let _ = write!(
-                out,
-                " · your code tells {} of its {} kinds apart",
-                self.told,
-                self.rows.len()
-            );
+            let _ = write!(out, " · your code tells {} of its {} kinds apart", self.told, self.rows.len());
         }
         out
     }
@@ -211,11 +191,7 @@ impl Section {
             if row.makers.is_empty() {
                 out.push_str("nothing here builds it");
             } else {
-                let names: Vec<&str> = row
-                    .makers
-                    .iter()
-                    .map(|&j| world.node(j).name.as_ref())
-                    .collect();
+                let names: Vec<&str> = row.makers.iter().map(|&j| world.node(j).name.as_ref()).collect();
                 out.push_str(&names.join(" · "));
                 if row.more > 0 {
                     let _ = write!(out, " + {}", row.more);
@@ -265,15 +241,10 @@ fn breaks_line(s: &str) -> bool {
 /// (`/^(?:[\w:]+::)?Result\s*<(.*)>$/`).
 fn result_args(ret: &str) -> Option<&str> {
     let s = ret.trim();
-    let head_end = s
-        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':'))
-        .unwrap_or(s.len());
+    let head_end = s.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':')).unwrap_or(s.len());
     let head = &s[..head_end];
     let named = head == "Result" || head.strip_suffix("::Result").is_some_and(|p| !p.is_empty());
-    let inner = s[head_end..]
-        .trim_start()
-        .strip_prefix('<')?
-        .strip_suffix('>')?;
+    let inner = s[head_end..].trim_start().strip_prefix('<')?.strip_suffix('>')?;
     (named && !breaks_line(inner)).then_some(inner)
 }
 
@@ -282,10 +253,7 @@ fn result_args(ret: &str) -> Option<&str> {
 fn alias_args(ty: &str) -> Option<&str> {
     let mut from = 0;
     while let Some(at) = ty[from..].find("Result").map(|k| from + k) {
-        if let Some(inner) = ty[at + "Result".len()..]
-            .trim_start()
-            .strip_prefix('<')
-            .and_then(|r| r.strip_suffix('>'))
+        if let Some(inner) = ty[at + "Result".len()..].trim_start().strip_prefix('<').and_then(|r| r.strip_suffix('>'))
             && !breaks_line(inner)
         {
             return Some(inner);
@@ -318,13 +286,7 @@ impl<'w> Fails<'w> {
     }
 
     fn resolve(&self, name: &str, from: NodeId) -> Option<NodeId> {
-        match (InWorld {
-            world: self.world,
-            names: self.names,
-            from,
-        })
-        .named(&[name.to_owned()])
-        {
+        match (InWorld { world: self.world, names: self.names, from }).named(&[name.to_owned()]) {
             Some(Target::Node(j)) => Some(j),
             _ => None,
         }
@@ -372,37 +334,22 @@ impl<'w> Fails<'w> {
             let alias = self.alias(n.pkg)?;
             let inner = alias_args(self.world.node(alias).ty.as_deref()?)?;
             let parts = split_top(inner, ',');
-            if parts.len() >= 2 {
-                self.resolve(plain_name(&parts[1]), alias)
-            } else {
-                None
-            }
+            if parts.len() >= 2 { self.resolve(plain_name(&parts[1]), alias) } else { None }
         }?;
-        matches!(
-            self.world.node(e).kind,
-            Kind::Enum | Kind::Struct | Kind::Type | Kind::Union
-        )
-        .then_some(e)
+        matches!(self.world.node(e).kind, Kind::Enum | Kind::Struct | Kind::Type | Kind::Union).then_some(e)
     }
 
     /// E's kinds: its variants, in declaration order.
     #[must_use]
     pub fn kinds(&self, e: NodeId) -> Vec<NodeId> {
-        self.world
-            .kids(e)
-            .iter()
-            .copied()
-            .filter(|&v| self.world.node(v).kind == Kind::Variant)
-            .collect()
+        self.world.kids(e).iter().copied().filter(|&v| self.world.node(v).kind == Kind::Variant).collect()
     }
 
     /// A maker of E: a callable returning E that is not one of E's own
     /// methods with a receiver.
     fn maker(&self, j: NodeId, e: NodeId) -> bool {
         let n = self.world.node(j);
-        is_callable(self.world, j)
-            && self.error_of(j) == Some(e)
-            && !(n.parent == Some(e) && n.recv.is_some())
+        is_callable(self.world, j) && self.error_of(j) == Some(e) && !(n.parent == Some(e) && n.recv.is_some())
     }
 
     fn direct(&self, e: NodeId) -> Rc<Direct> {
@@ -411,10 +358,7 @@ impl<'w> Fails<'w> {
         }
         let mut d = Direct::default();
         for v in self.kinds(e) {
-            for j in self
-                .world
-                .ins(v, Rel::USES | Rel::CALLS | Rel::TYPE | Rel::HAS)
-            {
+            for j in self.world.ins(v, Rel::USES | Rel::CALLS | Rel::TYPE | Rel::HAS) {
                 if !self.maker(j, e) {
                     continue;
                 }
@@ -440,11 +384,7 @@ impl<'w> Fails<'w> {
     pub fn fails_of(&self, j: NodeId) -> Option<CanFail> {
         let error = self.error_of(j)?;
         let kinds = self.fill(j)?.borrow().clone();
-        Some(CanFail {
-            error,
-            kinds,
-            all: self.kinds(error).len(),
-        })
+        Some(CanFail { error, kinds, all: self.kinds(error).len() })
     }
 
     /// The memo entry for `j`, filled on first ask. A cycle back into a
@@ -458,12 +398,7 @@ impl<'w> Fails<'w> {
         self.memo.borrow_mut().insert(j, out.clone());
         let direct = self.direct(e);
         if let Some(&at) = direct.at.get(&j) {
-            out.borrow_mut().extend(
-                direct.order[at]
-                    .1
-                    .iter()
-                    .map(|&kind| Given { kind, via: None }),
-            );
+            out.borrow_mut().extend(direct.order[at].1.iter().map(|&kind| Given { kind, via: None }));
         }
         for g in self.world.outs(j, Rel::CALLS) {
             if g == j || !is_callable(self.world, g) || self.error_of(g) != Some(e) {
@@ -484,14 +419,7 @@ impl<'w> Fails<'w> {
     /// Per kind of E, who builds it directly: yours first, then importance.
     #[must_use]
     pub fn makers_of(&self, e: NodeId) -> Vec<Makers> {
-        let mut per: Vec<Makers> = self
-            .kinds(e)
-            .into_iter()
-            .map(|kind| Makers {
-                kind,
-                makers: Vec::new(),
-            })
-            .collect();
+        let mut per: Vec<Makers> = self.kinds(e).into_iter().map(|kind| Makers { kind, makers: Vec::new() }).collect();
         for (j, kinds) in &self.direct(e).order {
             for v in kinds {
                 if let Some(m) = per.iter_mut().find(|m| m.kind == *v) {
@@ -501,11 +429,7 @@ impl<'w> Fails<'w> {
         }
         let w = self.world;
         for m in &mut per {
-            m.makers.sort_by(|&a, &b| {
-                w.yours(b)
-                    .cmp(&w.yours(a))
-                    .then_with(|| w.importance(b).total_cmp(&w.importance(a)))
-            });
+            m.makers.sort_by(|&a, &b| w.yours(b).cmp(&w.yours(a)).then_with(|| w.importance(b).total_cmp(&w.importance(a))));
         }
         per
     }
@@ -515,16 +439,10 @@ impl<'w> Fails<'w> {
     #[must_use]
     pub fn reach_of(&self, e: NodeId) -> Reach {
         let n = u32::try_from(self.world.len()).unwrap_or(u32::MAX);
-        let can = (0..n)
-            .filter(|&j| is_callable(self.world, j) && self.error_of(j) == Some(e))
-            .count();
+        let can = (0..n).filter(|&j| is_callable(self.world, j) && self.error_of(j) == Some(e)).count();
         let mut told = Vec::new();
         for v in self.kinds(e) {
-            let tells = self
-                .world
-                .ins(v, Rel::USES | Rel::CALLS | Rel::TYPE)
-                .into_iter()
-                .any(|j| self.world.yours(j) && !self.maker(j, e));
+            let tells = self.world.ins(v, Rel::USES | Rel::CALLS | Rel::TYPE).into_iter().any(|j| self.world.yours(j) && !self.maker(j, e));
             if tells {
                 told.push(v);
             }
@@ -541,12 +459,7 @@ impl<'w> Fails<'w> {
         if r.kinds.is_empty() || r.all == 0 {
             return None;
         }
-        let own: Vec<NodeId> = r
-            .kinds
-            .iter()
-            .filter(|g| g.via.is_none())
-            .map(|g| g.kind)
-            .collect();
+        let own: Vec<NodeId> = r.kinds.iter().filter(|g| g.via.is_none()).map(|g| g.kind).collect();
         let mut through: Vec<(NodeId, Vec<NodeId>)> = Vec::new();
         for g in &r.kinds {
             let Some(via) = g.via else { continue };
@@ -557,14 +470,7 @@ impl<'w> Fails<'w> {
         }
         Some(KindsLine {
             own: Listed::of(&own, 6),
-            carried: through
-                .iter()
-                .take(3)
-                .map(|(via, kinds)| Carried {
-                    kinds: Listed::of(kinds, 4),
-                    via: *via,
-                })
-                .collect(),
+            carried: through.iter().take(3).map(|(via, kinds)| Carried { kinds: Listed::of(kinds, 4), via: *via }).collect(),
             given: r.kinds.len(),
             all: r.all,
         })
@@ -593,17 +499,8 @@ impl<'w> Fails<'w> {
                 makers: m.makers.into_iter().take(4).collect(),
             })
             .collect();
-        let wide = kinds
-            .iter()
-            .map(|&v| self.world.node(v).name.encode_utf16().count())
-            .max()
-            .unwrap_or(0);
-        Some(Section {
-            rows,
-            can: reach.can,
-            told: reach.told.len(),
-            column: wide.min(28) + 1,
-        })
+        let wide = kinds.iter().map(|&v| self.world.node(v).name.encode_utf16().count()).max().unwrap_or(0);
+        Some(Section { rows, can: reach.can, told: reach.told.len(), column: wide.min(28) + 1 })
     }
 }
 

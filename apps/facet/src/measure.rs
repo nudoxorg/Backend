@@ -357,11 +357,7 @@ impl Measure {
         } else {
             Rung::Mark
         };
-        if self.reveal.xray {
-            fitted.up()
-        } else {
-            fitted
-        }
+        if self.reveal.xray { fitted.up() } else { fitted }
     }
 }
 
@@ -400,26 +396,12 @@ mod tests {
     fn big_text_behaves_like_a_small_window() {
         // 200 % text on 1440 px is a 720 design px room, the same as 720 px at 100 %.
         let big = at(1440.0, 2.0, Density::Comfortable).fluid_room();
-        assert_eq!(
-            big.design(),
-            at(720.0, 1.0, Density::Comfortable).fluid_room().design()
-        );
+        assert_eq!(big.design(), at(720.0, 1.0, Density::Comfortable).fluid_room().design());
         assert_eq!(big.design().get(), 720.0);
-        assert_eq!(
-            at(1440.0, 1.0, Density::Comfortable)
-                .fluid_room()
-                .design()
-                .get(),
-            1440.0
-        );
+        assert_eq!(at(1440.0, 1.0, Density::Comfortable).fluid_room().design().get(), 1440.0);
         // And the gaps breathe as they do in a 720 px window (twice as many real px).
         let gap = |m: Measure| f32::from(m.space(Space::Gutter));
-        assert!(
-            (gap(at(1440.0, 2.0, Density::Comfortable))
-                - 2.0 * gap(at(720.0, 1.0, Density::Comfortable)))
-            .abs()
-                < 1e-3
-        );
+        assert!((gap(at(1440.0, 2.0, Density::Comfortable)) - 2.0 * gap(at(720.0, 1.0, Density::Comfortable))).abs() < 1e-3);
     }
 
     #[test]
@@ -454,22 +436,12 @@ mod tests {
             #[allow(clippy::cast_precision_loss)]
             let w = w as f32;
             let now = f32::from(at(w, 1.0, Density::Comfortable).space(Space::Gutter));
-            assert!(
-                (now - old(w)).abs() < 1e-3,
-                "moved at {w}: {} -> {now}",
-                old(w)
-            );
+            assert!((now - old(w)).abs() < 1e-3, "moved at {w}: {} -> {now}", old(w));
         }
         // Below 480 it keeps tightening down to a phone, above 1600 it keeps opening up.
         let gutter = |w: f32| f32::from(at(w, 1.0, Density::Comfortable).space(Space::Gutter));
-        assert!(
-            gutter(320.0) < gutter(400.0) && gutter(400.0) < gutter(480.0),
-            "no tightening under 480"
-        );
-        assert!(
-            gutter(2560.0) > gutter(2000.0) && gutter(2000.0) > gutter(1600.0),
-            "no opening over 1600"
-        );
+        assert!(gutter(320.0) < gutter(400.0) && gutter(400.0) < gutter(480.0), "no tightening under 480");
+        assert!(gutter(2560.0) > gutter(2000.0) && gutter(2000.0) > gutter(1600.0), "no opening over 1600");
     }
 
     #[test]

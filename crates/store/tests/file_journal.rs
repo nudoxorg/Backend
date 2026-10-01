@@ -5,6 +5,9 @@ mod harness;
 
 use std::{fs, io::Write};
 
+use harness::{
+    ExpectedFailure, Fixture, ScenarioError, expect_commit, expect_journal, receipt_end,
+};
 use backend_store::journal::{
     CommitError, FileJournal, FrameSequence, HeaderError, JOURNAL_FRAME_BYTES,
     JOURNAL_HEADER_BYTES, JournalError, JournalOffset,
@@ -12,9 +15,6 @@ use backend_store::journal::{
 use backend_store::workflow::{
     Effect, EffectAction, EventKind, FailureCode, Phase, Recovery, StageKey, StageOutput,
     WORKFLOW_RECORD_BYTES, WorkflowEvent, WorkflowState, WorkflowVersion,
-};
-use harness::{
-    ExpectedFailure, Fixture, ScenarioError, expect_commit, expect_journal, receipt_end,
 };
 
 fn event(key: StageKey, kind: EventKind) -> WorkflowEvent {

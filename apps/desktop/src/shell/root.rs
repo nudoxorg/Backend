@@ -9,10 +9,11 @@
 use super::ask::Ask;
 use super::bodies::graph::OpenView;
 use super::facet_sync::{Surroundings, facet_for};
+use super::system;
+use facet::overlay::float;
 use super::focus::{Target, Zone};
 use super::frame::{Frame, FrameInput, ShelfMode};
 use super::hints::{HintMode, Step};
-use super::jump::route_symbol;
 use super::keys::{self, CONTEXT};
 use super::pins::Pins;
 use super::reader::{Reader, Way};
@@ -21,28 +22,27 @@ use super::reveal::{HOLD, RevealHold};
 use super::shelf::Shelf;
 use super::status::Status;
 use super::symbol_links::{Request as SymbolLinkRequest, Step as SymbolLinkStep};
-use super::system;
+use super::jump::route_symbol;
 use super::titlebar::Titlebar;
 use super::{kit, peeks};
-use crate::model::ZoomStep;
 use crate::model::pages::PageKey;
+use crate::model::ZoomStep;
 use crate::navigation::{Intent, Overlay, Route, RouteDepth, SettingsPage, View};
-use crate::runtime::UiEntityGraph;
+use std::sync::Arc;
 use crate::runtime::store::{Branch, StoreEvent};
+use crate::runtime::UiEntityGraph;
 use facet::fluid::{Modes, Room};
 use facet::motion::{Motion, spec};
-use facet::overlay::float;
 use facet::paint::ground;
 use facet::tokens::fluid::{ASK, ASK_PANEL, COLUMNS_SHARE, Float};
 use facet::tokens::geo;
 use facet::{ActiveFacet as _, Measure, Reveal};
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement,
-    IntoElement, KeyContext, KeyDownEvent, Modifiers, ModifiersChangedEvent, ParentElement, Pixels,
-    Render, SharedString, StatefulInteractiveElement, StyleRefinement, Styled, Subscription, Task,
-    Window, WindowAppearance, div, px,
+    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement, IntoElement,
+    KeyContext, KeyDownEvent, Modifiers, ModifiersChangedEvent, ParentElement, Render, SharedString,
+    Pixels, StatefulInteractiveElement, StyleRefinement, Styled, Subscription, Task, Window,
+    WindowAppearance, div, px,
 };
-use std::sync::Arc;
 
 /// The drawer's paint priority: above every page's own deferred draws (a
 /// fanned hand of tiles is 1 or 2) and below the float layer (`float::PRIORITY`,
@@ -128,12 +128,8 @@ impl Shell {
             shell: cx.entity().downgrade(),
         };
         let titlebar = new_region(&links, cx, |store| Titlebar::new(links.clone(), store));
-        let shelf = new_region(&links, cx, |store| {
-            Shelf::new("shelf", links.clone(), store)
-        });
-        let shelf_over = new_region(&links, cx, |store| {
-            Shelf::new("shelf-over", links.clone(), store)
-        });
+        let shelf = new_region(&links, cx, |store| Shelf::new("shelf", links.clone(), store));
+        let shelf_over = new_region(&links, cx, |store| Shelf::new("shelf-over", links.clone(), store));
         let reader = new_region(&links, cx, |store| Reader::new(links.clone(), store));
         let status = new_region(&links, cx, |store| Status::new(links.clone(), store));
         let pins = new_region(&links, cx, |store| Pins::new(links.clone(), store));
@@ -146,13 +142,9 @@ impl Shell {
             reader.targets.set_active(true);
         });
         let focus = cx.focus_handle();
-        let events = cx.subscribe_in(
-            &graph.store,
-            window,
-            |shell: &mut Self, _, event: &StoreEvent, window, cx| {
-                shell.store_event(event, window, cx);
-            },
-        );
+        let events = cx.subscribe_in(&graph.store, window, |shell: &mut Self, _, event: &StoreEvent, window, cx| {
+            shell.store_event(event, window, cx);
+        });
         let appearance = cx.observe_window_appearance(window, |shell: &mut Self, window, cx| {
             shell.around.dark = is_dark(window.appearance());
             shell.apply_facet(cx);
@@ -176,10 +168,7 @@ impl Shell {
         });
         // The system's text size is read once, off the UI thread.
         cx.spawn(async move |shell, cx| {
-            let text = cx
-                .background_executor()
-                .spawn(async { system::text_scale() })
-                .await;
+            let text = cx.background_executor().spawn(async { system::text_scale() }).await;
             let _ = shell.update(cx, |shell, cx| {
                 if (shell.around.text - text).abs() > f32::EPSILON {
                     shell.around.text = text;
@@ -247,15 +236,11 @@ impl Shell {
 
     /// Fixture world loading is part of the capture's real I/O quiet gate.
     #[must_use]
-    pub fn graph_ready(&self, cx: &App) -> bool {
-        self.reader.read(cx).graph_ready(cx)
-    }
+    pub fn graph_ready(&self, cx: &App) -> bool { self.reader.read(cx).graph_ready(cx) }
 
     /// The retained map's actual node count, focus and camera.
     #[must_use]
-    pub fn graph_report(&self, cx: &App) -> String {
-        self.reader.read(cx).graph_report(cx)
-    }
+    pub fn graph_report(&self, cx: &App) -> String { self.reader.read(cx).graph_report(cx) }
 
     #[cfg(feature = "visual-harness")]
     pub fn graph_state(&self, cx: &App) -> facet::gallery::json::Json {
@@ -264,42 +249,25 @@ impl Shell {
 
     #[cfg(test)]
     pub(crate) fn focus_graph_node(&mut self, node: facet::graph::NodeId, cx: &mut Context<Self>) {
-        self.reader
-            .update(cx, |reader, cx| reader.focus_graph_node(node, cx));
+        self.reader.update(cx, |reader, cx| reader.focus_graph_node(node, cx));
     }
 
     #[cfg(test)]
-    pub(crate) fn graph_entity(&self, cx: &App) -> Option<Entity<facet::graph::GraphView>> {
-        self.reader.read(cx).graph_entity(cx)
-    }
+    pub(crate) fn graph_entity(&self, cx: &App) -> Option<Entity<facet::graph::GraphView>> { self.reader.read(cx).graph_entity(cx) }
 
     #[cfg(test)]
-    pub(crate) fn ask_entity(&self) -> Entity<Ask> {
-        self.ask.clone()
-    }
+    pub(crate) fn ask_entity(&self) -> Entity<Ask> { self.ask.clone() }
 
     #[cfg(test)]
-    pub(crate) fn graph_canvas_geometry(
-        &self,
-        node: facet::graph::NodeId,
-        cx: &App,
-    ) -> (
-        Option<gpui::Bounds<gpui::Pixels>>,
-        Option<gpui::Bounds<gpui::Pixels>>,
-        gpui::LayerTransform,
-    ) {
+    pub(crate) fn graph_canvas_geometry(&self, node: facet::graph::NodeId, cx: &App) -> (Option<gpui::Bounds<gpui::Pixels>>, Option<gpui::Bounds<gpui::Pixels>>, gpui::LayerTransform) {
         self.reader.read(cx).graph_canvas_geometry(node, cx)
     }
 
     #[cfg(test)]
-    pub(crate) fn graph_gem_morphing(&self, cx: &App) -> bool {
-        self.reader.read(cx).graph_gem_morphing(cx)
-    }
+    pub(crate) fn graph_gem_morphing(&self, cx: &App) -> bool { self.reader.read(cx).graph_gem_morphing(cx) }
 
     #[cfg(test)]
-    pub(crate) fn graph_focus_glyph(&self, cx: &App) -> Option<gpui::Bounds<gpui::Pixels>> {
-        self.reader.read(cx).graph_focus_glyph(cx)
-    }
+    pub(crate) fn graph_focus_glyph(&self, cx: &App) -> Option<gpui::Bounds<gpui::Pixels>> { self.reader.read(cx).graph_focus_glyph(cx) }
 
     #[cfg(test)]
     pub(crate) fn graph_find_state(&self, window: &Window, cx: &App) -> (bool, bool) {
@@ -307,18 +275,8 @@ impl Shell {
     }
 
     #[cfg(test)]
-    pub(crate) fn titlebar_target_bounds(
-        &self,
-        id: &str,
-        cx: &App,
-    ) -> Option<gpui::Bounds<gpui::Pixels>> {
-        self.titlebar
-            .read(cx)
-            .targets
-            .placed()
-            .into_iter()
-            .find(|(target, _)| target.id == id)
-            .map(|(_, bounds)| bounds)
+    pub(crate) fn titlebar_target_bounds(&self, id: &str, cx: &App) -> Option<gpui::Bounds<gpui::Pixels>> {
+        self.titlebar.read(cx).targets.placed().into_iter().find(|(target, _)| target.id == id).map(|(_, bounds)| bounds)
     }
 
     /// The reader's own targets: a clone still shares its focus and
@@ -354,10 +312,7 @@ impl Shell {
     }
 
     #[cfg(test)]
-    pub(crate) fn shelf_comb(
-        &self,
-        cx: &App,
-    ) -> Option<(Option<SharedString>, Option<SharedString>)> {
+    pub(crate) fn shelf_comb(&self, cx: &App) -> Option<(Option<SharedString>, Option<SharedString>)> {
         self.shelf.read(cx).comb_marks()
     }
 
@@ -375,12 +330,7 @@ impl Shell {
     /// The reader's hero name, line by line, as last set.
     #[must_use]
     pub fn hero_lines(&self, cx: &App) -> Vec<String> {
-        self.reader
-            .read(cx)
-            .hero()
-            .iter()
-            .map(ToString::to_string)
-            .collect()
+        self.reader.read(cx).hero().iter().map(ToString::to_string).collect()
     }
 
     /// How many pages the reader draws (the current one plus any leaving).
@@ -428,22 +378,13 @@ impl Shell {
         let on = |open: bool| if open { "open" } else { "closed" }.to_owned();
         vec![
             ("zone", format!("{zone:?}").to_lowercase()),
-            (
-                "focus",
-                focused.map_or_else(|| "none".to_owned(), |id| id.to_string()),
-            ),
+            ("focus", focused.map_or_else(|| "none".to_owned(), |id| id.to_string())),
             ("ask", on(self.ask_open)),
             ("peek", on(self.peeking.is_some())),
             ("hints", on(self.hints.is_some())),
             ("hand", on(self.hand_open)),
             ("zen", if self.zen { "on" } else { "off" }.to_owned()),
-            (
-                "shelf",
-                self.frame.map_or_else(
-                    || "none".to_owned(),
-                    |frame| format!("{:?}", frame.shelf).to_lowercase(),
-                ),
-            ),
+            ("shelf", self.frame.map_or_else(|| "none".to_owned(), |frame| format!("{:?}", frame.shelf).to_lowercase())),
             ("drawer", on(self.shelf_over_open)),
         ]
     }
@@ -451,16 +392,8 @@ impl Shell {
     /// Subscribes `notified` to every view the window draws (the root and
     /// each region): a notification is what dirties a real window, so tests
     /// count these to prove an idle window costs nothing.
-    pub fn watch_views(
-        shell: &Entity<Self>,
-        cx: &mut App,
-        notified: std::rc::Rc<std::cell::Cell<u64>>,
-    ) -> Vec<Subscription> {
-        fn watch<T: 'static>(
-            entity: &Entity<T>,
-            cx: &mut App,
-            counter: &std::rc::Rc<std::cell::Cell<u64>>,
-        ) -> Subscription {
+    pub fn watch_views(shell: &Entity<Self>, cx: &mut App, notified: std::rc::Rc<std::cell::Cell<u64>>) -> Vec<Subscription> {
+        fn watch<T: 'static>(entity: &Entity<T>, cx: &mut App, counter: &std::rc::Rc<std::cell::Cell<u64>>) -> Subscription {
             let counter = std::rc::Rc::clone(counter);
             cx.observe(entity, move |_, _| counter.set(counter.get() + 1))
         }
@@ -616,15 +549,10 @@ impl Shell {
     fn cancel_symbol_link(&mut self, cx: &mut Context<Self>) {
         self.symbol_link_generation = self.symbol_link_generation.wrapping_add(1);
         self.pending_symbol_link = None;
-        self.status
-            .update(cx, |status, cx| status.set_opening(None, cx));
+        self.status.update(cx, |status, cx| status.set_opening(None, cx));
     }
 
-    fn find_symbol_link(
-        &mut self,
-        query: crate::model::pages::SearchQuery,
-        cx: &mut Context<Self>,
-    ) {
+    fn find_symbol_link(&mut self, query: crate::model::pages::SearchQuery, cx: &mut Context<Self>) {
         self.cancel_symbol_link(cx);
         self.links.dispatch(
             Intent::Navigate(Route::Orbit(crate::navigation::OrbitRoute::Browse(
@@ -637,11 +565,7 @@ impl Shell {
     /// S2: the exact identity behind an anatomy link could not be resolved
     /// (no admitted package, or no exact match in its complete outline).
     /// The link does not move the page; the Notice says so.
-    fn symbol_link_unresolved(
-        &mut self,
-        query: crate::model::pages::SearchQuery,
-        cx: &mut Context<Self>,
-    ) {
+    fn symbol_link_unresolved(&mut self, query: crate::model::pages::SearchQuery, cx: &mut Context<Self>) {
         self.cancel_symbol_link(cx);
         let snapshot = self.links.snapshot(cx);
         let notice = crate::runtime::graph_focus::Notice {
@@ -650,17 +574,13 @@ impl Shell {
             message: format!("{} isn't in the index", query.text).into(),
             retry: None,
         };
-        self.links
-            .store
-            .update(cx, |store, cx| store.set_notice(Some(notice), cx));
+        self.links.store.update(cx, |store, cx| store.set_notice(Some(notice), cx));
     }
 
     /// A resource event may be for a previous route, release, or fixture.
     /// Only the same generation and exact source identity can open a page.
     fn resolve_symbol_link(&mut self, cx: &mut Context<Self>) {
-        let Some(request) = self.pending_symbol_link.take() else {
-            return;
-        };
+        let Some(request) = self.pending_symbol_link.take() else { return };
         let snapshot = self.links.snapshot(cx);
         let current = crate::runtime::fixture_world::link_world(cx);
         if !request.accepts(
@@ -671,20 +591,14 @@ impl Shell {
         ) {
             return;
         }
-        let Some(package) = &request.package else {
-            self.symbol_link_unresolved(request.query, cx);
-            return;
-        };
+        let Some(package) = &request.package else { self.symbol_link_unresolved(request.query, cx); return };
         let resource = self.links.store.read(cx).package(package);
         match request.step(&resource) {
             SymbolLinkStep::Waiting => self.pending_symbol_link = Some(request),
             SymbolLinkStep::Resolved(resolved) => {
                 self.cancel_symbol_link(cx);
                 if let Some(route) = kit::symbol_view_route(
-                    resolved.package.as_str(),
-                    &resolved.symbol,
-                    View::Page,
-                    resolved.line,
+                    resolved.package.as_str(), &resolved.symbol, View::Page, resolved.line,
                 ) {
                     self.links.dispatch(Intent::Navigate(route), cx);
                 } else {
@@ -711,9 +625,7 @@ impl Shell {
             }
         };
         let snapshot = self.links.snapshot(cx);
-        let Some((world, identities)) = crate::runtime::fixture_world::link_world(cx) else {
-            return;
-        };
+        let Some((world, identities)) = crate::runtime::fixture_world::link_world(cx) else { return };
         let Some(request) = SymbolLinkRequest::new(
             node,
             snapshot.route().clone(),
@@ -721,38 +633,30 @@ impl Shell {
             self.symbol_link_generation,
             world,
             identities,
-        ) else {
-            return;
-        };
+        ) else { return };
         if snapshot.route().at().is_some() {
             // Fixture nodes describe the pinned world, not the viewed old
             // release. Offer the index query without claiming an exact page.
             self.find_symbol_link(request.query, cx);
             return;
         }
-        if let Some(package) = crate::runtime::store::route_package(snapshot.route()) {
+        if let Some(package) = crate::runtime::store::route_package(snapshot.route())
+        {
             let dossier = self.links.store.read(cx).package(&package);
             if let Ok(Some(dossier)) = super::bodies::graph::open_value(&dossier, snapshot.key())
                 && let Some(tree) = dossier.outline.known()
-                && let Some(symbol) =
-                    crate::runtime::fixture_world::symbol_of(node, &package, tree, cx)
+                && let Some(symbol) = crate::runtime::fixture_world::symbol_of(node, &package, tree, cx)
                 && let Some(route) = kit::symbol_route(package.as_str(), &symbol)
             {
                 self.links.dispatch(Intent::Navigate(route), cx);
                 return;
             }
         }
-        let Some(package) = request.package.clone() else {
-            self.symbol_link_unresolved(request.query, cx);
-            return;
-        };
+        let Some(package) = request.package.clone() else { self.symbol_link_unresolved(request.query, cx); return };
         let opening: SharedString = format!("Opening {}…", request.query.text).into();
-        self.status
-            .update(cx, |status, cx| status.set_opening(Some(opening), cx));
+        self.status.update(cx, |status, cx| status.set_opening(Some(opening), cx));
         self.pending_symbol_link = Some(request);
-        self.links.store.update(cx, |store, cx| {
-            store.ensure(PageKey::Package(package), cx);
-        });
+        self.links.store.update(cx, |store, cx| { store.ensure(PageKey::Package(package), cx); });
         self.resolve_symbol_link(cx);
     }
 
@@ -787,11 +691,7 @@ impl Shell {
         }
     }
 
-    fn with_zone<R>(
-        &mut self,
-        cx: &mut Context<Self>,
-        f: impl FnOnce(&mut super::focus::Targets) -> R,
-    ) -> R {
+    fn with_zone<R>(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut super::focus::Targets) -> R) -> R {
         match self.zone {
             Zone::Titlebar => self.titlebar.update(cx, |region, _| f(&mut region.targets)),
             Zone::Shelf => self.shelf.update(cx, |region, _| f(&mut region.targets)),
@@ -833,9 +733,7 @@ impl Shell {
     }
 
     fn visible_zones(&self) -> Vec<Zone> {
-        let shelf = self
-            .frame
-            .map_or(true, |frame| frame.shelf != ShelfMode::Hidden);
+        let shelf = self.frame.map_or(true, |frame| frame.shelf != ShelfMode::Hidden);
         let pins = self.frame.is_some_and(|frame| frame.pins);
         Zone::ALL
             .into_iter()
@@ -850,10 +748,7 @@ impl Shell {
     /// Tab: the next zone takes the keyboard.
     pub fn cycle_zone(&mut self, forward: bool, cx: &mut Context<Self>) {
         let zones = self.visible_zones();
-        let at = zones
-            .iter()
-            .position(|zone| *zone == self.zone)
-            .unwrap_or(0);
+        let at = zones.iter().position(|zone| *zone == self.zone).unwrap_or(0);
         let next = if forward {
             zones[(at + 1) % zones.len()]
         } else {
@@ -935,15 +830,10 @@ impl Shell {
     /// S: the focused declaration's code. On the page's own declaration it
     /// is a view switch (the entry is replaced); on another one it goes there.
     fn peel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.open_graph_view(OpenView::Code, window, cx) {
-            return;
-        }
+        if self.open_graph_view(OpenView::Code, window, cx) { return; }
         let snapshot = self.links.snapshot(cx);
         let own = route_symbol(snapshot.route());
-        let symbol = self
-            .current(cx)
-            .and_then(|target| target.source)
-            .or_else(|| own.clone());
+        let symbol = self.current(cx).and_then(|target| target.source).or_else(|| own.clone());
         let Some(symbol) = symbol else {
             return;
         };
@@ -963,25 +853,16 @@ impl Shell {
             Route::Package(route) => Some(route.package.as_str().to_owned()),
             Route::Orbit(_) | Route::World => None,
         });
-        if let Some(route) =
-            package.and_then(|package| kit::symbol_view_route(&package, &symbol, View::Code, line))
-        {
+        if let Some(route) = package.and_then(|package| kit::symbol_view_route(&package, &symbol, View::Code, line)) {
             self.links.dispatch(Intent::Navigate(route), cx);
         }
     }
 
     /// All graph-to-declaration commands use the visible graph selection.
-    fn open_graph_view(
-        &mut self,
-        target: OpenView,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
+    fn open_graph_view(&mut self, target: OpenView, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let snapshot = self.links.snapshot(cx);
         if super::bodies::graph::is_graph(snapshot.route()) && snapshot.overlay().is_none() {
-            self.reader.update(cx, |reader, cx| {
-                reader.open_graph_current(target, window, cx)
-            });
+            self.reader.update(cx, |reader, cx| reader.open_graph_current(target, window, cx));
             return true;
         }
         false
@@ -989,38 +870,26 @@ impl Shell {
 
     /// G enters the graph, or opens the graph's current symbol page.
     fn toggle_graph(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.reader.read(cx).graph_focused(cx)
-            && self.open_graph_view(OpenView::Page, window, cx)
-        {
-            return;
-        }
+        if self.reader.read(cx).graph_focused(cx) && self.open_graph_view(OpenView::Page, window, cx) { return; }
         let snapshot = self.links.snapshot(cx);
         let intent = match snapshot.route() {
-            Route::Symbol(route) if route.view == View::Graph => {
-                Intent::Navigate(snapshot.route().with_view(View::Page).expect("symbol view"))
-            }
+            Route::Symbol(route) if route.view == View::Graph => Intent::Navigate(snapshot.route().with_view(View::Page).expect("symbol view")),
             Route::Symbol(_) => Intent::SetView(View::Graph),
             Route::World => Intent::Back,
             Route::Orbit(_) | Route::Package(_) => {
                 self.reader.update(cx, |reader, cx| reader.reset_world(cx));
                 Intent::Navigate(Route::World)
-            }
+            },
         };
         self.links.dispatch(intent, cx);
     }
 
     /// ⌘.: a declaration's code ↔ its page.
     fn code_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.open_graph_view(OpenView::Code, window, cx) {
-            return;
-        }
+        if self.open_graph_view(OpenView::Code, window, cx) { return; }
         let snapshot = self.links.snapshot(cx);
         if let Route::Symbol(route) = snapshot.route() {
-            let view = if route.view == View::Code {
-                View::Page
-            } else {
-                View::Code
-            };
+            let view = if route.view == View::Code { View::Page } else { View::Code };
             self.links.dispatch(Intent::SetView(view), cx);
         }
     }
@@ -1045,10 +914,7 @@ impl Shell {
         }
         let mut placed = Vec::new();
         placed.extend(self.titlebar.read(cx).targets.placed());
-        if self
-            .frame
-            .is_some_and(|frame| frame.shelf == ShelfMode::Shelf)
-        {
+        if self.frame.is_some_and(|frame| frame.shelf == ShelfMode::Shelf) {
             placed.extend(self.shelf.read(cx).targets.placed());
         }
         placed.extend(self.reader.read(cx).targets.placed());
@@ -1063,8 +929,7 @@ impl Shell {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.hints.is_none() && self.hand_open && self.hand_key(event.keystroke.key.as_str(), cx)
-        {
+        if self.hints.is_none() && self.hand_open && self.hand_key(event.keystroke.key.as_str(), cx) {
             cx.stop_propagation();
             return;
         }
@@ -1102,11 +967,7 @@ impl Shell {
             return;
         }
         if float::step_back(window, cx) {
-            if self
-                .peeking
-                .as_ref()
-                .is_some_and(|key| !peeks::is_open(key, window, cx))
-            {
+            if self.peeking.as_ref().is_some_and(|key| !peeks::is_open(key, window, cx)) {
                 self.peeking = None;
             }
             cx.notify();
@@ -1158,43 +1019,22 @@ impl Shell {
         // the stone leaves from the canvas glyph.
         let graph_focus = self.links.store.read(cx).graph_focus().cloned();
         if let Some(focus) = graph_focus {
-            let Some(Route::Symbol(route)) = focus
-                .indexed
-                .as_ref()
-                .and_then(|(package, symbol)| kit::symbol_route(package.as_str(), symbol))
-            else {
+            let Some(Route::Symbol(route)) = focus.indexed.as_ref().and_then(|(package, symbol)| kit::symbol_route(package.as_str(), symbol)) else {
                 // Not in the index: nothing to hold, and the Notice says so.
                 let notice = crate::runtime::graph_focus::Notice {
                     visit: snapshot.route().clone(),
                     root: snapshot.key(),
-                    message: format!(
-                        "{}::{}::{} isn't in the index",
-                        focus.package, focus.module, focus.name
-                    )
-                    .into(),
+                    message: format!("{}::{}::{} isn't in the index", focus.package, focus.module, focus.name).into(),
                     retry: None,
                 };
-                self.links
-                    .store
-                    .update(cx, |store, cx| store.set_notice(Some(notice), cx));
+                self.links.store.update(cx, |store, cx| store.set_notice(Some(notice), cx));
                 return;
             };
             if let Some(stone) = self.reader.read(cx).graph_focus_glyph(cx) {
-                facet::motion::shared::remember(
-                    super::hand::take_key(route.id.as_str()),
-                    stone,
-                    window,
-                    cx,
-                );
+                facet::motion::shared::remember(super::hand::take_key(route.id.as_str()), stone, window, cx);
             }
             let at = now_ms();
-            let held = crate::model::hand::Held {
-                package: route.package,
-                id: Some(route.id),
-                why: crate::model::hand::HeldWhy::Pin,
-                held_at: at,
-                touched_at: at,
-            };
+            let held = crate::model::hand::Held { package: route.package, id: Some(route.id), why: crate::model::hand::HeldWhy::Pin, held_at: at, touched_at: at };
             self.links.dispatch(Intent::Hold(held), cx);
             return;
         }
@@ -1205,19 +1045,12 @@ impl Shell {
         };
         if let Some(id) = &id
             && let Ok(symbol) = crate::model::pages::SymbolRef::new(id.as_str())
-            && let Some(stone) =
-                facet::motion::shared::last_bounds(kit::shared_id(&symbol), window, cx)
+            && let Some(stone) = facet::motion::shared::last_bounds(kit::shared_id(&symbol), window, cx)
         {
             facet::motion::shared::remember(super::hand::take_key(id.as_str()), stone, window, cx);
         }
         let at = now_ms();
-        let held = crate::model::hand::Held {
-            package,
-            id,
-            why: crate::model::hand::HeldWhy::Pin,
-            held_at: at,
-            touched_at: at,
-        };
+        let held = crate::model::hand::Held { package, id, why: crate::model::hand::HeldWhy::Pin, held_at: at, touched_at: at };
         self.links.dispatch(Intent::Hold(held), cx);
     }
 
@@ -1258,8 +1091,7 @@ impl Shell {
             }
             "backspace" => {
                 let at = self.hand_at.min(count - 1);
-                self.links
-                    .dispatch(Intent::LetGo(view.cards[at].held.clone()), cx);
+                self.links.dispatch(Intent::LetGo(view.cards[at].held.clone()), cx);
                 self.hand_at = at.saturating_sub(usize::from(at + 1 == count));
                 if count == 1 {
                     self.hand_open = false;
@@ -1286,8 +1118,7 @@ impl Shell {
         };
         if let Some(route) = held_route(&card.held) {
             self.links.dispatch(Intent::Navigate(route), cx);
-            self.links
-                .dispatch(Intent::TouchHeld(card.held.clone(), now_ms()), cx);
+            self.links.dispatch(Intent::TouchHeld(card.held.clone(), now_ms()), cx);
         }
     }
 
@@ -1302,20 +1133,10 @@ impl Shell {
         let route = snapshot.route();
         match depth {
             RouteDepth::Page | RouteDepth::Source => {
-                let target = if depth == RouteDepth::Page {
-                    OpenView::Page
-                } else {
-                    OpenView::Code
-                };
-                if self.open_graph_view(target, window, cx) {
-                    return;
-                }
+                let target = if depth == RouteDepth::Page { OpenView::Page } else { OpenView::Code };
+                if self.open_graph_view(target, window, cx) { return; }
                 if matches!(route, Route::Symbol(_)) {
-                    let view = if depth == RouteDepth::Page {
-                        View::Page
-                    } else {
-                        View::Code
-                    };
+                    let view = if depth == RouteDepth::Page { View::Page } else { View::Code };
                     self.links.dispatch(Intent::SetView(view), cx);
                 }
             }
@@ -1362,13 +1183,7 @@ impl Shell {
     /// window grows and a sheet across it on a phone (`facet::tokens::fluid::ASK`,
     /// held through its hysteresis band). The rest of the page is veiled; a click
     /// on the veil puts Ask away.
-    fn ask_layer(
-        &self,
-        frame: &Frame,
-        status: f32,
-        viewport: gpui::Size<Pixels>,
-        cx: &App,
-    ) -> Option<AnyElement> {
+    fn ask_layer(&self, frame: &Frame, status: f32, viewport: gpui::Size<Pixels>, cx: &App) -> Option<AnyElement> {
         if !self.ask_open {
             return None;
         }
@@ -1445,10 +1260,7 @@ impl Shell {
             // adds its transients: Ask and hint mode.
             let mut entries = Vec::new();
             for bounds in ask.into_iter().flatten() {
-                entries.push(facet::probe::StackEntry {
-                    bounds: Some(bounds.clone()),
-                    ..entry(bounds.key.clone(), "dialog", false)
-                });
+                entries.push(facet::probe::StackEntry { bounds: Some(bounds.clone()), ..entry(bounds.key.clone(), "dialog", false) });
             }
             if let Some(count) = hints {
                 entries.push(entry(format!("hints:{count}"), "hints", false));
@@ -1462,10 +1274,7 @@ impl Shell {
 }
 
 fn is_dark(appearance: WindowAppearance) -> bool {
-    matches!(
-        appearance,
-        WindowAppearance::Dark | WindowAppearance::VibrantDark
-    )
+    matches!(appearance, WindowAppearance::Dark | WindowAppearance::VibrantDark)
 }
 
 impl Render for Shell {
@@ -1497,32 +1306,14 @@ impl Render for Shell {
         }
         // The status bar grows a line when the address's name has to wrap;
         // sized here from the same fit the bar sets, in the same frame.
-        let (graph_focus, graph_notice) = {
-            let store = self.links.store.read(cx);
-            (store.graph_focus().cloned(), store.notice().cloned())
-        };
+        let (graph_focus, graph_notice) = { let store = self.links.store.read(cx); (store.graph_focus().cloned(), store.notice().cloned()) };
         // The foot grows only for what the graph says in it; the hand's
         // marks sit on one line.
-        let status_height = if super::status::graph_speaks(
-            &snapshot,
-            graph_focus.as_ref(),
-            graph_notice.as_ref(),
-        ) {
+        let status_height = if super::status::graph_speaks(&snapshot, graph_focus.as_ref(), graph_notice.as_ref()) {
             // Set beside the hand's marks when it holds anything (the same
             // room the foot sets it in).
-            let room = super::status::line_room(
-                viewport.width,
-                frame.shelf_width,
-                snapshot.session().hand.held().len(),
-                scale,
-            );
-            let (lines, role) = super::status::feedback_lines(
-                &snapshot,
-                graph_focus.as_ref(),
-                graph_notice.as_ref(),
-                room,
-                cx,
-            );
+            let room = super::status::line_room(viewport.width, frame.shelf_width, snapshot.session().hand.held().len(), scale);
+            let (lines, role) = super::status::feedback_lines(&snapshot, graph_focus.as_ref(), graph_notice.as_ref(), room, cx);
             super::status::height(lines.len(), &role, f32::from(frame.status))
         } else {
             f32::from(frame.status)
@@ -1531,31 +1322,11 @@ impl Render for Shell {
         // column arriving); a window drag inside one mode tracks directly,
         // because the targets do not move.
         let columns_cap = f32::from(viewport.width) * COLUMNS_SHARE.at(frame.room);
-        let shelf_width = self
-            .motion
-            .animate(
-                "shelf-w",
-                f32::from(frame.shelf_width),
-                spec::SETTLE,
-                window,
-                cx,
-            )
-            .min(columns_cap);
-        let pins_width = self
-            .motion
-            .animate(
-                "pins-w",
-                f32::from(frame.pins_width),
-                spec::SETTLE,
-                window,
-                cx,
-            )
-            .min((columns_cap - shelf_width).max(0.0));
+        let shelf_width = self.motion.animate("shelf-w", f32::from(frame.shelf_width), spec::SETTLE, window, cx).min(columns_cap);
+        let pins_width = self.motion.animate("pins-w", f32::from(frame.pins_width), spec::SETTLE, window, cx).min((columns_cap - shelf_width).max(0.0));
         let spine = geo::KSPINE * scale;
-        self.shelf
-            .update(cx, |shelf, _| shelf.set_rest(frame.shelf_body, spine));
-        self.shelf_over
-            .update(cx, |shelf, _| shelf.set_rest(frame.drawer, spine));
+        self.shelf.update(cx, |shelf, _| shelf.set_rest(frame.shelf_body, spine));
+        self.shelf_over.update(cx, |shelf, _| shelf.set_rest(frame.drawer, spine));
         // The hand's marks start from the reader column's left edge.
         let reader_left = px(shelf_width);
         self.status.update(cx, |status, cx| {
@@ -1566,16 +1337,7 @@ impl Render for Shell {
         });
         let over = frame.shelf_overlays && self.shelf_over_open;
         let drawer = f32::from(frame.drawer);
-        let over_x = self
-            .motion
-            .animate(
-                "over-x",
-                if over { 0.0 } else { -drawer },
-                spec::SETTLE,
-                window,
-                cx,
-            )
-            .min(columns_cap);
+        let over_x = self.motion.animate("over-x", if over { 0.0 } else { -drawer }, spec::SETTLE, window, cx).min(columns_cap);
 
         let mut context = KeyContext::new_with_defaults();
         context.add(CONTEXT);
@@ -1595,10 +1357,7 @@ impl Render for Shell {
             .children((shelf_width > 0.5).then(|| {
                 measured(
                     &self.shelf,
-                    StyleRefinement::default()
-                        .w(px(shelf_width))
-                        .h_full()
-                        .flex_none(),
+                    StyleRefinement::default().w(px(shelf_width)).h_full().flex_none(),
                 )
             }))
             .child(measured(
@@ -1608,10 +1367,7 @@ impl Render for Shell {
             .children((pins_width > 0.5).then(|| {
                 measured(
                     &self.pins,
-                    StyleRefinement::default()
-                        .w(px(pins_width))
-                        .h_full()
-                        .flex_none(),
+                    StyleRefinement::default().w(px(pins_width)).h_full().flex_none(),
                 )
             }));
 
@@ -1626,30 +1382,16 @@ impl Render for Shell {
             .font_family(facet::fonts::family(facet::tokens::ty::BODY))
             .track_focus(&self.focus)
             .key_context(context)
-            .on_action(
-                cx.listener(|shell, _: &keys::FocusNext, window, cx| shell.walk(1, window, cx)),
-            )
-            .on_action(
-                cx.listener(|shell, _: &keys::FocusPrev, window, cx| shell.walk(-1, window, cx)),
-            )
-            .on_action(
-                cx.listener(|shell, _: &keys::Activate, window, cx| shell.activate(window, cx)),
-            )
+            .on_action(cx.listener(|shell, _: &keys::FocusNext, window, cx| shell.walk(1, window, cx)))
+            .on_action(cx.listener(|shell, _: &keys::FocusPrev, window, cx| shell.walk(-1, window, cx)))
+            .on_action(cx.listener(|shell, _: &keys::Activate, window, cx| shell.activate(window, cx)))
             .on_action(cx.listener(|shell, _: &keys::Peek, window, cx| shell.peek(window, cx)))
-            .on_action(
-                cx.listener(|shell, _: &keys::PeelSource, window, cx| shell.peel(window, cx)),
-            )
+            .on_action(cx.listener(|shell, _: &keys::PeelSource, window, cx| shell.peel(window, cx)))
             .on_action(cx.listener(|shell, _: &keys::HintMode, _, cx| shell.hint_mode(cx)))
             .on_action(cx.listener(|shell, _: &keys::Ask, _, cx| shell.open_ask(cx)))
-            .on_action(
-                cx.listener(|shell, _: &keys::Back, _, cx| shell.links.dispatch(Intent::Back, cx)),
-            )
-            .on_action(cx.listener(|shell, _: &keys::Forward, _, cx| {
-                shell.links.dispatch(Intent::Forward, cx)
-            }))
-            .on_action(cx.listener(|shell, _: &keys::Surface, _, cx| {
-                shell.links.dispatch(Intent::ZoomOut, cx)
-            }))
+            .on_action(cx.listener(|shell, _: &keys::Back, _, cx| shell.links.dispatch(Intent::Back, cx)))
+            .on_action(cx.listener(|shell, _: &keys::Forward, _, cx| shell.links.dispatch(Intent::Forward, cx)))
+            .on_action(cx.listener(|shell, _: &keys::Surface, _, cx| shell.links.dispatch(Intent::ZoomOut, cx)))
             .on_action(cx.listener(|shell, _: &keys::Zen, _, cx| {
                 shell.zen = !shell.zen;
                 cx.notify();
@@ -1658,34 +1400,16 @@ impl Render for Shell {
             .on_action(cx.listener(|shell, _: &keys::NextZone, _, cx| shell.cycle_zone(true, cx)))
             .on_action(cx.listener(|shell, _: &keys::PrevZone, _, cx| shell.cycle_zone(false, cx)))
             .on_action(cx.listener(|shell, _: &keys::Escape, window, cx| shell.escape(window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::DepthOrbit, window, cx| {
-                shell.depth(RouteDepth::Orbit, window, cx)
-            }))
-            .on_action(cx.listener(|shell, _: &keys::DepthPackage, window, cx| {
-                shell.depth(RouteDepth::Package, window, cx)
-            }))
-            .on_action(cx.listener(|shell, _: &keys::DepthPage, window, cx| {
-                shell.depth(RouteDepth::Page, window, cx)
-            }))
-            .on_action(cx.listener(|shell, _: &keys::DepthCode, window, cx| {
-                shell.depth(RouteDepth::Source, window, cx)
-            }))
-            .on_action(
-                cx.listener(|shell, _: &keys::Graph, window, cx| shell.toggle_graph(window, cx)),
-            )
-            .on_action(
-                cx.listener(|shell, _: &keys::CodePage, window, cx| shell.code_page(window, cx)),
-            )
-            .on_action(
-                cx.listener(|shell, open: &facet::anatomy::Open, _, cx| {
-                    shell.open_anatomy(open, cx)
-                }),
-            )
+            .on_action(cx.listener(|shell, _: &keys::DepthOrbit, window, cx| shell.depth(RouteDepth::Orbit, window, cx)))
+            .on_action(cx.listener(|shell, _: &keys::DepthPackage, window, cx| shell.depth(RouteDepth::Package, window, cx)))
+            .on_action(cx.listener(|shell, _: &keys::DepthPage, window, cx| shell.depth(RouteDepth::Page, window, cx)))
+            .on_action(cx.listener(|shell, _: &keys::DepthCode, window, cx| shell.depth(RouteDepth::Source, window, cx)))
+            .on_action(cx.listener(|shell, _: &keys::Graph, window, cx| shell.toggle_graph(window, cx)))
+            .on_action(cx.listener(|shell, _: &keys::CodePage, window, cx| shell.code_page(window, cx)))
+            .on_action(cx.listener(|shell, open: &facet::anatomy::Open, _, cx| shell.open_anatomy(open, cx)))
             .on_action(cx.listener(|shell, _: &keys::ZoomIn, _, cx| shell.zoom(ZoomStep::In, cx)))
             .on_action(cx.listener(|shell, _: &keys::ZoomOut, _, cx| shell.zoom(ZoomStep::Out, cx)))
-            .on_action(
-                cx.listener(|shell, _: &keys::ZoomReset, _, cx| shell.zoom(ZoomStep::Reset, cx)),
-            )
+            .on_action(cx.listener(|shell, _: &keys::ZoomReset, _, cx| shell.zoom(ZoomStep::Reset, cx)))
             .on_action(cx.listener(|shell, _: &keys::Hold, window, cx| shell.hold(window, cx)))
             .on_action(cx.listener(|shell, _: &keys::OpenHand, _, cx| shell.toggle_hand(cx)))
             .on_action(cx.listener(|shell, _: &keys::HandCard1, _, cx| shell.hand_card(0, cx)))
@@ -1696,13 +1420,9 @@ impl Render for Shell {
             .on_action(cx.listener(|shell, _: &keys::CopyAddress, _, cx| shell.copy_address(cx)))
             .on_action(cx.listener(|shell, _: &keys::Tour, _, cx| shell.tour(cx)))
             .on_action(cx.listener(|shell, _: &keys::OpenSettings, _, cx| {
-                shell
-                    .links
-                    .dispatch(Intent::OpenSettings(SettingsPage::Appearance), cx);
+                shell.links.dispatch(Intent::OpenSettings(SettingsPage::Appearance), cx);
             }))
-            .on_action(cx.listener(|shell, _: &keys::AddFolder, _, cx| {
-                shell.links.dispatch(Intent::OpenAddProject, cx)
-            }))
+            .on_action(cx.listener(|shell, _: &keys::AddFolder, _, cx| shell.links.dispatch(Intent::OpenAddProject, cx)))
             .on_modifiers_changed(cx.listener(|shell, event: &ModifiersChangedEvent, _, cx| {
                 shell.modifiers(event.modifiers, cx);
             }))
@@ -1718,18 +1438,12 @@ impl Render for Shell {
                     .flex_col()
                     .child(measured(
                         &self.titlebar,
-                        StyleRefinement::default()
-                            .w_full()
-                            .h(frame.titlebar)
-                            .flex_none(),
+                        StyleRefinement::default().w_full().h(frame.titlebar).flex_none(),
                     ))
                     .child(body)
                     .child(measured(
                         &self.status,
-                        StyleRefinement::default()
-                            .w_full()
-                            .h(px(status_height))
-                            .flex_none(),
+                        StyleRefinement::default().w_full().h(px(status_height)).flex_none(),
                     )),
             );
         // The hand opened (the Row rung), just above the foot.
@@ -1743,13 +1457,7 @@ impl Render for Shell {
                     .bottom(px(status_height + 6.0 * scale))
                     .left(px(shelf_width + 14.0 * scale))
                     .max_w(viewport.width - px(shelf_width + 28.0 * scale))
-                    .child(super::hand::row(
-                        &view,
-                        self.hand_at,
-                        &self.links,
-                        &measure,
-                        palette,
-                    )),
+                    .child(super::hand::row(&view, self.hand_at, &self.links, &measure, palette)),
             );
         } else if self.hand_open {
             self.hand_open = false;
@@ -1790,10 +1498,7 @@ impl Render for Shell {
                                 .left(px(over_x))
                                 .w(frame.drawer)
                                 .bg(palette.g2)
-                                .child(measured(
-                                    &self.shelf_over,
-                                    StyleRefinement::default().size_full(),
-                                )),
+                                .child(measured(&self.shelf_over, StyleRefinement::default().size_full())),
                         ),
                 )
                 .with_priority(DRAWER_PRIORITY),
@@ -1817,34 +1522,20 @@ impl Render for Shell {
         // Ask is a dialog over the veiled page: its field (the titlebar) and
         // its plate are what a person reads; the page under the veil is not.
         let ask_bounds = self.ask_open.then(|| {
-            let sample = |key: &str, x: Pixels, y: Pixels, width: Pixels, height: Pixels| {
-                facet::probe::BoundsSample {
-                    key: key.to_owned(),
-                    x: f32::from(x),
-                    y: f32::from(y),
-                    width: f32::from(width),
-                    height: f32::from(height),
-                }
+            let sample = |key: &str, x: Pixels, y: Pixels, width: Pixels, height: Pixels| facet::probe::BoundsSample {
+                key: key.to_owned(),
+                x: f32::from(x),
+                y: f32::from(y),
+                width: f32::from(width),
+                height: f32::from(height),
             };
-            let mut parts = vec![sample(
-                "ask-field",
-                px(0.0),
-                px(0.0),
-                viewport.width,
-                frame.titlebar,
-            )];
+            let mut parts = vec![sample("ask-field", px(0.0), px(0.0), viewport.width, frame.titlebar)];
             // The plate is drawn once there is a query for it to answer
             // (`ask_layer`): before that the page under the veil is all
             // there is (J9's ask-open frame held the shelf's words to text
             // contrast under a plate that was not there).
             if self.ask.read(cx).shows() {
-                parts.push(sample(
-                    "ask-plate",
-                    px(0.0),
-                    frame.titlebar,
-                    ask_width,
-                    (viewport.height - frame.titlebar - px(status_height)).max(px(0.0)),
-                ));
+                parts.push(sample("ask-plate", px(0.0), frame.titlebar, ask_width, (viewport.height - frame.titlebar - px(status_height)).max(px(0.0))));
             }
             parts
         });
@@ -1856,10 +1547,7 @@ impl Render for Shell {
             let list = self.shelf.read(cx).viewport();
             let page = gpui::Bounds::new(
                 gpui::point(px(shelf_width), frame.titlebar),
-                gpui::size(
-                    (viewport.width - px(shelf_width) - px(pins_width)).max(px(0.0)),
-                    (viewport.height - frame.titlebar - px(status_height)).max(px(0.0)),
-                ),
+                gpui::size((viewport.width - px(shelf_width) - px(pins_width)).max(px(0.0)), (viewport.height - frame.titlebar - px(status_height)).max(px(0.0))),
             );
             let regions = [
                 (list, self.shelf.read(cx).targets.twins_of(&symbol)),
@@ -1881,9 +1569,7 @@ fn _key(_: PageKey) {}
 pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| {
-            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-        })
+        .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
 }
 
 /// The page a held thing opens: its declaration's page, or its package.

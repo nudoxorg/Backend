@@ -131,11 +131,7 @@ fn scratch_dir(label: &'static str) -> Result<PathBuf, TestError> {
     Ok(work)
 }
 
-fn function_count(
-    source: &'static [u8],
-    label: &'static str,
-    name: &[u8],
-) -> Result<usize, TestError> {
+fn function_count(source: &'static [u8], label: &'static str, name: &[u8]) -> Result<usize, TestError> {
     let toolchain = python_toolchain()?;
     let work = scratch_dir(label)?;
     let cancelled = AtomicBool::new(false);
@@ -204,11 +200,7 @@ fn compiles(source: &'static [u8], label: &'static str) -> Result<(), TestError>
     Ok(())
 }
 
-fn static_count(
-    source: &'static [u8],
-    label: &'static str,
-    name: &[u8],
-) -> Result<usize, TestError> {
+fn static_count(source: &'static [u8], label: &'static str, name: &[u8]) -> Result<usize, TestError> {
     let toolchain = python_toolchain()?;
     let work = scratch_dir(label)?;
     let cancelled = AtomicBool::new(false);

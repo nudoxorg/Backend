@@ -52,16 +52,8 @@ impl Ui {
     #[must_use]
     pub const fn listed(&self) -> Listed {
         Listed {
-            imports: if self.imports {
-                ImportsListed::Shown
-            } else {
-                ImportsListed::Hidden
-            },
-            tests: if self.tests {
-                TestsListed::Included
-            } else {
-                TestsListed::Left
-            },
+            imports: if self.imports { ImportsListed::Shown } else { ImportsListed::Hidden },
+            tests: if self.tests { TestsListed::Included } else { TestsListed::Left },
         }
     }
 
@@ -70,19 +62,13 @@ impl Ui {
     pub fn apply(mut self, change: &Change) -> Self {
         match change {
             Change::Package(package) => {
-                self.package = package
-                    .clone()
-                    .filter(|package| self.package.as_ref() != Some(package));
+                self.package = package.clone().filter(|package| self.package.as_ref() != Some(package));
             }
             Change::Verb(verb) => {
                 if *verb == Verb::Imports {
                     self.imports = !self.imports;
                 }
-                self.verb = if self.verb == Some(*verb) {
-                    None
-                } else {
-                    Some(*verb)
-                };
+                self.verb = if self.verb == Some(*verb) { None } else { Some(*verb) };
             }
             Change::Tests => self.tests = !self.tests,
             Change::Fill(fill) => {
@@ -178,14 +164,7 @@ impl Fixed {
     /// A still page in state `ui`.
     #[must_use]
     pub fn new(ui: Ui) -> Self {
-        Self {
-            ui,
-            open: BTreeSet::new(),
-            spots: Spots::new(),
-            doors: crate::anatomy::page::Still,
-            presences: RefCell::new(BTreeMap::new()),
-            flow: Flow::new("s6-still"),
-        }
+        Self { ui, open: BTreeSet::new(), spots: Spots::new(), doors: crate::anatomy::page::Still, presences: RefCell::new(BTreeMap::new()), flow: Flow::new("s6-still") }
     }
 
     /// The same still with `folds` unrolled.
@@ -203,13 +182,7 @@ impl Doors for Fixed {
     fn fold(&self, key: &'static str) -> Option<Fold> {
         self.doors.fold(key)
     }
-    fn track(
-        &self,
-        key: SharedString,
-        label: SharedString,
-        door: Option<&Door>,
-        element: AnyElement,
-    ) -> AnyElement {
+    fn track(&self, key: SharedString, label: SharedString, door: Option<&Door>, element: AnyElement) -> AnyElement {
         self.doors.track(key, label, door, element)
     }
     fn say(&self, text: &str) {
@@ -228,17 +201,8 @@ impl Host for Fixed {
         Rc::new(|_, _| {})
     }
     fn unfold(&self, key: &FoldKey) -> Option<Fold> {
-        let presence = self
-            .presences
-            .borrow_mut()
-            .entry(key.clone())
-            .or_insert_with(|| Presence::new(format!("s6-still-{key:?}")))
-            .clone();
-        Some(Fold {
-            open: self.open.contains(key),
-            presence,
-            toggle: Rc::new(|_, _| {}),
-        })
+        let presence = self.presences.borrow_mut().entry(key.clone()).or_insert_with(|| Presence::new(format!("s6-still-{key:?}"))).clone();
+        Some(Fold { open: self.open.contains(key), presence, toggle: Rc::new(|_, _| {}) })
     }
     fn lookup(&self, _: &str) -> Option<Act> {
         None

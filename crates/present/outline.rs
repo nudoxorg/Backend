@@ -70,10 +70,9 @@ impl OutlineEntry {
     /// Returns the displayed name, falling back to the key tag.
     #[must_use]
     pub fn name(&self) -> String {
-        self.identity.as_ref().map_or_else(
-            || format!("‹{}›", self.tag),
-            |identity| identity.name().to_owned(),
-        )
+        self.identity
+            .as_ref()
+            .map_or_else(|| format!("‹{}›", self.tag), |identity| identity.name().to_owned())
     }
 
     /// Returns the number of nodes in this subtree, including itself.

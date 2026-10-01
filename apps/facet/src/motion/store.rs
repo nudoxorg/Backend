@@ -771,15 +771,11 @@ mod tests {
                         let dt = frame as f32 / 1000.0;
                         let step = (now.value - last.value).abs();
                         // The probe's continuity allowance for this step.
-                        let allowed = 1.5 * last.velocity.abs() * dt
-                            + 0.02 * (span - last.value).abs()
-                            + 1e-3;
+                        let allowed = 1.5 * last.velocity.abs() * dt + 0.02 * (span - last.value).abs() + 1e-3;
                         assert!(
                             step <= allowed,
                             "{spring:?} span {span} @{frame} ms frames: snapped {step} ({} -> {}) at {:.2}/s, allowed {allowed}",
-                            last.value,
-                            now.value,
-                            last.velocity
+                            last.value, now.value, last.velocity
                         );
                         assert!(
                             Duration::from_millis(t) <= budget + Duration::from_millis(frame),

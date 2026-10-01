@@ -11,9 +11,7 @@ use backend_engine::driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile,
 };
-use backend_frontend_rust::legacy::{
-    RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
-};
+use backend_frontend_rust::legacy::{RustFeatureControl, RustProject, RustToolchain, SourceByteLimit};
 use backend_semantic::ir::{
     DecodedOccurrence, EntityKind, FragmentView, OccurrenceConfidence, OccurrenceTarget,
     ReferenceKind,
@@ -132,9 +130,8 @@ fn compile_source(root: &PathBuf, relative: &str, source: &str) -> Result<Vec<u8
     let tool = rustc()?;
     let toolchain =
         RustToolchain::discover(&tool).map_err(|error| format!("toolchain: {error:?}"))?;
-    let project =
-        RustProject::open_with_source(root, &source_path, &toolchain, RustEdition::Rust2024)
-            .map_err(|error| format!("project: {error:?}"))?;
+    let project = RustProject::open_with_source(root, &source_path, &toolchain, RustEdition::Rust2024)
+        .map_err(|error| format!("project: {error:?}"))?;
     let resolved = ResolvedToolchain::from_version(
         backend_engine::driver::NativeTool::Rustc,
         &tool,
@@ -210,7 +207,9 @@ fn owner_name(lane: &Lane<'_>, owner: backend_semantic::ir::EntityId) -> Result<
         .ok_or_else(|| format!("entity {} name atom absent", owner.raw))
 }
 
-fn package_field_reads<'a>(lane: &'a Lane<'a>) -> Vec<&'a backend_semantic::ir::Occurrence<'a>> {
+fn package_field_reads<'a>(
+    lane: &'a Lane<'a>,
+) -> Vec<&'a backend_semantic::ir::Occurrence<'a>> {
     lane.occurrences
         .iter()
         .map(|row| &row.occurrence)
@@ -320,9 +319,11 @@ fn cross_file_field_read_retargets_to_defining_module_path() -> Result<(), Strin
                 return false;
             };
             lineage.name.starts_with("src/")
-                && !(lineage.name == "src/service"
-                    && ((key.path == "note" && key.kind == Some(EntityKind::Field))
-                        || (key.path == "Workout" && key.kind == Some(EntityKind::Record))))
+                && !(
+                    lineage.name == "src/service"
+                        && ((key.path == "note" && key.kind == Some(EntityKind::Field))
+                            || (key.path == "Workout" && key.kind == Some(EntityKind::Record)))
+                )
         })
         .count();
     if stray_project_packages > 0 {
@@ -442,15 +443,18 @@ fn variable_read_does_not_retarget_to_package_field() -> Result<(), String> {
     let bytes = compile_source(&root, "src/lib.rs", PATH_CALL_LIB)?;
     let _ = fs::remove_dir_all(&root);
     let lane = lane(&bytes)?;
-    if package_field_reads(&lane).into_iter().any(|occurrence| {
-        let OccurrenceTarget::Foreign(key) = occurrence.target else {
-            return false;
-        };
-        let backend_semantic::ir::ForeignOrigin::Package(lineage) = key.origin else {
-            return false;
-        };
-        lineage.name == "src/service" && key.kind == Some(EntityKind::Field)
-    }) {
+    if package_field_reads(&lane)
+        .into_iter()
+        .any(|occurrence| {
+            let OccurrenceTarget::Foreign(key) = occurrence.target else {
+                return false;
+            };
+            let backend_semantic::ir::ForeignOrigin::Package(lineage) = key.origin else {
+                return false;
+            };
+            lineage.name == "src/service" && key.kind == Some(EntityKind::Field)
+        })
+    {
         return Err("variable read must not retarget to a package field key".to_owned());
     }
     Ok(())
@@ -572,18 +576,19 @@ fn unresolved_macro_field_read_stays_non_package() -> Result<(), String> {
     let bytes = compile_source(&root, "src/lib.rs", UNRESOLVED_MACRO_LIB)?;
     let _ = fs::remove_dir_all(&root);
     let lane = lane(&bytes)?;
-    if package_field_reads(&lane).into_iter().any(|occurrence| {
-        let OccurrenceTarget::Foreign(key) = occurrence.target else {
-            return false;
-        };
-        let backend_semantic::ir::ForeignOrigin::Package(lineage) = key.origin else {
-            return false;
-        };
-        lineage.name == "src/service" && key.kind == Some(EntityKind::Field)
-    }) {
-        return Err(
-            "unresolved macro field read must not retarget to a package field key".to_owned(),
-        );
+    if package_field_reads(&lane)
+        .into_iter()
+        .any(|occurrence| {
+            let OccurrenceTarget::Foreign(key) = occurrence.target else {
+                return false;
+            };
+            let backend_semantic::ir::ForeignOrigin::Package(lineage) = key.origin else {
+                return false;
+            };
+            lineage.name == "src/service" && key.kind == Some(EntityKind::Field)
+        })
+    {
+        return Err("unresolved macro field read must not retarget to a package field key".to_owned());
     }
     Ok(())
 }
@@ -594,15 +599,18 @@ fn macro_function_call_does_not_retarget_to_package_field() -> Result<(), String
     let bytes = compile_source(&root, "src/lib.rs", MACRO_FN_CALL_LIB)?;
     let _ = fs::remove_dir_all(&root);
     let lane = lane(&bytes)?;
-    if package_field_reads(&lane).into_iter().any(|occurrence| {
-        let OccurrenceTarget::Foreign(key) = occurrence.target else {
-            return false;
-        };
-        let backend_semantic::ir::ForeignOrigin::Package(lineage) = key.origin else {
-            return false;
-        };
-        lineage.name == "src/service" && key.kind == Some(EntityKind::Field)
-    }) {
+    if package_field_reads(&lane)
+        .into_iter()
+        .any(|occurrence| {
+            let OccurrenceTarget::Foreign(key) = occurrence.target else {
+                return false;
+            };
+            let backend_semantic::ir::ForeignOrigin::Package(lineage) = key.origin else {
+                return false;
+            };
+            lineage.name == "src/service" && key.kind == Some(EntityKind::Field)
+        })
+    {
         return Err("macro function call must not retarget to a package field key".to_owned());
     }
     Ok(())

@@ -329,14 +329,8 @@ impl Route {
     #[must_use]
     pub fn with_release(&self, at: Option<ReleaseId>) -> Self {
         match self {
-            Self::Package(route) => Self::Package(PackageRoute {
-                at,
-                ..route.clone()
-            }),
-            Self::Symbol(route) => Self::Symbol(SymbolRoute {
-                at,
-                ..route.clone()
-            }),
+            Self::Package(route) => Self::Package(PackageRoute { at, ..route.clone() }),
+            Self::Symbol(route) => Self::Symbol(SymbolRoute { at, ..route.clone() }),
             Self::Orbit(_) | Self::World => self.clone(),
         }
     }
@@ -346,10 +340,7 @@ impl Route {
     #[must_use]
     pub fn with_view(&self, view: View) -> Option<Self> {
         match self {
-            Self::Symbol(route) => Some(Self::Symbol(SymbolRoute {
-                view,
-                ..route.clone()
-            })),
+            Self::Symbol(route) => Some(Self::Symbol(SymbolRoute { view, ..route.clone() })),
             Self::Orbit(_) | Self::Package(_) | Self::World => None,
         }
     }
@@ -460,10 +451,7 @@ mod tests {
         let package = symbol(View::Code).zoom_out().expect("package");
         assert_eq!(package.depth(), Some(RouteDepth::Package));
         assert_eq!(package.selected(), Some(ObjectId::test(7)));
-        assert_eq!(
-            package.zoom_out().expect("orbit").depth(),
-            Some(RouteDepth::Orbit)
-        );
+        assert_eq!(package.zoom_out().expect("orbit").depth(), Some(RouteDepth::Orbit));
         assert_eq!(Route::World.depth(), Some(RouteDepth::Orbit));
     }
 
@@ -475,10 +463,7 @@ mod tests {
         assert_eq!(page.key(), code.key());
         assert_ne!(page, code);
         let other_release = page.with_release(Some(ReleaseId::new("1.0.0").expect("release")));
-        assert!(
-            !page.same_place(&other_release),
-            "another release is another place"
-        );
+        assert!(!page.same_place(&other_release), "another release is another place");
         assert_eq!(Route::World.with_view(View::Code), None);
     }
 

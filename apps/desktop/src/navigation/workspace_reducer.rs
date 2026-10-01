@@ -313,13 +313,7 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
         }
         Intent::DismissNote(note) => {
             let mut workspace = next.workspace().clone();
-            workspace.notes = workspace
-                .notes
-                .iter()
-                .filter(|held| *held != note)
-                .cloned()
-                .collect::<Vec<_>>()
-                .into();
+            workspace.notes = workspace.notes.iter().filter(|held| *held != note).cloned().collect::<Vec<_>>().into();
             next = next.with_workspace(workspace);
         }
         Intent::LibraryRebuilding { kept_at } => {
@@ -343,26 +337,15 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
                 })
                 .collect::<Vec<_>>()
                 .into();
-            let note = crate::model::Note::LibraryRebuilding {
-                kept_at: Arc::clone(kept_at),
-            };
+            let note = crate::model::Note::LibraryRebuilding { kept_at: Arc::clone(kept_at) };
             if !workspace.notes.contains(&note) {
-                workspace.notes = workspace
-                    .notes
-                    .iter()
-                    .cloned()
-                    .chain([note])
-                    .collect::<Vec<_>>()
-                    .into();
+                workspace.notes = workspace.notes.iter().cloned().chain([note]).collect::<Vec<_>>().into();
             }
             next = next.with_workspace(workspace);
             effects.push(Effect::Persist);
         }
         Intent::WindowResized { width, height } => {
-            let size = crate::model::WindowSize {
-                width: *width,
-                height: *height,
-            };
+            let size = crate::model::WindowSize { width: *width, height: *height };
             if next.settings().window != Some(size) {
                 let mut settings = next.settings().clone();
                 settings.window = Some(size);
@@ -640,14 +623,7 @@ mod tests {
         );
         let mut snapshot = snapshot();
         for project in [&first, &second] {
-            snapshot = reduce(
-                &snapshot,
-                &Intent::AddProject {
-                    project: project.clone(),
-                },
-            )
-            .expect("workspace")
-            .snapshot;
+            snapshot = reduce(&snapshot, &Intent::AddProject { project: project.clone() }).expect("workspace").snapshot;
         }
         let mut workspace = snapshot.workspace().clone();
         workspace.projects = workspace
@@ -666,203 +642,87 @@ mod tests {
     #[test]
     fn switching_between_ready_projects_indexes_nothing_again() {
         let (snapshot, first, second) = two_ready_projects();
-        let switched =
-            reduce(&snapshot, &Intent::ActivateProject(first.clone())).expect("workspace");
-        assert_eq!(
-            switched.snapshot.workspace().active.as_ref(),
-            Some(&first),
-            "the chosen project is the active one"
-        );
+        let switched = reduce(&snapshot, &Intent::ActivateProject(first.clone())).expect("workspace");
+        assert_eq!(switched.snapshot.workspace().active.as_ref(), Some(&first), "the chosen project is the active one");
         assert!(
-            switched
-                .snapshot
-                .workspace()
-                .projects
-                .iter()
-                .all(|project| project.phase == ProjectPhase::Ready),
+            switched.snapshot.workspace().projects.iter().all(|project| project.phase == ProjectPhase::Ready),
             "a ready project stays ready: switching is instant, never a fresh compile"
         );
         assert!(
-            !switched
-                .effects
-                .iter()
-                .any(|effect| matches!(effect, Effect::Engine(_) | Effect::Cancel(_))),
+            !switched.effects.iter().any(|effect| matches!(effect, Effect::Engine(_) | Effect::Cancel(_))),
             "and no engine work is asked for: {:?}",
             switched.effects
         );
-        assert_eq!(
-            switched.effects,
-            [Effect::Persist],
-            "the choice is remembered"
-        );
-        let back = reduce(&switched.snapshot, &Intent::ActivateProject(second.clone()))
-            .expect("workspace");
+        assert_eq!(switched.effects, [Effect::Persist], "the choice is remembered");
+        let back = reduce(&switched.snapshot, &Intent::ActivateProject(second.clone())).expect("workspace");
         assert_eq!(back.snapshot.workspace().active.as_ref(), Some(&second));
-        assert_eq!(
-            back.snapshot.shelf().selected,
-            Some(ResourceIdentity::Local(second)),
-            "the shelf follows"
-        );
+        assert_eq!(back.snapshot.shelf().selected, Some(ResourceIdentity::Local(second)), "the shelf follows");
     }
 
     #[test]
     fn a_stopped_project_stays_stopped_until_someone_presses_try_again() {
         let (snapshot, first, _) = two_ready_projects();
-        let failed = set_project_phase(
-            &snapshot,
-            &first,
-            ProjectPhase::Failed,
-            Some(Arc::from("the compiler stopped")),
-            None,
-        );
-        let activated =
-            reduce(&failed, &Intent::ActivateProject(first.clone())).expect("workspace");
+        let failed = set_project_phase(&snapshot, &first, ProjectPhase::Failed, Some(Arc::from("the compiler stopped")), None);
+        let activated = reduce(&failed, &Intent::ActivateProject(first.clone())).expect("workspace");
         let row = &activated.snapshot.workspace().projects[0];
-        assert_eq!(
-            (row.phase, row.error.as_deref()),
-            (ProjectPhase::Failed, Some("the compiler stopped")),
-            "choosing it does not hide what happened"
-        );
+        assert_eq!((row.phase, row.error.as_deref()), (ProjectPhase::Failed, Some("the compiler stopped")), "choosing it does not hide what happened");
         let retried = reduce(&activated.snapshot, &Intent::RetryIndex(first)).expect("workspace");
         let row = &retried.snapshot.workspace().projects[0];
-        assert_eq!(
-            (row.phase, row.error.as_deref()),
-            (ProjectPhase::Indexing, None),
-            "Try again starts it again and forgets the old reason"
-        );
+        assert_eq!((row.phase, row.error.as_deref()), (ProjectPhase::Indexing, None), "Try again starts it again and forgets the old reason");
     }
 
     #[test]
     fn removing_the_active_project_makes_another_active_and_forgets_the_row() {
         let (snapshot, first, second) = two_ready_projects();
-        let active = snapshot
-            .workspace()
-            .active
-            .clone()
-            .expect("the last added is active");
+        let active = snapshot.workspace().active.clone().expect("the last added is active");
         assert_eq!(active, second);
         let removed = reduce(&snapshot, &Intent::RemoveProject(second.clone())).expect("workspace");
         assert_eq!(removed.snapshot.workspace().projects.len(), 1);
-        assert_eq!(
-            removed.snapshot.workspace().active.as_ref(),
-            Some(&first),
-            "the shelf never has no active project while it has projects"
-        );
+        assert_eq!(removed.snapshot.workspace().active.as_ref(), Some(&first), "the shelf never has no active project while it has projects");
         assert_eq!(removed.snapshot.shelf().items.len(), 1);
-        assert_eq!(
-            removed.snapshot.workspace().projects[0].phase,
-            ProjectPhase::Ready,
-            "the one that stays is not indexed again"
-        );
+        assert_eq!(removed.snapshot.workspace().projects[0].phase, ProjectPhase::Ready, "the one that stays is not indexed again");
         assert!(removed.effects.contains(&Effect::Persist));
     }
 
     #[test]
     fn the_folder_the_picker_chose_closes_the_dialog_it_was_opened_from() {
-        let opened = reduce(&snapshot(), &Intent::OpenAddProject)
-            .expect("workspace")
-            .snapshot;
+        let opened = reduce(&snapshot(), &Intent::OpenAddProject).expect("workspace").snapshot;
         assert_eq!(opened.overlay(), Some(Overlay::AddProject));
         let chosen: Arc<[std::path::PathBuf]> = vec!["/tmp/nudox-picker-chosen".into()].into();
-        let picked = reduce(
-            &opened,
-            &Intent::FolderPickerResult {
-                outcome: FolderPickerOutcome::Selected(chosen),
-            },
-        )
-        .expect("workspace");
+        let picked = reduce(&opened, &Intent::FolderPickerResult { outcome: FolderPickerOutcome::Selected(chosen) }).expect("workspace");
         assert_eq!(picked.snapshot.overlay(), None);
         assert_eq!(picked.snapshot.workspace().projects.len(), 1);
-        let cancelled = reduce(
-            &opened,
-            &Intent::FolderPickerResult {
-                outcome: FolderPickerOutcome::Cancelled,
-            },
-        )
-        .expect("workspace");
-        assert_eq!(
-            cancelled.snapshot.overlay(),
-            Some(Overlay::AddProject),
-            "a cancelled picker leaves the dialog where it was"
-        );
+        let cancelled = reduce(&opened, &Intent::FolderPickerResult { outcome: FolderPickerOutcome::Cancelled }).expect("workspace");
+        assert_eq!(cancelled.snapshot.overlay(), Some(Overlay::AddProject), "a cancelled picker leaves the dialog where it was");
     }
 
     #[test]
     fn a_library_set_aside_is_told_once_and_every_project_is_indexed_again() {
         let (snapshot, first, _) = two_ready_projects();
         let gone = set_project_phase(&snapshot, &first, ProjectPhase::Missing, None, None);
-        let told = reduce(
-            &gone,
-            &Intent::LibraryRebuilding {
-                kept_at: Arc::from("/data/from-another-build"),
-            },
-        )
-        .expect("workspace");
-        let phases: Vec<_> = told
-            .snapshot
-            .workspace()
-            .projects
-            .iter()
-            .map(|project| project.phase)
-            .collect();
-        assert_eq!(
-            phases,
-            [ProjectPhase::Missing, ProjectPhase::Indexing],
-            "a folder that is gone stays gone; the rest are indexed again"
-        );
+        let told = reduce(&gone, &Intent::LibraryRebuilding { kept_at: Arc::from("/data/from-another-build") }).expect("workspace");
+        let phases: Vec<_> = told.snapshot.workspace().projects.iter().map(|project| project.phase).collect();
+        assert_eq!(phases, [ProjectPhase::Missing, ProjectPhase::Indexing], "a folder that is gone stays gone; the rest are indexed again");
         assert_eq!(
             told.snapshot.workspace().notes.as_ref(),
-            [crate::model::Note::LibraryRebuilding {
-                kept_at: Arc::from("/data/from-another-build")
-            }]
+            [crate::model::Note::LibraryRebuilding { kept_at: Arc::from("/data/from-another-build") }]
         );
-        let again = reduce(
-            &told.snapshot,
-            &Intent::LibraryRebuilding {
-                kept_at: Arc::from("/data/from-another-build"),
-            },
-        )
-        .expect("workspace");
+        let again = reduce(&told.snapshot, &Intent::LibraryRebuilding { kept_at: Arc::from("/data/from-another-build") }).expect("workspace");
         assert_eq!(again.snapshot.workspace().notes.len(), 1, "said once");
         let dismissed = reduce(
             &again.snapshot,
-            &Intent::DismissNote(crate::model::Note::LibraryRebuilding {
-                kept_at: Arc::from("/data/from-another-build"),
-            }),
+            &Intent::DismissNote(crate::model::Note::LibraryRebuilding { kept_at: Arc::from("/data/from-another-build") }),
         )
         .expect("workspace");
-        assert!(
-            dismissed.snapshot.workspace().notes.is_empty(),
-            "and let go when dismissed"
-        );
+        assert!(dismissed.snapshot.workspace().notes.is_empty(), "and let go when dismissed");
     }
 
     #[test]
     fn the_window_size_is_remembered_only_when_it_changed() {
-        let resized = reduce(
-            &snapshot(),
-            &Intent::WindowResized {
-                width: 1100,
-                height: 800,
-            },
-        )
-        .expect("workspace");
-        assert_eq!(
-            resized.snapshot.settings().window,
-            Some(crate::model::WindowSize {
-                width: 1100,
-                height: 800
-            })
-        );
+        let resized = reduce(&snapshot(), &Intent::WindowResized { width: 1100, height: 800 }).expect("workspace");
+        assert_eq!(resized.snapshot.settings().window, Some(crate::model::WindowSize { width: 1100, height: 800 }));
         assert_eq!(resized.effects, [Effect::Persist]);
-        let same = reduce(
-            &resized.snapshot,
-            &Intent::WindowResized {
-                width: 1100,
-                height: 800,
-            },
-        )
-        .expect("workspace");
+        let same = reduce(&resized.snapshot, &Intent::WindowResized { width: 1100, height: 800 }).expect("workspace");
         assert!(same.effects.is_empty(), "the same size writes nothing");
     }
 

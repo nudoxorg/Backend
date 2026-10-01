@@ -101,11 +101,7 @@ pub fn symbol_text(page: &SymbolPage) -> String {
         format!("{:?}", id.language).to_lowercase()
     );
     let _ = writeln!(out, "  coordinate: {}", id.coordinate);
-    let _ = writeln!(
-        out,
-        "  package: {}",
-        known(&page.package, ToString::to_string)
-    );
+    let _ = writeln!(out, "  package: {}", known(&page.package, ToString::to_string));
     let _ = writeln!(
         out,
         "  signature: {}",
@@ -143,10 +139,7 @@ pub fn symbol_text(page: &SymbolPage) -> String {
     let _ = writeln!(
         out,
         "  site: {} · excerpt {}",
-        known(&page.site.location, |location| format!(
-            "{}:{}",
-            location.path, location.line
-        )),
+        known(&page.site.location, |location| format!("{}:{}", location.path, location.line)),
         known(&page.site.excerpt, |excerpt| format!(
             "{} bytes{}",
             excerpt.text.len(),
@@ -157,12 +150,7 @@ pub fn symbol_text(page: &SymbolPage) -> String {
         Known::Known(members) => {
             let _ = writeln!(out, "  members ({}):", members.len());
             for member in members.made_of.iter() {
-                let _ = writeln!(
-                    out,
-                    "    made of: {} {}",
-                    member.decl.kind_name(),
-                    member.decl.name
-                );
+                let _ = writeln!(out, "    made of: {} {}", member.decl.kind_name(), member.decl.name);
             }
             for group in members.does.iter() {
                 for member in group.members.iter() {
@@ -180,12 +168,7 @@ pub fn symbol_text(page: &SymbolPage) -> String {
                 }
             }
             for member in members.other.iter() {
-                let _ = writeln!(
-                    out,
-                    "    other: {} {}",
-                    member.decl.kind_name(),
-                    member.decl.name
-                );
+                let _ = writeln!(out, "    other: {} {}", member.decl.kind_name(), member.decl.name);
             }
         }
         Known::Unknown(missing) => {
@@ -250,102 +233,45 @@ pub fn package_text(dossier: &PackageDossier) -> String {
     match &dossier.record {
         Known::Known(record) => {
             let _ = writeln!(out, "  name: {} ({:?})", record.name, record.source);
-            let _ = writeln!(
-                out,
-                "  version: {}",
-                known(&record.version, ToString::to_string)
-            );
-            let _ = writeln!(
-                out,
-                "  ecosystem: {}",
-                known(&record.ecosystem, ToString::to_string)
-            );
-            let _ = writeln!(
-                out,
-                "  standing: {}",
-                known(&record.standing, |standing| standing.name().to_owned())
-            );
-            let _ = writeln!(
-                out,
-                "  downloads: {}",
-                known(&record.downloads, |downloads| format!("{downloads:?}"))
-            );
-            let _ = writeln!(
-                out,
-                "  bytes: {}",
-                known(&record.bytes, ToString::to_string)
-            );
-            let _ = writeln!(
-                out,
-                "  advisory: {}",
-                known(&record.advisory, |advisory| format!(
-                    "{} advisories, worst {:?}, decision {}, coverage {:?}",
-                    advisory.advisories, advisory.worst, advisory.decision, advisory.coverage
-                ))
-            );
-            let _ = writeln!(
-                out,
-                "  description: {}",
-                known(&record.description, ToString::to_string)
-            );
-            let _ = writeln!(
-                out,
-                "  license: {}",
-                known(&record.license, ToString::to_string)
-            );
+            let _ = writeln!(out, "  version: {}", known(&record.version, ToString::to_string));
+            let _ = writeln!(out, "  ecosystem: {}", known(&record.ecosystem, ToString::to_string));
+            let _ = writeln!(out, "  standing: {}", known(&record.standing, |standing| standing.name().to_owned()));
+            let _ = writeln!(out, "  downloads: {}", known(&record.downloads, |downloads| format!("{downloads:?}")));
+            let _ = writeln!(out, "  bytes: {}", known(&record.bytes, ToString::to_string));
+            let _ = writeln!(out, "  advisory: {}", known(&record.advisory, |advisory| format!(
+                "{} advisories, worst {:?}, decision {}, coverage {:?}",
+                advisory.advisories, advisory.worst, advisory.decision, advisory.coverage
+            )));
+            let _ = writeln!(out, "  description: {}", known(&record.description, ToString::to_string));
+            let _ = writeln!(out, "  license: {}", known(&record.license, ToString::to_string));
         }
         Known::Unknown(missing) => {
             let _ = writeln!(out, "  record: {}", gap(missing));
         }
     }
-    let _ = writeln!(
-        out,
-        "  versions: {}",
-        known(&dossier.versions, |versions| {
-            versions
-                .iter()
-                .map(|entry| {
-                    format!(
-                        "{}{} ({})",
-                        entry.version,
-                        if entry.current { "*" } else { "" },
-                        entry.standing.name()
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
-    );
-    let _ = writeln!(
-        out,
-        "  dependencies: {}",
-        known(&dossier.dependencies, |dependencies| {
-            dependencies
-                .iter()
-                .map(|dependency| {
-                    format!(
-                        "{} {} [{}]",
-                        dependency.name,
-                        dependency.requirement,
-                        dependency.scope.name()
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
-    );
-    let _ = writeln!(
-        out,
-        "  dependents: {}",
-        known(&dossier.dependents, |dependents| {
-            format!("{} packages", dependents.len())
-        })
-    );
-    let _ = writeln!(
-        out,
-        "  readme: {}",
-        known(&dossier.readme, |blocks| format!("{} blocks", blocks.len()))
-    );
+    let _ = writeln!(out, "  versions: {}", known(&dossier.versions, |versions| {
+        versions
+            .iter()
+            .map(|entry| format!(
+                "{}{} ({})",
+                entry.version,
+                if entry.current { "*" } else { "" },
+                entry.standing.name()
+            ))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }));
+    let _ = writeln!(out, "  dependencies: {}", known(&dossier.dependencies, |dependencies| {
+        dependencies
+            .iter()
+            .map(|dependency| format!("{} {} [{}]", dependency.name, dependency.requirement, dependency.scope.name()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }));
+    let _ = writeln!(out, "  dependents: {}", known(&dossier.dependents, |dependents| {
+        format!("{} packages", dependents.len())
+    }));
+    let _ = writeln!(out, "  readme: {}", known(&dossier.readme, |blocks| format!("{} blocks", blocks.len())));
     match &dossier.outline {
         Known::Known(tree) => {
             let _ = writeln!(
@@ -368,11 +294,7 @@ pub fn package_text(dossier: &PackageDossier) -> String {
                     root.decl.name,
                     root.children.len(),
                     items.join(", "),
-                    if root.children.len() > 12 {
-                        ", …"
-                    } else {
-                        ""
-                    }
+                    if root.children.len() > 12 { ", …" } else { "" }
                 );
             }
         }
@@ -387,52 +309,28 @@ pub fn package_text(dossier: &PackageDossier) -> String {
 #[must_use]
 pub fn source_text(view: &SourceView) -> String {
     let mut out = String::new();
-    let _ = writeln!(
-        out,
-        "source {} {}",
-        view.symbol.kind_name(),
-        view.symbol.name
-    );
+    let _ = writeln!(out, "source {} {}", view.symbol.kind_name(), view.symbol.name);
     let _ = writeln!(out, "  file: {}", known(&view.file, ToString::to_string));
-    let _ = writeln!(
-        out,
-        "  declaration: {}",
-        known(&view.declaration, |span| format!(
-            "lines {}..={}",
-            span.first, span.last
-        ))
-    );
-    let _ = writeln!(
-        out,
-        "  identifiers: {}",
-        known(&view.identifiers, |spans| {
-            let text = view.text.known();
-            spans
-                .iter()
-                .take(24)
-                .map(|span| {
-                    let word = text
-                        .and_then(|text| text.text.get(span.span.range()))
-                        .unwrap_or("?");
-                    format!("{word}@{}→{}", span.span.start, span.link.target)
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
-    );
-    let _ = writeln!(
-        out,
-        "  uses here: {}",
-        known(&view.uses, |spans| format!("{} spans", spans.len()))
-    );
+    let _ = writeln!(out, "  declaration: {}", known(&view.declaration, |span| format!("lines {}..={}", span.first, span.last)));
+    let _ = writeln!(out, "  identifiers: {}", known(&view.identifiers, |spans| {
+        let text = view.text.known();
+        spans
+            .iter()
+            .take(24)
+            .map(|span| {
+                let word = text
+                    .and_then(|text| text.text.get(span.span.range()))
+                    .unwrap_or("?");
+                format!("{word}@{}→{}", span.span.start, span.link.target)
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }));
+    let _ = writeln!(out, "  uses here: {}", known(&view.uses, |spans| format!("{} spans", spans.len())));
     let _ = writeln!(out, "  uses elsewhere: {}", view.uses_elsewhere.len());
     match &view.text {
         Known::Known(text) => {
-            let _ = writeln!(
-                out,
-                "  text ({:?}, from line {}):",
-                text.origin, text.first_line
-            );
+            let _ = writeln!(out, "  text ({:?}, from line {}):", text.origin, text.first_line);
             for (offset, line) in text.text.lines().enumerate().take(40) {
                 let _ = writeln!(out, "    {:>5} │ {line}", text.first_line as usize + offset);
             }
@@ -481,38 +379,16 @@ pub fn search_text(page: &SearchPage) -> String {
 pub fn orbit_text(model: &OrbitModel) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "orbit");
-    let _ = writeln!(
-        out,
-        "  indexed: {}",
-        known(&model.indexed, |packages| {
-            packages
-                .iter()
-                .map(|package| format!("{} ({:?})", package.name, package.readiness))
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
-    );
-    let _ = writeln!(
-        out,
-        "  projects: {}",
-        known(&model.projects, |projects| format!(
-            "{} projects",
-            projects.len()
-        ))
-    );
-    let _ = writeln!(
-        out,
-        "  explore: {}",
-        known(&model.explore, |records| format!(
-            "{} registry records",
-            records.len()
-        ))
-    );
-    let _ = writeln!(
-        out,
-        "  tree: {}",
-        known(&model.tree, |nodes| format!("{} nodes", nodes.len()))
-    );
+    let _ = writeln!(out, "  indexed: {}", known(&model.indexed, |packages| {
+        packages
+            .iter()
+            .map(|package| format!("{} ({:?})", package.name, package.readiness))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }));
+    let _ = writeln!(out, "  projects: {}", known(&model.projects, |projects| format!("{} projects", projects.len())));
+    let _ = writeln!(out, "  explore: {}", known(&model.explore, |records| format!("{} registry records", records.len())));
+    let _ = writeln!(out, "  tree: {}", known(&model.tree, |nodes| format!("{} nodes", nodes.len())));
     out
 }
 
@@ -536,9 +412,7 @@ pub fn health_text(model: &HealthModel) -> String {
         ingest.files_discovered,
         ingest.files_unavailable,
         ingest.declarations,
-        ingest
-            .facets()
-            .map_or_else(|| "-".to_owned(), |facets| facets.to_string())
+        ingest.facets().map_or_else(|| "-".to_owned(), |facets| facets.to_string())
     );
     let _ = writeln!(
         out,

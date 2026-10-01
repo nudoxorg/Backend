@@ -21,10 +21,7 @@ use crate::icons::{Icon, IconSize, ui};
 use crate::measure::{Control, Measure, Space};
 use crate::theme::ActiveFacet;
 use crate::tokens::ty;
-use gpui::{
-    AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, SharedString,
-    Styled, Window, div,
-};
+use gpui::{AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, Window, div};
 use std::rc::Rc;
 
 /// Where an offered release's source is.
@@ -128,56 +125,32 @@ pub fn seam_stages(place: Place, step: Step) -> Vec<Stage> {
         Place::Unpacked | Place::Download => &[Step::Resolving, Step::Indexing],
     };
     // Waiting: nothing has started.
-    let at = steps
-        .iter()
-        .position(|known| *known == step)
-        .unwrap_or(usize::MAX);
+    let at = steps.iter().position(|known| *known == step).unwrap_or(usize::MAX);
     steps
         .iter()
         .enumerate()
         .map(|(index, known)| {
-            let state = if at == usize::MAX {
-                StageState::Todo
-            } else {
-                match index.cmp(&at) {
-                    std::cmp::Ordering::Less => StageState::Done,
-                    std::cmp::Ordering::Equal => StageState::Now,
-                    std::cmp::Ordering::Greater => StageState::Todo,
-                }
-            };
+            let state = if at == usize::MAX { StageState::Todo } else { match index.cmp(&at) {
+                std::cmp::Ordering::Less => StageState::Done,
+                std::cmp::Ordering::Equal => StageState::Now,
+                std::cmp::Ordering::Greater => StageState::Todo,
+            } };
             // Indexing is most of the wait: it takes most of the strip.
-            Stage::new(known.words(), state).weight(if *known == Step::Indexing {
-                4.0
-            } else {
-                1.0
-            })
+            Stage::new(known.words(), state).weight(if *known == Step::Indexing { 4.0 } else { 1.0 })
         })
         .collect()
 }
 
 /// The control for `offer`, in whatever state the shell says it is.
-pub fn add_control(
-    id: impl Into<ElementId>,
-    offer: &Offer,
-    actions: &AddActions,
-    measure: &Measure,
-    cx: &mut App,
-) -> AnyElement {
+pub fn add_control(id: impl Into<ElementId>, offer: &Offer, actions: &AddActions, measure: &Measure, cx: &mut App) -> AnyElement {
     let id: ElementId = id.into();
     let palette = cx.palette();
     let state = match ((actions.state)(&offer.release, cx), &offer.library) {
         (Adding::Idle, Some(page)) => Adding::Added { open: page.clone() },
         (state, _) => state,
     };
-    let row = div()
-        .flex()
-        .flex_wrap()
-        .items_center()
-        .gap_x(measure.space(Space::Roomy))
-        .gap_y(measure.space(Space::Tight));
-    let caption = |part: &str, text: SharedString| {
-        words(child(&id, part), text, ty::CAPTION, palette.ink2, measure)
-    };
+    let row = div().flex().flex_wrap().items_center().gap_x(measure.space(Space::Roomy)).gap_y(measure.space(Space::Tight));
+    let caption = |part: &str, text: SharedString| words(child(&id, part), text, ty::CAPTION, palette.ink2, measure);
     let body = match state {
         Adding::Idle => {
             let add = Rc::clone(&actions.add);
@@ -188,26 +161,14 @@ pub fn add_control(
                 .glyph(Glyph::Plus)
                 .disabled(!offer.place.offline())
                 .on_click(move |window, cx| add(release.clone(), window, cx));
-            row.child(button)
-                .child(caption(
-                    "where",
-                    format!("{} · {}", offer.label, offer.place.words()).into(),
-                ))
-                .into_any_element()
+            row.child(button).child(caption("where", format!("{} · {}", offer.label, offer.place.words()).into())).into_any_element()
         }
         Adding::Working(step) => div()
             .flex()
             .flex_col()
             .gap(measure.space(Space::Tight))
-            .child(row.child(caption(
-                "step",
-                format!("{} · {}", step.words(), offer.label).into(),
-            )))
-            .child(div().w_full().child(seam(
-                child(&id, "seam"),
-                seam_stages(offer.place, step),
-                measure,
-            )))
+            .child(row.child(caption("step", format!("{} · {}", step.words(), offer.label).into())))
+            .child(div().w_full().child(seam(child(&id, "seam"), seam_stages(offer.place, step), measure)))
             .into_any_element(),
         Adding::Added { open: target } => {
             let open = Rc::clone(&actions.open);
@@ -217,13 +178,7 @@ pub fn add_control(
                 .icon(Icon::Package)
                 .on_click(move |window, cx| open(target.clone(), window, cx));
             row.child(ui(Icon::ShieldCheck, IconSize::S18, palette.mint.base))
-                .child(words(
-                    child(&id, "added"),
-                    format!("{} is in your library", offer.label),
-                    ty::SMALL,
-                    palette.ink1,
-                    measure,
-                ))
+                .child(words(child(&id, "added"), format!("{} is in your library", offer.label), ty::SMALL, palette.ink1, measure))
                 .child(button)
                 .into_any_element()
         }
@@ -240,17 +195,7 @@ pub fn add_control(
                 .flex()
                 .flex_col()
                 .gap(measure.space(Space::Tight))
-                .child(
-                    row.child(ui(Icon::Alert, IconSize::S18, palette.coral.base))
-                        .child(words(
-                            child(&id, "failed"),
-                            format!("{} was not added", offer.label),
-                            ty::SMALL,
-                            palette.ink1,
-                            measure,
-                        ))
-                        .child(button),
-                )
+                .child(row.child(ui(Icon::Alert, IconSize::S18, palette.coral.base)).child(words(child(&id, "failed"), format!("{} was not added", offer.label), ty::SMALL, palette.ink1, measure)).child(button))
                 .child(caption("reason", reason))
                 .into_any_element()
         }

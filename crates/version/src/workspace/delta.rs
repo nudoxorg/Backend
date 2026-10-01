@@ -101,23 +101,19 @@ impl UntrustedWorkspaceDeltaHeader {
         if self.base != base.root().to_bytes()
             || self.target != target.root().to_bytes()
             || self.relations.len() != relations.len()
-            || self
-                .relations
-                .iter()
-                .zip(&relations)
-                .any(|(claim, checked)| {
-                    claim.schema != checked.schema()
-                        || claim.base != checked.base()
-                        || claim.target != checked.target()
-                        || claim.delta != checked.delta()
-                })
+            || self.relations.iter().zip(&relations).any(|(claim, checked)| {
+                claim.schema != checked.schema()
+                    || claim.base != checked.base()
+                    || claim.target != checked.target()
+                    || claim.delta != checked.delta()
+            })
         {
             return Err(WorkspaceDecodeError::Semantic(
                 WorkspaceError::TransitionMismatch,
             ));
         }
-        let admitted =
-            WorkspaceDelta::new(base, target, relations).map_err(WorkspaceDecodeError::Semantic)?;
+        let admitted = WorkspaceDelta::new(base, target, relations)
+            .map_err(WorkspaceDecodeError::Semantic)?;
         if admitted.encode() != encoded {
             return Err(WorkspaceDecodeError::Semantic(
                 WorkspaceError::TransitionMismatch,

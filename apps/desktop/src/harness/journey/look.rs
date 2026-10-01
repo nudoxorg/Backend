@@ -33,16 +33,9 @@ pub(super) struct Seen {
 /// the theme, and what the clipboard holds.
 pub(super) fn state_words(cx: &mut gpui::App) -> Vec<(String, String)> {
     use facet::ActiveFacet as _;
-    let Some(booted) = cx.try_global::<super::super::Booted>() else {
-        return Vec::new();
-    };
+    let Some(booted) = cx.try_global::<super::super::Booted>() else { return Vec::new() };
     let (shell, store) = (booted.shell.clone(), booted.graph.store.clone());
-    let mut words: Vec<(String, String)> = shell
-        .read(cx)
-        .chrome_words(cx)
-        .into_iter()
-        .map(|(key, value)| (key.to_owned(), value))
-        .collect();
+    let mut words: Vec<(String, String)> = shell.read(cx).chrome_words(cx).into_iter().map(|(key, value)| (key.to_owned(), value)).collect();
     let snapshot = store.read(cx).snapshot();
     let overlay = match snapshot.overlay() {
         None => "none".to_owned(),
@@ -52,28 +45,12 @@ pub(super) fn state_words(cx: &mut gpui::App) -> Vec<(String, String)> {
         Some(crate::navigation::Overlay::Inbox) => "inbox".to_owned(),
     };
     words.push(("overlay".to_owned(), overlay));
-    words.push((
-        "held".to_owned(),
-        snapshot.session().hand.held().len().to_string(),
-    ));
+    words.push(("held".to_owned(), snapshot.session().hand.held().len().to_string()));
     let facet = cx.facet();
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "a text scale is 50..300 %"
-    )]
-    words.push((
-        "text".to_owned(),
-        ((facet.text_scale * 100.0).round() as u32).to_string(),
-    ));
-    words.push((
-        "theme".to_owned(),
-        format!("{:?}", facet.appearance).to_lowercase(),
-    ));
-    let clipboard = cx
-        .read_from_clipboard()
-        .and_then(|item| item.text())
-        .unwrap_or_default();
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "a text scale is 50..300 %")]
+    words.push(("text".to_owned(), ((facet.text_scale * 100.0).round() as u32).to_string()));
+    words.push(("theme".to_owned(), format!("{:?}", facet.appearance).to_lowercase()));
+    let clipboard = cx.read_from_clipboard().and_then(|item| item.text()).unwrap_or_default();
     words.push(("clipboard".to_owned(), clipboard));
     words
 }
@@ -127,10 +104,7 @@ pub(super) fn rect(area: Area, frame: Option<&Frame>, viewport: Viewport) -> (f3
         return (0.0, 0.0, width, height);
     };
     let (top, bottom) = (f32::from(frame.titlebar), height - f32::from(frame.status));
-    let (shelf, pins) = (
-        f32::from(frame.shelf_width),
-        width - f32::from(frame.pins_width),
-    );
+    let (shelf, pins) = (f32::from(frame.shelf_width), width - f32::from(frame.pins_width));
     match area {
         Area::Titlebar => (0.0, 0.0, width, top),
         Area::Status => (0.0, bottom, width, height),
@@ -153,10 +127,7 @@ pub(super) fn visible(bounds: &BoundsSample, viewport: Viewport) -> bool {
 }
 
 fn centre(bounds: &BoundsSample) -> (f32, f32) {
-    (
-        bounds.x + bounds.width / 2.0,
-        bounds.y + bounds.height / 2.0,
-    )
+    (bounds.x + bounds.width / 2.0, bounds.y + bounds.height / 2.0)
 }
 
 fn contains(bounds: &BoundsSample, (x, y): (f32, f32)) -> bool {
@@ -174,21 +145,14 @@ fn plates(ledger: &Ledger) -> Vec<(&str, &BoundsSample)> {
         .flat_map(|stack| &stack.entries)
         .filter(|entry| entry.kind == "dialog" && entry.phase != facet::probe::StackPhase::Leaving)
         .filter_map(|entry| Some((entry.key.strip_suffix("-plate")?, entry.bounds.as_ref()?)))
-        .filter(|(region, _)| {
-            ledger
-                .texts
-                .iter()
-                .any(|text| text.region.as_deref() == Some(*region))
-        })
+        .filter(|(region, _)| ledger.texts.iter().any(|text| text.region.as_deref() == Some(*region)))
         .collect()
 }
 
 /// Whether `text` lies under a dialog's opaque plate (its centre on the
 /// plate, and not one of the dialog's own words): it is not on screen.
 pub(super) fn occluded(plates: &[(&str, &BoundsSample)], text: &TextSample) -> bool {
-    plates.iter().any(|(region, plate)| {
-        text.region.as_deref() != Some(*region) && contains(plate, centre(&text.bounds))
-    })
+    plates.iter().any(|(region, plate)| text.region.as_deref() != Some(*region) && contains(plate, centre(&text.bounds)))
 }
 
 /// The ledger as a person sees it: without the words a dialog's plate
@@ -272,31 +236,19 @@ impl Seen {
         rows.into_iter()
             .map(|mut row| {
                 row.sort_by(|a, b| a.bounds.x.total_cmp(&b.bounds.x));
-                row.iter()
-                    .map(|text| text.content.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" ")
+                row.iter().map(|text| text.content.as_str()).collect::<Vec<_>>().join(" ")
             })
             .collect()
     }
 
     /// The focused targets' keys.
     pub(super) fn focused(&self) -> Vec<&TargetSample> {
-        self.ledger
-            .targets
-            .iter()
-            .filter(|target| target.state.focused)
-            .collect()
+        self.ledger.targets.iter().filter(|target| target.state.focused).collect()
     }
 
     /// The visible text a [`Pick::Text`] names, or why not: the first
     /// `text` after each anchor in turn.
-    fn words(
-        &self,
-        text: &str,
-        after: &[String],
-        area: Option<Area>,
-    ) -> Result<&TextSample, String> {
+    fn words(&self, text: &str, after: &[String], area: Option<Area>) -> Result<&TextSample, String> {
         let shown = self.texts(area);
         let mut from = 0;
         for anchor in after {
@@ -306,11 +258,7 @@ impl Seen {
                 .ok_or_else(|| {
                     format!(
                         "the anchor \"{anchor}\" is not on screen{}{}; {}",
-                        if from > 0 {
-                            " after the anchors before it"
-                        } else {
-                            ""
-                        },
+                        if from > 0 { " after the anchors before it" } else { "" },
                         area_words(area),
                         self.summary(area)
                     )
@@ -329,11 +277,7 @@ impl Seen {
                     } else {
                         format!(
                             " after {}",
-                            after
-                                .iter()
-                                .map(|anchor| format!("\"{anchor}\""))
-                                .collect::<Vec<_>>()
-                                .join(" ")
+                            after.iter().map(|anchor| format!("\"{anchor}\"")).collect::<Vec<_>>().join(" ")
                         )
                     },
                     area_words(area),
@@ -383,14 +327,7 @@ impl Seen {
                         let (x, y) = centre(b);
                         Ok((
                             (x.round(), y.round()),
-                            format!(
-                                "target `{}` at ({:.0}, {:.0}) {:.0}x{:.0}",
-                                short(&target.key),
-                                b.x,
-                                b.y,
-                                b.width,
-                                b.height
-                            ),
+                            format!("target `{}` at ({:.0}, {:.0}) {:.0}x{:.0}", short(&target.key), b.x, b.y, b.width, b.height),
                             target.key.clone(),
                         ))
                     }
@@ -407,10 +344,7 @@ impl Seen {
                     many => Err(format!(
                         "`{probe}` matches {} targets: [{}]",
                         many.len(),
-                        many.iter()
-                            .map(|target| short(&target.key))
-                            .collect::<Vec<_>>()
-                            .join(", ")
+                        many.iter().map(|target| short(&target.key)).collect::<Vec<_>>().join(", ")
                     )),
                 }
             }
@@ -451,9 +385,7 @@ impl Seen {
             return Err(format!("{} targets focused: [{}]", focused.len(), names()));
         };
         match pick {
-            Pick::Probe(probe) if glob(probe, &target.key) => {
-                Ok(format!("`{}`", short(&target.key)))
-            }
+            Pick::Probe(probe) if glob(probe, &target.key) => Ok(format!("`{}`", short(&target.key))),
             Pick::Probe(_) => Err(format!("focused: [{}]", names())),
             Pick::Text { text, after, area } => {
                 let words = self.words(text, after, *area)?;
@@ -497,8 +429,7 @@ impl Seen {
             .filter(|text| {
                 let content = text.content.to_lowercase();
                 content != lower
-                    && (content.contains(&lower)
-                        || (lower.contains(&content) && content.len() >= 3))
+                    && (content.contains(&lower) || (lower.contains(&content) && content.len() >= 3))
             })
             .take(6)
             .map(|text| {
@@ -507,11 +438,7 @@ impl Seen {
                     clip(&short(&text.content), 80),
                     text.bounds.x,
                     text.bounds.y,
-                    if visible(&text.bounds, self.viewport()) {
-                        ""
-                    } else {
-                        " outside the window"
-                    }
+                    if visible(&text.bounds, self.viewport()) { "" } else { " outside the window" }
                 )
             })
             .collect()
@@ -521,11 +448,7 @@ impl Seen {
     pub(super) fn inventory(&self, route: Option<&Route>) -> String {
         use std::fmt::Write as _;
         let mut out = String::new();
-        let _ = writeln!(
-            out,
-            "  route: {}",
-            route.map_or_else(|| "(none)".to_owned(), |route| short(&describe(route)))
-        );
+        let _ = writeln!(out, "  route: {}", route.map_or_else(|| "(none)".to_owned(), |route| short(&describe(route))));
         if let Some(frame) = &self.frame {
             let _ = writeln!(
                 out,
@@ -542,11 +465,7 @@ impl Seen {
             let _ = writeln!(
                 out,
                 "   {}{:>5.0},{:<5.0} {:?}",
-                if visible(&text.bounds, self.viewport()) {
-                    " "
-                } else {
-                    "*"
-                },
+                if visible(&text.bounds, self.viewport()) { " " } else { "*" },
                 text.bounds.x,
                 text.bounds.y,
                 short(&text.content)
@@ -556,11 +475,7 @@ impl Seen {
             let _ = writeln!(
                 out,
                 "   {}{:>5.0},{:<5.0} {:?}  (painted only: no probe text)",
-                if visible(&extra.bounds, self.viewport()) {
-                    " "
-                } else {
-                    "*"
-                },
+                if visible(&extra.bounds, self.viewport()) { " " } else { "*" },
                 extra.bounds.x,
                 extra.bounds.y,
                 short(&extra.content)
@@ -575,27 +490,17 @@ impl Seen {
                     entry.kind,
                     short(&entry.key),
                     entry.phase,
-                    entry.bounds.as_ref().map_or_else(String::new, |b| format!(
-                        " at ({:.0}, {:.0}) {:.0}x{:.0}",
-                        b.x, b.y, b.width, b.height
-                    ))
+                    entry.bounds.as_ref().map_or_else(String::new, |b| format!(" at ({:.0}, {:.0}) {:.0}x{:.0}", b.x, b.y, b.width, b.height))
                 );
             }
         }
-        let _ = writeln!(
-            out,
-            "  targets (paint order; F = focused, * = outside the window):"
-        );
+        let _ = writeln!(out, "  targets (paint order; F = focused, * = outside the window):");
         for target in &self.ledger.targets {
             let _ = writeln!(
                 out,
                 "   {}{}{:>5.0},{:<5.0} {:>4.0}x{:<4.0} {}",
                 if target.state.focused { "F" } else { " " },
-                if visible(&target.bounds, self.viewport()) {
-                    " "
-                } else {
-                    "*"
-                },
+                if visible(&target.bounds, self.viewport()) { " " } else { "*" },
                 target.bounds.x,
                 target.bounds.y,
                 target.bounds.width,
@@ -647,20 +552,10 @@ pub(super) fn describe(route: &Route) -> String {
             format!("tree {}", project.display_lossy())
         }
         Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::FindHome)) => "find".into(),
-        Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::Find(query))) => {
-            format!("find {}", query.text)
-        }
-        Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::Compare(selection))) => {
-            format!(
-                "compare {}",
-                selection
-                    .packages()
-                    .iter()
-                    .map(|package| package.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            )
-        }
+        Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::Find(query))) => format!("find {}", query.text),
+        Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::Compare(selection))) => format!(
+            "compare {}", selection.packages().iter().map(|package| package.as_str()).collect::<Vec<_>>().join(" "),
+        ),
         Route::World => "world".to_owned(),
         Route::Package(package) => format!(
             "package {}{}{}",
@@ -677,9 +572,7 @@ pub(super) fn describe(route: &Route) -> String {
             symbol.id.as_str(),
             symbol.view.as_str(),
             at(symbol.at.as_ref()),
-            symbol
-                .line
-                .map_or_else(String::new, |line| format!(" line={line}"))
+            symbol.line.map_or_else(String::new, |line| format!(" line={line}"))
         ),
     }
 }
@@ -687,18 +580,10 @@ pub(super) fn describe(route: &Route) -> String {
 #[cfg(test)]
 mod tests {
     use super::unoccluded;
-    use facet::probe::{
-        BoundsSample, Ledger, StackEntry, StackPhase, StackSample, TextOverflow, TextSample,
-    };
+    use facet::probe::{BoundsSample, Ledger, StackEntry, StackPhase, StackSample, TextOverflow, TextSample};
 
     fn at(key: &str, x: f32, y: f32, width: f32, height: f32) -> BoundsSample {
-        BoundsSample {
-            key: key.to_owned(),
-            x,
-            y,
-            width,
-            height,
-        }
+        BoundsSample { key: key.to_owned(), x, y, width, height }
     }
 
     fn text(content: &str, x: f32, y: f32, region: Option<&str>) -> TextSample {
@@ -730,21 +615,14 @@ mod tests {
             texts,
             stacks: vec![StackSample {
                 layer: "shell".to_owned(),
-                entries: vec![
-                    dialog("ask-field", at("ask-field", 0.0, 0.0, 1440.0, 50.0)),
-                    dialog("ask-plate", at("ask-plate", 0.0, 50.0, 440.0, 824.0)),
-                ],
+                entries: vec![dialog("ask-field", at("ask-field", 0.0, 0.0, 1440.0, 50.0)), dialog("ask-plate", at("ask-plate", 0.0, 50.0, 440.0, 824.0))],
             }],
             ..Ledger::default()
         }
     }
 
     fn words(ledger: &Ledger) -> Vec<&str> {
-        ledger
-            .texts
-            .iter()
-            .map(|text| text.content.as_str())
-            .collect()
+        ledger.texts.iter().map(|text| text.content.as_str()).collect()
     }
 
     /// Ask's plate covers the shelf: the shelf's words under it are not on
@@ -758,15 +636,9 @@ mod tests {
             text("toml Value", 560.0, 16.0, None),
             text("toml_pin", 800.0, 300.0, None),
         ]);
-        assert_eq!(
-            words(&unoccluded(&open)),
-            ["Searching the library…", "toml Value", "toml_pin"]
-        );
+        assert_eq!(words(&unoccluded(&open)), ["Searching the library…", "toml Value", "toml_pin"]);
         // No words of Ask's own: the plate is not drawn, nothing is hidden.
-        let empty = ledger(vec![
-            text("Library", 20.0, 90.0, None),
-            text("toml_pin", 800.0, 300.0, None),
-        ]);
+        let empty = ledger(vec![text("Library", 20.0, 90.0, None), text("toml_pin", 800.0, 300.0, None)]);
         assert_eq!(words(&unoccluded(&empty)), ["Library", "toml_pin"]);
     }
 }

@@ -379,16 +379,9 @@ mod tests {
                     }),
                 },
             );
-            assert!(
-                accepted.is_ok_and(|snapshot| snapshot.key() == key),
-                "publication {salt}, the next sequence, is admitted"
-            );
+            assert!(accepted.is_ok_and(|snapshot| snapshot.key() == key), "publication {salt}, the next sequence, is admitted");
         }
-        assert_eq!(
-            seen,
-            [true, true],
-            "the roots sort both ways against the current one"
-        );
+        assert_eq!(seen, [true, true], "the roots sort both ways against the current one");
     }
 
     #[test]

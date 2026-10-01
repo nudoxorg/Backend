@@ -14,44 +14,12 @@ const LEDE_MAX: usize = 240;
 const DOC_FULL_MAX: usize = 400;
 const SIG_MAX: usize = 140;
 const DOC_MAX: usize = 200;
-const ABBR: [&str; 9] = [
-    "e.g", "i.e", "vs", "etc", "approx", "cf", "resp", "no", "inc",
-];
+const ABBR: [&str; 9] = ["e.g", "i.e", "vs", "etc", "approx", "cf", "resp", "no", "inc"];
 const STOP_HEADINGS: [&str; 34] = [
-    "install",
-    "installation",
-    "installing",
-    "usage",
-    "getting started",
-    "quick start",
-    "quickstart",
-    "license",
-    "licence",
-    "licensing",
-    "contributing",
-    "contribution",
-    "contributions",
-    "examples",
-    "example",
-    "minimum supported rust version",
-    "msrv",
-    "changelog",
-    "documentation",
-    "docs",
-    "usage example",
-    "usage examples",
-    "basic usage",
-    "example usage",
-    "sponsors",
-    "contributors",
-    "acknowledgements",
-    "acknowledgments",
-    "development",
-    "testing",
-    "benchmarks",
-    "errors",
-    "panics",
-    "safety",
+    "install", "installation", "installing", "usage", "getting started", "quick start", "quickstart", "license", "licence", "licensing",
+    "contributing", "contribution", "contributions", "examples", "example", "minimum supported rust version", "msrv", "changelog",
+    "documentation", "docs", "usage example", "usage examples", "basic usage", "example usage", "sponsors", "contributors",
+    "acknowledgements", "acknowledgments", "development", "testing", "benchmarks", "errors", "panics", "safety",
 ];
 
 /// A module's words: its first sentence and its first paragraph.
@@ -115,10 +83,7 @@ pub fn clean_inline(text: &str) -> String {
     while i < chars.len() {
         let c = chars[i];
         if c == '`' {
-            let end = chars[i + 1..]
-                .iter()
-                .position(|x| *x == '`')
-                .map(|p| i + 1 + p);
+            let end = chars[i + 1..].iter().position(|x| *x == '`').map(|p| i + 1 + p);
             if let Some(end) = end {
                 out.extend(&chars[i..=end]);
                 i = end + 1;
@@ -127,11 +92,7 @@ pub fn clean_inline(text: &str) -> String {
         }
         if c == '!' && chars.get(i + 1) == Some(&'[') {
             // An image is no words: `![alt](src)` is gone.
-            if let Some(close) = chars[i + 2..]
-                .iter()
-                .position(|x| *x == ']')
-                .map(|p| i + 2 + p)
-            {
+            if let Some(close) = chars[i + 2..].iter().position(|x| *x == ']').map(|p| i + 2 + p) {
                 let mut end = close + 1;
                 if chars.get(end) == Some(&'(')
                     && let Some(p) = chars[end..].iter().position(|x| *x == ')')
@@ -144,11 +105,7 @@ pub fn clean_inline(text: &str) -> String {
         }
         if c == '[' {
             // [text](url) and [text][ref] read as text; [text] as text.
-            if let Some(close) = chars[i + 1..]
-                .iter()
-                .position(|x| *x == ']')
-                .map(|p| i + 1 + p)
-            {
+            if let Some(close) = chars[i + 1..].iter().position(|x| *x == ']').map(|p| i + 1 + p) {
                 let label: String = chars[i + 1..close].iter().collect();
                 let mut end = close + 1;
                 if chars.get(end) == Some(&'(') {
@@ -172,9 +129,7 @@ pub fn clean_inline(text: &str) -> String {
         if c == '<' {
             // Inline HTML tags and autolinks.
             if let Some(p) = chars[i..].iter().position(|x| *x == '>')
-                && chars
-                    .get(i + 1)
-                    .is_some_and(|n| n.is_alphabetic() || *n == '/')
+                && chars.get(i + 1).is_some_and(|n| n.is_alphabetic() || *n == '/')
             {
                 i += p + 1;
                 continue;
@@ -196,9 +151,7 @@ fn list_start(line: &str) -> bool {
         || t.starts_with("- ")
         || t.starts_with("* ")
         || t.starts_with("+ ")
-        || t.split_once(['.', ')']).is_some_and(|(n, rest)| {
-            !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) && rest.starts_with(' ')
-        })
+        || t.split_once(['.', ')']).is_some_and(|(n, rest)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) && rest.starts_with(' '))
         || (t.starts_with('[') && t.contains("]:"))
 }
 
@@ -327,10 +280,7 @@ pub fn first_sentence(text: &str) -> Option<String> {
         }
         let last_word = t[..at].rsplit(' ').next().unwrap_or("").to_lowercase();
         let last_word = last_word.trim_start_matches('(');
-        if c == '.'
-            && (ABBR.contains(&last_word)
-                || (last_word.len() == 1 && last_word.chars().all(char::is_alphabetic)))
-        {
+        if c == '.' && (ABBR.contains(&last_word) || (last_word.len() == 1 && last_word.chars().all(char::is_alphabetic))) {
             continue;
         }
         let rest = t[at + 1..].trim_start();
@@ -348,12 +298,7 @@ pub fn first_sentence(text: &str) -> Option<String> {
     }
     if out.chars().count() > LEDE_MAX {
         let cut: String = out.chars().take(LEDE_MAX - 1).collect();
-        out = format!(
-            "{}…",
-            cut.rsplit_once(' ')
-                .map_or(cut.as_str(), |(head, _)| head)
-                .trim_end_matches([',', ';', ':'])
-        );
+        out = format!("{}…", cut.rsplit_once(' ').map_or(cut.as_str(), |(head, _)| head).trim_end_matches([',', ';', ':']));
     }
     (!out.is_empty()).then_some(out)
 }
@@ -367,21 +312,13 @@ fn paragraph_cut(para: &str, cap: usize) -> String {
     let stop = [". ", "! ", "? "].iter().filter_map(|m| cut.rfind(m)).max();
     match stop {
         Some(at) if at * 10 > cap * 4 => cut[..=at].to_owned(),
-        _ => format!(
-            "{}…",
-            cut.rsplit_once(' ')
-                .map_or(cut.as_str(), |(head, _)| head)
-                .trim_end_matches([',', ';', ':'])
-        ),
+        _ => format!("{}…", cut.rsplit_once(' ').map_or(cut.as_str(), |(head, _)| head).trim_end_matches([',', ';', ':'])),
     }
 }
 
 fn doc_of(paragraph: Option<String>) -> Option<Doc> {
     let paragraph = paragraph?;
-    Some(Doc {
-        sentence: first_sentence(&paragraph)?,
-        paragraph: paragraph_cut(&paragraph, DOC_FULL_MAX),
-    })
+    Some(Doc { sentence: first_sentence(&paragraph)?, paragraph: paragraph_cut(&paragraph, DOC_FULL_MAX) })
 }
 
 /// The `//!` lines at the top of a file (and `#![doc = "…"]`, and
@@ -406,10 +343,7 @@ fn inner_doc(text: &str, dir: &Path) -> Option<String> {
             {
                 out.push(s[q + 1..end].replace("\\n", "\n"));
             }
-        } else if s.is_empty()
-            || s.starts_with("//") && !s.starts_with("///")
-            || s.starts_with("#![")
-        {
+        } else if s.is_empty() || s.starts_with("//") && !s.starts_with("///") || s.starts_with("#![") {
             continue;
         } else {
             break;
@@ -475,22 +409,14 @@ fn doc_sentence(lines: &[&str], at: usize) -> Option<String> {
         let mut sentence = first_sentence(&paragraph.join(" "))?;
         if sentence.chars().count() > DOC_MAX {
             let cut: String = sentence.chars().take(DOC_MAX - 1).collect();
-            sentence = format!(
-                "{}…",
-                cut.rsplit_once(' ')
-                    .map_or(cut.as_str(), |(head, _)| head)
-                    .trim_end_matches([',', ';', ':'])
-            );
+            sentence = format!("{}…", cut.rsplit_once(' ').map_or(cut.as_str(), |(head, _)| head).trim_end_matches([',', ';', ':']));
         }
         return Some(sentence);
     }
     None
 }
 
-const TESTISH: [&str; 11] = [
-    "tests", "test", "benches", "bench", "examples", "example", "fixtures", "fixture", "testdata",
-    "corpus", "target",
-];
+const TESTISH: [&str; 11] = ["tests", "test", "benches", "bench", "examples", "example", "fixtures", "fixture", "testdata", "corpus", "target"];
 
 fn is_test_file(stem: &str) -> bool {
     stem == "tests" || stem == "test" || stem.ends_with("_tests") || stem.ends_with("_test")
@@ -587,10 +513,7 @@ fn item_at(code: &[u8], at: usize) -> Option<(&'static str, String, usize)> {
                 break;
             }
             if code.get(next) == Some(&b'"') {
-                let close = code[next + 1..]
-                    .iter()
-                    .position(|c| *c == b'"')
-                    .map(|p| next + 1 + p + 1)?;
+                let close = code[next + 1..].iter().position(|c| *c == b'"').map(|p| next + 1 + p + 1)?;
                 next = skip_blank(code, close);
                 if next == close {
                     break;
@@ -608,31 +531,18 @@ fn item_at(code: &[u8], at: usize) -> Option<(&'static str, String, usize)> {
                 continue;
             }
             let end = start + text.len();
-            if code
-                .get(end)
-                .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
-            {
+            if code.get(end).is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_') {
                 continue;
             }
             let mut k = skip_blank(code, end);
-            if code[k..].starts_with(b"mut")
-                && code.get(k + 3).is_some_and(|b| *b == b' ' || *b == b'\t')
-            {
+            if code[k..].starts_with(b"mut") && code.get(k + 3).is_some_and(|b| *b == b' ' || *b == b'\t') {
                 k = skip_blank(code, k + 3);
             }
             if code[k..].starts_with(b"r#") {
                 k += 2;
             }
             let (name_end, name) = ident_at(code, k);
-            let name = if name
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-            {
-                name.to_owned()
-            } else {
-                String::new()
-            };
+            let name = if name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') { name.to_owned() } else { String::new() };
             let end = if name.is_empty() { k } else { name_end };
             return Some((keyword, name, end));
         }
@@ -649,11 +559,7 @@ fn mod_decls(code: &str) -> Vec<(String, bool, usize)> {
         if let Some(rest) = t.strip_prefix("pub") {
             let rest = rest.trim_start();
             public = true;
-            t = if rest.starts_with('(') {
-                rest.find(')').map_or(rest, |c| rest[c + 1..].trim_start())
-            } else {
-                rest
-            };
+            t = if rest.starts_with('(') { rest.find(')').map_or(rest, |c| rest[c + 1..].trim_start()) } else { rest };
         } else if t.starts_with("#[") {
             // Attributes on the same line: skip them.
             let mut rest = t;
@@ -667,11 +573,7 @@ fn mod_decls(code: &str) -> Vec<(String, bool, usize)> {
             if let Some(rest) = t.strip_prefix("pub") {
                 let rest = rest.trim_start();
                 public = true;
-                t = if rest.starts_with('(') {
-                    rest.find(')').map_or(rest, |c| rest[c + 1..].trim_start())
-                } else {
-                    rest
-                };
+                t = if rest.starts_with('(') { rest.find(')').map_or(rest, |c| rest[c + 1..].trim_start()) } else { rest };
             }
         }
         let t = t.strip_prefix("unsafe ").unwrap_or(t);
@@ -693,15 +595,9 @@ fn walk(dir: &Path, root: &Path, skip_nested: bool, out: &mut Vec<(PathBuf, Vec<
     for entry in entries {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
-        let Ok(kind) = entry.file_type() else {
-            continue;
-        };
+        let Ok(kind) = entry.file_type() else { continue };
         if kind.is_dir() {
-            if name.starts_with('.')
-                || TESTISH.contains(&name.to_lowercase().as_str())
-                || (skip_nested && path.join("Cargo.toml").exists())
-                || name == "node_modules"
-            {
+            if name.starts_with('.') || TESTISH.contains(&name.to_lowercase().as_str()) || (skip_nested && path.join("Cargo.toml").exists()) || name == "node_modules" {
                 continue;
             }
             walk(&path, root, skip_nested, out);
@@ -710,15 +606,7 @@ fn walk(dir: &Path, root: &Path, skip_nested: bool, out: &mut Vec<(PathBuf, Vec<
             if is_test_file(stem) {
                 continue;
             }
-            let rel = path
-                .strip_prefix(root)
-                .ok()
-                .map(|r| {
-                    r.components()
-                        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-                        .collect()
-                })
-                .unwrap_or_default();
+            let rel = path.strip_prefix(root).ok().map(|r| r.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect()).unwrap_or_default();
             out.push((path, rel));
         }
     }
@@ -748,11 +636,7 @@ pub fn items(root: &Path, crate_dir: &Path) -> Vec<Module> {
         let module = module_name(&rel);
         let full = full_module_path(&rel);
         for (name, public, _) in mod_decls(&code) {
-            let entry = declared
-                .entry(full.clone())
-                .or_default()
-                .entry(name)
-                .or_insert(false);
+            let entry = declared.entry(full.clone()).or_default().entry(name).or_insert(false);
             *entry = *entry || public;
         }
         let file_uses = pub_uses(&code);
@@ -763,12 +647,7 @@ pub fn items(root: &Path, crate_dir: &Path) -> Vec<Module> {
         let lines: Vec<&str> = text.split('\n').collect();
         let bytes = code.as_bytes();
         // Newline offsets of the masked text (same offsets as the source).
-        let newlines: Vec<usize> = bytes
-            .iter()
-            .enumerate()
-            .filter(|(_, b)| **b == b'\n')
-            .map(|(i, _)| i)
-            .collect();
+        let newlines: Vec<usize> = bytes.iter().enumerate().filter(|(_, b)| **b == b'\n').map(|(i, _)| i).collect();
         let mut stack: Vec<&str> = Vec::new();
         let mut bad = 0usize;
         let mut boundary: Option<usize> = None;
@@ -784,14 +663,7 @@ pub fn items(root: &Path, crate_dir: &Path) -> Vec<Module> {
                         let raw = &code[boundary.map_or(0, |at| at + 1)..i];
                         let header = strip_attributes(raw);
                         if let Some(name) = mod_header(header.trim()) {
-                            if raw.replace(' ', "").contains("cfg(test)")
-                                || name == "tests"
-                                || name == "test"
-                            {
-                                "test"
-                            } else {
-                                "mod"
-                            }
+                            if raw.replace(' ', "").contains("cfg(test)") || name == "tests" || name == "test" { "test" } else { "mod" }
                         } else if extern_header(header.trim()) {
                             "extern"
                         } else {
@@ -812,9 +684,7 @@ pub fn items(root: &Path, crate_dir: &Path) -> Vec<Module> {
                 i += 1;
                 continue;
             }
-            if (i == 0 || bytes[i - 1] == b'\n')
-                && let Some((keyword, name, end)) = item_at(bytes, i)
-            {
+            if (i == 0 || bytes[i - 1] == b'\n') && let Some((keyword, name, end)) = item_at(bytes, i) {
                 if bad == 0 && keyword != "mod" && !name.is_empty() {
                     let key = (module.clone(), keyword, name.clone());
                     if !seen.contains(&key) {
@@ -843,14 +713,8 @@ pub fn items(root: &Path, crate_dir: &Path) -> Vec<Module> {
             let rest = &code[start..];
             if let Some(m) = rest.find("macro_rules!") {
                 let between = &rest[..m];
-                if between.matches("#[").count() >= 1
-                    && !between.contains(';')
-                    && !between.contains('{')
-                {
-                    let (_, name) = ident_at(
-                        rest.as_bytes(),
-                        skip_blank(rest.as_bytes(), m + 12).max(m + 12),
-                    );
+                if between.matches("#[").count() >= 1 && !between.contains(';') && !between.contains('{') {
+                    let (_, name) = ident_at(rest.as_bytes(), skip_blank(rest.as_bytes(), m + 12).max(m + 12));
                     let name_at = rest[m + 12..].trim_start();
                     let (_, name2) = ident_at(name_at.as_bytes(), 0);
                     let name = if name2.is_empty() { name } else { name2 };
@@ -875,11 +739,7 @@ pub fn items(root: &Path, crate_dir: &Path) -> Vec<Module> {
         if !found.is_empty() {
             match modules.iter_mut().find(|m| m.path == module) {
                 Some(m) => m.items.extend(found),
-                None => modules.push(Module {
-                    path: module.clone(),
-                    access: Access::Public,
-                    items: found,
-                }),
+                None => modules.push(Module { path: module.clone(), access: Access::Public, items: found }),
             }
         }
         if seen.len() > before {
@@ -887,12 +747,7 @@ pub fn items(root: &Path, crate_dir: &Path) -> Vec<Module> {
         }
     }
     let private = |path: &[String]| -> bool {
-        (1..=path.len()).any(|i| {
-            declared
-                .get(&path[..i - 1])
-                .and_then(|d| d.get(&path[i - 1]))
-                .is_some_and(|public| !public)
-        })
+        (1..=path.len()).any(|i| declared.get(&path[..i - 1]).and_then(|d| d.get(&path[i - 1])).is_some_and(|public| !public))
     };
     // What a `pub use` makes public: a name defined in a module nobody can
     // reach by path is public where it is re-exported.
@@ -903,41 +758,20 @@ pub fn items(root: &Path, crate_dir: &Path) -> Vec<Module> {
         }
         let mut added: Vec<Item> = Vec::new();
         for (path, exported) in leaves {
-            let Some((target, name)) = path
-                .split_last()
-                .map(|(name, rest)| (rest.to_vec(), name.clone()))
-            else {
-                continue;
-            };
-            let Some(target) = resolve_module(&target, full, &declared) else {
-                continue;
-            };
+            let Some((target, name)) = path.split_last().map(|(name, rest)| (rest.to_vec(), name.clone())) else { continue };
+            let Some(target) = resolve_module(&target, full, &declared) else { continue };
             if !private(&target) {
                 continue;
             }
             let key = module_key(&target);
-            let Some(defined) = modules.iter().find(|m| m.path == key) else {
-                continue;
-            };
-            let pick: Vec<&Item> = if name == "*" {
-                defined.items.iter().collect()
-            } else {
-                defined.items.iter().filter(|i| i.name == name).collect()
-            };
+            let Some(defined) = modules.iter().find(|m| m.path == key) else { continue };
+            let pick: Vec<&Item> = if name == "*" { defined.items.iter().collect() } else { defined.items.iter().filter(|i| i.name == name).collect() };
             for item in pick {
-                let shown = if name == "*" {
-                    item.name.clone()
-                } else {
-                    exported.clone()
-                };
+                let shown = if name == "*" { item.name.clone() } else { exported.clone() };
                 if shown == "_" {
                     continue;
                 }
-                added.push(Item {
-                    name: shown,
-                    from: Some(key.clone()),
-                    ..item.clone()
-                });
+                added.push(Item { name: shown, from: Some(key.clone()), ..item.clone() });
             }
         }
         if added.is_empty() {
@@ -946,11 +780,7 @@ pub fn items(root: &Path, crate_dir: &Path) -> Vec<Module> {
         let at = match modules.iter().position(|m| m.path == *module) {
             Some(at) => at,
             None => {
-                modules.push(Module {
-                    path: module.clone(),
-                    access: Access::Public,
-                    items: Vec::new(),
-                });
+                modules.push(Module { path: module.clone(), access: Access::Public, items: Vec::new() });
                 modules.len() - 1
             }
         };
@@ -962,44 +792,23 @@ pub fn items(root: &Path, crate_dir: &Path) -> Vec<Module> {
         reexporting.push((module.clone(), full.clone()));
     }
     for module in &mut modules {
-        let hidden = contributed
-            .iter()
-            .chain(reexporting.iter())
-            .filter(|(m, _)| *m == module.path)
-            .all(|(_, full)| private(full));
-        module.access = if hidden {
-            Access::Private
-        } else {
-            Access::Public
-        };
+        let hidden = contributed.iter().chain(reexporting.iter()).filter(|(m, _)| *m == module.path).all(|(_, full)| private(full));
+        module.access = if hidden { Access::Private } else { Access::Public };
     }
-    modules.sort_by(|a, b| {
-        b.items
-            .len()
-            .cmp(&a.items.len())
-            .then_with(|| a.path.cmp(&b.path))
-    });
+    modules.sort_by(|a, b| b.items.len().cmp(&a.items.len()).then_with(|| a.path.cmp(&b.path)));
     modules
 }
 
 /// The key of a module by its full path: `lib` for the root, else its first
 /// two segments (`sync::mpsc`), as [`module_name`] keys a file.
 fn module_key(path: &[String]) -> String {
-    if path.is_empty() {
-        "lib".to_owned()
-    } else {
-        path.iter().take(2).cloned().collect::<Vec<_>>().join("::")
-    }
+    if path.is_empty() { "lib".to_owned() } else { path.iter().take(2).cloned().collect::<Vec<_>>().join("::") }
 }
 
 /// The module a `pub use` path names, as full segments, when it is one of
 /// this crate's: `crate::a::b`, `self::a`, `super::a`, or a child of the
 /// module the statement sits in (`a::b`). Paths into other crates are `None`.
-fn resolve_module(
-    path: &[String],
-    here: &[String],
-    declared: &HashMap<Vec<String>, HashMap<String, bool>>,
-) -> Option<Vec<String>> {
+fn resolve_module(path: &[String], here: &[String], declared: &HashMap<Vec<String>, HashMap<String, bool>>) -> Option<Vec<String>> {
     let mut out: Vec<String>;
     let mut rest = path;
     match path.first().map(String::as_str) {
@@ -1022,11 +831,7 @@ fn resolve_module(
             // A child of this module, or (edition 2015) of the root.
             if declared.get(here).is_some_and(|d| d.contains_key(first)) {
                 out = here.to_vec();
-            } else if declared
-                .get(&Vec::new())
-                .is_some_and(|d| d.contains_key(first))
-                && here.is_empty()
-            {
+            } else if declared.get(&Vec::new()).is_some_and(|d| d.contains_key(first)) && here.is_empty() {
                 out = Vec::new();
             } else {
                 return None;
@@ -1060,13 +865,7 @@ fn pub_uses(code: &str) -> Vec<(Vec<String>, String)> {
 
 fn use_tree(tree: &str, prefix: &[String], out: &mut Vec<(Vec<String>, String)>) {
     let tree = tree.trim();
-    let segments = |text: &str| -> Vec<String> {
-        text.split("::")
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned)
-            .collect()
-    };
+    let segments = |text: &str| -> Vec<String> { text.split("::").map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect() };
     if let Some(open) = tree.find('{') {
         let close = tree.rfind('}').unwrap_or(tree.len());
         let mut path = prefix.to_vec();
@@ -1126,11 +925,7 @@ fn declaration(code: &[u8], at: usize) -> String {
     let text = String::from_utf8_lossy(&code[at..end]);
     let one: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let one = one.trim().trim_end_matches(',').to_owned();
-    if one.chars().count() > 480 {
-        one.chars().take(480).collect()
-    } else {
-        one
-    }
+    if one.chars().count() > 480 { one.chars().take(480).collect() } else { one }
 }
 
 fn signature(line: &str) -> String {
@@ -1138,10 +933,7 @@ fn signature(line: &str) -> String {
     if s.chars().count() <= SIG_MAX {
         s.to_owned()
     } else {
-        format!(
-            "{}…",
-            s.chars().take(SIG_MAX - 1).collect::<String>().trim_end()
-        )
+        format!("{}…", s.chars().take(SIG_MAX - 1).collect::<String>().trim_end())
     }
 }
 
@@ -1194,40 +986,23 @@ fn extern_header(header: &str) -> bool {
 pub fn module_doc(root: &Path, root_file: &Path, name: &str) -> Option<Doc> {
     let read = |p: &Path| fs::read_to_string(p).ok();
     let file_of = |segs: &[&str]| -> Option<PathBuf> {
-        let base = segs
-            .iter()
-            .fold(root.to_path_buf(), |dir, seg| dir.join(seg));
+        let base = segs.iter().fold(root.to_path_buf(), |dir, seg| dir.join(seg));
         let file = base.with_file_name(format!("{}.rs", base.file_name()?.to_string_lossy()));
-        [file, base.join("mod.rs")]
-            .into_iter()
-            .find(|f| f.is_file())
+        [file, base.join("mod.rs")].into_iter().find(|f| f.is_file())
     };
     if name == "lib" {
-        let file = if root.join("lib.rs").is_file() {
-            root.join("lib.rs")
-        } else {
-            root_file.to_path_buf()
-        };
+        let file = if root.join("lib.rs").is_file() { root.join("lib.rs") } else { root_file.to_path_buf() };
         let text = read(&file)?;
-        return doc_of(first_paragraph(&inner_doc(
-            &text,
-            file.parent().unwrap_or(root),
-        )?));
+        return doc_of(first_paragraph(&inner_doc(&text, file.parent().unwrap_or(root))?));
     }
     let segs: Vec<&str> = name.split("::").collect();
     if let Some(own) = file_of(&segs)
         && let Some(text) = read(&own)
-        && let Some(doc) = inner_doc(&text, own.parent().unwrap_or(root))
-            .and_then(|d| first_paragraph(&d))
-            .and_then(|p| doc_of(Some(p)))
+        && let Some(doc) = inner_doc(&text, own.parent().unwrap_or(root)).and_then(|d| first_paragraph(&d)).and_then(|p| doc_of(Some(p)))
     {
         return Some(doc);
     }
-    let parent = if segs.len() == 1 {
-        Some(root_file.to_path_buf())
-    } else {
-        file_of(&segs[..segs.len() - 1])
-    }?;
+    let parent = if segs.len() == 1 { Some(root_file.to_path_buf()) } else { file_of(&segs[..segs.len() - 1]) }?;
     let text = read(&parent)?;
     let code = mask(&text, Literals::Blank);
     let lines: Vec<&str> = text.split('\n').collect();

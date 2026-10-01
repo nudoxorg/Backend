@@ -5,8 +5,6 @@
 //! DTO surface.
 
 mod admission;
-#[cfg(test)]
-mod claim_index_tests;
 mod claims;
 mod codec;
 mod command;
@@ -22,6 +20,8 @@ mod reply_graph_query;
 mod reply_page;
 mod subscription;
 mod subscription_snapshot;
+#[cfg(test)]
+mod claim_index_tests;
 #[cfg(test)]
 mod tests;
 

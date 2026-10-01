@@ -15,26 +15,14 @@ use super::Known;
 pub(crate) mod declaration_kind {
     use super::*;
 
-    #[allow(
-        clippy::trivially_copy_pass_by_ref,
-        clippy::ref_option,
-        reason = "serde's `with` passes the field by reference"
-    )]
-    pub(crate) fn serialize<S: Serializer>(
-        kind: &Option<DeclarationKind>,
-        to: S,
-    ) -> Result<S::Ok, S::Error> {
+    #[allow(clippy::trivially_copy_pass_by_ref, clippy::ref_option, reason = "serde's `with` passes the field by reference")]
+    pub(crate) fn serialize<S: Serializer>(kind: &Option<DeclarationKind>, to: S) -> Result<S::Ok, S::Error> {
         kind.map(DeclarationKind::wire_tag).serialize(to)
     }
 
-    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
-        from: D,
-    ) -> Result<Option<DeclarationKind>, D::Error> {
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(from: D) -> Result<Option<DeclarationKind>, D::Error> {
         Option::<u8>::deserialize(from)?
-            .map(|tag| {
-                DeclarationKind::from_wire_tag(tag)
-                    .ok_or_else(|| D::Error::custom(format!("declaration kind tag {tag}")))
-            })
+            .map(|tag| DeclarationKind::from_wire_tag(tag).ok_or_else(|| D::Error::custom(format!("declaration kind tag {tag}"))))
             .transpose()
     }
 }
@@ -43,28 +31,18 @@ pub(crate) mod declaration_kind {
 pub(crate) mod obligation {
     use super::*;
 
-    pub(crate) fn serialize<S: Serializer>(
-        value: &Known<Option<Obligation>>,
-        to: S,
-    ) -> Result<S::Ok, S::Error> {
+    pub(crate) fn serialize<S: Serializer>(value: &Known<Option<Obligation>>, to: S) -> Result<S::Ok, S::Error> {
         match value {
-            Known::Known(obligation) => {
-                Known::Known(obligation.map(Obligation::wire_tag)).serialize(to)
-            }
+            Known::Known(obligation) => Known::Known(obligation.map(Obligation::wire_tag)).serialize(to),
             Known::Unknown(gap) => Known::<Option<u8>>::Unknown(gap.clone()).serialize(to),
         }
     }
 
-    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
-        from: D,
-    ) -> Result<Known<Option<Obligation>>, D::Error> {
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(from: D) -> Result<Known<Option<Obligation>>, D::Error> {
         Ok(match Known::<Option<u8>>::deserialize(from)? {
             Known::Known(tag) => Known::Known(
-                tag.map(|tag| {
-                    Obligation::from_wire_tag(tag)
-                        .map_err(|_| D::Error::custom(format!("obligation tag {tag}")))
-                })
-                .transpose()?,
+                tag.map(|tag| Obligation::from_wire_tag(tag).map_err(|_| D::Error::custom(format!("obligation tag {tag}"))))
+                    .transpose()?,
             ),
             Known::Unknown(gap) => Known::Unknown(gap),
         })
@@ -75,10 +53,7 @@ pub(crate) mod obligation {
 pub(crate) mod language {
     use super::*;
 
-    #[allow(
-        clippy::trivially_copy_pass_by_ref,
-        reason = "serde's `with` passes the field by reference"
-    )]
+    #[allow(clippy::trivially_copy_pass_by_ref, reason = "serde's `with` passes the field by reference")]
     pub(crate) fn serialize<S: Serializer>(language: &Language, to: S) -> Result<S::Ok, S::Error> {
         language.name().serialize(to)
     }
@@ -110,10 +85,7 @@ pub(crate) mod section_kind {
         SectionKind::Other,
     ];
 
-    #[allow(
-        clippy::trivially_copy_pass_by_ref,
-        reason = "serde's `with` passes the field by reference"
-    )]
+    #[allow(clippy::trivially_copy_pass_by_ref, reason = "serde's `with` passes the field by reference")]
     pub(crate) fn serialize<S: Serializer>(kind: &SectionKind, to: S) -> Result<S::Ok, S::Error> {
         kind.name().serialize(to)
     }

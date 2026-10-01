@@ -5,8 +5,8 @@
 
 use core::{cmp::Ordering, ops::Deref};
 
-use crate::index_vocabulary::LexicalSegmentId;
 use backend_version::{ContentHasher, FixedCanonicalRecord, IndexLexicalSegmentDomain};
+use crate::index_vocabulary::LexicalSegmentId;
 
 use crate::index_core::document::{ENTITY_DOCUMENT_ID_BYTES, EntityDocumentId};
 

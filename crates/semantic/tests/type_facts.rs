@@ -13,8 +13,8 @@ use backend_semantic::ir_vocabulary::{
     VariantFingerprint,
 };
 use backend_semantic::vocabulary::{LanguageProfile, NativeTool, RustEdition, Stage};
-use backend_version::{ContentId, IrFragmentDomain, SourceFactDomain, ToolchainDomain};
 use core::num::ParseIntError;
+use backend_version::{ContentId, IrFragmentDomain, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -198,9 +198,7 @@ fn schema_three_rejects_invalid_computed_rows_before_publication() {
         },
     }];
     let child = [backend_semantic::ir_vocabulary::SemanticTypeChild {
-        target: TypeChildTarget::Type(TypeRef::Local(
-            backend_semantic::ir_vocabulary::TypeId::new(2),
-        )),
+        target: TypeChildTarget::Type(TypeRef::Local(backend_semantic::ir_vocabulary::TypeId::new(2))),
         name: None,
         flags: 0,
     }];
@@ -266,9 +264,7 @@ fn schema_three_reopen_reports_the_full_type_lane_for_computed_children() -> Res
         },
     }];
     let children = [backend_semantic::ir_vocabulary::SemanticTypeChild {
-        target: TypeChildTarget::Type(TypeRef::Local(
-            backend_semantic::ir_vocabulary::TypeId::new(0),
-        )),
+        target: TypeChildTarget::Type(TypeRef::Local(backend_semantic::ir_vocabulary::TypeId::new(0))),
         name: None,
         flags: 0,
     }];
@@ -714,9 +710,7 @@ fn forward_child_reopen_retains_the_true_record_ordinal() -> Result<(), TestFail
         },
     ];
     let children = [backend_semantic::ir_vocabulary::SemanticTypeChild {
-        target: TypeChildTarget::Type(TypeRef::Local(
-            backend_semantic::ir_vocabulary::TypeId::new(0),
-        )),
+        target: TypeChildTarget::Type(TypeRef::Local(backend_semantic::ir_vocabulary::TypeId::new(0))),
         name: None,
         flags: 0,
     }];
@@ -763,9 +757,7 @@ fn admission_out_of_range_child_returns_the_typed_prepare_fault() {
         },
     }];
     let children = [backend_semantic::ir_vocabulary::SemanticTypeChild {
-        target: TypeChildTarget::Type(TypeRef::Local(
-            backend_semantic::ir_vocabulary::TypeId::new(8),
-        )),
+        target: TypeChildTarget::Type(TypeRef::Local(backend_semantic::ir_vocabulary::TypeId::new(8))),
         name: None,
         flags: 0,
     }];

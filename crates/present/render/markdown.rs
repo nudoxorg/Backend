@@ -328,10 +328,9 @@ fn push_outline_entry(
     within: Option<&ProjectRef>,
 ) {
     let indent = "  ".repeat(depth.min(16));
-    let glyph = entry.kind().map_or_else(
-        || "·".to_owned(),
-        |kind| KindGlyph::new(kind).as_str().to_owned(),
-    );
+    let glyph = entry
+        .kind()
+        .map_or_else(|| "·".to_owned(), |kind| KindGlyph::new(kind).as_str().to_owned());
     let mut line = format!("{indent}{glyph} {}", entry.name());
     if let Some(identity) = entry.identity() {
         let _ = write!(line, "  `{}`", identity.trail_within(within));

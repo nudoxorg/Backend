@@ -243,8 +243,7 @@ impl CommandAdapter {
                 request.request_id,
                 ticket,
             )? {
-                return Self::encode(daemon, request.request_id, started, None)
-                    .map(Executed::Reply);
+                return Self::encode(daemon, request.request_id, started, None).map(Executed::Reply);
             }
             return Ok(Executed::Deferred);
         }
@@ -321,13 +320,7 @@ impl CommandAdapter {
         let (package, label) = canonical_local_package(package, label)?;
         if !matches!(classify_add_target(&label)?, AddTarget::LocalDirectory) {
             return self
-                .add(
-                    daemon,
-                    requested_package,
-                    execution_intent,
-                    certificate,
-                    request_id,
-                )
+                .add(daemon, requested_package, execution_intent, certificate, request_id)
                 .map(Some);
         }
         let prepared = match prepare_index_project(
@@ -346,9 +339,9 @@ impl CommandAdapter {
             }
         };
         match prepared {
-            PreparedIndex::Ready(intent) => self
-                .finish_add(daemon, intent, request_id, requested_package)
-                .map(Some),
+            PreparedIndex::Ready(intent) => {
+                self.finish_add(daemon, intent, request_id, requested_package).map(Some)
+            }
             PreparedIndex::Compile(mut job) => {
                 let work = job.take_work();
                 let compiler = self.compiler.clone();
@@ -358,9 +351,7 @@ impl CommandAdapter {
                     .spawn(move || {
                         let _ = sender.send(run_deferred_compile(&compiler, work));
                     })
-                    .map_err(|error| {
-                        BuiltinModelError(format!("start the index compile: {error}"))
-                    })?;
+                    .map_err(|error| BuiltinModelError(format!("start the index compile: {error}")))?;
                 self.indexing = Some(IndexJob {
                     ticket,
                     request_id,

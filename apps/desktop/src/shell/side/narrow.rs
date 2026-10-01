@@ -130,21 +130,9 @@ mod tests {
         assert_eq!(find_fold("ValueDeserializer", "deser"), Some(5..10));
         assert_eq!(find_fold("AS_STR", "as_s"), Some(0..4));
         assert_eq!(find_fold("as_str", "xyz"), None);
-        assert_eq!(
-            find_fold("as_str", ""),
-            None,
-            "an empty query matches everything and underlines nothing"
-        );
-        assert_eq!(
-            find_fold("héllo", "llo"),
-            Some(3..6),
-            "byte offsets survive a multi-byte character"
-        );
+        assert_eq!(find_fold("as_str", ""), None, "an empty query matches everything and underlines nothing");
+        assert_eq!(find_fold("héllo", "llo"), Some(3..6), "byte offsets survive a multi-byte character");
         assert_eq!(find_fold("héllo", "É"), Some(1..3));
-        assert_eq!(
-            find_fold("ab", "abc"),
-            None,
-            "a query longer than the name never matches"
-        );
+        assert_eq!(find_fold("ab", "abc"), None, "a query longer than the name never matches");
     }
 }

@@ -11,8 +11,8 @@ use backend_engine::driver::{
 };
 use backend_frontend_csharp::legacy::{CSharpImage, DeclarationKind, ReferenceTag};
 use backend_semantic::ir::{
-    EntityKind, ForeignOrigin, FragmentError, FragmentView, OccurrenceConfidence, OccurrenceTarget,
-    ReferenceKind,
+    EntityKind, ForeignOrigin, FragmentError, FragmentView, OccurrenceConfidence,
+    OccurrenceTarget, ReferenceKind,
 };
 use backend_semantic::vocabulary::{CSharpVersion, LanguageProfile, Stage};
 use std::{
@@ -140,12 +140,11 @@ fn drive_owner<'fragment>(view: &FragmentView<'fragment>) -> Result<u32, TestErr
     let atoms: Vec<&[u8]> = view.atoms().map(|atom| atom.bytes).collect();
     for entity in view.entities() {
         if entity.kind == EntityKind::Function {
-            let name = atoms
-                .get(entity.name.raw as usize)
-                .copied()
-                .ok_or_else(|| TestError::Fact {
+            let name = atoms.get(entity.name.raw as usize).copied().ok_or_else(|| {
+                TestError::Fact {
                     message: "entity name atom is absent".to_owned(),
-                })?;
+                }
+            })?;
             if name == b"Drive" {
                 return Ok(entity.entity.raw);
             }
@@ -234,10 +233,9 @@ fn cross_file_const_read_targets_workout_service_namespace_constant_key() -> Res
             .ok_or_else(|| TestError::Fact {
                 message: "cross-file Limit site is absent from the fixture source".to_owned(),
             })?;
-        let start =
-            u32::try_from(before + "WorkoutService.".len()).map_err(|_| TestError::Fact {
-                message: "Limit span start does not fit u32".to_owned(),
-            })?;
+        let start = u32::try_from(before + "WorkoutService.".len()).map_err(|_| TestError::Fact {
+            message: "Limit span start does not fit u32".to_owned(),
+        })?;
         let end = start
             + u32::try_from("Limit".len()).map_err(|_| TestError::Fact {
                 message: "Limit span end does not fit u32".to_owned(),

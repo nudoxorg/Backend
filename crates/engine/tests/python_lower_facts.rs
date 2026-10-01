@@ -763,7 +763,8 @@ fn sixty_five_parameter_function_keeps_every_parameter() -> Result<(), TestError
 /// One parameter past the fact-child lane is still the typed ChildCapacity
 /// terminal, not a truncated signature.
 #[test]
-fn two_hundred_fifty_six_parameter_function_rejects_with_child_capacity() -> Result<(), TestError> {
+fn two_hundred_fifty_six_parameter_function_rejects_with_child_capacity() -> Result<(), TestError>
+{
     let mut source = b"def wide(\n".to_vec();
     for index in 0..256 {
         if index != 0 {
@@ -852,9 +853,8 @@ fn same_name_result_slot_reuses_the_identical_parameter_row() -> Result<(), Test
                         let ty = item
                             .semantic_type()
                             .ok_or(TestError::Falsified("function value is untyped"))?;
-                        let TypeExpr::Concrete(ConcreteType::Function { results, .. }) = ir
-                            .ty(ty)
-                            .ok_or(TestError::Falsified("function type row absent"))?
+                        let TypeExpr::Concrete(ConcreteType::Function { results, .. }) =
+                            ir.ty(ty).ok_or(TestError::Falsified("function type row absent"))?
                         else {
                             return Err(TestError::Falsified(
                                 "function type is not a concrete function",
@@ -896,9 +896,13 @@ const WIDE_INFERRED_TUPLE: &[u8] = b"anchor: int = 0\nvalues = (1, 2, 3, 4, 5, 6
 #[test]
 fn seventy_element_inferred_tuple_carries_seventy_integer_children() -> Result<(), TestError> {
     let site = values_name_span(VALUES_FIXTURE)?;
-    let report = report_with_inference(site, InferredType::Tuple(repeated_integers(70)));
-    let bytes = attempt_fragment_with_report(VALUES_FIXTURE, &report, "seventy-tuple")?
-        .map_err(TestError::Rejected)?;
+    let report = report_with_inference(
+        site,
+        InferredType::Tuple(repeated_integers(70)),
+    );
+    let bytes =
+        attempt_fragment_with_report(VALUES_FIXTURE, &report, "seventy-tuple")?
+            .map_err(TestError::Rejected)?;
     let lane = lane_of(&bytes)?;
     let value = entity_ordinal(&lane, b"values", EntityKind::Static)?;
     let row = owned_row(&lane, value)?;
@@ -930,7 +934,10 @@ fn two_hundred_fifty_six_element_inferred_tuple_folds_into_chunks() -> Result<()
     const PADDED_BYTES: usize = 160;
     let source = padded_values_fixture(PADDED_BYTES);
     let site = values_name_span(source)?;
-    let report = report_with_inference(site, InferredType::Tuple(repeated_integers(256)));
+    let report = report_with_inference(
+        site,
+        InferredType::Tuple(repeated_integers(256)),
+    );
     let bytes = attempt_fragment_with_report(source, &report, "wide-tuple")?
         .map_err(TestError::Rejected)?;
     let lane = lane_of(&bytes)?;
@@ -973,7 +980,10 @@ fn two_hundred_fifty_six_element_inferred_union_folds_into_chunks() -> Result<()
     const PADDED_BYTES: usize = 160;
     let source = padded_values_fixture(PADDED_BYTES);
     let site = values_name_span(source)?;
-    let report = report_with_inference(site, InferredType::Union(repeated_integers(256)));
+    let report = report_with_inference(
+        site,
+        InferredType::Union(repeated_integers(256)),
+    );
     let bytes = attempt_fragment_with_report(source, &report, "wide-union")?
         .map_err(TestError::Rejected)?;
     let lane = lane_of(&bytes)?;
@@ -1013,8 +1023,7 @@ fn two_hundred_fifty_six_element_inferred_union_folds_into_chunks() -> Result<()
 /// A checker-inferred callable wider than the type-child lane lowers as an
 /// oracle gap without minting a FunctionPointer row.
 #[test]
-fn two_hundred_fifty_six_parameter_inferred_callable_admits_as_oracle_gap() -> Result<(), TestError>
-{
+fn two_hundred_fifty_six_parameter_inferred_callable_admits_as_oracle_gap() -> Result<(), TestError> {
     const PADDED_BYTES: usize = 160;
     let source = padded_values_fixture(PADDED_BYTES);
     let site = values_name_span(source)?;

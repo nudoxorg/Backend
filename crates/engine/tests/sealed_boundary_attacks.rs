@@ -10,20 +10,20 @@
 
 mod retrieval_support;
 
-use backend_engine::retrieval::{
-    RetrievalBoundary, RetrievalFailure, RetrievalOperationTerminal, VectorAuthoritySurface,
-    VectorRoute,
-};
-use backend_extension_qdrant::server::{PhysicalPointId, QdrantBlockingAdapter, QdrantCandidate};
-use backend_extension_tantivy::server::{TantivyAdapterError, TantivyHit, TantivyLexical};
-use backend_extension_trustfall::server::TrustfallHit;
+use backend_semantic::ir::EntityId;
+use backend_version::GenerationId;
+use backend_semantic::index_core::{IndexSnapshot, LexicalManifest};
 use backend_semantic::graph_vector::{
     Cancellation, GraphAuthority, GraphEdge, GraphRow, GraphTerminal, Metric, ModelId, PartitionId,
     ProjectionId, ValidatedGraphView, ValidatedVectorSegment, VectorAuthority, VectorPoint,
 };
-use backend_semantic::index_core::{IndexSnapshot, LexicalManifest};
-use backend_semantic::ir::EntityId;
-use backend_version::GenerationId;
+use backend_extension_qdrant::server::{PhysicalPointId, QdrantBlockingAdapter, QdrantCandidate};
+use backend_engine::retrieval::{
+    RetrievalBoundary, RetrievalFailure, RetrievalOperationTerminal, VectorAuthoritySurface,
+    VectorRoute,
+};
+use backend_extension_tantivy::server::{TantivyAdapterError, TantivyHit, TantivyLexical};
+use backend_extension_trustfall::server::TrustfallHit;
 
 use retrieval_support::{SealedFixture, lexical_document, with_sealed_fixture};
 
@@ -323,9 +323,7 @@ const fn graph_sentinel(authority: GraphAuthority, partition: PartitionId) -> Tr
 fn qdrant_sentinel(fixture: &SealedFixture<'_>) -> QdrantCandidate {
     QdrantCandidate {
         authority: fixture.vector_authority,
-        segment: backend_semantic::index_vocabulary::VectorSegmentId::from_canonical_bytes(
-            b"sentinel",
-        ),
+        segment: backend_semantic::index_vocabulary::VectorSegmentId::from_canonical_bytes(b"sentinel"),
         partition: PartitionId::new(1),
         entity: EntityId::new(1),
         score: 0.0,

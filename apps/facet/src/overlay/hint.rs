@@ -84,11 +84,7 @@ impl Global for PerWindow {}
 
 fn mode(window: &Window, cx: &mut App) -> Rc<RefCell<Mode>> {
     let id = window.window_handle().window_id();
-    cx.default_global::<PerWindow>()
-        .0
-        .entry(id)
-        .or_default()
-        .clone()
+    cx.default_global::<PerWindow>().0.entry(id).or_default().clone()
 }
 
 /// Registers an actionable rect for this frame (no-op outside hint mode).
@@ -153,22 +149,12 @@ pub fn handle_key(keystroke: &Keystroke, window: &mut Window, cx: &mut App) -> b
         exit(window, cx);
         return true;
     }
-    let Some(letter) = keystroke
-        .key
-        .chars()
-        .next()
-        .filter(|ch| LETTERS.contains(ch) && keystroke.key.len() == 1)
-    else {
+    let Some(letter) = keystroke.key.chars().next().filter(|ch| LETTERS.contains(ch) && keystroke.key.len() == 1) else {
         return true; // swallow everything else while hints show
     };
     let chosen = {
         let mut current = mode_rc.borrow_mut();
-        let Mode::Showing {
-            targets,
-            codes,
-            typed,
-        } = &mut *current
-        else {
+        let Mode::Showing { targets, codes, typed } = &mut *current else {
             return true;
         };
         let mut next = typed.clone();
@@ -196,12 +182,7 @@ pub fn handle_key(keystroke: &Keystroke, window: &mut Window, cx: &mut App) -> b
 pub(crate) fn element(measure: &Measure, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let mode = mode(window, cx);
     let current = mode.borrow();
-    let Mode::Showing {
-        targets,
-        codes,
-        typed,
-    } = &*current
-    else {
+    let Mode::Showing { targets, codes, typed } = &*current else {
         return None;
     };
     let mut layer = div().absolute().top_0().left_0().size_full();
@@ -232,10 +213,7 @@ mod tests {
         assert!(many.iter().all(|code| code.len() == 2));
         for a in &many {
             for b in &many {
-                assert!(
-                    a == b || !b.starts_with(a.as_str()),
-                    "{a} is a prefix of {b}"
-                );
+                assert!(a == b || !b.starts_with(a.as_str()), "{a} is a prefix of {b}");
             }
         }
         assert_eq!(codes(200).len(), LETTERS.len() * LETTERS.len());

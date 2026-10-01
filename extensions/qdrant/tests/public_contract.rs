@@ -1,10 +1,10 @@
 //! Exercises the `backend-extension-qdrant` tests public-contract contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
-use backend_extension_qdrant::server::{PhysicalPointId, QdrantBlockingAdapter, QdrantDataKey};
-use backend_semantic::graph_vector::{Metric, ModelId, PartitionId, VectorAuthority};
-use backend_semantic::index_vocabulary::{IndexSnapshotId, VectorSegmentId};
 use backend_semantic::ir::EntityId;
+use backend_semantic::graph_vector::{Metric, ModelId, PartitionId, VectorAuthority};
+use backend_extension_qdrant::server::{PhysicalPointId, QdrantBlockingAdapter, QdrantDataKey};
+use backend_semantic::index_vocabulary::{IndexSnapshotId, VectorSegmentId};
 
 fn authority(byte: u8) -> VectorAuthority {
     VectorAuthority::new(

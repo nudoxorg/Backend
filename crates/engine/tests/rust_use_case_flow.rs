@@ -212,11 +212,11 @@ fn entity_in_parent(
     kind: EntityKind,
 ) -> Result<backend_semantic::ir::EntityId, TestError> {
     ir.items()
-        .find(|item| item.name() == name && item.kind() == kind && item.parent() == Some(parent))
+        .find(|item| {
+            item.name() == name && item.kind() == kind && item.parent() == Some(parent)
+        })
         .map(|item| item.id())
-        .ok_or(TestError::Falsified(
-            "entity absent in expected parent module",
-        ))
+        .ok_or(TestError::Falsified("entity absent in expected parent module"))
 }
 
 fn parameter_of(
@@ -230,9 +230,8 @@ fn parameter_of(
 }
 
 fn applied_lifetime_spelling(ir: &Ir, ty: TypeId) -> Result<&[u8], TestError> {
-    let TypeExpr::Concrete(ConcreteType::Applied { arguments, .. }) = ir
-        .ty(ty)
-        .ok_or(TestError::Falsified("parameter type row absent"))?
+    let TypeExpr::Concrete(ConcreteType::Applied { arguments, .. }) =
+        ir.ty(ty).ok_or(TestError::Falsified("parameter type row absent"))?
     else {
         return Err(TestError::Falsified("parameter type is not Apply"));
     };

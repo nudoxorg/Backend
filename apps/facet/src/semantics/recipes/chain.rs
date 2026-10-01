@@ -43,26 +43,8 @@ const MAX_COST: f64 = 3.6;
 fn identity(name: &str) -> bool {
     matches!(
         name,
-        "as_ref"
-            | "as_mut"
-            | "borrow"
-            | "borrow_mut"
-            | "deref"
-            | "deref_mut"
-            | "clone"
-            | "to_owned"
-            | "into"
-            | "index"
-            | "index_mut"
-            | "eq"
-            | "ne"
-            | "cmp"
-            | "partial_cmp"
-            | "lt"
-            | "le"
-            | "gt"
-            | "ge"
-            | "hash"
+        "as_ref" | "as_mut" | "borrow" | "borrow_mut" | "deref" | "deref_mut" | "clone" | "to_owned" | "into" | "index"
+            | "index_mut" | "eq" | "ne" | "cmp" | "partial_cmp" | "lt" | "le" | "gt" | "ge" | "hash"
     )
 }
 
@@ -183,17 +165,13 @@ pub struct Sentence {
     pub through: Vec<String>,
 }
 
-const NUM: [&str; 11] = [
-    "no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
-];
+const NUM: [&str; 11] = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
 
 impl Sentence {
     /// The sentence as words.
     #[must_use]
     pub fn text(&self) -> String {
-        let n = NUM
-            .get(self.steps)
-            .map_or_else(|| self.steps.to_string(), |n| (*n).to_owned());
+        let n = NUM.get(self.steps).map_or_else(|| self.steps.to_string(), |n| (*n).to_owned());
         let s = if self.steps == 1 { "" } else { "s" };
         let mut out = match &self.via {
             Some(via) => format!("from {} to {via} and back", self.from),
@@ -214,10 +192,7 @@ impl Eq for Queued {}
 
 impl Ord for Queued {
     fn cmp(&self, other: &Self) -> Ordering {
-        other
-            .0
-            .total_cmp(&self.0)
-            .then_with(|| other.1.cmp(&self.1))
+        other.0.total_cmp(&self.0).then_with(|| other.1.cmp(&self.1))
     }
 }
 
@@ -251,10 +226,7 @@ fn trait_word(bound: &str) -> Option<String> {
     let b = b.trim_start_matches('?');
     let head = b.split('<').next().unwrap_or(b).trim();
     let last = head.rsplit("::").next().unwrap_or(head).trim();
-    (!last.is_empty()
-        && !last.starts_with('\'')
-        && last.chars().next().is_some_and(char::is_alphabetic))
-    .then(|| last.to_owned())
+    (!last.is_empty() && !last.starts_with('\'') && last.chars().next().is_some_and(char::is_alphabetic)).then(|| last.to_owned())
 }
 
 impl<'a> Connector<'a> {
@@ -277,10 +249,7 @@ impl<'a> Connector<'a> {
             if node.kind == Kind::Trait
                 && let Ok(n) = NodeId::try_from(n)
             {
-                trait_nodes
-                    .entry(node.name.to_string())
-                    .or_default()
-                    .push(n);
+                trait_nodes.entry(node.name.to_string()).or_default().push(n);
             }
         }
         Self {
@@ -330,15 +299,8 @@ impl<'a> Connector<'a> {
             for word in self.supertraits(t) {
                 // The supertrait's own node: in the same package when there
                 // is one of that name, else the only one.
-                let named = self
-                    .trait_nodes
-                    .get(&word)
-                    .map(Vec::as_slice)
-                    .unwrap_or_default();
-                let home = named
-                    .iter()
-                    .copied()
-                    .find(|&n| world.node(n).pkg == world.node(t).pkg);
+                let named = self.trait_nodes.get(&word).map(Vec::as_slice).unwrap_or_default();
+                let home = named.iter().copied().find(|&n| world.node(n).pkg == world.node(t).pkg);
                 if let Some(s) = home.or(match named {
                     [only] => Some(*only),
                     _ => None,
@@ -360,19 +322,14 @@ impl<'a> Connector<'a> {
         };
         let head = head.split(" where ").next().unwrap_or(head);
         let head = head.split('{').next().unwrap_or(head);
-        split_top(head, '+')
-            .iter()
-            .filter_map(|bound| trait_word(bound))
-            .collect()
+        split_top(head, '+').iter().filter_map(|bound| trait_word(bound)).collect()
     }
 
     /// The node a type alias stands for, when it is one in the world.
     fn alias_target(&self, i: NodeId) -> Option<NodeId> {
         let sig = self.world.node(i).sig.as_deref()?;
         let rhs = sig.split_once('=')?.1.trim().trim_end_matches(';');
-        let key = self
-            .recipes
-            .expression_key(self.world, i, None, &parse(rhs));
+        let key = self.recipes.expression_key(self.world, i, None, &parse(rhs));
         key.strip_prefix('#')?.parse().ok()
     }
 
@@ -387,9 +344,7 @@ impl<'a> Connector<'a> {
 
     /// Whether the type behind `key` is a `t`.
     fn is_a(&self, key: &str, t: &str) -> bool {
-        key.strip_prefix('#')
-            .and_then(|n| n.parse::<NodeId>().ok())
-            .is_some_and(|n| self.traits_of(n).contains(t))
+        key.strip_prefix('#').and_then(|n| n.parse::<NodeId>().ok()).is_some_and(|n| self.traits_of(n).contains(t))
     }
 
     /// `i` as a noun.
@@ -398,31 +353,17 @@ impl<'a> Connector<'a> {
         let world = self.world;
         let node = world.node(i);
         let own = format!("#{i}");
-        let plain = |role| Piece {
-            node: i,
-            role,
-            q: None,
-            ins: Vec::new(),
-            out: None,
-            fails: false,
-            maybe: false,
-        };
+        let plain = |role| Piece { node: i, role, q: None, ins: Vec::new(), out: None, fails: false, maybe: false };
         match node.kind {
-            Kind::Struct | Kind::Enum | Kind::Union | Kind::Type => Piece {
-                node: i,
-                role: Role::Type,
-                q: None,
-                ins: vec![own.clone()],
-                out: Some(own),
-                fails: false,
-                maybe: false,
-            },
+            Kind::Struct | Kind::Enum | Kind::Union | Kind::Type => {
+                Piece { node: i, role: Role::Type, q: None, ins: vec![own.clone()], out: Some(own), fails: false, maybe: false }
+            }
             Kind::Trait => plain(Role::Trait),
             _ => {
                 let table = self.recipes.table();
-                let found = table.iter().position(|e| {
-                    e.node == i && matches!(e.how, How::Call | How::Method | How::Variant)
-                });
+                let found = table
+                    .iter()
+                    .position(|e| e.node == i && matches!(e.how, How::Call | How::Method | How::Variant));
                 if let Some(q) = found {
                     let e = &table[q];
                     return Piece {
@@ -438,18 +379,8 @@ impl<'a> Connector<'a> {
                 if node.kind == Kind::Field
                     && let (Some(owner), Some(ty)) = (node.parent, node.ty.as_deref())
                 {
-                    let out = self
-                        .recipes
-                        .expression_key(world, i, Some(owner), &parse(ty));
-                    return Piece {
-                        node: i,
-                        role: Role::Call,
-                        q: None,
-                        ins: vec![format!("#{owner}")],
-                        out: Some(out),
-                        fails: false,
-                        maybe: false,
-                    };
+                    let out = self.recipes.expression_key(world, i, Some(owner), &parse(ty));
+                    return Piece { node: i, role: Role::Call, q: None, ins: vec![format!("#{owner}")], out: Some(out), fails: false, maybe: false };
                 }
                 plain(Role::Context)
             }
@@ -479,19 +410,11 @@ impl<'a> Connector<'a> {
         let mut names: Vec<String> = self.traits_of(from).into_iter().collect();
         names.sort();
         for t in names {
-            traits
-                .entry(format!("any {t}"))
-                .or_insert_with(|| have_key.clone());
+            traits.entry(format!("any {t}")).or_insert_with(|| have_key.clone());
         }
         let r0: Run = recipes.run_with_inputs(world, PUBLIC, &have);
         let home: HashSet<u32> = [from, to].iter().map(|&n| world.node(n).pkg).collect();
-        let away = |e: &Producer| {
-            if home.contains(&world.node(e.node).pkg) {
-                0.0
-            } else {
-                0.6
-            }
-        };
+        let away = |e: &Producer| if home.contains(&world.node(e.node).pkg) { 0.0 } else { 0.6 };
         let others = |e: &Producer, j: usize| {
             let mut s = 0.0;
             for (a, k) in e.ins.iter().enumerate() {
@@ -515,15 +438,9 @@ impl<'a> Connector<'a> {
             if e.how != How::Method || e.ins.first().is_none_or(|first| first != k) {
                 return false;
             }
-            let Some(&(q, _)) = best.get(k) else {
-                return false;
-            };
+            let Some(&(q, _)) = best.get(k) else { return false };
             let made = recipes.producer(q);
-            made.how == How::Variant
-                || made
-                    .names
-                    .iter()
-                    .any(|n| n == world.node(e.node).name.as_ref())
+            made.how == How::Variant || made.names.iter().any(|n| n == world.node(e.node).name.as_ref())
         };
         cost.insert(have_key.clone(), 0.0);
         heap.push(Queued(0.0, have_key.clone()));
@@ -553,14 +470,9 @@ impl<'a> Connector<'a> {
                 {
                     continue;
                 }
-                let Some(j) = e.ins.iter().position(|x| x == &k) else {
-                    continue;
-                };
+                let Some(j) = e.ins.iter().position(|x| x == &k) else { continue };
                 let s = c + recipes.weight(world, e) + away(e) + others(e, j);
-                if s.is_finite()
-                    && !done.contains(&e.out)
-                    && s < cost.get(&e.out).copied().unwrap_or(f64::INFINITY)
-                {
+                if s.is_finite() && !done.contains(&e.out) && s < cost.get(&e.out).copied().unwrap_or(f64::INFINITY) {
                     cost.insert(e.out.clone(), s);
                     best.insert(e.out.clone(), (q, j));
                     heap.push(Queued(s, e.out.clone()));
@@ -570,11 +482,7 @@ impl<'a> Connector<'a> {
         let mut candidates: Vec<(f64, usize, usize)> = Vec::new();
         for &q in self.by_out.get(&want).into_iter().flatten() {
             let e = recipes.producer(q);
-            if have.contains(&e.out)
-                || e.ins.contains(&e.out)
-                || !Recipes::usable(world, e, PUBLIC)
-                || identity(&world.node(e.node).name)
-            {
+            if have.contains(&e.out) || e.ins.contains(&e.out) || !Recipes::usable(world, e, PUBLIC) || identity(&world.node(e.node).name) {
                 continue;
             }
             let mut pick: Option<(f64, usize)> = None;
@@ -582,10 +490,7 @@ impl<'a> Connector<'a> {
                 if !done.contains(k) || hollow(k, e, &best) {
                     continue;
                 }
-                let s = cost.get(k).copied().unwrap_or(f64::INFINITY)
-                    + recipes.weight(world, e)
-                    + away(e)
-                    + others(e, j);
+                let s = cost.get(k).copied().unwrap_or(f64::INFINITY) + recipes.weight(world, e) + away(e) + others(e, j);
                 if s.is_finite() && pick.is_none_or(|(c, _)| s < c) {
                     pick = Some((s, j));
                 }
@@ -596,11 +501,7 @@ impl<'a> Connector<'a> {
         }
         candidates.sort_by(|a, b| {
             a.0.total_cmp(&b.0)
-                .then_with(|| {
-                    world
-                        .importance(recipes.producer(b.1).node)
-                        .total_cmp(&world.importance(recipes.producer(a.1).node))
-                })
+                .then_with(|| world.importance(recipes.producer(b.1).node).total_cmp(&world.importance(recipes.producer(a.1).node)))
                 .then(a.1.cmp(&b.1))
         });
         for (c, q, j) in candidates {
@@ -623,12 +524,7 @@ impl<'a> Connector<'a> {
             if (!have.contains(&k) && !traits.contains_key(&k)) || spine.len() > MAX_STEPS {
                 continue;
             }
-            return Some(Chain {
-                cost: c,
-                spine,
-                at,
-                from: k,
-            });
+            return Some(Chain { cost: c, spine, at, from: k });
         }
         None
     }
@@ -651,21 +547,14 @@ impl<'a> Connector<'a> {
         {
             return Some((0.25, JoinHow::As));
         }
-        let (a, b) = (
-            k.strip_prefix('#')?.parse().ok()?,
-            t.strip_prefix('#')?.parse().ok()?,
-        );
-        self.convert(a, b)
-            .map(|chain| (1.0 + chain.cost, JoinHow::Steps(chain)))
+        let (a, b) = (k.strip_prefix('#')?.parse().ok()?, t.strip_prefix('#')?.parse().ok()?);
+        self.convert(a, b).map(|chain| (1.0 + chain.cost, JoinHow::Steps(chain)))
     }
 
     /// The verb from `a` into `b`, if `a` feeds `b`.
     #[must_use]
     pub fn join(&self, a: &Piece, b: &Piece) -> Option<Join> {
-        let out = a
-            .out
-            .as_ref()
-            .filter(|out| a.node != b.node && out.as_str() != "nothing")?;
+        let out = a.out.as_ref().filter(|out| a.node != b.node && out.as_str() != "nothing")?;
         let mut best: Option<Join> = None;
         let mut takes: Vec<&String> = b.ins.iter().collect();
         takes.dedup();
@@ -673,11 +562,7 @@ impl<'a> Connector<'a> {
             if let Some((cost, how)) = self.link(out, t)
                 && best.as_ref().is_none_or(|j| cost < j.cost)
             {
-                best = Some(Join {
-                    cost,
-                    how,
-                    into: t.clone(),
-                });
+                best = Some(Join { cost, how, into: t.clone() });
             }
         }
         best
@@ -688,16 +573,9 @@ impl<'a> Connector<'a> {
     pub fn arrange(&self, held: &[NodeId]) -> Arrangement {
         let pieces: Vec<Piece> = held.iter().map(|&i| self.piece(i)).collect();
         let at: HashMap<NodeId, usize> = held.iter().enumerate().map(|(n, &i)| (i, n)).collect();
-        let (live, rest): (Vec<Piece>, Vec<Piece>) = pieces
-            .into_iter()
-            .partition(|p| matches!(p.role, Role::Type | Role::Call));
+        let (live, rest): (Vec<Piece>, Vec<Piece>) = pieces.into_iter().partition(|p| matches!(p.role, Role::Type | Role::Call));
         let mut joins: HashMap<(NodeId, NodeId), Option<Join>> = HashMap::new();
-        let mut join = |a: &Piece, b: &Piece| {
-            joins
-                .entry((a.node, b.node))
-                .or_insert_with(|| self.join(a, b))
-                .clone()
-        };
+        let mut join = |a: &Piece, b: &Piece| joins.entry((a.node, b.node)).or_insert_with(|| self.join(a, b)).clone();
         let mut best: Option<((usize, i64, f64), Vec<usize>)> = None;
         for order in permutations(live.len()) {
             let (mut n, mut cost, mut swaps) = (0usize, 0.0f64, 0i64);
@@ -716,9 +594,7 @@ impl<'a> Connector<'a> {
             }
             let score = (n, -swaps, -cost);
             let better = best.as_ref().is_none_or(|(s, _)| {
-                score.0 > s.0
-                    || (score.0 == s.0
-                        && (score.1 > s.1 || (score.1 == s.1 && score.2 > s.2 + 1e-9)))
+                score.0 > s.0 || (score.0 == s.0 && (score.1 > s.1 || (score.1 == s.1 && score.2 > s.2 + 1e-9)))
             });
             if better {
                 best = Some((score, order));
@@ -728,14 +604,9 @@ impl<'a> Connector<'a> {
         let mut current: Vec<Link> = Vec::new();
         for &k in best.map(|(_, order)| order).unwrap_or_default().iter() {
             let piece = live[k].clone();
-            let joined = current
-                .last()
-                .and_then(|last: &Link| join(&last.piece, &piece));
+            let joined = current.last().and_then(|last: &Link| join(&last.piece, &piece));
             match joined {
-                Some(j) => current.push(Link {
-                    piece,
-                    join: Some(j),
-                }),
+                Some(j) => current.push(Link { piece, join: Some(j) }),
                 None => {
                     if !current.is_empty() {
                         runs.push(std::mem::take(&mut current));
@@ -747,26 +618,12 @@ impl<'a> Connector<'a> {
         if !current.is_empty() {
             runs.push(current);
         }
-        let (mut joined, singles): (Vec<Vec<Link>>, Vec<Vec<Link>>) =
-            runs.into_iter().partition(|run| run.len() > 1);
-        joined.sort_by(|a, b| {
-            b.len()
-                .cmp(&a.len())
-                .then(at[&a[0].piece.node].cmp(&at[&b[0].piece.node]))
-        });
-        let mut apart: Vec<Piece> = singles
-            .into_iter()
-            .map(|mut run| run.remove(0).piece)
-            .collect();
+        let (mut joined, singles): (Vec<Vec<Link>>, Vec<Vec<Link>>) = runs.into_iter().partition(|run| run.len() > 1);
+        joined.sort_by(|a, b| b.len().cmp(&a.len()).then(at[&a[0].piece.node].cmp(&at[&b[0].piece.node])));
+        let mut apart: Vec<Piece> = singles.into_iter().map(|mut run| run.remove(0).piece).collect();
         // A held trait filters: the roads that go through it say so; one
         // that no road goes through stands apart.
-        let mut roads: Vec<Road> = joined
-            .into_iter()
-            .map(|links| Road {
-                links,
-                through: Vec::new(),
-            })
-            .collect();
+        let mut roads: Vec<Road> = joined.into_iter().map(|links| Road { links, through: Vec::new() }).collect();
         for piece in rest {
             let traited = piece.role == Role::Trait;
             let name = self.world.node(piece.node).name.to_string();
@@ -792,12 +649,7 @@ impl<'a> Connector<'a> {
     fn goes_through(&self, road: &Road, name: &str) -> bool {
         let any = format!("any {name}");
         road.links.iter().any(|link| {
-            (link.piece.role == Role::Type
-                && link
-                    .piece
-                    .out
-                    .as_deref()
-                    .is_some_and(|k| self.is_a(k, name)))
+            (link.piece.role == Role::Type && link.piece.out.as_deref().is_some_and(|k| self.is_a(k, name)))
                 || link.piece.out.as_deref() == Some(any.as_str())
                 || link.join.as_ref().is_some_and(|j| j.into == any)
         })
@@ -821,9 +673,7 @@ impl<'a> Connector<'a> {
     /// The names a join's road steps through (`as_table`).
     #[must_use]
     pub fn verbs(&self, join: &Join) -> Vec<String> {
-        let JoinHow::Steps(chain) = &join.how else {
-            return Vec::new();
-        };
+        let JoinHow::Steps(chain) = &join.how else { return Vec::new() };
         chain
             .spine
             .iter()
@@ -831,9 +681,7 @@ impl<'a> Connector<'a> {
                 let e = self.recipes.producer(q);
                 let node = self.world.node(e.node);
                 match (e.how, node.parent) {
-                    (How::Variant, Some(p)) => {
-                        format!("{}::{}", self.world.node(p).name, node.name)
-                    }
+                    (How::Variant, Some(p)) => format!("{}::{}", self.world.node(p).name, node.name),
                     _ => node.name.to_string(),
                 }
             })
@@ -846,16 +694,11 @@ impl<'a> Connector<'a> {
         if let Some(n) = key.strip_prefix('#').and_then(|n| n.parse::<NodeId>().ok()) {
             let node = self.world.node(n);
             if twins.contains(node.name.as_ref()) {
-                return format!(
-                    "{} {}",
-                    self.world.package_short(node.pkg).replace('-', "_"),
-                    node.name
-                );
+                return format!("{} {}", self.world.package_short(node.pkg).replace('-', "_"), node.name);
             }
             return node.name.to_string();
         }
-        key.strip_prefix("any ")
-            .map_or_else(|| key_words(self.world, key), ToOwned::to_owned)
+        key.strip_prefix("any ").map_or_else(|| key_words(self.world, key), ToOwned::to_owned)
     }
 
     /// The road's one sentence.
@@ -864,23 +707,12 @@ impl<'a> Connector<'a> {
         let first = &road.links[0].piece;
         let last = &road.links[road.links.len() - 1].piece;
         let from = match first.role {
-            Role::Call => first
-                .ins
-                .iter()
-                .find(|k| !k.starts_with('#'))
-                .or(first.ins.first())
-                .cloned()
-                .unwrap_or_default(),
+            Role::Call => first.ins.iter().find(|k| !k.starts_with('#')).or(first.ins.first()).cloned().unwrap_or_default(),
             _ => first.out.clone().unwrap_or_default(),
         };
         let to = last.out.clone().unwrap_or_default();
         let via = (from == to)
-            .then(|| {
-                road.links
-                    .iter()
-                    .rev()
-                    .find(|link| link.piece.role == Role::Type)
-            })
+            .then(|| road.links.iter().rev().find(|link| link.piece.role == Role::Type))
             .flatten()
             .and_then(|link| link.piece.out.as_deref())
             .map(|k| self.words(k, twins));
@@ -889,11 +721,7 @@ impl<'a> Connector<'a> {
             to: self.words(&to, twins),
             via,
             steps: self.steps(road),
-            through: road
-                .through
-                .iter()
-                .map(|&t| self.world.node(t).name.to_string())
-                .collect(),
+            through: road.through.iter().map(|&t| self.world.node(t).name.to_string()).collect(),
         }
     }
 
@@ -911,42 +739,23 @@ impl<'a> Connector<'a> {
                     let name = e.names.get(a).cloned().unwrap_or_default();
                     if a == j {
                         match (step, tree.take()) {
-                            (0, _) | (_, None) => Kid {
-                                key: chain.from.clone(),
-                                name,
-                                node: None,
-                                opaque: false,
-                            },
-                            (_, Some(inner)) => Kid {
-                                key: key.clone(),
-                                name,
-                                node: Some(inner),
-                                opaque: false,
-                            },
+                            (0, _) | (_, None) => Kid { key: chain.from.clone(), name, node: None, opaque: false },
+                            (_, Some(inner)) => Kid { key: key.clone(), name, node: Some(inner), opaque: false },
                         }
                     } else {
-                        Kid {
-                            key: key.clone(),
-                            name,
-                            node: None,
-                            opaque: !is_ground(key),
-                        }
+                        Kid { key: key.clone(), name, node: None, opaque: !is_ground(key) }
                     }
                 })
                 .collect();
             tree = Some(Tree { q, kids });
         }
-        tree.map(|tree| chain_code(self.recipes, self.world, &tree))
-            .unwrap_or_default()
+        tree.map(|tree| chain_code(self.recipes, self.world, &tree)).unwrap_or_default()
     }
 }
 
 /// Plain values connect everything, so they connect nothing.
 fn is_plain(key: &str) -> bool {
-    matches!(
-        key,
-        "text" | "path" | "number" | "bool" | "char" | "bytes" | "nothing" | "any"
-    )
+    matches!(key, "text" | "path" | "number" | "bool" | "char" | "bytes" | "nothing" | "any")
 }
 
 /// Every order of `0..n` (at most five pieces: 120 orders).

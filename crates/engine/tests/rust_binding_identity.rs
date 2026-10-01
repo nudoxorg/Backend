@@ -314,7 +314,8 @@ fn lifetime_generic_argument_preserves_written_spelling() -> Result<(), TestErro
 
     let early_parameter = lane.types[early_row].owner.raw as usize;
     let late_parameter = lane.types[late_row].owner.raw as usize;
-    let early_lifetime = parameter_lifetime_spelling(&lane, early_parameter, early_row)?;
+    let early_lifetime =
+        parameter_lifetime_spelling(&lane, early_parameter, early_row)?;
     let late_lifetime = parameter_lifetime_spelling(&lane, late_parameter, late_row)?;
 
     if early_lifetime == late_lifetime {

@@ -76,19 +76,9 @@ fn pinned_interruption_retargets_then_returns_to_exact_world_with_same_history()
             .image
             .save(path.join("fresh.png"))
             .expect("fresh frame can be saved for diagnosis");
-        let mismatch = frames[5]
-            .image
-            .enumerate_pixels()
-            .zip(fresh[0].image.enumerate_pixels())
-            .filter(|(a, b)| a.2 != b.2)
-            .map(|(a, _)| (a.0, a.1))
-            .collect::<Vec<_>>();
-        panic!(
-            "settled interrupted navigation differs from settled visits with identical history: {} changed pixels, first {:?}, diagnostic {}",
-            mismatch.len(),
-            mismatch.first(),
-            path.display()
-        );
+        let mismatch = frames[5].image.enumerate_pixels().zip(fresh[0].image.enumerate_pixels())
+            .filter(|(a,b)| a.2 != b.2).map(|(a,_)| (a.0,a.1)).collect::<Vec<_>>();
+        panic!("settled interrupted navigation differs from settled visits with identical history: {} changed pixels, first {:?}, diagnostic {}", mismatch.len(), mismatch.first(), path.display());
     }
 }
 
@@ -112,10 +102,8 @@ fn input_after_idle_really_opens_find_and_returns_to_quiet() {
     fresh_shot.scale = 1;
     fresh_shot.times = vec![5800];
     fresh_shot.script = Some(
-        Script::parse(
-            "leave @0; key / @200; type \"glyph::RelationLabel\" @240; key escape @280; leave @400",
-        )
-        .expect("find comparison script is valid"),
+        Script::parse("leave @0; key / @200; type \"glyph::RelationLabel\" @240; key escape @280; leave @400")
+            .expect("find comparison script is valid"),
     );
     let fresh = capture(&fresh_scene, &fresh_shot).expect("fresh comparison scene captures");
     assert_eq!(
@@ -177,12 +165,7 @@ fn reduced_weather_lands_without_live_tracks_and_equals_fresh_narrow_light_world
     shot.times = vec![4600];
     // The search field retains its last query when closed. Reproduce that
     // state through actual input on the independent fresh geometry.
-    shot.script = Some(
-        Script::parse(
-            "leave @0; key / @200; type \"glyph::RelationLabel\" @240; key escape @280; leave @400",
-        )
-        .unwrap_or_else(|error| panic!("{error}")),
-    );
+    shot.script = Some(Script::parse("leave @0; key / @200; type \"glyph::RelationLabel\" @240; key escape @280; leave @400").unwrap_or_else(|error| panic!("{error}")));
     let fresh = capture(&fresh_scene, &shot).unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(frames[3].image.dimensions(), fresh[0].image.dimensions());
     assert_eq!(
@@ -318,20 +301,14 @@ fn reach_and_tour_keys_show_the_pinned_content_and_walk_real_stops() {
                 assert_eq!(view.focused(), None);
                 assert!(tick.ledger.any_live(), "return flight was not observed");
                 for track in tick.ledger.tracks.iter().filter(|track| track.live) {
-                    assert!(
-                        track.at_ms as f64 <= track.started_ms as f64 + track.budget_ms + 1.0,
-                        "return flight exceeded its unchanged budget: {track:?}"
-                    );
+                    assert!(track.at_ms as f64 <= track.started_ms as f64 + track.budget_ms + 1.0,
+                        "return flight exceeded its unchanged budget: {track:?}");
                 }
             }
             5800 | 7600 => {
                 assert!(view.reach().is_none() && view.tour_stop().is_none());
                 assert_eq!(view.focused(), None);
-                assert!(
-                    !tick.ledger.any_live(),
-                    "live tracks at {at}ms: {:?}",
-                    tick.ledger.tracks
-                );
+                assert!(!tick.ledger.any_live(), "live tracks at {at}ms: {:?}", tick.ledger.tracks);
             }
             _ => unreachable!(),
         }
@@ -638,9 +615,7 @@ fn two_same_symbol_moves_without_a_frame_keep_the_real_peek_open() {
                         .stacks
                         .iter()
                         .flat_map(|s| &s.entries)
-                        .any(|e| e.kind == "peek"
-                            && (e.phase == StackPhase::Open
-                                || (tick.drawn.at_ms == 500 && e.phase == StackPhase::Entering))),
+                        .any(|e| e.kind == "peek" && (e.phase == StackPhase::Open || (tick.drawn.at_ms == 500 && e.phase == StackPhase::Entering))),
                     "intent elapsed but real peek vanished: {:?}",
                     tick.ledger.stacks
                 );
@@ -660,6 +635,7 @@ fn two_same_symbol_moves_without_a_frame_keep_the_real_peek_open() {
     assert_eq!(checked, 5);
 }
 
+
 #[test]
 fn parked_pointer_uses_current_prism_geometry_after_resize_and_text_scale() {
     let target = find("graph-check-parked").unwrap_or_else(|| panic!("parked scene missing"));
@@ -670,69 +646,38 @@ fn parked_pointer_uses_current_prism_geometry_after_resize_and_text_scale() {
     let mut initial = None;
     let mut checked = 0;
     run(&target, &shot, &mut |tick, _, cx| {
-        if !shot.times.contains(&tick.drawn.at_ms) {
-            return Ok(());
-        }
-        let entity = cx
-            .global::<Current>()
-            .0
-            .upgrade()
-            .unwrap_or_else(|| panic!("graph gone"));
+        if !shot.times.contains(&tick.drawn.at_ms) { return Ok(()); }
+        let entity = cx.global::<Current>().0.upgrade().unwrap_or_else(|| panic!("graph gone"));
         let graph = entity.read(cx);
         let state = graph.inspect(cx);
         if tick.drawn.at_ms < 2200 {
-            let pointer = state
-                .pointer
-                .unwrap_or_else(|| panic!("real pointer absent"));
-            if let Some(previous) = initial {
-                assert_eq!(pointer, previous, "weather fabricated another pointer move");
-            } else {
-                initial = Some(pointer);
-                assert_eq!(
-                    state.hover,
-                    Some(4),
-                    "initial label never picked actual prism node"
-                );
-            }
-            let frame = state
-                .frame
-                .as_ref()
-                .unwrap_or_else(|| panic!("prism absent"));
-            let picked = frame.pick(pointer.0, pointer.1);
-            assert_eq!(
-                state.hover_slot, picked,
-                "hover uses stale geometry after text scale/resize"
-            );
-            if let Some(slot) = picked {
-                assert_eq!(
-                    state.hover, frame.slots[slot].node,
-                    "hovered ID differs from visible row under parked pointer"
-                );
-            }
+            let pointer = state.pointer.unwrap_or_else(|| panic!("real pointer absent"));
+            if let Some(previous) = initial { assert_eq!(pointer,previous,"weather fabricated another pointer move"); }
+            else { initial = Some(pointer); assert_eq!(state.hover,Some(4),"initial label never picked actual prism node"); }
+            let frame = state.frame.as_ref().unwrap_or_else(|| panic!("prism absent"));
+            let picked = frame.pick(pointer.0,pointer.1);
+            assert_eq!(state.hover_slot,picked,"hover uses stale geometry after text scale/resize");
+            if let Some(slot) = picked { assert_eq!(state.hover,frame.slots[slot].node,"hovered ID differs from visible row under parked pointer"); }
         } else {
-            assert_eq!(state.pointer, None);
-            assert_eq!(state.hover, None);
-            assert!(
-                !tick.ledger.any_live() && !tick.drawn.requested(),
-                "parked pointer left motion running"
-            );
+            assert_eq!(state.pointer,None); assert_eq!(state.hover,None);
+            assert!(!tick.ledger.any_live() && !tick.drawn.requested(),"parked pointer left motion running");
         }
         checked += 1;
         Ok(())
-    })
-    .unwrap_or_else(|error| panic!("{error}"));
-    assert_eq!(checked, 7, "all parked-pointer checkpoints must run");
+    }).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(checked,7,"all parked-pointer checkpoints must run");
 }
+
 
 #[test]
 fn opening_find_during_focus_flight_and_closing_it_after_arrival_restores_prism() {
-    for reduced in [false, true] {
+    for reduced in [false,true] {
         let target = find("graph-pinned-world").unwrap_or_else(|| panic!("pinned world absent"));
         let mut shot = Shot::new(&target);
         shot.scale = 1;
         shot.probe = true;
         shot.reduced_motion = reduced;
-        shot.times = vec![400, 2000, 3200, 7200];
+        shot.times = vec![400,2000,3200,7200];
         shot.script = Some(Script::parse(
             "key / @200; type \"glyph::RelationLabel\" @240; key enter @280; key / @400; key escape @2200; key escape @3800; leave @4000; leave @6200"
         ).unwrap_or_else(|error| panic!("{error}")));
@@ -759,233 +704,120 @@ fn opening_find_during_focus_flight_and_closing_it_after_arrival_restores_prism(
             checked += 1;
             Ok(())
         }).unwrap_or_else(|error| panic!("{error}"));
-        assert_eq!(
-            checked, 4,
-            "all normal/reduced arrivalfind checkpoints must execute"
-        );
+        assert_eq!(checked,4,"all normal/reduced arrivalfind checkpoints must execute");
     }
 }
+
 
 #[test]
 fn real_native_zoom_and_drag_preserve_world_anchors_in_normal_and_offset_viewports() {
-    for id in ["graph-pinned-world", "graph-pinned-offset"] {
-        for drag in [false, true] {
+    for id in ["graph-pinned-world","graph-pinned-offset"] {
+        for drag in [false,true] {
             let target = find(id).unwrap_or_else(|| panic!("scene {id} absent"));
-            let mut shot = Shot::new(&target);
-            shot.scale = 1;
-            shot.probe = true;
-            let (x, y) = if id == "graph-pinned-offset" {
-                (300.0, 260.0)
-            } else {
-                (720.0, 300.0)
-            };
-            shot.times = if drag {
-                vec![900, 1200, 1400, 1800]
-            } else {
-                vec![900, 1100, 1800, 2600]
-            };
-            let script = if drag {
-                format!(
-                    "down {x},{y} @1000; move {},{} @1200; up {},{} @1600; leave @2000",
-                    x + 60.0,
-                    y + 30.0,
-                    x + 60.0,
-                    y + 30.0
-                )
-            } else {
-                format!("wheel-zoom {x},{y} 1.25 @1000; leave @2800")
-            };
-            shot.script = Some(Script::parse(&script).unwrap_or_else(|error| panic!("{error}")));
-            let mut before = None;
-            let mut checked = 0;
-            run(&target, &shot, &mut |tick, _, cx| {
-                if !shot.times.contains(&tick.drawn.at_ms) {
-                    return Ok(());
-                }
-                let entity = cx
-                    .global::<Current>()
-                    .0
-                    .upgrade()
-                    .unwrap_or_else(|| panic!("graph gone"));
-                let graph = entity.read(cx);
-                let state = graph.inspect(cx);
-                let view = state
-                    .viewport
-                    .unwrap_or_else(|| panic!("actualviewport absent"));
-                let cam = graph.camera().unwrap_or_else(|| panic!("camera absent"));
-                if tick.drawn.at_ms == 900 {
-                    assert!(!state.moving, "gesture must start from actualrest");
-                    before = Some(cam);
-                } else {
-                    let old = before.unwrap_or_else(|| panic!("gesture baseline absent"));
-                    let anchor = view.to_world(&old, x, y);
-                    let point = view.to_world(
-                        &cam,
-                        if drag { x + 60.0 } else { x },
-                        if drag { y + 30.0 } else { y },
-                    );
-                    let error = (point.0 - anchor.0).hypot(point.1 - anchor.1) * view.k(&cam);
-                    assert!(
-                        error < 0.001,
-                        "{id}/drag{drag}: actualworldanchor drifted {error}px"
-                    );
+            let mut shot = Shot::new(&target); shot.scale=1; shot.probe=true;
+            let (x,y) = if id=="graph-pinned-offset" { (300.0,260.0) } else { (720.0,300.0) };
+            shot.times = if drag { vec![900,1200,1400,1800] } else { vec![900,1100,1800,2600] };
+            let script = if drag { format!("down {x},{y} @1000; move {},{} @1200; up {},{} @1600; leave @2000",x+60.0,y+30.0,x+60.0,y+30.0) }
+                else { format!("wheel-zoom {x},{y} 1.25 @1000; leave @2800") };
+            shot.script=Some(Script::parse(&script).unwrap_or_else(|error|panic!("{error}")));
+            let mut before = None; let mut checked=0;
+            run(&target,&shot,&mut |tick,_,cx| {
+                if !shot.times.contains(&tick.drawn.at_ms) { return Ok(()); }
+                let entity=cx.global::<Current>().0.upgrade().unwrap_or_else(||panic!("graph gone"));
+                let graph=entity.read(cx); let state=graph.inspect(cx);
+                let view=state.viewport.unwrap_or_else(||panic!("actualviewport absent"));
+                let cam=graph.camera().unwrap_or_else(||panic!("camera absent"));
+                if tick.drawn.at_ms==900 { assert!(!state.moving,"gesture must start from actualrest");before=Some(cam); }
+                else {
+                    let old=before.unwrap_or_else(||panic!("gesture baseline absent"));
+                    let anchor=view.to_world(&old,x,y);
+                    let point=view.to_world(&cam,if drag{x+60.0}else{x},if drag{y+30.0}else{y});
+                    let error=(point.0-anchor.0).hypot(point.1-anchor.1)*view.k(&cam);
+                    assert!(error<0.001,"{id}/drag{drag}: actualworldanchor drifted {error}px");
                     if drag {
-                        assert_eq!(cam.w, old.w, "drag changedzoom");
-                        assert!(
-                            (cam.x - (old.x - 60.0 / view.k(&old))).abs() < 1e-9
-                                && (cam.y - (old.y - 30.0 / view.k(&old))).abs() < 1e-9,
-                            "{id}: native drag handler didnotapplyactualdisplacement"
-                        );
-                    } else if tick.drawn.at_ms == 2600 {
-                        let expected = (old.w / 1.25).max(crate::graph::camera::MIN_W);
-                        assert!(
-                            (cam.w - expected).abs() < 1e-9 && cam.w < old.w,
-                            "{id}: native zoom handler didnotapplyactualfactor"
-                        );
-                        assert!(
-                            !state.moving && !tick.ledger.any_live(),
-                            "nativezoom didnotsettle"
-                        );
+                        assert_eq!(cam.w,old.w,"drag changedzoom");
+                        assert!((cam.x-(old.x-60.0/view.k(&old))).abs()<1e-9 && (cam.y-(old.y-30.0/view.k(&old))).abs()<1e-9,
+                            "{id}: native drag handler didnotapplyactualdisplacement");
+                    } else if tick.drawn.at_ms==2600 {
+                        let expected=(old.w/1.25).max(crate::graph::camera::MIN_W);
+                        assert!((cam.w-expected).abs()<1e-9 && cam.w<old.w,"{id}: native zoom handler didnotapplyactualfactor");
+                        assert!(!state.moving && !tick.ledger.any_live(),"nativezoom didnotsettle");
                     }
                 }
-                checked += 1;
-                Ok(())
-            })
-            .unwrap_or_else(|error| panic!("{error}"));
-            assert_eq!(
-                checked, 4,
-                "every normal/offset gesture checkpoint mustexecute"
-            );
+                checked+=1;Ok(())
+            }).unwrap_or_else(|error|panic!("{error}"));
+            assert_eq!(checked,4,"every normal/offset gesture checkpoint mustexecute");
         }
     }
 }
 
+
 #[test]
 fn input_timing_captures_real_adapter_work_and_resets_after_each_draw() {
-    fn slow_adapter(_: &backend_gui_harness::Act, _: &mut gpui::Window, _: &mut gpui::App) {
-        let started = std::time::Instant::now();
-        while started.elapsed() < std::time::Duration::from_millis(6) {
-            std::hint::spin_loop();
-        }
+    fn slow_adapter(_: &backend_gui_harness::Act,_:&mut gpui::Window,_:&mut gpui::App) {
+        let started=std::time::Instant::now();
+        while started.elapsed()<std::time::Duration::from_millis(6) { std::hint::spin_loop(); }
     }
-    let target = crate::gallery::Scene {
-        id: "input-timer-canary",
-        title: "Actual synchronous adapter work",
-        size: (480, 824),
-        build: |window, cx| {
-            let view = super::build(Src::Pinned, super::At::World, window, cx);
-            crate::gallery::declare_adapter(slow_adapter, cx);
-            view
+    let target=crate::gallery::Scene {
+        id:"input-timer-canary",title:"Actual synchronous adapter work",size:(480,824),
+        build:|window,cx| {
+            let view=super::build(Src::Pinned,super::At::World,window,cx);
+            crate::gallery::declare_adapter(slow_adapter,cx);view
         },
     };
-    let mut shot = Shot::new(&target);
-    shot.times = vec![100, 116];
-    shot.scale = 1;
-    shot.script =
-        Some(Script::parse("route timer-canary @100").unwrap_or_else(|error| panic!("{error}")));
-    let mut checked = 0;
-    run(&target, &shot, &mut |tick, _, _| {
-        if tick.drawn.at_ms == 100 {
-            assert_eq!(tick.drawn.input_events, 1);
-            assert!(
-                tick.drawn.input_cpu >= std::time::Duration::from_millis(6),
-                "input timer omitted actual synchronous adapter work"
-            );
-            assert_eq!(tick.drawn.input_max, tick.drawn.input_cpu);
-            checked += 1;
-        } else if tick.drawn.at_ms == 116 {
-            assert_eq!(tick.drawn.input_events, 0);
-            assert_eq!(tick.drawn.input_cpu, std::time::Duration::ZERO);
-            assert_eq!(tick.drawn.input_max, std::time::Duration::ZERO);
-            checked += 1;
+    let mut shot=Shot::new(&target);shot.times=vec![100,116];shot.scale=1;
+    shot.script=Some(Script::parse("route timer-canary @100").unwrap_or_else(|error|panic!("{error}")));
+    let mut checked=0;
+    run(&target,&shot,&mut |tick,_,_| {
+        if tick.drawn.at_ms==100 {
+            assert_eq!(tick.drawn.input_events,1);
+            assert!(tick.drawn.input_cpu>=std::time::Duration::from_millis(6),"input timer omitted actual synchronous adapter work");
+            assert_eq!(tick.drawn.input_max,tick.drawn.input_cpu);
+            checked+=1;
+        } else if tick.drawn.at_ms==116 {
+            assert_eq!(tick.drawn.input_events,0);assert_eq!(tick.drawn.input_cpu,std::time::Duration::ZERO);
+            assert_eq!(tick.drawn.input_max,std::time::Duration::ZERO);checked+=1;
         }
         Ok(())
-    })
-    .unwrap_or_else(|error| panic!("{error}"));
-    assert_eq!(
-        checked, 2,
-        "actual input and quietdraw were not both measured"
-    );
+    }).unwrap_or_else(|error|panic!("{error}"));
+    assert_eq!(checked,2,"actual input and quietdraw were not both measured");
 }
 
 #[test]
 fn native_focus_card_padding_click_keeps_focus_and_does_not_drag_graph() {
     use crate::tokens::Appearance;
-    for (size, theme, text_scale) in [
-        ((1440, 824), Appearance::Abyss, 1.0),
-        ((480, 400), Appearance::Glacier, 2.0),
-    ] {
-        let target = find("graph-pinned-focus").unwrap_or_else(|| panic!("focus fixture absent"));
-        let mut shot = Shot::new(&target);
-        shot.size = size;
-        shot.appearance = theme;
-        shot.text_scale = text_scale;
-        shot.scale = 1;
-        shot.probe = true;
-        shot.times = vec![1200];
-        let mut measured = None;
-        run(&target, &shot, &mut |tick, _, cx| {
-            if tick.drawn.at_ms == 1200 {
-                let entity = cx
-                    .global::<Current>()
-                    .0
-                    .upgrade()
-                    .unwrap_or_else(|| panic!("graph gone"));
-                let graph = entity.read(cx);
-                let card = tick
-                    .ledger
-                    .bounds("graph-focus-card")
-                    .unwrap_or_else(|| panic!("actual card missing"));
-                assert_eq!(graph.focused(), Some(0));
-                assert!(
-                    !graph.inspect(cx).moving,
-                    "padding baseline must start at rest"
-                );
-                measured = Some((
-                    card.x + 4.0,
-                    card.y + 4.0,
-                    graph.camera().expect("focused graph has a camera"),
-                ));
+    for (size, theme, text_scale) in [((1440,824),Appearance::Abyss,1.0),((480,400),Appearance::Glacier,2.0)] {
+        let target=find("graph-pinned-focus").unwrap_or_else(||panic!("focus fixture absent"));
+        let mut shot=Shot::new(&target);
+        shot.size=size; shot.appearance=theme; shot.text_scale=text_scale;
+        shot.scale=1; shot.probe=true; shot.times=vec![1200];
+        let mut measured=None;
+        run(&target,&shot,&mut |tick,_,cx| {
+            if tick.drawn.at_ms==1200 {
+                let entity=cx.global::<Current>().0.upgrade().unwrap_or_else(||panic!("graph gone"));
+                let graph=entity.read(cx);
+                let card=tick.ledger.bounds("graph-focus-card").unwrap_or_else(||panic!("actual card missing"));
+                assert_eq!(graph.focused(),Some(0));
+                assert!(!graph.inspect(cx).moving,"padding baseline must start at rest");
+                measured=Some((card.x+4.0,card.y+4.0,graph.camera().expect("focused graph has a camera")));
             }
             Ok(())
-        })
-        .unwrap_or_else(|error| panic!("{error}"));
-        let (x, y, cam) = measured.unwrap_or_else(|| panic!("padding baseline was not observed"));
-        shot.times = vec![1400, 1450, 1520, 2600];
-        shot.script = Some(
-            Script::parse(&format!(
-                "down {x},{y} @1400; move {},{} @1450; up {},{} @1500; leave @1600",
-                x + 2.0,
-                y + 2.0,
-                x + 2.0,
-                y + 2.0
-            ))
-            .expect("padding click script is valid"),
-        );
-        let mut checked = 0;
-        run(&target, &shot, &mut |tick, _, cx| {
+        }).unwrap_or_else(|error|panic!("{error}"));
+        let (x,y,cam)=measured.unwrap_or_else(||panic!("padding baseline was not observed"));
+        shot.times=vec![1400,1450,1520,2600];
+        shot.script=Some(Script::parse(&format!("down {x},{y} @1400; move {},{} @1450; up {},{} @1500; leave @1600",x+2.0,y+2.0,x+2.0,y+2.0)).expect("padding click script is valid"));
+        let mut checked=0;
+        run(&target,&shot,&mut |tick,_,cx| {
             if shot.times.contains(&tick.drawn.at_ms) {
-                let entity = cx
-                    .global::<Current>()
-                    .0
-                    .upgrade()
-                    .unwrap_or_else(|| panic!("graph gone"));
-                let graph = entity.read(cx);
-                assert_eq!(graph.focused(), Some(0), "card padding cleared focus");
-                assert_eq!(
-                    graph.camera(),
-                    Some(cam),
-                    "card padding propagated a graph drag"
-                );
-                assert!(
-                    !graph.inspect(cx).moving,
-                    "card padding started camera motion"
-                );
-                checked += 1;
+                let entity=cx.global::<Current>().0.upgrade().unwrap_or_else(||panic!("graph gone"));
+                let graph=entity.read(cx);
+                assert_eq!(graph.focused(),Some(0),"card padding cleared focus");
+                assert_eq!(graph.camera(),Some(cam),"card padding propagated a graph drag");
+                assert!(!graph.inspect(cx).moving,"card padding started camera motion");
+                checked+=1;
             }
             Ok(())
-        })
-        .unwrap_or_else(|error| panic!("{error}"));
-        assert_eq!(checked, 4, "all native padding checkpoints must execute");
+        }).unwrap_or_else(|error|panic!("{error}"));
+        assert_eq!(checked,4,"all native padding checkpoints must execute");
     }
 }
