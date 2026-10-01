@@ -747,6 +747,9 @@ impl Shell {
             cx.notify();
         }
         if self.with_zone(cx, |targets| targets.walk(delta)) {
+            // J/K walks a custom region target. Keep the shell as GPUI's
+            // focus owner so the selected row can be its active descendant.
+            self.focus.focus(window, cx);
             self.notify_zone(self.zone, cx);
         }
     }
@@ -769,7 +772,7 @@ impl Shell {
     }
 
     /// Tab: the next zone takes the keyboard.
-    pub fn cycle_zone(&mut self, forward: bool, cx: &mut Context<Self>) {
+    pub fn cycle_zone(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
         let zones = self.visible_zones();
         let at = zones.iter().position(|zone| *zone == self.zone).unwrap_or(0);
         let next = if forward {
@@ -778,6 +781,7 @@ impl Shell {
             zones[(at + zones.len() - 1) % zones.len()]
         };
         self.set_zone(next, cx);
+        self.focus.focus(window, cx);
     }
 
     /// The zone takes the keyboard (Tab, or a click in the sidebar).
@@ -1440,8 +1444,8 @@ impl Render for Shell {
                 cx.notify();
             }))
             .on_action(cx.listener(|shell, _: &keys::ToggleShelf, _, cx| shell.toggle_shelf(cx)))
-            .on_action(cx.listener(|shell, _: &keys::NextZone, _, cx| shell.cycle_zone(true, cx)))
-            .on_action(cx.listener(|shell, _: &keys::PrevZone, _, cx| shell.cycle_zone(false, cx)))
+            .on_action(cx.listener(|shell, _: &keys::NextZone, window, cx| shell.cycle_zone(true, window, cx)))
+            .on_action(cx.listener(|shell, _: &keys::PrevZone, window, cx| shell.cycle_zone(false, window, cx)))
             .on_action(cx.listener(|shell, _: &keys::Escape, window, cx| shell.escape(window, cx)))
             .on_action(cx.listener(|shell, _: &keys::DepthOrbit, window, cx| shell.depth(RouteDepth::Orbit, window, cx)))
             .on_action(cx.listener(|shell, _: &keys::DepthPackage, window, cx| shell.depth(RouteDepth::Package, window, cx)))

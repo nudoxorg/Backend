@@ -391,8 +391,8 @@ fn capture(
                 }
                 (Script::ShelfFocus, 1) => {
                     shell.update(cx, |shell, cx| {
-                        shell.cycle_zone(true, cx);
-                        shell.cycle_zone(true, cx);
+                        shell.cycle_zone(true, window, cx);
+                        shell.cycle_zone(true, window, cx);
                         for _ in 0..32 {
                             if shell.focus_state(cx).1.as_deref().is_some_and(|id| {
                                 id.starts_with("project-") && !id.starts_with("project-tree-")
@@ -562,9 +562,13 @@ fn capture(
             assert!(nodes.len() > 1, "the live shell cannot be a Window-only tree");
             let focused = native.tree["gpui_focus"].as_str().expect("real focused AccessKit node");
             let focused_node = nodes.get(focused).expect("focus belongs to this tree");
-            assert_eq!(focused_node["aria"]["role"].as_str(), Some("Application"));
-            assert_eq!(focused_node["aria"]["label"].as_str(), Some("Nudox"));
-            if frame.time_ms > 0 {
+            if frame.time_ms == 0 {
+                // The harness's real initial Tab stop is the titlebar button.
+                assert_eq!(focused_node["aria"]["role"].as_str(), Some("Button"));
+                assert_eq!(focused_node["aria"]["label"].as_str(), Some("Toggle the shelf"));
+            } else {
+                assert_eq!(focused_node["aria"]["role"].as_str(), Some("Application"));
+                assert_eq!(focused_node["aria"]["label"].as_str(), Some("Nudox"));
                 let descendant = native.tree["active_descendant_focus"].as_str().expect("shelf's selected project focus");
                 assert_eq!(native.tree["accesskit_focus"].as_str(), Some(descendant));
                 let node = nodes.get(descendant).expect("selected project belongs to this tree");
