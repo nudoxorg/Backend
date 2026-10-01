@@ -6,28 +6,28 @@
 //! keeps the engine's availability distinctions: a reply that could not
 //! answer becomes a typed [`Gap`], never an empty list.
 
-use crate::model::local_package::{DependencyKind, LocalPackage, LocalPackageSource, ReadmeLink, rustdoc_link};
+use crate::model::local_package::{
+    DependencyKind, LocalPackage, LocalPackageSource, ReadmeLink, rustdoc_link,
+};
 use crate::model::pages::{
     AdvisorySummary, Arrival, ByteSpan, DeclFacts, DeclRef, Dependency, DependencyScope,
-    Derivation, DocEntry, DocFragment, DocSection, DocSections, Downloads, Excerpt, FaultProgress, FileSpan, Gap, GapReason, HealthModel,
-    IdentifierSpan, IndexedPackage, IngestModel, Known, LanguageProgress, LineSpan, MatchReason,
-    Member, Members, MembersCoverage, MethodGroup, NameLinkCoverage, OrbitModel, OrbitProject,
-    OutlineNode, OutlinePosition,
-    OutlineTree, PackageDossier, PackageRecord, PackageRef, ReadmeExactKind, ReadmeExactTarget,
-    ReadmeExactTargets, Provenance, Readiness, Receiver,
-    RecordSource, ReferenceScope, ReferenceSite, Relation, RelationKind, Rose, SearchContinuation,
-    SearchPage, SearchRow, SignatureText, SignatureToken, SourceCoverage, SourceLocation,
-    SourceOrigin,
-    SourceSite, SourceText, SourceView, Standing, SymbolLink, SymbolPage, SymbolRef, TokenClass,
-    TreeNode, TreeOpener, TreeSubject, VersionEntry,
+    Derivation, DocEntry, DocFragment, DocSection, DocSections, Downloads, Excerpt, FaultProgress,
+    FileSpan, Gap, GapReason, HealthModel, IdentifierSpan, IndexedPackage, IngestModel, Known,
+    LanguageProgress, LineSpan, MatchReason, Member, Members, MembersCoverage, MethodGroup,
+    NameLinkCoverage, OrbitModel, OrbitProject, OutlineNode, OutlinePosition, OutlineTree,
+    PackageDossier, PackageRecord, PackageRef, Provenance, Readiness, ReadmeExactKind,
+    ReadmeExactTarget, ReadmeExactTargets, Receiver, RecordSource, ReferenceScope, ReferenceSite,
+    Relation, RelationKind, Rose, SearchContinuation, SearchPage, SearchRow, SignatureText,
+    SignatureToken, SourceCoverage, SourceLocation, SourceOrigin, SourceSite, SourceText,
+    SourceView, Standing, SymbolLink, SymbolPage, SymbolRef, TokenClass, TreeNode, TreeOpener,
+    TreeSubject, VersionEntry,
 };
 use backend_client::ClientError;
 use backend_library::{
     DeclarationKind, Document, Fragment, GraphEdgeKind, GraphNodeId, GraphRelation, HealthReport,
     RegistryDownloadCount, RegistryFactAvailability, RegistryPackageRecord,
-    RegistryReleaseStanding, Row, RowId, SemanticConfidence, SemanticLinkKind,
-    SemanticLinkTarget, SourceAvailability, SourceExcerpt, SourceExcerptExtent, SurfaceReply,
-    SymbolKey, ViewSnapshot,
+    RegistryReleaseStanding, Row, RowId, SemanticConfidence, SemanticLinkKind, SemanticLinkTarget,
+    SourceAvailability, SourceExcerpt, SourceExcerptExtent, SurfaceReply, SymbolKey, ViewSnapshot,
 };
 use backend_present::{CoverageLine, Language, TokenKind};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -132,7 +132,8 @@ impl OutlineIndex {
     /// on a partial outline through [`Self::row`] and [`Self::row_by_label`].
     #[must_use]
     pub fn complete_names(&self) -> Option<CompleteNameLookup<'_>> {
-        self.complete.then_some(CompleteNameLookup { outline: self })
+        self.complete
+            .then_some(CompleteNameLookup { outline: self })
     }
 
     /// Returns the number of indexed rows.
@@ -151,22 +152,65 @@ impl OutlineIndex {
     /// rows so names never stand in for missing type or signature evidence.
     pub fn comparison_api(&self, package: &PackageRef) -> crate::model::browse::PackageApi {
         const LIMIT: usize = 2048;
-        let mut candidates = self.rows.iter().filter_map(|row| {
-            let decl = DeclRef::from_row(row)?;
-            matches!(row.kind, Some(DeclarationKind::Module | DeclarationKind::Function | DeclarationKind::Method | DeclarationKind::Constructor | DeclarationKind::Struct | DeclarationKind::Class | DeclarationKind::Enum | DeclarationKind::Trait | DeclarationKind::Interface | DeclarationKind::Type | DeclarationKind::Union | DeclarationKind::Macro))
+        let mut candidates = self
+            .rows
+            .iter()
+            .filter_map(|row| {
+                let decl = DeclRef::from_row(row)?;
+                matches!(
+                    row.kind,
+                    Some(
+                        DeclarationKind::Module
+                            | DeclarationKind::Function
+                            | DeclarationKind::Method
+                            | DeclarationKind::Constructor
+                            | DeclarationKind::Struct
+                            | DeclarationKind::Class
+                            | DeclarationKind::Enum
+                            | DeclarationKind::Trait
+                            | DeclarationKind::Interface
+                            | DeclarationKind::Type
+                            | DeclarationKind::Union
+                            | DeclarationKind::Macro
+                    )
+                )
                 .then_some((decl, row))
-        }).collect::<Vec<_>>();
-        candidates.sort_by(|(left, _), (right, _)| left.name.cmp(&right.name).then_with(|| left.coordinate.cmp(&right.coordinate)));
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|(left, _), (right, _)| {
+            left.name
+                .cmp(&right.name)
+                .then_with(|| left.coordinate.cmp(&right.coordinate))
+        });
         let complete = self.complete && candidates.len() <= LIMIT;
-        let items = candidates.into_iter().take(LIMIT).map(|(decl, row)| {
-            let summary = row.document.iter().find_map(|fragment| match fragment {
-                Fragment::Text(text) if !text.trim().is_empty() && text != &row.label => Some(Arc::from(text.lines().next().unwrap_or_default().trim())),
-                _ => None,
-            });
-            let signature = signature_text(row.signature.as_deref(), decl.language, decl.key, Some(self));
-            crate::model::browse::ApiItem { decl, signature, summary }
-        }).collect::<Vec<_>>();
-        crate::model::browse::PackageApi { package: package.clone(), items: items.into(), complete }
+        let items = candidates
+            .into_iter()
+            .take(LIMIT)
+            .map(|(decl, row)| {
+                let summary = row.document.iter().find_map(|fragment| match fragment {
+                    Fragment::Text(text) if !text.trim().is_empty() && text != &row.label => {
+                        Some(Arc::from(text.lines().next().unwrap_or_default().trim()))
+                    }
+                    _ => None,
+                });
+                let signature = signature_text(
+                    row.signature.as_deref(),
+                    decl.language,
+                    decl.key,
+                    Some(self),
+                );
+                crate::model::browse::ApiItem {
+                    decl,
+                    signature,
+                    summary,
+                }
+            })
+            .collect::<Vec<_>>();
+        crate::model::browse::PackageApi {
+            package: package.clone(),
+            items: items.into(),
+            complete,
+        }
     }
 
     /// Returns one row by key.
@@ -333,11 +377,36 @@ fn leaf_name(label: &str) -> &str {
 #[must_use]
 pub fn is_encoded_signature(text: &str) -> bool {
     const HEADS: [&str; 30] = [
-        "annotated(", "applied(", "array(", "builtin(", "c-qualified(", "channel(",
-        "conditional(", "cxx-member-pointer(", "cxx-reference(", "entity(", "external(",
-        "fixed(", "function(parameters=", "import(", "indexed(", "infer(", "inferred(",
-        "map(", "mapped(", "namespace(", "nominal(", "package(", "pointer(", "qualified(",
-        "rectangular(", "reference(", "tuple(", "typeof(", "unknown(", "literal.",
+        "annotated(",
+        "applied(",
+        "array(",
+        "builtin(",
+        "c-qualified(",
+        "channel(",
+        "conditional(",
+        "cxx-member-pointer(",
+        "cxx-reference(",
+        "entity(",
+        "external(",
+        "fixed(",
+        "function(parameters=",
+        "import(",
+        "indexed(",
+        "infer(",
+        "inferred(",
+        "map(",
+        "mapped(",
+        "namespace(",
+        "nominal(",
+        "package(",
+        "pointer(",
+        "qualified(",
+        "rectangular(",
+        "reference(",
+        "tuple(",
+        "typeof(",
+        "unknown(",
+        "literal.",
     ];
     let text = text.trim_start();
     HEADS.iter().any(|head| text.starts_with(head))
@@ -606,7 +675,10 @@ pub fn doc_sections(language: Language, fragments: &[DocFragment]) -> DocSection
         let role = if line.code_only && !line.fragments.is_empty() {
             backend_present::LineRole::Prose
         } else {
-            reader.line(&line.text, lines.get(index + 1).map(|next| next.text.as_str()))
+            reader.line(
+                &line.text,
+                lines.get(index + 1).map(|next| next.text.as_str()),
+            )
         };
         match role {
             backend_present::LineRole::Heading { kind, title } => {
@@ -761,11 +833,7 @@ pub fn receiver(signature: Option<&str>, language: Language) -> Receiver {
         return Receiver::Unknown;
     };
     let params = &signature[open + 1..];
-    let first = params
-        .split([',', ')'])
-        .next()
-        .unwrap_or_default()
-        .trim();
+    let first = params.split([',', ')']).next().unwrap_or_default().trim();
     let compact: String = first.chars().filter(|c| !c.is_whitespace()).collect();
     if compact.starts_with("&mutself") || compact.starts_with("self:&mut") {
         return Receiver::Changes;
@@ -779,7 +847,11 @@ pub fn receiver(signature: Option<&str>, language: Language) -> Receiver {
     if compact.starts_with("&'") && compact.ends_with("mutself") {
         return Receiver::Changes;
     }
-    if compact == "self" || compact == "mutself" || compact.starts_with("self:") || compact.starts_with("mutself:") {
+    if compact == "self"
+        || compact == "mutself"
+        || compact.starts_with("self:")
+        || compact.starts_with("mutself:")
+    {
         return Receiver::Consumes;
     }
     Receiver::Makes
@@ -839,7 +911,9 @@ pub fn members(
             Some(DeclarationKind::Constant) if centre_kind == Some(DeclarationKind::Enum) => {
                 made_of.push(member);
             }
-            Some(DeclarationKind::Method | DeclarationKind::Function | DeclarationKind::Constructor) => {
+            Some(
+                DeclarationKind::Method | DeclarationKind::Function | DeclarationKind::Constructor,
+            ) => {
                 let receiver = receiver(row.signature.as_deref(), member.decl.language);
                 does.entry(receiver).or_default().push(member);
             }
@@ -906,7 +980,10 @@ impl<'a> Neighbourhood<'a> {
                 rich.edges.iter().find(|candidate| {
                     candidate.from == from
                         && candidate.to == to
-                        && candidate.kind == GraphEdgeKind::Code { relation: edge.relation }
+                        && candidate.kind
+                            == GraphEdgeKind::Code {
+                                relation: edge.relation,
+                            }
                 })
             })
             .and_then(|candidate| candidate.provenance.confidence)
@@ -943,7 +1020,10 @@ pub fn rose(
 ) -> Rose {
     let Some(neighbourhood) = neighbourhood else {
         let gap = failure.unwrap_or_else(|| {
-            Gap::new(GapReason::ReadFailed, "the related neighbourhood was not read")
+            Gap::new(
+                GapReason::ReadFailed,
+                "the related neighbourhood was not read",
+            )
         });
         return Rose {
             up: Known::Unknown(gap.clone()),
@@ -1005,7 +1085,14 @@ pub fn rose(
             }
         }
     }
-    derive_impl_blocks(centre, centre_kind, &neighbourhood, edges, &mut up, &mut implemented_by);
+    derive_impl_blocks(
+        centre,
+        centre_kind,
+        &neighbourhood,
+        edges,
+        &mut up,
+        &mut implemented_by,
+    );
     Rose {
         up: Known::Known(up.into()),
         down: Known::Known(down.into()),
@@ -1046,7 +1133,11 @@ fn derive_impl_blocks(
             edge.from == from && edge.relation == SemanticLinkKind::TypeReference
         })
     };
-    for block in neighbourhood.rows.iter().filter(|row| row.id != centre && is_impl_block(row)) {
+    for block in neighbourhood
+        .rows
+        .iter()
+        .filter(|row| row.id != centre && is_impl_block(row))
+    {
         let Some(via) = DeclRef::from_row(block) else {
             continue;
         };
@@ -1188,7 +1279,11 @@ pub fn client_gap(error: &ClientError) -> Gap {
 
 /// Places `centre` inside its package outline.
 #[must_use]
-pub fn outline_position(centre: RowId, outline: Option<&OutlineIndex>, failure: Option<Gap>) -> Known<OutlinePosition> {
+pub fn outline_position(
+    centre: RowId,
+    outline: Option<&OutlineIndex>,
+    failure: Option<Gap>,
+) -> Known<OutlinePosition> {
     let Some(outline) = outline else {
         return Known::Unknown(failure.unwrap_or_else(|| {
             Gap::new(GapReason::ReadFailed, "the package outline was not read")
@@ -1270,7 +1365,11 @@ pub fn symbol_page(inputs: &SymbolInputs<'_>) -> SymbolPage {
     // The page's own row: a structural row echoes the document key; a
     // compiler-backed row is keyed by its compiler identity and found by label.
     let own_row = neighbourhood
-        .and_then(|hood| hood.rows.iter().find(|row| row.label == coordinate.as_str()))
+        .and_then(|hood| {
+            hood.rows
+                .iter()
+                .find(|row| row.label == coordinate.as_str())
+        })
         .or_else(|| outline.and_then(|outline| outline.row_by_label(coordinate.as_str())))
         .or_else(|| outline.and_then(|outline| outline.row(inputs.document.symbol)));
     let centre = own_row.map_or(RowId::Symbol(inputs.document.symbol), |row| row.id);
@@ -1334,14 +1433,12 @@ pub fn symbol_page(inputs: &SymbolInputs<'_>) -> SymbolPage {
             GapReason::Unavailable,
             "the package outline is partial; the members ledger may omit declarations",
         ),
-        None => Known::Unknown(
-            inputs
-                .outline
-                .as_ref()
-                .err()
-                .cloned()
-                .unwrap_or_else(|| Gap::new(GapReason::Unavailable, "member coverage was not established")),
-        ),
+        None => Known::Unknown(inputs.outline.as_ref().err().cloned().unwrap_or_else(|| {
+            Gap::new(
+                GapReason::Unavailable,
+                "member coverage was not established",
+            )
+        })),
     };
     let references = references(inputs.references, outline);
     SymbolPage {
@@ -1470,7 +1567,9 @@ fn identifier_spans(
         let byte = bytes[index];
         if byte.is_ascii_alphabetic() || byte == b'_' {
             let start = index;
-            while index < bytes.len() && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_') {
+            while index < bytes.len()
+                && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_')
+            {
                 index += 1;
             }
             let word = &text[start..index];
@@ -1535,10 +1634,7 @@ pub fn source_view(
             semantic: false,
             facts: DeclFacts::unread(),
         });
-    let file = site
-        .location
-        .clone()
-        .map(|location| location.path);
+    let file = site.location.clone().map(|location| location.path);
     let excerpt = site.excerpt.known().cloned();
     let location = site.location.known().cloned();
     let verified = match (local_file, &excerpt, &location) {
@@ -1561,7 +1657,8 @@ pub fn source_view(
             1,
             SourceOrigin::LocalFile,
             excerpt.complete,
-        ).map_or_else(
+        )
+        .map_or_else(
             |error| Known::unknown(GapReason::Unavailable, error.to_string()),
             |source| Known::Known(source.with_verified_local_excerpt(verified_bytes)),
         ),
@@ -1570,7 +1667,8 @@ pub fn source_view(
             location.as_ref().map_or(1, |location| location.line),
             SourceOrigin::Excerpt,
             excerpt.complete,
-        ).map_or_else(
+        )
+        .map_or_else(
             |error| Known::unknown(GapReason::Unavailable, error.to_string()),
             Known::Known,
         ),
@@ -1585,7 +1683,12 @@ pub fn source_view(
         .as_ref()
         .and_then(|excerpt| excerpt.lines)
         .map_or_else(
-            || Known::unknown(GapReason::NotCaptured, "the declaration's lines are not known"),
+            || {
+                Known::unknown(
+                    GapReason::NotCaptured,
+                    "the declaration's lines are not known",
+                )
+            },
             Known::Known,
         );
     let identifiers = match &text {
@@ -1686,11 +1789,7 @@ fn local_gap(what: &str) -> Gap {
 #[must_use]
 pub fn registry_record(record: &RegistryPackageRecord) -> PackageRecord {
     let advisory = &record.advisory;
-    let worst = advisory
-        .advisories
-        .iter()
-        .map(|entry| entry.severity)
-        .max();
+    let worst = advisory.advisories.iter().map(|entry| entry.severity).max();
     let decision = match &advisory.decision {
         backend_library::AcquisitionDecision::Allow => "allow",
         backend_library::AcquisitionDecision::Warn(_) => "warn",
@@ -1903,11 +2002,7 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
                         requirement: Arc::from(row.target.requirement.as_str()),
                         scope: scope(row.scope),
                         optional: row.optional,
-                        resolved: row
-                            .target
-                            .resolved
-                            .clone()
-                            .map(PackageRef::from_reference),
+                        resolved: row.target.resolved.clone().map(PackageRef::from_reference),
                     })
                     .collect::<Vec<_>>()
                     .into(),
@@ -1945,8 +2040,11 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
     };
     let (dependents, observed_dependents) = match inputs.dependents {
         Ok(SurfaceReply::Dependents(backend_library::RegistryMetadata::Recorded(records))) => {
-            let observed: Arc<[PackageRecord]> =
-                records.iter().map(registry_record).collect::<Vec<_>>().into();
+            let observed: Arc<[PackageRecord]> = records
+                .iter()
+                .map(registry_record)
+                .collect::<Vec<_>>()
+                .into();
             (Known::Known(Arc::clone(&observed)), observed)
         }
         Ok(SurfaceReply::Dependents(backend_library::RegistryMetadata::Partial {
@@ -1975,7 +2073,10 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
             },
             Arc::from([]),
         ),
-        other => (Known::Unknown(surface_gap(other, "dependents")), Arc::from([])),
+        other => (
+            Known::Unknown(surface_gap(other, "dependents")),
+            Arc::from([]),
+        ),
     };
     let outline = match &inputs.outline {
         Ok(index) => Known::Known(index.tree()),
@@ -2009,7 +2110,10 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
     };
     let readme = match inputs.local {
         Some(manifest) if !manifest.readme.is_empty() => Known::Known(Arc::clone(&manifest.readme)),
-        Some(_) => Known::unknown(GapReason::NotRecorded, "the project has no README the manifest names"),
+        Some(_) => Known::unknown(
+            GapReason::NotRecorded,
+            "the project has no README the manifest names",
+        ),
         None => Known::Unknown(not_served("README")),
     };
     PackageDossier {
@@ -2023,7 +2127,12 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
         readme,
         readme_markdown: match inputs.local {
             Some(manifest) => manifest.readme_markdown.clone().map_or_else(
-                || Known::unknown(GapReason::NotRecorded, "the project has no retained README Markdown source"),
+                || {
+                    Known::unknown(
+                        GapReason::NotRecorded,
+                        "the project has no retained README Markdown source",
+                    )
+                },
                 Known::Known,
             ),
             None => Known::Unknown(not_served("README Markdown source")),
@@ -2111,7 +2220,8 @@ fn prepare_readme_exact_targets(
                     }
                 }
                 let decl = DeclRef::from_row(found?)?;
-                let in_package = decl.coordinate
+                let in_package = decl
+                    .coordinate
                     .as_str()
                     .strip_prefix(package.as_str())
                     .is_some_and(|rest| rest.starts_with("::"));
@@ -2189,7 +2299,9 @@ pub fn search_page(query: &str, snapshot: &ViewSnapshot, worker: usize) -> Searc
         query,
         snapshot.root.rows(),
         snapshot.root.coverage(),
-        snapshot.next.map(backend_library::PageContinuation::from_cursor),
+        snapshot
+            .next
+            .map(backend_library::PageContinuation::from_cursor),
         worker,
     )
 }
@@ -2216,9 +2328,17 @@ pub fn search_rows(
             let signature = signature_text(row.signature.as_deref(), decl.language, decl.key, None);
             Some(SearchRow {
                 rank,
-                package: decl.coordinate.package().map(|package| Arc::from(package.as_str())),
+                package: decl
+                    .coordinate
+                    .package()
+                    .map(|package| Arc::from(package.as_str())),
                 score: row.score.map_or_else(
-                    || Known::unknown(GapReason::NotServed, "the engine published no score for this row"),
+                    || {
+                        Known::unknown(
+                            GapReason::NotServed,
+                            "the engine published no score for this row",
+                        )
+                    },
                     Known::Known,
                 ),
                 signature,
@@ -2264,7 +2384,9 @@ fn tree_subject(subject: &backend_library::TreeSubject) -> TreeSubject {
         backend_library::TreeSubject::Explore(query) => {
             TreeSubject::Explore(query.as_ref().map(|query| Arc::from(query.as_str())))
         }
-        backend_library::TreeSubject::Search(query) => TreeSubject::Search(Arc::from(query.as_str())),
+        backend_library::TreeSubject::Search(query) => {
+            TreeSubject::Search(Arc::from(query.as_str()))
+        }
         backend_library::TreeSubject::Owner(owner) => TreeSubject::Owner(Arc::from(owner.as_str())),
     }
 }
@@ -2301,7 +2423,10 @@ pub fn orbit_model(inputs: &OrbitInputs<'_>) -> OrbitModel {
                 .map(|record| OrbitProject {
                     id: record.id.get(),
                     name: Arc::from(record.name.as_str()),
-                    lockfile: record.lockfile.as_ref().map(|path| Arc::from(path.as_str())),
+                    lockfile: record
+                        .lockfile
+                        .as_ref()
+                        .map(|path| Arc::from(path.as_str())),
                     members: record
                         .members
                         .iter()
@@ -2316,9 +2441,13 @@ pub fn orbit_model(inputs: &OrbitInputs<'_>) -> OrbitModel {
         other => Known::Unknown(surface_gap(other, "projects")),
     };
     let explore = match inputs.explore {
-        Ok(SurfaceReply::Explored(records)) => {
-            Known::Known(records.iter().map(registry_record).collect::<Vec<_>>().into())
-        }
+        Ok(SurfaceReply::Explored(records)) => Known::Known(
+            records
+                .iter()
+                .map(registry_record)
+                .collect::<Vec<_>>()
+                .into(),
+        ),
         other => Known::Unknown(surface_gap(other, "explore")),
     };
     let tree = match inputs.tree {
@@ -2408,7 +2537,6 @@ pub fn health_model(report: &HealthReport) -> HealthModel {
     }
 }
 
-
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic, clippy::too_many_lines)]
 mod tests {
@@ -2438,11 +2566,19 @@ mod tests {
         let invalid = std::path::Path::new(PRESENT)
             .join("src")
             .join(OsString::from_vec(b"\xff.rs".to_vec()));
-        let replacement = std::path::Path::new(PRESENT).join("src").join("\u{fffd}.rs");
-        assert_eq!(invalid.to_string_lossy(), replacement.to_string_lossy(),
-            "this is a real native-path collision under lossy conversion");
+        let replacement = std::path::Path::new(PRESENT)
+            .join("src")
+            .join("\u{fffd}.rs");
+        assert_eq!(
+            invalid.to_string_lossy(),
+            replacement.to_string_lossy(),
+            "this is a real native-path collision under lossy conversion"
+        );
         assert_eq!(readme_relative_source_path(&package, &invalid), None);
-        assert_eq!(readme_relative_source_path(&package, &replacement).as_deref(), Some("src/\u{fffd}.rs"));
+        assert_eq!(
+            readme_relative_source_path(&package, &replacement).as_deref(),
+            Some("src/\u{fffd}.rs")
+        );
     }
 
     fn basis() -> Basis {
@@ -2463,8 +2599,12 @@ mod tests {
     }
 
     fn row(spec: &RowSpec<'_>) -> Row {
-        let mut row = Row::new(RowId::Symbol(key(&spec.label)), basis(), spec.label.as_str())
-            .with_kind(spec.kind);
+        let mut row = Row::new(
+            RowId::Symbol(key(&spec.label)),
+            basis(),
+            spec.label.as_str(),
+        )
+        .with_kind(spec.kind);
         if let Some(signature) = spec.signature {
             row = row.with_signature(signature);
         }
@@ -2494,17 +2634,98 @@ mod tests {
         let identity = present("identity.rs:339::Identity");
         let prose = present("page.rs:26::Prose");
         let specs = vec![
-            RowSpec { label: module.clone(), kind: DeclarationKind::Module, signature: None, parent: None, doc: None, site: Some(("page.rs", 1)) },
-            RowSpec { label: page.clone(), kind: DeclarationKind::Struct, signature: Some("pub struct Page"), parent: Some(&module), doc: Some("One complete declaration page."), site: Some(("page.rs", 396)) },
-            RowSpec { label: present("page.rs:399::prose"), kind: DeclarationKind::Field, signature: Some("prose: Box<[Prose]>"), parent: Some(&page), doc: None, site: Some(("page.rs", 399)) },
-            RowSpec { label: present("page.rs:410::new"), kind: DeclarationKind::Method, signature: Some("pub fn new(identity: Identity, kind: Option<DeclarationKind>, source: Source) -> Self"), parent: Some(&page), doc: Some("Assembles one page from already-typed parts."), site: Some(("page.rs", 410)) },
-            RowSpec { label: present("page.rs:437::with_prose"), kind: DeclarationKind::Method, signature: Some("pub fn with_prose(mut self, prose: impl Into<Box<[Prose]>>) -> Self"), parent: Some(&page), doc: Some("Attaches the producer's captured documentation."), site: Some(("page.rs", 437)) },
-            RowSpec { label: present("page.rs:463::identity"), kind: DeclarationKind::Method, signature: Some("pub const fn identity(&self) -> &Identity"), parent: Some(&page), doc: Some("Returns the page's identity."), site: Some(("page.rs", 463)) },
-            RowSpec { label: present("page.rs:470::retitle"), kind: DeclarationKind::Method, signature: Some("pub fn retitle(&mut self, title: &str)"), parent: Some(&page), doc: None, site: Some(("page.rs", 470)) },
-            RowSpec { label: prose.clone(), kind: DeclarationKind::Enum, signature: Some("pub enum Prose"), parent: Some(&module), doc: Some("One block of producer-captured documentation."), site: Some(("page.rs", 26)) },
-            RowSpec { label: present("page.rs:28::Text"), kind: DeclarationKind::Variant, signature: Some("Text(String)"), parent: Some(&prose), doc: Some("A paragraph of readable text."), site: Some(("page.rs", 28)) },
-            RowSpec { label: identity_module.clone(), kind: DeclarationKind::Module, signature: None, parent: None, doc: None, site: Some(("identity.rs", 1)) },
-            RowSpec { label: identity.clone(), kind: DeclarationKind::Struct, signature: Some("pub struct Identity"), parent: Some(&identity_module), doc: Some("One parsed row identity."), site: Some(("identity.rs", 339)) },
+            RowSpec {
+                label: module.clone(),
+                kind: DeclarationKind::Module,
+                signature: None,
+                parent: None,
+                doc: None,
+                site: Some(("page.rs", 1)),
+            },
+            RowSpec {
+                label: page.clone(),
+                kind: DeclarationKind::Struct,
+                signature: Some("pub struct Page"),
+                parent: Some(&module),
+                doc: Some("One complete declaration page."),
+                site: Some(("page.rs", 396)),
+            },
+            RowSpec {
+                label: present("page.rs:399::prose"),
+                kind: DeclarationKind::Field,
+                signature: Some("prose: Box<[Prose]>"),
+                parent: Some(&page),
+                doc: None,
+                site: Some(("page.rs", 399)),
+            },
+            RowSpec {
+                label: present("page.rs:410::new"),
+                kind: DeclarationKind::Method,
+                signature: Some(
+                    "pub fn new(identity: Identity, kind: Option<DeclarationKind>, source: Source) -> Self",
+                ),
+                parent: Some(&page),
+                doc: Some("Assembles one page from already-typed parts."),
+                site: Some(("page.rs", 410)),
+            },
+            RowSpec {
+                label: present("page.rs:437::with_prose"),
+                kind: DeclarationKind::Method,
+                signature: Some(
+                    "pub fn with_prose(mut self, prose: impl Into<Box<[Prose]>>) -> Self",
+                ),
+                parent: Some(&page),
+                doc: Some("Attaches the producer's captured documentation."),
+                site: Some(("page.rs", 437)),
+            },
+            RowSpec {
+                label: present("page.rs:463::identity"),
+                kind: DeclarationKind::Method,
+                signature: Some("pub const fn identity(&self) -> &Identity"),
+                parent: Some(&page),
+                doc: Some("Returns the page's identity."),
+                site: Some(("page.rs", 463)),
+            },
+            RowSpec {
+                label: present("page.rs:470::retitle"),
+                kind: DeclarationKind::Method,
+                signature: Some("pub fn retitle(&mut self, title: &str)"),
+                parent: Some(&page),
+                doc: None,
+                site: Some(("page.rs", 470)),
+            },
+            RowSpec {
+                label: prose.clone(),
+                kind: DeclarationKind::Enum,
+                signature: Some("pub enum Prose"),
+                parent: Some(&module),
+                doc: Some("One block of producer-captured documentation."),
+                site: Some(("page.rs", 26)),
+            },
+            RowSpec {
+                label: present("page.rs:28::Text"),
+                kind: DeclarationKind::Variant,
+                signature: Some("Text(String)"),
+                parent: Some(&prose),
+                doc: Some("A paragraph of readable text."),
+                site: Some(("page.rs", 28)),
+            },
+            RowSpec {
+                label: identity_module.clone(),
+                kind: DeclarationKind::Module,
+                signature: None,
+                parent: None,
+                doc: None,
+                site: Some(("identity.rs", 1)),
+            },
+            RowSpec {
+                label: identity.clone(),
+                kind: DeclarationKind::Struct,
+                signature: Some("pub struct Identity"),
+                parent: Some(&identity_module),
+                doc: Some("One parsed row identity."),
+                site: Some(("identity.rs", 339)),
+            },
         ];
         specs.iter().map(row).collect()
     }
@@ -2580,13 +2801,45 @@ mod tests {
             "exact source path still resolves"
         );
 
-        let unknown_kind = OutlineIndex::new(vec![
-            row(&RowSpec { label: module.clone(), kind: DeclarationKind::Module, signature: None, parent: None, doc: None, site: Some(("src/lib.rs", 1)) }),
-            row(&RowSpec { label: widget, kind: DeclarationKind::Struct, signature: None, parent: Some(&module), doc: None, site: Some(("src/lib.rs", 7)) }),
-            Row::new(RowId::Symbol(key(&present("src/unknown.rs:9::Widget"))), basis(), present("src/unknown.rs:9::Widget")).with_parent(key(&module)),
-        ], true);
-        let exact = prepare_readme_exact_targets(&package, &source, &links, &unknown_kind, &unknown_kind.tree());
-        assert_eq!(exact.links.len(), 1, "untyped same-name rows also block Rustdoc proof");
+        let unknown_kind = OutlineIndex::new(
+            vec![
+                row(&RowSpec {
+                    label: module.clone(),
+                    kind: DeclarationKind::Module,
+                    signature: None,
+                    parent: None,
+                    doc: None,
+                    site: Some(("src/lib.rs", 1)),
+                }),
+                row(&RowSpec {
+                    label: widget,
+                    kind: DeclarationKind::Struct,
+                    signature: None,
+                    parent: Some(&module),
+                    doc: None,
+                    site: Some(("src/lib.rs", 7)),
+                }),
+                Row::new(
+                    RowId::Symbol(key(&present("src/unknown.rs:9::Widget"))),
+                    basis(),
+                    present("src/unknown.rs:9::Widget"),
+                )
+                .with_parent(key(&module)),
+            ],
+            true,
+        );
+        let exact = prepare_readme_exact_targets(
+            &package,
+            &source,
+            &links,
+            &unknown_kind,
+            &unknown_kind.tree(),
+        );
+        assert_eq!(
+            exact.links.len(),
+            1,
+            "untyped same-name rows also block Rustdoc proof"
+        );
     }
 
     #[test]
@@ -2639,31 +2892,87 @@ mod tests {
         let package = PackageRef::parse(PRESENT).expect("local package");
         let module = present("src/lib.rs:1::api");
         let rows = vec![
-            row(&RowSpec { label: module.clone(), kind: DeclarationKind::Module, signature: None, parent: None, doc: None, site: Some(("src/lib.rs", 1)) }),
-            row(&RowSpec { label: present("src/lib.rs:7::Widget"), kind: DeclarationKind::Struct, signature: None, parent: Some(&module), doc: None, site: Some(("src/lib.rs", 7)) }),
+            row(&RowSpec {
+                label: module.clone(),
+                kind: DeclarationKind::Module,
+                signature: None,
+                parent: None,
+                doc: None,
+                site: Some(("src/lib.rs", 1)),
+            }),
+            row(&RowSpec {
+                label: present("src/lib.rs:7::Widget"),
+                kind: DeclarationKind::Struct,
+                signature: None,
+                parent: Some(&module),
+                doc: None,
+                site: Some(("src/lib.rs", 7)),
+            }),
         ];
         let local = LocalPackage {
             project: crate::core::LocalProjectId::new(PRESENT).expect("project"),
             source: LocalPackageSource::Readme,
-            name: Arc::from("backend-present"), version: None, description: None,
-            license: None, rust_version: None, repository: None, homepage: None,
-            documentation: None, keywords: Arc::from([]), categories: Arc::from([]),
+            name: Arc::from("backend-present"),
+            version: None,
+            description: None,
+            license: None,
+            rust_version: None,
+            repository: None,
+            homepage: None,
+            documentation: None,
+            keywords: Arc::from([]),
+            categories: Arc::from([]),
             readme: Arc::from([]),
             readme_markdown: Some(Arc::from("[item](api/struct.Widget.html)")),
-            readme_links: Arc::from([ReadmeLink { label: Arc::from("item"), destination: Arc::from("api/struct.Widget.html"), local_file: None, line: None }]),
-            readme_headings: Arc::from([]), dependencies: Arc::from([]), features: Arc::from([]), members: 0,
+            readme_links: Arc::from([ReadmeLink {
+                label: Arc::from("item"),
+                destination: Arc::from("api/struct.Widget.html"),
+                local_file: None,
+                line: None,
+            }]),
+            readme_headings: Arc::from([]),
+            dependencies: Arc::from([]),
+            features: Arc::from([]),
+            members: 0,
         };
         let failure = no_semantics();
         let complete = OutlineIndex::new(rows.clone(), true);
-        let live = package_dossier(&PackageInputs { package: &package, records: Err(&failure), versions: Err(&failure), dependencies: Err(&failure), dependents: Err(&failure), outline: Ok(&complete), local: Some(&local) });
-        assert_eq!(live.readme_exact_targets.known().map(|proof| proof.links.len()), Some(1));
+        let live = package_dossier(&PackageInputs {
+            package: &package,
+            records: Err(&failure),
+            versions: Err(&failure),
+            dependencies: Err(&failure),
+            dependents: Err(&failure),
+            outline: Ok(&complete),
+            local: Some(&local),
+        });
+        assert_eq!(
+            live.readme_exact_targets
+                .known()
+                .map(|proof| proof.links.len()),
+            Some(1)
+        );
         let wire = serde_json::to_string(&live).expect("save dossier");
         let restored: PackageDossier = serde_json::from_str(&wire).expect("restore dossier");
-        assert_eq!(restored.readme_exact_targets.gap().map(|gap| gap.reason), Some(GapReason::NotCaptured));
+        assert_eq!(
+            restored.readme_exact_targets.gap().map(|gap| gap.reason),
+            Some(GapReason::NotCaptured)
+        );
 
         let partial = OutlineIndex::new(rows, false);
-        let live = package_dossier(&PackageInputs { package: &package, records: Err(&failure), versions: Err(&failure), dependencies: Err(&failure), dependents: Err(&failure), outline: Ok(&partial), local: Some(&local) });
-        assert!(live.readme_exact_targets.known().is_none(), "partial outline cannot prove name uniqueness");
+        let live = package_dossier(&PackageInputs {
+            package: &package,
+            records: Err(&failure),
+            versions: Err(&failure),
+            dependencies: Err(&failure),
+            dependents: Err(&failure),
+            outline: Ok(&partial),
+            local: Some(&local),
+        });
+        assert!(
+            live.readme_exact_targets.known().is_none(),
+            "partial outline cannot prove name uniqueness"
+        );
     }
 
     #[test]
@@ -2746,7 +3055,11 @@ mod tests {
             ],
             false,
         );
-        assert!(partial_duplicates.resolve_name("Foo", is_type_like).is_none());
+        assert!(
+            partial_duplicates
+                .resolve_name("Foo", is_type_like)
+                .is_none()
+        );
 
         let partial_spans = identifier_spans("Foo", None, Some(&partial), None);
         assert_eq!(
@@ -2824,29 +3137,65 @@ mod tests {
     }
 
     #[test]
-    fn comparison_packets_keep_callable_shapes_docs_and_exact_identity_without_promising_public_api() {
+    fn comparison_packets_keep_callable_shapes_docs_and_exact_identity_without_promising_public_api()
+     {
         let package = PackageRef::parse("/repo/crates/present").unwrap();
         let index = OutlineIndex::new(present_rows(), true);
         let api = index.comparison_api(&package);
         assert!(api.complete);
-        let method = api.items.iter().find(|item| item.decl.name.as_ref() == "retitle").unwrap();
+        let method = api
+            .items
+            .iter()
+            .find(|item| item.decl.name.as_ref() == "retitle")
+            .unwrap();
         assert_eq!(method.decl.kind, Some(DeclarationKind::Method));
-        assert_eq!(method.signature.known().unwrap().text.as_ref(), "pub fn retitle(&mut self, title: &str)");
+        assert_eq!(
+            method.signature.known().unwrap().text.as_ref(),
+            "pub fn retitle(&mut self, title: &str)"
+        );
         assert_eq!(method.summary, None);
-        let constructor = api.items.iter().find(|item| item.decl.name.as_ref() == "new").unwrap();
-        assert_eq!(constructor.summary.as_deref(), Some("Assembles one page from already-typed parts."));
-        assert_eq!(constructor.decl.coordinate.as_str(), present("page.rs:410::new"));
-        let modules = api.items.iter().filter(|item| item.decl.kind == Some(DeclarationKind::Module))
-            .map(|item| item.decl.coordinate.as_str()).collect::<Vec<_>>();
-        assert_eq!(modules.len(), 2, "both recorded file modules survive the comparison projection");
+        let constructor = api
+            .items
+            .iter()
+            .find(|item| item.decl.name.as_ref() == "new")
+            .unwrap();
+        assert_eq!(
+            constructor.summary.as_deref(),
+            Some("Assembles one page from already-typed parts.")
+        );
+        assert_eq!(
+            constructor.decl.coordinate.as_str(),
+            present("page.rs:410::new")
+        );
+        let modules = api
+            .items
+            .iter()
+            .filter(|item| item.decl.kind == Some(DeclarationKind::Module))
+            .map(|item| item.decl.coordinate.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            modules.len(),
+            2,
+            "both recorded file modules survive the comparison projection"
+        );
         assert!(modules.contains(&present("page.rs").as_str()));
         assert!(modules.contains(&present("identity.rs").as_str()));
-        assert!(!api.items.iter().any(|item| item.decl.name.as_ref() == "prose"));
+        assert!(
+            !api.items
+                .iter()
+                .any(|item| item.decl.name.as_ref() == "prose")
+        );
         let partial = OutlineIndex::new(present_rows(), false).comparison_api(&package);
         assert!(!partial.complete);
     }
 
-    fn present_document(label: &str, signature: &str, doc: &str, site: (&str, u32), excerpt: &str) -> Document {
+    fn present_document(
+        label: &str,
+        signature: &str,
+        doc: &str,
+        site: (&str, u32),
+        excerpt: &str,
+    ) -> Document {
         let mut document = Document::new(
             key(label),
             view_state_root(&[]),
@@ -2869,7 +3218,10 @@ mod tests {
     }
 
     fn names(members: &[Member]) -> Vec<&str> {
-        members.iter().map(|member| member.decl.name.as_ref()).collect()
+        members
+            .iter()
+            .map(|member| member.decl.name.as_ref())
+            .collect()
     }
 
     #[test]
@@ -2936,7 +3288,13 @@ mod tests {
         assert_eq!((location.path.as_ref(), location.line), ("page.rs", 396));
         let excerpt = page.site.excerpt.known().expect("captured excerpt");
         assert!(excerpt.text.starts_with("pub struct Page {"));
-        assert_eq!(excerpt.lines, Some(LineSpan { first: 396, last: 399 }));
+        assert_eq!(
+            excerpt.lines,
+            Some(LineSpan {
+                first: 396,
+                last: 399
+            })
+        );
 
         let members = page.members.known().expect("members");
         assert_eq!(names(&members.made_of), ["prose"]);
@@ -2944,7 +3302,12 @@ mod tests {
             members
                 .does
                 .iter()
-                .find(|group| group.members.iter().any(|member| member.decl.name.as_ref() == name))
+                .find(|group| {
+                    group
+                        .members
+                        .iter()
+                        .any(|member| member.decl.name.as_ref() == name)
+                })
                 .map(|group| group.receiver)
         };
         assert_eq!(receiver_of("new"), Some(Receiver::Makes));
@@ -2955,7 +3318,10 @@ mod tests {
             .all()
             .find(|member| member.decl.name.as_ref() == "identity")
             .expect("identity accessor");
-        assert_eq!(identity_member.summary.as_deref(), Some("Returns the page's identity."));
+        assert_eq!(
+            identity_member.summary.as_deref(),
+            Some("Returns the page's identity.")
+        );
         // `new(identity: Identity, …)` links the Identity type by name.
         let new_member = members
             .all()
@@ -2972,7 +3338,10 @@ mod tests {
 
         // Structural replies know containment and nothing typed.
         let down = page.rose.down.known().expect("containment");
-        assert!(down.iter().any(|relation| relation.decl.name.as_ref() == "prose"));
+        assert!(
+            down.iter()
+                .any(|relation| relation.decl.name.as_ref() == "prose")
+        );
         assert_eq!(
             page.rose.up.gap().map(|gap| gap.reason),
             Some(GapReason::NoSemanticPublication)
@@ -2987,10 +3356,18 @@ mod tests {
 
         let position = page.outline.known().expect("outline position");
         assert_eq!(
-            position.ancestors.iter().map(|decl| decl.name.as_ref()).collect::<Vec<_>>(),
+            position
+                .ancestors
+                .iter()
+                .map(|decl| decl.name.as_ref())
+                .collect::<Vec<_>>(),
             ["page.rs"]
         );
-        let siblings = position.siblings.iter().map(|decl| decl.name.as_ref()).collect::<Vec<_>>();
+        let siblings = position
+            .siblings
+            .iter()
+            .map(|decl| decl.name.as_ref())
+            .collect::<Vec<_>>();
         assert_eq!(siblings, ["Prose", "Page"], "outline order is source order");
         assert_eq!(position.index, Some(1));
     }
@@ -2999,7 +3376,9 @@ mod tests {
     fn an_enum_page_lists_its_variants_as_made_of() {
         let rows = present_rows();
         let outline = OutlineIndex::new(rows, true);
-        let children = outline.children(key(&present("page.rs:26::Prose"))).collect::<Vec<_>>();
+        let children = outline
+            .children(key(&present("page.rs:26::Prose")))
+            .collect::<Vec<_>>();
         let members = members(Some(DeclarationKind::Enum), &children, Some(&outline));
         assert_eq!(names(&members.made_of), ["Text"]);
         assert_eq!(
@@ -3018,14 +3397,54 @@ mod tests {
         let block = rich("b578f79d::Boxed");
         let boxed = rich("18207de4::Boxed");
         let rows = vec![
-            row(&RowSpec { label: marker.clone(), kind: DeclarationKind::Trait, signature: Some("pub trait Marker"), parent: None, doc: None, site: Some(("src/lib.rs", 26)) }),
-            row(&RowSpec { label: block.clone(), kind: DeclarationKind::Type, signature: Some("nominal(entity(family=x\"18207DE4\",variant=x\"D58F\",name=x\"426F786564\"))"), parent: None, doc: None, site: None }),
-            row(&RowSpec { label: boxed.clone(), kind: DeclarationKind::Struct, signature: Some("nominal(entity(family=x\"18207DE4\",variant=x\"D58F\",name=x\"426F786564\"))"), parent: None, doc: None, site: None }),
-            row(&RowSpec { label: rich("43a81a00::value"), kind: DeclarationKind::Field, signature: Some("pub value: i32"), parent: Some(&boxed), doc: None, site: Some(("src/lib.rs", 12)) }),
+            row(&RowSpec {
+                label: marker.clone(),
+                kind: DeclarationKind::Trait,
+                signature: Some("pub trait Marker"),
+                parent: None,
+                doc: None,
+                site: Some(("src/lib.rs", 26)),
+            }),
+            row(&RowSpec {
+                label: block.clone(),
+                kind: DeclarationKind::Type,
+                signature: Some(
+                    "nominal(entity(family=x\"18207DE4\",variant=x\"D58F\",name=x\"426F786564\"))",
+                ),
+                parent: None,
+                doc: None,
+                site: None,
+            }),
+            row(&RowSpec {
+                label: boxed.clone(),
+                kind: DeclarationKind::Struct,
+                signature: Some(
+                    "nominal(entity(family=x\"18207DE4\",variant=x\"D58F\",name=x\"426F786564\"))",
+                ),
+                parent: None,
+                doc: None,
+                site: None,
+            }),
+            row(&RowSpec {
+                label: rich("43a81a00::value"),
+                kind: DeclarationKind::Field,
+                signature: Some("pub value: i32"),
+                parent: Some(&boxed),
+                doc: None,
+                site: Some(("src/lib.rs", 12)),
+            }),
         ];
         let relations = vec![
-            GraphRelation::new(RowId::Symbol(key(&block)), RowId::Symbol(key(&marker)), SemanticLinkKind::TypeReference),
-            GraphRelation::new(RowId::Symbol(key(&block)), RowId::Symbol(key(&boxed)), SemanticLinkKind::TypeReference),
+            GraphRelation::new(
+                RowId::Symbol(key(&block)),
+                RowId::Symbol(key(&marker)),
+                SemanticLinkKind::TypeReference,
+            ),
+            GraphRelation::new(
+                RowId::Symbol(key(&block)),
+                RowId::Symbol(key(&boxed)),
+                SemanticLinkKind::TypeReference,
+            ),
         ];
         (rows, relations)
     }
@@ -3039,11 +3458,19 @@ mod tests {
             relations: Some(&relations),
             rich: None,
         };
-        let rose = rose(RowId::Symbol(key(&boxed)), Some(DeclarationKind::Struct), Some(hood), None);
+        let rose = rose(
+            RowId::Symbol(key(&boxed)),
+            Some(DeclarationKind::Struct),
+            Some(hood),
+            None,
+        );
         let up = rose.up.known().expect("typed up");
         let marker = up.first().expect("Boxed is Marker");
         assert_eq!(marker.decl.name.as_ref(), "Marker");
-        assert_eq!(marker.kind, RelationKind::Semantic(SemanticLinkKind::Implements));
+        assert_eq!(
+            marker.kind,
+            RelationKind::Semantic(SemanticLinkKind::Implements)
+        );
         assert_eq!(
             marker.provenance,
             Provenance::Derived {
@@ -3059,13 +3486,19 @@ mod tests {
         // The impl block's own edge to the struct is an incoming type use.
         let left = rose.left.known().expect("typed left");
         assert_eq!(left.len(), 1);
-        assert_eq!(left[0].kind, RelationKind::Semantic(SemanticLinkKind::TypeReference));
+        assert_eq!(
+            left[0].kind,
+            RelationKind::Semantic(SemanticLinkKind::TypeReference)
+        );
         let down = rose.down.known().expect("containment");
         assert_eq!(down[0].decl.name.as_ref(), "value");
 
         // The struct's own signature is compiler-encoded, and says so.
         let signature = signature_text(rows[2].signature.as_deref(), Language::Rust, None, None);
-        assert_eq!(signature.gap().map(|gap| gap.reason), Some(GapReason::Encoded));
+        assert_eq!(
+            signature.gap().map(|gap| gap.reason),
+            Some(GapReason::Encoded)
+        );
     }
 
     #[test]
@@ -3077,16 +3510,27 @@ mod tests {
             relations: Some(&relations),
             rich: None,
         };
-        let rose = rose(RowId::Symbol(key(&marker)), Some(DeclarationKind::Trait), Some(hood), None);
+        let rose = rose(
+            RowId::Symbol(key(&marker)),
+            Some(DeclarationKind::Trait),
+            Some(hood),
+            None,
+        );
         let implementors = rose.implemented_by.known().expect("implementors");
         assert_eq!(implementors.len(), 1);
         assert_eq!(implementors[0].decl.name.as_ref(), "Boxed");
         assert_eq!(implementors[0].decl.kind, Some(DeclarationKind::Type));
         assert!(matches!(
             implementors[0].provenance,
-            Provenance::Derived { via: Derivation::ImplBlock, .. }
+            Provenance::Derived {
+                via: Derivation::ImplBlock,
+                ..
+            }
         ));
-        assert!(rose.up.known().expect("typed up").is_empty(), "Marker has no supertrait");
+        assert!(
+            rose.up.known().expect("typed up").is_empty(),
+            "Marker has no supertrait"
+        );
 
         let reply = SurfaceReply::References {
             target: backend_library::ProductText::new(marker.clone()).expect("target"),
@@ -3114,7 +3558,11 @@ mod tests {
         let sites = sites.known().expect("reference sites");
         assert_eq!(sites.len(), 1);
         assert_eq!(sites[0].site.name.as_ref(), "Boxed");
-        assert_eq!(sites[0].site.kind, Some(DeclarationKind::Type), "resolved through the outline");
+        assert_eq!(
+            sites[0].site.kind,
+            Some(DeclarationKind::Type),
+            "resolved through the outline"
+        );
         assert_eq!(sites[0].confidence, SemanticConfidence::Compiler);
         assert_eq!(sites[0].scope, ReferenceScope::Local);
         let span = sites[0].span.known().expect("captured span");
@@ -3128,31 +3576,35 @@ mod tests {
         let record = crate::runtime::tests::registry_record("beta", "1.0.0");
         let mut yanked = crate::runtime::tests::registry_record("beta", "0.9.0");
         yanked.standing = RegistryReleaseStanding::Yanked;
-        yanked.downloads = RegistryDownloadCount::Unavailable(RegistryFactAvailability::NotRecorded);
+        yanked.downloads =
+            RegistryDownloadCount::Unavailable(RegistryFactAvailability::NotRecorded);
         let records = SurfaceReply::Package(Box::new([record.clone()]));
         let versions = SurfaceReply::PackageVersions(Box::new([yanked, record]));
-        let dependencies = SurfaceReply::Dependencies(backend_library::DependencyFacts::Known(Box::new([
-            backend_library::PackageDependencyRecord::new(
-                package.reference().clone(),
-                backend_library::PackageDependencyTarget::new(
-                    backend_library::RegistryEcosystem::Cargo,
-                    "serde",
-                    "^1.0",
-                    None,
-                )
-                .expect("target"),
-                backend_library::DependencyScope::Runtime,
-                false,
-                backend_library::DependencyEvidence {
-                    authority: backend_library::DependencyAuthority::RegistryMetadata,
-                    frontier: [7; 32],
-                    provenance: [8; 32],
-                },
-            ),
-        ])));
+        let dependencies =
+            SurfaceReply::Dependencies(backend_library::DependencyFacts::Known(Box::new([
+                backend_library::PackageDependencyRecord::new(
+                    package.reference().clone(),
+                    backend_library::PackageDependencyTarget::new(
+                        backend_library::RegistryEcosystem::Cargo,
+                        "serde",
+                        "^1.0",
+                        None,
+                    )
+                    .expect("target"),
+                    backend_library::DependencyScope::Runtime,
+                    false,
+                    backend_library::DependencyEvidence {
+                        authority: backend_library::DependencyAuthority::RegistryMetadata,
+                        frontier: [7; 32],
+                        provenance: [8; 32],
+                    },
+                ),
+            ])));
         let dependents = SurfaceReply::Dependents(backend_library::RegistryMetadata::NotRecorded(
-            backend_library::ProductText::new("the configured feed does not record dependency metadata")
-                .expect("reason"),
+            backend_library::ProductText::new(
+                "the configured feed does not record dependency metadata",
+            )
+            .expect("reason"),
         ));
         let dossier = package_dossier(&PackageInputs {
             package: &package,
@@ -3170,7 +3622,10 @@ mod tests {
         assert_eq!(head.standing.known(), Some(&Standing::Available));
         assert_eq!(head.downloads.known(), Some(&Downloads::Exact(42)));
         assert_eq!(head.bytes.known(), Some(&1_024));
-        assert_eq!(head.description.gap().map(|gap| gap.reason), Some(GapReason::NotServed));
+        assert_eq!(
+            head.description.gap().map(|gap| gap.reason),
+            Some(GapReason::NotServed)
+        );
         let versions = dossier.versions.known().expect("versions");
         let summary = versions
             .iter()
@@ -3178,17 +3633,32 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             summary,
-            [("0.9.0", Standing::Yanked, false), ("1.0.0", Standing::Available, true)]
+            [
+                ("0.9.0", Standing::Yanked, false),
+                ("1.0.0", Standing::Available, true)
+            ]
         );
         let dependencies = dossier.dependencies.known().expect("dependencies");
         assert_eq!(dependencies[0].name.as_ref(), "serde");
         assert_eq!(dependencies[0].requirement.as_ref(), "^1.0");
         assert_eq!(dependencies[0].scope, DependencyScope::Runtime);
-        let dependents = dossier.dependents.gap().expect("dependents are not recorded");
+        let dependents = dossier
+            .dependents
+            .gap()
+            .expect("dependents are not recorded");
         assert_eq!(dependents.reason, GapReason::NotRecorded);
-        assert_eq!(dependents.detail.as_ref(), "the configured feed does not record dependency metadata");
-        assert_eq!(dossier.readme.gap().map(|gap| gap.reason), Some(GapReason::NotServed));
-        assert_eq!(dossier.outline.gap().map(|gap| gap.detail.as_ref()), Some("outline refused"));
+        assert_eq!(
+            dependents.detail.as_ref(),
+            "the configured feed does not record dependency metadata"
+        );
+        assert_eq!(
+            dossier.readme.gap().map(|gap| gap.reason),
+            Some(GapReason::NotServed)
+        );
+        assert_eq!(
+            dossier.outline.gap().map(|gap| gap.detail.as_ref()),
+            Some("outline refused")
+        );
     }
 
     #[test]
@@ -3233,13 +3703,18 @@ mod tests {
         let record = crate::runtime::tests::registry_record("beta", "1.0.0");
         let records = SurfaceReply::Package(Box::new([record.clone()]));
         let versions = SurfaceReply::PackageVersions(Box::new([record]));
-        let dependencies = SurfaceReply::Dependencies(backend_library::DependencyFacts::Unavailable(
-            backend_library::ProductText::new("dependency facts are unavailable because the package is not recorded")
+        let dependencies =
+            SurfaceReply::Dependencies(backend_library::DependencyFacts::Unavailable(
+                backend_library::ProductText::new(
+                    "dependency facts are unavailable because the package is not recorded",
+                )
                 .expect("reason"),
-        ));
+            ));
         let dependents = SurfaceReply::Dependents(backend_library::RegistryMetadata::NotRecorded(
-            backend_library::ProductText::new("the configured feed does not record dependency metadata")
-                .expect("reason"),
+            backend_library::ProductText::new(
+                "the configured feed does not record dependency metadata",
+            )
+            .expect("reason"),
         ));
         let local = LocalPackage {
             project: crate::core::LocalProjectId::new("beta").expect("project"),
@@ -3282,7 +3757,10 @@ mod tests {
             head.description.known().map(AsRef::as_ref),
             Some("A native Rust encoder and decoder.")
         );
-        assert_eq!(head.license.known().map(AsRef::as_ref), Some("MIT OR Apache-2.0"));
+        assert_eq!(
+            head.license.known().map(AsRef::as_ref),
+            Some("MIT OR Apache-2.0")
+        );
     }
 
     #[test]
@@ -3316,10 +3794,13 @@ mod tests {
         };
         let records = SurfaceReply::Package(Box::new([]));
         let versions = SurfaceReply::PackageVersions(Box::new([]));
-        let dependencies = SurfaceReply::Dependencies(backend_library::DependencyFacts::Unavailable(
-            backend_library::ProductText::new("dependency facts are unavailable because the package is not recorded")
+        let dependencies =
+            SurfaceReply::Dependencies(backend_library::DependencyFacts::Unavailable(
+                backend_library::ProductText::new(
+                    "dependency facts are unavailable because the package is not recorded",
+                )
                 .expect("reason"),
-        ));
+            ));
         let dependents = SurfaceReply::Dependents(backend_library::RegistryMetadata::NotRecorded(
             backend_library::ProductText::new("not recorded").expect("reason"),
         ));
@@ -3338,15 +3819,31 @@ mod tests {
         assert_eq!(head.name.as_ref(), "backend-present");
         assert_eq!(head.version.known().map(AsRef::as_ref), Some("0.3.0"));
         assert_eq!(head.license.known().map(AsRef::as_ref), Some("MIT"));
-        assert_eq!(head.downloads.gap().map(|gap| gap.reason), Some(GapReason::LocalProject));
-        assert_eq!(dossier.versions.gap().map(|gap| gap.reason), Some(GapReason::LocalProject));
-        assert_eq!(dossier.dependents.gap().map(|gap| gap.reason), Some(GapReason::LocalProject));
         assert_eq!(
-            dossier.dependencies.known().map(|deps| deps[0].name.as_ref()),
+            head.downloads.gap().map(|gap| gap.reason),
+            Some(GapReason::LocalProject)
+        );
+        assert_eq!(
+            dossier.versions.gap().map(|gap| gap.reason),
+            Some(GapReason::LocalProject)
+        );
+        assert_eq!(
+            dossier.dependents.gap().map(|gap| gap.reason),
+            Some(GapReason::LocalProject)
+        );
+        assert_eq!(
+            dossier
+                .dependencies
+                .known()
+                .map(|deps| deps[0].name.as_ref()),
             Some("backend-library")
         );
         let tree = dossier.outline.known().expect("mosaic tree");
-        let modules = tree.roots.iter().map(|node| node.decl.name.as_ref()).collect::<Vec<_>>();
+        let modules = tree
+            .roots
+            .iter()
+            .map(|node| node.decl.name.as_ref())
+            .collect::<Vec<_>>();
         assert_eq!(modules, ["identity.rs", "page.rs"]);
         let page_module = &tree.roots[1];
         let items = page_module
@@ -3356,7 +3853,10 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             items,
-            [("Prose", Some(DeclarationKind::Enum)), ("Page", Some(DeclarationKind::Struct))]
+            [
+                ("Prose", Some(DeclarationKind::Enum)),
+                ("Page", Some(DeclarationKind::Struct))
+            ]
         );
         assert_eq!(tree.count(), 11);
         assert!(matches!(
@@ -3489,7 +3989,10 @@ mod tests {
             dossier.record.gap().map(|gap| gap.reason),
             Some(GapReason::LocalProject)
         );
-        let dependencies = dossier.dependencies.gap().expect("unavailable dependencies");
+        let dependencies = dossier
+            .dependencies
+            .gap()
+            .expect("unavailable dependencies");
         assert_eq!(dependencies.reason, GapReason::Unavailable);
         assert_eq!(dependencies.detail.as_ref(), reason);
         assert!(matches!(
@@ -3501,11 +4004,38 @@ mod tests {
     #[test]
     fn search_rows_keep_producer_order_and_say_why_each_matched() {
         let rows = vec![
-            row(&RowSpec { label: present("record.rs:91::from_row"), kind: DeclarationKind::Method, signature: Some("pub fn from_row(row: &Row) -> Self"), parent: None, doc: Some("Lowers one engine row into a result record."), site: Some(("record.rs", 91)) }),
-            row(&RowSpec { label: present("drive.rs:116::Engine"), kind: DeclarationKind::Trait, signature: Some("pub trait Engine"), parent: None, doc: Some("Whatever a surface talks to in order to read an admitted reply."), site: Some(("drive.rs", 116)) }),
-            row(&RowSpec { label: present("drive.rs:200::answer"), kind: DeclarationKind::Function, signature: Some("pub fn answer(engine: &mut dyn Engine) -> Answer"), parent: None, doc: None, site: Some(("drive.rs", 200)) }),
+            row(&RowSpec {
+                label: present("record.rs:91::from_row"),
+                kind: DeclarationKind::Method,
+                signature: Some("pub fn from_row(row: &Row) -> Self"),
+                parent: None,
+                doc: Some("Lowers one engine row into a result record."),
+                site: Some(("record.rs", 91)),
+            }),
+            row(&RowSpec {
+                label: present("drive.rs:116::Engine"),
+                kind: DeclarationKind::Trait,
+                signature: Some("pub trait Engine"),
+                parent: None,
+                doc: Some("Whatever a surface talks to in order to read an admitted reply."),
+                site: Some(("drive.rs", 116)),
+            }),
+            row(&RowSpec {
+                label: present("drive.rs:200::answer"),
+                kind: DeclarationKind::Function,
+                signature: Some("pub fn answer(engine: &mut dyn Engine) -> Answer"),
+                parent: None,
+                doc: None,
+                site: Some(("drive.rs", 200)),
+            }),
         ];
-        let page = search_rows("engine", &rows, &[backend_library::Coverage::Complete], None, 0);
+        let page = search_rows(
+            "engine",
+            &rows,
+            &[backend_library::Coverage::Complete],
+            None,
+            0,
+        );
         let summary = page
             .rows
             .iter()
@@ -3519,9 +4049,15 @@ mod tests {
                 (2, "answer", MatchReason::Signature),
             ]
         );
-        assert_eq!(page.rows[1].snippet.as_deref(), Some("Whatever a surface talks to in order to read an admitted reply."));
+        assert_eq!(
+            page.rows[1].snippet.as_deref(),
+            Some("Whatever a surface talks to in order to read an admitted reply.")
+        );
         assert_eq!(page.rows[1].package.as_deref(), Some(PRESENT));
-        assert_eq!(page.rows[1].score.gap().map(|gap| gap.reason), Some(GapReason::NotServed));
+        assert_eq!(
+            page.rows[1].score.gap().map(|gap| gap.reason),
+            Some(GapReason::NotServed)
+        );
         assert!(page.next.is_none());
     }
 
@@ -3552,7 +4088,14 @@ mod tests {
             }),
             scope: ReferenceScope::Local,
         }]));
-        let view = source_view(&coordinate, &document, Some(file), Some("/fixture/page.rs"), &uses, Some(&outline));
+        let view = source_view(
+            &coordinate,
+            &document,
+            Some(file),
+            Some("/fixture/page.rs"),
+            &uses,
+            Some(&outline),
+        );
         let text = view.text.known().expect("source text");
         assert_eq!(text.origin, SourceOrigin::LocalFile);
         assert_eq!(text.first_line(), 1);
@@ -3567,22 +4110,34 @@ mod tests {
                 bytes: ByteSpan::new(verified_start, verified_end).expect("verified range"),
             }
         );
-        assert_eq!(view.declaration.known(), Some(&LineSpan { first: 3, last: 5 }));
+        assert_eq!(
+            view.declaration.known(),
+            Some(&LineSpan { first: 3, last: 5 })
+        );
         assert_eq!(view.file.known().map(AsRef::as_ref), Some("page.rs"));
-        assert_eq!(view.editor_path.known().map(AsRef::as_ref), Some("/fixture/page.rs"));
+        assert_eq!(
+            view.editor_path.known().map(AsRef::as_ref),
+            Some("/fixture/page.rs")
+        );
         let linked = view
             .identifiers
             .known()
             .expect("identifiers")
             .iter()
-            .map(|span| (&text.text()[span.span.range()], span.link.target.as_str().to_owned()))
+            .map(|span| {
+                (
+                    &text.text()[span.span.range()],
+                    span.link.target.as_str().to_owned(),
+                )
+            })
             .collect::<Vec<_>>();
-        assert!(view
-            .identifiers
-            .known()
-            .expect("identifiers")
-            .windows(2)
-            .all(|pair| pair[0].span.end <= pair[1].span.start));
+        assert!(
+            view.identifiers
+                .known()
+                .expect("identifiers")
+                .windows(2)
+                .all(|pair| pair[0].span.end <= pair[1].span.start)
+        );
         assert_eq!(
             linked,
             [
@@ -3596,12 +4151,22 @@ mod tests {
 
         // A file that no longer matches the excerpt is not trusted.
         let stale = "// edited since indexing\n";
-        let view = source_view(&coordinate, &document, Some(stale), Some("/fixture/page.rs"), &Known::Known(Arc::from([])), Some(&outline));
+        let view = source_view(
+            &coordinate,
+            &document,
+            Some(stale),
+            Some("/fixture/page.rs"),
+            &Known::Known(Arc::from([])),
+            Some(&outline),
+        );
         let text = view.text.known().expect("excerpt text");
         assert_eq!(text.origin, SourceOrigin::Excerpt);
         assert!(view.editor_path.known().is_none());
         assert_eq!(text.first_line(), 3);
-        assert_eq!(view.uses.gap().map(|gap| gap.reason), Some(GapReason::NotServed));
+        assert_eq!(
+            view.uses.gap().map(|gap| gap.reason),
+            Some(GapReason::NotServed)
+        );
     }
 
     #[test]
@@ -3615,8 +4180,18 @@ mod tests {
             "pub fn render() {\n}",
         );
         let coordinate = SymbolRef::new(&label).expect("coordinate");
-        let view = source_view(&coordinate, &document, None, None, &Known::Known(Arc::from([])), None);
-        let gap = view.text.gap().expect("overflow has no unique source-row identity");
+        let view = source_view(
+            &coordinate,
+            &document,
+            None,
+            None,
+            &Known::Known(Arc::from([])),
+            None,
+        );
+        let gap = view
+            .text
+            .gap()
+            .expect("overflow has no unique source-row identity");
         assert_eq!(gap.reason, GapReason::Unavailable);
         assert!(gap.detail.contains("line numbers"));
     }
@@ -3625,7 +4200,11 @@ mod tests {
     fn health_keeps_lane_reasons_and_ingest_counts() {
         let root = view_state_root(&[]);
         let report = HealthReport::from_admitted_parts(
-            backend_library::RevisionReceipt::new(root, backend_library::Cursor::at(root, 1), object_version(b"fixture")),
+            backend_library::RevisionReceipt::new(
+                root,
+                backend_library::Cursor::at(root, 1),
+                object_version(b"fixture"),
+            ),
             basis(),
             Box::new([
                 backend_library::Coverage::Complete,
@@ -3643,7 +4222,11 @@ mod tests {
                 22,
                 1,
                 1_269,
-                vec![backend_library::LanguageRows::new(backend_library::SourceLanguage::Rust, 22, 1_269)],
+                vec![backend_library::LanguageRows::new(
+                    backend_library::SourceLanguage::Rust,
+                    22,
+                    1_269,
+                )],
                 Vec::new(),
             )
             .expect("progress"),
@@ -3660,7 +4243,9 @@ mod tests {
         assert_eq!(semantic.name(), "semantic");
         assert!(matches!(
             semantic.state(),
-            backend_present::LaneState::Unavailable { reason: backend_library::Reason::Unconfigured }
+            backend_present::LaneState::Unavailable {
+                reason: backend_library::Reason::Unconfigured
+            }
         ));
         assert!(health.ready_capabilities.is_empty());
         assert!(!health.missing_capabilities.is_empty());
@@ -3696,7 +4281,11 @@ mod tests {
                     .entries
                     .iter()
                     .map(|entry| {
-                        format!("{}: {}", entry.subject, DocFragment::plain_text(&entry.body))
+                        format!(
+                            "{}: {}",
+                            entry.subject,
+                            DocFragment::plain_text(&entry.body)
+                        )
                     })
                     .collect::<Vec<_>>();
                 format!(
@@ -3732,8 +4321,22 @@ mod tests {
             }
         }
         let rows = vec![
-            row(&RowSpec { label: module.clone(), kind: DeclarationKind::Module, signature: None, parent: None, doc: None, site: Some(("service.rs", 1)) }),
-            row(&spec(service.clone(), DeclarationKind::Trait, "pub trait Service", &module, "A contract.", 3)),
+            row(&RowSpec {
+                label: module.clone(),
+                kind: DeclarationKind::Module,
+                signature: None,
+                parent: None,
+                doc: None,
+                site: Some(("service.rs", 1)),
+            }),
+            row(&spec(
+                service.clone(),
+                DeclarationKind::Trait,
+                "pub trait Service",
+                &module,
+                "A contract.",
+                3,
+            )),
             row(&spec(
                 present("service.rs:9::execute"),
                 DeclarationKind::Method,
@@ -3758,7 +4361,14 @@ mod tests {
                 deprecation: Fact::Present(Deprecation::new(Some("2.0.0"), Some("use `execute`"))),
                 obligation: Fact::Present(Obligation::Provided),
             }),
-            row(&spec(present("service.rs:20::unread"), DeclarationKind::Function, "fn unread()", &module, "Never looked at.", 20)),
+            row(&spec(
+                present("service.rs:20::unread"),
+                DeclarationKind::Function,
+                "fn unread()",
+                &module,
+                "Never looked at.",
+                20,
+            )),
         ];
         let outline = OutlineIndex::new(rows.clone(), true);
         let coordinate = SymbolRef::new(&service).expect("coordinate");
@@ -3787,7 +4397,10 @@ mod tests {
         });
 
         assert_eq!(
-            page.identity.facts.deprecated().and_then(|notice| notice.note.as_deref()),
+            page.identity
+                .facts
+                .deprecated()
+                .and_then(|notice| notice.note.as_deref()),
             Some("the old contract")
         );
         let members = page.members.known().expect("members");
@@ -3818,7 +4431,11 @@ mod tests {
             [r#"errors "Errors" body "Fails when stopped." entries []"#]
         );
         let describe = member("describe");
-        let notice = describe.decl.facts.deprecated().expect("describe is deprecated");
+        let notice = describe
+            .decl
+            .facts
+            .deprecated()
+            .expect("describe is deprecated");
         assert_eq!(notice.since.as_deref(), Some("2.0.0"));
         assert_eq!(notice.note.as_deref(), Some("use `execute`"));
         assert_eq!(

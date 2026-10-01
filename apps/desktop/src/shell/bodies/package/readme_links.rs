@@ -659,7 +659,8 @@ mod tests {
             .decl
             .coordinate
             .clone();
-        let source: Arc<str> = Arc::from("[first](outline/struct.Outline.html) [second](outline/struct.Outline.html)");
+        let source: Arc<str> =
+            Arc::from("[first](outline/struct.Outline.html) [second](outline/struct.Outline.html)");
         let links: Arc<[ReadmeLink]> = Arc::from([
             link("outline/struct.Outline.html", None, None),
             link("outline/struct.Outline.html", None, None),
@@ -674,11 +675,20 @@ mod tests {
                 kind: ReadmeExactKind::Rustdoc(symbol),
             }]),
         };
-        let prepared = Plan::build(source, Some(links), Some(Arc::from([])), Some(outline), Some(exact), package);
+        let prepared = Plan::build(
+            source,
+            Some(links),
+            Some(Arc::from([])),
+            Some(outline),
+            Some(exact),
+            package,
+        );
         assert!(matches!(prepared.row(0), Outcome::Route(Route::Symbol(_))));
         assert!(matches!(prepared.row(1), Outcome::Unavailable(_)));
-        assert!(matches!(prepared.destination("outline/struct.Outline.html"), Outcome::Unavailable(reason)
-            if reason.contains("different link targets")));
+        assert!(
+            matches!(prepared.destination("outline/struct.Outline.html"), Outcome::Unavailable(reason)
+            if reason.contains("different link targets"))
+        );
 
         let same = plan(
             vec![
@@ -687,7 +697,10 @@ mod tests {
             ],
             vec![],
         );
-        assert!(matches!(same.destination("https://example.test/help"), Outcome::External(_)));
+        assert!(matches!(
+            same.destination("https://example.test/help"),
+            Outcome::External(_)
+        ));
     }
 
     #[test]
