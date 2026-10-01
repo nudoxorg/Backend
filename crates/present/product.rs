@@ -1058,6 +1058,51 @@ fn session_view(reply: &SurfaceReply) -> ProductView {
                 )
             }
         },
+        SurfaceReply::CargoPackageSourceInventory(result) => match result {
+            backend_library::CargoPackageSourceInventoryResultV1::Listed(inventory) => {
+                let coverage = match inventory.coverage {
+                    backend_library::CargoPackageSourceInventoryCoverageV1::Complete => {
+                        "complete for supported regular source/document files; internal directories and links are excluded".to_owned()
+                    }
+                    backend_library::CargoPackageSourceInventoryCoverageV1::Truncated { limit } => {
+                        format!("truncated at {limit} paths; additional paths may exist")
+                    }
+                    backend_library::CargoPackageSourceInventoryCoverageV1::Partial { reason } => {
+                        format!("partial inventory ({reason:?}); additional paths may exist")
+                    }
+                };
+                let mut records = Vec::with_capacity(inventory.paths.len().saturating_add(1));
+                records.push(ProductRecord::new(
+                    format!(
+                        "{} · {} observed path(s)",
+                        inventory.package.as_str(),
+                        inventory.paths.len()
+                    ),
+                    None,
+                    vec![coverage],
+                ));
+                records.extend(inventory.paths.iter().map(|path| {
+                    ProductRecord::new(
+                        path.as_str(),
+                        Some(path.as_str().to_owned()),
+                        vec!["source-only address · revalidate before reading".to_owned()],
+                    )
+                }));
+                ProductView::assembled("cargo-source-inventory", records)
+            }
+            backend_library::CargoPackageSourceInventoryResultV1::Stale { .. } => {
+                ProductView::scalar(
+                    "cargo-source-inventory",
+                    "The Cargo source receipt is stale. Reload the package tree before listing files.",
+                )
+            }
+            backend_library::CargoPackageSourceInventoryResultV1::Unavailable {
+                reason, ..
+            } => ProductView::scalar(
+                "cargo-source-inventory",
+                format!("The owner could not list this source: {reason:?}."),
+            ),
+        },
         other => ProductView::scalar("surface", format!("{:?}", other.id())),
     }
 }

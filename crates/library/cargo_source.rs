@@ -21,6 +21,10 @@ pub const MAX_CARGO_SOURCE_DETAIL_BYTES: usize = 2_048;
 pub const MAX_CARGO_PACKAGE_SOURCE_FILE_BYTES: usize = 1024 * 1024;
 /// Maximum bytes in a package-relative source path.
 pub const MAX_CARGO_PACKAGE_SOURCE_PATH_BYTES: usize = 1_024;
+/// Maximum source addresses returned by one inventory read.
+pub const MAX_CARGO_PACKAGE_SOURCE_INVENTORY_PATHS: usize = 512;
+/// Maximum filesystem entries inspected by one inventory read.
+pub const MAX_CARGO_PACKAGE_SOURCE_INVENTORY_SCAN_ENTRIES: usize = 8_192;
 
 /// How Cargo names an admitted registry source.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -336,6 +340,133 @@ impl CargoPackageSourceFileResultV1 {
                     && !contents.as_bytes().contains(&0)
                     && blake3::hash(contents.as_bytes()).as_bytes() == content_digest
             }
+            Self::Stale { package } => {
+                CargoPackageSourceAuthorityV1::digest_from_package_reference(package).is_some()
+            }
+            Self::Unavailable { package, .. } => package.as_ref().is_none_or(|package| {
+                CargoPackageSourceAuthorityV1::digest_from_package_reference(package).is_some()
+            }),
+        }
+    }
+}
+
+/// Why a bounded package-relative source inventory is incomplete.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CargoPackageSourceInventoryGapV1 {
+    /// A directory has more direct entries than its bounded listing permits.
+    DirectoryEntryLimit,
+    /// The whole traversal reached its entry-count bound.
+    ScanEntryLimit,
+    /// The package tree is deeper than the supported traversal bound.
+    DepthLimit,
+    /// A path could not be represented by the canonical UTF-8 route type.
+    UnaddressablePath,
+    /// A directory changed or could not be opened without following links.
+    DirectoryUnavailable,
+}
+
+/// Whether the listed addresses cover every supported safe source file.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "coverage", content = "detail", rename_all = "kebab-case")]
+pub enum CargoPackageSourceInventoryCoverageV1 {
+    /// The complete set of supported, regular, UTF-8-addressable files was
+    /// enumerated. Internal build/VCS/config directories and links are
+    /// deliberately excluded.
+    Complete,
+    /// There were more paths than one reply admits; only the bounded prefix
+    /// is included and this fixed cap has no continuation cursor.
+    Truncated {
+        /// Maximum number of addresses in this inventory contract.
+        limit: u16,
+    },
+    /// Some paths could not be observed safely. The listed rows are only an
+    /// exact partial set, with no claim that omitted rows do not exist.
+    Partial {
+        /// The first bounded reason the traversal could not complete.
+        reason: CargoPackageSourceInventoryGapV1,
+    },
+}
+
+/// Bounded source and documentation addresses under an exact Cargo receipt.
+/// These paths are navigation hints only; they do not prove indexed content.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CargoPackageSourceInventoryV1 {
+    /// Exact source-qualified package route requested.
+    pub package: PackageReference,
+    /// Current Cargo authority revalidated by the owner.
+    pub authority: CargoPackageSourceAuthorityV1,
+    /// Sorted canonical relative file addresses, each requiring an individual
+    /// digest-checked read before its bytes are displayed.
+    pub paths: Box<[CargoPackageSourcePathV1]>,
+    /// Explicit completeness state of the bounded traversal.
+    pub coverage: CargoPackageSourceInventoryCoverageV1,
+}
+
+impl CargoPackageSourceInventoryV1 {
+    /// Validates route binding, path order, and explicit truncation shape.
+    #[must_use]
+    pub fn has_admissible_shape(&self) -> bool {
+        self.authority.matches_package_reference(&self.package)
+            && self.authority.has_admissible_shape()
+            && self.paths.len() <= MAX_CARGO_PACKAGE_SOURCE_INVENTORY_PATHS
+            && self
+                .paths
+                .iter()
+                .all(CargoPackageSourcePathV1::has_admissible_shape)
+            && self.paths.windows(2).all(|pair| pair[0] < pair[1])
+            && match self.coverage {
+                CargoPackageSourceInventoryCoverageV1::Complete
+                | CargoPackageSourceInventoryCoverageV1::Partial { .. } => true,
+                CargoPackageSourceInventoryCoverageV1::Truncated { limit } => {
+                    usize::from(limit) == MAX_CARGO_PACKAGE_SOURCE_INVENTORY_PATHS
+                        && self.paths.len() == MAX_CARGO_PACKAGE_SOURCE_INVENTORY_PATHS
+                }
+            }
+    }
+}
+
+/// Why an owner could not produce a package source inventory.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CargoPackageSourceInventoryFailureV1 {
+    /// The owner has no current Cargo metadata observation for this authority.
+    AuthorityUnavailable,
+    /// The Cargo metadata input set changed since the package was displayed.
+    StaleAuthority,
+    /// The exact Cargo row has no retained local root.
+    PackageRootUnavailable,
+    /// The owner could not hold or enumerate the exact package root.
+    DirectoryUnavailable,
+}
+
+/// Result of reading one bounded inventory under an exact source authority.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum CargoPackageSourceInventoryResultV1 {
+    /// Exact observed file addresses with explicit completeness.
+    Listed(CargoPackageSourceInventoryV1),
+    /// The authority changed between the route and current owner lookup.
+    Stale {
+        /// Exact source-qualified package reference requested.
+        package: PackageReference,
+    },
+    /// No inventory was returned; the failure remains typed.
+    Unavailable {
+        /// Exact source-qualified package reference when it was valid.
+        package: Option<PackageReference>,
+        /// Stable reason the source inventory could not answer.
+        reason: CargoPackageSourceInventoryFailureV1,
+    },
+}
+
+impl CargoPackageSourceInventoryResultV1 {
+    /// Validates the bounded result and any exact source route it carries.
+    #[must_use]
+    pub fn has_admissible_shape(&self) -> bool {
+        match self {
+            Self::Listed(inventory) => inventory.has_admissible_shape(),
             Self::Stale { package } => {
                 CargoPackageSourceAuthorityV1::digest_from_package_reference(package).is_some()
             }

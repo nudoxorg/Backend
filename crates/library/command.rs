@@ -157,6 +157,8 @@ pub enum CommandId {
     ProjectTree,
     /// Read one file under owner-revalidated Cargo package source authority.
     CargoPackageSourceFile,
+    /// Read bounded source-file addresses under an owner-revalidated Cargo package authority.
+    CargoPackageSourceInventory,
     /// Refresh the configured advisory sources.
     AdvisoryRefresh,
     /// Begin one owner-managed local package index job.

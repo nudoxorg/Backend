@@ -56,6 +56,7 @@ impl CommandSpec {
                 | CommandId::TreeClose
                 | CommandId::ProjectTree
                 | CommandId::CargoPackageSourceFile
+                | CommandId::CargoPackageSourceInventory
                 | CommandId::IndexStart
                 | CommandId::IndexAwait
                 | CommandId::IndexCancel
@@ -92,7 +93,7 @@ pub enum CommandDomain {
 }
 
 /// The closed registry in stable display order.
-pub const COMMANDS: [CommandSpec; 48] = [
+pub const COMMANDS: [CommandSpec; 49] = [
     CommandSpec {
         id: CommandId::Advisory,
         name: "advisory",
@@ -477,6 +478,14 @@ pub const COMMANDS: [CommandSpec; 48] = [
         mutation: CommandMutation::Read,
         domain: CommandDomain::Library,
     },
+    CommandSpec {
+        id: CommandId::CargoPackageSourceInventory,
+        name: "cargo-source-inventory",
+        title: "Cargo Source Inventory",
+        description: "List a bounded set of currently observed source and documentation paths under one exact Cargo package authority.",
+        mutation: CommandMutation::Read,
+        domain: CommandDomain::Library,
+    },
 ];
 
 /// Finds one registry row.
@@ -531,6 +540,7 @@ pub fn command_spec(id: CommandId) -> CommandSpec {
         CommandId::IndexCancel => 46,
         CommandId::IndexProgress => 47,
         CommandId::PackageGraphPage => 42,
+        CommandId::CargoPackageSourceInventory => 48,
     };
     COMMANDS[index]
 }

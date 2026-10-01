@@ -599,6 +599,9 @@ fn surface(invocation: &Invocation, id: CommandId) -> Result<SurfaceCommand, Fau
                     )
                 })?,
         },
+        CommandId::CargoPackageSourceInventory => SurfaceCommand::CargoPackageSourceInventory {
+            package: package(invocation, 0)?,
+        },
         CommandId::Owner => SurfaceCommand::Owner {
             owner: text(invocation, 0)?,
         },

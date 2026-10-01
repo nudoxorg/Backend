@@ -354,6 +354,7 @@ impl CommandGrammar {
             | CommandId::Revision
             | CommandId::ProjectTree
             | CommandId::CargoPackageSourceFile
+            | CommandId::CargoPackageSourceInventory
             | CommandId::AdvisoryRefresh
             | CommandId::IndexStart
             | CommandId::IndexAwait
@@ -1085,6 +1086,18 @@ pub const GRAMMARS: [CommandGrammar; 48] = [
         ],
         options: &[],
         when: "Use for a bounded source or documentation file when the owner can revalidate its exact Cargo source receipt.",
+    },
+    CommandGrammar {
+        name: "cargo-source-inventory",
+        tool: "backend.cargo_source_inventory",
+        aliases: &[],
+        positional: &[ArgumentSpec::required(
+            "package",
+            ArgumentKind::PackageReference,
+            "Source-qualified package reference copied from a current ProjectTree row.",
+        )],
+        options: &[],
+        when: "Use to list a bounded set of owner-observed source and documentation paths. Each address must be read separately; the inventory is not proof that a file is indexed.",
     },
     CommandGrammar {
         name: "index_start",
