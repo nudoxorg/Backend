@@ -11,9 +11,27 @@ use super::tree::{
     LockedInactiveCoverage, LockfileGraphCoverage, LockfileWorkspaceMembership, PackageOrigin,
     TreeEdge, TreeInput, TreeInputPackage, TreeSource,
 };
+use crate::{
+    CargoPackageSourceAuthorityFailureV1 as SourceAuthorityFailure,
+    CargoPackageSourceAuthorityStateV1 as SourceAuthorityState,
+    CargoPackageSourceAuthorityV1 as SourceAuthority,
+};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
+
+/// Largest Cargo metadata response accepted by the pure parser.
+pub const MAX_CARGO_METADATA_BYTES: usize = 64 * 1024 * 1024;
+/// Largest Cargo.lock document admitted by the lockfile-only parser.
+pub const MAX_CARGO_LOCKFILE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_CARGO_METADATA_STRING_BYTES: usize = 4 * 1024;
+const MAX_CARGO_METADATA_STRING_ARRAY: usize = 8 * 1024;
+const MAX_CARGO_TARGETS_PER_PACKAGE: usize = 256;
+const MAX_CARGO_RESOLVE_EDGES: usize = 1_000_000;
+const MAX_CARGO_RESOLVED_FEATURES: usize = 262_144;
+const MAX_CARGO_RESOLVED_FEATURE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_LOCKED_PACKAGES: usize = 20_000;
+const MAX_LOCKED_DEPENDENCIES_PER_PACKAGE: usize = 16_384;
 
 /// Why a reader could not produce a tree.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -39,6 +57,7 @@ fn required_string(value: &Value, key: &str, context: &str) -> Result<String, Ca
     let text = value
         .get(key)
         .and_then(Value::as_str)
+        .filter(|text| text.len() <= MAX_CARGO_METADATA_STRING_BYTES)
         .map(ToOwned::to_owned)
         .ok_or_else(|| CargoTreeError::Metadata(format!("{context} has no string {key}")))?;
     if text.is_empty() {
@@ -56,7 +75,12 @@ fn optional_string(
 ) -> Result<Option<String>, CargoTreeError> {
     match value.get(key) {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::String(text)) => Ok(Some(text.clone())),
+        Some(Value::String(text)) if text.len() <= MAX_CARGO_METADATA_STRING_BYTES => {
+            Ok(Some(text.clone()))
+        }
+        Some(Value::String(_)) => Err(CargoTreeError::Metadata(format!(
+            "{context} has an overlong {key}"
+        ))),
         Some(_) => Err(CargoTreeError::Metadata(format!(
             "{context} has a non-string {key}"
         ))),
@@ -80,12 +104,23 @@ fn required_string_array(
     key: &str,
     context: &str,
 ) -> Result<Vec<String>, CargoTreeError> {
-    required_array(value, key, context)?
+    let values = required_array(value, key, context)?;
+    if values.len() > MAX_CARGO_METADATA_STRING_ARRAY {
+        return Err(CargoTreeError::Metadata(format!(
+            "{context} has too many {key} entries"
+        )));
+    }
+    values
         .iter()
         .map(|item| {
-            item.as_str().map(ToOwned::to_owned).ok_or_else(|| {
-                CargoTreeError::Metadata(format!("{context} has a non-string {key} entry"))
-            })
+            item.as_str()
+                .filter(|text| text.len() <= MAX_CARGO_METADATA_STRING_BYTES)
+                .map(ToOwned::to_owned)
+                .ok_or_else(|| {
+                    CargoTreeError::Metadata(format!(
+                        "{context} has a non-string or overlong {key} entry"
+                    ))
+                })
         })
         .collect()
 }
@@ -135,6 +170,41 @@ fn package_identity(package: &TreeInputPackage) -> (String, String, Option<Strin
         package.version.clone(),
         package_source(package).map(ToOwned::to_owned),
     )
+}
+
+/// Hashes Cargo's exact metadata and lock response together with target and
+/// workspace identity. File bytes below package roots remain a separate read
+/// observation.
+fn metadata_observation_revision(
+    metadata: &[u8],
+    lockfile: Option<&str>,
+    target: &str,
+    workspace_root: &str,
+    stable_input_witness: Option<[u8; 32]>,
+) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.cargo-metadata-observation.v2\0");
+    for value in [workspace_root.as_bytes(), target.as_bytes()] {
+        hasher.update(&(value.len() as u64).to_le_bytes());
+        hasher.update(value);
+    }
+    hasher.update(&(metadata.len() as u64).to_le_bytes());
+    hasher.update(metadata);
+    if let Some(lockfile) = lockfile {
+        hasher.update(&[1]);
+        hasher.update(&(lockfile.len() as u64).to_le_bytes());
+        hasher.update(lockfile.as_bytes());
+    } else {
+        hasher.update(&[0]);
+    }
+    match stable_input_witness {
+        Some(witness) if witness != [0; 32] => {
+            hasher.update(&[1]);
+            hasher.update(&witness);
+        }
+        _ => hasher.update(&[0]),
+    }
+    *hasher.finalize().as_bytes()
 }
 
 #[cfg(test)]
@@ -1022,19 +1092,135 @@ pub fn metadata_input(
     host: &str,
     lockfile: Option<&str>,
 ) -> Result<TreeInput, CargoTreeError> {
+    metadata_input_observed(metadata, host, lockfile, None)
+}
+
+/// Parses one Cargo metadata result whose local manifest/configuration input
+/// set was observed unchanged immediately before and after the Cargo run.
+/// Only this owner-side entry point emits actionable source authority; the
+/// ordinary byte parser intentionally leaves it unavailable.
+pub fn metadata_input_with_stable_source_witness(
+    metadata: &[u8],
+    host: &str,
+    lockfile: Option<&str>,
+    stable_input_witness: [u8; 32],
+) -> Result<TreeInput, CargoTreeError> {
+    if stable_input_witness == [0; 32] {
+        return Err(CargoTreeError::Metadata(
+            "Cargo source input witness is empty".to_owned(),
+        ));
+    }
+    metadata_input_observed(metadata, host, lockfile, Some(stable_input_witness))
+}
+
+fn metadata_input_observed(
+    metadata: &[u8],
+    host: &str,
+    lockfile: Option<&str>,
+    stable_input_witness: Option<[u8; 32]>,
+) -> Result<TreeInput, CargoTreeError> {
+    if metadata.len() > MAX_CARGO_METADATA_BYTES {
+        return Err(CargoTreeError::Metadata(
+            "metadata exceeds the bounded input size".to_owned(),
+        ));
+    }
     let root: Value = serde_json::from_slice(metadata)
         .map_err(|error| CargoTreeError::Metadata(error.to_string()))?;
+    if host.is_empty() || host.len() > MAX_CARGO_METADATA_STRING_BYTES {
+        return Err(CargoTreeError::Metadata(
+            "Cargo effective target is empty or exceeds its limit".to_owned(),
+        ));
+    }
     let workspace_root = required_string(&root, "workspace_root", "metadata")?;
+    if !admitted_metadata_path(&workspace_root) {
+        return Err(CargoTreeError::Metadata(
+            "workspace_root is not a canonical absolute path".to_owned(),
+        ));
+    }
+    let source_revision = stable_input_witness.map(|witness| {
+        metadata_observation_revision(metadata, lockfile, host, &workspace_root, Some(witness))
+    });
+    let raw_members = required_array(&root, "workspace_members", "metadata")?;
+    if raw_members.len() > super::tree::MAX_TREE_PACKAGES {
+        return Err(CargoTreeError::Metadata(
+            "workspace_members exceeds the package limit".to_owned(),
+        ));
+    }
     let members = required_string_array(&root, "workspace_members", "metadata")?
         .into_iter()
         .collect::<BTreeSet<_>>();
-    let raw_members = required_array(&root, "workspace_members", "metadata")?;
     if members.len() != raw_members.len() {
         return Err(CargoTreeError::Metadata(
             "workspace_members contains duplicate package ids".to_owned(),
         ));
     }
+    let resolved_nodes = required_array(
+        root.get("resolve")
+            .ok_or_else(|| CargoTreeError::Metadata("no resolve graph".to_owned()))?,
+        "nodes",
+        "resolve graph",
+    )?;
+    if resolved_nodes.len() > super::tree::MAX_TREE_PACKAGES {
+        return Err(CargoTreeError::Metadata(
+            "resolve.nodes exceeds the package limit".to_owned(),
+        ));
+    }
+    let mut resolved_features = BTreeMap::<String, Vec<String>>::new();
+    let mut total_features = 0_usize;
+    let mut total_feature_bytes = 0_usize;
+    for node in resolved_nodes {
+        let id = required_string(node, "id", "a resolve node")?;
+        if let Some(features) = node.get("features") {
+            let feature_values = features.as_array().ok_or_else(|| {
+                CargoTreeError::Metadata(format!("resolve node {id} has no feature array"))
+            })?;
+            if feature_values.len() > MAX_CARGO_METADATA_STRING_ARRAY {
+                return Err(CargoTreeError::Metadata(format!(
+                    "resolve node {id} has too many features"
+                )));
+            }
+            total_features = total_features.saturating_add(feature_values.len());
+            if total_features > MAX_CARGO_RESOLVED_FEATURES {
+                return Err(CargoTreeError::Metadata(
+                    "resolved feature inventory exceeds its limit".to_owned(),
+                ));
+            }
+            let features = feature_values
+                .iter()
+                .map(|feature| {
+                    let feature = feature
+                        .as_str()
+                        .filter(|feature| {
+                            !feature.is_empty() && feature.len() <= MAX_CARGO_METADATA_STRING_BYTES
+                        })
+                        .ok_or_else(|| {
+                            CargoTreeError::Metadata(format!(
+                                "resolve node {id} has a malformed feature"
+                            ))
+                        })?;
+                    total_feature_bytes = total_feature_bytes.saturating_add(feature.len());
+                    if total_feature_bytes > MAX_CARGO_RESOLVED_FEATURE_BYTES {
+                        return Err(CargoTreeError::Metadata(
+                            "resolved feature bytes exceed their limit".to_owned(),
+                        ));
+                    }
+                    Ok(feature.to_owned())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if resolved_features.insert(id.clone(), features).is_some() {
+                return Err(CargoTreeError::Metadata(format!(
+                    "duplicate resolve node {id}"
+                )));
+            }
+        }
+    }
+
     let listed = required_array(&root, "packages", "metadata")?;
+    if listed.len() > super::tree::MAX_TREE_PACKAGES {
+        return Err(CargoTreeError::Metadata(
+            "packages exceeds the package limit".to_owned(),
+        ));
+    }
     let mut packages = Vec::with_capacity(listed.len());
     let mut package_ids = BTreeSet::new();
     for package in listed {
@@ -1047,7 +1233,11 @@ pub fn metadata_input(
         let member = members.contains(&id);
         let source = match package.get("source") {
             Some(Value::Null) => None,
-            Some(Value::String(source)) if !source.is_empty() => Some(source.as_str()),
+            Some(Value::String(source))
+                if !source.is_empty() && source.len() <= MAX_CARGO_METADATA_STRING_BYTES =>
+            {
+                Some(source.as_str())
+            }
             _ => {
                 return Err(CargoTreeError::Metadata(format!(
                     "{id} has no valid source field"
@@ -1055,7 +1245,17 @@ pub fn metadata_input(
             }
         };
         let manifest = required_string(package, "manifest_path", &id)?;
+        if !admitted_metadata_path(&manifest) {
+            return Err(CargoTreeError::Metadata(format!(
+                "{id} has a noncanonical manifest_path"
+            )));
+        }
         let targets = required_array(package, "targets", &id)?;
+        if targets.len() > MAX_CARGO_TARGETS_PER_PACKAGE {
+            return Err(CargoTreeError::Metadata(format!(
+                "{id} exceeds the target limit"
+            )));
+        }
         let mut has_bin = false;
         for target in targets {
             let kinds = required_string_array(target, "kind", "a target")?;
@@ -1066,31 +1266,48 @@ pub fn metadata_input(
             }
             has_bin |= kinds.iter().any(|kind| kind == "bin");
         }
-        let origin = if member {
-            None
-        } else {
-            Some(match source {
-                Some(source) => source_origin(source),
-                None => PackageOrigin::Vendored {
-                    path: Path::new(&manifest)
-                        .parent()
-                        .map(|directory| {
-                            directory
-                                .strip_prefix(&workspace_root)
-                                .map_or(directory, |relative| relative)
-                                .to_string_lossy()
-                                .into_owned()
-                        })
-                        .unwrap_or_default(),
-                },
-            })
-        };
+        let origin = Some(match source {
+            Some(source) => source_origin(source),
+            None => PackageOrigin::Vendored {
+                path: Path::new(&manifest)
+                    .parent()
+                    .and_then(|package_root| {
+                        SourceAuthority::vendored_display_path(
+                            package_root,
+                            Path::new(&workspace_root),
+                        )
+                    })
+                    .unwrap_or_default(),
+            },
+        });
         let name = required_string(package, "name", &id)?;
         let version = required_string(package, "version", &id)?;
         let license = optional_string(package, "license", &id)?;
         let description = optional_string(package, "description", &id)?;
         let categories = optional_string_array(package, "categories", &id)?;
         let keywords = optional_string_array(package, "keywords", &id)?;
+        let source_root = Path::new(&manifest).parent().map(Path::to_path_buf);
+        let source_authority = match (source_revision, resolved_features.get(&id)) {
+            (Some(source_revision), Some(features)) => SourceAuthority::from_metadata_observation(
+                &name,
+                &version,
+                &id,
+                source,
+                &manifest,
+                &workspace_root,
+                source_revision,
+                host,
+                features,
+            )
+            .map(SourceAuthorityState::Admitted)
+            .unwrap_or_else(SourceAuthorityState::Unavailable),
+            (None, _) => {
+                SourceAuthorityState::Unavailable(SourceAuthorityFailure::MissingSourceRevision)
+            }
+            (_, None) => {
+                SourceAuthorityState::Unavailable(SourceAuthorityFailure::MissingResolvedFeatures)
+            }
+        };
         packages.push(TreeInputPackage {
             name,
             version,
@@ -1098,6 +1315,8 @@ pub fn metadata_input(
             member,
             has_bin,
             origin,
+            source_root,
+            source_authority,
             license,
             description,
             categories,
@@ -1116,6 +1335,11 @@ pub fn metadata_input(
         "nodes",
         "resolve graph",
     )?;
+    if nodes.len() > super::tree::MAX_TREE_PACKAGES {
+        return Err(CargoTreeError::Metadata(
+            "resolve.nodes exceeds the package limit".to_owned(),
+        ));
+    }
     let mut node_ids = BTreeSet::new();
     for node in nodes {
         let id = required_string(node, "id", "a resolve node")?;
@@ -1138,9 +1362,17 @@ pub fn metadata_input(
     }
 
     let mut edges = Vec::new();
+    let mut edge_count = 0_usize;
     for node in nodes {
         let from = required_string(node, "id", "a resolve node")?;
-        for dependency in required_array(node, "deps", &format!("resolve node {from}"))? {
+        let dependencies = required_array(node, "deps", &format!("resolve node {from}"))?;
+        edge_count = edge_count.saturating_add(dependencies.len());
+        if edge_count > MAX_CARGO_RESOLVE_EDGES {
+            return Err(CargoTreeError::Metadata(
+                "resolved dependency edges exceed their limit".to_owned(),
+            ));
+        }
+        for dependency in dependencies {
             let to = required_string(dependency, "pkg", "a resolved dependency")?;
             if !package_ids.contains(&to) {
                 return Err(CargoTreeError::Metadata(format!(
@@ -1272,6 +1504,19 @@ pub fn metadata_input(
     })
 }
 
+fn admitted_metadata_path(value: &str) -> bool {
+    let path = Path::new(value);
+    path.is_absolute()
+        && !value.contains("//")
+        && !value.chars().any(char::is_control)
+        && !path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
+}
+
 struct Locked {
     row_index: usize,
     duplicate_identity: bool,
@@ -1282,6 +1527,11 @@ struct Locked {
 }
 
 fn locked_packages(lockfile: &str) -> Result<Vec<Locked>, CargoTreeError> {
+    if lockfile.len() > MAX_CARGO_LOCKFILE_BYTES {
+        return Err(CargoTreeError::Lockfile(
+            "Cargo.lock exceeds the bounded input size".to_owned(),
+        ));
+    }
     let document: toml::Value = lockfile
         .parse()
         .map_err(|error: toml::de::Error| CargoTreeError::Lockfile(error.to_string()))?;
@@ -1289,6 +1539,12 @@ fn locked_packages(lockfile: &str) -> Result<Vec<Locked>, CargoTreeError> {
         .get("package")
         .and_then(toml::Value::as_array)
         .ok_or_else(|| CargoTreeError::Lockfile("no [[package]] entries".to_owned()))?;
+    if listed.len() > MAX_LOCKED_PACKAGES {
+        return Err(CargoTreeError::Lockfile(
+            "Cargo.lock package inventory exceeds its limit".to_owned(),
+        ));
+    }
+    let mut total_dependencies = 0_usize;
     let packages = listed
         .iter()
         .enumerate()
@@ -1297,15 +1553,59 @@ fn locked_packages(lockfile: &str) -> Result<Vec<Locked>, CargoTreeError> {
                 package
                     .get(key)
                     .and_then(toml::Value::as_str)
+                    .filter(|value| {
+                        !value.is_empty() && value.len() <= MAX_CARGO_METADATA_STRING_BYTES
+                    })
                     .map(ToOwned::to_owned)
             };
             let source = match package.get("source") {
                 None => None,
-                Some(toml::Value::String(source)) => Some(source.clone()),
+                Some(toml::Value::String(source))
+                    if !source.is_empty() && source.len() <= MAX_CARGO_METADATA_STRING_BYTES =>
+                {
+                    Some(source.clone())
+                }
                 Some(_) => {
                     return Err(CargoTreeError::Lockfile(
                         "a package source is not a string".to_owned(),
                     ));
+                }
+            };
+            let dependencies = match package.get("dependencies") {
+                None => Vec::new(),
+                Some(dependencies) => {
+                    let dependencies = dependencies.as_array().ok_or_else(|| {
+                        CargoTreeError::Lockfile(
+                            "a package's dependencies are not an array".to_owned(),
+                        )
+                    })?;
+                    if dependencies.len() > MAX_LOCKED_DEPENDENCIES_PER_PACKAGE {
+                        return Err(CargoTreeError::Lockfile(
+                            "a package's dependency inventory exceeds its limit".to_owned(),
+                        ));
+                    }
+                    total_dependencies = total_dependencies
+                        .checked_add(dependencies.len())
+                        .filter(|count| *count <= MAX_CARGO_RESOLVE_EDGES)
+                        .ok_or_else(|| {
+                            CargoTreeError::Lockfile(
+                                "Cargo.lock dependency inventory exceeds its limit".to_owned(),
+                            )
+                        })?;
+                    dependencies
+                        .iter()
+                        .map(|dependency| {
+                            dependency
+                                .as_str()
+                                .filter(|text| text.len() <= MAX_CARGO_METADATA_STRING_BYTES)
+                                .map(ToOwned::to_owned)
+                                .ok_or_else(|| {
+                                    CargoTreeError::Lockfile(
+                                        "a dependency entry is not a bounded string".to_owned(),
+                                    )
+                                })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?
                 }
             };
             Ok(Locked {
@@ -1317,25 +1617,7 @@ fn locked_packages(lockfile: &str) -> Result<Vec<Locked>, CargoTreeError> {
                     CargoTreeError::Lockfile("a package has no version".to_owned())
                 })?,
                 source,
-                dependencies: match package.get("dependencies") {
-                    None => Vec::new(),
-                    Some(dependencies) => dependencies
-                        .as_array()
-                        .ok_or_else(|| {
-                            CargoTreeError::Lockfile(
-                                "a package's dependencies are not an array".to_owned(),
-                            )
-                        })?
-                        .iter()
-                        .map(|dependency| {
-                            dependency.as_str().map(ToOwned::to_owned).ok_or_else(|| {
-                                CargoTreeError::Lockfile(
-                                    "a dependency entry is not a string".to_owned(),
-                                )
-                            })
-                        })
-                        .collect::<Result<Vec<_>, _>>()?,
-                },
+                dependencies,
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -1381,6 +1663,19 @@ pub fn lockfile_input(
     _patched: &BTreeSet<String>,
     reason: &str,
 ) -> Result<TreeInput, CargoTreeError> {
+    if lockfile.len() > MAX_CARGO_LOCKFILE_BYTES {
+        return Err(CargoTreeError::Lockfile(
+            "Cargo.lock exceeds the bounded input size".to_owned(),
+        ));
+    }
+    if root.is_empty()
+        || root.len() > MAX_CARGO_METADATA_STRING_BYTES
+        || reason.len() > MAX_CARGO_METADATA_STRING_BYTES
+    {
+        return Err(CargoTreeError::Lockfile(
+            "Cargo lockfile root or reason exceeds its limit".to_owned(),
+        ));
+    }
     let locked = locked_packages(lockfile)?;
     let id = |package: &Locked| {
         let base = format!("{} {} {:?}", package.name, package.version, package.source);
@@ -1391,11 +1686,28 @@ pub fn lockfile_input(
         }
     };
     let mut by_name: BTreeMap<&str, Vec<&Locked>> = BTreeMap::new();
+    let mut by_name_version: BTreeMap<(&str, &str), Vec<&Locked>> = BTreeMap::new();
+    let mut by_name_source: BTreeMap<(&str, Option<&str>), Vec<&Locked>> = BTreeMap::new();
+    let mut by_name_version_source: BTreeMap<(&str, &str, &str), Vec<&Locked>> = BTreeMap::new();
     for package in &locked {
         by_name
             .entry(package.name.as_str())
             .or_default()
             .push(package);
+        by_name_version
+            .entry((package.name.as_str(), package.version.as_str()))
+            .or_default()
+            .push(package);
+        by_name_source
+            .entry((package.name.as_str(), package.source.as_deref()))
+            .or_default()
+            .push(package);
+        if let Some(source) = package.source.as_deref() {
+            by_name_version_source
+                .entry((package.name.as_str(), package.version.as_str(), source))
+                .or_default()
+                .push(package);
+        }
     }
     let packages = locked
         .iter()
@@ -1447,20 +1759,19 @@ pub fn lockfile_input(
                 unattributed_edges = unattributed_edges.saturating_add(1);
                 continue;
             }
-            let Some(candidates) = by_name.get(name) else {
+            let candidates = match (version, source_selector) {
+                (Some(version), Some(source)) => {
+                    by_name_version_source.get(&(name, version, source))
+                }
+                (Some(version), None) => by_name_version.get(&(name, version)),
+                (None, Some(source)) => by_name_source.get(&(name, Some(source))),
+                (None, None) => by_name.get(name),
+            };
+            let Some(candidates) = candidates else {
                 unattributed_edges = unattributed_edges.saturating_add(1);
                 continue;
             };
-            let matches = candidates
-                .iter()
-                .filter(|candidate| {
-                    version.is_none_or(|version| candidate.version == version)
-                        && source_selector
-                            .is_none_or(|source| candidate.source.as_deref() == Some(source))
-                })
-                .copied()
-                .collect::<Vec<_>>();
-            if let [target] = matches.as_slice() {
+            if let [target] = candidates.as_slice() {
                 edges.push(TreeEdge {
                     from: id(package),
                     to: id(target),

@@ -353,6 +353,7 @@ impl CommandGrammar {
             | CommandId::Health
             | CommandId::Revision
             | CommandId::ProjectTree
+            | CommandId::CargoPackageSourceFile
             | CommandId::AdvisoryRefresh
             | CommandId::IndexStart
             | CommandId::IndexAwait
@@ -468,7 +469,7 @@ const CURSOR: ArgumentSpec = ArgumentSpec::optional(
 );
 
 /// The calling convention of every registry row, in registry order.
-pub const GRAMMARS: [CommandGrammar; 47] = [
+pub const GRAMMARS: [CommandGrammar; 48] = [
     CommandGrammar {
         name: "advisory",
         tool: "backend.advisory",
@@ -1065,6 +1066,25 @@ pub const GRAMMARS: [CommandGrammar; 47] = [
             ),
         ],
         when: "Use for a package's exact dependency or dependent edges, with each source authority, ecosystem, resolver scope, version requirement, and selected graph snapshot preserved.",
+    },
+    CommandGrammar {
+        name: "cargo-source-file",
+        tool: "backend.cargo_source_file",
+        aliases: &[],
+        positional: &[
+            ArgumentSpec::required(
+                "package",
+                ArgumentKind::PackageReference,
+                "Source-qualified package reference copied from a current ProjectTree row.",
+            ),
+            ArgumentSpec::required(
+                "path",
+                ArgumentKind::Text,
+                "Slash-separated package-relative source or documentation path.",
+            ),
+        ],
+        options: &[],
+        when: "Use for a bounded source or documentation file when the owner can revalidate its exact Cargo source receipt.",
     },
     CommandGrammar {
         name: "index_start",

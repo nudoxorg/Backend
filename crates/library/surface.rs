@@ -998,6 +998,14 @@ pub enum SurfaceCommand {
         /// Absolute project directory (any directory inside the workspace).
         root: ProductText,
     },
+    /// Read one bounded UTF-8 file under a currently revalidated Cargo
+    /// package source root. The request carries no filesystem path.
+    CargoPackageSourceFile {
+        /// Exact source-qualified package reference from a current tree row.
+        package: PackageReference,
+        /// Canonical package-relative path.
+        path: crate::CargoPackageSourcePathV1,
+    },
     /// Start indexing one local project without waiting for compilation.
     IndexStart {
         /// Local project directory or pinned package coordinate.
@@ -1062,6 +1070,7 @@ impl SurfaceCommand {
             Self::TreeOpen { .. } => CommandId::TreeOpen,
             Self::TreeClose { .. } => CommandId::TreeClose,
             Self::ProjectTree { .. } => CommandId::ProjectTree,
+            Self::CargoPackageSourceFile { .. } => CommandId::CargoPackageSourceFile,
             Self::IndexStart { .. } => CommandId::IndexStart,
             Self::IndexAwait { .. } => CommandId::IndexAwait,
             Self::IndexProgress { .. } => CommandId::IndexProgress,
@@ -1095,6 +1104,13 @@ impl SurfaceCommand {
             Self::PackageGraphPage { request } => request
                 .admit()
                 .map_err(|_| ProductAdmissionError::PackageGraphPage),
+            Self::CargoPackageSourceFile { package, path }
+                if crate::CargoPackageSourceAuthorityV1::digest_from_package_reference(package)
+                    .is_none()
+                    || !path.has_admissible_shape() =>
+            {
+                Err(ProductAdmissionError::CargoSourceShape)
+            }
             _ => Ok(()),
         }
     }
@@ -2366,6 +2382,8 @@ pub enum SurfaceReply {
     TreeClosed(u64),
     /// One project's dependency tree.
     ProjectTree(Box<crate::browse::ProjectTree>),
+    /// One source-file read under exact Cargo source authority.
+    CargoPackageSourceFile(crate::CargoPackageSourceFileResultV1),
     /// Each advisory source after a refresh.
     AdvisoryRefreshed(Box<[crate::browse::AdvisorySourceState]>),
 }
@@ -2413,6 +2431,7 @@ impl SurfaceReply {
             Self::TreeOpened(_) => CommandId::TreeOpen,
             Self::TreeClosed(_) => CommandId::TreeClose,
             Self::ProjectTree(_) => CommandId::ProjectTree,
+            Self::CargoPackageSourceFile(_) => CommandId::CargoPackageSourceFile,
             Self::AdvisoryRefreshed(_) => CommandId::AdvisoryRefresh,
         }
     }
@@ -2499,11 +2518,17 @@ impl SurfaceReply {
             Self::Projects(v) => v.len(),
             Self::Tree(v) => v.len(),
             Self::AdvisoryRefreshed(v) => v.len(),
+            Self::CargoPackageSourceFile(result) if !result.has_admissible_shape() => {
+                return Err(ProductAdmissionError::CargoSourceShape);
+            }
             Self::ProjectTree(tree)
                 if tree.packages.len() > crate::browse::MAX_TREE_PACKAGES
                     || tree.direct.len() > tree.packages.len() =>
             {
                 return Err(ProductAdmissionError::RowBound);
+            }
+            Self::ProjectTree(tree) if !tree.has_admissible_shape() => {
+                return Err(ProductAdmissionError::CargoSourceShape);
             }
             _ => 1,
         };
@@ -2712,6 +2737,9 @@ impl SurfaceReply {
             }),
             Self::TreeOpened(record) => tree_node_record_bound(record),
             Self::ProjectTree(tree) => serde_json::to_vec(tree).map_or(0, |bytes| bytes.len()),
+            Self::CargoPackageSourceFile(result) => {
+                serde_json::to_vec(result).map_or(0, |bytes| bytes.len())
+            }
             Self::AdvisoryRefreshed(states) => {
                 serde_json::to_vec(states).map_or(0, |bytes| bytes.len())
             }
@@ -2944,6 +2972,8 @@ pub enum ProductAdmissionError {
     ForgeAssociation,
     /// A package graph request or page is malformed or outside its bound.
     PackageGraphPage,
+    /// Cargo source package or relative file authority is malformed.
+    CargoSourceShape,
     /// An index progress page contains mismatched tickets or invalid sequence/profile facts.
     IndexProgressShape,
     /// An index cancellation terminal receipt belongs to a different ticket.
@@ -2983,6 +3013,7 @@ impl core::fmt::Display for ProductAdmissionError {
                 "registry-to-forge lineage is invalid or has a stale identity"
             }
             Self::PackageGraphPage => "package graph request or page is invalid",
+            Self::CargoSourceShape => "Cargo source authority or relative file path is invalid",
             Self::IndexProgressShape => {
                 "index progress page has inconsistent sequence or profile facts"
             }

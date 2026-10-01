@@ -20,6 +20,7 @@ pub mod browse;
 pub mod canonical;
 mod capability;
 mod cargo_profile;
+mod cargo_source;
 mod catalog;
 mod command;
 mod command_registry;
@@ -90,6 +91,15 @@ pub use cargo_profile::{
     RustCargoFeatureFactV1, RustCargoFeatureSelectionV1, RustCargoProfileRequestError,
     RustCargoProfileSelectionV1, RustCargoResolvedDependencyFactV1, RustCargoResolvedPackageFactV1,
     RustCargoTargetFactV1, RustCargoWorkspaceFactsV1, RustCargoWorkspacePackageFactV1,
+};
+pub use cargo_source::{
+    CARGO_PACKAGE_SOURCE_AUTHORITY_SCHEMA, CargoPackageRootIdentityV1,
+    CargoPackageSourceAuthorityFailureV1, CargoPackageSourceAuthorityStateV1,
+    CargoPackageSourceAuthorityV1, CargoPackageSourceFileResultV1, CargoPackageSourcePathV1,
+    CargoPackageSourceReadFailureV1, CargoPackageSourceSemanticStatusV1, CargoPackageSourceV1,
+    CargoRegistrySourceSchemeV1, MAX_CARGO_PACKAGE_SOURCE_FILE_BYTES,
+    MAX_CARGO_PACKAGE_SOURCE_PATH_BYTES, MAX_CARGO_SOURCE_COORDINATE_BYTES,
+    MAX_CARGO_SOURCE_DETAIL_BYTES,
 };
 pub use catalog::{Library, RankedSearchSnapshot};
 pub use command::ReferenceFact;

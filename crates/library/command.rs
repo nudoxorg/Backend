@@ -155,6 +155,8 @@ pub enum CommandId {
     TreeClose,
     /// Read a project's dependency tree.
     ProjectTree,
+    /// Read one file under owner-revalidated Cargo package source authority.
+    CargoPackageSourceFile,
     /// Refresh the configured advisory sources.
     AdvisoryRefresh,
     /// Begin one owner-managed local package index job.

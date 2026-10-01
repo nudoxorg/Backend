@@ -548,6 +548,7 @@ impl ProductState {
             ),
             // The command adapter answers these before product state is asked.
             SurfaceCommand::ProjectTree { .. }
+            | SurfaceCommand::CargoPackageSourceFile { .. }
             | SurfaceCommand::AdvisoryRefresh
             | SurfaceCommand::IndexStart { .. }
             | SurfaceCommand::IndexAwait { .. }

@@ -12,7 +12,10 @@ mod tree;
 #[cfg(test)]
 mod tests;
 
-pub use cargo::{CargoTreeError, lockfile_input, metadata_input};
+pub use cargo::{
+    CargoTreeError, MAX_CARGO_LOCKFILE_BYTES, MAX_CARGO_METADATA_BYTES, lockfile_input,
+    metadata_input, metadata_input_with_stable_source_witness,
+};
 pub use roles::{RoleEvidence, RoleId};
 pub use tree::{
     AdvisoryObserver, AdvisorySourceState, DirectDependency, Duplicate, DuplicateCopy,

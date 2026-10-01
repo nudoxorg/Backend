@@ -55,6 +55,7 @@ impl CommandSpec {
                 | CommandId::TreeOpen
                 | CommandId::TreeClose
                 | CommandId::ProjectTree
+                | CommandId::CargoPackageSourceFile
                 | CommandId::IndexStart
                 | CommandId::IndexAwait
                 | CommandId::IndexCancel
@@ -91,7 +92,7 @@ pub enum CommandDomain {
 }
 
 /// The closed registry in stable display order.
-pub const COMMANDS: [CommandSpec; 47] = [
+pub const COMMANDS: [CommandSpec; 48] = [
     CommandSpec {
         id: CommandId::Advisory,
         name: "advisory",
@@ -437,6 +438,14 @@ pub const COMMANDS: [CommandSpec; 47] = [
         domain: CommandDomain::Registry,
     },
     CommandSpec {
+        id: CommandId::CargoPackageSourceFile,
+        name: "cargo-source-file",
+        title: "Cargo Source File",
+        description: "Read one bounded source or documentation file from the exact Cargo package source currently observed by the owner.",
+        mutation: CommandMutation::Read,
+        domain: CommandDomain::Library,
+    },
+    CommandSpec {
         id: CommandId::IndexStart,
         name: "index_start",
         title: "Start Indexing",
@@ -516,10 +525,11 @@ pub fn command_spec(id: CommandId) -> CommandSpec {
         CommandId::ForgeReference => 39,
         CommandId::ProjectTree => 40,
         CommandId::AdvisoryRefresh => 41,
-        CommandId::IndexStart => 43,
-        CommandId::IndexAwait => 44,
-        CommandId::IndexCancel => 45,
-        CommandId::IndexProgress => 46,
+        CommandId::CargoPackageSourceFile => 43,
+        CommandId::IndexStart => 44,
+        CommandId::IndexAwait => 45,
+        CommandId::IndexCancel => 46,
+        CommandId::IndexProgress => 47,
         CommandId::PackageGraphPage => 42,
     };
     COMMANDS[index]
