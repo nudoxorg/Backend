@@ -3,19 +3,29 @@
 
 use super::state::{Shown, not_ready, shown};
 use super::{Ctx, Leaf, Pages};
-use crate::core::{ResourceAdmission, ReadHoldReason, ResourceTerminal, UnavailableReason, VersionedRoot, admit_resource};
-use crate::model::browse::{BrowseKey, BrowseValue, CompareModel, FindModel, TreeDestination, TreeModel, TreeRoleLinks};
-use crate::model::pages::{PageKey, PackageRef, SearchQuery, SymbolRef};
+use crate::core::{
+    ReadHoldReason, ResourceAdmission, ResourceTerminal, UnavailableReason, VersionedRoot,
+    admit_resource,
+};
+use crate::model::browse::{
+    BrowseKey, BrowseValue, CompareModel, FindModel, TreeDestination, TreeModel, TreeRoleLinks,
+};
+use crate::model::pages::{PackageRef, PageKey, SearchQuery, SymbolRef};
 use crate::navigation::{BrowseRoute, CompareSet, Intent, OrbitRoute, Route, View};
 use crate::shell::kit::{package_route, symbol_route, symbol_view_route};
 use crate::shell::reader::Reader;
-use facet::browse::{LibraryActions, LibraryModel, library};
 use facet::browse::library::ReleaseHandle;
+use facet::browse::{LibraryActions, LibraryModel, library};
 use gpui::{App, Context, SharedString, Window};
-use std::sync::Arc;
 use std::rc::Rc;
+use std::sync::Arc;
 
-pub(super) fn body(route: &BrowseRoute, store: &Pages, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Vec<Leaf> {
+pub(super) fn body(
+    route: &BrowseRoute,
+    store: &Pages,
+    ctx: &mut Ctx<'_>,
+    cx: &mut Context<Reader>,
+) -> Vec<Leaf> {
     let key = BrowseKey::from(route);
     let resource = store.browse(&key);
     // Find owns a live editing engine, including while a newly admitted
@@ -28,12 +38,16 @@ pub(super) fn body(route: &BrowseRoute, store: &Pages, ctx: &mut Ctx<'_>, cx: &m
         };
         let reading = admit_resource(&resource, ctx.links.snapshot(cx).key(), owner_serving);
         let value = match reading.current_value().or_else(|| reading.retained_value()) {
-            Some(BrowseValue::Find(value)) => Some(value.as_ref()), _ => None,
+            Some(BrowseValue::Find(value)) => Some(value.as_ref()),
+            _ => None,
         };
         let model = match value {
             Some(value) => Arc::clone(&value.prepared),
             None => Arc::new(facet::browse::find::Model {
-                query: match route { BrowseRoute::Find(query) => query.text.to_string().into(), _ => "".into() },
+                query: match route {
+                    BrowseRoute::Find(query) => query.text.to_string().into(),
+                    _ => "".into(),
+                },
                 candidates: vec![],
                 loose: vec![],
                 coverage: vec![],
@@ -48,22 +62,44 @@ pub(super) fn body(route: &BrowseRoute, store: &Pages, ctx: &mut Ctx<'_>, cx: &m
         let mut actions = find_actions(ctx, cx, &source);
         if matches!(resource.terminal(), ResourceTerminal::Fault(_)) {
             actions.retry = Some(Rc::new(move |window, cx| {
-                if let Err(reason) = source.failed_retry(cx) { find_action_notice(reason, window, cx); return; }
+                if let Err(reason) = source.failed_retry(cx) {
+                    find_action_notice(reason, window, cx);
+                    return;
+                }
                 source.links.retry(PageKey::Browse(source.key.clone()), cx);
             }));
         }
-        let leaves = vec![Leaf::new(facet::browse::find::find("find", model, actions, &ctx.measure).admission(admission).active(ctx.native_input_active && ctx.links.snapshot(cx).overlay().is_none()))];
+        let leaves = vec![Leaf::new(
+            facet::browse::find::find("find", model, actions, &ctx.measure)
+                .admission(admission)
+                .active(ctx.native_input_active && ctx.links.snapshot(cx).overlay().is_none()),
+        )];
         return leaves;
     }
     match shown(&resource) {
         Shown::Ready(BrowseValue::Tree(tree)) => {
             let model = library_model(tree, ctx);
-            vec![Leaf::new(library("library", model, LibraryActions { open_package: open_library_package_action(Arc::clone(tree), ctx) }, &ctx.measure, Rc::clone(&ctx.library_state), ctx.place_key, ctx.active))]
+            vec![Leaf::new(library(
+                "library",
+                model,
+                LibraryActions {
+                    open_package: open_library_package_action(Arc::clone(tree), ctx),
+                },
+                &ctx.measure,
+                Rc::clone(&ctx.library_state),
+                ctx.place_key,
+                ctx.active,
+            ))]
         }
         Shown::Ready(BrowseValue::Compare(compare)) => {
             let model = Arc::clone(&compare.prepared);
             let actions = compare_actions(route, ctx, cx);
-            vec![Leaf::new(facet::browse::compare::compare("compare", model, actions, &ctx.measure))]
+            vec![Leaf::new(facet::browse::compare::compare(
+                "compare",
+                model,
+                actions,
+                &ctx.measure,
+            ))]
         }
         other => {
             let (name, _) = route.here();
@@ -95,7 +131,9 @@ fn find_admission<T>(reading: &ResourceAdmission<'_, T>) -> facet::browse::find:
 
 fn query_input(text: &str) -> facet::browse::find::QueryInput {
     use facet::browse::find::QueryInput;
-    if text.trim().is_empty() { return QueryInput::Blank; }
+    if text.trim().is_empty() {
+        return QueryInput::Blank;
+    }
     match SearchQuery::new(text, SearchQuery::DEFAULT_LIMIT) {
         Ok(_) => QueryInput::Valid,
         Err(error) => QueryInput::Invalid(format!("This query was not admitted: {error}. Remove the invalid character to search; the current route has not changed.").into()),
@@ -124,76 +162,156 @@ struct FindActionSource {
 
 impl FindActionSource {
     fn new(route: &BrowseRoute, ctx: &Ctx<'_>, cx: &App) -> Self {
-        Self { links: ctx.links.clone(), route: route.clone(), key: route.into(), root: ctx.links.snapshot(cx).key() }
+        Self {
+            links: ctx.links.clone(),
+            route: route.clone(),
+            key: route.into(),
+            root: ctx.links.snapshot(cx).key(),
+        }
     }
 
-    fn resource<R>(&self, cx: &App, use_resource: impl FnOnce(&crate::core::Resource<BrowseValue>, VersionedRoot, bool) -> Result<R, &'static str>) -> Result<R, &'static str> {
+    fn resource<R>(
+        &self,
+        cx: &App,
+        use_resource: impl FnOnce(
+            &crate::core::Resource<BrowseValue>,
+            VersionedRoot,
+            bool,
+        ) -> Result<R, &'static str>,
+    ) -> Result<R, &'static str> {
         let store = self.links.store.read(cx);
         let snapshot = store.snapshot();
         if snapshot.route() != &Route::Orbit(OrbitRoute::Browse(self.route.clone()))
             || snapshot.overlay().is_some()
             || !snapshot.key().same_authority(self.root)
         {
-            return Err("Find changed before that action. Choose a result from the current reading.");
+            return Err(
+                "Find changed before that action. Choose a result from the current reading.",
+            );
         }
         let resource = store.pages().browse(&self.key);
         use_resource(&resource, snapshot.key(), store.owner_serving())
     }
 
-    fn current<R>(&self, cx: &App, member: impl FnOnce(&FindModel) -> Option<R>) -> Result<R, &'static str> {
+    fn current<R>(
+        &self,
+        cx: &App,
+        member: impl FnOnce(&FindModel) -> Option<R>,
+    ) -> Result<R, &'static str> {
         self.resource(cx, |resource, root, serving| {
-            let ResourceAdmission::Current(BrowseValue::Find(find)) = admit_resource(resource, root, serving) else {
-                return Err("Find results changed before that action. Wait for the current reading.");
+            let ResourceAdmission::Current(BrowseValue::Find(find)) =
+                admit_resource(resource, root, serving)
+            else {
+                return Err(
+                    "Find results changed before that action. Wait for the current reading.",
+                );
             };
-            let expected = match &self.route { BrowseRoute::Find(query) => query.text.as_ref(), BrowseRoute::FindHome => "", _ => return Err("Find is no longer the current page.") };
-            if find.prepared.query.as_ref() != expected { return Err("Find results belong to another query. Wait for the current reading."); }
+            let expected = match &self.route {
+                BrowseRoute::Find(query) => query.text.as_ref(),
+                BrowseRoute::FindHome => "",
+                _ => return Err("Find is no longer the current page."),
+            };
+            if find.prepared.query.as_ref() != expected {
+                return Err("Find results belong to another query. Wait for the current reading.");
+            }
             member(find).ok_or("That result is no longer in the current Find reading.")
         })
     }
 
     fn failed_retry(&self, cx: &App) -> Result<(), &'static str> {
         self.resource(cx, |resource, root, serving| {
-            if matches!(admit_resource(resource, root, serving), ResourceAdmission::Failed { terminal: ResourceTerminal::Fault(_), .. }) {
+            if matches!(
+                admit_resource(resource, root, serving),
+                ResourceAdmission::Failed {
+                    terminal: ResourceTerminal::Fault(_),
+                    ..
+                }
+            ) {
                 Ok(())
-            } else { Err("That Find failure is no longer current. Retry the failure now shown.") }
+            } else {
+                Err("That Find failure is no longer current. Retry the failure now shown.")
+            }
         })
     }
 }
 
 fn find_action_notice(reason: &str, window: &mut Window, cx: &mut App) {
-    facet::overlay::toast::show(facet::overlay::toast::Toast::new(reason).voice(facet::tokens::Voice::Coral), window, cx);
+    facet::overlay::toast::show(
+        facet::overlay::toast::Toast::new(reason).voice(facet::tokens::Voice::Coral),
+        window,
+        cx,
+    );
 }
 
-fn find_symbol_action(source: FindActionSource, code: bool) -> Rc<dyn Fn(SharedString, &mut Window, &mut App)> {
+fn find_symbol_action(
+    source: FindActionSource,
+    code: bool,
+) -> Rc<dyn Fn(SharedString, &mut Window, &mut App)> {
     Rc::new(move |key, window, cx| {
         let route = source.current(cx, |find| {
-            let present = find.prepared.loose.iter().chain(find.prepared.candidates.iter().flat_map(|candidate| candidate.answers.iter()))
+            let present = find
+                .prepared
+                .loose
+                .iter()
+                .chain(
+                    find.prepared
+                        .candidates
+                        .iter()
+                        .flat_map(|candidate| candidate.answers.iter()),
+                )
                 .any(|answer| answer.key == key && (!code || answer.source_available));
-            if !present { return None; }
+            if !present {
+                return None;
+            }
             let symbol = SymbolRef::new(&key).ok()?;
             let package = symbol.package()?;
-            if code { symbol_view_route(package.as_str(), &symbol, View::Code, None) } else { symbol_route(package.as_str(), &symbol) }
+            if code {
+                symbol_view_route(package.as_str(), &symbol, View::Code, None)
+            } else {
+                symbol_route(package.as_str(), &symbol)
+            }
         });
-        match route { Ok(route) => source.links.dispatch(Intent::Navigate(route), cx), Err(reason) => find_action_notice(reason, window, cx) }
+        match route {
+            Ok(route) => source.links.dispatch(Intent::Navigate(route), cx),
+            Err(reason) => find_action_notice(reason, window, cx),
+        }
     })
 }
 
-fn find_package_action(source: FindActionSource) -> Rc<dyn Fn(SharedString, &mut Window, &mut App)> {
+fn find_package_action(
+    source: FindActionSource,
+) -> Rc<dyn Fn(SharedString, &mut Window, &mut App)> {
     Rc::new(move |key, window, cx| {
         let route = source.current(cx, |find| {
-            find.prepared.candidates.iter().any(|candidate| candidate.key == key)
-                .then(|| PackageRef::parse(&key).ok().and_then(|package| package_route(&package))).flatten()
+            find.prepared
+                .candidates
+                .iter()
+                .any(|candidate| candidate.key == key)
+                .then(|| {
+                    PackageRef::parse(&key)
+                        .ok()
+                        .and_then(|package| package_route(&package))
+                })
+                .flatten()
         });
-        match route { Ok(route) => source.links.dispatch(Intent::Navigate(route), cx), Err(reason) => find_action_notice(reason, window, cx) }
+        match route {
+            Ok(route) => source.links.dispatch(Intent::Navigate(route), cx),
+            Err(reason) => find_action_notice(reason, window, cx),
+        }
     })
 }
 
-fn open_library_package_action(tree: Arc<TreeModel>, ctx: &Ctx<'_>) -> Rc<dyn Fn(ReleaseHandle, &mut gpui::Window, &mut gpui::App)> {
+fn open_library_package_action(
+    tree: Arc<TreeModel>,
+    ctx: &Ctx<'_>,
+) -> Rc<dyn Fn(ReleaseHandle, &mut gpui::Window, &mut gpui::App)> {
     let links = ctx.links.clone();
     let state = Rc::clone(&ctx.library_state);
     let place_key = ctx.place_key;
     Rc::new(move |handle, _, cx| {
-        let Some(package) = typed_library_release(&tree.links, &handle) else { return; };
+        let Some(package) = typed_library_release(&tree.links, &handle) else {
+            return;
+        };
         if let Some(route) = package_route(package) {
             state.borrow_mut().remember_open(handle, place_key);
             links.dispatch(Intent::Navigate(route), cx);
@@ -204,31 +322,53 @@ fn open_library_package_action(tree: Arc<TreeModel>, ctx: &Ctx<'_>) -> Rc<dyn Fn
 fn typed_library_release(roles: &[TreeRoleLinks], handle: &ReleaseHandle) -> Option<&PackageRef> {
     let (role, row, release) = handle.positions();
     let (role_key, row_key, release_key) = handle.keys();
-    let role = roles.get(role).filter(|role| role.role.as_str() == role_key)?;
-    let row = role.rows.get(row).filter(|row| row.key.as_ref() == row_key)?;
-    let release = row.releases.get(release).filter(|release| release.key.as_ref() == release_key)?;
+    let role = roles
+        .get(role)
+        .filter(|role| role.role.as_str() == role_key)?;
+    let row = role
+        .rows
+        .get(row)
+        .filter(|row| row.key.as_ref() == row_key)?;
+    let release = row
+        .releases
+        .get(release)
+        .filter(|release| release.key.as_ref() == release_key)?;
     match &release.destination {
         TreeDestination::Open(package) => Some(package),
         TreeDestination::Unavailable(_) => None,
     }
 }
 
-fn find_actions(ctx: &Ctx<'_>, cx: &mut Context<Reader>, source: &FindActionSource) -> facet::browse::find::Actions {
-    let expected = match &source.route { BrowseRoute::Find(query) => Some(query.clone()), _ => None };
+fn find_actions(
+    ctx: &Ctx<'_>,
+    cx: &mut Context<Reader>,
+    source: &FindActionSource,
+) -> facet::browse::find::Actions {
+    let expected = match &source.route {
+        BrowseRoute::Find(query) => Some(query.clone()),
+        _ => None,
+    };
     let refine_links = ctx.links.clone();
     let compare_source = source.clone();
     let compare_reader = cx.weak_entity();
     let reader = cx.weak_entity();
-    let acquire = Some(crate::shell::acquire::add_actions(&ctx.links, cx.entity_id()));
+    let acquire = Some(crate::shell::acquire::add_actions(
+        &ctx.links,
+        cx.entity_id(),
+    ));
     facet::browse::find::Actions {
         acquire,
         retry: None,
         scroll: ctx.reader_scroll.clone(),
         initial_held: ctx.find_held.clone(),
-        persist_held: Rc::new(move |held, cx| { let _ = reader.update(cx, |reader, cx| reader.set_find_held(held, cx)); }),
+        persist_held: Rc::new(move |held, cx| {
+            let _ = reader.update(cx, |reader, cx| reader.set_find_held(held, cx));
+        }),
         query_input: Rc::new(query_input),
         refine: Rc::new(move |text, cx| {
-            let query = if text.trim().is_empty() { None } else {
+            let query = if text.trim().is_empty() {
+                None
+            } else {
                 match SearchQuery::new(&text, SearchQuery::DEFAULT_LIMIT) {
                     Ok(query) => Some(query),
                     // The Find field exposes this same invalid-input state;
@@ -236,21 +376,46 @@ fn find_actions(ctx: &Ctx<'_>, cx: &mut Context<Reader>, source: &FindActionSour
                     Err(_) => return,
                 }
             };
-            refine_links.dispatch(Intent::RefineFind { expected: expected.clone(), query }, cx);
+            refine_links.dispatch(
+                Intent::RefineFind {
+                    expected: expected.clone(),
+                    query,
+                },
+                cx,
+            );
         }),
         symbol_routability: Rc::new(symbol_routability),
-        open_symbol: find_symbol_action(source.clone(), false), open_code: find_symbol_action(source.clone(), true), open_package: find_package_action(source.clone()),
+        open_symbol: find_symbol_action(source.clone(), false),
+        open_code: find_symbol_action(source.clone(), true),
+        open_package: find_package_action(source.clone()),
         compare: Rc::new(move |keys, window, cx| {
-            if !compare_reader.upgrade().is_some_and(|reader| reader.read(cx).holds_find_packages_at(&keys, compare_source.root)) {
-                find_action_notice("The held packages changed with the Find reading. Choose them again to compare.", window, cx);
+            if !compare_reader.upgrade().is_some_and(|reader| {
+                reader
+                    .read(cx)
+                    .holds_find_packages_at(&keys, compare_source.root)
+            }) {
+                find_action_notice(
+                    "The held packages changed with the Find reading. Choose them again to compare.",
+                    window,
+                    cx,
+                );
                 return;
             }
             let selection = compare_source.current(cx, |_| {
-                let packages = keys.iter().map(|key| PackageRef::parse(key)).collect::<Result<Vec<_>, _>>().ok()?;
+                let packages = keys
+                    .iter()
+                    .map(|key| PackageRef::parse(key))
+                    .collect::<Result<Vec<_>, _>>()
+                    .ok()?;
                 CompareSet::new(packages).ok()
             });
             match selection {
-                Ok(selection) => compare_source.links.dispatch(Intent::Navigate(Route::Orbit(OrbitRoute::Browse(BrowseRoute::Compare(selection)))), cx),
+                Ok(selection) => compare_source.links.dispatch(
+                    Intent::Navigate(Route::Orbit(OrbitRoute::Browse(BrowseRoute::Compare(
+                        selection,
+                    )))),
+                    cx,
+                ),
                 Err(reason) => find_action_notice(reason, window, cx),
             }
         }),
@@ -269,82 +434,175 @@ struct CompareActionSource {
 
 impl CompareActionSource {
     fn new(selection: &CompareSet, ctx: &Ctx<'_>, cx: &App) -> Self {
-        Self { links: ctx.links.clone(), selection: selection.clone(), root: ctx.links.snapshot(cx).key() }
+        Self {
+            links: ctx.links.clone(),
+            selection: selection.clone(),
+            root: ctx.links.snapshot(cx).key(),
+        }
     }
 
-    fn current<R>(&self, cx: &App, member: impl FnOnce(&CompareModel) -> Option<R>) -> Result<R, &'static str> {
+    fn current<R>(
+        &self,
+        cx: &App,
+        member: impl FnOnce(&CompareModel) -> Option<R>,
+    ) -> Result<R, &'static str> {
         let store = self.links.store.read(cx);
         let snapshot = store.snapshot();
-        if snapshot.route() != &Route::Orbit(OrbitRoute::Browse(BrowseRoute::Compare(self.selection.clone())))
+        if snapshot.route()
+            != &Route::Orbit(OrbitRoute::Browse(BrowseRoute::Compare(
+                self.selection.clone(),
+            )))
             || snapshot.overlay().is_some()
             || !snapshot.key().same_authority(self.root)
         {
             return Err("Compare changed before that action. Choose from the current reading.");
         }
-        let resource = store.pages().browse(&BrowseKey::Compare(self.selection.clone()));
+        let resource = store
+            .pages()
+            .browse(&BrowseKey::Compare(self.selection.clone()));
         let ResourceAdmission::Current(BrowseValue::Compare(compare)) =
-            admit_resource(&resource, snapshot.key(), store.owner_serving()) else {
-                return Err("Compare results changed before that action. Wait for the current reading.");
-            };
-        if !compare.packages.iter().map(|package| &package.package).eq(self.selection.packages())
+            admit_resource(&resource, snapshot.key(), store.owner_serving())
+        else {
+            return Err(
+                "Compare results changed before that action. Wait for the current reading.",
+            );
+        };
+        if !compare
+            .packages
+            .iter()
+            .map(|package| &package.package)
+            .eq(self.selection.packages())
             || compare.apis.len() != self.selection.packages().len()
-            || !compare.apis.iter().zip(self.selection.packages()).all(|(api, package)|
-                api.known().is_none_or(|api| &api.package == package))
-            || !compare.prepared.candidates.iter().map(|candidate| candidate.key.as_ref())
+            || !compare
+                .apis
+                .iter()
+                .zip(self.selection.packages())
+                .all(|(api, package)| api.known().is_none_or(|api| &api.package == package))
+            || !compare
+                .prepared
+                .candidates
+                .iter()
+                .map(|candidate| candidate.key.as_ref())
                 .eq(self.selection.packages().iter().map(PackageRef::as_str))
         {
-            return Err("Compare results belong to another package selection. Wait for the current reading.");
+            return Err(
+                "Compare results belong to another package selection. Wait for the current reading.",
+            );
         }
         member(compare).ok_or("That choice is no longer in the current Compare reading.")
     }
 }
 
-fn compare_package_action(source: CompareActionSource) -> Rc<dyn Fn(SharedString, &mut Window, &mut App)> {
+fn compare_package_action(
+    source: CompareActionSource,
+) -> Rc<dyn Fn(SharedString, &mut Window, &mut App)> {
     Rc::new(move |key, window, cx| {
         let route = source.current(cx, |compare| {
             let package = PackageRef::parse(&key).ok()?;
-            compare.packages.iter().any(|candidate| candidate.package == package).then(|| package_route(&package)).flatten()
+            compare
+                .packages
+                .iter()
+                .any(|candidate| candidate.package == package)
+                .then(|| package_route(&package))
+                .flatten()
         });
-        match route { Ok(route) => source.links.dispatch(Intent::Navigate(route), cx), Err(reason) => find_action_notice(reason, window, cx) }
+        match route {
+            Ok(route) => source.links.dispatch(Intent::Navigate(route), cx),
+            Err(reason) => find_action_notice(reason, window, cx),
+        }
     })
 }
 
-fn compare_symbol_action(source: CompareActionSource, code: bool) -> Rc<dyn Fn(SharedString, &mut Window, &mut App)> {
+fn compare_symbol_action(
+    source: CompareActionSource,
+    code: bool,
+) -> Rc<dyn Fn(SharedString, &mut Window, &mut App)> {
     Rc::new(move |key, window, cx| {
         let route = source.current(cx, |compare| {
             let symbol = SymbolRef::new(&key).ok()?;
             let package = symbol.package()?;
             let present = compare.prepared.candidates.iter().any(|candidate| {
-                candidate.key.as_ref() == package.as_str() && candidate.operations.as_ref().is_some_and(|operations| {
-                    operations.iter().any(|operation| operation.answer.key == key && (!code || operation.answer.source_available))
-                })
+                candidate.key.as_ref() == package.as_str()
+                    && candidate.operations.as_ref().is_some_and(|operations| {
+                        operations.iter().any(|operation| {
+                            operation.answer.key == key
+                                && (!code || operation.answer.source_available)
+                        })
+                    })
             });
-            if !present { return None; }
-            if code { symbol_view_route(package.as_str(), &symbol, View::Code, None) } else { symbol_route(package.as_str(), &symbol) }
+            if !present {
+                return None;
+            }
+            if code {
+                symbol_view_route(package.as_str(), &symbol, View::Code, None)
+            } else {
+                symbol_route(package.as_str(), &symbol)
+            }
         });
-        match route { Ok(route) => source.links.dispatch(Intent::Navigate(route), cx), Err(reason) => find_action_notice(reason, window, cx) }
+        match route {
+            Ok(route) => source.links.dispatch(Intent::Navigate(route), cx),
+            Err(reason) => find_action_notice(reason, window, cx),
+        }
     })
 }
 
-fn compare_actions(route: &BrowseRoute, ctx: &Ctx<'_>, cx: &mut Context<Reader>) -> facet::browse::compare::Actions {
-    let BrowseRoute::Compare(selection) = route else { unreachable!("Compare actions require a Compare route") };
+fn compare_actions(
+    route: &BrowseRoute,
+    ctx: &Ctx<'_>,
+    cx: &mut Context<Reader>,
+) -> facet::browse::compare::Actions {
+    let BrowseRoute::Compare(selection) = route else {
+        unreachable!("Compare actions require a Compare route")
+    };
     let source = CompareActionSource::new(selection, ctx, cx);
-    facet::browse::compare::Actions { active: ctx.native_input_active && source.current(cx, |_| Some(())).is_ok(), scroll: ctx.reader_scroll.clone(), open_package: compare_package_action(source.clone()), open_symbol: compare_symbol_action(source.clone(), false), open_code: compare_symbol_action(source, true),
-        remove_package: compare_remove_action(CompareActionSource::new(selection, ctx, cx), cx.weak_entity()),
+    facet::browse::compare::Actions {
+        active: ctx.native_input_active && source.current(cx, |_| Some(())).is_ok(),
+        scroll: ctx.reader_scroll.clone(),
+        open_package: compare_package_action(source.clone()),
+        open_symbol: compare_symbol_action(source.clone(), false),
+        open_code: compare_symbol_action(source, true),
+        remove_package: compare_remove_action(
+            CompareActionSource::new(selection, ctx, cx),
+            cx.weak_entity(),
+        ),
     }
 }
 
-fn compare_remove_action(source: CompareActionSource, reader: gpui::WeakEntity<Reader>) -> Rc<dyn Fn(SharedString, &mut Window, &mut App)> {
+fn compare_remove_action(
+    source: CompareActionSource,
+    reader: gpui::WeakEntity<Reader>,
+) -> Rc<dyn Fn(SharedString, &mut Window, &mut App)> {
     Rc::new(move |key, window, cx| {
         let next = source.current(cx, |compare| {
             let package = PackageRef::parse(&key).ok()?;
-            if !compare.packages.iter().any(|candidate| candidate.package == package) { return None; }
-            CompareSet::new(source.selection.packages().iter().filter(|candidate| *candidate != &package).cloned()).ok()
+            if !compare
+                .packages
+                .iter()
+                .any(|candidate| candidate.package == package)
+            {
+                return None;
+            }
+            CompareSet::new(
+                source
+                    .selection
+                    .packages()
+                    .iter()
+                    .filter(|candidate| *candidate != &package)
+                    .cloned(),
+            )
+            .ok()
         });
         match next {
             Ok(selection) => {
-                let _ = reader.update(cx, |reader, cx| reader.remove_find_held_package(&key, source.root, cx));
-                source.links.dispatch(Intent::Navigate(Route::Orbit(OrbitRoute::Browse(BrowseRoute::Compare(selection)))), cx);
+                let _ = reader.update(cx, |reader, cx| {
+                    reader.remove_find_held_package(&key, source.root, cx)
+                });
+                source.links.dispatch(
+                    Intent::Navigate(Route::Orbit(OrbitRoute::Browse(BrowseRoute::Compare(
+                        selection,
+                    )))),
+                    cx,
+                );
             }
             Err(reason) => find_action_notice(reason, window, cx),
         }
@@ -357,15 +615,25 @@ fn library_model(tree: &TreeModel, ctx: &mut Ctx<'_>) -> Arc<LibraryModel> {
     let model = &tree.prepared;
     ctx.say(model.name.clone());
     ctx.say(model.lede.clone());
-    if let Some(note) = &model.note { ctx.say(note.clone()); }
-    for alert in model.alerts.iter().take(8) { ctx.say(alert.title.clone()); }
-    for fact in &model.facts { ctx.say(fact.clone()); }
+    if let Some(note) = &model.note {
+        ctx.say(note.clone());
+    }
+    for alert in model.alerts.iter().take(8) {
+        ctx.say(alert.title.clone());
+    }
+    for fact in &model.facts {
+        ctx.say(fact.clone());
+    }
     for role in &model.roles {
         ctx.say(role.label.clone());
-        if let Some(serving) = &role.serving { ctx.say(serving.clone()); }
+        if let Some(serving) = &role.serving {
+            ctx.say(serving.clone());
+        }
         for row in role.rows.iter().take(6) {
             ctx.say(row.name.clone());
-            if let Some(rest) = &row.at_rest { ctx.say(rest.clone()); }
+            if let Some(rest) = &row.at_rest {
+                ctx.say(rest.clone());
+            }
         }
     }
     if let Some((heading, caption)) = &model.twice_heading {
