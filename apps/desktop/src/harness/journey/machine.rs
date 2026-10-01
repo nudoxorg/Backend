@@ -53,8 +53,8 @@ fn options() -> SessionOptions {
     SessionOptions { asset_source: std::sync::Arc::new(facet::icons::Assets), frame_ms: FRAME_MS }
 }
 
-/// Opens a production window over the user root `root` (created if absent,
-/// owner-only), exactly as `main` launches from Finder.
+/// Opens a production window over the app root beneath the private fixture
+/// `root`, exactly as `main` launches from Finder.
 ///
 /// # Errors
 /// Fonts, the workspace paths, the engine actor, or GPUI failing.
@@ -62,7 +62,8 @@ pub(super) fn open_production(root: &Path, size: (u32, u32), scale: u8) -> Resul
     facet::fonts::verify().map_err(err)?;
     super::super::private_dir(root).map_err(|error| format!("{}: {error}", root.display()))?;
     let root = root.canonicalize().map_err(|error| format!("{}: {error}", root.display()))?;
-    let paths = crate::host::paths::ambient_paths(&root).map_err(|error| format!("workspace paths under {}: {error}", root.display()))?;
+    let app_root = root.join("Nudox");
+    let paths = crate::host::paths::ambient_paths(&app_root).map_err(|error| format!("workspace paths under {}: {error}", app_root.display()))?;
     paths.initialize().map_err(|error| format!("initialize {}: {error}", root.display()))?;
     let mut boot = launch::prepare(Ok(paths), crate::host::owner::spawn);
     let owner = boot.owner.take();

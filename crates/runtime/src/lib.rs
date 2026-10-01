@@ -849,12 +849,21 @@ fn locald_executable() -> Result<PathBuf, RuntimeError> {
 }
 
 fn ensure_authority_secret(path: &Path) -> Result<(), RuntimeError> {
-    if path.exists() {
-        return validate_authority_secret(path);
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt as _;
+
+    match fs::symlink_metadata(path) {
+        Ok(_) => return validate_authority_secret(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(RuntimeError::Io(error)),
     }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(RuntimeError::Io)?;
-    }
+    let parent = path.parent().ok_or_else(|| {
+        RuntimeError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "authority credential needs a parent directory",
+        ))
+    })?;
+    backend_platform::durable::ensure_private_directory(parent).map_err(RuntimeError::Io)?;
     let mut bytes = [0_u8; 32];
     #[cfg(unix)]
     fs::File::open("/dev/urandom")
@@ -876,10 +885,17 @@ fn ensure_authority_secret(path: &Path) -> Result<(), RuntimeError> {
     options.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::fs::OpenOptionsExt as _;
         options.mode(0o600);
     }
     let mut file = options.open(&temporary).map_err(RuntimeError::Io)?;
+    #[cfg(unix)]
+    let staged = file
+        .set_permissions(fs::Permissions::from_mode(0o600))
+        .and_then(|()| file.write_all(&bytes))
+        .and_then(|()| file.sync_all())
+        .map_err(RuntimeError::Io);
+    #[cfg(not(unix))]
     let staged = file
         .write_all(&bytes)
         .and_then(|()| file.sync_all())
@@ -897,7 +913,10 @@ fn ensure_authority_secret(path: &Path) -> Result<(), RuntimeError> {
     let published = fs::hard_link(&temporary, path);
     let _ = fs::remove_file(&temporary);
     match published {
-        Ok(()) => validate_authority_secret(path),
+        Ok(()) => {
+            backend_platform::durable::sync_parent(path).map_err(RuntimeError::Io)?;
+            validate_authority_secret(path)
+        }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             validate_authority_secret(path)
         }
@@ -906,18 +925,11 @@ fn ensure_authority_secret(path: &Path) -> Result<(), RuntimeError> {
 }
 
 fn validate_authority_secret(path: &Path) -> Result<(), RuntimeError> {
-    let metadata = fs::metadata(path).map_err(RuntimeError::Io)?;
+    let file = backend_platform::durable::open_private_read(path).map_err(RuntimeError::Io)?;
+    let metadata = file.metadata().map_err(RuntimeError::Io)?;
     if !metadata.is_file() || metadata.len() != 32 {
         Err(RuntimeError::InvalidCredential(path.to_path_buf()))
     } else {
-        #[cfg(windows)]
-        {
-            use backend_platform::win32::identity;
-            let owner = identity::file_owner(path).map_err(RuntimeError::Io)?;
-            if !identity::is_owned_by_current_user(&owner).map_err(RuntimeError::Io)? {
-                return Err(RuntimeError::InvalidCredential(path.to_path_buf()));
-            }
-        }
         Ok(())
     }
 }
@@ -1445,7 +1457,25 @@ mod tests {
 
     #[test]
     fn concurrent_initializers_publish_one_complete_authority_secret() {
-        let root = test_directory("concurrent-secret");
+        let fixture = test_directory("concurrent-secret");
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt as _;
+            builder.mode(0o700);
+        }
+        builder
+            .create(&fixture)
+            .expect("private concurrency fixture");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&fixture, fs::Permissions::from_mode(0o700))
+                .expect("fixture remains private under umask");
+        }
+        let root = fixture.join("state");
+        backend_platform::durable::ensure_private_directory(&root)
+            .expect("create private secret parent");
         let secret = root.join("authority.secret");
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(24));
         let workers = (0..24)
@@ -1472,6 +1502,42 @@ mod tests {
                 .count(),
             1
         );
-        fs::remove_dir_all(root).expect("remove runtime fixture");
+        fs::remove_dir_all(fixture).expect("remove runtime fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn authority_secret_admission_rejects_symlinks_without_replacing_them() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = test_directory("secret-symlink");
+        let mut builder = fs::DirBuilder::new();
+        use std::os::unix::fs::DirBuilderExt as _;
+        builder.mode(0o700);
+        builder.create(&fixture).expect("private secret fixture");
+        let state = fixture.join("state");
+        backend_platform::durable::ensure_private_directory(&state)
+            .expect("create private state directory");
+        let target = fixture.join("target");
+        fs::write(&target, [7_u8; 32]).expect("secret-shaped target");
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600))
+            .expect("protect target fixture");
+        let secret = state.join("authority.secret");
+        symlink(&target, &secret).expect("credential symlink");
+
+        assert!(ensure_authority_secret(&secret).is_err());
+        assert!(
+            fs::symlink_metadata(&secret)
+                .expect("rejected credential remains present")
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            fs::read(&target).expect("target remains unchanged"),
+            [7_u8; 32]
+        );
+
+        fs::remove_dir_all(fixture).expect("remove secret fixture");
     }
 }
