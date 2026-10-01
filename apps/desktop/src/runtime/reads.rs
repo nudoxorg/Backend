@@ -42,8 +42,12 @@ use std::thread::{self, JoinHandle};
 
 /// Largest outline page the owner admits.
 const OUTLINE_PAGE: u16 = 200;
-/// Upper bound on outline pages read for one package (40 000 rows).
+/// Upper bound on outline pages read for one package.
 const OUTLINE_PAGES: usize = 200;
+/// Maximum rows and estimated retained bytes in one outline, including its
+/// lookup maps. Limits are checked against borrowed rows before cloning.
+const OUTLINE_ROWS: usize = 8_000;
+const OUTLINE_BYTES: usize = 12 * 1024 * 1024;
 /// Explore page size for the Orbit catalog.
 const EXPLORE_LIMIT: u16 = 64;
 /// Maximum queued page reads across all workers. Running reads have their
@@ -179,7 +183,7 @@ impl ReadContext<'_> {
 }
 
 /// One cached outline: package, revision root, index.
-type OutlineEntry = (PackageRef, ViewStateRoot, Arc<OutlineIndex>);
+type OutlineEntry = (PackageRef, ViewStateRoot, Arc<OutlineIndex>, usize);
 
 /// Package outlines shared across workers, keyed by package and revision.
 #[derive(Debug, Default)]
@@ -188,7 +192,8 @@ pub struct OutlineCache {
 }
 
 impl OutlineCache {
-    const CAPACITY: usize = 8;
+    const CAPACITY: usize = 4;
+    const MAX_BYTES: usize = 32 * 1024 * 1024;
 
     /// Returns a cached outline for `package` at `root`.
     #[must_use]
@@ -196,7 +201,7 @@ impl OutlineCache {
         let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
         let position = entries
             .iter()
-            .position(|(cached, at, _)| cached == package && *at == root)?;
+            .position(|(cached, at, _, _)| cached == package && *at == root)?;
         let entry = entries.remove(position)?;
         let index = Arc::clone(&entry.2);
         entries.push_front(entry);
@@ -204,12 +209,38 @@ impl OutlineCache {
     }
 
     /// Stores an outline, evicting the least recently used.
-    pub fn put(&self, package: PackageRef, root: ViewStateRoot, index: Arc<OutlineIndex>) {
+    pub fn put(&self, package: PackageRef, root: ViewStateRoot, index: Arc<OutlineIndex>, bytes: usize) {
+        if !index.is_complete() || bytes > Self::MAX_BYTES { return; }
         let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
-        entries.retain(|(cached, _, _)| *cached != package);
-        entries.push_front((package, root, index));
-        entries.truncate(Self::CAPACITY);
+        entries.retain(|(cached, _, _, _)| *cached != package);
+        entries.push_front((package, root, index, bytes));
+        while entries.len() > Self::CAPACITY || entries.iter().map(|entry| entry.3).sum::<usize>() > Self::MAX_BYTES {
+            entries.pop_back();
+        }
     }
+}
+
+/// Conservative retained cost of one cloned row plus outline lookup entries.
+/// String bytes are multiplied for the row, label/name maps, and allocator
+/// slack; fixed overhead includes map nodes and child/name index vectors.
+fn outline_row_bytes(row: &Row) -> usize {
+    use backend_library::{Fragment, SourceExcerpt};
+    let fragments = row.document.iter().fold(0_usize, |used, fragment| {
+        let text = match fragment {
+            Fragment::Text(text) | Fragment::Code(text) => text.len(),
+            Fragment::Link { label, .. } => label.len(),
+            Fragment::Break => 0,
+        };
+        used.saturating_add(std::mem::size_of::<Fragment>()).saturating_add(text)
+    });
+    let text = row.label.len()
+        .saturating_add(row.identity_preimage().map_or(0, |value| value.as_str().len()))
+        .saturating_add(row.signature.as_ref().map_or(0, String::len))
+        .saturating_add(row.source.file_path().map_or(0, str::len))
+        .saturating_add(match &row.excerpt { SourceExcerpt::Captured { text, .. } => text.len(), _ => 0 })
+        .saturating_add(row.facts.text_bytes())
+        .saturating_add(fragments);
+    std::mem::size_of::<Row>().saturating_add(512).saturating_add(text.saturating_mul(4))
 }
 
 /// The job one worker is running: its key, generation, and token.
@@ -876,6 +907,7 @@ fn outline(
     let mut rows: Vec<Row> = Vec::new();
     let mut continuation = None;
     let mut complete = false;
+    let mut retained_bytes = 0_usize;
     for _ in 0..OUTLINE_PAGES {
         if context.cancel.is_cancelled() {
             return Err(Gap::new(GapReason::ReadFailed, "cancelled"));
@@ -895,7 +927,17 @@ fn outline(
                 "the outline page reply changed shape",
             ));
         };
-        rows.extend(page.snapshot.root.rows().iter().cloned());
+        let mut capped = false;
+        for row in page.snapshot.root.rows() {
+            let bytes = outline_row_bytes(row);
+            if rows.len() >= OUTLINE_ROWS || retained_bytes.saturating_add(bytes) > OUTLINE_BYTES {
+                capped = true;
+                break;
+            }
+            retained_bytes += bytes;
+            rows.push(row.clone());
+        }
+        if capped { break; }
         match page.terminal {
             PageTerminal::Complete => {
                 complete = true;
@@ -906,9 +948,7 @@ fn outline(
         }
     }
     let index = Arc::new(OutlineIndex::new(rows, complete));
-    context
-        .outlines
-        .put(package.clone(), root, Arc::clone(&index));
+    if complete { context.outlines.put(package.clone(), root, Arc::clone(&index), retained_bytes); }
     Ok(index)
 }
 
@@ -1291,6 +1331,20 @@ mod tests {
     use crate::model::pages::{HealthModel, IngestModel};
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn outline_cache_evicts_by_retained_bytes_and_never_caches_incomplete_indexes() {
+        let cache = OutlineCache::default();
+        let root = backend_library::view_state_root(&[("outline".to_owned(), "cache".to_owned())]);
+        let first = PackageRef::parse("pkg:cargo/first@1.0.0").expect("first");
+        let second = PackageRef::parse("pkg:cargo/second@1.0.0").expect("second");
+        cache.put(first.clone(), root, Arc::new(OutlineIndex::new(Vec::new(), true)), 20 * 1024 * 1024);
+        cache.put(second.clone(), root, Arc::new(OutlineIndex::new(Vec::new(), true)), 20 * 1024 * 1024);
+        assert!(cache.get(&first, root).is_none(), "the combined retained cost exceeds the cache budget");
+        assert!(cache.get(&second, root).is_some());
+        cache.put(first.clone(), root, Arc::new(OutlineIndex::new(Vec::new(), false)), 1);
+        assert!(cache.get(&first, root).is_none(), "an incomplete outline cannot become a cache hit");
+    }
 
     /// A reader whose `Symbol` reads block until the test releases them, and
     /// that records the order jobs started in.
