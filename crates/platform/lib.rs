@@ -26,4 +26,5 @@ mod native_path;
 #[cfg(windows)]
 pub mod win32;
 
+pub use directory::{DirectoryCapability, DirectoryEntry, DirectoryRenameError, EntryKind};
 pub use native_path::{NativePath, NativePathError, NativePathKey, NativePathWire};

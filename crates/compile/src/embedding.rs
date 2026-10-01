@@ -4527,7 +4527,7 @@ while True:
             },
         );
         let wait_for_entry = |directory: &Path| {
-            let path = directory.join(format!("{}.vec", hex(identity.as_bytes())));
+            let path = directory.join(format!("{}.vec", hex(&identity.as_bytes())));
             let deadline = Instant::now() + Duration::from_secs(2);
             while !path.exists() && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(1));
@@ -4800,7 +4800,13 @@ while True:
     fn batch_input_bytes_are_bounded_before_identity_work_and_poll_cancellation() {
         let texts = ["same", "same", "other"];
         assert!(matches!(
-            validate_batch_input_bytes(&texts, 8, 12, None),
+            validate_batch_input_bytes(
+                &texts,
+                8,
+                12,
+                None,
+                Instant::now() + Duration::from_secs(1),
+            ),
             Err(EmbeddingExecutableError::BatchInputBytesLimit {
                 observed: 13,
                 maximum: 12,
@@ -4809,7 +4815,13 @@ while True:
 
         let cancelled = AtomicBool::new(true);
         assert!(matches!(
-            validate_batch_input_bytes(&texts, 8, 64, Some(&cancelled)),
+            validate_batch_input_bytes(
+                &texts,
+                8,
+                64,
+                Some(&cancelled),
+                Instant::now() + Duration::from_secs(1),
+            ),
             Err(EmbeddingExecutableError::Process(ProcessError::Cancelled))
         ));
     }

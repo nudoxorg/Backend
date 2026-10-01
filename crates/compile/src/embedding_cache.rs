@@ -458,7 +458,7 @@ impl EmbeddingCacheFile {
                 .ok_or_else(cache_size_error)?,
         )
         .map_err(|_| cache_size_error())?;
-        let mut unique = BTreeMap::new();
+        let mut unique: BTreeMap<[u8; 32], &[f32]> = BTreeMap::new();
         for (identity, coordinates) in values {
             checkpoint()?;
             if coordinates.len() != dimension_count
