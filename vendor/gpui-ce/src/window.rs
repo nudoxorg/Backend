@@ -7,8 +7,8 @@ use crate::{
     DevicePixels, DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect,
     Entity, EntityId, EventEmitter, FileDropEvent, Filter, FilterBoundary, FontId, Global,
     GlobalElementId, GlyphId, GpuSpecs, InputHandler, IsZero, KeyBinding, KeyContext, KeyDownEvent,
-    LayerTransform,
-    KeyEvent, Keystroke, KeystrokeEvent, LayoutId, Lerp, LineLayoutIndex, Modifiers,
+    LayerTransform, KeyEvent, Keystroke, KeystrokeEvent, LayoutId, Lerp, LineLayoutIndex,
+    Modifiers, Motion,
     ModifiersChangedEvent, MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent,
     Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler,
     PlatformWindow, Point, PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render,
@@ -4020,12 +4020,12 @@ impl Window {
     pub fn use_transition<T: Lerp + Clone + PartialEq + 'static>(
         &mut self,
         cx: &mut App,
-        duration: Duration,
+        motion: impl Into<Motion>,
         init: impl Fn(&mut Window, &mut Context<TransitionState<T>>) -> T,
     ) -> Transition<T> {
         let state = self.use_state(cx, |window, cx| TransitionState::new(init(window, cx)));
 
-        Transition::new(state, duration)
+        Transition::new(state, motion)
     }
 
     /// Creates a new keyed transition with persistent state.
@@ -4040,13 +4040,13 @@ impl Window {
         &mut self,
         key: impl Into<ElementId>,
         cx: &mut App,
-        duration: Duration,
+        motion: impl Into<Motion>,
         init: impl Fn(&mut Window, &mut Context<TransitionState<T>>) -> T,
     ) -> Transition<T> {
         let state =
             self.use_keyed_state(key, cx, |window, cx| TransitionState::new(init(window, cx)));
 
-        Transition::new(state, duration)
+        Transition::new(state, motion)
     }
 
     /// Executes the given closure within the context of a tab group.
