@@ -67,6 +67,29 @@ impl FileStamp {
     }
 }
 
+/// Opens a candidate executable without allowing a FIFO path to block the caller before its
+/// descriptor can be classified. On Unix, `O_NONBLOCK` is harmless for regular files and makes
+/// opening a FIFO return immediately; every caller still rejects non-regular descriptors after
+/// `fstat`.
+fn open_executable_file(path: &Path) -> Result<File, ProcessError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let mut options = OpenOptions::new();
+        options.read(true).custom_flags(
+            (rustix::fs::OFlags::NONBLOCK | rustix::fs::OFlags::CLOEXEC).bits() as i32,
+        );
+        options
+            .open(path)
+            .map_err(|_| ProcessError::ExecutableUnavailable)
+    }
+    #[cfg(not(unix))]
+    {
+        File::open(path).map_err(|_| ProcessError::ExecutableUnavailable)
+    }
+}
+
 /// Content identity captured for one executable file.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecutableIdentity {
@@ -84,7 +107,7 @@ impl ExecutableIdentity {
     /// changes during the read, or [`ProcessError::Io`] for another read
     /// failure.
     pub fn from_path(path: &Path) -> Result<Self, ProcessError> {
-        let mut file = File::open(path).map_err(|_| ProcessError::ExecutableUnavailable)?;
+        let mut file = open_executable_file(path)?;
         let before = file
             .metadata()
             .map_err(|_| ProcessError::ExecutableUnavailable)?;
@@ -161,7 +184,7 @@ impl ExecutableIdentity {
         deadline: std::time::Instant,
     ) -> Result<(), ProcessError> {
         process_checkpoint(cancellation, deadline)?;
-        let mut file = File::open(path).map_err(|_| ProcessError::ExecutableUnavailable)?;
+        let mut file = open_executable_file(path)?;
         let before = file
             .metadata()
             .map_err(|_| ProcessError::ExecutableUnavailable)?;
@@ -421,8 +444,9 @@ impl ExecutableLease {
         let expected = command
             .executable_identity()
             .ok_or(ProcessError::ExecutableUnavailable)?;
-        let mut source =
-            File::open(command.program()).map_err(|_| ProcessError::ExecutableUnavailable)?;
+        let source_path = std::fs::canonicalize(command.program())
+            .map_err(|_| ProcessError::ExecutableUnavailable)?;
+        let mut source = open_executable_file(&source_path)?;
         let before = source
             .metadata()
             .map_err(|_| ProcessError::ExecutableUnavailable)?;
@@ -444,16 +468,14 @@ impl ExecutableLease {
         if !is_macho(&bytes) {
             return Self::from_bytes_until(&bytes, &before, cancellation, deadline);
         }
-        let source_path = std::fs::canonicalize(command.program())
-            .map_err(|_| ProcessError::ExecutableUnavailable)?;
-        let file_is_writable = OpenOptions::new().write(true).open(&source_path).is_ok();
+        let file_is_writable = file_is_writable_or_changed(&source_path, before_stamp);
         process_checkpoint(cancellation, deadline)?;
         if file_is_writable || directory_is_writable(source_path.as_path()) {
             return Self::from_bytes_until(&bytes, &before, cancellation, deadline);
         }
         process_checkpoint(cancellation, deadline)?;
         Ok(Self {
-            path: command.program().to_owned(),
+            path: source_path,
             remove_on_drop: false,
             temporary_directory: None,
         })
@@ -476,8 +498,7 @@ impl ExecutableLease {
         let expected = command
             .executable_identity()
             .ok_or(ProcessError::ExecutableUnavailable)?;
-        let mut source =
-            File::open(command.program()).map_err(|_| ProcessError::ExecutableUnavailable)?;
+        let mut source = open_executable_file(command.program())?;
         let before = source
             .metadata()
             .map_err(|_| ProcessError::ExecutableUnavailable)?;
@@ -566,8 +587,9 @@ impl ExecutableLease {
         let expected = command
             .executable_identity()
             .ok_or(ProcessError::ExecutableUnavailable)?;
-        let mut source =
-            File::open(command.program()).map_err(|_| ProcessError::ExecutableUnavailable)?;
+        let source_path = std::fs::canonicalize(command.program())
+            .map_err(|_| ProcessError::ExecutableUnavailable)?;
+        let mut source = open_executable_file(&source_path)?;
         let before = source
             .metadata()
             .map_err(|_| ProcessError::ExecutableUnavailable)?;
@@ -591,14 +613,11 @@ impl ExecutableLease {
         if !is_macho(&bytes) {
             return Self::from_bytes(&bytes, &before);
         }
-        let source_path = std::fs::canonicalize(command.program())
-            .map_err(|_| ProcessError::ExecutableUnavailable)?;
-
         // A signed Mach-O must retain its embedded code-signing envelope. A
         // caller-writable file or source directory permits a private
         // byte-for-byte copy, which also prevents a later chmod or in-place
         // write from changing the admitted image.
-        let file_is_writable = OpenOptions::new().write(true).open(&source_path).is_ok();
+        let file_is_writable = file_is_writable_or_changed(&source_path, before_stamp);
         if file_is_writable || directory_is_writable(source_path.as_path()) {
             return Self::from_bytes(&bytes, &before);
         }
@@ -607,7 +626,7 @@ impl ExecutableLease {
         // retaining the original signed path does not expose a caller-level
         // rename or in-place mutation race.
         Ok(Self {
-            path: command.program().to_owned(),
+            path: source_path,
             remove_on_drop: false,
             temporary_directory: None,
         })
@@ -625,8 +644,7 @@ impl ExecutableLease {
         let expected = command
             .executable_identity()
             .ok_or(ProcessError::ExecutableUnavailable)?;
-        let mut source =
-            File::open(command.program()).map_err(|_| ProcessError::ExecutableUnavailable)?;
+        let mut source = open_executable_file(command.program())?;
         let before = source
             .metadata()
             .map_err(|_| ProcessError::ExecutableUnavailable)?;
@@ -848,6 +866,22 @@ fn directory_is_writable(file: &Path) -> bool {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn file_is_writable_or_changed(path: &Path, expected: FileStamp) -> bool {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut options = OpenOptions::new();
+    options
+        .write(true)
+        .custom_flags((rustix::fs::OFlags::NONBLOCK | rustix::fs::OFlags::CLOEXEC).bits() as i32);
+    match options.open(path) {
+        Ok(_) => true,
+        Err(_) => std::fs::metadata(path)
+            .map(|metadata| !metadata.is_file() || FileStamp::from_metadata(&metadata) != expected)
+            .unwrap_or(true),
+    }
+}
+
 impl Drop for ExecutableLease {
     fn drop(&mut self) {
         if self.remove_on_drop {
@@ -856,5 +890,247 @@ impl Drop for ExecutableLease {
                 let _ = remove_dir(directory);
             }
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::{
+        fs,
+        os::unix::fs::PermissionsExt,
+        sync::mpsc,
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
+
+    fn scratch_directory(label: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "backend-executable-identity-{}-{label}-{stamp}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory)?;
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+        Ok(directory)
+    }
+
+    #[test]
+    fn executable_identity_refuses_a_fifo_without_waiting_for_a_writer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use rustix::fs::{CWD, Mode, mkfifoat};
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let directory = scratch_directory("fifo")?;
+        let fifo = directory.join("candidate");
+        mkfifoat(CWD, &fifo, Mode::from_bits_truncate(0o600))?;
+        let candidate = fifo.clone();
+        let (finished, completion) = mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            let result = ExecutableIdentity::from_path(&candidate);
+            let _ = finished.send(());
+            result
+        });
+
+        let completed_without_writer = completion.recv_timeout(Duration::from_secs(2)).is_ok();
+        let release = if completed_without_writer {
+            None
+        } else {
+            let mut options = OpenOptions::new();
+            options.read(true).write(true).custom_flags(
+                (rustix::fs::OFlags::NONBLOCK | rustix::fs::OFlags::CLOEXEC).bits() as i32,
+            );
+            // An RDWR FIFO handle releases an implementation that incorrectly blocks in
+            // `File::open`, while also ensuring a delayed test thread cannot strand the suite.
+            Some(options.open(&fifo)?)
+        };
+        let result = worker
+            .join()
+            .map_err(|_| std::io::Error::other("identity worker panicked"))?;
+        drop(release);
+        fs::remove_dir_all(&directory)?;
+
+        assert!(
+            completed_without_writer,
+            "identity capture waited for a FIFO peer instead of refusing the special file"
+        );
+        assert!(matches!(result, Err(ProcessError::ExecutableUnavailable)));
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn protected_macho_lease_uses_the_canonical_target_after_alias_replacement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::{ProcessEnvironment, ProcessLimits, ProcessStdin, ProtocolDescriptor};
+        use std::{os::unix::fs::symlink, process::Command};
+
+        let original = Path::new("/usr/bin/true");
+        let replacement = Path::new("/usr/bin/false");
+        let canonical = fs::canonicalize(original)?;
+        let bytes = fs::read(&canonical)?;
+        if !is_macho(&bytes) {
+            return Ok(());
+        }
+        let directory = scratch_directory("protected-macho")?;
+        let alias = directory.join("tool");
+        symlink(original, &alias)?;
+        let artifact = ToolchainArtifact::from_path(&alias, Vec::new())?;
+        let command = SupervisedCommand::for_authority_with_artifact(
+            alias.clone(),
+            Vec::new(),
+            ProcessEnvironment::new(Vec::new())?,
+            directory.clone(),
+            ProcessStdin::null(),
+            artifact,
+            None,
+            ProtocolDescriptor::cold(),
+            ProcessLimits::new(64, 64, Duration::from_secs(2), 128)?,
+        )?;
+        let lease = ExecutableLease::prepare_until(
+            &command,
+            &std::sync::atomic::AtomicBool::new(false),
+            std::time::Instant::now() + Duration::from_secs(5),
+        )?;
+        if lease.remove_on_drop {
+            // Test installations where the system binary is writable exercise the private-copy
+            // path instead of the protected-system-image path.
+            drop(lease);
+            fs::remove_dir_all(&directory)?;
+            return Ok(());
+        }
+        assert_eq!(lease.path(), canonical);
+
+        fs::remove_file(&alias)?;
+        symlink(replacement, &alias)?;
+        let status = Command::new(lease.path()).status()?;
+        assert!(
+            status.success(),
+            "the admitted canonical image must still run"
+        );
+
+        drop(lease);
+        fs::remove_dir_all(&directory)?;
+        Ok(())
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::{
+        fs,
+        os::unix::fs::PermissionsExt,
+        sync::mpsc,
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
+
+    fn scratch_directory(label: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "backend-executable-identity-{}-{label}-{stamp}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory)?;
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+        Ok(directory)
+    }
+
+    #[test]
+    fn executable_identity_refuses_a_fifo_without_waiting_for_a_writer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use rustix::fs::{CWD, Mode, mkfifoat};
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let directory = scratch_directory("fifo")?;
+        let fifo = directory.join("candidate");
+        mkfifoat(CWD, &fifo, Mode::from_bits_truncate(0o600))?;
+        let candidate = fifo.clone();
+        let (finished, completion) = mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            let result = ExecutableIdentity::from_path(&candidate);
+            let _ = finished.send(());
+            result
+        });
+
+        let completed_without_writer = completion.recv_timeout(Duration::from_secs(2)).is_ok();
+        let release = if completed_without_writer {
+            None
+        } else {
+            let mut options = OpenOptions::new();
+            options.read(true).write(true).custom_flags(
+                (rustix::fs::OFlags::NONBLOCK | rustix::fs::OFlags::CLOEXEC).bits() as i32,
+            );
+            // An RDWR FIFO handle releases an implementation that incorrectly blocks in
+            // `File::open`, while also ensuring a delayed test thread cannot strand the suite.
+            Some(options.open(&fifo)?)
+        };
+        let result = worker
+            .join()
+            .map_err(|_| std::io::Error::other("identity worker panicked"))?;
+        drop(release);
+        fs::remove_dir_all(&directory)?;
+
+        assert!(
+            completed_without_writer,
+            "identity capture waited for a FIFO peer instead of refusing the special file"
+        );
+        assert!(matches!(result, Err(ProcessError::ExecutableUnavailable)));
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn protected_macho_lease_uses_the_canonical_target_after_alias_replacement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::{ProcessEnvironment, ProcessLimits, ProcessStdin, ProtocolDescriptor};
+        use std::{os::unix::fs::symlink, process::Command};
+
+        let original = Path::new("/usr/bin/true");
+        let replacement = Path::new("/usr/bin/false");
+        let canonical = fs::canonicalize(original)?;
+        let bytes = fs::read(&canonical)?;
+        if !is_macho(&bytes) {
+            return Ok(());
+        }
+        let directory = scratch_directory("protected-macho")?;
+        let alias = directory.join("tool");
+        symlink(original, &alias)?;
+        let artifact = ToolchainArtifact::from_path(&alias, Vec::new())?;
+        let command = SupervisedCommand::for_authority_with_artifact(
+            alias.clone(),
+            Vec::new(),
+            ProcessEnvironment::new(Vec::new())?,
+            directory.clone(),
+            ProcessStdin::null(),
+            artifact,
+            None,
+            ProtocolDescriptor::cold(),
+            ProcessLimits::new(64, 64, Duration::from_secs(2), 128)?,
+        )?;
+        let lease = ExecutableLease::prepare_until(
+            &command,
+            &std::sync::atomic::AtomicBool::new(false),
+            std::time::Instant::now() + Duration::from_secs(5),
+        )?;
+        if lease.remove_on_drop {
+            // Test installations where the system binary is writable exercise the private-copy
+            // path instead of the protected-system-image path.
+            drop(lease);
+            fs::remove_dir_all(&directory)?;
+            return Ok(());
+        }
+        assert_eq!(lease.path(), canonical);
+
+        fs::remove_file(&alias)?;
+        symlink(replacement, &alias)?;
+        let status = Command::new(lease.path()).status()?;
+        assert!(
+            status.success(),
+            "the admitted canonical image must still run"
+        );
+
+        drop(lease);
+        fs::remove_dir_all(&directory)?;
+        Ok(())
     }
 }
