@@ -212,3 +212,38 @@ fn the_selection_follows_a_release_the_library_just_added(cx: &mut TestAppContex
     assert_eq!(state.read_with(cx, |state, _| state.selected.clone()), Some(Selection::Package("/cache/smallvec-1.16.2".into())),
         "the added release stays selected at its new address, not the first candidate");
 }
+
+// Native component fixture only: this does not establish a live-owner journey.
+#[gpui::test]
+fn departing_find_cancels_refinement_and_reactivation_owns_input_again(cx: &mut TestAppContext) {
+    cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); });
+    let reads = Rc::new(RefCell::new(vec![]));
+    let opened = Rc::new(RefCell::new(vec![]));
+    let actions = actions(&reads, &opened);
+    let model = model("from_str", false);
+    let (host, cx) = cx.add_window_view(|window, cx| MountedFind {
+        active: true,
+        state: cx.new(|cx| State::new(model.query.clone(), actions.clone(), window, cx)),
+        scroll: ScrollHandle::new(), model, actions,
+    });
+    draw(cx);
+    let state = host.read_with(cx, |host, _| host.state.clone());
+    edit(&state, "toml", cx);
+    assert!(state.read_with(cx, |state, _| state.pending.is_some()));
+    host.update(cx, |host, cx| { host.active = false; cx.notify(); });
+    draw(cx);
+    assert!(!state.read_with(cx, |state, _| state.active));
+    assert!(state.read_with(cx, |state, _| state.pending.is_none()));
+    advance(cx, 200);
+    assert!(reads.borrow().is_empty(), "departing input must not publish an obsolete query");
+    edit(&state, "stale edit", cx);
+    advance(cx, 200);
+    assert!(reads.borrow().is_empty());
+    host.update(cx, |host, cx| { host.active = true; cx.notify(); });
+    draw(cx);
+    assert!(state.read_with(cx, |state, _| state.active));
+    edit(&state, "Deserialize", cx);
+    advance(cx, 120);
+    assert_eq!(reads.borrow().as_slice(), &[SharedString::from("Deserialize")]);
+    assert!(opened.borrow().is_empty());
+}
