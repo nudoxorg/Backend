@@ -27,7 +27,7 @@ use ra_ap_hir::{
     HasSource, Impl, Macro, Module, ModuleDef, PathResolution, Semantics, Static, Trait, TypeAlias,
     TypeInfo,
 };
-use ra_ap_hir_def::nameres::{crate_def_map, diagnostics::DefDiagnosticKind};
+use ra_ap_hir_def::nameres::{ModuleOrigin, crate_def_map, diagnostics::DefDiagnosticKind};
 use ra_ap_ide_db::{
     ChangeWithProcMacros, LibraryRoots, LocalRoots, RootDatabase, documentation::HasDocs,
 };
@@ -45,6 +45,9 @@ pub const MAX_RUST_WORKSPACE_SESSION_SOURCES: usize = 100_000;
 
 /// Maximum RA source-root path entries copied while adding virtual files.
 const MAX_RUST_WORKSPACE_ROOT_MEMBERSHIP_FILES: usize = 250_000;
+
+/// Largest active DefMap ownership index retained for one loaded package graph.
+const MAX_RUST_SOURCE_OWNERSHIP_MODULES: usize = MAX_RUST_WORKSPACE_ROOT_MEMBERSHIP_FILES;
 
 /// Maximum number of `include_str!` inputs admitted from Rustdoc attributes in one operation.
 const MAX_RUST_DOCUMENTATION_INPUTS: usize = 1024;
@@ -331,6 +334,24 @@ pub struct RustWorkspace {
     vfs: Vfs,
     /// Package-relative selected paths mapped to their lexical RA VFS paths.
     selected_source_paths: HashMap<PathBuf, PathBuf>,
+    /// Exact active module membership for this database, built before it is shared.
+    source_ownership_index: Option<RustSourceOwnershipIndex>,
+}
+
+#[derive(Clone, Copy)]
+struct RustSourceOwnershipEntry {
+    krate: ra_ap_hir::Crate,
+    scope: RustSourceScope,
+}
+
+enum RustSourceOwners {
+    Unique(RustSourceOwnershipEntry),
+    Ambiguous(Vec<RustSourceOwnershipEntry>),
+}
+
+struct RustSourceOwnershipIndex {
+    owners_by_file: HashMap<FileId, RustSourceOwners>,
+    active_hir_roots: RustActiveHirRootInventory,
 }
 
 /// Bounded evidence about package crate roots visible to HIR when one source
@@ -350,11 +371,28 @@ pub struct RustActiveHirRootInventory {
 }
 
 impl RustWorkspace {
-    fn active_hir_root_inventory(&self) -> RustActiveHirRootInventory {
+    fn build_source_ownership_index(
+        &self,
+        control: RustAnalysisControl<'_>,
+    ) -> Result<RustSourceOwnershipIndex, RustAuthorityError> {
+        control.check()?;
+        let crate_ids = all_crates(&self.database);
+        if crate_ids.len() > MAX_RUST_SOURCE_OWNERSHIP_MODULES {
+            return Err(RustAuthorityError::SourceOwnershipIndexLimit {
+                maximum: MAX_RUST_SOURCE_OWNERSHIP_MODULES,
+            });
+        }
         let package_root = AbsPathBuf::assert_utf8(self.root.clone());
         let mut package_crate_count = 0_usize;
         let mut package_relative_roots = Vec::with_capacity(MAX_DETACHED_HIR_ROOT_SAMPLE);
-        for crate_id in all_crates(&self.database).iter().copied() {
+        let mut package_crates = Vec::<(ra_ap_hir::Crate, FileId)>::new();
+        package_crates
+            .try_reserve(crate_ids.len().min(16))
+            .map_err(|_| RustAuthorityError::SourceOwnershipIndexLimit {
+                maximum: MAX_RUST_SOURCE_OWNERSHIP_MODULES,
+            })?;
+        for crate_id in crate_ids.iter().copied() {
+            control.check()?;
             let krate = ra_ap_hir::Crate::from(crate_id);
             let root_file = krate.root_file(&self.database);
             let Some(root_path) = self.vfs.file_path(root_file).as_path() else {
@@ -364,16 +402,179 @@ impl RustWorkspace {
                 continue;
             };
             package_crate_count = package_crate_count.saturating_add(1);
+            if package_crate_count > MAX_RUST_SOURCE_OWNERSHIP_MODULES {
+                return Err(RustAuthorityError::SourceOwnershipIndexLimit {
+                    maximum: MAX_RUST_SOURCE_OWNERSHIP_MODULES,
+                });
+            }
             if package_relative_roots.len() < MAX_DETACHED_HIR_ROOT_SAMPLE {
                 package_relative_roots.push(PathBuf::from(relative.as_str()));
+            }
+            if package_crates.len() == package_crates.capacity() {
+                package_crates.try_reserve(1).map_err(|_| {
+                    RustAuthorityError::SourceOwnershipIndexLimit {
+                        maximum: MAX_RUST_SOURCE_OWNERSHIP_MODULES,
+                    }
+                })?;
+            }
+            package_crates.push((krate, root_file));
+        }
+        let mut owners_by_file = HashMap::<FileId, RustSourceOwners>::new();
+        owners_by_file
+            .try_reserve(
+                package_crates
+                    .len()
+                    .saturating_mul(4)
+                    .min(MAX_RUST_SOURCE_OWNERSHIP_MODULES),
+            )
+            .map_err(|_| RustAuthorityError::SourceOwnershipIndexLimit {
+                maximum: MAX_RUST_SOURCE_OWNERSHIP_MODULES,
+            })?;
+        let mut observed_modules = 0_usize;
+        for (krate, root_file) in package_crates {
+            control.check()?;
+            let def_map = crate_def_map(&self.database, krate.base());
+            for (_, module) in def_map.modules() {
+                control.check()?;
+                observed_modules = observed_modules.saturating_add(1);
+                if observed_modules > MAX_RUST_SOURCE_OWNERSHIP_MODULES {
+                    return Err(RustAuthorityError::SourceOwnershipIndexLimit {
+                        maximum: MAX_RUST_SOURCE_OWNERSHIP_MODULES,
+                    });
+                }
+                if !matches!(
+                    module.origin,
+                    ModuleOrigin::CrateRoot { .. } | ModuleOrigin::File { .. }
+                ) {
+                    continue;
+                }
+                let Some(definition) = module.origin.file_id() else {
+                    continue;
+                };
+                let file_id = definition.file_id(&self.database);
+                let Some(path) = self.vfs.file_path(file_id).as_path() else {
+                    continue;
+                };
+                if !path.starts_with(package_root.as_path()) {
+                    continue;
+                }
+                let owner = RustSourceOwnershipEntry {
+                    krate,
+                    scope: if file_id == root_file {
+                        RustSourceScope::CargoTargetRoot
+                    } else {
+                        RustSourceScope::CargoModule
+                    },
+                };
+                if !owners_by_file.contains_key(&file_id) {
+                    owners_by_file.try_reserve(1).map_err(|_| {
+                        RustAuthorityError::SourceOwnershipIndexLimit {
+                            maximum: MAX_RUST_SOURCE_OWNERSHIP_MODULES,
+                        }
+                    })?;
+                }
+                use std::collections::hash_map::Entry;
+                match owners_by_file.entry(file_id) {
+                    Entry::Vacant(slot) => {
+                        slot.insert(RustSourceOwners::Unique(owner));
+                    }
+                    Entry::Occupied(mut slot) => {
+                        let previous = std::mem::replace(
+                            slot.get_mut(),
+                            RustSourceOwners::Ambiguous(Vec::new()),
+                        );
+                        let owners = match previous {
+                            RustSourceOwners::Unique(previous) => {
+                                let mut owners = Vec::new();
+                                owners.try_reserve_exact(2).map_err(|_| {
+                                    RustAuthorityError::SourceOwnershipIndexLimit {
+                                        maximum: MAX_RUST_SOURCE_OWNERSHIP_MODULES,
+                                    }
+                                })?;
+                                owners.push(previous);
+                                owners.push(owner);
+                                owners
+                            }
+                            RustSourceOwners::Ambiguous(mut owners) => {
+                                owners.try_reserve(1).map_err(|_| {
+                                    RustAuthorityError::SourceOwnershipIndexLimit {
+                                        maximum: MAX_RUST_SOURCE_OWNERSHIP_MODULES,
+                                    }
+                                })?;
+                                owners.push(owner);
+                                owners
+                            }
+                        };
+                        *slot.get_mut() = RustSourceOwners::Ambiguous(owners);
+                    }
+                }
             }
         }
         let omitted_package_crates =
             package_crate_count.saturating_sub(package_relative_roots.len());
-        RustActiveHirRootInventory {
-            package_crate_count,
-            package_relative_roots: package_relative_roots.into_boxed_slice(),
-            omitted_package_crates,
+        control.check()?;
+        Ok(RustSourceOwnershipIndex {
+            owners_by_file,
+            active_hir_roots: RustActiveHirRootInventory {
+                package_crate_count,
+                package_relative_roots: package_relative_roots.into_boxed_slice(),
+                omitted_package_crates,
+            },
+        })
+    }
+
+    fn prepare_source_ownership_index(
+        &mut self,
+        control: RustAnalysisControl<'_>,
+    ) -> Result<(), RustAuthorityError> {
+        self.source_ownership_index = Some(self.build_source_ownership_index(control)?);
+        Ok(())
+    }
+
+    fn source_owner_entry(
+        &self,
+        file_id: FileId,
+        path: &Path,
+        control: RustAnalysisControl<'_>,
+    ) -> Result<RustSourceOwnershipEntry, RustAuthorityError> {
+        control.check()?;
+        let index = self
+            .source_ownership_index
+            .as_ref()
+            .ok_or(RustAuthorityError::SourceOwnershipIndexUnavailable)?;
+        let Some(owners) = index.owners_by_file.get(&file_id) else {
+            return Err(RustAuthorityError::DetachedSource {
+                path: path.to_path_buf(),
+                active_hir_roots: index.active_hir_roots.clone(),
+            });
+        };
+        match owners {
+            RustSourceOwners::Unique(owner) => Ok(*owner),
+            RustSourceOwners::Ambiguous(owners) => {
+                let package_root = AbsPathBuf::assert_utf8(self.root.clone());
+                let mut owner_root_sample = Vec::with_capacity(MAX_DETACHED_HIR_ROOT_SAMPLE);
+                for owner in owners {
+                    control.check()?;
+                    if owner_root_sample.len() >= MAX_DETACHED_HIR_ROOT_SAMPLE {
+                        break;
+                    }
+                    let root_file = owner.krate.root_file(&self.database);
+                    let Some(root_path) = self.vfs.file_path(root_file).as_path() else {
+                        continue;
+                    };
+                    if let Some(relative) = root_path.strip_prefix(package_root.as_path()) {
+                        owner_root_sample.push(PathBuf::from(relative.as_str()));
+                    }
+                }
+                let omitted_owner_definitions =
+                    owners.len().saturating_sub(owner_root_sample.len());
+                Err(RustAuthorityError::AmbiguousSourceOwner {
+                    path: path.to_path_buf(),
+                    definition_count: owners.len(),
+                    owner_root_sample: owner_root_sample.into_boxed_slice(),
+                    omitted_owner_definitions,
+                })
+            }
         }
     }
 }
@@ -1152,7 +1353,7 @@ impl RustWorkspaceSessionLane {
             no_default_features: key.features.no_default_features,
             features: &selected_features,
         };
-        let workspace = RustWorkspace::open_with_features(
+        let workspace = RustWorkspace::open_with_features_unindexed(
             &key.root,
             &key.toolchain,
             key.edition,
@@ -1483,6 +1684,43 @@ impl RustWorkspace {
         metadata_policy: RustCargoMetadataPolicy,
         control: RustAnalysisControl<'_>,
     ) -> Result<Self, RustAuthorityError> {
+        let mut workspace = Self::open_with_features_and_metadata_policy_unindexed(
+            root,
+            toolchain,
+            edition,
+            features,
+            metadata_policy,
+            control,
+        )?;
+        workspace.prepare_source_ownership_index(control)?;
+        Ok(workspace)
+    }
+
+    fn open_with_features_unindexed(
+        root: impl AsRef<Path>,
+        toolchain: &RustToolchain,
+        edition: RustEdition,
+        features: RustFeatureControl<'_>,
+        control: RustAnalysisControl<'_>,
+    ) -> Result<Self, RustAuthorityError> {
+        Self::open_with_features_and_metadata_policy_unindexed(
+            root,
+            toolchain,
+            edition,
+            features,
+            RustCargoMetadataPolicy::Offline,
+            control,
+        )
+    }
+
+    fn open_with_features_and_metadata_policy_unindexed(
+        root: impl AsRef<Path>,
+        toolchain: &RustToolchain,
+        edition: RustEdition,
+        features: RustFeatureControl<'_>,
+        metadata_policy: RustCargoMetadataPolicy,
+        control: RustAnalysisControl<'_>,
+    ) -> Result<Self, RustAuthorityError> {
         control.check()?;
         let root = RustProject::validate_root(root)?;
         let cargo = toolchain
@@ -1598,6 +1836,7 @@ impl RustWorkspace {
             database,
             vfs,
             selected_source_paths: HashMap::new(),
+            source_ownership_index: None,
         })
     }
 
@@ -1707,45 +1946,13 @@ impl RustWorkspace {
                 observed: observed_text.len(),
             });
         }
-        // Cargo's VFS contains package Rust files even when cfg removes them
-        // from every active module tree. Resolve an ordinary source through
-        // its HIR module owner; use root-file identity for standalone Cargo
-        // targets such as build scripts. Never treat a merely present VFS
-        // file as a Cargo crate root.
-        let package_root = AbsPathBuf::assert_utf8(self.root.clone());
+        // VFS presence alone does not establish active Cargo ownership. The
+        // retained DefMap index was built from this exact loaded graph before
+        // the workspace was shared, after any selected source overlays.
         let semantics = Semantics::new(&self.database);
-        let crate_belongs_to_package = |krate: ra_ap_hir::Crate| {
-            let root_file = krate.root_file(&self.database);
-            self.vfs
-                .file_path(root_file)
-                .as_path()
-                .is_some_and(|path| path.starts_with(package_root.as_path()))
-        };
-        let owner = semantics
-            .file_to_module_defs(file_id)
-            .map(|module| module.krate(&self.database))
-            .find(|krate| crate_belongs_to_package(*krate))
-            // `all_crates` is topologically ordered, so shared roots resolve
-            // to the first crate in the loader's deterministic graph order.
-            .or_else(|| {
-                all_crates(&self.database)
-                    .iter()
-                    .copied()
-                    .map(ra_ap_hir::Crate::from)
-                    .find(|krate| {
-                        krate.root_file(&self.database) == file_id
-                            && crate_belongs_to_package(*krate)
-                    })
-            })
-            .ok_or_else(|| RustAuthorityError::DetachedSource {
-                path: source_path.clone(),
-                active_hir_roots: self.active_hir_root_inventory(),
-            })?;
-        let source_scope = if owner.root_file(&self.database) == file_id {
-            RustSourceScope::CargoTargetRoot
-        } else {
-            RustSourceScope::CargoModule
-        };
+        let owner = self.source_owner_entry(file_id, &source_path, control)?;
+        let source_scope = owner.scope;
+        let owner = owner.krate;
         let observed_edition = owner.edition(&self.database);
         let source_file = EditionedFileId::new(&self.database, file_id, observed_edition);
         let observed = rust_edition(observed_edition);
@@ -1828,21 +2035,9 @@ impl RustWorkspace {
             }
 
             let semantics = Semantics::new(&self.database);
-            let owner = semantics
-                .file_to_module_defs(selected_file_id)
-                .map(|module| module.krate(&self.database))
-                .next()
-                .or_else(|| {
-                    all_crates(&self.database)
-                        .iter()
-                        .copied()
-                        .map(ra_ap_hir::Crate::from)
-                        .find(|krate| krate.root_file(&self.database) == selected_file_id)
-                })
-                .ok_or_else(|| RustAuthorityError::DetachedSource {
-                    path: selected.path.to_path_buf(),
-                    active_hir_roots: self.active_hir_root_inventory(),
-                })?;
+            let owner = self
+                .source_owner_entry(selected_file_id, selected.path, control)?
+                .krate;
             let edition = owner.edition(&self.database);
             let source_file = EditionedFileId::new(&self.database, selected_file_id, edition);
             let parsed = semantics.parse(source_file);
@@ -2371,6 +2566,10 @@ impl RustWorkspace {
             self.database.apply_change(change);
         }
         control.check()?;
+        // Selected editor buffers can change the active DefMap. Build the
+        // complete ownership cache now, before this workspace is shared with
+        // source analysis or documentation loading.
+        self.prepare_source_ownership_index(control)?;
         self.preload_documentation_inputs(
             &files
                 .iter()
@@ -4514,6 +4713,29 @@ pub enum RustAuthorityError {
         /// Exact requested source path.
         path: PathBuf,
     },
+    /// The complete active DefMap scan exceeded its bounded crate or module limit.
+    #[error("Rust source ownership scan exceeded the {maximum}-entry limit")]
+    SourceOwnershipIndexLimit {
+        /// Maximum active crate or module entries examined.
+        maximum: usize,
+    },
+    /// A source request reached a workspace without its completed ownership index.
+    #[error("Rust active module ownership index is unavailable")]
+    SourceOwnershipIndexUnavailable,
+    /// The same physical source is defined in multiple active Cargo crate contexts.
+    #[error(
+        "selected Rust source has {definition_count} active module definitions: {path}; owner roots: {owner_root_sample:?} ({omitted_owner_definitions} definitions omitted)"
+    )]
+    AmbiguousSourceOwner {
+        /// Exact selected package source with multiple active owners.
+        path: PathBuf,
+        /// Exact number of active DefMap module definitions for this file.
+        definition_count: usize,
+        /// Bounded package-relative sample of the owning Cargo crate roots.
+        owner_root_sample: Box<[PathBuf]>,
+        /// Number of owning module definitions omitted after filling the sample.
+        omitted_owner_definitions: usize,
+    },
     /// The selected file exists in the package VFS but is outside all active Cargo targets.
     #[error(
         "selected Rust source is cfg-inactive or detached from every active Cargo target: {path}; active package HIR roots: {active_hir_roots:?}"
@@ -4809,6 +5031,149 @@ mod read_frontier_budget_tests {
             !root.join("Cargo.lock").exists(),
             "metadata and analyzer loading must not write a lockfile into the project"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn source_ownership_indexes_the_captured_backend_present_assemble_file() {
+        use super::{
+            RustAnalysisControl, RustAuthorityError, RustCargoMetadataPolicy, RustFeatureControl,
+            RustSourceScope, RustToolchain, RustWorkspace, SourceByteLimit,
+        };
+        use backend_semantic::vocabulary::RustEdition;
+        use std::sync::atomic::AtomicBool;
+        use std::time::Instant;
+
+        let repository_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repository root");
+        let package_root = std::env::var_os("BACKEND_PRESENT_HARNESS_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| repository_root.join("crates/present"));
+        let source_path = package_root.join("assemble.rs");
+        let source = std::fs::read(&source_path).expect("backend-present assemble source");
+        assert_eq!(
+            source.as_slice(),
+            include_bytes!("../../../../crates/present/assemble.rs"),
+            "the captured Harness source must match the real backend-present module"
+        );
+        let library = std::fs::read_to_string(package_root.join("lib.rs"))
+            .expect("backend-present library root");
+        assert!(
+            library.lines().any(|line| line.trim() == "mod assemble;"),
+            "the package root must actively declare assemble without a cfg gate"
+        );
+        let tool = std::env::var_os("RUSTC")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("rustc"));
+        let toolchain = RustToolchain::discover(tool).expect("selected Rust toolchain");
+        let cancelled = AtomicBool::new(false);
+        let control = || RustAnalysisControl {
+            cancelled: &cancelled,
+            maximum_source_bytes: SourceByteLimit::from(1024 * 1024),
+            deadline: Instant::now() + std::time::Duration::from_secs(180),
+        };
+        let workspace = RustWorkspace::open_with_features_and_metadata_policy(
+            &package_root,
+            &toolchain,
+            RustEdition::Rust2024,
+            RustFeatureControl::default(),
+            RustCargoMetadataPolicy::Offline,
+            control(),
+        )
+        .expect("load backend-present through Cargo metadata and rust-analyzer");
+        let result = workspace.analyze_source(&source_path, &source, control(), |authority| {
+            assert_eq!(authority.source_scope, RustSourceScope::CargoModule);
+            Ok(())
+        });
+        assert!(
+            result.is_ok(),
+            "active lib.rs module lost its Cargo owner: {result:?}"
+        );
+        assert!(matches!(
+            workspace.analyze_source(&source_path, b"different bytes\n", control(), |_| Ok(())),
+            Err(RustAuthorityError::SourceBinding { .. })
+        ));
+    }
+
+    #[test]
+    fn source_ownership_reports_shared_and_complete_absence_from_one_retained_index() {
+        use super::{
+            RustAnalysisControl, RustAuthorityError, RustCargoMetadataPolicy, RustFeatureControl,
+            RustToolchain, RustWorkspace, SourceByteLimit,
+        };
+        use backend_semantic::vocabulary::RustEdition;
+        use std::sync::atomic::AtomicBool;
+        use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after the epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "backend-rust-source-ownership-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("fixture package directory");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"readiness-source-ownership\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[workspace]\n[lib]\npath = \"lib.rs\"\n[[bin]]\nname = \"readiness-source-ownership-bin\"\npath = \"main.rs\"\n",
+        )
+        .expect("fixture manifest");
+        let library = b"#[path = \"shared.rs\"] mod shared;\n";
+        let binary = b"#[path = \"shared.rs\"] mod shared;\nfn main() {}\n";
+        let shared = b"pub fn shared() {}\n";
+        let inactive = b"pub fn inactive() {}\n";
+        std::fs::write(root.join("lib.rs"), library).expect("library target");
+        std::fs::write(root.join("main.rs"), binary).expect("binary target");
+        std::fs::write(root.join("shared.rs"), shared).expect("shared module");
+        std::fs::write(root.join("inactive.rs"), inactive).expect("inactive source");
+        let tool = std::env::var_os("RUSTC")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("rustc"));
+        let toolchain = RustToolchain::discover(tool).expect("selected Rust toolchain");
+        let cancelled = AtomicBool::new(false);
+        let control = || RustAnalysisControl {
+            cancelled: &cancelled,
+            maximum_source_bytes: SourceByteLimit::from(1024 * 1024),
+            deadline: Instant::now() + std::time::Duration::from_secs(120),
+        };
+        let workspace = RustWorkspace::open_with_features_and_metadata_policy(
+            &root,
+            &toolchain,
+            RustEdition::Rust2024,
+            RustFeatureControl::default(),
+            RustCargoMetadataPolicy::Offline,
+            control(),
+        )
+        .expect("load both Cargo targets");
+        let retained_index = std::ptr::from_ref(
+            workspace
+                .source_ownership_index
+                .as_ref()
+                .expect("index prepared before workspace is shared"),
+        );
+        assert!(matches!(
+            workspace.analyze_source(root.join("shared.rs"), shared, control(), |_| Ok(())),
+            Err(RustAuthorityError::AmbiguousSourceOwner {
+                definition_count: 2,
+                ..
+            })
+        ));
+        assert!(matches!(
+            workspace.analyze_source(root.join("inactive.rs"), inactive, control(), |_| Ok(())),
+            Err(RustAuthorityError::DetachedSource { .. })
+        ));
+        assert!(std::ptr::eq(
+            retained_index,
+            std::ptr::from_ref(
+                workspace
+                    .source_ownership_index
+                    .as_ref()
+                    .expect("same retained index after per-source queries")
+            )
+        ));
         let _ = std::fs::remove_dir_all(&root);
     }
 
