@@ -26,7 +26,11 @@ impl PendingSave {
     fn write(&self, when: &str) -> std::io::Result<usize> {
         let saving = std::time::Instant::now();
         let written = self.file.write(self.root, &self.pages)?;
-        crate::runtime::trace::span("snapshot.write", saving, format_args!("{} pages, {written} bytes, {when}", self.pages.len()));
+        crate::runtime::trace::span(
+            "snapshot.write",
+            saving,
+            format_args!("{} pages, {written} bytes, {when}", self.pages.len()),
+        );
         Ok(written)
     }
 }
@@ -75,13 +79,11 @@ impl SnapshotKeeper {
             return;
         };
         if seed.serves(root) {
-            // An alternate-release cache key carries a route claim about
-            // another tree. The owner root alone cannot admit that claim:
-            // its read worker must verify both manifests and the provider.
-            let confirmed = pages.keys().into_iter()
-                .filter(|key| !requires_origin_verification(key))
-                .filter(|key| pages.confirm(key, root)).count();
-            crate::runtime::trace::mark("snapshot.confirm", format_args!("{confirmed} pages at the served root"));
+            let confirmed = confirm_index_pages(pages, root);
+            crate::runtime::trace::mark(
+                "snapshot.confirm",
+                format_args!("{confirmed} pages at the served root"),
+            );
         } else {
             crate::runtime::trace::mark("snapshot.revalidate", "the owner serves a newer root");
         }
@@ -91,9 +93,12 @@ impl SnapshotKeeper {
     /// root: what the next launch paints first.
     fn to_save(&self, pages: &PageStore, snapshot: &AppSnapshot) -> Option<PendingSave> {
         fn at<T>(resource: &Resource<T>, root: VersionedRoot) -> Option<Arc<T>> {
-            (resource.is_loaded() && resource.value_root().is_some_and(|at| at.same_authority(root)))
-                .then(|| resource.loaded_arc().cloned())
-                .flatten()
+            (resource.is_loaded()
+                && resource
+                    .value_root()
+                    .is_some_and(|at| at.same_authority(root)))
+            .then(|| resource.loaded_arc().cloned())
+            .flatten()
         }
         let file = self.file.clone()?;
         let root = snapshot.key();
@@ -108,23 +113,38 @@ impl SnapshotKeeper {
                 return None;
             }
             match key {
-                PageKey::Symbol(symbol) => at(&pages.symbol(symbol), root).map(|page| SeedEntry::Symbol(symbol.clone(), page)),
-                PageKey::Source(symbol) => at(&pages.source(symbol), root).map(|view| SeedEntry::Source(symbol.clone(), view)),
-                PageKey::Package(package) => at(&pages.package(package), root).map(|dossier| SeedEntry::Package(package.clone(), dossier)),
+                PageKey::Symbol(symbol) => at(&pages.symbol(symbol), root)
+                    .map(|page| SeedEntry::Symbol(symbol.clone(), page)),
+                PageKey::Source(symbol) => at(&pages.source(symbol), root)
+                    .map(|view| SeedEntry::Source(symbol.clone(), view)),
+                PageKey::Package(package) => at(&pages.package(package), root)
+                    .map(|dossier| SeedEntry::Package(package.clone(), dossier)),
                 PageKey::Orbit => at(&pages.orbit(), root).map(SeedEntry::Orbit),
                 PageKey::Search(_) | PageKey::Health | PageKey::Browse(_) => None,
             }
         };
-        let kept = kept_keys(snapshot.route()).iter().filter_map(current).collect::<Vec<_>>();
-        (!kept.is_empty()).then_some(PendingSave { file, root, pages: kept })
+        let kept = kept_keys(snapshot.route())
+            .iter()
+            .filter_map(current)
+            .collect::<Vec<_>>();
+        (!kept.is_empty()).then_some(PendingSave {
+            file,
+            root,
+            pages: kept,
+        })
     }
 
     /// Saves the launch snapshot now, on this thread (quit).
     ///
     /// # Errors
     /// The snapshot file's I/O error; nothing to save is `Ok(0)`.
-    pub(super) fn save_now(&self, pages: &PageStore, snapshot: &AppSnapshot) -> std::io::Result<usize> {
-        self.to_save(pages, snapshot).map_or(Ok(0), |save| save.write("on quit"))
+    pub(super) fn save_now(
+        &self,
+        pages: &PageStore,
+        snapshot: &AppSnapshot,
+    ) -> std::io::Result<usize> {
+        self.to_save(pages, snapshot)
+            .map_or(Ok(0), |save| save.write("on quit"))
     }
 
     /// Saves the launch snapshot once the pages have rested (a newer landing
@@ -135,12 +155,17 @@ impl SnapshotKeeper {
         }
         self.saving = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SAVE_IDLE).await;
-            let Ok(Some(save)) = this.update(cx, |store, _| store.keeper.to_save(&store.pages, &store.snapshot)) else {
+            let Ok(Some(save)) = this.update(cx, |store, _| {
+                store.keeper.to_save(&store.pages, &store.snapshot)
+            }) else {
                 return;
             };
             cx.background_spawn(async move {
                 if let Err(error) = save.write("at rest") {
-                    eprintln!("backend-desktop: save {}: {error}", save.file.path().display());
+                    eprintln!(
+                        "backend-desktop: save {}: {error}",
+                        save.file.path().display()
+                    );
                 }
             })
             .await;
@@ -148,9 +173,22 @@ impl SnapshotKeeper {
     }
 }
 
-fn requires_origin_verification(key: &PageKey) -> bool {
+/// Called only after the saved root and running build identity were admitted.
+/// Source pages also observe local bytes, which can change without an index
+/// revision. Their worker must renew those observations on every launch.
+fn confirm_index_pages(pages: &mut PageStore, root: VersionedRoot) -> usize {
+    pages
+        .keys()
+        .into_iter()
+        .filter(|key| !requires_worker_verification(key))
+        .filter(|key| pages.confirm(key, root))
+        .count()
+}
+
+fn requires_worker_verification(key: &PageKey) -> bool {
     match key {
-        PageKey::Symbol(symbol) | PageKey::Source(symbol) => symbol.release_origin().is_some(),
+        PageKey::Source(_) => true,
+        PageKey::Symbol(symbol) => symbol.release_origin().is_some(),
         PageKey::Package(package) => package.release_origin().is_some(),
         PageKey::Orbit | PageKey::Search(_) | PageKey::Health | PageKey::Browse(_) => false,
     }
@@ -167,29 +205,106 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("nx-keeper-origin-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("scratch");
         let file = SnapshotFile::in_data(&dir);
-        let root = VersionedRoot::synthetic(backend_library::view_state_root(&[("keeper".into(), "origin".into())]), 1);
+        let root = VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("keeper".into(), "origin".into())]),
+            1,
+        );
         let pinned = PackageRef::parse("pkg:cargo/serde@1.0.0").expect("pin");
-        let release = PackageRef::parse("pkg:cargo/serde@0.9.0").expect("release").with_release_origin(&pinned);
+        let release = PackageRef::parse("pkg:cargo/serde@0.9.0")
+            .expect("release")
+            .with_release_origin(&pinned);
         let entry = SeedEntry::Package(release.clone(), Arc::new(crate::shell::tests::dossier()));
         let key = entry.key();
-        assert!(file.read(&[]).is_none(), "prepare the build identity on the read path");
+        assert!(
+            file.read(&[]).is_none(),
+            "prepare the build identity on the read path"
+        );
         file.write(root, &[entry]).expect("snapshot");
         let seed = file.read(std::slice::from_ref(&key)).expect("seed");
-        assert!(seed.root.serves(root), "this regression must exercise the same-build confirmation path");
         let mut keeper = SnapshotKeeper::default();
         let mut pages = PageStore::default();
-        keeper.keep(&mut pages, VersionedRoot::unserved(), Keep { file, seed: Some(seed) });
+        keeper.keep(
+            &mut pages,
+            VersionedRoot::unserved(),
+            Keep {
+                file,
+                seed: Some(seed),
+            },
+        );
         keeper.settle(&mut pages, root);
-        assert!(pages.is_seeded(&key), "matching root does not verify the saved original release tree");
-        assert!(pages.begin(&key, root).is_some(), "a real worker read is still required");
+        // Exercise the admitted-root branch even when this test executable
+        // exceeds the bounded fingerprint limit. This does not supply a
+        // production identity or bypass the launch reader's admission.
+        assert_eq!(confirm_index_pages(&mut pages, root), 0);
+        assert!(
+            pages.is_seeded(&key),
+            "matching root does not verify the saved original release tree"
+        );
+        assert!(
+            pages.begin(&key, root).is_some(),
+            "a real worker read is still required"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
+    fn an_admitted_index_root_confirms_docs_but_not_local_source_observations() {
+        let root = VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("keeper".into(), "local-source".into())]),
+            1,
+        );
+        let symbol = crate::shell::tests::symbol("LocalSource");
+        let mut pages = PageStore::default();
+        assert!(pages.seed(
+            SeedEntry::Symbol(
+                symbol.clone(),
+                Arc::new(crate::shell::tests::page("LocalSource"))
+            ),
+            VersionedRoot::unserved()
+        ));
+        use crate::runtime::reads::{OutlineCache, PageReader as _, ReadContext, ReadRequest};
+        let cancel = crate::runtime::actor::CancellationToken::new();
+        let outlines = OutlineCache::default();
+        let context = ReadContext {
+            worker: 0,
+            cancel: &cancel,
+            outlines: &outlines,
+            progress: None,
+        };
+        let PageValue::Source(source) = crate::shell::tests::Fixture
+            .read(&ReadRequest::Source(symbol.clone()), &context)
+            .expect("source page")
+        else {
+            panic!("source page family")
+        };
+        assert!(pages.seed(
+            SeedEntry::Source(symbol.clone(), Arc::new(source)),
+            VersionedRoot::unserved()
+        ));
+        assert_eq!(confirm_index_pages(&mut pages, root), 1);
+        assert!(!pages.is_seeded(&PageKey::Symbol(symbol.clone())));
+        let source_key = PageKey::Source(symbol);
+        assert!(
+            pages.is_seeded(&source_key),
+            "the index root cannot confirm a mutable local file"
+        );
+        assert!(
+            pages.begin(&source_key, root).is_some(),
+            "restart renews the source observation on a worker"
+        );
+    }
+
+    #[test]
     fn a_cancelled_stage_is_never_saved_as_a_complete_launch_page() {
-        let root = VersionedRoot::synthetic(backend_library::view_state_root(&[("keeper".into(), "stage".into())]), 1);
+        let root = VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("keeper".into(), "stage".into())]),
+            1,
+        );
         let snapshot = AppSnapshot::empty(root);
-        let keeper = SnapshotKeeper { file: Some(SnapshotFile::in_data(std::path::Path::new("/tmp"))), ..SnapshotKeeper::default() };
+        let keeper = SnapshotKeeper {
+            file: Some(SnapshotFile::in_data(std::path::Path::new("/tmp"))),
+            ..SnapshotKeeper::default()
+        };
         let model = OrbitModel {
             indexed: Known::Known(Arc::from([])),
             projects: Known::Known(Arc::from([])),
@@ -199,13 +314,27 @@ mod tests {
         let mut pages = PageStore::default();
         let key = PageKey::Orbit;
         let first = pages.begin(&key, root).expect("first read");
-        assert_eq!(pages.stage(&key, first, PageValue::Orbit(model.clone())), crate::model::pages::Landing::Applied);
-        assert!(keeper.to_save(&pages, &snapshot).is_none(), "an in-flight stage is not complete");
+        assert_eq!(
+            pages.stage(&key, first, PageValue::Orbit(model.clone())),
+            crate::model::pages::Landing::Applied
+        );
+        assert!(
+            keeper.to_save(&pages, &snapshot).is_none(),
+            "an in-flight stage is not complete"
+        );
         assert_eq!(pages.cancel(&key), Some(first));
-        assert!(keeper.to_save(&pages, &snapshot).is_none(), "cancellation must not erase partial provenance");
+        assert!(
+            keeper.to_save(&pages, &snapshot).is_none(),
+            "cancellation must not erase partial provenance"
+        );
         let second = pages.begin(&key, root).expect("second read");
-        assert_eq!(pages.land(&key, second, Ok(PageValue::Orbit(model))), crate::model::pages::Landing::Applied);
-        let saved = keeper.to_save(&pages, &snapshot).expect("the completed page is savable");
+        assert_eq!(
+            pages.land(&key, second, Ok(PageValue::Orbit(model))),
+            crate::model::pages::Landing::Applied
+        );
+        let saved = keeper
+            .to_save(&pages, &snapshot)
+            .expect("the completed page is savable");
         assert!(matches!(saved.pages.as_slice(), [SeedEntry::Orbit(_)]));
     }
 }
