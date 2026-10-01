@@ -112,6 +112,12 @@ pub fn reduced_in(window: &gpui::Window, cx: &App) -> bool {
     reduced(cx) || window.is_inert_subtree()
 }
 
+/// A retained body must settle immediately, even where ordinary reduced
+/// motion intentionally uses a short opacity transition.
+pub(crate) fn is_still_in(window: &gpui::Window, cx: &App) -> bool {
+    is_still(cx) || window.is_inert_subtree()
+}
+
 /// Locally sample a retained body at rest while it is assembled. This does
 /// not change the user's preference; dropping the guard restores the prior
 /// scope even during unwinding. Hold it only around synchronous body work.

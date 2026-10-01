@@ -710,3 +710,152 @@ fn inert_motion_leaves_no_gate_latch_and_resumes_after_release(cx: &mut TestAppC
     frame(cx);
     assert_eq!(cx.update(|_, cx| frames_requested(cx)), requested);
 }
+
+
+struct RetainedSuite {
+    child: gpui::Entity<MotionSuite>,
+    inert: bool,
+}
+
+impl Render for RetainedSuite {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        if self.inert {
+            gpui::inert("retained-suite", "Previous content", self.child.clone()).into_any_element()
+        } else { self.child.clone().into_any_element() }
+    }
+}
+
+struct MotionSuite {
+    flights: super::Flights,
+    flow: super::Flow,
+    presence: super::Presence,
+    rows: Vec<u64>,
+    version: u64,
+    target: super::Camera,
+    shot: Rc<Cell<Option<super::Shot>>>,
+    morph: Rc<Cell<super::shared::Morphing>>,
+    pulse: Rc<Cell<f32>>,
+}
+
+impl Render for MotionSuite {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use gpui::{ElementId, px};
+        self.shot.set(Some(self.flights.fly("retained-flight", self.target, window, cx)));
+        self.pulse.set(pulse::lease(window, cx).phase(1.0));
+        self.flow.epoch(self.version);
+        let items = self.presence.sync(self.rows.iter().map(|&row| ElementId::Integer(row)), window, cx);
+        let morph = self.morph.clone();
+        div().flex().flex_col()
+            .child(super::shared::shared_with("retained-shared", move |sample| {
+                morph.set(sample);
+                div().w(px(120.0)).h(px(40.0))
+            }))
+            .children(items.into_iter().map(|item| {
+                let key = item.key.clone();
+                item.slot(self.flow.item(key, div().w(px(120.0)).h(px(40.0))))
+            }))
+    }
+}
+
+/// Actual native traversal of a live entity entering inert state. All retained
+/// tracks land without callbacks; release admits a new target/arrangement and
+/// ordinary user reduced motion keeps its intentional short flight fade.
+#[gpui::test]
+fn live_motion_families_settle_under_inert_and_restart_for_new_targets(cx: &mut TestAppContext) {
+    use gpui::{AppContext as _, Bounds, point, px, size};
+    let shot = Rc::new(Cell::new(None));
+    let morph = Rc::new(Cell::new(super::shared::Morphing { t: 1.0, from: None }));
+    let pulse_seen = Rc::new(Cell::new(-1.0));
+    let (root, cx) = cx.add_window_view({
+        let shot = shot.clone();
+        let morph = morph.clone();
+        let pulse = pulse_seen.clone();
+        move |_, cx| RetainedSuite {
+            child: cx.new(|_| MotionSuite {
+                flights: super::Flights::new(),
+                flow: super::Flow::new("retained.flow"),
+                presence: super::Presence::new("retained.presence").enter(super::act::RISE),
+                rows: vec![1, 2, 3], version: 0,
+                target: super::Camera::new(0.0, 0.0, 100.0), shot, morph, pulse,
+            }), inert: false,
+        }
+    });
+    let child = root.read_with(cx, |root, _| root.child.clone());
+    frame(cx);
+    let from = Bounds::new(point(px(300.0), px(300.0)), size(px(12.0), px(12.0)));
+    cx.update(|window, cx| super::shared::remember("retained-shared", from, window, cx));
+    child.update(cx, |suite, cx| {
+        suite.target = super::Camera::new(200.0, 80.0, 50.0);
+        suite.rows = vec![4, 3, 2, 1]; suite.version += 1; cx.notify();
+    });
+    frame(cx);
+    advance(cx, 16);
+    frame(cx);
+    assert!(shot.get().expect("flight sampled").live);
+    assert!(morph.get().t < 1.0, "existing timed shared morph is live");
+    assert!(cx.update(|_, cx| pulse::running(cx)));
+    root.update(cx, |root, cx| { root.inert = true; cx.notify(); });
+    frame(cx);
+    let settled = shot.get().expect("inert flight sampled");
+    assert_eq!(settled.camera, super::Camera::new(200.0, 80.0, 50.0));
+    assert!(!settled.live && settled.from.is_none() && settled.fade == 1.0);
+    assert_eq!(morph.get(), super::shared::Morphing { t: 1.0, from: None });
+    assert_eq!(pulse_seen.get(), 0.0);
+    assert!(child.read_with(cx, |suite, cx| suite.flow.is_settled(cx) && suite.presence.is_settled(cx)));
+    assert_eq!(cx.update(|_, cx| pulse::leases(cx)), 0);
+    assert!(!cx.update(|_, cx| pulse::running(cx)));
+    let requested = cx.update(|_, cx| frames_requested(cx));
+    advance(cx, 500);
+    assert_eq!(frame(cx), 0, "no next-frame callback remains after the inert frame");
+    assert_eq!(cx.update(|_, cx| frames_requested(cx)), requested);
+    root.update(cx, |root, cx| { root.inert = false; cx.notify(); });
+    child.update(cx, |suite, cx| {
+        suite.target = super::Camera::new(400.0, 0.0, 100.0);
+        suite.rows = vec![1, 2, 3, 4]; suite.version += 1; cx.notify();
+    });
+    cx.update(|window, cx| super::shared::drive("retained-shared", from, 0.25, window, cx));
+    frame(cx);
+    assert!(shot.get().expect("new flight").live);
+    assert_eq!(morph.get().t, 0.25, "fresh external drive works after release");
+    assert!(cx.update(|_, cx| frames_requested(cx)) > requested);
+    assert!(cx.update(|_, cx| pulse::running(cx)));
+    root.update(cx, |root, cx| { root.inert = true; cx.notify(); });
+    frame(cx);
+    assert_eq!(morph.get(), super::shared::Morphing { t: 1.0, from: None }, "inert also overrides an external live driver locally");
+    assert!(!shot.get().expect("settled again").live);
+    cx.update(|window, cx| super::shared::release("retained-shared", window, cx));
+    root.update(cx, |root, cx| { root.inert = false; cx.notify(); });
+    frame(cx);
+    assert_eq!(morph.get(), super::shared::Morphing { t: 1.0, from: None }, "the old timed morph cannot replay");
+    cx.update(|_, cx| set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx));
+    child.update(cx, |suite, cx| { suite.target = super::Camera::new(500.0, 20.0, 80.0); cx.notify(); });
+    frame(cx);
+    let reduced = shot.get().expect("ordinary reduced flight");
+    assert!(reduced.live && reduced.from.is_some() && reduced.fade < 1.0,
+        "ordinary reduced preference preserves its intentional opacity transition");
+}
+
+
+#[gpui::test]
+fn still_guard_lands_seeded_flights_and_releases_local_policy(cx: &mut TestAppContext) {
+    let (_view, cx) = cx.add_window_view(|_, _| Tweened { seen: Rc::new(Cell::new(0.0)) });
+    let flights = super::Flights::new();
+    let from = super::Camera::new(0.0, 0.0, 100.0);
+    let target = super::Camera::new(100.0, 40.0, 50.0);
+    cx.update(|window, cx| {
+        let requested = frames_requested(cx);
+        let guard = super::still(cx);
+        for shot in [
+            flights.fly_from("seed", from, (10.0, 5.0, 0.2), target, window, cx),
+            flights.fly_travel_from("travel", from, (10.0, 5.0, 0.2), target, super::flight::Travel::Reframe, window, cx),
+        ] {
+            assert_eq!(shot.camera, target);
+            assert!(!shot.live && shot.from.is_none() && shot.fade == 1.0);
+        }
+        assert_eq!(frames_requested(cx), requested);
+        drop(guard);
+        assert!(!super::is_still_in(window, cx));
+        let next = super::Camera::new(200.0, 0.0, 80.0);
+        assert!(flights.fly("seed", next, window, cx).live);
+    });
+}

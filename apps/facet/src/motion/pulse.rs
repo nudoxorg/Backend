@@ -65,6 +65,16 @@ impl Pulse {
 /// Call from `render` (or `prepaint`) every frame the ambient motion is
 /// visible; stop calling it and the pulse lets go within three ticks.
 pub fn lease(window: &mut Window, cx: &mut App) -> Pulse {
+    if super::is_still_in(window, cx) {
+        let view = window.current_view();
+        let clock = cx.default_global::<PulseClock>();
+        clock.leases.remove(&view);
+        if clock.leases.is_empty() {
+            clock.running = false;
+            clock.task = None;
+        }
+        return Pulse { seconds: 0.0 };
+    }
     let now = now(cx);
     let epoch = epoch(cx);
     let clock = cx.default_global::<PulseClock>();

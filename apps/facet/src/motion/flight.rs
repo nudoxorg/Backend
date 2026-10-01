@@ -974,6 +974,9 @@ impl Flights {
         let (shot, trip) = {
             let mut store = self.store.borrow_mut();
             let state = store.entry(key.clone()).or_insert(State::Still(target));
+            if super::is_still_in(window, cx) {
+                *state = State::Still(target);
+            }
             if let Some(travel) = travel {
                 step_with(state, target, now, reduced, self.pacing, Some(travel))
             } else {
@@ -1002,6 +1005,10 @@ impl Flights {
         cx: &mut App,
     ) -> Shot {
         let key = key.into();
+        if super::is_still_in(window, cx) {
+            self.jump(key.clone(), target);
+            return self.fly(key, target, window, cx);
+        }
         let trip = plan(camera, velocity, target, now(cx), self.pacing);
         let state = if reduced_in(window, cx) {
             State::Still(camera)
@@ -1024,6 +1031,10 @@ impl Flights {
         cx: &mut App,
     ) -> Shot {
         let key = key.into();
+        if super::is_still_in(window, cx) {
+            self.jump(key.clone(), target);
+            return self.fly_travel(key, target, travel, window, cx);
+        }
         let trip = plan_travel(camera, velocity, target, now(cx), self.pacing, travel);
         let state = if reduced_in(window, cx) {
             State::Still(camera)
