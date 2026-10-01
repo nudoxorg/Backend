@@ -171,10 +171,6 @@ mod tests {
                 .on_mouse_down(MouseButton::Left, move |_, _, _| {
                     clicks.clicks.set(clicks.clicks.get() + 1)
                 })
-                .on_key_down(move |_, _, _| keys.keys.set(keys.keys.get() + 1))
-                .on_action(move |_: &InertTestAction, _, _| {
-                    actions.actions.set(actions.actions.get() + 1)
-                })
                 .on_a11y_action(accesskit::Action::Click, move |_, _, _| {
                     a11y_actions
                         .a11y_actions
@@ -194,7 +190,11 @@ mod tests {
                 .track_focus(&self.focus)
                 .tab_stop(true)
                 .role(accesskit::Role::Group)
-                .child(button);
+                .child(button)
+                .on_key_down(move |_, _, _| keys.keys.set(keys.keys.get() + 1))
+                .on_action(move |_: &InertTestAction, _, _| {
+                    actions.actions.set(actions.actions.get() + 1)
+                });
 
             let nested_clicks = self.events.clone();
             let nested = inert(
