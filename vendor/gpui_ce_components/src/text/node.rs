@@ -1367,7 +1367,7 @@ pub(crate) struct NodeContext {
 
 impl NodeContext {
     pub(super) fn add_ref(&mut self, identifier: SharedString, link: LinkMark) {
-        self.link_refs.insert(identifier, link);
+        self.link_refs.entry(identifier).or_insert(link);
     }
 }
 

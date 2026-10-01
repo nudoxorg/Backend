@@ -1,4 +1,5 @@
 mod document;
+mod document_storage;
 mod format;
 mod inline;
 mod inline_flow;

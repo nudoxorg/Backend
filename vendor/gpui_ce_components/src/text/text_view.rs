@@ -715,7 +715,7 @@ mod tests {
         let cx: &mut VisualTestContext = cx;
         let prepared = PreparedMarkdown::parse("prepared heading").unwrap();
         for prepared_first in [false, true] {
-            cx.update(|window, cx| {
+            let (live_state, fixed_state) = cx.update(|window, cx| {
                 let id = if prepared_first {
                     "switch-prepared-first"
                 } else {
@@ -742,6 +742,22 @@ mod tests {
                     live_state.entity_id()
                 );
                 assert_eq!(live_state.read(cx).source().as_str(), "changed live");
+                let mut later =
+                    TextView::markdown(id, "later background publication").background_parse();
+                later.request_layout(None, None, window, cx);
+                assert_eq!(
+                    later.state.as_ref().unwrap().entity_id(),
+                    live_state.entity_id()
+                );
+                assert_eq!(live_state.read(cx).source().as_str(), "changed live");
+                (live_state, fixed_state)
+            });
+            cx.run_until_parked();
+            live_state.read_with(cx, |state, _| {
+                assert_eq!(state.source().as_str(), "later background publication")
+            });
+            fixed_state.read_with(cx, |state, _| {
+                assert_eq!(state.source().as_str(), "prepared heading")
             });
         }
     }

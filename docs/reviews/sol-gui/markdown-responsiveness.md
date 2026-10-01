@@ -61,3 +61,38 @@ Still needs real-owner proof: first frame and completed README geometry, width
 and 200% text-scale reflow, heading jumps before/after parse, inline local and
 external links, keyboard link rows and Back restoration, selection/copy, and idle
 frame settling. No performance or pixel acceptance is inferred from source tests.
+
+## Source repair invariants
+
+The parser worker separates the current logical source from its last checked
+projection. Any failed replacement or append marks the basis unparsed. Recovery
+parses the actual complete logical source and resets incompatible selection;
+no append may borrow an older successful page as its basis after a failure.
+
+Checked source snapshots use the existing Ropey dependency; appending inserts
+only the new bytes and shares the prior rope. Checked block snapshots use a
+private persistent balanced tree: publication clones the root, suffix replacement
+copies a logarithmic path, and stable prefix AST leaves retain their addresses.
+Full source materialization is lazy for source-copy consumers and full recovery.
+The source-copy oracle measures ingestion, suffix slicing and parse-buffer source
+storage over 1,024 real parser appends while retaining an old snapshot. This is
+an operation counter, not an allocator profiler or a release timing measurement.
+Tree tests check prefix identity and bounded height after 4,096 appends/pops.
+
+A barrier-driven test holds the actual Markdown worker on A while a replacement
+and repairing append are published. Only its latest cumulative result remains
+queued when the UI resumes; this exercises the real reducer and parser.
+
+Prepared headings derive native inline nodes from their parent's AST and
+reference context. Derived projection offsets are local, distinct projections
+always publish even when source text matches, and prepared/live keyed states
+have separate identities. Duplicate definitions deliberately use CommonMark's
+first-definition-wins rule, correcting the component's previous last-insertion
+priority. A same-key switch test also requires a later live background result.
+
+Generic append semantics still have limits: an ever-growing unfinished last
+paragraph/fence requires reparsing that growing suffix; references introduced
+later can require reparsing older prose. This slice removes unconditional checked
+prefix copies, not those Markdown grammar dependencies. Generic cumulative bytes
+remain unrestricted; the complete README producer remains admitted at 512 KiB.
+All new repair oracles remain source-only until the integration gate runs them.

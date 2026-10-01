@@ -100,7 +100,7 @@ impl PreparedMarkdown {
     }
 
     pub(super) fn source(&self) -> SharedString {
-        self.0.document.source.clone()
+        self.0.document.source.shared()
     }
 }
 
@@ -282,11 +282,6 @@ impl TextViewState {
             return;
         }
         self.prepared_snapshot = Some(prepared.clone());
-        if self.text == prepared.0.document.source.as_str()
-            && self.parsed_content.node_cx.link_refs == prepared.0.node_cx.link_refs
-        {
-            return;
-        }
         self.text = prepared.0.document.source.to_string();
         self.revision = self.revision.wrapping_add(1);
         self.selection_revision = self.selection_revision.wrapping_add(1);
@@ -334,7 +329,7 @@ impl TextViewState {
 
     /// Get the text content.
     pub(crate) fn source(&self) -> SharedString {
-        self.parsed_content.document.source.clone()
+        self.parsed_content.document.source.shared()
     }
 
     /// Set whether the text is selectable, default false.
@@ -774,7 +769,7 @@ pub(crate) struct ParsedContent {
 struct UpdateFuture {
     format: TextViewFormat,
     content: ParsedContent,
-    logical_source: String,
+    logical_source: super::document_storage::SourceSnapshot,
     basis_checked: bool,
     rx: Pin<Box<Publications<UpdateOptions>>>,
     tx_result: Publisher<ParsedUpdate>,
@@ -789,7 +784,7 @@ impl UpdateFuture {
         Self {
             format,
             content: Default::default(),
-            logical_source: String::new(),
+            logical_source: Default::default(),
             basis_checked: true,
             rx: Box::pin(rx),
             tx_result,
@@ -797,15 +792,15 @@ impl UpdateFuture {
     }
     fn apply(&mut self, options: UpdateOptions) -> ParsedUpdate {
         if options.append {
-            self.logical_source.push_str(&options.pending_text);
+            self.logical_source.append(&options.pending_text);
         } else {
-            self.logical_source.clone_from(&options.pending_text);
+            self.logical_source = options.pending_text.clone().into();
         }
         let recover = options.append && !self.basis_checked;
         let res = if recover {
             let complete = UpdateOptions {
                 append: false,
-                pending_text: self.logical_source.clone(),
+                pending_text: self.logical_source.to_string(),
                 mode: ParseMode::Replace,
                 ..options.clone()
             };
@@ -901,10 +896,12 @@ fn parse_content(
     mut content: ParsedContent,
     options: &UpdateOptions,
 ) -> Result<ParsedContent, SharedString> {
-    let mut node_cx = NodeContext {
-        markdown_extensions: options.markdown_extensions.clone(),
-        ..NodeContext::default()
+    let mut node_cx = if options.append {
+        content.node_cx.clone()
+    } else {
+        NodeContext::default()
     };
+    node_cx.markdown_extensions = options.markdown_extensions.clone();
 
     // Re-parse the last block together with the appended text, so a block the
     // new text continues (an unclosed list, a fenced code block) is not split
@@ -924,9 +921,15 @@ fn parse_content(
 
     let mut source = String::new();
     if let Some(span) = last_span {
-        Arc::make_mut(&mut content.document.blocks).pop();
+        content.document.blocks.pop();
         node_cx.offset = span.start;
-        source.push_str(&content.document.source[span.start..]);
+        source.push_str(
+            &content
+                .document
+                .source
+                .get(span.start..content.document.source.len())
+                .unwrap(),
+        );
         source.push_str(&options.pending_text);
     } else {
         if options.append {
@@ -941,14 +944,20 @@ fn parse_content(
     }?;
 
     if options.append {
-        content.document.source =
-            format!("{}{}", content.document.source, options.pending_text).into();
-        Arc::make_mut(&mut content.document.blocks)
-            .extend(Arc::unwrap_or_clone(new_document.blocks));
+        // Test accounting includes the parse-buffer copy and the temporary
+        // suffix document's source storage, not only the persistent append.
+        #[cfg(test)]
+        content
+            .document
+            .source
+            .record_materialized_bytes(source.len() + new_document.source.copied_bytes());
+        content.document.source.append(&options.pending_text);
+        content.document.blocks.append(new_document.blocks);
     } else {
         content.document = new_document;
     }
 
+    content.node_cx = node_cx;
     Ok(content)
 }
 
@@ -1060,6 +1069,103 @@ mod tests {
                 state.source().as_str(),
                 "🦀 **Guide** [local](src/lib.rs#L7)"
             )
+        });
+    }
+
+    #[gpui::test]
+    fn distinct_prepared_semantics_replace_same_source_and_parent_offset_is_local(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::init);
+        let first = PreparedMarkdown::parse("same").unwrap();
+        let mut changed = (*first.0).clone();
+        let mut paragraph = node::Paragraph::default();
+        paragraph.push(
+            node::InlineNode::new("same").marks(vec![(0..4, node::TextMark::default().bold())]),
+        );
+        changed.document.blocks = vec![node::BlockNode::Paragraph(paragraph)].into();
+        let changed = PreparedMarkdown::from_content(changed);
+        let state = cx.update(|cx| cx.new(|cx| TextViewState::new_prepared(first, cx)));
+        state.update(cx, |state, cx| state.set_prepared(&changed, cx));
+        state.read_with(cx, |state, _| {
+            let node::BlockNode::Paragraph(paragraph) = &state.parsed_content.document.blocks[0]
+            else {
+                panic!("paragraph missing");
+            };
+            assert!(paragraph.children[0].marks[0].1.bold);
+        });
+
+        let extensions = Arc::new(MarkdownExtensions::default().block_parser(|node, context| {
+            let markdown::mdast::Node::Heading(heading) = node else {
+                return None;
+            };
+            assert!(
+                context.offset() > 0,
+                "fixture must exercise a nonzero parent offset"
+            );
+            Some(MarkdownNode::new(
+                "offset-heading",
+                context.prepare_inline(&heading.children, "<b>Guide</b> [id][target]"),
+            ))
+        }));
+        let prefix = parse_content(
+            TextViewFormat::Markdown,
+            ParsedContent::default(),
+            &UpdateOptions {
+                revision: 1,
+                pending_text: "first\n\nsecond\n\n".into(),
+                append: false,
+                mode: ParseMode::Replace,
+                markdown_extensions: extensions.clone(),
+            },
+        )
+        .unwrap();
+        let content =
+            parse_content(
+                TextViewFormat::Markdown,
+                prefix,
+                &UpdateOptions {
+                    revision: 2,
+                    pending_text:
+                        "## <b>Guide</b> [id][target]\n\n[target]: first.rs\n[target]: second.rs"
+                            .into(),
+                    append: true,
+                    mode: ParseMode::Compatible,
+                    markdown_extensions: extensions,
+                },
+            )
+            .unwrap();
+        let node = content
+            .document
+            .blocks
+            .iter()
+            .find_map(|block| match block {
+                node::BlockNode::Custom(node) => Some(node),
+                _ => None,
+            });
+        let Some(node) = node else {
+            panic!("heading missing");
+        };
+        let projection = node.data::<PreparedMarkdown>().unwrap();
+        assert_eq!(projection.0.node_cx.offset, 0);
+        assert_eq!(
+            projection
+                .0
+                .node_cx
+                .link_refs
+                .get("target")
+                .unwrap()
+                .url
+                .as_str(),
+            "first.rs"
+        );
+        assert_eq!(projection.0.document.blocks[0].span().unwrap().start, 0);
+        let state =
+            cx.update(|cx| cx.new(|cx| TextViewState::new_prepared(projection.clone(), cx)));
+        state.update(cx, |state, cx| {
+            state.selection_format = SelectionFormat::Source;
+            state.select_all(cx);
+            assert_eq!(state.selected_text(), "<b>Guide</b> [id][target]");
         });
     }
 
@@ -1470,6 +1576,122 @@ mod tests {
         assert_eq!(options.pending_text, "new text");
         assert!(!options.append);
         assert_eq!(options.mode, ParseMode::Replace);
+    }
+
+    #[test]
+    fn held_actual_worker_coalesces_replacement_and_repair_append_before_paint() {
+        use std::sync::{
+            Barrier,
+            atomic::{AtomicBool, Ordering},
+            mpsc,
+        };
+        let barrier = Arc::new(Barrier::new(2));
+        let worker_barrier = barrier.clone();
+        let (started, wait_started) = mpsc::channel();
+        let entered = AtomicBool::new(false);
+        let extensions = Arc::new(MarkdownExtensions::default().mdx().block_parser(
+            move |_, context| {
+                if context.source() == "A" && !entered.swap(true, Ordering::SeqCst) {
+                    started.send(()).unwrap();
+                    worker_barrier.wait();
+                }
+                None
+            },
+        ));
+        let (tx, rx) = pending_update::channel(UpdateOptions::merge);
+        let (tx_result, results) = pending_update::channel(ParsedUpdate::merge);
+        let options = |revision, text: &str, append| UpdateOptions {
+            revision,
+            pending_text: text.into(),
+            append,
+            mode: if append {
+                ParseMode::Compatible
+            } else {
+                ParseMode::Replace
+            },
+            markdown_extensions: extensions.clone(),
+        };
+        tx.try_send(options(1, "A", false)).unwrap();
+        let worker = std::thread::spawn(move || {
+            let mut worker = Box::pin(UpdateFuture::new(TextViewFormat::Markdown, rx, tx_result));
+            let waker = futures::task::noop_waker();
+            let mut context = std::task::Context::from_waker(&waker);
+            assert!(worker.as_mut().poll(&mut context).is_pending());
+            assert!(worker.as_mut().poll(&mut context).is_pending());
+        });
+        wait_started
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert!(results.try_recv().is_err());
+        tx.try_send(options(2, "{invalid", false)).unwrap();
+        tx.try_send(options(3, "}", true)).unwrap();
+        tx.try_send(options(4, " tail", true)).unwrap();
+        barrier.wait();
+        worker.join().unwrap();
+        let ready = results.try_recv().unwrap();
+        assert_eq!(ready.revision, 4);
+        assert!(!ready.selection_compatible);
+        assert_eq!(
+            ready.result.unwrap().document.source.as_str(),
+            "{invalid} tail"
+        );
+        assert!(
+            results.try_recv().is_err(),
+            "no intermediate stale document may remain queued"
+        );
+    }
+
+    #[test]
+    fn real_incremental_parser_preserves_prefix_nodes_and_linear_source_copy_work() {
+        let (_, rx) = pending_update::channel(UpdateOptions::merge);
+        let (tx_result, _) = pending_update::channel(ParsedUpdate::merge);
+        let mut worker = UpdateFuture::new(TextViewFormat::Markdown, rx, tx_result);
+        let options = |revision, text: &str, append| UpdateOptions {
+            revision,
+            pending_text: text.into(),
+            append,
+            mode: if append {
+                ParseMode::Compatible
+            } else {
+                ParseMode::Replace
+            },
+            markdown_extensions: Arc::default(),
+        };
+        let initial = worker
+            .apply(options(1, "first\n\nsecond\n\n", false))
+            .result
+            .unwrap();
+        let original_first = initial.document.blocks.get(0).unwrap() as *const node::BlockNode;
+        let before = worker.content.document.source.copied_bytes();
+        for revision in 2..=1025 {
+            worker
+                .apply(options(revision, "next\n\n", true))
+                .result
+                .unwrap();
+        }
+        assert_eq!(
+            worker.content.document.blocks.get(0).unwrap() as *const node::BlockNode,
+            original_first
+        );
+        assert_eq!(initial.document.blocks.len(), 2);
+        assert_eq!(worker.content.document.blocks.len(), 1026);
+        let copied = worker.content.document.source.copied_bytes() - before;
+        assert!(
+            copied < 1024 * 32,
+            "copied {copied} bytes while appending only stable short paragraphs"
+        );
+        assert_eq!(
+            worker.content.document.blocks.last().unwrap().text().trim(),
+            "next"
+        );
+        assert!(
+            worker
+                .content
+                .document
+                .source
+                .as_str()
+                .starts_with("first\n\nsecond\n\n")
+        );
     }
 
     #[test]

@@ -1,9 +1,9 @@
 use gpui::{
-    App, InteractiveElement as _, IntoElement, ListState, ParentElement as _, SharedString,
-    Styled as _, Window, div,
+    App, InteractiveElement as _, IntoElement, ListState, ParentElement as _, Styled as _, Window,
+    div,
 };
 
-use std::{ops::RangeInclusive, sync::Arc};
+use std::ops::RangeInclusive;
 
 use crate::text::{
     SelectionFormat,
@@ -13,8 +13,8 @@ use crate::text::{
 /// The parsed document AST.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct ParsedDocument {
-    pub(crate) source: SharedString,
-    pub(crate) blocks: Arc<Vec<BlockNode>>,
+    pub(crate) source: super::document_storage::SourceSnapshot,
+    pub(crate) blocks: super::document_storage::BlockSequence,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -145,7 +145,7 @@ impl ParsedDocument {
         if let Some(span) = block.span()
             && let Some(source) = self.source.get(span.start..span.end)
         {
-            return source.to_string();
+            return source;
         }
 
         block.selected_text(SelectionFormat::Source)

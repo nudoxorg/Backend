@@ -1,4 +1,4 @@
-use std::{ops::Range, sync::Arc};
+use std::ops::Range;
 
 use gpui::SharedString;
 use markdown::mdast::{self, Node};
@@ -26,6 +26,7 @@ pub(crate) fn prepare_inline(
     context: &NodeContext,
 ) -> crate::text::state::PreparedMarkdown {
     let mut node_cx = context.clone();
+    node_cx.offset = 0;
     let mut paragraph = Paragraph::default();
     for child in children {
         parse_paragraph(&mut paragraph, child, &mut node_cx);
@@ -39,7 +40,7 @@ pub(crate) fn prepare_inline(
     crate::text::state::PreparedMarkdown::from_content(crate::text::state::ParsedContent {
         document: ParsedDocument {
             source: source.to_string().into(),
-            blocks: Arc::new(vec![BlockNode::Paragraph(paragraph)]),
+            blocks: vec![BlockNode::Paragraph(paragraph)].into(),
         },
         node_cx,
     })
@@ -265,7 +266,7 @@ fn parse_paragraph(paragraph: &mut Paragraph, node: &mdast::Node, cx: &mut NodeC
         Node::Html(val) => match super::html::parse(&val.value, cx) {
             Ok(el) => {
                 if let Some(inline_text) =
-                    append_inline_html_blocks(paragraph, Arc::unwrap_or_clone(el.blocks))
+                    append_inline_html_blocks(paragraph, el.blocks.into_vec())
                 {
                     text = inline_text;
                 } else {
@@ -352,10 +353,10 @@ fn ast_to_document(source: &str, root: mdast::Node, cx: &mut NodeContext) -> Par
         .children
         .into_iter()
         .map(|c| ast_to_node(source, c, cx))
-        .collect();
+        .collect::<Vec<_>>();
     ParsedDocument {
         source: source.to_string().into(),
-        blocks: Arc::new(blocks),
+        blocks: blocks.into(),
     }
 }
 
@@ -450,7 +451,7 @@ fn ast_to_node(source: &str, value: mdast::Node, cx: &mut NodeContext) -> BlockN
         )),
         Node::Html(val) => match super::html::parse(&val.value, cx) {
             Ok(el) => BlockNode::Root {
-                children: Arc::unwrap_or_clone(el.blocks),
+                children: el.blocks.into_vec(),
                 span: new_span(val.position, cx),
             },
             Err(err) => {
