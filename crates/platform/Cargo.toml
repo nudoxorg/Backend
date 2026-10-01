@@ -12,9 +12,9 @@ serde.workspace = true
 [lib]
 path = "lib.rs"
 
-# Unix builds use only the standard library. Windows builds reach AF_UNIX
-# sockets through `socket2` and the Win32 security API through `windows-sys`;
-# every unsafe call lives in this crate's `win32` module and nowhere else.
+# Unix builds use the standard library and `rustix`; macOS also has a direct
+# `libc` dependency for its private process-info adapter. Windows builds reach
+# AF_UNIX sockets through `socket2` and Win32 security through `windows-sys`.
 [target.'cfg(windows)'.dependencies]
 socket2 = { version = "0.6.5", default-features = false }
 windows-sys = { version = "0.61.2", features = [
@@ -31,6 +31,9 @@ windows-sys = { version = "0.61.2", features = [
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1.4", default-features = false, features = ["fs", "process", "std"] }
 socket2 = { version = "0.6.5", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "=0.2.189"
 
 [lints]
 workspace = true

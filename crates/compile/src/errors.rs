@@ -105,6 +105,8 @@ pub enum ProcessError {
     Io,
     /// A child could not be killed and reaped after cancellation or a limit.
     NotReaped,
+    /// The bounded supervisor has no free child-custody slot; no child was spawned.
+    SupervisorCapacity,
     /// Output exceeded stdout, stderr, or aggregate output limits.
     OutputLimit,
     /// Files grew beyond the configured workspace growth limit.
@@ -143,6 +145,7 @@ impl fmt::Display for ProcessError {
             Self::SpawnFailure => "authority process could not be started",
             Self::Io => "authority process I/O failed",
             Self::NotReaped => "authority process was not reaped",
+            Self::SupervisorCapacity => "authority process supervisor is at child-custody capacity",
             Self::OutputLimit => "authority process output exceeded its limit",
             Self::WorkspaceLimit => "authority workspace grew beyond its limit",
             Self::InputLimit => "authority process input exceeded its limit",

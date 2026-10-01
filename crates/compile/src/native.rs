@@ -13,7 +13,7 @@ use crate::{
     ProcessTerminal, ScopeRoot, SessionKey, SupervisedCommand, ToolchainId,
 };
 use native_process::PersistentProcess;
-use std::fmt;
+use std::{fmt, time::Instant};
 
 /// Description of the wire protocol an authority command implements.
 ///
@@ -509,6 +509,20 @@ impl NativeAuthorityRunner {
         &self,
         cancellation: &Cancellation,
     ) -> Result<PersistentNativeSession, NativeRunnerError> {
+        if !cfg!(all(
+            unix,
+            not(any(
+                target_os = "cygwin",
+                target_os = "horizon",
+                target_os = "openbsd",
+                target_os = "redox",
+                target_os = "wasi"
+            ))
+        )) {
+            return Err(NativeRunnerError::Process(ProcessError::UnsupportedLimit(
+                crate::UnsupportedLimit::ProcessGroup,
+            )));
+        }
         self.validate_persistent()?;
         let key = self
             .command
@@ -520,11 +534,14 @@ impl NativeAuthorityRunner {
         cancellation
             .checkpoint()
             .map_err(|_| NativeRunnerError::Process(ProcessError::Cancelled))?;
+        let deadline = Instant::now()
+            .checked_add(self.command.limits().wall_time())
+            .ok_or(NativeRunnerError::Process(ProcessError::Deadline))?;
         let mut process = PersistentProcess::spawn(&self.command)?;
         let mut session = ErasedSession::new(key.digest());
         let hello = session.hello().map_err(NativeRunnerError::Process)?;
-        process.send(&hello)?;
-        let (response, _payload) = process.receive(cancellation, false)?;
+        process.send(&hello, cancellation, deadline)?;
+        let (response, _payload) = process.receive(cancellation, false, deadline)?;
         session.accept_wire(&response).map_err(|_| {
             let _ = process.terminate();
             NativeRunnerError::Protocol
@@ -591,6 +608,11 @@ impl PersistentNativeSession {
     #[must_use]
     pub const fn state(&self) -> crate::SessionState {
         self.session.state()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_stdout_after_next_frame_for_test(&self) -> bool {
+        self.process.pause_stdout_after_next_frame_for_test()
     }
 
     /// Sends one manifest-bound request with a fresh cancellation observation.
@@ -671,19 +693,22 @@ impl PersistentNativeSession {
             .session
             .request(manifest, revision)
             .map_err(NativeRunnerError::Process)?;
-        if let Err(error) = self.process.send(&request) {
+        let deadline = Instant::now()
+            .checked_add(self.command.limits().wall_time())
+            .ok_or(NativeRunnerError::Process(ProcessError::Deadline))?;
+        if let Err(error) = self.process.send(&request, cancellation, deadline) {
             self.session.fallback_to_cold();
             let _ = self.process.terminate();
             return Err(error);
         }
         if !payload.is_empty()
-            && let Err(error) = self.process.send_bytes(payload)
+            && let Err(error) = self.process.send_bytes(payload, cancellation, deadline)
         {
             self.session.fallback_to_cold();
             let _ = self.process.terminate();
             return Err(error);
         }
-        let (response, payload) = match self.process.receive(cancellation, true) {
+        let (response, payload) = match self.process.receive(cancellation, true, deadline) {
             Ok(response) => response,
             Err(error) => {
                 self.session.fallback_to_cold();

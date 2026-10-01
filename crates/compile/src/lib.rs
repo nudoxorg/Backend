@@ -12,6 +12,7 @@ mod cancel;
 mod containment;
 mod contract;
 mod embedding;
+mod embedding_cache;
 mod errors;
 mod facts;
 mod frame;
@@ -56,6 +57,7 @@ pub use embedding::{
     MAX_EMBEDDING_BATCH_INPUTS, MAX_EMBEDDING_BATCH_ITEMS, MAX_EMBEDDING_BATCH_METADATA_BYTES,
     MAX_EMBEDDING_CACHE_COORDINATE_BYTES, MAX_EMBEDDING_MODEL_BYTES, MAX_EMBEDDING_TOKENIZER_BYTES,
 };
+pub use embedding_cache::EmbeddingCacheFile;
 pub use errors::{FrameError, PoolError, ProcessError, UnsupportedLimit};
 pub use facts::{
     DeclarationFacts, Deprecation, Fact, FactError, MAX_FACT_TEXT_BYTES, Obligation,
