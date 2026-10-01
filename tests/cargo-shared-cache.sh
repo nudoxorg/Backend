@@ -62,6 +62,7 @@ chmod +x "$test_root/bin/git"
 
 printf '%s\n' '#!/bin/sh' \
 'if [ "${1:-}" = --version ]; then printf "cargo 1.97.1-test\\n"; exit 0; fi' \
+'if [ -n "${NUDOX_TEST_TOOLCHAIN_LOG:-}" ]; then printf "%s|%s\\n" "$RUSTC" "$RUSTDOC" >> "$NUDOX_TEST_TOOLCHAIN_LOG"; fi' \
 'if [ -n "${CARGO_BUILD_BUILD_DIR:-}" ]; then mkdir -p "$CARGO_BUILD_BUILD_DIR"; fi' \
 'if [ -n "${CARGO_BUILD_BUILD_DIR:-}" ]; then' \
   '  if [ -n "${NUDOX_TEST_REQUIRE_BUILD_MARKER:-}" ]; then' \
@@ -84,10 +85,15 @@ printf '%s\n' '#!/bin/sh' \
 chmod +x "$test_root/bin/cargo"
 
 printf '%s\n' '#!/bin/sh' \
+  'if [ -n "${RUSTC_TEST_LOG:-}" ]; then printf "selected:%s\\n" "$*" >> "$RUSTC_TEST_LOG"; fi' \
   'if [ "${1:-}" = --version ]; then printf "rustc 1.97.1-test\\n"; exit 0; fi' \
-  'if [ -n "${RUSTC_TEST_LOG:-}" ]; then printf "%s\\n" "$*" >> "$RUSTC_TEST_LOG"; fi' \
   'exit "${RUSTC_TEST_STATUS:-0}"' > "$test_root/bin/rustc"
 chmod +x "$test_root/bin/rustc"
+
+printf '%s\n' '#!/bin/sh' \
+  'if [ "${1:-}" = --version ]; then printf "rustdoc 1.97.1-test\\n"; exit 0; fi' \
+  'exit 0' > "$test_root/bin/rustdoc"
+chmod +x "$test_root/bin/rustdoc"
 
 printf '%s\n' '#!/bin/sh' \
   'if [ -n "${SCCACHE_TEST_LOG:-}" ]; then printf "%s\\n" "$*" >> "$SCCACHE_TEST_LOG"; fi' \
@@ -812,6 +818,71 @@ assert_eq "$test_root/blocked-explicit-build/.nudox-cargo/slot-0" "$(tail -n 1 "
 if find "$ceiling_cache/build" -maxdepth 1 -type d -name 'overflow-*' -print -quit 2>/dev/null | grep . >/dev/null; then
   fail "hard build ceiling created an overflow directory"
 fi
+
+# A Cargo wrapper launched outside the Nix shell must not let an ambient
+# Homebrew Rustc shadow the toolchain selected when the wrapper was built.
+# Cargo receives exact absolute RUSTC/RUSTDOC paths, and provenance records the
+# same RUSTC executable Cargo receives. An explicit RUSTC override remains
+# exact and is reflected in provenance; an explicit RUSTDOC is passed through.
+ambient_tools="$test_root/ambient-tools"
+mkdir -p "$ambient_tools"
+printf '%s\n' '#!/bin/sh' \
+  'if [ "${1:-}" = --version ]; then printf "rustc 1.98.1-homebrew-test\\n"; exit 0; fi' \
+  'if [ -n "${RUSTC_TEST_LOG:-}" ]; then printf "ambient:%s\\n" "$*" >> "$RUSTC_TEST_LOG"; fi' \
+  'exit 0' > "$ambient_tools/rustc"
+printf '%s\n' '#!/bin/sh' \
+  'if [ "${1:-}" = --version ]; then printf "rustdoc 1.98.1-homebrew-test\\n"; exit 0; fi' \
+  'exit 0' > "$ambient_tools/rustdoc"
+chmod +x "$ambient_tools/rustc" "$ambient_tools/rustdoc"
+ambient_shadow_root="$test_root/roots/ambient-rust-shadow"
+ambient_shadow_log="$test_root/ambient-rust-shadow.log"
+ambient_shadow_toolchain_log="$test_root/ambient-rust-shadow-tools.log"
+ambient_shadow_rustc_log="$test_root/ambient-rust-shadow-rustc.log"
+PATH="$ambient_tools:$test_root/bin:$PATH" \
+  NUDOX_TEST_WORKTREE="$ambient_shadow_root" NUDOX_TEST_LOG="$ambient_shadow_log" \
+  NUDOX_TEST_TOOLCHAIN_LOG="$ambient_shadow_toolchain_log" \
+  RUSTC_TEST_LOG="$ambient_shadow_rustc_log" \
+  NUDOX_BUILD_CACHE_ROOT="$test_root/ambient-rust-shadow-cache" NUDOX_CARGO_BUILD_SLOTS=1 \
+  SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+  "$test_root/wrapper" build --locked
+assert_eq "$test_root/bin/rustc|$test_root/bin/rustdoc" "$(cat "$ambient_shadow_toolchain_log")"
+case "$(cat "$ambient_shadow_rustc_log")" in
+  selected:--version\ --verbose) ;;
+  *) fail "Cargo provenance queried the ambient Rustc instead of the selected Rustc" ;;
+esac
+ambient_shadow_manifest="$(find "$ambient_shadow_root/.local/target/.nudox-provenance" -maxdepth 1 -type f -name '*.json' -print | head -n 1)"
+[ -n "$ambient_shadow_manifest" ] || fail "ambient-shadow provenance manifest was not emitted"
+python3 - "$ambient_shadow_manifest" "$test_root/bin/rustc" <<'PY'
+import json
+import pathlib
+import sys
+
+value = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert value["toolchain"]["rustc_path"] == sys.argv[2]
+assert value["toolchain"]["rustc"].startswith("rustc 1.97.1-test")
+PY
+
+explicit_tool_root="$test_root/roots/explicit-rust-overrides"
+explicit_tool_log="$test_root/explicit-rust-overrides.log"
+explicit_toolchain_log="$test_root/explicit-rust-overrides-tools.log"
+NUDOX_TEST_WORKTREE="$explicit_tool_root" NUDOX_TEST_LOG="$explicit_tool_log" \
+  NUDOX_TEST_TOOLCHAIN_LOG="$explicit_toolchain_log" \
+  NUDOX_BUILD_CACHE_ROOT="$test_root/explicit-rust-overrides-cache" NUDOX_CARGO_BUILD_SLOTS=1 \
+  RUSTC="$ambient_tools/rustc" RUSTDOC="$ambient_tools/rustdoc" \
+  SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+  "$test_root/wrapper" check --offline
+assert_eq "$ambient_tools/rustc|$ambient_tools/rustdoc" "$(cat "$explicit_toolchain_log")"
+explicit_tool_manifest="$(find "$explicit_tool_root/.local/target/.nudox-provenance" -maxdepth 1 -type f -name '*.json' -print | head -n 1)"
+[ -n "$explicit_tool_manifest" ] || fail "explicit-tool provenance manifest was not emitted"
+python3 - "$explicit_tool_manifest" "$ambient_tools/rustc" <<'PY'
+import json
+import pathlib
+import sys
+
+value = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert value["toolchain"]["rustc_path"] == sys.argv[2]
+assert value["toolchain"]["rustc"].startswith("rustc 1.98.1-homebrew-test")
+PY
 
 # Provenance is emitted for a failed Cargo invocation too, while the original
 # arguments and exact Cargo exit status remain intact. The executable output

@@ -813,9 +813,54 @@ fi
 export CARGO_BUILD_BUILD_DIR="$selected"
 export CARGO_TARGET_DIR
 
+# Cargo otherwise resolves rustc and rustdoc from PATH. The wrapped Cargo
+# executable has a pinned toolchain available as @rustc@; use it by default so
+# provenance cannot claim that compiler while Cargo silently runs an ambient
+# one. Preserve explicit caller overrides, but resolve each to one absolute
+# executable before Cargo observes it; provenance records the selected RUSTC
+# path and version.
+resolve_rust_tool() {
+  tool_name="$1"
+  tool_value="$2"
+  case "$tool_value" in
+    */*)
+      case "$tool_value" in
+        /*) resolved_tool="$tool_value" ;;
+        *) resolved_tool="$PWD/$tool_value" ;;
+      esac
+      ;;
+    *) resolved_tool="$(command -v "$tool_value" 2>/dev/null || true)" ;;
+  esac
+  case "$resolved_tool" in
+    /*) ;;
+    *)
+      echo "nudox cargo: cannot resolve $tool_name to an absolute executable" >&2
+      return 1
+      ;;
+  esac
+  if [ ! -f "$resolved_tool" ] || [ ! -x "$resolved_tool" ]; then
+    echo "nudox cargo: $tool_name is not an executable file: $resolved_tool" >&2
+    return 1
+  fi
+  printf '%s\n' "$resolved_tool"
+}
+
+RUSTC="$(resolve_rust_tool RUSTC "${RUSTC:-@rustc@}")" || exit 64
+export RUSTC
+if [ -n "${RUSTDOC:-}" ]; then
+  RUSTDOC="$(resolve_rust_tool RUSTDOC "$RUSTDOC")" || exit 64
+else
+  RUSTDOC="${RUSTC%/*}/rustdoc"
+  if [ ! -f "$RUSTDOC" ] || [ ! -x "$RUSTDOC" ]; then
+    echo "nudox cargo: selected rustc has no executable sibling rustdoc: $RUSTDOC" >&2
+    exit 64
+  fi
+fi
+export RUSTDOC
+
 if provenance_start="$(NUDOX_PROVENANCE_GIT="@git@" @python3@ @provenance@ begin \
   "$workspace_root" "$CARGO_BUILD_BUILD_DIR" "$CARGO_TARGET_DIR" "$0" \
-  "@wrapper_source@" "@cargo@" "${RUSTC:-@rustc@}" "$RUSTC_WRAPPER" "$@" 2>/dev/null)"; then
+  "@wrapper_source@" "@cargo@" "$RUSTC" "$RUSTC_WRAPPER" "$@" 2>/dev/null)"; then
   :
 else
   echo "nudox cargo: build provenance capture could not start" >&2
