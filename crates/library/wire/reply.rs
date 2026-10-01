@@ -2,10 +2,9 @@ use super::reply_admission::{CapabilityAdmission, CoverageAdmission, VerifierAdm
 use super::reply_content::{
     DocumentWire, FactsWire, FragmentWire, OutlineWire, SourceAvailabilityWire, SourceExcerptWire,
     document_from_wire_with_admission, document_to_wire, facts_from_wire, facts_to_wire,
-    fragment_from_wire_with_capability,
-    fragment_to_wire, outline_from_wire_with_admission, outline_to_wire,
-    source_availability_from_wire, source_availability_to_wire, source_excerpt_from_wire,
-    source_excerpt_not_captured, source_excerpt_to_wire,
+    fragment_from_wire_with_capability, fragment_to_wire, outline_from_wire_with_admission,
+    outline_to_wire, source_availability_from_wire, source_availability_to_wire,
+    source_excerpt_from_wire, source_excerpt_not_captured, source_excerpt_to_wire,
 };
 use super::reply_failure::{
     CommandFailureWire, command_failure_from_wire, command_failure_to_wire,
@@ -31,7 +30,7 @@ use crate::canonical::{
 use crate::{
     Basis, CommandReply, CoverageCapability, DeclarationKind, GraphRelation, HealthReport,
     PageTerminal, RevisionReceipt, Row, RowId, RowIdentityPreimage, RowState, SemanticLinkKind,
-    ViewRoot, ViewSnapshot,
+    SemanticSearchStatus, ViewRoot, ViewSnapshot,
 };
 use backend_version::ProducerObservationVerifier;
 use serde::{Deserialize, Serialize};
@@ -45,6 +44,8 @@ pub(crate) struct ReplyEnvelope {
     pub(crate) certificate: Option<WireCertificate>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) health_cursor: Option<CursorWire>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) semantic_search: Option<SemanticSearchStatus>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -212,6 +213,13 @@ impl Serialize for ReplyDto {
                 "health cursor attached to a non-health reply",
             ));
         }
+        if self.semantic_search_status().is_some()
+            && !matches!(&self.reply, CommandReply::Search(_))
+        {
+            return Err(serde::ser::Error::custom(
+                "semantic search status attached to a non-search reply",
+            ));
+        }
         let reply = reply_to_wire(&self.reply);
         ReplyEnvelope {
             version: DTO_VERSION,
@@ -222,6 +230,7 @@ impl Serialize for ReplyDto {
                 .then_some(self.health_cursor())
                 .flatten()
                 .map(cursor_to_wire),
+            semantic_search: self.semantic_search_status(),
         }
         .serialize(serializer)
     }
@@ -237,6 +246,11 @@ impl<'de> Deserialize<'de> for ReplyDto {
         let certificate = envelope.certificate.as_ref().unwrap_or(&empty_certificate);
         let reply =
             reply_from_wire(envelope.reply, certificate, None).map_err(serde::de::Error::custom)?;
+        if envelope.semantic_search.is_some() && !matches!(&reply, CommandReply::Search(_)) {
+            return Err(serde::de::Error::custom(
+                "semantic search status attached to a non-search reply",
+            ));
+        }
         let health_cursor = envelope
             .health_cursor
             .as_ref()
@@ -276,6 +290,9 @@ impl<'de> Deserialize<'de> for ReplyDto {
         }
         if let Some(cursor) = health_cursor {
             dto = dto.with_health_cursor(cursor);
+        }
+        if let Some(status) = envelope.semantic_search {
+            dto = dto.with_semantic_search_status(status);
         }
         Ok(dto)
     }
@@ -500,8 +517,10 @@ pub(crate) fn snapshot_to_wire(snapshot: &ViewSnapshot) -> SnapshotWire {
         root: view_root_to_wire(&snapshot.root),
         freshness: freshness_to_wire(snapshot.freshness),
         next: snapshot.next.map(cursor_to_wire),
-        graph_relations: snapshot.graph_relations.as_deref().map(|relations| {
-            GraphRelationsWire {
+        graph_relations: snapshot
+            .graph_relations
+            .as_deref()
+            .map(|relations| GraphRelationsWire {
                 schema: GRAPH_RELATIONS_SCHEMA,
                 relations: relations
                     .iter()
@@ -511,8 +530,7 @@ pub(crate) fn snapshot_to_wire(snapshot: &ViewSnapshot) -> SnapshotWire {
                         relation: relation.relation,
                     })
                     .collect(),
-            }
-        }),
+            }),
         rich_graph: snapshot.rich_graph.clone(),
     }
 }
@@ -625,7 +643,7 @@ pub(crate) fn view_root_from_wire(
     view_root_from_wire_with_admission(value, certificate, &CapabilityAdmission(capability), false)
 }
 
-fn view_root_from_wire_with_admission<A: CoverageAdmission>(
+pub(super) fn view_root_from_wire_with_admission<A: CoverageAdmission>(
     value: &ViewRootWire,
     certificate: &WireCertificate,
     admission: &A,

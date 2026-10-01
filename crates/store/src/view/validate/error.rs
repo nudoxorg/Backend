@@ -7,7 +7,9 @@
     reason = "Each documented variant names and explains its complete structured payload; repeating field labels would not add meaning."
 )]
 
-use backend_version::schema::{LimitError, LimitKind, SECTION_DESCRIPTOR_BYTES, SectionCompatibilityError};
+use backend_version::schema::{
+    LimitError, LimitKind, SECTION_DESCRIPTOR_BYTES, SectionCompatibilityError,
+};
 
 /// A precise structural reason untrusted frame bytes could not become a validation witness.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]

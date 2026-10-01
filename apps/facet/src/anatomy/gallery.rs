@@ -80,14 +80,38 @@ pub(crate) const SCENES: &[Scene] = &[
         size: READER,
         build: |_, cx| scene("serde_core::de::Visitor", cx),
     },
+    // The drawn page (`anatomy::page::gallery`): the desktop's reader region
+    // at a 1440 and a 760 window.
+    Scene { id: "page-value", title: "The drawn page: toml::Value (Rust), a fork with accessors on its tines", size: PAGE_WIDE, build: |_, cx| page_view(PageOf::Value, cx) },
+    Scene { id: "page-value-760", title: "The drawn page at 760: toml::Value", size: PAGE_NARROW, build: |_, cx| page_view(PageOf::Value, cx) },
+    Scene { id: "page-relation-label", title: "The drawn page: present::glyph::RelationLabel (Rust)", size: PAGE_WIDE, build: |_, cx| page_view(PageOf::RelationLabel, cx) },
+    Scene { id: "page-relation-label-760", title: "The drawn page at 760: RelationLabel", size: PAGE_NARROW, build: |_, cx| page_view(PageOf::RelationLabel, cx) },
+    Scene { id: "page-error-handling", title: "The drawn page: pflag.ErrorHandling (Go), a named int and its iota constants", size: PAGE_WIDE, build: |_, cx| page_view(PageOf::ErrorHandling, cx) },
+    Scene { id: "page-error-handling-760", title: "The drawn page at 760: pflag.ErrorHandling", size: PAGE_NARROW, build: |_, cx| page_view(PageOf::ErrorHandling, cx) },
+    Scene { id: "page-string-formats", title: "The drawn page: zod $ZodStringFormats (TypeScript), a literal union folded past seven", size: PAGE_WIDE, build: |_, cx| page_view(PageOf::StringFormats, cx) },
+    Scene { id: "page-string-formats-760", title: "The drawn page at 760: $ZodStringFormats", size: PAGE_NARROW, build: |_, cx| page_view(PageOf::StringFormats, cx) },
+    Scene { id: "page-from-str", title: "The drawn page: serde_json::from_str (Rust), a pipe with its bound in words and its error dropping", size: PAGE_WIDE, build: |_, cx| page_view(PageOf::FromStr, cx) },
+    Scene { id: "page-from-str-760", title: "The drawn page at 760: serde_json::from_str", size: PAGE_NARROW, build: |_, cx| page_view(PageOf::FromStr, cx) },
+    Scene { id: "page-parse", title: "The drawn page: pflag FlagSet.Parse (Go), a pipe that changes its receiver and returns error", size: PAGE_WIDE, build: |_, cx| page_view(PageOf::Parse, cx) },
+    Scene { id: "page-parse-760", title: "The drawn page at 760: FlagSet.Parse", size: PAGE_NARROW, build: |_, cx| page_view(PageOf::Parse, cx) },
+    Scene { id: "page-zod-parse", title: "The drawn page: zod ZodType.parse (TypeScript), a pipe on its schema", size: PAGE_WIDE, build: |_, cx| page_view(PageOf::ZodParse, cx) },
+    Scene { id: "page-zod-parse-760", title: "The drawn page at 760: ZodType.parse", size: PAGE_NARROW, build: |_, cx| page_view(PageOf::ZodParse, cx) },
+    Scene { id: "page-serialize", title: "The drawn page: serde Serialize (Rust), a socket with 486 doers plugged in", size: PAGE_WIDE, build: |_, cx| page_view(PageOf::Serialize, cx) },
+    Scene { id: "page-serialize-760", title: "The drawn page at 760: Serialize", size: PAGE_NARROW, build: |_, cx| page_view(PageOf::Serialize, cx) },
+    Scene { id: "page-go-value", title: "The drawn page: pflag.Value (Go), all notches, its doers computed", size: PAGE_WIDE, build: |_, cx| page_view(PageOf::GoValue, cx) },
+    Scene { id: "page-go-value-760", title: "The drawn page at 760: pflag.Value", size: PAGE_NARROW, build: |_, cx| page_view(PageOf::GoValue, cx) },
+    Scene { id: "page-collection", title: "The drawn page: yaml Collection (TypeScript), an abstract class: notches and tabs", size: PAGE_WIDE, build: |_, cx| page_view(PageOf::Collection, cx) },
+    Scene { id: "page-collection-760", title: "The drawn page at 760: yaml Collection", size: PAGE_NARROW, build: |_, cx| page_view(PageOf::Collection, cx) },
 ];
+
+use super::page::gallery::{NARROW as PAGE_NARROW, PageOf, WIDE as PAGE_WIDE, view as page_view};
 
 fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Nudox-Design-System/v4/graph")
 }
 
 /// The fixture world and its names, parsed once per process.
-fn world() -> &'static (World, Names) {
+pub(super) fn world() -> &'static (World, Names) {
     static WORLD: OnceLock<(World, Names)> = OnceLock::new();
     WORLD.get_or_init(|| {
         let bytes = std::fs::read(fixture().join("world.json")).unwrap_or_default();
@@ -99,12 +123,12 @@ fn world() -> &'static (World, Names) {
     })
 }
 
-fn find(world: &World, qualified: &str) -> Option<NodeId> {
+pub(super) fn find(world: &World, qualified: &str) -> Option<NodeId> {
     let (place, name) = qualified.rsplit_once("::")?;
     (0..u32::try_from(world.len()).ok()?).find(|&i| world.node(i).name.as_ref() == name && world.qual(i).as_ref() == place)
 }
 
-fn read(package: &Package, file: &str) -> Option<Arc<str>> {
+pub(super) fn read(package: &Package, file: &str) -> Option<Arc<str>> {
     let dir = if package.external { "registry" } else { "repo" };
     std::fs::read_to_string(fixture().join(dir).join(file)).ok().map(Arc::from)
 }
@@ -139,7 +163,7 @@ fn scene(qualified: &'static str, cx: &mut App) -> AnyView {
             let name = world.name_of(u.caller);
             (u, name)
         });
-        let recipe = RECIPES.with(|r| r.getting_one(world, node).or_else(|| r.calling_it(world, node)).map(|s| s.view(world)));
+        let recipe = RECIPES.with(|r| r.getting_one(world, node).or_else(|| r.calling_it(world, node)).map(|s| s.view(world, node)));
         (node, page(world, names, node), uses.collect(), recipe)
     });
     cx.new(|_: &mut Context<AnatomyScene>| AnatomyScene { node }).into()

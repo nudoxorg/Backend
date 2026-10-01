@@ -606,23 +606,35 @@ fn added_package_semantic_terminal(
         .map_err(|error| BuiltinModelError(format!("added package URL: {error:?}")))?;
     let profile = match coordinate.package_type() {
         backend_semantic::vocabulary::PackageType::Cargo => {
-            backend_semantic::vocabulary::LanguageProfile::Rust(backend_semantic::vocabulary::RustEdition::Rust2024)
+            backend_semantic::vocabulary::LanguageProfile::Rust(
+                backend_semantic::vocabulary::RustEdition::Rust2024,
+            )
         }
-        backend_semantic::vocabulary::PackageType::Npm => backend_semantic::vocabulary::LanguageProfile::TypeScript(
-            backend_semantic::vocabulary::TypeScriptSource::TypeScript,
-        ),
-        backend_semantic::vocabulary::PackageType::Pypi => backend_semantic::vocabulary::LanguageProfile::Python(
-            backend_semantic::vocabulary::PythonVersion::Python314,
-        ),
+        backend_semantic::vocabulary::PackageType::Npm => {
+            backend_semantic::vocabulary::LanguageProfile::TypeScript(
+                backend_semantic::vocabulary::TypeScriptSource::TypeScript,
+            )
+        }
+        backend_semantic::vocabulary::PackageType::Pypi => {
+            backend_semantic::vocabulary::LanguageProfile::Python(
+                backend_semantic::vocabulary::PythonVersion::Python314,
+            )
+        }
         backend_semantic::vocabulary::PackageType::Golang => {
-            backend_semantic::vocabulary::LanguageProfile::Go(backend_semantic::vocabulary::GoVersion::Go125)
+            backend_semantic::vocabulary::LanguageProfile::Go(
+                backend_semantic::vocabulary::GoVersion::Go125,
+            )
         }
         backend_semantic::vocabulary::PackageType::Maven => {
-            backend_semantic::vocabulary::LanguageProfile::Java(backend_semantic::vocabulary::JavaRelease::Java25)
+            backend_semantic::vocabulary::LanguageProfile::Java(
+                backend_semantic::vocabulary::JavaRelease::Java25,
+            )
         }
-        backend_semantic::vocabulary::PackageType::Nuget => backend_semantic::vocabulary::LanguageProfile::CSharp(
-            backend_semantic::vocabulary::CSharpVersion::CSharp14,
-        ),
+        backend_semantic::vocabulary::PackageType::Nuget => {
+            backend_semantic::vocabulary::LanguageProfile::CSharp(
+                backend_semantic::vocabulary::CSharpVersion::CSharp14,
+            )
+        }
         // The `generic` package type intentionally cannot choose between C and
         // C++; indexing a concrete extension supplies that distinction.
         backend_semantic::vocabulary::PackageType::Generic => return Ok(Vec::new()),
@@ -1482,12 +1494,14 @@ mod persisted_intent_tests {
         let package = backend_engine::PackageKey::from_value(label);
         let package_reference = backend_engine::PackageReference::parse(label.to_owned())
             .expect("selection package reference");
-        let coordinate =
-            backend_semantic::vocabulary::PackageUrl::parse(label.to_owned()).expect("selection coordinate");
+        let coordinate = backend_semantic::vocabulary::PackageUrl::parse(label.to_owned())
+            .expect("selection coordinate");
         let selected = ProductSemanticPublicationKey::new(
             package_reference,
             coordinate,
-            backend_semantic::vocabulary::LanguageProfile::Rust(backend_semantic::vocabulary::RustEdition::Rust2024),
+            backend_semantic::vocabulary::LanguageProfile::Rust(
+                backend_semantic::vocabulary::RustEdition::Rust2024,
+            ),
         )
         .expect("selection key");
         let claim = semantic_claim(b"persisted-selection-generation");

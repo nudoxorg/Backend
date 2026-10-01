@@ -22,9 +22,14 @@ pub use full::{
 };
 pub use full_wire::{
     FullSemanticImageError, FullSemanticImageFault, FullSemanticImageField,
-    AdmittedSemanticImage, FullSemanticImageIdentityField, SemanticImageView,
-    encode_full_semantic_image, reset_semantic_image_validations, semantic_image_validations,
-    full_semantic_image_len,
+    FullSemanticImageIdentityField, PreparedFullSemanticImage, SemanticImageProofOwner,
+    SemanticImageView, encode_full_semantic_image, full_semantic_image_len,
+    reset_semantic_image_validations, semantic_image_validations,
+};
+#[cfg(feature = "mmap")]
+pub use full_wire::{
+    MappedSemanticImage, MappedSemanticImageError, MappedSemanticImageIoPhase,
+    load_semantic_image_mmap, open_semantic_image_mmap,
 };
 /// Exact planning failures from [`encode_full_semantic_image`].
 pub type SemanticImageEncodeError = FullPlanError;

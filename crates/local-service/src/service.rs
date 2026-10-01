@@ -20,7 +20,33 @@ mod runtime;
 #[path = "service/transport.rs"]
 mod transport;
 
-pub use transport::{LocaldService, OwnerService};
+pub use transport::{CommandOutcome, Handled, LocaldService, OwnerService};
+
+/// Commands an owner can take now and answer later: an index job hands its
+/// compile off the owner loop, and the loop answers reads from the last
+/// publication meanwhile. Installed with [`LocaldOwner::with_deferred_commands`].
+pub trait DeferredCommands<M, V, A>
+where
+    M: backend_engine::WorkspaceModel,
+    V: backend_engine::OutputAdmissionValidator + backend_engine::SemanticCoverageValidator,
+    A: backend_engine::AttestationVerifier + Send + Sync + 'static,
+{
+    /// Handles one command body now, or takes it under `ticket`.
+    ///
+    /// # Errors
+    ///
+    /// The owner's refusal, in its words.
+    fn command(
+        &mut self,
+        daemon: &mut crate::Locald<M, V, A>,
+        body: &[u8],
+        ticket: u64,
+    ) -> Result<CommandOutcome, String>;
+
+    /// Finishes whatever deferred work is ready, on the owner loop, and
+    /// returns the reply bodies by ticket.
+    fn poll(&mut self, daemon: &mut crate::Locald<M, V, A>) -> Vec<(u64, Result<Vec<u8>, String>)>;
+}
 #[path = "service/subscription.rs"]
 mod subscription;
 
@@ -41,6 +67,7 @@ pub struct LocaldOwner<
     F = (),
     C = NoCompletionAdmission,
     R = NoReplicationAdmission,
+    S = NoSemanticRangeAdmission,
 > where
     V: backend_engine::OutputAdmissionValidator + backend_engine::SemanticCoverageValidator,
     A: backend_engine::AttestationVerifier + Send + Sync + 'static,
@@ -49,8 +76,10 @@ pub struct LocaldOwner<
     command: F,
     completion: C,
     replication: R,
+    semantic_ranges: S,
     leases: BTreeMap<LocalSubscriptionId, DurableLease>,
     next_lease_nonce: u64,
+    deferred: Option<Box<dyn DeferredCommands<M, V, A> + Send>>,
 }
 
 /// Owner-retained state for one leased subscription.
@@ -78,10 +107,11 @@ struct DurableSnapshot {
 #[path = "service/admission.rs"]
 mod admission;
 pub use admission::{
-    CompletionAdmission, NoCompletionAdmission, NoReplicationAdmission, ReplicationAdmission,
+    CompletionAdmission, NoCompletionAdmission, NoReplicationAdmission, NoSemanticRangeAdmission,
+    ReplicationAdmission, SemanticRangeAdmission,
 };
 
-impl<M, V, A, F, C, R> fmt::Debug for LocaldOwner<M, V, A, F, C, R>
+impl<M, V, A, F, C, R, S> fmt::Debug for LocaldOwner<M, V, A, F, C, R, S>
 where
     M: backend_engine::WorkspaceModel,
     V: backend_engine::OutputAdmissionValidator + backend_engine::SemanticCoverageValidator,
@@ -89,6 +119,7 @@ where
     F: fmt::Debug,
     C: fmt::Debug,
     R: fmt::Debug,
+    S: fmt::Debug,
 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -97,20 +128,33 @@ where
             .field("command", &self.command)
             .field("completion", &self.completion)
             .field("replication", &self.replication)
+            .field("semantic_ranges", &self.semantic_ranges)
             .field("leases", &self.leases)
             .field("next_lease_nonce", &self.next_lease_nonce)
             .finish()
     }
 }
 
-impl<M, V, A, F, C, R> LocaldOwner<M, V, A, F, C, R>
+impl<M, V, A, F, C, R, S> LocaldOwner<M, V, A, F, C, R, S>
 where
     M: backend_engine::WorkspaceModel,
     V: backend_engine::OutputAdmissionValidator + backend_engine::SemanticCoverageValidator,
     A: backend_engine::AttestationVerifier + Send + Sync + 'static,
     C: CompletionAdmission<M, V, A>,
     R: ReplicationAdmission<M, V, A>,
+    S: SemanticRangeAdmission,
 {
+    /// Lets `deferred` take commands now and answer them later, so the owner
+    /// loop answers other requests while their long part runs.
+    #[must_use]
+    pub fn with_deferred_commands(
+        mut self,
+        deferred: Box<dyn DeferredCommands<M, V, A> + Send>,
+    ) -> Self {
+        self.deferred = Some(deferred);
+        self
+    }
+
     fn allocate_lease(&mut self, request_id: u64, cursor: &[u8]) -> LocalSubscriptionId {
         loop {
             self.next_lease_nonce = self.next_lease_nonce.wrapping_add(1);
@@ -177,7 +221,10 @@ where
             EngineStatus::Accepted
             | EngineStatus::Queued { .. }
             | EngineStatus::Rejected(_)
-            | EngineStatus::Subscription(_) => Err(ProtocolError::InvalidControl(
+            | EngineStatus::Subscription(_)
+            | EngineStatus::SemanticRangeChunk(_)
+            | EngineStatus::SemanticMetadataChunk(_)
+            | EngineStatus::SemanticStaleSelection => Err(ProtocolError::InvalidControl(
                 "subscription reply omitted its typed payload",
             )),
         }
@@ -706,7 +753,8 @@ fn subscription_error_text(error: &backend_engine::DaemonError) -> &'static str 
     }
 }
 
-impl<M, V, A, F> LocaldOwner<M, V, A, F, NoCompletionAdmission, NoReplicationAdmission>
+impl<M, V, A, F>
+    LocaldOwner<M, V, A, F, NoCompletionAdmission, NoReplicationAdmission, NoSemanticRangeAdmission>
 where
     M: backend_engine::WorkspaceModel,
     V: backend_engine::OutputAdmissionValidator + backend_engine::SemanticCoverageValidator,
@@ -720,13 +768,15 @@ where
             command,
             completion: NoCompletionAdmission,
             replication: NoReplicationAdmission,
+            semantic_ranges: NoSemanticRangeAdmission,
             leases: BTreeMap::new(),
             next_lease_nonce: 0,
+            deferred: None,
         }
     }
 }
 
-impl<M, V, A, F, C> LocaldOwner<M, V, A, F, C, NoReplicationAdmission>
+impl<M, V, A, F, C> LocaldOwner<M, V, A, F, C, NoReplicationAdmission, NoSemanticRangeAdmission>
 where
     M: backend_engine::WorkspaceModel,
     V: backend_engine::OutputAdmissionValidator + backend_engine::SemanticCoverageValidator,
@@ -741,8 +791,10 @@ where
             command,
             completion,
             replication: NoReplicationAdmission,
+            semantic_ranges: NoSemanticRangeAdmission,
             leases: BTreeMap::new(),
             next_lease_nonce: 0,
+            deferred: None,
         }
     }
 
@@ -754,14 +806,40 @@ where
         command: F,
         completion: C,
         replication: R,
-    ) -> LocaldOwner<M, V, A, F, C, R> {
+    ) -> LocaldOwner<M, V, A, F, C, R, NoSemanticRangeAdmission> {
         LocaldOwner {
             daemon,
             command,
             completion,
             replication,
+            semantic_ranges: NoSemanticRangeAdmission,
             leases: BTreeMap::new(),
             next_lease_nonce: 0,
+            deferred: None,
+        }
+    }
+
+    /// Creates an owner adapter with an explicit semantic range handler.
+    pub fn with_semantic_range_admission<R, S>(
+        daemon: crate::Locald<M, V, A>,
+        command: F,
+        completion: C,
+        replication: R,
+        semantic_ranges: S,
+    ) -> LocaldOwner<M, V, A, F, C, R, S>
+    where
+        R: ReplicationAdmission<M, V, A>,
+        S: SemanticRangeAdmission,
+    {
+        LocaldOwner {
+            daemon,
+            command,
+            completion,
+            replication,
+            semantic_ranges,
+            leases: BTreeMap::new(),
+            next_lease_nonce: 0,
+            deferred: None,
         }
     }
 
@@ -771,6 +849,7 @@ where
         &self.daemon
     }
 
+
     /// Returns the embedded daemon mutably.
     #[must_use]
     pub const fn daemon_mut(&mut self) -> &mut crate::Locald<M, V, A> {
@@ -778,7 +857,7 @@ where
     }
 }
 
-impl<M, V, A, F, C, R, E> OwnerService for LocaldOwner<M, V, A, F, C, R>
+impl<M, V, A, F, C, R, S, E> OwnerService for LocaldOwner<M, V, A, F, C, R, S>
 where
     M: backend_engine::WorkspaceModel,
     V: backend_engine::OutputAdmissionValidator + backend_engine::SemanticCoverageValidator,
@@ -787,10 +866,35 @@ where
     E: fmt::Display,
     C: CompletionAdmission<M, V, A>,
     R: ReplicationAdmission<M, V, A>,
+    S: SemanticRangeAdmission,
 {
     fn command(&mut self, body: &[u8]) -> Result<Vec<u8>, ProtocolError> {
         (self.command)(&mut self.daemon, body)
             .map_err(|error| ProtocolError::CommandExecution(error.to_string()))
+    }
+
+    fn command_or_defer(
+        &mut self,
+        body: &[u8],
+        ticket: u64,
+    ) -> Result<CommandOutcome, ProtocolError> {
+        match self.deferred.as_mut() {
+            Some(deferred) => deferred
+                .command(&mut self.daemon, body, ticket)
+                .map_err(ProtocolError::CommandExecution),
+            None => self.command(body).map(CommandOutcome::Reply),
+        }
+    }
+
+    fn poll_deferred(&mut self) -> Vec<(u64, Result<Vec<u8>, ProtocolError>)> {
+        let Some(deferred) = self.deferred.as_mut() else {
+            return Vec::new();
+        };
+        deferred
+            .poll(&mut self.daemon)
+            .into_iter()
+            .map(|(ticket, reply)| (ticket, reply.map_err(ProtocolError::CommandExecution)))
+            .collect()
     }
 
     fn engine(
@@ -803,6 +907,8 @@ where
             EngineRequest::Replicate(_)
             | EngineRequest::Complete(_)
             | EngineRequest::Subscription(_)
+            | EngineRequest::SemanticRangeGet(_)
+            | EngineRequest::SemanticMetadataGet(_)
             | EngineRequest::Shutdown => None,
         };
         let request = match request {
@@ -819,6 +925,24 @@ where
             }
             EngineRequest::Subscription(subscription) => {
                 return self.durable_subscription(request_id, subscription);
+            }
+            EngineRequest::SemanticRangeGet(request) => {
+                return match self.semantic_ranges.serve(request_id, request) {
+                    Ok(chunk) => Ok(EngineStatus::SemanticRangeChunk(chunk)),
+                    Err(ProtocolError::SemanticStaleSelection) => {
+                        Ok(EngineStatus::SemanticStaleSelection)
+                    }
+                    Err(error) => Err(error),
+                };
+            }
+            EngineRequest::SemanticMetadataGet(request) => {
+                return match self.semantic_ranges.serve(request_id, request) {
+                    Ok(chunk) => Ok(EngineStatus::SemanticMetadataChunk(chunk)),
+                    Err(ProtocolError::SemanticStaleSelection) => {
+                        Ok(EngineStatus::SemanticStaleSelection)
+                    }
+                    Err(error) => Err(error),
+                };
             }
             // The listener answers a lifecycle request before it reaches any
             // owner. Reaching here means a host wired a service without one.

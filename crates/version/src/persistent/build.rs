@@ -152,3 +152,63 @@ pub(super) fn build_tree<R: Relation, I: TreeInterner<R>>(
     }
     nodes.pop().ok_or(TreeError::InvalidRoot)
 }
+
+/// Builds the same canonical tree while moving a caller-owned sorted run into
+/// leaf slabs. This avoids cloning payload values; a multi-leaf build still
+/// temporarily retains the source vector allocation while filling leaf slabs.
+pub(super) fn build_tree_owned<R: Relation, I: TreeInterner<R>>(
+    items: Vec<Item<R>>,
+    work: &mut TreeWork,
+    interner: &I,
+) -> Result<Node<R>, TreeError> {
+    if items.is_empty() {
+        let root = empty_node();
+        work.rebuild_node(&root)?;
+        return checked_intern(interner, TreeNodeHandle { node: root });
+    }
+
+    let boundaries = anchored_cut_points_items::<R, _>(items.iter(), DEFAULT_CUT_POLICY, 0)
+        .map_err(|_| TreeError::InvalidRoot)?;
+    if boundaries.len() == 1 {
+        return make_leaf(items, interner, work);
+    }
+    let mut nodes = Vec::with_capacity(boundaries.len());
+    let mut rows = items.into_iter();
+    let mut start = 0;
+    for end in boundaries {
+        let leaf = rows.by_ref().take(end - start).collect();
+        nodes.push(make_leaf(leaf, interner, work)?);
+        start = end;
+    }
+    if rows.next().is_some() {
+        return Err(TreeError::InvalidRoot);
+    }
+
+    let mut level = 1u16;
+    while nodes.len() > 1 {
+        if nodes.iter().any(|node| node.first_key().is_none()) {
+            return Err(TreeError::InvalidRoot);
+        }
+        let boundaries = anchored_cut_points_children::<R, _>(
+            nodes.iter().filter_map(|node| node.first_key()),
+            DEFAULT_CUT_POLICY,
+            level,
+        )
+        .map_err(|_| TreeError::InvalidRoot)?;
+        let previous_len = nodes.len();
+        let mut parents = Vec::with_capacity(boundaries.len());
+        let mut children = nodes.into_iter();
+        let mut start = 0;
+        for end in boundaries {
+            let group = children.by_ref().take(end - start).collect();
+            parents.push(make_branch(level, group, interner, work)?);
+            start = end;
+        }
+        if children.next().is_some() || parents.len() >= previous_len {
+            return Err(TreeError::InvalidRoot);
+        }
+        nodes = parents;
+        level = level.checked_add(1).ok_or(TreeError::Overflow)?;
+    }
+    nodes.pop().ok_or(TreeError::InvalidRoot)
+}

@@ -132,7 +132,11 @@ impl<'output, DomainTag: backend_version::Domain> LocalityEncoder<'output, Domai
         }
     }
 
-    pub(crate) fn emit(&mut self, row: crate::root::packed::RowIndex, placement: NonResident<DomainTag>) {
+    pub(crate) fn emit(
+        &mut self,
+        row: crate::root::packed::RowIndex,
+        placement: NonResident<DomainTag>,
+    ) {
         write_row(
             self.output,
             self.lanes.rows,

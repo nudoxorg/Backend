@@ -32,7 +32,10 @@ impl std::fmt::Display for CargoTreeError {
 impl std::error::Error for CargoTreeError {}
 
 fn text(value: &Value, key: &str) -> Option<String> {
-    value.get(key).and_then(Value::as_str).map(ToOwned::to_owned)
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
 }
 
 fn words(value: &Value, key: &str) -> Vec<String> {
@@ -54,9 +57,15 @@ fn words(value: &Value, key: &str) -> Vec<String> {
 /// # Errors
 ///
 /// Returns [`CargoTreeError`] when either document is not in Cargo's format.
-pub fn metadata_input(metadata: &[u8], host: &str, lockfile: Option<&str>) -> Result<TreeInput, CargoTreeError> {
-    let root: Value = serde_json::from_slice(metadata).map_err(|error| CargoTreeError::Metadata(error.to_string()))?;
-    let workspace_root = text(&root, "workspace_root").ok_or_else(|| CargoTreeError::Metadata("no workspace_root".to_owned()))?;
+pub fn metadata_input(
+    metadata: &[u8],
+    host: &str,
+    lockfile: Option<&str>,
+) -> Result<TreeInput, CargoTreeError> {
+    let root: Value = serde_json::from_slice(metadata)
+        .map_err(|error| CargoTreeError::Metadata(error.to_string()))?;
+    let workspace_root = text(&root, "workspace_root")
+        .ok_or_else(|| CargoTreeError::Metadata("no workspace_root".to_owned()))?;
     let members: BTreeSet<String> = words(&root, "workspace_members").into_iter().collect();
     let listed = root
         .get("packages")
@@ -64,7 +73,8 @@ pub fn metadata_input(metadata: &[u8], host: &str, lockfile: Option<&str>) -> Re
         .ok_or_else(|| CargoTreeError::Metadata("no packages".to_owned()))?;
     let mut packages = Vec::with_capacity(listed.len());
     for package in listed {
-        let id = text(package, "id").ok_or_else(|| CargoTreeError::Metadata("a package has no id".to_owned()))?;
+        let id = text(package, "id")
+            .ok_or_else(|| CargoTreeError::Metadata("a package has no id".to_owned()))?;
         let member = members.contains(&id);
         let source = package.get("source").and_then(Value::as_str);
         let origin = if member {
@@ -72,7 +82,12 @@ pub fn metadata_input(metadata: &[u8], host: &str, lockfile: Option<&str>) -> Re
         } else {
             Some(match source {
                 Some(source) if source.starts_with("git+") => PackageOrigin::Git {
-                    url: source.trim_start_matches("git+").split(['?', '#']).next().unwrap_or(source).to_owned(),
+                    url: source
+                        .trim_start_matches("git+")
+                        .split(['?', '#'])
+                        .next()
+                        .unwrap_or(source)
+                        .to_owned(),
                 },
                 Some(_) => PackageOrigin::Registry,
                 None => PackageOrigin::Vendored {
@@ -92,8 +107,10 @@ pub fn metadata_input(metadata: &[u8], host: &str, lockfile: Option<&str>) -> Re
             })
         };
         packages.push(TreeInputPackage {
-            name: text(package, "name").ok_or_else(|| CargoTreeError::Metadata(format!("{id} has no name")))?,
-            version: text(package, "version").ok_or_else(|| CargoTreeError::Metadata(format!("{id} has no version")))?,
+            name: text(package, "name")
+                .ok_or_else(|| CargoTreeError::Metadata(format!("{id} has no name")))?,
+            version: text(package, "version")
+                .ok_or_else(|| CargoTreeError::Metadata(format!("{id} has no version")))?,
             id,
             member,
             has_bin: package
@@ -116,11 +133,30 @@ pub fn metadata_input(metadata: &[u8], host: &str, lockfile: Option<&str>) -> Re
         .and_then(Value::as_array)
         .ok_or_else(|| CargoTreeError::Metadata("no resolve graph".to_owned()))?
     {
-        let from = text(node, "id").ok_or_else(|| CargoTreeError::Metadata("a node has no id".to_owned()))?;
-        for dependency in node.get("deps").and_then(Value::as_array).into_iter().flatten() {
-            let Some(to) = text(dependency, "pkg") else { continue };
-            let mut edge = TreeEdge { from: from.clone(), to, normal: false, dev: false, build: false };
-            for kind in dependency.get("dep_kinds").and_then(Value::as_array).into_iter().flatten() {
+        let from = text(node, "id")
+            .ok_or_else(|| CargoTreeError::Metadata("a node has no id".to_owned()))?;
+        for dependency in node
+            .get("deps")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(to) = text(dependency, "pkg") else {
+                continue;
+            };
+            let mut edge = TreeEdge {
+                from: from.clone(),
+                to,
+                normal: false,
+                dev: false,
+                build: false,
+            };
+            for kind in dependency
+                .get("dep_kinds")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
                 match kind.get("kind").and_then(Value::as_str) {
                     Some("dev") => edge.dev = true,
                     Some("build") => edge.build = true,
@@ -135,7 +171,11 @@ pub fn metadata_input(metadata: &[u8], host: &str, lockfile: Option<&str>) -> Re
     }
     let other_platforms = match lockfile {
         Some(lockfile) => {
-            let member_names = packages.iter().filter(|package| package.member).map(|package| package.name.as_str()).collect::<BTreeSet<_>>();
+            let member_names = packages
+                .iter()
+                .filter(|package| package.member)
+                .map(|package| package.name.as_str())
+                .collect::<BTreeSet<_>>();
             let here = packages
                 .iter()
                 .filter(|package| !package.member)
@@ -146,7 +186,9 @@ pub fn metadata_input(metadata: &[u8], host: &str, lockfile: Option<&str>) -> Re
                 locked
                     .iter()
                     .filter(|package| !member_names.contains(package.name.as_str()))
-                    .filter(|package| !here.contains(&(package.name.as_str(), package.version.as_str())))
+                    .filter(|package| {
+                        !here.contains(&(package.name.as_str(), package.version.as_str()))
+                    })
                     .count(),
             )
             .unwrap_or(u32::MAX)
@@ -154,7 +196,9 @@ pub fn metadata_input(metadata: &[u8], host: &str, lockfile: Option<&str>) -> Re
         None => 0,
     };
     Ok(TreeInput {
-        source: TreeSource::Cargo { host: host.to_owned() },
+        source: TreeSource::Cargo {
+            host: host.to_owned(),
+        },
         root: workspace_root,
         packages,
         edges,
@@ -170,7 +214,9 @@ struct Locked {
 }
 
 fn locked_packages(lockfile: &str) -> Result<Vec<Locked>, CargoTreeError> {
-    let document: toml::Value = lockfile.parse().map_err(|error: toml::de::Error| CargoTreeError::Lockfile(error.to_string()))?;
+    let document: toml::Value = lockfile
+        .parse()
+        .map_err(|error: toml::de::Error| CargoTreeError::Lockfile(error.to_string()))?;
     let listed = document
         .get("package")
         .and_then(toml::Value::as_array)
@@ -178,10 +224,18 @@ fn locked_packages(lockfile: &str) -> Result<Vec<Locked>, CargoTreeError> {
     listed
         .iter()
         .map(|package| {
-            let field = |key: &str| package.get(key).and_then(toml::Value::as_str).map(ToOwned::to_owned);
+            let field = |key: &str| {
+                package
+                    .get(key)
+                    .and_then(toml::Value::as_str)
+                    .map(ToOwned::to_owned)
+            };
             Ok(Locked {
-                name: field("name").ok_or_else(|| CargoTreeError::Lockfile("a package has no name".to_owned()))?,
-                version: field("version").ok_or_else(|| CargoTreeError::Lockfile("a package has no version".to_owned()))?,
+                name: field("name")
+                    .ok_or_else(|| CargoTreeError::Lockfile("a package has no name".to_owned()))?,
+                version: field("version").ok_or_else(|| {
+                    CargoTreeError::Lockfile("a package has no version".to_owned())
+                })?,
                 source: field("source"),
                 dependencies: package
                     .get("dependencies")
@@ -206,12 +260,20 @@ fn locked_packages(lockfile: &str) -> Result<Vec<Locked>, CargoTreeError> {
 /// # Errors
 ///
 /// Returns [`CargoTreeError::Lockfile`] when `lockfile` is not Cargo's format.
-pub fn lockfile_input(lockfile: &str, root: &str, patched: &BTreeSet<String>, reason: &str) -> Result<TreeInput, CargoTreeError> {
+pub fn lockfile_input(
+    lockfile: &str,
+    root: &str,
+    patched: &BTreeSet<String>,
+    reason: &str,
+) -> Result<TreeInput, CargoTreeError> {
     let locked = locked_packages(lockfile)?;
     let id = |package: &Locked| format!("{} {}", package.name, package.version);
     let mut by_name: BTreeMap<&str, Vec<&Locked>> = BTreeMap::new();
     for package in &locked {
-        by_name.entry(package.name.as_str()).or_default().push(package);
+        by_name
+            .entry(package.name.as_str())
+            .or_default()
+            .push(package);
     }
     let packages = locked
         .iter()
@@ -228,10 +290,17 @@ pub fn lockfile_input(lockfile: &str, root: &str, patched: &BTreeSet<String>, re
                 } else {
                     Some(match package.source.as_deref() {
                         Some(source) if source.starts_with("git+") => PackageOrigin::Git {
-                            url: source.trim_start_matches("git+").split(['?', '#']).next().unwrap_or(source).to_owned(),
+                            url: source
+                                .trim_start_matches("git+")
+                                .split(['?', '#'])
+                                .next()
+                                .unwrap_or(source)
+                                .to_owned(),
                         },
                         Some(_) => PackageOrigin::Registry,
-                        None => PackageOrigin::Vendored { path: String::new() },
+                        None => PackageOrigin::Vendored {
+                            path: String::new(),
+                        },
                     })
                 },
                 ..TreeInputPackage::default()
@@ -244,18 +313,30 @@ pub fn lockfile_input(lockfile: &str, root: &str, patched: &BTreeSet<String>, re
             let mut parts = dependency.split(' ');
             let name = parts.next().unwrap_or_default();
             let version = parts.next();
-            let Some(candidates) = by_name.get(name) else { continue };
+            let Some(candidates) = by_name.get(name) else {
+                continue;
+            };
             let target = match version {
-                Some(version) => candidates.iter().find(|candidate| candidate.version == version),
+                Some(version) => candidates
+                    .iter()
+                    .find(|candidate| candidate.version == version),
                 None => candidates.first(),
             };
             if let Some(target) = target {
-                edges.push(TreeEdge { from: id(package), to: id(target), normal: true, dev: false, build: false });
+                edges.push(TreeEdge {
+                    from: id(package),
+                    to: id(target),
+                    normal: true,
+                    dev: false,
+                    build: false,
+                });
             }
         }
     }
     Ok(TreeInput {
-        source: TreeSource::Lockfile { reason: reason.to_owned() },
+        source: TreeSource::Lockfile {
+            reason: reason.to_owned(),
+        },
         root: root.to_owned(),
         packages,
         edges,

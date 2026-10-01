@@ -582,7 +582,9 @@ fn assert_surface_json(output: &Output, kind: &str, purl: &str) {
 fn assert_mcp_profile(output: &Output, purl: &str) {
     assert_process_success(output, "MCP profile");
     let reply = decode_reply(&output.stdout).expect("decode MCP profile reply");
-    let CommandReply::Surface(SurfaceReply::PackageProfile { latest, versions }) = reply.reply
+    let CommandReply::Surface(SurfaceReply::PackageProfile {
+        latest, versions, ..
+    }) = reply.reply
     else {
         panic!("MCP profile reply changed shape: {:?}", reply.reply);
     };
@@ -941,7 +943,10 @@ fn unconfigured_registry_is_an_explicit_typed_empty_state() {
             package: PackageReference::parse(&coordinate).expect("unconfigured package reference"),
         })
         .expect("unconfigured package profile");
-    let SurfaceReply::PackageProfile { latest, versions } = profile else {
+    let SurfaceReply::PackageProfile {
+        latest, versions, ..
+    } = profile
+    else {
         panic!("unconfigured package profile reply changed shape");
     };
     assert!(
@@ -1018,6 +1023,7 @@ fn pinned_native_registries_ingest_through_cli_mcp_and_desktop() {
                 })
                 .expect("index query"),
                 limit: 200,
+                cursor: None,
             },
         );
         assert_process_success(&indexed, "live CLI index search");

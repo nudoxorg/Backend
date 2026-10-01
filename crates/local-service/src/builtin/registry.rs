@@ -8,12 +8,12 @@
 use crate::process::{AdvisoryConfig, AdvisorySourceConfig, RegistryConfig};
 use backend_engine::acquisition::{
     AcquisitionOutcome as TypedAcquisitionOutcome, AcquisitionRequest, AcquisitionService,
-    CorruptReason, RejectReason,
+    CorruptReason, NegativeFactKind, RejectReason, ReleaseClaim, SourceSnapshot,
 };
 use backend_engine::registry::{
-    admit_registry_coordinate, AcquisitionError, AcquisitionPolicy, EcosystemAdapter,
-    HttpRegistryTransport, PackageCoordinate, RegistryId, RegistrySource, RegistrySourceSet,
-    REGISTRY_SOURCE_ROOT_VERSION,
+    AcquisitionError, AcquisitionPolicy, EcosystemAdapter, HttpRegistryTransport,
+    PackageCoordinate, REGISTRY_SOURCE_ROOT_VERSION, RegistryId, RegistrySource, RegistrySourceSet,
+    admit_registry_coordinate,
 };
 use backend_library::is_hard_ignored_path;
 use flate2::read::{DeflateDecoder, GzDecoder};
@@ -23,10 +23,18 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
     Arc,
+    atomic::{AtomicU64, Ordering},
 };
 use std::time::Duration;
+
+/// Local policy horizon for how long a source observation is projected as
+/// fresh. It is not a guarantee that the registry has not changed; a negative
+/// source fact may impose a shorter expiry.
+const PACKAGE_FACTS_OBSERVATION_HORIZON_MILLIS: u64 = 60_000;
+/// Bound process-local freshness evidence so long-lived owners do not retain
+/// an observation for every package version they have ever fetched.
+const MAX_FRESH_PACKAGE_FACT_OBSERVATIONS: usize = 4_096;
 
 /// Durable registry state attached to one local owner loop.
 pub(super) struct RegistryGateway {
@@ -39,19 +47,274 @@ pub(super) struct RegistryGateway {
     advisory: Arc<backend_engine::advisory::AdvisoryAuthority>,
     advisory_path: PathBuf,
     advisory_config: AdvisoryConfig,
-    last_receipt: Option<Arc<backend_engine::acquisition::AcquisitionReceipt>>,
-    last_snapshot: Option<Arc<backend_engine::acquisition::SourceSnapshot>>,
-    projection: Option<(Vec<([u8; 32], [u8; 32])>, Arc<CatalogProjection>)>,
+    fresh_package_facts: FreshPackageFactMap,
+    observation_generation: u64,
+    projection: Option<(CatalogProjectionKey, Arc<CatalogProjection>)>,
 }
 
 /// Resident catalog rows, name index, and registry dependency facts.
 ///
-/// Rebuilt only when a source facts root changes. Surface commands borrow
-/// this projection instead of re-admitting every published package.
+/// Rebuilt when a source facts root, mutable-fact freshness state, or advisory
+/// feed generation changes. Surface commands borrow this projection instead
+/// of re-admitting every published package.
 pub(super) struct CatalogProjection {
     pub(super) records: Vec<backend_engine::RegistryPackageRecord>,
-    pub(super) index: super::product_state::CatalogLookupIndex,
+    pub(super) index: Arc<super::product_state::CatalogLookupIndex>,
+    /// Digest of the currently selected row overlays. This can change when
+    /// freshness or mutable facts change while the reusable Tantivy index does
+    /// not.
+    pub(super) selected_rows_snapshot: [u8; 32],
+    /// Authority generation that produced the current advisory row overlays.
+    pub(super) advisory_generation: [u8; 32],
     pub(super) dependency_facts: Vec<backend_engine::PackageDependencySourceFacts>,
+}
+
+/// Exact registry row identity paired with its current advisory authority DTO.
+/// The coordinate includes the package version; source identity keeps the
+/// release standing facts separate when multiple registries publish it.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct AdvisoryOverlayKey {
+    source: [u8; 32],
+    coordinate: PackageCoordinate,
+}
+
+/// Current advisory results projected over immutable publication receipts.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct VersionedAdvisoryOverlay {
+    generation: [u8; 32],
+    entries: BTreeMap<AdvisoryOverlayKey, backend_engine::advisory::AdvisoryPackageDto>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CatalogSourceProjectionKey {
+    source: [u8; 32],
+    facts_frontier: [u8; 32],
+    observation_state: [u8; 32],
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CatalogProjectionKey {
+    sources: Vec<CatalogSourceProjectionKey>,
+    advisory_generation: [u8; 32],
+}
+
+/// Completeness of one mutable package fact group, kept separate from the
+/// freshness of the source observation that selected it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PackageFactCompleteness {
+    Complete,
+    Partial,
+    NotRecorded,
+    Unsupported,
+    Unavailable,
+    Unknown,
+}
+
+/// Proof that this process observed the selected mutable facts, or an explicit
+/// historical marker after a cold start.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PackageFactFreshness {
+    Observed {
+        at_millis: u64,
+        valid_until_millis: u64,
+        proof: PackageFactObservationProof,
+    },
+    Historical,
+}
+
+/// The source evidence that established the selected package facts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PackageFactObservationProof {
+    AcquisitionReceipt {
+        receipt: [u8; 32],
+        snapshot: [u8; 32],
+    },
+    SourceNegativeFact {
+        authority: [u8; 32],
+        source_proof: [u8; 32],
+        cursor: [u8; 32],
+        observed_at_millis: u64,
+        expires_at_millis: u64,
+        policy_epoch: u64,
+        kind: NegativeFactKind,
+    },
+}
+
+/// Versioned source authority for one selected release row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct PackageFactAuthority {
+    pub(super) source: [u8; 32],
+    pub(super) source_facts_root: [u8; 32],
+    pub(super) source_provenance: [u8; 32],
+    pub(super) facts_version: [u8; 32],
+    pub(super) advisory_facts_version: [u8; 32],
+    pub(super) selection_version: [u8; 32],
+    pub(super) standing: PackageFactCompleteness,
+    pub(super) downloads: PackageFactCompleteness,
+    pub(super) advisories: PackageFactCompleteness,
+    /// Freshness of the selected release facts (standing and download count).
+    pub(super) release_facts_freshness: PackageFactFreshness,
+    /// Advisory-feed freshness remains independent from registry release facts.
+    pub(super) advisory_freshness: backend_engine::advisory::FreshnessState,
+}
+
+impl PackageFactAuthority {
+    fn to_surface(self) -> backend_engine::RegistryPackageFactAuthority {
+        use backend_engine::{
+            RegistryNegativeFactKind, RegistryPackageFactCompleteness as Completeness,
+            RegistryPackageFactFreshness as Freshness, RegistryPackageFactProof as Proof,
+        };
+
+        let completeness = |value| match value {
+            PackageFactCompleteness::Complete => Completeness::Complete,
+            PackageFactCompleteness::Partial => Completeness::Partial,
+            PackageFactCompleteness::NotRecorded => Completeness::NotRecorded,
+            PackageFactCompleteness::Unsupported => Completeness::Unsupported,
+            PackageFactCompleteness::Unavailable => Completeness::Unavailable,
+            PackageFactCompleteness::Unknown => Completeness::Unknown,
+        };
+        let release_facts_freshness = match self.release_facts_freshness {
+            PackageFactFreshness::Historical => Freshness::Historical,
+            PackageFactFreshness::Observed {
+                at_millis,
+                valid_until_millis,
+                proof,
+            } => {
+                let proof = match proof {
+                    PackageFactObservationProof::AcquisitionReceipt { receipt, snapshot } => {
+                        Proof::AcquisitionReceipt { receipt, snapshot }
+                    }
+                    PackageFactObservationProof::SourceNegativeFact {
+                        authority,
+                        source_proof,
+                        cursor,
+                        observed_at_millis,
+                        expires_at_millis,
+                        policy_epoch,
+                        kind,
+                    } => Proof::SourceNegativeFact {
+                        authority,
+                        source_proof,
+                        cursor,
+                        observed_at_millis,
+                        expires_at_millis,
+                        policy_epoch,
+                        fact: match kind {
+                            NegativeFactKind::NotFound => RegistryNegativeFactKind::NotFound,
+                            NegativeFactKind::Yanked => RegistryNegativeFactKind::Yanked,
+                            NegativeFactKind::AdvisoryBlocked => {
+                                RegistryNegativeFactKind::AdvisoryBlocked
+                            }
+                            NegativeFactKind::Unsupported => RegistryNegativeFactKind::Unsupported,
+                        },
+                    },
+                };
+                Freshness::Current {
+                    observed_at_millis: at_millis,
+                    valid_until_millis,
+                    proof,
+                }
+            }
+        };
+        backend_engine::RegistryPackageFactAuthority {
+            source: self.source,
+            source_facts_root: self.source_facts_root,
+            source_provenance: self.source_provenance,
+            facts_version: self.facts_version,
+            advisory_facts_version: self.advisory_facts_version,
+            selection_version: self.selection_version,
+            standing: completeness(self.standing),
+            downloads: completeness(self.downloads),
+            advisories: completeness(self.advisories),
+            release_facts_freshness,
+            advisory_freshness: self.advisory_freshness,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FreshPackageFactsObservation {
+    facts_version: [u8; 32],
+    source_provenance: [u8; 32],
+    at_millis: u64,
+    proof: PackageFactObservationProof,
+}
+
+type FreshPackageFactMap = BTreeMap<([u8; 32], PackageCoordinate), FreshPackageFactsObservation>;
+
+impl FreshPackageFactsObservation {
+    fn valid_until_millis(self) -> u64 {
+        let max_age = self
+            .at_millis
+            .saturating_add(PACKAGE_FACTS_OBSERVATION_HORIZON_MILLIS);
+        match self.proof {
+            PackageFactObservationProof::AcquisitionReceipt { .. } => max_age,
+            PackageFactObservationProof::SourceNegativeFact {
+                expires_at_millis, ..
+            } => max_age.min(expires_at_millis),
+        }
+    }
+
+    fn is_current_at(self, now_millis: u64) -> bool {
+        self.valid_until_millis() > now_millis
+    }
+}
+
+fn prune_expired_package_fact_observations(
+    observations: &mut FreshPackageFactMap,
+    now_millis: u64,
+) -> usize {
+    let previous_len = observations.len();
+    observations.retain(|_, observation| observation.is_current_at(now_millis));
+    previous_len - observations.len()
+}
+
+fn remember_package_fact_observation(
+    observations: &mut FreshPackageFactMap,
+    key: ([u8; 32], PackageCoordinate),
+    observation: FreshPackageFactsObservation,
+    now_millis: u64,
+) -> bool {
+    let changed = prune_expired_package_fact_observations(observations, now_millis) > 0;
+    if !observation.is_current_at(now_millis) {
+        return changed;
+    }
+    if observations.get(&key) == Some(&observation) {
+        return changed;
+    }
+    while !observations.contains_key(&key)
+        && observations.len() >= MAX_FRESH_PACKAGE_FACT_OBSERVATIONS
+    {
+        let oldest = observations
+            .iter()
+            .min_by_key(|(_, observation)| observation.valid_until_millis())
+            .map(|(key, _)| key.clone());
+        let Some(oldest) = oldest else {
+            break;
+        };
+        observations.remove(&oldest);
+    }
+    observations.insert(key, observation);
+    true
+}
+
+fn package_fact_observation_state(
+    observations: &FreshPackageFactMap,
+    generation: u64,
+    now_millis: u64,
+) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.registry.package-fact-observation-state.v1\0");
+    hasher.update(&generation.to_le_bytes());
+    for ((source, coordinate), observation) in observations {
+        hasher.update(source);
+        hasher.update(coordinate.as_str().as_bytes());
+        hasher.update(&observation.facts_version);
+        hasher.update(&observation.source_provenance);
+        hasher.update(&observation.at_millis.to_be_bytes());
+        hasher.update(&[u8::from(observation.is_current_at(now_millis))]);
+    }
+    *hasher.finalize().as_bytes()
 }
 
 struct RegistrySlot {
@@ -121,11 +384,17 @@ impl RegistryGateway {
     ///
     /// A source that fails keeps its last good body and is marked
     /// unavailable, so coverage says "unavailable" rather than "clean".
-    pub(super) fn refresh_advisories(&mut self) -> Result<Vec<backend_library::browse::AdvisorySourceState>, String> {
+    pub(super) fn refresh_advisories(
+        &mut self,
+    ) -> Result<Vec<backend_library::browse::AdvisorySourceState>, String> {
         let mut authority = (*self.advisory).clone();
         let mut states = Vec::new();
         for source in &self.advisory_config.sources {
-            let error = match refresh_authority_source(&authority, source, self.advisory_config.max_feed_bytes) {
+            let error = match refresh_authority_source(
+                &authority,
+                source,
+                self.advisory_config.max_feed_bytes,
+            ) {
                 Ok(feed) => authority.apply(feed).err().map(|error| error.to_string()),
                 Err(error) => Some(error),
             };
@@ -141,11 +410,16 @@ impl RegistryGateway {
                 error,
             });
         }
-        authority.persist(&self.advisory_path).map_err(|error| error.to_string())?;
+        authority
+            .persist(&self.advisory_path)
+            .map_err(|error| error.to_string())?;
         self.advisory = Arc::new(authority);
         // Open owners hold the previous authority as their resolver; they
         // reopen lazily with the new one.
         self.slots.clear();
+        // Keep old callers' Arcs valid, but make the next catalog read project
+        // the newly committed feed generation immediately.
+        self.projection = None;
         Ok(states)
     }
 
@@ -156,21 +430,58 @@ impl RegistryGateway {
 
     fn project_catalog_records(
         &mut self,
-    ) -> Result<Vec<backend_engine::RegistryPackageRecord>, String> {
+        generation: [u8; 32],
+    ) -> Result<
+        (
+            Vec<backend_engine::RegistryPackageRecord>,
+            VersionedAdvisoryOverlay,
+        ),
+        String,
+    > {
         let mut records = Vec::new();
         let mut seen = BTreeSet::new();
+        let mut advisory_overlay = VersionedAdvisoryOverlay {
+            generation,
+            entries: BTreeMap::new(),
+        };
         for source in self.sources.sources().cloned().collect::<Vec<_>>() {
-            let service = self
-                .service_for(&source)
-                .map_err(|error| format!("open registry source: {error}"))?;
-            for published in service.published_packages() {
-                if !seen.insert(published.coordinate.clone()) {
+            let (source_id, source_facts_root, publications) = {
+                let service = self
+                    .service_for(&source)
+                    .map_err(|error| format!("open registry source: {error}"))?;
+                let publications = service
+                    .published_packages()
+                    .into_iter()
+                    .map(|published| {
+                        let forge_sources = service
+                            .forge_sources_for(&published)
+                            .map_err(|error| error.to_string())?;
+                        let advisory = service.advisory_for_published(&published);
+                        Ok((published, forge_sources, advisory))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                (service.source_id(), service.facts_frontier(), publications)
+            };
+            for (published, forge_sources, advisory) in publications {
+                if !remember_catalog_publication(&mut seen, source_id, &published.coordinate) {
                     continue;
                 }
+                let advisory_key = AdvisoryOverlayKey {
+                    source: source_id,
+                    coordinate: published.coordinate.clone(),
+                };
+                advisory_overlay
+                    .entries
+                    .insert(advisory_key.clone(), advisory);
+                let advisory = advisory_overlay
+                    .entries
+                    .get(&advisory_key)
+                    .cloned()
+                    .ok_or_else(|| "advisory overlay omitted a published release".to_owned())?;
                 let admitted = admit_registry_coordinate(&published.coordinate)
                     .map_err(|_| backend_engine::ProductAdmissionError::PackageReference)
                     .map_err(|error| error.to_string())?;
-                records.push(backend_engine::RegistryPackageRecord {
+                let mut record = backend_engine::RegistryPackageRecord {
                     ecosystem: admitted.ecosystem(),
                     coordinate: backend_engine::PackageReference::Purl(
                         published.coordinate.clone(),
@@ -223,27 +534,59 @@ impl RegistryGateway {
                         }
                     },
                     facts_version: published.facts.version(),
+                    authority: None,
                     native_metadata_version: published
                         .native_metadata
                         .identity()
                         .map_err(|error| error.to_string())?,
                     native_metadata: published.native_metadata.clone(),
-                    forge_sources: service
-                        .forge_sources_for(&published)
-                        .map_err(|error| error.to_string())?,
-                    advisory: published.advisory.clone(),
-                });
+                    forge_sources,
+                    advisory,
+                };
+                let mut authority = package_fact_authority(
+                    source_id,
+                    source_facts_root,
+                    published.provenance.as_bytes(),
+                    published.facts.version(),
+                    &record,
+                    self.fresh_package_facts
+                        .get(&(source_id, published.coordinate.clone())),
+                )?;
+                if matches!(
+                    authority.release_facts_freshness,
+                    PackageFactFreshness::Historical
+                ) {
+                    let current_advisory = record.advisory.clone();
+                    mark_mutable_facts_stale(&mut record);
+                    // The release observation expired across process restart,
+                    // but advisory freshness comes from the separately
+                    // persisted and currently selected feed generation.
+                    record.advisory = current_advisory;
+                }
+                // Advisory feed freshness is a separate mutable overlay from
+                // release facts; reflect its projected state in the authority
+                // DTO carried by this row.
+                authority.advisory_freshness = record.advisory.freshness;
+                record.authority = Some(authority.to_surface());
+                records.push(record);
             }
         }
-        records.sort_by(|left, right| left.coordinate.cmp(&right.coordinate));
-        Ok(records)
+        records.sort_by(|left, right| {
+            left.coordinate.cmp(&right.coordinate).then_with(|| {
+                left.authority
+                    .map(|authority| authority.source)
+                    .cmp(&right.authority.map(|authority| authority.source))
+            })
+        });
+        Ok((records, advisory_overlay))
     }
 
     /// Identity of the opened catalog generations.
     ///
-    /// The stamp changes when a source commits a package or a forge link.
+    /// The stamp changes when a source commits a package or forge link, a
+    /// mutable-fact observation expires, or advisory authority advances.
     /// Callers keep a resident dependency index until it changes. Opening a
-    /// source that is already resident only reads the generation counter.
+    /// resident source reads its generation.
     pub(super) fn publication_stamp(&mut self) -> Result<[u8; 32], String> {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"backend.registry.publication-stamp.v1\0");
@@ -251,9 +594,14 @@ impl RegistryGateway {
             let service = self
                 .service_for(&source)
                 .map_err(|error| format!("open registry source: {error}"))?;
+            service
+                .refresh_external()
+                .map_err(|error| format!("refresh registry source: {error}"))?;
             hasher.update(&source.id().as_bytes());
             hasher.update(&service.catalog_generation().to_le_bytes());
         }
+        hasher.update(&self.observation_freshness_state());
+        hasher.update(&self.advisory_overlay_generation()?);
         Ok(*hasher.finalize().as_bytes())
     }
 
@@ -264,18 +612,43 @@ impl RegistryGateway {
     pub(super) fn dependency_facts(&mut self) -> Vec<backend_engine::PackageDependencySourceFacts> {
         let mut facts = Vec::new();
         let mut seen = BTreeSet::new();
-        for slot in self.slots.values() {
+        for ((registry_id, _), slot) in &self.slots {
             let Some(service) = slot.service.as_ref() else {
                 continue;
             };
             for published in service.published_packages() {
-                if !seen.insert(published.coordinate.clone()) {
+                if !seen.insert((*registry_id, published.coordinate.clone())) {
                     continue;
                 }
                 if let Ok(source) = backend_engine::PackageReference::parse(
                     published.coordinate.as_str().to_owned(),
                 ) {
-                    facts.push((source, published.dependency_facts.clone()));
+                    let source_authority = backend_library::PackageGraphSourceAuthority::Registry(
+                        backend_library::RegistryAuthorityId::from_configured_source(
+                            registry_id.as_bytes(),
+                        ),
+                    );
+                    let dependency_facts = match &published.dependency_facts {
+                        backend_library::DependencyFacts::Known(rows) => {
+                            backend_library::DependencyFacts::Known(
+                                rows.iter()
+                                    .cloned()
+                                    .map(|row| row.with_source_authority(source_authority))
+                                    .collect::<Vec<_>>()
+                                    .into_boxed_slice(),
+                            )
+                        }
+                        backend_library::DependencyFacts::Unknown(reason) => {
+                            backend_library::DependencyFacts::Unknown(reason.clone())
+                        }
+                        backend_library::DependencyFacts::Unavailable(reason) => {
+                            backend_library::DependencyFacts::Unavailable(reason.clone())
+                        }
+                    };
+                    facts.push((
+                        backend_library::PackageGraphSourceKey::new(source, source_authority),
+                        dependency_facts,
+                    ));
                 }
             }
         }
@@ -308,14 +681,17 @@ impl RegistryGateway {
             advisory,
             advisory_path,
             advisory_config: advisory_config.clone(),
-            last_receipt: None,
-            last_snapshot: None,
+            // Freshness observations are deliberately process-local. A
+            // recovered catalog retains authenticated facts, but a restart
+            // cannot make a mutable fact current merely by reopening cache.
+            fresh_package_facts: BTreeMap::new(),
+            observation_generation: 0,
             projection: None,
         }))
     }
 
     /// Returns the resident catalog projection, rebuilding it when a source
-    /// facts root changes.
+    /// facts root or mutable-fact freshness state changes.
     pub(super) fn catalog_projection(&mut self) -> Result<Arc<CatalogProjection>, String> {
         let key = self.projection_key()?;
         if let Some((cached_key, projection)) = &self.projection
@@ -323,10 +699,26 @@ impl RegistryGateway {
         {
             return Ok(Arc::clone(projection));
         }
-        let records = self.project_catalog_records()?;
+        // Release-fact freshness changes the row overlay without changing
+        // searchable terms. Advisory generations are part of the search
+        // revision because they can add or remove indexed advisory terms.
+        let reusable_index = self
+            .projection
+            .as_ref()
+            .filter(|(cached_key, _)| same_catalog_search_revision(cached_key, &key))
+            .map(|(_, projection)| Arc::clone(&projection.index));
+        let (records, advisory_overlay) = self.project_catalog_records(key.advisory_generation)?;
         let dependency_facts = self.dependency_facts();
-        let index = super::product_state::CatalogLookupIndex::from_catalog(&records);
+        let index = reusable_index.unwrap_or_else(|| {
+            Arc::new(super::product_state::CatalogLookupIndex::from_catalog(
+                &records,
+            ))
+        });
         let projection = Arc::new(CatalogProjection {
+            selected_rows_snapshot: super::product_state::CatalogLookupIndex::snapshot_for_catalog(
+                &records,
+            ),
+            advisory_generation: advisory_overlay.generation,
             records,
             index,
             dependency_facts,
@@ -335,16 +727,77 @@ impl RegistryGateway {
         Ok(projection)
     }
 
-    fn projection_key(&mut self) -> Result<Vec<([u8; 32], [u8; 32])>, String> {
+    fn projection_key(&mut self) -> Result<CatalogProjectionKey, String> {
         let sources = self.sources.sources().cloned().collect::<Vec<_>>();
-        let mut key = Vec::with_capacity(sources.len());
+        let mut source_keys = Vec::with_capacity(sources.len());
+        let observation_state = self.observation_freshness_state();
         for source in &sources {
             let service = self
                 .service_for(source)
                 .map_err(|error| format!("open registry source: {error}"))?;
-            key.push((service.source_id(), service.facts_frontier()));
+            service
+                .refresh_external()
+                .map_err(|error| format!("refresh registry source: {error}"))?;
+            source_keys.push(CatalogSourceProjectionKey {
+                source: service.source_id(),
+                facts_frontier: service.facts_frontier(),
+                observation_state,
+            });
         }
-        Ok(key)
+        Ok(CatalogProjectionKey {
+            sources: source_keys,
+            advisory_generation: self.advisory_overlay_generation()?,
+        })
+    }
+
+    fn advisory_overlay_generation(&self) -> Result<[u8; 32], String> {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"backend.registry.advisory-overlay-generation.v1\0");
+        hasher.update(&1_u16.to_be_bytes());
+        hasher.update(&self.advisory.max_age_secs.to_be_bytes());
+        hasher.update(&[u8::from(self.advisory_config.offline)]);
+        let now = advisory_now();
+        for source in &self.advisory_config.sources {
+            let source_identity = backend_engine::serde_json::to_vec(&source.source)
+                .map_err(|error| error.to_string())?;
+            hasher.update(&source_identity);
+            match self.advisory.frontier(source.source) {
+                Some(frontier) => {
+                    hasher.update(&[1]);
+                    hasher.update(&frontier.sequence.to_be_bytes());
+                    hasher.update(&frontier.digest);
+                    hasher.update(&frontier.observed_at.to_be_bytes());
+                    hasher.update(&[u8::from(frontier.complete)]);
+                    hasher.update(&frontier.entries.to_be_bytes());
+                    hasher.update(&[u8::from(frontier.not_modified)]);
+                    hasher.update(&[match frontier.availability {
+                        backend_engine::advisory::AuthorityAvailability::Available => 0,
+                        backend_engine::advisory::AuthorityAvailability::Unavailable => 1,
+                    }]);
+                    let stale =
+                        now.saturating_sub(frontier.observed_at) > self.advisory.max_age_secs;
+                    hasher.update(&[u8::from(stale)]);
+                }
+                None => {
+                    hasher.update(&[0]);
+                }
+            }
+        }
+        Ok(*hasher.finalize().as_bytes())
+    }
+
+    fn observation_freshness_state(&mut self) -> [u8; 32] {
+        let now = current_millis();
+        self.prune_expired_package_facts(now);
+        package_fact_observation_state(&self.fresh_package_facts, self.observation_generation, now)
+    }
+
+    fn prune_expired_package_facts(&mut self, now_millis: u64) {
+        let removed =
+            prune_expired_package_fact_observations(&mut self.fresh_package_facts, now_millis);
+        if removed > 0 {
+            self.observation_generation = self.observation_generation.saturating_add(1);
+        }
     }
 
     /// Fetches, verifies, and durably publishes one exact remote coordinate.
@@ -352,6 +805,7 @@ impl RegistryGateway {
         &mut self,
         coordinate: &PackageCoordinate,
     ) -> Result<Vec<u8>, RegistryAddError> {
+        self.prune_expired_package_facts(current_millis());
         let route = self
             .sources
             .route(coordinate)
@@ -374,21 +828,13 @@ impl RegistryGateway {
         coordinate: &PackageCoordinate,
     ) -> Result<CandidateOutcome, RegistryAddError> {
         let source_id = self.service_for(source)?.source_id();
-        let slot_key = (
-            source.id(),
-            matches!(source.policy(), AcquisitionPolicy::Offline),
-        );
-        let contains = self
-            .slots
-            .get(&slot_key)
-            .and_then(|slot| slot.service.as_ref())
-            .is_some_and(|service| service.contains(coordinate));
         let request =
             AcquisitionRequest::for_coordinate(source_id, coordinate.to_string(), 1, 0)
                 .map_err(|_| RegistryAddError::Acquisition(AcquisitionError::InvalidCoordinate))?;
-        let outcome = if contains || matches!(source.policy(), AcquisitionPolicy::Offline) {
-            // A repeated or explicitly offline add is a cache read. Rehydrate
-            // it from this source's durable catalog without a network effect.
+        let live_observation = !matches!(source.policy(), AcquisitionPolicy::Offline);
+        let outcome = if !live_observation {
+            // An explicitly offline add is a cache read. Rehydrate it from
+            // the durable catalog while preserving its historical freshness.
             let service = self.service_for(source)?;
             service.ensure(&request)
         } else {
@@ -396,10 +842,194 @@ impl RegistryGateway {
             let service = self.service_for(source)?;
             service.acquire(&request, &mut transport)
         };
-        match self.finish_acquisition(outcome) {
+        let observation = match &outcome {
+            TypedAcquisitionOutcome::Hit(result) => {
+                Some(PackageFactObservationProof::AcquisitionReceipt {
+                    receipt: result.receipt.id.to_bytes(),
+                    snapshot: result.snapshot.id().to_bytes(),
+                })
+            }
+            TypedAcquisitionOutcome::NegativeFact(fact)
+                if matches!(
+                    fact.kind,
+                    NegativeFactKind::Yanked | NegativeFactKind::AdvisoryBlocked
+                ) =>
+            {
+                Some(PackageFactObservationProof::SourceNegativeFact {
+                    authority: fact.authority,
+                    source_proof: fact.source_proof,
+                    cursor: fact.cursor,
+                    observed_at_millis: fact.observed_at_millis,
+                    expires_at_millis: fact.expires_at_millis,
+                    policy_epoch: fact.policy_epoch,
+                    kind: fact.kind,
+                })
+            }
+            _ => None,
+        };
+        let result = self.finish_acquisition(outcome);
+        if live_observation && let Some(proof) = observation {
+            self.remember_fresh_package_facts(source_id, coordinate, proof);
+        }
+        match result {
             Ok(bytes) => Ok(CandidateOutcome::Done(bytes)),
             Err(error) if should_fallback(&error) => Ok(CandidateOutcome::Fallback(error)),
             Err(error) => Ok(CandidateOutcome::Terminal(error)),
+        }
+    }
+
+    fn remember_fresh_package_facts(
+        &mut self,
+        source_id: [u8; 32],
+        coordinate: &PackageCoordinate,
+        proof: PackageFactObservationProof,
+    ) {
+        let Some((facts_version, source_provenance, valid, receipt_observed_at)) = (|| {
+            let service = self.slots.values().find_map(|slot| {
+                slot.service
+                    .as_ref()
+                    .filter(|service| service.source_id() == source_id)
+            })?;
+            if service.refresh_external().is_err() {
+                return None;
+            }
+            let package = service.published_package(coordinate)?;
+            let (valid, receipt_observed_at) = match proof {
+                PackageFactObservationProof::AcquisitionReceipt { receipt, snapshot } => {
+                    let request = AcquisitionRequest::for_coordinate(
+                        source_id,
+                        coordinate.to_string(),
+                        1,
+                        service.policy_epoch(),
+                    )
+                    .ok()?;
+                    let record = service.recover_product_record(&request).ok().flatten();
+                    let valid = record.as_ref().is_some_and(|record| {
+                        let (Some(selected_receipt), Some(selected_snapshot)) =
+                            (record.receipt.as_deref(), record.target_snapshot.as_deref())
+                        else {
+                            return false;
+                        };
+                        record.terminal
+                            == backend_engine::acquisition::AcquisitionProductTerminal::Published
+                            && record.source == source_id
+                            && record.policy_epoch == service.policy_epoch()
+                            && record.facts_frontier == service.facts_frontier()
+                            && record.metadata_digest == Some(package.metadata_evidence_digest())
+                            && record.raw_object == Some(package.raw_object)
+                            && selected_receipt.id.to_bytes() == receipt
+                            && selected_snapshot.id().to_bytes() == snapshot
+                            && selected_receipt.target == selected_snapshot.id()
+                            && selected_receipt.owner_cursor == record.owner_cursor
+                            && selected_receipt.metadata_digest
+                                == package.metadata_evidence_digest()
+                            && selected_receipt.raw_object == package.raw_object
+                            && selected_snapshot.source() == source_id
+                            && selected_snapshot.facts_frontier() == service.facts_frontier()
+                            && selected_receipt.policy_epoch == service.policy_epoch()
+                            && snapshot_selects_package(selected_snapshot, source_id, &package)
+                    });
+                    (valid, record.map(|record| record.observed_at_millis))
+                }
+                PackageFactObservationProof::SourceNegativeFact {
+                    authority,
+                    source_proof,
+                    cursor,
+                    observed_at_millis,
+                    expires_at_millis,
+                    policy_epoch,
+                    kind,
+                    ..
+                } => {
+                    let request = AcquisitionRequest::for_coordinate(
+                        source_id,
+                        coordinate.to_string(),
+                        1,
+                        service.policy_epoch(),
+                    )
+                    .ok()?;
+                    let expected_fact = backend_engine::acquisition::NegativeFact {
+                        kind,
+                        authority,
+                        source_proof,
+                        cursor,
+                        observed_at_millis,
+                        expires_at_millis,
+                        policy_epoch,
+                    };
+                    let record = service.recover_product_record(&request).ok().flatten();
+                    let durable_fact_matches = record.as_ref().is_some_and(|record| {
+                        let backend_engine::acquisition::AcquisitionProductTerminal::NegativeFact(
+                            durable_fact,
+                        ) = record.terminal
+                        else {
+                            return false;
+                        };
+                        record.source == source_id
+                            && record.source_intent == request.source_intent()
+                            && record.coordinate.as_ref() == coordinate.as_str()
+                            && record.policy_epoch == service.policy_epoch()
+                            && record.owner_cursor == cursor
+                            && record.facts_frontier == service.facts_frontier()
+                            && record.metadata_digest == Some(package.metadata_evidence_digest())
+                            && record.raw_object == Some(package.raw_object)
+                            && durable_fact == expected_fact
+                    });
+                    (
+                        durable_fact_matches
+                            && authority == source_id
+                            && source_proof == cursor
+                            && expires_at_millis > current_millis()
+                            && policy_epoch == service.policy_epoch()
+                            && match kind {
+                                NegativeFactKind::Yanked => matches!(
+                                    package.facts.standing(),
+                                    backend_engine::registry::ReleaseStanding::Yanked
+                                ),
+                                NegativeFactKind::AdvisoryBlocked => matches!(
+                                    package.advisory.decision,
+                                    backend_engine::advisory::AcquisitionDecision::Deny(_)
+                                ),
+                                NegativeFactKind::NotFound | NegativeFactKind::Unsupported => false,
+                            },
+                        None,
+                    )
+                }
+            };
+            Some((
+                package.facts.version(),
+                package.provenance.as_bytes(),
+                valid,
+                receipt_observed_at,
+            ))
+        })() else {
+            return;
+        };
+        if !valid {
+            return;
+        }
+        let at_millis = match proof {
+            PackageFactObservationProof::AcquisitionReceipt { .. } => {
+                receipt_observed_at.unwrap_or_else(current_millis)
+            }
+            PackageFactObservationProof::SourceNegativeFact {
+                observed_at_millis, ..
+            } => observed_at_millis,
+        };
+        let key = (source_id, coordinate.clone());
+        let observation = FreshPackageFactsObservation {
+            facts_version,
+            source_provenance,
+            at_millis,
+            proof,
+        };
+        if remember_package_fact_observation(
+            &mut self.fresh_package_facts,
+            key,
+            observation,
+            current_millis(),
+        ) {
+            self.observation_generation = self.observation_generation.saturating_add(1);
         }
     }
 
@@ -414,8 +1044,6 @@ impl RegistryGateway {
                 // The local ingester consumes the immutable target root and
                 // receipt alongside the bytes, so a successful Add cannot
                 // discard its source snapshot evidence.
-                self.last_receipt = Some(Arc::clone(&result.receipt));
-                self.last_snapshot = Some(Arc::clone(&result.snapshot));
                 Ok(result.artifact.bytes().to_vec())
             }
             TypedAcquisitionOutcome::NegativeFact(fact) => match fact.kind {
@@ -464,16 +1092,6 @@ impl RegistryGateway {
             }
             TypedAcquisitionOutcome::Cancelled => Err(RegistryAddError::Unavailable),
         }
-    }
-
-    /// Returns the last immutable receipt consumed by a local Add.
-    pub(super) fn last_receipt(&self) -> Option<&backend_engine::acquisition::AcquisitionReceipt> {
-        self.last_receipt.as_deref()
-    }
-
-    /// Returns the target source snapshot consumed by a local Add.
-    pub(super) fn last_snapshot(&self) -> Option<&backend_engine::acquisition::SourceSnapshot> {
-        self.last_snapshot.as_deref()
     }
 
     pub(super) fn stage_archive(
@@ -554,6 +1172,184 @@ impl RegistryGateway {
                 .map_err(RegistryAddError::Acquisition)
         }
     }
+}
+
+fn same_catalog_search_revision(left: &CatalogProjectionKey, right: &CatalogProjectionKey) -> bool {
+    left.advisory_generation == right.advisory_generation
+        && left.sources.len() == right.sources.len()
+        && left
+            .sources
+            .iter()
+            .zip(&right.sources)
+            .all(|(left, right)| {
+                left.source == right.source && left.facts_frontier == right.facts_frontier
+            })
+}
+
+fn remember_catalog_publication(
+    seen: &mut BTreeSet<([u8; 32], PackageCoordinate)>,
+    source: [u8; 32],
+    coordinate: &PackageCoordinate,
+) -> bool {
+    seen.insert((source, coordinate.clone()))
+}
+
+fn snapshot_selects_package(
+    snapshot: &SourceSnapshot,
+    source_id: [u8; 32],
+    package: &backend_engine::registry::PublishedPackage,
+) -> bool {
+    let Ok(admitted) = admit_registry_coordinate(&package.coordinate) else {
+        return false;
+    };
+    let Ok(claim) = ReleaseClaim::new_with_facts(
+        source_id,
+        package.coordinate.as_str(),
+        admitted.version().as_str(),
+        package.raw_object,
+        package.facts.version(),
+    ) else {
+        return false;
+    };
+    snapshot.source() == source_id
+        && snapshot
+            .manifest()
+            .entries()
+            .binary_search_by(|entry| entry.path.as_ref().cmp(package.coordinate.as_str()))
+            .is_ok_and(|index| snapshot.manifest().entries()[index].object == package.raw_object)
+        && snapshot.claims().binary_search(&claim.id).is_ok()
+}
+
+fn package_fact_authority(
+    source: [u8; 32],
+    source_facts_root: [u8; 32],
+    source_provenance: [u8; 32],
+    facts_version: [u8; 32],
+    record: &backend_engine::RegistryPackageRecord,
+    observation: Option<&FreshPackageFactsObservation>,
+) -> Result<PackageFactAuthority, String> {
+    let freshness = observation
+        .filter(|observation| {
+            observation.facts_version == facts_version
+                && observation.source_provenance == source_provenance
+                && observation.is_current_at(current_millis())
+        })
+        .map_or(PackageFactFreshness::Historical, |observation| {
+            PackageFactFreshness::Observed {
+                at_millis: observation.at_millis,
+                valid_until_millis: observation.valid_until_millis(),
+                proof: observation.proof,
+            }
+        });
+    let advisory_facts_version = *blake3::hash(
+        &serde_json::to_vec(&record.advisory)
+            .map_err(|error| format!("encode selected advisory facts: {error}"))?,
+    )
+    .as_bytes();
+    let mut selection = blake3::Hasher::new();
+    selection.update(b"backend.registry.selected-package-facts.v1\0");
+    selection.update(&source);
+    selection.update(&source_facts_root);
+    selection.update(record.coordinate.as_str().as_bytes());
+    selection.update(&source_provenance);
+    selection.update(&facts_version);
+    selection.update(&advisory_facts_version);
+    match freshness {
+        PackageFactFreshness::Historical => {
+            selection.update(b"historical\0");
+        }
+        PackageFactFreshness::Observed {
+            at_millis,
+            valid_until_millis,
+            proof,
+        } => {
+            selection.update(b"observed\0");
+            selection.update(&at_millis.to_be_bytes());
+            selection.update(&valid_until_millis.to_be_bytes());
+            match proof {
+                PackageFactObservationProof::AcquisitionReceipt { receipt, snapshot } => {
+                    selection.update(b"receipt\0");
+                    selection.update(&receipt);
+                    selection.update(&snapshot);
+                }
+                PackageFactObservationProof::SourceNegativeFact {
+                    authority,
+                    source_proof,
+                    cursor,
+                    observed_at_millis,
+                    expires_at_millis,
+                    policy_epoch,
+                    kind,
+                } => {
+                    selection.update(b"negative\0");
+                    selection.update(&authority);
+                    selection.update(&source_proof);
+                    selection.update(&cursor);
+                    selection.update(&observed_at_millis.to_be_bytes());
+                    selection.update(&expires_at_millis.to_be_bytes());
+                    selection.update(&policy_epoch.to_be_bytes());
+                    let kind = match kind {
+                        NegativeFactKind::NotFound => 0,
+                        NegativeFactKind::Yanked => 1,
+                        NegativeFactKind::AdvisoryBlocked => 2,
+                        NegativeFactKind::Unsupported => 3,
+                    };
+                    selection.update(&[kind]);
+                }
+            }
+        }
+    }
+    let availability = |value| match value {
+        backend_engine::RegistryFactAvailability::NotRecorded => {
+            PackageFactCompleteness::NotRecorded
+        }
+        backend_engine::RegistryFactAvailability::Unsupported => {
+            PackageFactCompleteness::Unsupported
+        }
+        backend_engine::RegistryFactAvailability::Unavailable => {
+            PackageFactCompleteness::Unavailable
+        }
+        backend_engine::RegistryFactAvailability::Stale => PackageFactCompleteness::Partial,
+        backend_engine::RegistryFactAvailability::Unknown => PackageFactCompleteness::Unknown,
+    };
+    let downloads = match &record.downloads {
+        backend_engine::RegistryDownloadCount::Exact(_) => PackageFactCompleteness::Complete,
+        backend_engine::RegistryDownloadCount::Approximate(_) => PackageFactCompleteness::Partial,
+        backend_engine::RegistryDownloadCount::Unavailable(state) => availability(*state),
+    };
+    let advisories = match record.advisory.coverage {
+        backend_engine::advisory::AdvisoryCoverage::Complete => PackageFactCompleteness::Complete,
+        backend_engine::advisory::AdvisoryCoverage::Partial => PackageFactCompleteness::Partial,
+        backend_engine::advisory::AdvisoryCoverage::Unavailable => {
+            PackageFactCompleteness::Unavailable
+        }
+        backend_engine::advisory::AdvisoryCoverage::Unknown => PackageFactCompleteness::Unknown,
+    };
+    Ok(PackageFactAuthority {
+        source,
+        source_facts_root,
+        source_provenance,
+        facts_version,
+        advisory_facts_version,
+        selection_version: *selection.finalize().as_bytes(),
+        standing: PackageFactCompleteness::Complete,
+        downloads,
+        advisories,
+        release_facts_freshness: freshness,
+        advisory_freshness: record.advisory.freshness,
+    })
+}
+
+fn mark_mutable_facts_stale(record: &mut backend_engine::RegistryPackageRecord) {
+    if !matches!(
+        &record.downloads,
+        backend_engine::RegistryDownloadCount::Unavailable(_)
+    ) {
+        record.downloads = backend_engine::RegistryDownloadCount::Unavailable(
+            backend_engine::RegistryFactAvailability::Stale,
+        );
+    }
+    record.advisory.freshness = backend_engine::advisory::FreshnessState::Stale;
 }
 
 enum CandidateOutcome {
@@ -786,6 +1582,9 @@ impl StagedProject {
     /// Java package path must stay intact.
     fn at(directory: PathBuf, version: &str) -> Result<Self, RegistryAddError> {
         let io = |error| RegistryAddError::Acquisition(AcquisitionError::Io(error));
+        if let Some(member) = generated_cargo_workspace_member(&directory)? {
+            return Ok(Self { path: member });
+        }
         let mut entries = fs::read_dir(&directory).map_err(io)?;
         let (Some(only), None) = (entries.next(), entries.next()) else {
             return Ok(Self { path: directory });
@@ -793,7 +1592,9 @@ impl StagedProject {
         let only = only.map_err(io)?;
         let name = only.file_name();
         let wrapper = name.to_str().is_some_and(|name| {
-            name == "package" || (!version.is_empty() && name.ends_with(version))
+            name == "package"
+                || name.starts_with("__nudox_registry_package_")
+                || (!version.is_empty() && name.ends_with(version))
         });
         if wrapper && only.file_type().map_err(io)?.is_dir() {
             return Ok(Self { path: only.path() });
@@ -804,6 +1605,174 @@ impl StagedProject {
     pub(super) fn path(&self) -> &Path {
         &self.path
     }
+}
+
+const GENERATED_CARGO_WORKSPACE_HEADER: &str = "# nudox-registry-workspace-v1\n";
+
+/// Places Cargo archives behind a workspace boundary without editing package files.
+///
+/// Registry source trees are staged beneath the application checkout, which may
+/// itself be a Cargo workspace. Cargo otherwise walks upward from a downloaded
+/// package and rejects it as an unlisted child of that unrelated workspace.
+/// A tiny generated workspace at the archive digest root gives Cargo the right
+/// boundary while leaving the verified package manifest and sources untouched.
+fn ensure_cargo_workspace_boundary(root: &Path) -> Result<(), RegistryAddError> {
+    let io = |error| RegistryAddError::Acquisition(AcquisitionError::Io(error));
+    if generated_cargo_workspace_member(root)?.is_some() {
+        return Ok(());
+    }
+
+    let root_manifest = root.join("Cargo.toml");
+    let package_root = if root_manifest.is_file() {
+        // Some valid source archives have no `<name>-<version>/` wrapper. Move
+        // their extracted entries under a generated member instead of replacing
+        // the authentic root Cargo.toml with the workspace marker.
+        let mut suffix = 0_u32;
+        let member_name = loop {
+            let candidate = format!("__nudox_registry_package_{suffix}");
+            if !root.join(&candidate).exists() {
+                break candidate;
+            }
+            suffix = suffix
+                .checked_add(1)
+                .ok_or(RegistryAddError::Acquisition(AcquisitionError::Bounds))?;
+        };
+        let member = root.join(&member_name);
+        fs::create_dir(&member).map_err(io)?;
+        let entries = fs::read_dir(root).map_err(io)?;
+        for entry in entries {
+            let entry = entry.map_err(io)?;
+            if entry.file_name().to_string_lossy() == member_name {
+                continue;
+            }
+            fs::rename(entry.path(), member.join(entry.file_name())).map_err(io)?;
+        }
+        (member_name, member)
+    } else {
+        let mut package_roots = Vec::new();
+        for entry in fs::read_dir(root).map_err(io)? {
+            let entry = entry.map_err(io)?;
+            if entry.file_type().map_err(io)?.is_dir() && entry.path().join("Cargo.toml").is_file()
+            {
+                package_roots.push(entry.path());
+            }
+        }
+        let [package_root] = package_roots.as_slice() else {
+            return Err(RegistryAddError::UnsupportedArchive);
+        };
+        let member_name = package_root
+            .strip_prefix(root)
+            .map_err(|_| RegistryAddError::UnsupportedArchive)?
+            .to_string_lossy()
+            .into_owned();
+        (member_name, package_root.clone())
+    };
+
+    let package_manifest_path = package_root.1.join("Cargo.toml");
+    let package_manifest = fs::read_to_string(&package_manifest_path).map_err(io)?;
+    let package_value: toml::Value = package_manifest
+        .parse()
+        .map_err(|_| RegistryAddError::UnsupportedArchive)?;
+    let package_table = package_value
+        .get("package")
+        .and_then(toml::Value::as_table)
+        .ok_or(RegistryAddError::UnsupportedArchive)?;
+
+    // A package that owns a workspace already provides Cargo's nearest
+    // boundary, including its explicit resolver setting.
+    if package_value.get("workspace").is_some() {
+        return Ok(());
+    }
+    let edition = package_table
+        .get("edition")
+        .and_then(toml::Value::as_str)
+        .unwrap_or("2015");
+    let resolver = match package_table.get("resolver").and_then(toml::Value::as_str) {
+        Some("1") => "1",
+        Some("2") => "2",
+        Some("3") => "3",
+        Some(_) => return Err(RegistryAddError::UnsupportedArchive),
+        None => match edition {
+            "2015" | "2018" => "1",
+            "2021" => "2",
+            "2024" => "3",
+            _ => return Err(RegistryAddError::UnsupportedArchive),
+        },
+    };
+    let mut workspace_table = toml::map::Map::new();
+    workspace_table.insert(
+        "members".to_owned(),
+        toml::Value::Array(vec![toml::Value::String(package_root.0.clone())]),
+    );
+    workspace_table.insert(
+        "resolver".to_owned(),
+        toml::Value::String(resolver.to_owned()),
+    );
+    let mut root_table = toml::map::Map::new();
+    root_table.insert("workspace".to_owned(), toml::Value::Table(workspace_table));
+    let workspace = format!(
+        "{GENERATED_CARGO_WORKSPACE_HEADER}{}",
+        toml::to_string(&toml::Value::Table(root_table))
+            .map_err(|_| RegistryAddError::UnsupportedArchive)?
+    );
+    let workspace_path = root.join("Cargo.toml");
+    match OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&workspace_path)
+    {
+        Ok(mut file) => {
+            file.write_all(workspace.as_bytes()).map_err(io)?;
+            file.sync_all().map_err(io)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            if generated_cargo_workspace_member(root)?.is_none() {
+                return Err(RegistryAddError::Acquisition(AcquisitionError::Io(error)));
+            }
+        }
+        Err(error) => return Err(io(error)),
+    }
+    backend_platform::durability::open_directory(&package_root.1)
+        .and_then(|directory| directory.sync_all())
+        .map_err(io)?;
+    backend_platform::durability::open_directory(root)
+        .and_then(|directory| directory.sync_all())
+        .map_err(io)?;
+    Ok(())
+}
+
+/// Returns the sole package member declared by a generated staging workspace.
+fn generated_cargo_workspace_member(root: &Path) -> Result<Option<PathBuf>, RegistryAddError> {
+    let io = |error| RegistryAddError::Acquisition(AcquisitionError::Io(error));
+    let path = root.join("Cargo.toml");
+    let contents = match fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(io(error)),
+    };
+    let Some(generated) = contents.strip_prefix(GENERATED_CARGO_WORKSPACE_HEADER) else {
+        return Ok(None);
+    };
+    let value: toml::Value = generated
+        .parse()
+        .map_err(|_| RegistryAddError::UnsupportedArchive)?;
+    let members = value
+        .get("workspace")
+        .and_then(|workspace| workspace.get("members"))
+        .and_then(toml::Value::as_array)
+        .ok_or(RegistryAddError::UnsupportedArchive)?;
+    let [member] = members.as_slice() else {
+        return Err(RegistryAddError::UnsupportedArchive);
+    };
+    let member = member
+        .as_str()
+        .ok_or(RegistryAddError::UnsupportedArchive)?;
+    let member = confined_path(member)?;
+    let member = root.join(member);
+    if !member.join("Cargo.toml").is_file() {
+        return Err(RegistryAddError::UnsupportedArchive);
+    }
+    Ok(Some(member))
 }
 
 const MAX_EXTRACTED_FILES: usize = 100_000;
@@ -827,9 +1796,9 @@ pub(super) fn stage_archive(
     archive: &[u8],
     workspace_root: impl AsRef<Path>,
 ) -> Result<StagedProject, RegistryAddError> {
-    let version = admit_registry_coordinate(coordinate)
-        .map(|admitted| admitted.version().as_str().to_owned())
-        .unwrap_or_default();
+    let admitted = admit_registry_coordinate(coordinate).map_err(RegistryAddError::Acquisition)?;
+    let version = admitted.version().as_str().to_owned();
+    let needs_cargo_boundary = admitted.ecosystem() == backend_library::RegistryEcosystem::Cargo;
     if archive.is_empty() {
         return Err(RegistryAddError::UnsupportedArchive);
     }
@@ -839,6 +1808,9 @@ pub(super) fn stage_archive(
     let digest = blake3::hash(archive);
     let directory = staging_root.join(hex(digest.as_bytes()));
     if directory.exists() {
+        if needs_cargo_boundary {
+            ensure_cargo_workspace_boundary(&directory)?;
+        }
         return StagedProject::at(directory, &version);
     }
     let temporary = staging_root.join(format!(
@@ -858,6 +1830,12 @@ pub(super) fn stage_archive(
     if writer.source_files == 0 {
         let _ = fs::remove_dir_all(&temporary);
         return Err(RegistryAddError::UnsupportedArchive);
+    }
+    if needs_cargo_boundary {
+        if let Err(error) = ensure_cargo_workspace_boundary(&temporary) {
+            let _ = fs::remove_dir_all(&temporary);
+            return Err(error);
+        }
     }
     backend_platform::durability::open_directory(&temporary)
         .and_then(|directory| directory.sync_all())
@@ -1421,35 +2399,967 @@ fn hex(value: &[u8; 32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flate2::{write::GzEncoder, Compression};
+    use flate2::{Compression, write::GzEncoder};
+    use std::io::{Read as IoRead, Write as IoWrite};
+    use std::net::TcpListener;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::thread;
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
 
     fn scratch() -> PathBuf {
-        let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "backend-registry-stage-{}-{id}",
-            std::process::id()
-        ))
+        for _ in 0..64 {
+            let id = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "backend-registry-stage-{}-{id}",
+                std::process::id()
+            ));
+            match fs::create_dir(&path) {
+                Ok(()) => return path,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("create isolated registry fixture directory: {error}"),
+            }
+        }
+        panic!("registry fixture directory capacity exhausted")
     }
 
     fn tar_file(name: &str, bytes: &[u8]) -> Vec<u8> {
-        let mut header = [0_u8; TAR_BLOCK_BYTES];
-        header[..name.len()].copy_from_slice(name.as_bytes());
-        let size = format!("{:011o}\0", bytes.len());
-        header[124..136].copy_from_slice(size.as_bytes());
-        header[156] = b'0';
-        header[257..263].copy_from_slice(b"ustar\0");
-        header[148..156].fill(b' ');
-        let checksum: usize = header.iter().map(|byte| usize::from(*byte)).sum();
-        let checksum = format!("{checksum:06o}\0 ");
-        header[148..156].copy_from_slice(checksum.as_bytes());
-        let mut archive = header.to_vec();
-        archive.extend_from_slice(bytes);
-        archive.resize(archive.len().div_ceil(TAR_BLOCK_BYTES) * TAR_BLOCK_BYTES, 0);
+        tar_files(&[(name, bytes)])
+    }
+
+    fn tar_files(files: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut archive = Vec::new();
+        for (name, bytes) in files {
+            let mut header = [0_u8; TAR_BLOCK_BYTES];
+            header[..name.len()].copy_from_slice(name.as_bytes());
+            let size = format!("{:011o}\0", bytes.len());
+            header[124..136].copy_from_slice(size.as_bytes());
+            header[156] = b'0';
+            header[257..263].copy_from_slice(b"ustar\0");
+            header[148..156].fill(b' ');
+            let checksum: usize = header.iter().map(|byte| usize::from(*byte)).sum();
+            let checksum = format!("{checksum:06o}\0 ");
+            header[148..156].copy_from_slice(checksum.as_bytes());
+            archive.extend_from_slice(&header);
+            archive.extend_from_slice(bytes);
+            archive.resize(archive.len().div_ceil(TAR_BLOCK_BYTES) * TAR_BLOCK_BYTES, 0);
+        }
         archive.resize(archive.len() + TAR_BLOCK_BYTES * 2, 0);
         archive
+    }
+
+    fn catalog_record(
+        coordinate: &str,
+        ecosystem: backend_library::RegistryEcosystem,
+        facts_version: [u8; 32],
+    ) -> backend_engine::RegistryPackageRecord {
+        let native_metadata = backend_library::RegistryNativeMetadata::unavailable(
+            ecosystem,
+            "catalog authority test",
+        );
+        let coordinate = PackageCoordinate::parse(coordinate).expect("coordinate");
+        let admitted = admit_registry_coordinate(&coordinate).expect("admitted coordinate");
+        backend_engine::RegistryPackageRecord {
+            coordinate: backend_engine::PackageReference::Purl(coordinate),
+            ecosystem,
+            name: backend_engine::ProductText::new(admitted.qualified_name().as_str())
+                .expect("name"),
+            version: backend_engine::ProductText::new(admitted.version().as_str())
+                .expect("version"),
+            bytes: 4,
+            standing: backend_engine::RegistryReleaseStanding::Available,
+            downloads: backend_engine::RegistryDownloadCount::Exact(42),
+            facts_version,
+            authority: None,
+            native_metadata_version: native_metadata.identity().expect("metadata identity"),
+            native_metadata,
+            forge_sources: Box::new([]),
+            advisory: backend_engine::advisory::AdvisoryPackageDto::unknown(),
+        }
+    }
+
+    fn empty_product_view() -> backend_engine::ViewRoot {
+        let root = backend_engine::view_state_root(&[]);
+        let basis = backend_engine::Basis::new(
+            root,
+            backend_engine::object_version(b"catalog-authority-test"),
+        );
+        backend_engine::ViewRoot::new_incomplete(
+            backend_engine::view_key(b"catalog-authority-test"),
+            basis,
+            backend_engine::Frontier::new(basis.branch, basis.log, basis.schema, root, 0),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("empty product view")
+    }
+
+    fn advisory_config(location: Option<&Path>) -> AdvisoryConfig {
+        let gate = backend_engine::advisory::AcquisitionGate {
+            offline: backend_engine::advisory::OfflinePolicy::Warn,
+        };
+        AdvisoryConfig {
+            sources: location
+                .map(|path| {
+                    vec![AdvisorySourceConfig {
+                        source: backend_engine::advisory::AdvisorySource::Osv,
+                        location: path.to_string_lossy().into_owned(),
+                    }]
+                })
+                .unwrap_or_default(),
+            max_age_secs: 60 * 60,
+            offline: false,
+            gate,
+            max_feed_bytes: 1024 * 1024,
+        }
+    }
+
+    fn registry_config(endpoint: String) -> RegistryConfig {
+        let endpoint = backend_engine::registry::RegistryEndpoint::new(
+            backend_library::RegistryEcosystem::Cargo,
+            endpoint,
+        )
+        .expect("loopback registry endpoint");
+        let source = backend_engine::registry::RegistrySource::new(endpoint).with_native(false);
+        let sources = backend_engine::registry::RegistrySourceSet::empty()
+            .with_source(source)
+            .expect("canonical test registry source");
+        RegistryConfig {
+            sources,
+            endpoint: None,
+            authentication: None,
+            policy: backend_engine::registry::AcquisitionPolicy::Online,
+            native: false,
+            limits: backend_engine::registry::AcquisitionLimits::default(),
+            advisory_gate: backend_engine::advisory::AcquisitionGate {
+                offline: backend_engine::advisory::OfflinePolicy::Warn,
+            },
+        }
+    }
+
+    fn local_registry_server(
+        listener: TcpListener,
+        feed: Vec<u8>,
+        archive: Vec<u8>,
+    ) -> thread::JoinHandle<()> {
+        thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().expect("local registry request");
+                let mut request = [0_u8; 4096];
+                let read = stream.read(&mut request).expect("read registry request");
+                let request = String::from_utf8_lossy(&request[..read]);
+                let body = if request.starts_with("GET /feed?") {
+                    &feed
+                } else if request.starts_with("GET /archive ") {
+                    &archive
+                } else {
+                    panic!(
+                        "unexpected registry request: {}",
+                        request.lines().next().unwrap_or("")
+                    );
+                };
+                let headers = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream
+                    .write_all(headers.as_bytes())
+                    .expect("write registry response headers");
+                stream
+                    .write_all(body)
+                    .expect("write registry response body");
+            }
+        })
+    }
+
+    #[test]
+    fn advisory_refresh_overlays_the_same_release_after_cold_reopen() {
+        const ADVISORY_ID: &str = "OSV-REGRESSION-1";
+        let root = scratch();
+        fs::create_dir_all(&root).expect("workspace root");
+        let advisory_feed = root.join("live-osv-feed.json");
+        fs::write(&advisory_feed, br#"{"vulns":[]}"#).expect("initial clean feed");
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("local registry listener");
+        let endpoint = format!(
+            "http://{}",
+            listener.local_addr().expect("listener address")
+        );
+        let config = registry_config(endpoint);
+        let archive = b"registry release whose advisory arrives later".to_vec();
+        let digest =
+            *backend_engine::capability::CapabilityArtifactId::from_value(&archive).as_bytes();
+        let feed = format!(
+            r#"{{"schema":1,"next":"{}","items":[{{"name":"demo","version":"1.0.0","blake3":"{}","provenance":"{}","archive":"/archive"}}]}}"#,
+            format!("{}", "07".repeat(32)),
+            digest
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>(),
+            "09".repeat(32),
+        )
+        .into_bytes();
+        let server = local_registry_server(listener, feed, archive.clone());
+
+        let mut gateway =
+            RegistryGateway::open(&config, &root, &advisory_config(Some(&advisory_feed)))
+                .expect("compose gateway")
+                .expect("configured registry gateway");
+        gateway
+            .refresh_advisories()
+            .expect("refresh initial clean feed");
+        let coordinate = PackageCoordinate::parse("pkg:cargo/demo@1.0.0").expect("coordinate");
+        let acquired = gateway
+            .acquire(&coordinate)
+            .expect("acquire release once from local registry");
+        assert_eq!(acquired, archive);
+        server.join().expect("local registry server");
+
+        let source = config
+            .sources
+            .sources()
+            .next()
+            .expect("configured source")
+            .clone();
+        let acquisition_time_package = gateway
+            .service_for(&source)
+            .expect("resident service")
+            .published_packages()
+            .into_iter()
+            .next()
+            .expect("published release");
+        let clean_projection = gateway.catalog_projection().expect("clean projection");
+        let clean_stamp = gateway
+            .publication_stamp()
+            .expect("initial published catalog stamp");
+        assert_eq!(clean_projection.records.len(), 1);
+        assert_eq!(
+            clean_projection.records[0].advisory.coverage,
+            backend_engine::advisory::AdvisoryCoverage::Complete
+        );
+        assert!(clean_projection.records[0].advisory.advisories.is_empty());
+        assert_eq!(
+            clean_projection.records[0].coordinate,
+            backend_engine::PackageReference::Purl(coordinate.clone())
+        );
+
+        let vulnerable = format!(
+            r#"{{"schema_version":"1.3.1","id":"{ADVISORY_ID}","modified":"2026-09-28T00:00:00Z","affected":[{{"package":{{"ecosystem":"Cargo","name":"demo"}},"ranges":[{{"type":"SEMVER","events":[{{"introduced":"0"}},{{"fixed":"2.0.0"}}]}}]}}]}}"#
+        );
+        fs::write(&advisory_feed, vulnerable).expect("mutate local feed with vulnerability");
+        gateway
+            .refresh_advisories()
+            .expect("refresh changed local feed");
+        let refreshed_stamp = gateway
+            .publication_stamp()
+            .expect("publication stamp after advisory refresh");
+        assert_ne!(clean_stamp, refreshed_stamp);
+        let refreshed_projection = gateway
+            .catalog_projection()
+            .expect("same-process projection after refresh");
+        assert_ne!(
+            clean_projection.advisory_generation,
+            refreshed_projection.advisory_generation
+        );
+        assert_ne!(
+            clean_projection.index.search_identity(),
+            refreshed_projection.index.search_identity()
+        );
+        assert!(
+            refreshed_projection.records[0]
+                .advisory
+                .advisories
+                .iter()
+                .any(|advisory| advisory.canonical_id == ADVISORY_ID)
+        );
+        assert!(matches!(
+            &refreshed_projection.records[0].advisory.decision,
+            backend_engine::advisory::AcquisitionDecision::Deny(_)
+        ));
+        let refreshed_id_hits = refreshed_projection
+            .index
+            .search_page(&refreshed_projection.records, ADVISORY_ID, 8)
+            .expect("search advisory id immediately after refresh");
+        assert_eq!(refreshed_id_hits.hits.len(), 1);
+        drop(gateway);
+
+        // A fresh gateway instance recovers the same immutable release and
+        // the persisted new advisory authority before rebuilding its row/search overlay.
+        let mut gateway =
+            RegistryGateway::open(&config, &root, &advisory_config(Some(&advisory_feed)))
+                .expect("cold reopen gateway")
+                .expect("configured registry gateway");
+        let vulnerable_projection = gateway
+            .catalog_projection()
+            .expect("vulnerable projection after cold reopen");
+        assert_ne!(
+            clean_projection.advisory_generation,
+            vulnerable_projection.advisory_generation
+        );
+        let row = vulnerable_projection
+            .records
+            .first()
+            .expect("same acquired package row");
+        assert_eq!(
+            row.coordinate,
+            backend_engine::PackageReference::Purl(coordinate.clone())
+        );
+        assert!(
+            row.advisory
+                .advisories
+                .iter()
+                .any(|advisory| advisory.canonical_id == ADVISORY_ID)
+        );
+        assert!(matches!(
+            &row.advisory.decision,
+            backend_engine::advisory::AcquisitionDecision::Deny(_)
+        ));
+        let exact_id_hits = vulnerable_projection
+            .index
+            .search_page(&vulnerable_projection.records, ADVISORY_ID, 8)
+            .expect("search exact advisory id");
+        assert_eq!(exact_id_hits.hits.len(), 1);
+        assert_eq!(
+            vulnerable_projection.records[exact_id_hits.hits[0].key].coordinate,
+            backend_engine::PackageReference::Purl(coordinate.clone())
+        );
+
+        let reopened_package = gateway
+            .service_for(&source)
+            .expect("recovered acquisition service")
+            .published_packages()
+            .into_iter()
+            .next()
+            .expect("recovered immutable publication");
+        assert_eq!(
+            reopened_package.coordinate,
+            acquisition_time_package.coordinate
+        );
+        assert_eq!(
+            reopened_package.raw_object,
+            acquisition_time_package.raw_object
+        );
+        assert_eq!(reopened_package.advisory, acquisition_time_package.advisory);
+        assert!(reopened_package.advisory.advisories.is_empty());
+
+        struct NoNetwork;
+        impl backend_engine::registry::RegistryTransport for NoNetwork {
+            fn fetch_page(
+                &mut self,
+                _request: backend_engine::registry::FeedRequest,
+            ) -> Result<
+                backend_engine::registry::TransportResult<backend_engine::registry::FeedPage>,
+                backend_engine::registry::TransportFailure,
+            > {
+                panic!("current advisory denial must be decided from the cached release")
+            }
+
+            fn fetch_archive(
+                &mut self,
+                _package: &backend_engine::registry::RemotePackage,
+            ) -> Result<
+                backend_engine::registry::TransportResult<
+                    backend_engine::registry::ArchiveArtifact,
+                >,
+                backend_engine::registry::TransportFailure,
+            > {
+                panic!("current advisory denial must not download the archive")
+            }
+        }
+        let service = gateway
+            .service_for(&source)
+            .expect("current authority service");
+        let request = AcquisitionRequest::for_coordinate(
+            service.source_id(),
+            coordinate.as_str(),
+            1,
+            service.policy_epoch(),
+        )
+        .expect("cache-only policy request")
+        .with_fact_freshness(backend_engine::acquisition::FactFreshness::max_age_millis(
+            u64::MAX,
+        ));
+        assert!(matches!(
+            service.acquire(&request, &mut NoNetwork),
+            TypedAcquisitionOutcome::NegativeFact(fact)
+                if fact.kind == NegativeFactKind::AdvisoryBlocked
+        ));
+        drop(gateway);
+
+        let no_sources = advisory_config(None);
+        let mut unknown_gateway = RegistryGateway::open(&config, &root, &no_sources)
+            .expect("open with no advisory authorities")
+            .expect("configured registry gateway");
+        let unknown = unknown_gateway
+            .catalog_projection()
+            .expect("unknown coverage projection");
+        assert_eq!(
+            unknown.records[0].advisory.coverage,
+            backend_engine::advisory::AdvisoryCoverage::Unknown
+        );
+        assert!(unknown.records[0].advisory.advisories.is_empty());
+        drop(unknown_gateway);
+
+        fs::write(&advisory_feed, b"not an advisory feed").expect("break live feed");
+        let mut unavailable_gateway =
+            RegistryGateway::open(&config, &root, &advisory_config(Some(&advisory_feed)))
+                .expect("reopen configured authority")
+                .expect("configured registry gateway");
+        let states = unavailable_gateway
+            .refresh_advisories()
+            .expect("persist unavailable source state");
+        assert!(states[0].error.is_some());
+        drop(unavailable_gateway);
+        let mut unavailable_gateway =
+            RegistryGateway::open(&config, &root, &advisory_config(Some(&advisory_feed)))
+                .expect("cold reopen unavailable authority")
+                .expect("configured registry gateway");
+        let unavailable = unavailable_gateway
+            .catalog_projection()
+            .expect("unavailable coverage projection");
+        assert_eq!(
+            unavailable.records[0].advisory.coverage,
+            backend_engine::advisory::AdvisoryCoverage::Unavailable
+        );
+        assert!(
+            unavailable.records[0]
+                .advisory
+                .advisories
+                .iter()
+                .any(|advisory| advisory.canonical_id == ADVISORY_ID)
+        );
+
+        drop(unavailable_gateway);
+        fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn freshness_only_projection_reuses_search_and_structural_revision_rebuilds_it() {
+        let old_key = CatalogProjectionKey {
+            sources: vec![CatalogSourceProjectionKey {
+                source: [1; 32],
+                facts_frontier: [2; 32],
+                observation_state: [3; 32],
+            }],
+            advisory_generation: [5; 32],
+        };
+        let freshness_advanced = CatalogProjectionKey {
+            sources: vec![CatalogSourceProjectionKey {
+                observation_state: [4; 32],
+                ..old_key.sources[0]
+            }],
+            ..old_key.clone()
+        };
+        let source_advanced = CatalogProjectionKey {
+            sources: vec![CatalogSourceProjectionKey {
+                facts_frontier: [9; 32],
+                observation_state: [4; 32],
+                ..old_key.sources[0]
+            }],
+            ..old_key.clone()
+        };
+        let source_replaced = CatalogProjectionKey {
+            sources: vec![CatalogSourceProjectionKey {
+                source: [8; 32],
+                observation_state: [4; 32],
+                ..old_key.sources[0]
+            }],
+            ..old_key.clone()
+        };
+        let advisory_advanced = CatalogProjectionKey {
+            advisory_generation: [6; 32],
+            ..old_key.clone()
+        };
+        assert!(same_catalog_search_revision(&old_key, &freshness_advanced));
+        assert!(!same_catalog_search_revision(&old_key, &source_advanced));
+        assert!(!same_catalog_search_revision(&old_key, &source_replaced));
+        assert!(!same_catalog_search_revision(&old_key, &advisory_advanced));
+
+        let catalog = [catalog_record(
+            "pkg:cargo/shared@1.0.0",
+            backend_library::RegistryEcosystem::Cargo,
+            [5; 32],
+        )];
+        let original = std::sync::Arc::new(
+            super::super::product_state::CatalogLookupIndex::from_catalog(&catalog),
+        );
+        let identity = original.search_identity().expect("Tantivy projection");
+        let reused = if same_catalog_search_revision(&old_key, &freshness_advanced) {
+            std::sync::Arc::clone(&original)
+        } else {
+            std::sync::Arc::new(
+                super::super::product_state::CatalogLookupIndex::from_catalog(&catalog),
+            )
+        };
+        assert!(std::sync::Arc::ptr_eq(&original, &reused));
+        assert_eq!(reused.search_identity(), Some(identity));
+        let rebuilt = std::sync::Arc::new(
+            super::super::product_state::CatalogLookupIndex::from_catalog(&catalog),
+        );
+        assert_ne!(rebuilt.search_identity(), Some(identity));
+    }
+
+    #[test]
+    fn same_coordinate_from_two_sources_retains_both_authorities_and_facts() {
+        let coordinate = PackageCoordinate::parse("pkg:cargo/shared@1.0.0").expect("coordinate");
+        let mut seen = BTreeSet::new();
+        assert!(remember_catalog_publication(
+            &mut seen,
+            [1; 32],
+            &coordinate
+        ));
+        assert!(!remember_catalog_publication(
+            &mut seen,
+            [1; 32],
+            &coordinate
+        ));
+        assert!(remember_catalog_publication(
+            &mut seen,
+            [2; 32],
+            &coordinate
+        ));
+
+        let mut available = catalog_record(
+            coordinate.as_str(),
+            backend_library::RegistryEcosystem::Cargo,
+            [3; 32],
+        );
+        available.authority = Some(
+            package_fact_authority([1; 32], [4; 32], [5; 32], [3; 32], &available, None)
+                .expect("available source authority")
+                .to_surface(),
+        );
+        let mut yanked = catalog_record(
+            coordinate.as_str(),
+            backend_library::RegistryEcosystem::Cargo,
+            [6; 32],
+        );
+        yanked.standing = backend_engine::RegistryReleaseStanding::Yanked;
+        yanked.authority = Some(
+            package_fact_authority([2; 32], [7; 32], [8; 32], [6; 32], &yanked, None)
+                .expect("yanked source authority")
+                .to_surface(),
+        );
+
+        let mut catalog = vec![available, yanked];
+        catalog.sort_by(|left, right| {
+            left.coordinate.cmp(&right.coordinate).then_with(|| {
+                left.authority
+                    .map(|authority| authority.source)
+                    .cmp(&right.authority.map(|authority| authority.source))
+            })
+        });
+        let index = super::super::product_state::CatalogLookupIndex::from_catalog(&catalog);
+        let reference = backend_engine::PackageReference::Purl(coordinate);
+        let rows = index
+            .records_for(&catalog, &reference, false)
+            .expect("exact coordinate rows");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0].standing,
+            backend_engine::RegistryReleaseStanding::Available
+        );
+        assert_eq!(rows[0].facts_version, [3; 32]);
+        assert_eq!(rows[0].authority.expect("authority").source, [1; 32]);
+        assert_eq!(
+            rows[1].standing,
+            backend_engine::RegistryReleaseStanding::Yanked
+        );
+        assert_eq!(rows[1].facts_version, [6; 32]);
+        assert_eq!(rows[1].authority.expect("authority").source, [2; 32]);
+        assert!(
+            index
+                .first_coordinate(&catalog, &reference)
+                .expect_err("ambiguous authority must not select a source")
+                .contains("multiple registry authorities")
+        );
+    }
+
+    #[test]
+    fn catalog_facts_bind_provenance_and_fact_versions_with_separate_freshness() {
+        let coordinate = "pkg:cargo/demo@1.10.0";
+        let source = [3; 32];
+        let source_root = [4; 32];
+        let provenance = [5; 32];
+        let facts_version = [6; 32];
+        let mut record = catalog_record(
+            coordinate,
+            backend_library::RegistryEcosystem::Cargo,
+            facts_version,
+        );
+
+        // A cold owner reopens historical facts with their source and content
+        // identities intact, but no live observation proof.
+        let historical = package_fact_authority(
+            source,
+            source_root,
+            provenance,
+            facts_version,
+            &record,
+            None,
+        )
+        .expect("historical authority");
+        assert_eq!(historical.source, source);
+        assert_eq!(historical.source_facts_root, source_root);
+        assert_eq!(historical.source_provenance, provenance);
+        assert_eq!(historical.facts_version, facts_version);
+        assert_ne!(historical.advisory_facts_version, [0; 32]);
+        assert_eq!(historical.downloads, PackageFactCompleteness::Complete);
+        assert_eq!(
+            historical.release_facts_freshness,
+            PackageFactFreshness::Historical
+        );
+
+        let selected_record = record.clone();
+        mark_mutable_facts_stale(&mut record);
+        assert_eq!(
+            record.downloads,
+            backend_engine::RegistryDownloadCount::Unavailable(
+                backend_engine::RegistryFactAvailability::Stale
+            )
+        );
+        assert_eq!(
+            record.advisory.freshness,
+            backend_engine::advisory::FreshnessState::Stale
+        );
+
+        let observation = FreshPackageFactsObservation {
+            facts_version,
+            source_provenance: provenance,
+            at_millis: current_millis(),
+            proof: PackageFactObservationProof::AcquisitionReceipt {
+                receipt: [7; 32],
+                snapshot: [8; 32],
+            },
+        };
+        let observed = package_fact_authority(
+            source,
+            source_root,
+            provenance,
+            facts_version,
+            &selected_record,
+            Some(&observation),
+        )
+        .expect("observed authority");
+        assert!(matches!(
+            observed.release_facts_freshness,
+            PackageFactFreshness::Observed {
+                proof: PackageFactObservationProof::AcquisitionReceipt {
+                    receipt,
+                    snapshot,
+                },
+                ..
+            } if receipt == [7; 32] && snapshot == [8; 32]
+        ));
+        assert_ne!(observed.selection_version, historical.selection_version);
+
+        let mut changed_advisory = selected_record.clone();
+        changed_advisory.advisory.freshness = backend_engine::advisory::FreshnessState::Fresh;
+        let changed_advisory_authority = package_fact_authority(
+            source,
+            source_root,
+            provenance,
+            facts_version,
+            &changed_advisory,
+            Some(&observation),
+        )
+        .expect("changed advisory authority");
+        assert_ne!(
+            changed_advisory_authority.advisory_facts_version,
+            observed.advisory_facts_version
+        );
+        assert_ne!(
+            changed_advisory_authority.selection_version,
+            observed.selection_version
+        );
+
+        // A new yank produces a new selected facts version. The older receipt
+        // cannot make that transition look current.
+        let yanked_facts = [9; 32];
+        let changed = catalog_record(
+            coordinate,
+            backend_library::RegistryEcosystem::Cargo,
+            yanked_facts,
+        );
+        let changed_authority = package_fact_authority(
+            source,
+            [10; 32],
+            provenance,
+            yanked_facts,
+            &changed,
+            Some(&observation),
+        )
+        .expect("changed authority");
+        assert_eq!(
+            changed_authority.release_facts_freshness,
+            PackageFactFreshness::Historical
+        );
+        assert_ne!(
+            changed_authority.selection_version,
+            observed.selection_version
+        );
+    }
+
+    #[test]
+    fn cold_catalog_package_and_profile_replies_expose_historical_authority() {
+        let coordinate = PackageCoordinate::parse("pkg:cargo/demo@1.10.0").expect("coordinate");
+        let mut record = catalog_record(
+            coordinate.as_str(),
+            backend_library::RegistryEcosystem::Cargo,
+            [6; 32],
+        );
+        // A reopened registry owner has durable selected facts but an empty
+        // process-local observation map, so the projected row stays Available
+        // as a historical fact and carries that status explicitly.
+        let authority = package_fact_authority(
+            [3; 32],
+            [4; 32],
+            [5; 32],
+            record.facts_version,
+            &record,
+            None,
+        )
+        .expect("historical fact authority");
+        record.authority = Some(authority.to_surface());
+        mark_mutable_facts_stale(&mut record);
+        let catalog = [record.clone()];
+        let catalog_index = super::super::product_state::CatalogLookupIndex::from_catalog(&catalog);
+        let mut state = super::super::product_state::ProductState::open(
+            scratch().join("cold-product-state.json"),
+        )
+        .expect("cold product state");
+        let dependency_facts: [backend_engine::PackageDependencySourceFacts; 0] = [];
+        let dependency_index = backend_library::PackageGraphIndex::from_facts(&dependency_facts);
+        let view = empty_product_view();
+
+        let package_reply = state
+            .execute(
+                backend_engine::SurfaceCommand::Package {
+                    package: backend_engine::PackageReference::Purl(coordinate.clone()),
+                },
+                &view,
+                &catalog,
+                &catalog_index,
+                &dependency_facts,
+                &dependency_index,
+                None,
+            )
+            .expect("package query");
+        let backend_engine::SurfaceReply::Package(package_rows) = package_reply else {
+            panic!("package reply shape");
+        };
+        assert_eq!(package_rows.len(), 1);
+        assert_eq!(
+            package_rows[0].standing,
+            backend_engine::RegistryReleaseStanding::Available
+        );
+        assert_eq!(package_rows[0].downloads, record.downloads);
+        assert_eq!(
+            package_rows[0]
+                .authority
+                .expect("package authority")
+                .release_facts_freshness,
+            backend_engine::RegistryPackageFactFreshness::Historical
+        );
+
+        let versions_reply = state
+            .execute(
+                backend_engine::SurfaceCommand::PackageVersions {
+                    package: backend_engine::PackageReference::Purl(coordinate.clone()),
+                },
+                &view,
+                &catalog,
+                &catalog_index,
+                &dependency_facts,
+                &dependency_index,
+                None,
+            )
+            .expect("versions query");
+        let backend_engine::SurfaceReply::PackageVersions(version_rows) = versions_reply else {
+            panic!("package versions reply shape");
+        };
+        assert_eq!(version_rows.len(), 1);
+        assert_eq!(
+            version_rows[0]
+                .authority
+                .expect("version authority")
+                .release_facts_freshness,
+            backend_engine::RegistryPackageFactFreshness::Historical
+        );
+
+        let profile_reply = state
+            .execute(
+                backend_engine::SurfaceCommand::PackageProfile {
+                    package: backend_engine::PackageReference::Purl(coordinate),
+                },
+                &view,
+                &catalog,
+                &catalog_index,
+                &dependency_facts,
+                &dependency_index,
+                None,
+            )
+            .expect("profile query");
+        let backend_engine::SurfaceReply::PackageProfile {
+            latest,
+            versions,
+            candidate_authority,
+        } = profile_reply
+        else {
+            panic!("profile reply shape");
+        };
+        assert_eq!(versions, 1);
+        assert!(latest.is_none());
+        assert_eq!(
+            candidate_authority
+                .expect("profile authority for withheld latest")
+                .release_facts_freshness,
+            backend_engine::RegistryPackageFactFreshness::Historical
+        );
+    }
+
+    #[test]
+    fn catalog_package_fact_observations_expire_and_keep_source_identity() {
+        let now = 200_000;
+        let receipt_observation = FreshPackageFactsObservation {
+            facts_version: [1; 32],
+            source_provenance: [2; 32],
+            at_millis: now,
+            proof: PackageFactObservationProof::AcquisitionReceipt {
+                receipt: [3; 32],
+                snapshot: [4; 32],
+            },
+        };
+        assert!(receipt_observation.is_current_at(now));
+        assert!(!receipt_observation.is_current_at(now + PACKAGE_FACTS_OBSERVATION_HORIZON_MILLIS));
+        assert_eq!(
+            receipt_observation.valid_until_millis(),
+            now + PACKAGE_FACTS_OBSERVATION_HORIZON_MILLIS
+        );
+
+        let negative_observation = FreshPackageFactsObservation {
+            facts_version: [1; 32],
+            source_provenance: [2; 32],
+            at_millis: now,
+            proof: PackageFactObservationProof::SourceNegativeFact {
+                authority: [5; 32],
+                source_proof: [6; 32],
+                cursor: [6; 32],
+                observed_at_millis: now,
+                expires_at_millis: now + 500,
+                policy_epoch: 7,
+                kind: NegativeFactKind::Yanked,
+            },
+        };
+        assert!(negative_observation.is_current_at(now + 499));
+        assert!(!negative_observation.is_current_at(now + 500));
+
+        let coordinate = "pkg:cargo/shared@1.0.0";
+        let record = catalog_record(
+            coordinate,
+            backend_library::RegistryEcosystem::Cargo,
+            [8; 32],
+        );
+        let left = package_fact_authority([9; 32], [10; 32], [11; 32], [8; 32], &record, None)
+            .expect("left source authority");
+        let right = package_fact_authority([12; 32], [13; 32], [14; 32], [8; 32], &record, None)
+            .expect("right source authority");
+        assert_ne!(left.source, right.source);
+        assert_ne!(left.selection_version, right.selection_version);
+    }
+
+    fn receipt_observation(
+        at_millis: u64,
+        facts_version: [u8; 32],
+    ) -> FreshPackageFactsObservation {
+        FreshPackageFactsObservation {
+            facts_version,
+            source_provenance: [2; 32],
+            at_millis,
+            proof: PackageFactObservationProof::AcquisitionReceipt {
+                receipt: [3; 32],
+                snapshot: [4; 32],
+            },
+        }
+    }
+
+    #[test]
+    fn package_fact_observations_remain_bounded_across_many_versions() {
+        let source = [21; 32];
+        let first_at = 300_000;
+        let version_count = MAX_FRESH_PACKAGE_FACT_OBSERVATIONS + 16;
+        let mut observations = FreshPackageFactMap::new();
+        let mut newest = None;
+
+        for index in 0..version_count {
+            let at_millis = first_at + u64::try_from(index).expect("index fits");
+            let coordinate = PackageCoordinate::parse(format!("pkg:cargo/demo@1.0.{index}"))
+                .expect("version coordinate");
+            let mut facts_version = [0; 32];
+            facts_version[..8]
+                .copy_from_slice(&u64::try_from(index).expect("index fits").to_le_bytes());
+            assert!(remember_package_fact_observation(
+                &mut observations,
+                (source, coordinate.clone()),
+                receipt_observation(at_millis, facts_version),
+                at_millis,
+            ));
+            newest = Some(coordinate);
+        }
+
+        assert_eq!(observations.len(), MAX_FRESH_PACKAGE_FACT_OBSERVATIONS);
+        let newest = newest.expect("at least one package version");
+        assert!(observations.contains_key(&(source, newest)));
+        assert!(observations.values().all(|observation| {
+            observation.is_current_at(first_at + u64::try_from(version_count).expect("count fits"))
+        }));
+    }
+
+    #[test]
+    fn expired_observations_are_pruned_and_cold_reopen_starts_historical() {
+        let source = [31; 32];
+        let expired_coordinate =
+            PackageCoordinate::parse("pkg:cargo/demo@1.0.0").expect("expired coordinate");
+        let live_coordinate =
+            PackageCoordinate::parse("pkg:cargo/demo@1.0.1").expect("live coordinate");
+        let expired_at = 100_000;
+        let live_at = expired_at + PACKAGE_FACTS_OBSERVATION_HORIZON_MILLIS - 1;
+        let expires_at = expired_at + PACKAGE_FACTS_OBSERVATION_HORIZON_MILLIS;
+        let mut observations = FreshPackageFactMap::new();
+        assert!(remember_package_fact_observation(
+            &mut observations,
+            (source, expired_coordinate.clone()),
+            receipt_observation(expired_at, [1; 32]),
+            expired_at,
+        ));
+        assert!(remember_package_fact_observation(
+            &mut observations,
+            (source, live_coordinate.clone()),
+            receipt_observation(live_at, [2; 32]),
+            live_at,
+        ));
+
+        let before_expiry = package_fact_observation_state(&observations, 2, expires_at - 1);
+        let removed = prune_expired_package_fact_observations(&mut observations, expires_at);
+        assert_eq!(removed, 1);
+        assert!(!observations.contains_key(&(source, expired_coordinate)));
+        assert!(observations.contains_key(&(source, live_coordinate)));
+        let after_expiry = package_fact_observation_state(
+            &observations,
+            2 + u64::try_from(removed).expect("removed count fits"),
+            expires_at,
+        );
+        assert_ne!(before_expiry, after_expiry);
+
+        // RegistryGateway::open intentionally initializes an empty process-local
+        // observation map, so durable facts after restart are historical.
+        let reopened_observations = FreshPackageFactMap::new();
+        assert!(reopened_observations.is_empty());
+        assert_ne!(
+            after_expiry,
+            package_fact_observation_state(&reopened_observations, 0, expires_at)
+        );
+        assert!(!receipt_observation(expired_at, [1; 32]).is_current_at(expires_at));
     }
 
     fn stored_zip_file(name: &str, bytes: &[u8], checksum: u32) -> Vec<u8> {
@@ -1474,7 +3384,13 @@ mod tests {
     fn tar_archive_materializes_once_and_reuses_the_immutable_tree() {
         let root = scratch();
         let coordinate = PackageCoordinate::parse("pkg:cargo/demo@1.0.0").expect("coordinate");
-        let archive = tar_file("package/src/lib.rs", b"pub fn from_registry() {}");
+        let archive = tar_files(&[
+            (
+                "package/Cargo.toml",
+                b"[package]\nname = \"demo\"\nversion = \"1.0.0\"\nedition = \"2021\"\n",
+            ),
+            ("package/src/lib.rs", b"pub fn from_registry() {}"),
+        ]);
         let staged = stage_archive(&coordinate, &archive, &root).expect("stage archive");
         let source = fs::read(staged.path().join("src/lib.rs")).expect("read source");
         assert!(
@@ -1495,7 +3411,13 @@ mod tests {
         let root = scratch();
         let crate_coordinate =
             PackageCoordinate::parse("pkg:cargo/demo@1.4.0").expect("coordinate");
-        let crate_archive = tar_file("demo-1.4.0/src/lib.rs", b"pub fn wrapped() {}");
+        let crate_archive = tar_files(&[
+            (
+                "demo-1.4.0/Cargo.toml",
+                b"[package]\nname = \"demo\"\nversion = \"1.4.0\"\nedition = \"2021\"\n",
+            ),
+            ("demo-1.4.0/src/lib.rs", b"pub fn wrapped() {}"),
+        ]);
         let staged = stage_archive(&crate_coordinate, &crate_archive, &root).expect("stage crate");
         assert_eq!(
             fs::read(staged.path().join("src/lib.rs")).expect("crate source at package root"),
@@ -1516,15 +3438,122 @@ mod tests {
     }
 
     #[test]
+    fn cargo_archive_gets_a_resolver_preserving_workspace_boundary() {
+        const SERDE_BUILD_SCRIPT: &[u8] = include_bytes!(
+            "../../../../frontends/rust/tests/fixtures/serde-1.0.228-build-script.txt"
+        );
+        let root = scratch();
+        let coordinate = PackageCoordinate::parse("pkg:cargo/serde@1.0.228").expect("coordinate");
+        let manifest = b"[package]\nname = \"serde\"\nversion = \"1.0.228\"\nedition = \"2021\"\nbuild = \"build.rs\"\n";
+        let archive = tar_files(&[
+            ("serde-1.0.228/Cargo.toml", manifest),
+            ("serde-1.0.228/build.rs", SERDE_BUILD_SCRIPT),
+            ("serde-1.0.228/src/lib.rs", b"pub fn fixture() {}\n"),
+        ]);
+        let staged = stage_archive(&coordinate, &archive, &root).expect("stage serde archive");
+
+        assert_eq!(
+            staged.path().file_name().unwrap().to_string_lossy(),
+            "serde-1.0.228"
+        );
+        assert_eq!(
+            fs::read(staged.path().join("Cargo.toml")).expect("package manifest"),
+            manifest
+        );
+        assert_eq!(
+            fs::read(staged.path().join("build.rs")).expect("serde build script"),
+            SERDE_BUILD_SCRIPT
+        );
+        let workspace_manifest =
+            fs::read_to_string(staged.path().parent().unwrap().join("Cargo.toml"))
+                .expect("generated workspace manifest");
+        assert!(workspace_manifest.starts_with(GENERATED_CARGO_WORKSPACE_HEADER));
+        let workspace: toml::Value = workspace_manifest
+            .strip_prefix(GENERATED_CARGO_WORKSPACE_HEADER)
+            .expect("generated marker")
+            .parse()
+            .expect("workspace TOML");
+        assert_eq!(
+            workspace["workspace"]["members"].as_array().unwrap()[0].as_str(),
+            Some("serde-1.0.228")
+        );
+        assert_eq!(workspace["workspace"]["resolver"].as_str(), Some("2"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn flat_cargo_archive_is_wrapped_without_overwriting_its_manifest() {
+        let root = scratch();
+        let coordinate = PackageCoordinate::parse("pkg:cargo/flat-demo@1.0.0").expect("coordinate");
+        let manifest =
+            b"[package]\nname = \"flat-demo\"\nversion = \"1.0.0\"\nedition = \"2018\"\n";
+        let archive = tar_files(&[
+            ("Cargo.toml", manifest),
+            ("build.rs", b"fn main() {}\n"),
+            ("src/lib.rs", b"pub fn fixture() {}\n"),
+        ]);
+        let staged = stage_archive(&coordinate, &archive, &root).expect("stage flat crate");
+        assert_eq!(
+            fs::read(staged.path().join("Cargo.toml")).expect("package manifest"),
+            manifest
+        );
+        let member = staged.path().file_name().unwrap().to_string_lossy();
+        assert!(member.starts_with("__nudox_registry_package_"));
+        let workspace_manifest =
+            fs::read_to_string(staged.path().parent().unwrap().join("Cargo.toml"))
+                .expect("generated workspace manifest");
+        assert!(workspace_manifest.contains("resolver = \"1\""));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cargo_archive_without_a_manifest_is_rejected_as_unsupported() {
+        let root = scratch();
+        let coordinate =
+            PackageCoordinate::parse("pkg:cargo/no-manifest@1.0.0").expect("coordinate");
+        let archive = tar_file("no-manifest-1.0.0/src/lib.rs", b"pub fn fixture() {}\n");
+        assert!(matches!(
+            stage_archive(&coordinate, &archive, &root),
+            Err(RegistryAddError::UnsupportedArchive)
+        ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explicit_package_resolver_overrides_edition_default() {
+        let root = scratch();
+        let coordinate =
+            PackageCoordinate::parse("pkg:cargo/resolver-demo@1.0.0").expect("coordinate");
+        let archive = tar_files(&[
+            (
+                "Cargo.toml",
+                b"[package]\nname = \"resolver-demo\"\nversion = \"1.0.0\"\nedition = \"2018\"\nresolver = \"2\"\n",
+            ),
+            ("src/lib.rs", b"pub fn fixture() {}\n"),
+        ]);
+        let staged = stage_archive(&coordinate, &archive, &root).expect("stage explicit resolver");
+        let workspace_manifest =
+            fs::read_to_string(staged.path().parent().unwrap().join("Cargo.toml"))
+                .expect("generated workspace manifest");
+        assert!(workspace_manifest.contains("resolver = \"2\""));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn archive_path_traversal_is_rejected_before_writing_outside_the_jail() {
         let root = scratch();
+        let escaped_staging_path = root.join("registry-staging/outside.rs");
+        let escaped_workspace_path = root.join("outside.rs");
+        assert!(!escaped_staging_path.exists());
+        assert!(!escaped_workspace_path.exists());
         let coordinate = PackageCoordinate::parse("pkg:cargo/demo@1.0.0").expect("coordinate");
         let archive = tar_file("../outside.rs", b"must not escape");
         assert!(matches!(
             stage_archive(&coordinate, &archive, &root),
             Err(RegistryAddError::UnsupportedArchive)
         ));
-        assert!(!root.parent().unwrap_or(&root).join("outside.rs").exists());
+        assert!(!escaped_staging_path.exists());
+        assert!(!escaped_workspace_path.exists());
         let _ = fs::remove_dir_all(root);
     }
 

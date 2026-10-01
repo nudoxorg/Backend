@@ -1,0 +1,8 @@
+text-scale 150 @300        # text-scale 150
+text-scale 100 @1100       # text-scale 100
+density compact @1900      # density compact
+density comfortable @2700  # density comfortable
+theme glacier @3500        # theme glacier
+theme abyss @4100          # theme abyss
+resize 900x700 @4700       # resize 900x700
+resize 1440x900 @5500      # resize 1440x900

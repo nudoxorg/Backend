@@ -12,6 +12,7 @@ path = "src/lib.rs"
 [dependencies]
 backend-version = { path = "../version" }
 backend-flow = { path = "../flow" }
+backend-platform = { path = "../platform" }
 backend-semantic = { path = "../semantic" }
 blake3.workspace = true
 serde.workspace = true

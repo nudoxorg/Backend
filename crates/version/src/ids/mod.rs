@@ -23,8 +23,8 @@ mod wire;
 
 pub use context::IdContext;
 pub use hash::{
-    ObjectVersionHasher, RuntimeIdentityError, admit_object_version_bytes, admit_state_root_bytes,
-    object_version_digest, state_root_digest,
+    ObjectKeyHasher, ObjectVersionHasher, RuntimeIdentityError, admit_object_version_bytes,
+    admit_state_root_bytes, object_version_digest, state_root_digest,
 };
 pub use identity::{CommitId, DeltaId, ObjectKey, ObjectVersion, StateRoot, WorkspaceRoot};
 pub use schema::{CanonicalRelation, Relation, RelationDecodeError, Schema};

@@ -22,6 +22,17 @@ pub mod application;
 pub use backend_advisory as advisory;
 pub mod builtin;
 pub mod capability;
+mod compiler_attempt_v2;
+/// Exact assignment-to-Iroh/Bao capability bridge for private compiler clusters.
+pub mod compiler_cluster_transport;
+mod compiler_input_capture_v2;
+mod compiler_input_manifest;
+mod compiler_input_manifest_v2;
+mod compiler_input_tree_v2;
+mod compiler_read_observation_v2;
+mod compiler_unit_read_closure_v2;
+/// Private authenticated content-addressed compiler-cluster transport.
+pub use backend_cluster_transport as cluster_transport;
 pub mod daemon;
 pub mod dispatch;
 pub mod driver;
@@ -30,12 +41,12 @@ pub mod fault;
 /// Typed, content-addressed source acquisition from code forges.
 pub mod forge;
 pub use forge::{
-    ForgeAcquisitionError, ForgeAcquisitionLimits, ForgeAcquisitionOutcome,
-    ForgeAcquisitionPolicy, ForgeAcquisitionResult, ForgeAcquisitionService, ForgeArchive,
-    ForgeArchiveFormat, ForgeAuthToken, ForgeCoordinate, ForgeCoordinateError,
-    ForgeDelegatedObject, ForgeDelegationRequest, ForgeFact, ForgeHashAlgorithm, ForgeObjectId,
-    ForgePackageManifest, ForgeProtocolError, ForgeProvider, ForgeReceipt, ForgeRefName,
-    ForgeRejectReason, ForgeRepositoryMetadata, ForgeResolution, ForgeRevision, ForgeTransport,
+    ForgeAcquisitionError, ForgeAcquisitionLimits, ForgeAcquisitionOutcome, ForgeAcquisitionPolicy,
+    ForgeAcquisitionResult, ForgeAcquisitionService, ForgeArchive, ForgeArchiveFormat,
+    ForgeAuthToken, ForgeCoordinate, ForgeCoordinateError, ForgeDelegatedObject,
+    ForgeDelegationRequest, ForgeFact, ForgeHashAlgorithm, ForgeObjectId, ForgePackageManifest,
+    ForgeProtocolError, ForgeProvider, ForgeReceipt, ForgeRefName, ForgeRejectReason,
+    ForgeRepositoryMetadata, ForgeResolution, ForgeRevision, ForgeSearchRecord, ForgeTransport,
     ForgeTransportError, ForgeUnavailableReason, HttpForgeTransport, verify_delegated_object,
 };
 pub mod index_build;
@@ -52,6 +63,7 @@ pub mod telemetry;
 pub mod worker;
 pub mod workspace;
 
+pub use backend_advisory::{AcquisitionGate, OfflinePolicy};
 pub use backend_execution::{
     Admission, AdmissionError, AdmissionRequest, AttemptError, AttemptFence, AttemptLease,
     AttemptManager, AuthorityVersion, AuthorityVersionSchema, Budget, CancelHandle, Cancellation,
@@ -65,6 +77,7 @@ pub use backend_execution::{
     ScheduleError, ScheduleOutcome, ScheduleReceipt, ScheduleRequest, Scheduled, Scheduler,
     Telemetry, TelemetryExporter, TelemetrySnapshot, UntrustedResultReceipt, VersionedWorkIdentity,
     WorkInterner, WorkKey, WorkKeySchema, acquisition_work_key, choose_refresh,
+    compiler_transfer_work_id,
 };
 pub use backend_replication::{
     AdmittedAuthority, AdmittedChunk, AttemptId, Attestation, AttestationClass,
@@ -76,18 +89,20 @@ pub use backend_replication::{
     ExecutionRequestExpectation, ExecutionResultExpectation, ExecutionScopeId, ExpectedIdentity,
     Fence, Frame, ImmutableObjectSchema, LOCAL_CONTROL_HEADER_BYTES, LOCAL_CONTROL_MAGIC,
     LOCAL_CONTROL_MAX_CURSOR, LOCAL_CONTROL_MAX_ERROR, LOCAL_CONTROL_MAX_FRAME,
-    LOCAL_CONTROL_VERSION, LocalControlClient, LocalControlError, LocalControlLimits,
-    LocalControlRequest, LocalControlResponse, LocalSubscriptionId, LocalSubscriptionOperation,
-    LocalSubscriptionRequest, LocalSubscriptionResetReason, LocalSubscriptionResponse,
-    MAX_UNIX_ENDPOINT_PATH_BYTES, MerkleChild, MerkleDelta, MerkleDeltaPage, MerkleLeafEntry,
-    MerkleObject, MerklePage, MerklePageBody, MerklePageRequest, MerklePageSource,
-    MerkleReconciler, MerkleRoot, MerkleRootClaim, NegotiatedCapabilities, NodeDigest,
-    ObjectRequest, ObjectSummary, ObjectSummaryExpectation, PageCursor, ReceivingCas,
-    ReceivingCasSink, ReceivingCheckpoint, RecipeCapability, ReconcileBudget, ReplicationError,
-    ResourceEnvelope, RevocationVersion, RootSummary, RootSummaryExpectation, SchemaDescriptor,
-    SparseCoverage, StagedExtent, TransferId, TransportLimits, TransportMessage, UnixEndpointPath,
-    UnixEndpointPathError, UnixEndpointRef, VersionRange, WireAuthority, WireAuthorityPolicy,
-    WireIdentity, WirePackClaim, WireRecipeRequest, WireRecipeResult, WireRootSummary,
+    LOCAL_CONTROL_MAX_SEMANTIC_RANGE_PAYLOAD, LOCAL_CONTROL_VERSION, LocalControlClient,
+    LocalControlError, LocalControlLimits, LocalControlRequest, LocalControlResponse,
+    LocalSubscriptionId, LocalSubscriptionOperation, LocalSubscriptionRequest,
+    LocalSubscriptionResetReason, LocalSubscriptionResponse, MAX_UNIX_ENDPOINT_PATH_BYTES,
+    MerkleChild, MerkleDelta, MerkleDeltaPage, MerkleLeafEntry, MerkleObject, MerklePage,
+    MerklePageBody, MerklePageRequest, MerklePageSource, MerkleReconciler, MerkleRoot,
+    MerkleRootClaim, NegotiatedCapabilities, NodeDigest, ObjectRequest, ObjectSummary,
+    ObjectSummaryExpectation, PageCursor, ReceivingCas, ReceivingCasSink, ReceivingCheckpoint,
+    RecipeCapability, ReconcileBudget, ReplicationError, ResourceEnvelope, RevocationVersion,
+    RootSummary, RootSummaryExpectation, SchemaDescriptor, SchemaWireObjectKey,
+    SchemaWireObjectVersion, SparseCoverage, StagedExtent, TransferId, TransportLimits,
+    TransportMessage, UnixEndpointPath, UnixEndpointPathError, UnixEndpointRef,
+    UnverifiedObjectRequest, VersionRange, WireAuthority, WireAuthorityPolicy, WireIdentity,
+    WirePackClaim, WireReceivingCheckpoint, WireRecipeRequest, WireRecipeResult, WireRootSummary,
     WorkspaceRootClaim, canonical_object_digest, claim_schema_object_key,
     claim_schema_object_version, control_request_id as local_control_request_id,
     decode_request as decode_local_control_request,
@@ -100,78 +115,79 @@ pub use backend_replication::{
     write_frame as write_local_frame,
 };
 pub use backend_replication::{FramedStream, FramedStreamError};
-pub use backend_advisory::{AcquisitionGate, OfflinePolicy};
 // The process applications depend only on this composition crate. Keep the
 // portable library DTOs, version primitives, and closure types available here
 // so an application cannot accidentally grow a second direct dependency edge
 // into one of the lower crates.
 pub use backend_library::{
-    AdvisoryCategory, AdvisoryCoverage, AdvisoryDecisionDto, AdvisoryPackageDto, AdvisoryStatus,
-    AdvisorySurfaceDto, AffectedRange, AcquisitionDecision, FreshnessState, NativeAdvisoryId,
-    PolicyReason, SeverityLevel,
-    Basis, BranchKey, CURSOR_CONTROL_BYTES, CURSOR_SCHEMA, CapabilityAuthority, CapabilityFamily,
-    CapabilityId, CapabilityInventory, CapabilityLifecycle, CapabilityStatus, CapabilityTarget,
+    AcquisitionDecision, AdvisoryCategory, AdvisoryCoverage, AdvisoryDecisionDto,
+    AdvisoryPackageDto, AdvisoryStatus, AdvisorySurfaceDto, AffectedRange, Basis, BranchKey,
+    CURSOR_CONTROL_BYTES, CURSOR_SCHEMA, CapabilityAuthority, CapabilityFamily, CapabilityId,
+    CapabilityInventory, CapabilityLifecycle, CapabilityStatus, CapabilityTarget,
     CapabilityUnavailable, Command, CommandDto, CommandFailure, CommandReply, CommittedViewDelta,
     CompleteViewProjection, Coverage as ViewCoverage, CoverageCapability, Cursor, CursorEvent,
-    CursorResetReason, DTO_VERSION, DeclarationChange, DeclarationRecord, DiffRecord, Document,
+    CursorResetReason, DTO_VERSION, DeclarationChange, DeclarationRecord, DependencyAuthority,
+    DependencyEvidence, DependencyFacts, DependencyScope, DiffRecord, Document,
     EmbeddingCapabilityRecipe, EmbeddingEncoding, EmbeddingMetric, EmbeddingNormalization,
-    EmbeddingPooling, EmbeddingRecipeId, EmbeddingSource, EventDto, FaultRows, Fragment, Freshness,
-    Frontier, GraphNeighborhoodQuery, GraphQueryControl, GraphQueryPage, GraphQueryRequest,
-    GraphAuthority, GraphAvailability, GraphControl, GraphEdgeId, GraphEdgeKind, GraphLayoutEdge,
-    GraphLayoutInput, GraphNodeId, GraphPageTerminal, GraphProvenance, GraphQueryRow,
-    GraphRelation, GraphRelationFamily, GraphValue, HealthReport, IngestProgress, IntentId, Lane,
-    LanguageOracleTask, RichGraphBuilder, RichGraphCursor, RichGraphDelta, RichGraphEdge,
-    RichGraphError, RichGraphNode, RichGraphPage, RichGraphRequest, RichGraphRevision,
-    RichGraphSnapshot,
-    LanguageRows, LogKey, MAX_PRODUCT_ROWS, MAX_PROGRESS_FAULTS, MAX_PROGRESS_LANGUAGES,
-    MAX_ROW_IDENTITY_PREIMAGE_BYTES,
-    MAX_SNAPSHOT_PAGE_ROWS, MAX_SUBSCRIPTION_EVENTS, MAX_VIEW_PATCH_ROWS, Outline,
-    DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope,
-    PackageDependencyRecord, PackageDependencySourceFacts, PackageDependencyTarget,
-    PackageAuthorityIdentity, PackageCoordinate as ProductPackageCoordinate, PackageKey,
-    PackageReference, PageContinuation, PageRequest, PageTerminal, ProductAdmissionError,
-    ProductText, ProjectId, ProjectName, ProjectRecord, ProjectSelector, ProjectionPage, Query,
-    QueryLimit, Reason, ReferenceFact, ReferenceRecord, RegistryDownloadCount,
-    RegistryEcosystem, RegistryFactAvailability, RegistryMetadata, RegistryPackageRecord,
+    EmbeddingPooling, EmbeddingRecipeId, EmbeddingSource, EventDto, FaultRows,
     ForgeFact as ForgePackageFact, ForgeManifestRecord, ForgePackageRecord,
-    ForgeRepositoryMetadataRecord, MAX_REGISTRY_FORGE_ASSOCIATIONS, MAX_REGISTRY_FORGE_BLOBS,
-    MAX_REGISTRY_FORGE_CANDIDATES, MAX_REGISTRY_FORGE_ASSOCIATION_BYTES,
-    REGISTRY_FORGE_ASSOCIATION_VERSION,
-    RegistryForgeAssociation, RegistryForgeAssociationError, RegistryForgeAssociationState,
-    RegistryForgeBlobFrontier, RegistryForgeBlobKind, RegistryForgeBlobPage,
-    RegistryForgeBlobRef, RegistryForgeCandidate,
+    ForgeRepositoryMetadataRecord, Fragment, Freshness, FreshnessState, Frontier, GraphAuthority,
+    GraphAvailability, GraphControl, GraphEdgeId, GraphEdgeKind, GraphLayoutEdge, GraphLayoutInput,
+    GraphNeighborhoodQuery, GraphNodeId, GraphPageTerminal, GraphProvenance, GraphQueryControl,
+    GraphQueryPage, GraphQueryRequest, GraphQueryRow, GraphRelation, GraphRelationFamily,
+    GraphValue, HealthReport, IngestProgress, IntentId, Lane, LanguageOracleTask, LanguageRows,
+    LogKey, MAX_PRODUCT_ROWS, MAX_PROGRESS_FAULTS, MAX_PROGRESS_LANGUAGES,
+    MAX_REGISTRY_FORGE_ASSOCIATION_BYTES, MAX_REGISTRY_FORGE_ASSOCIATIONS,
+    MAX_REGISTRY_FORGE_BLOBS, MAX_REGISTRY_FORGE_CANDIDATES, MAX_REGISTRY_FORGE_PAGES,
+    MAX_ROW_IDENTITY_PREIMAGE_BYTES, MAX_SNAPSHOT_PAGE_ROWS, MAX_SUBSCRIPTION_EVENTS,
+    MAX_VIEW_PATCH_ROWS, NativeAdvisoryId, Outline, PackageAuthorityIdentity,
+    PackageCoordinate as ProductPackageCoordinate, PackageDependencyRecord,
+    PackageDependencySourceFacts, PackageDependencyTarget, PackageDependencyLookup,
+    PackageGraphSourceAuthority, PackageGraphSourceKey, RegistryAuthorityId, PackageKey,
+    PackageReference,
+    PageContinuation, PageRequest, PageTerminal, PolicyReason, ProductAdmissionError, ProductText,
+    ProjectId, ProjectName, ProjectRecord, ProjectSelector, ProjectionPage, Query, QueryLimit,
+    REGISTRY_FORGE_ASSOCIATION_VERSION, REGISTRY_FORGE_BLOB_FRONTIER_VERSION, Reason,
+    ReferenceFact, ReferenceRecord, RegistryDiscoveryCandidate, RegistryDiscoveryCompleteness,
+    RegistryDiscoveryFreshness, RegistryDiscoveryStanding, RegistryDownloadCount,
+    RegistryEcosystem, RegistryFactAvailability, RegistryForgeAssociation,
+    RegistryForgeAssociationError, RegistryForgeAssociationState, RegistryForgeBlobFrontier,
+    RegistryForgeBlobKind, RegistryForgeBlobPage, RegistryForgeBlobRef, RegistryForgeCandidate,
     RegistryForgeConfidence, RegistryForgeProvenance, RegistryForgeSourceIdentity,
-    MAX_REGISTRY_FORGE_PAGES, REGISTRY_FORGE_BLOB_FRONTIER_VERSION,
-    RegistryReleaseStanding,
-    ReleaseRecord, ReplyDto, Row, RowChange, RowId, RowIdentityPreimage, RowIdentityPreimageError,
-    SemanticConfidence,
+    RegistryMetadata, RegistryNegativeFactKind, RegistryPackageFactAuthority,
+    RegistryPackageFactCompleteness, RegistryPackageFactFreshness, RegistryPackageFactProof,
+    RegistryPackageRecord, RegistryReleaseStanding, RegistrySearchHit, ReleaseRecord, ReplyDto,
+    RichGraphBuilder, RichGraphCursor, RichGraphDelta, RichGraphEdge, RichGraphError,
+    RichGraphNode, RichGraphPage, RichGraphRequest, RichGraphRevision, RichGraphSnapshot, Row,
+    RowChange, RowId, RowIdentityPreimage, RowIdentityPreimageError, SemanticConfidence,
     SemanticDeclarationIdentity, SemanticGenerationId, SemanticLanguageProfile, SemanticLinkDelta,
     SemanticLinkEvidence, SemanticLinkKind, SemanticLinkTarget, SemanticSourceSpan,
-    SemanticVersionRecord, SnapshotHydrator, SnapshotPageClaim, SnapshotPageDto,
-    SourceLanguage as ProductSourceLanguage, SubscriptionDto, SubscriptionRecord, SurfaceCommand,
-    SurfaceReply, SymbolAddress, SymbolKey, TreeNodeId as ProductTreeNodeId, TreeNodeRecord,
-    TreeOpener, TreeSubject, ViewDelta, ViewDto, ViewPageCursor, ViewPageError, ViewProjection,
-    ViewProjectionError, ViewRecipeId, ViewRelation, ViewRoot, ViewRootDescriptor,
-    ViewRootDescriptorClaim, ViewSnapshot, ViewSnapshotPage, ViewStateRoot, ViewVersion,
-    WireCertificate, WireClaim, WireSchema, command_request_id, compiler_authority_recipe,
-    decode_compact_view_event, encode_compact_subscription, encode_compact_view_event, encode_id,
-    encode_view_root_descriptor, intent_id, object_version, package_key, protocol_version,
-    symbol_key, view_identity_bytes, view_key, view_state_root, view_version_preimage,
+    SemanticVersionFreshness, SemanticVersionRecord, SeverityLevel, SnapshotHydrator,
+    SnapshotPageClaim, SnapshotPageDto, SourceLanguage as ProductSourceLanguage, SubscriptionDto,
+    SubscriptionRecord, SurfaceCommand, SurfaceReply, SymbolAddress, SymbolKey,
+    TreeNodeId as ProductTreeNodeId, TreeNodeRecord, TreeOpener, TreeSubject, ViewDelta, ViewDto,
+    ViewPageCursor, ViewPageError, ViewProjection, ViewProjectionError, ViewRecipeId, ViewRelation,
+    ViewRoot, ViewRootDescriptor, ViewRootDescriptorClaim, ViewSnapshot, ViewSnapshotPage,
+    ViewStateRoot, ViewVersion, WireCertificate, WireClaim, WireSchema, command_request_id,
+    compiler_authority_recipe, decode_compact_view_event, encode_compact_subscription,
+    encode_compact_view_event, encode_id, encode_view_root_descriptor, intent_id, object_version,
+    package_key, protocol_version, symbol_key, view_identity_bytes, view_key, view_state_root,
+    view_version_preimage,
 };
 pub use backend_store::{
     ClosureManifest, FileStore, GcLimits, GcReport, GcRoot, GcRoots, ObjectId,
-    RelationAdmissionRegistry, TypedObject, WorkspaceClosure,
+    RelationAdmissionRegistry, TypedObject, UntrustedObjectId, WorkspaceClosure,
 };
 pub use backend_version::{
     AdmittedProducerObservation, AuthorityScopeClaim, AuthorizedCompleteCoverage, CanonicalNode,
     CanonicalNodeView, CanonicalRelation, CheckedCanonicalRoot, CheckedCommit,
     CheckedWorkspaceManifest, CheckedWorkspaceTransition, Commit, CommitProvenance, Coverage,
     CoverageWitness, IdContext, LazyPreparedUpdate, LazyTree, MapChange, ObjectClosure, ObjectKey,
-    ObjectVersion, PersistedTreeRoot, ProducerObservationClaims, ProducerObservationVerifier,
-    Relation, RelationBinding, RelationDecodeError, RelationState, RelationTransition, Schema,
-    ScopeRoot, StateRoot, TreeChange, TreeNodeChildren, TreeNodeClosure, TreeNodeClosureWork,
-    TreeNodeHandle, TreeNodeId, TreeNodeLoader, TreeNodeView, UntrustedId,
-    UntrustedProducerObservation, UntrustedWorkspaceDelta, UntrustedWorkspaceManifest,
+    ObjectKeyHasher, ObjectVersion, PersistedTreeRoot, ProducerObservationClaims,
+    ProducerObservationVerifier, Relation, RelationBinding, RelationDecodeError, RelationState,
+    RelationTransition, Schema, ScopeRoot, StateRoot, TreeChange, TreeNodeChildren,
+    TreeNodeClosure, TreeNodeClosureWork, TreeNodeHandle, TreeNodeId, TreeNodeLoader, TreeNodeView,
+    UntrustedId, UntrustedProducerObservation, UntrustedWorkspaceDelta, UntrustedWorkspaceManifest,
     WorkspaceDelta, WorkspaceManifest, WorkspaceRoot, admit_canonical_root,
     admit_canonical_root_claim, admit_complete_scope, admit_producer_observation, canonical_empty,
     commit_capability, commit_checked, partial_coverage, prepare_delta,
@@ -202,10 +218,11 @@ pub use builtin::{
     admit_product_closure_manifest, canonical_relation_row, coverage_from_admitted_authority,
     echo_row_bytes, execution_input_basis, execution_input_basis_from_source,
     execution_input_manifest, execution_input_manifest_from_source, execution_manifest,
-    execution_resources, product_closure_manifest, product_closure_root,
-    product_dependency_manifest, product_input_bytes, product_input_claim, product_input_version,
-    product_output_bytes, product_read_manifest, product_source_file_key, product_source_fixture,
-    product_source_fixture_with_authority, profile_descriptor, profile_ids, profile_output_len,
+    execution_resources, legacy_product_source_file_key, product_closure_manifest,
+    product_closure_root, product_dependency_manifest, product_input_bytes, product_input_claim,
+    product_input_version, product_output_bytes, product_read_manifest, product_source_file_key,
+    product_source_fixture, product_source_fixture_with_authority, profile_descriptor, profile_ids,
+    profile_output_len,
     semantic_execution_input_basis, semantic_execution_input_basis_from_snapshot,
     semantic_execution_input_manifest, semantic_execution_input_manifest_from_snapshot,
     semantic_input_bytes, semantic_input_claim, semantic_input_version,
@@ -323,6 +340,8 @@ pub fn encode_snapshot_page_dto(page: &SnapshotPageDto) -> Result<Vec<u8>, Strin
 pub use backend_replication::{
     AuthenticatedLocalPeer, LocalAddr, LocalListener, LocalPeerAuthenticationError, LocalStream,
 };
+#[cfg(any(unix, windows))]
+pub use backend_replication::{PeerCredentialError, peer_is_same_effective_uid};
 pub use daemon::{
     CompletionNotice, Daemon, DaemonConfig, DaemonError, DaemonHandle, DaemonProtocolConfig,
     DaemonReply, DaemonRequest, Operation, QueryState, ReplicationReply, SubscriptionReply,
@@ -362,12 +381,8 @@ pub use journal::{
     JournalLimits, JournalReceipt, JournalRecovery,
 };
 pub use platform::{AuthoritySecretError, read_authority_secret};
-#[cfg(any(unix, windows))]
-pub use backend_replication::{PeerCredentialError, peer_is_same_effective_uid};
 #[cfg(unix)]
-pub use platform::{
-    PeerCredentials, current_effective_uid, peer_credentials,
-};
+pub use platform::{PeerCredentials, current_effective_uid, peer_credentials};
 pub use queue::{
     BoundedQueue, FairQueues, QueueBudget, QueueError, QueueLane, QueueSized, QueueUsage,
 };

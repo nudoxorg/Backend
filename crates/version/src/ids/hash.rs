@@ -74,11 +74,11 @@ pub(crate) fn commit_id_from_digest(bytes: [u8; ID_BYTES]) -> CommitId {
 use core::marker::PhantomData;
 
 use super::{
+    CLASS_DELTA, CLASS_OBJECT_KEY, CLASS_OBJECT_VERSION, CLASS_STATE_ROOT, HASH_DOMAIN, ID_BYTES,
     context::IdContext,
-    identity::{CommitId, DeltaId, ObjectVersion, StateRoot, WorkspaceRoot},
+    identity::{CommitId, DeltaId, ObjectKey, ObjectVersion, StateRoot, WorkspaceRoot},
     schema::{Relation, Schema},
     wire::{IdAdmissionError, UntrustedId},
-    CLASS_DELTA, CLASS_OBJECT_VERSION, CLASS_STATE_ROOT, HASH_DOMAIN, ID_BYTES,
 };
 use crate::workspace::SchemaIdentity;
 
@@ -126,6 +126,103 @@ pub struct ObjectVersionHasher {
     expected: usize,
     written: usize,
     failed: bool,
+}
+
+/// Incremental logical object-key identity encoder owned by the version ABI.
+///
+/// It uses the same canonical schema framing as [`ObjectKey::from_value`],
+/// while allowing a caller to hash a bounded file stream without materializing
+/// the complete key preimage in memory.
+pub struct ObjectKeyHasher {
+    hasher: blake3::Hasher,
+    schema: SchemaIdentity,
+    expected: usize,
+    written: usize,
+    failed: bool,
+}
+
+impl ObjectKeyHasher {
+    /// Starts one logical-key digest for a runtime schema and payload size.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeIdentityError::Oversized`] if `payload_len` cannot be
+    /// represented by the canonical identity framing.
+    pub fn new(schema: SchemaIdentity, payload_len: usize) -> Result<Self, RuntimeIdentityError> {
+        let length = u64::try_from(payload_len).map_err(|_| RuntimeIdentityError::Oversized)?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(HASH_DOMAIN);
+        hasher.update(&[CLASS_OBJECT_KEY, schema.domain()]);
+        hasher.update(&schema.ty().to_be_bytes());
+        hasher.update(&[schema.version()]);
+        hasher.update(&length.to_be_bytes());
+        Ok(Self {
+            hasher,
+            schema,
+            expected: payload_len,
+            written: 0,
+            failed: false,
+        })
+    }
+
+    /// Appends one canonical payload chunk.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeIdentityError::LengthMismatch`] when this chunk would
+    /// exceed the declared payload length or a prior chunk already failed.
+    pub fn update(&mut self, chunk: &[u8]) -> Result<(), RuntimeIdentityError> {
+        if self.failed {
+            return Err(RuntimeIdentityError::LengthMismatch {
+                expected: self.expected,
+                actual: self.written,
+            });
+        }
+        let actual = self
+            .written
+            .checked_add(chunk.len())
+            .ok_or(RuntimeIdentityError::Oversized)?;
+        if actual > self.expected {
+            self.failed = true;
+            self.written = actual;
+            return Err(RuntimeIdentityError::LengthMismatch {
+                expected: self.expected,
+                actual,
+            });
+        }
+        self.hasher.update(chunk);
+        self.written = actual;
+        Ok(())
+    }
+
+    /// Finishes the digest after the declared payload length is complete.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeIdentityError::LengthMismatch`] for an over- or
+    /// under-filled stream.
+    pub fn finish(self) -> Result<[u8; ID_BYTES], RuntimeIdentityError> {
+        if self.failed || self.written != self.expected {
+            return Err(RuntimeIdentityError::LengthMismatch {
+                expected: self.expected,
+                actual: self.written,
+            });
+        }
+        Ok(*self.hasher.finalize().as_bytes())
+    }
+
+    /// Finishes a streamed digest as an opaque typed object key.
+    ///
+    /// The schema is checked against the type parameter before the identity
+    /// is constructed, so a caller cannot relabel the result to another
+    /// schema.
+    pub fn finish_key<T: Schema>(self) -> Result<ObjectKey<T>, RuntimeIdentityError> {
+        let expected = SchemaIdentity::new(T::DOMAIN, T::TYPE, T::VERSION);
+        if self.schema != expected {
+            return Err(RuntimeIdentityError::SchemaMismatch {
+                actual: self.schema,
+                expected,
+            });
+        }
+        Ok(ObjectKey::from_digest(self.finish()?))
+    }
 }
 
 impl ObjectVersionHasher {

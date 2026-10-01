@@ -291,7 +291,9 @@ impl Affordance {
                 }
                 Some(line)
             }
-            Self::WaitForReadiness => Some("backend health  (wait for ~lanes to read ready)".to_owned()),
+            Self::WaitForReadiness => {
+                Some("backend health  (wait for ~lanes to read ready)".to_owned())
+            }
             Self::None => None,
         }
     }
@@ -602,6 +604,15 @@ impl Fault {
                 ),
                 Affordance::Retry,
             ),
+            ClientError::StaleSelection => Self::new(
+                FaultSlug::WrongBasis,
+                operand,
+                Cause::new(
+                    CauseSlug::Moved,
+                    "the selected semantic generation changed; restart hydration against the current selection",
+                ),
+                Affordance::Retry,
+            ),
             other => Self::from_simple_client_error(other, operand),
         }
     }
@@ -654,9 +665,8 @@ impl Fault {
             expected: ViewRevision::from(backend_library::view_state_root(&[])),
             observed: ViewRevision::from(backend_library::view_state_root(&[])),
         };
-        (moved.to_string() == message).then(|| {
-            Self::from_command_failure(&moved, operand.clone()).about(operand.clone())
-        })
+        (moved.to_string() == message)
+            .then(|| Self::from_command_failure(&moved, operand.clone()).about(operand.clone()))
     }
 
     fn from_simple_client_error(error: &ClientError, operand: Operand) -> Self {
@@ -762,7 +772,9 @@ const fn lane_cause(reason: Reason) -> CauseSlug {
 fn lane_sentence(lane: Lane, reason: Reason) -> String {
     let lane = lane_name(lane);
     match reason {
-        Reason::NoIndex => format!("the {lane} lane has no local materialization for this revision"),
+        Reason::NoIndex => {
+            format!("the {lane} lane has no local materialization for this revision")
+        }
         Reason::Unconfigured => {
             format!("this deployment did not configure the {lane} lane, so it answered nothing")
         }

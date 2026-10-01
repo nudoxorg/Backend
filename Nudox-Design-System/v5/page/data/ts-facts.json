@@ -1,0 +1,1749 @@
+{
+ "packages": {
+  "zod": {
+   "version": "4.1.8",
+   "license": "MIT",
+   "description": "TypeScript-first schema declaration and validation library with static type inference"
+  },
+  "yaml": {
+   "version": "2.9.0",
+   "license": "ISC",
+   "description": "JavaScript parser and stringifier for YAML"
+  }
+ },
+ "choice": {
+  "name": "$ZodIssue",
+  "decl": "export type $ZodIssue =\n  | $ZodIssueInvalidType\n  | $ZodIssueTooBig\n  | $ZodIssueTooSmall\n  | $ZodIssueInvalidStringFormat\n  | $ZodIssueNotMultipleOf\n  | $ZodIssueUnrecognizedKeys\n  | $ZodIssueInvalidUnion\n  | $ZodIssueInvalidKey\n  | $ZodIssueInvalidElement\n  | $ZodIssueInvalidValue\n  | $ZodIssueCustom;",
+  "doc": "",
+  "file": "zod/src/v4/core/errors.ts",
+  "line": 144,
+  "base": {
+   "name": "$ZodIssueBase",
+   "kind": "interface",
+   "doc": "",
+   "tags": [],
+   "file": "zod/src/v4/core/errors.ts",
+   "line": 10,
+   "typeParams": [],
+   "extends": [],
+   "props": [
+    {
+     "name": "code",
+     "type": "string",
+     "optional": true,
+     "readonly": true,
+     "doc": "",
+     "tags": [],
+     "file": "zod/src/v4/core/errors.ts",
+     "line": 11
+    },
+    {
+     "name": "input",
+     "type": "unknown",
+     "optional": true,
+     "readonly": true,
+     "doc": "",
+     "tags": [],
+     "file": "zod/src/v4/core/errors.ts",
+     "line": 12
+    },
+    {
+     "name": "path",
+     "type": "PropertyKey[]",
+     "optional": false,
+     "readonly": true,
+     "doc": "",
+     "tags": [],
+     "file": "zod/src/v4/core/errors.ts",
+     "line": 13
+    },
+    {
+     "name": "message",
+     "type": "string",
+     "optional": false,
+     "readonly": true,
+     "doc": "",
+     "tags": [],
+     "file": "zod/src/v4/core/errors.ts",
+     "line": 14
+    }
+   ],
+   "decl": "export interface $ZodIssueBase {\n  readonly code?: string;\n  readonly input?: unknown;\n  readonly path: PropertyKey[];\n  readonly message: string;\n}"
+  },
+  "cases": [
+   {
+    "name": "$ZodIssueInvalidType",
+    "kind": "interface",
+    "doc": "",
+    "tags": [],
+    "file": "zod/src/v4/core/errors.ts",
+    "line": 20,
+    "typeParams": [
+     {
+      "name": "Input",
+      "constraint": "",
+      "dflt": "unknown"
+     }
+    ],
+    "extends": [
+     "$ZodIssueBase"
+    ],
+    "props": [
+     {
+      "name": "code",
+      "type": "\"invalid_type\"",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 21
+     },
+     {
+      "name": "expected",
+      "type": "$ZodType[\"_zod\"][\"def\"][\"type\"]",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 22
+     },
+     {
+      "name": "input",
+      "type": "Input",
+      "optional": true,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 23
+     }
+    ],
+    "decl": "export interface $ZodIssueInvalidType<Input = unknown> extends $ZodIssueBase {\n  readonly code: \"invalid_type\";\n  readonly expected: $ZodType[\"_zod\"][\"def\"][\"type\"];\n  readonly input?: Input;\n}",
+    "lit": "\"invalid_type\"",
+    "own": [
+     {
+      "name": "expected",
+      "type": "$ZodType[\"_zod\"][\"def\"][\"type\"]",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 22
+     }
+    ],
+    "shadow": [
+     "input"
+    ]
+   },
+   {
+    "name": "$ZodIssueTooBig",
+    "kind": "interface",
+    "doc": "",
+    "tags": [],
+    "file": "zod/src/v4/core/errors.ts",
+    "line": 26,
+    "typeParams": [
+     {
+      "name": "Input",
+      "constraint": "",
+      "dflt": "unknown"
+     }
+    ],
+    "extends": [
+     "$ZodIssueBase"
+    ],
+    "props": [
+     {
+      "name": "code",
+      "type": "\"too_big\"",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 27
+     },
+     {
+      "name": "origin",
+      "type": "\"number\" | \"int\" | \"bigint\" | \"date\" | \"string\" | \"array\" | \"set\" | \"file\" | (string & {})",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 28
+     },
+     {
+      "name": "maximum",
+      "type": "number | bigint",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 29
+     },
+     {
+      "name": "inclusive",
+      "type": "boolean",
+      "optional": true,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 30
+     },
+     {
+      "name": "exact",
+      "type": "boolean",
+      "optional": true,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 31
+     },
+     {
+      "name": "input",
+      "type": "Input",
+      "optional": true,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 32
+     }
+    ],
+    "decl": "export interface $ZodIssueTooBig<Input = unknown> extends $ZodIssueBase {\n  readonly code: \"too_big\";\n  readonly origin: \"number\" | \"int\" | \"bigint\" | \"date\" | \"string\" | \"array\" | \"set\" | \"file\" | (string & {});\n  readonly maximum: number | bigint;\n  readonly inclusive?: boolean;\n  readonly exact?: boolean;\n  readonly input?: Input;\n}",
+    "lit": "\"too_big\"",
+    "own": [
+     {
+      "name": "origin",
+      "type": "\"number\" | \"int\" | \"bigint\" | \"date\" | \"string\" | \"array\" | \"set\" | \"file\" | (string & {})",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 28
+     },
+     {
+      "name": "maximum",
+      "type": "number | bigint",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 29
+     },
+     {
+      "name": "inclusive",
+      "type": "boolean",
+      "optional": true,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 30
+     },
+     {
+      "name": "exact",
+      "type": "boolean",
+      "optional": true,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 31
+     }
+    ],
+    "shadow": [
+     "input"
+    ]
+   },
+   {
+    "name": "$ZodIssueTooSmall",
+    "kind": "interface",
+    "doc": "",
+    "tags": [],
+    "file": "zod/src/v4/core/errors.ts",
+    "line": 35,
+    "typeParams": [
+     {
+      "name": "Input",
+      "constraint": "",
+      "dflt": "unknown"
+     }
+    ],
+    "extends": [
+     "$ZodIssueBase"
+    ],
+    "props": [
+     {
+      "name": "code",
+      "type": "\"too_small\"",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 36
+     },
+     {
+      "name": "origin",
+      "type": "\"number\" | \"int\" | \"bigint\" | \"date\" | \"string\" | \"array\" | \"set\" | \"file\" | (string & {})",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 37
+     },
+     {
+      "name": "minimum",
+      "type": "number | bigint",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 38
+     },
+     {
+      "name": "inclusive",
+      "type": "boolean",
+      "optional": true,
+      "readonly": true,
+      "doc": "True if the allowable range includes the minimum",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 40
+     },
+     {
+      "name": "exact",
+      "type": "boolean",
+      "optional": true,
+      "readonly": true,
+      "doc": "True if the allowed value is fixed (e.g.` z.length(5)`), not a range (`z.minLength(5)`)",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 42
+     },
+     {
+      "name": "input",
+      "type": "Input",
+      "optional": true,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 43
+     }
+    ],
+    "decl": "export interface $ZodIssueTooSmall<Input = unknown> extends $ZodIssueBase {\n  readonly code: \"too_small\";\n  readonly origin: \"number\" | \"int\" | \"bigint\" | \"date\" | \"string\" | \"array\" | \"set\" | \"file\" | (string & {});\n  readonly minimum: number | bigint;\n  /** True if the allowable range includes the minimum */\n  readonly inclusive?: boolean;\n  /** True if the allowed value is fixed (e.g.` z.length(5)`), not a range (`z.minLength(5)`) */\n  readonly exact?: boolean;\n  readonly input?: Input;\n}",
+    "lit": "\"too_small\"",
+    "own": [
+     {
+      "name": "origin",
+      "type": "\"number\" | \"int\" | \"bigint\" | \"date\" | \"string\" | \"array\" | \"set\" | \"file\" | (string & {})",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 37
+     },
+     {
+      "name": "minimum",
+      "type": "number | bigint",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 38
+     },
+     {
+      "name": "inclusive",
+      "type": "boolean",
+      "optional": true,
+      "readonly": true,
+      "doc": "True if the allowable range includes the minimum",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 40
+     },
+     {
+      "name": "exact",
+      "type": "boolean",
+      "optional": true,
+      "readonly": true,
+      "doc": "True if the allowed value is fixed (e.g.` z.length(5)`), not a range (`z.minLength(5)`)",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 42
+     }
+    ],
+    "shadow": [
+     "input"
+    ]
+   },
+   {
+    "name": "$ZodIssueInvalidStringFormat",
+    "kind": "interface",
+    "doc": "",
+    "tags": [],
+    "file": "zod/src/v4/core/errors.ts",
+    "line": 46,
+    "typeParams": [],
+    "extends": [
+     "$ZodIssueBase"
+    ],
+    "props": [
+     {
+      "name": "code",
+      "type": "\"invalid_format\"",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 47
+     },
+     {
+      "name": "format",
+      "type": "$ZodStringFormats | (string & {})",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 48
+     },
+     {
+      "name": "pattern",
+      "type": "string",
+      "optional": true,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 49
+     },
+     {
+      "name": "input",
+      "type": "string",
+      "optional": true,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 50
+     }
+    ],
+    "decl": "export interface $ZodIssueInvalidStringFormat extends $ZodIssueBase {\n  readonly code: \"invalid_format\";\n  readonly format: $ZodStringFormats | (string & {});\n  readonly pattern?: string;\n  readonly input?: string;\n}",
+    "lit": "\"invalid_format\"",
+    "own": [
+     {
+      "name": "format",
+      "type": "$ZodStringFormats | (string & {})",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 48
+     },
+     {
+      "name": "pattern",
+      "type": "string",
+      "optional": true,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 49
+     }
+    ],
+    "shadow": [
+     "input"
+    ]
+   },
+   {
+    "name": "$ZodIssueNotMultipleOf",
+    "kind": "interface",
+    "doc": "",
+    "tags": [],
+    "file": "zod/src/v4/core/errors.ts",
+    "line": 53,
+    "typeParams": [
+     {
+      "name": "Input",
+      "constraint": "number | bigint",
+      "dflt": "number | bigint"
+     }
+    ],
+    "extends": [
+     "$ZodIssueBase"
+    ],
+    "props": [
+     {
+      "name": "code",
+      "type": "\"not_multiple_of\"",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 54
+     },
+     {
+      "name": "divisor",
+      "type": "number",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 55
+     },
+     {
+      "name": "input",
+      "type": "Input",
+      "optional": true,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 56
+     }
+    ],
+    "decl": "export interface $ZodIssueNotMultipleOf<Input extends number | bigint = number | bigint> extends $ZodIssueBase {\n  readonly code: \"not_multiple_of\";\n  readonly divisor: number;\n  readonly input?: Input;\n}",
+    "lit": "\"not_multiple_of\"",
+    "own": [
+     {
+      "name": "divisor",
+      "type": "number",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 55
+     }
+    ],
+    "shadow": [
+     "input"
+    ]
+   },
+   {
+    "name": "$ZodIssueUnrecognizedKeys",
+    "kind": "interface",
+    "doc": "",
+    "tags": [],
+    "file": "zod/src/v4/core/errors.ts",
+    "line": 59,
+    "typeParams": [],
+    "extends": [
+     "$ZodIssueBase"
+    ],
+    "props": [
+     {
+      "name": "code",
+      "type": "\"unrecognized_keys\"",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 60
+     },
+     {
+      "name": "keys",
+      "type": "string[]",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 61
+     },
+     {
+      "name": "input",
+      "type": "Record<string, unknown>",
+      "optional": true,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 62
+     }
+    ],
+    "decl": "export interface $ZodIssueUnrecognizedKeys extends $ZodIssueBase {\n  readonly code: \"unrecognized_keys\";\n  readonly keys: string[];\n  readonly input?: Record<string, unknown>;\n}",
+    "lit": "\"unrecognized_keys\"",
+    "own": [
+     {
+      "name": "keys",
+      "type": "string[]",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 61
+     }
+    ],
+    "shadow": [
+     "input"
+    ]
+   },
+   {
+    "name": "$ZodIssueInvalidUnion",
+    "kind": "interface",
+    "doc": "",
+    "tags": [],
+    "file": "zod/src/v4/core/errors.ts",
+    "line": 65,
+    "typeParams": [],
+    "extends": [
+     "$ZodIssueBase"
+    ],
+    "props": [
+     {
+      "name": "code",
+      "type": "\"invalid_union\"",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 66
+     },
+     {
+      "name": "errors",
+      "type": "$ZodIssue[][]",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 67
+     },
+     {
+      "name": "input",
+      "type": "unknown",
+      "optional": true,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 68
+     },
+     {
+      "name": "discriminator",
+      "type": "string | undefined",
+      "optional": true,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 69
+     }
+    ],
+    "decl": "export interface $ZodIssueInvalidUnion extends $ZodIssueBase {\n  readonly code: \"invalid_union\";\n  readonly errors: $ZodIssue[][];\n  readonly input?: unknown;\n  readonly discriminator?: string | undefined;\n}",
+    "lit": "\"invalid_union\"",
+    "own": [
+     {
+      "name": "errors",
+      "type": "$ZodIssue[][]",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 67
+     },
+     {
+      "name": "discriminator",
+      "type": "string | undefined",
+      "optional": true,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 69
+     }
+    ],
+    "shadow": [
+     "input"
+    ]
+   },
+   {
+    "name": "$ZodIssueInvalidKey",
+    "kind": "interface",
+    "doc": "",
+    "tags": [],
+    "file": "zod/src/v4/core/errors.ts",
+    "line": 72,
+    "typeParams": [
+     {
+      "name": "Input",
+      "constraint": "",
+      "dflt": "unknown"
+     }
+    ],
+    "extends": [
+     "$ZodIssueBase"
+    ],
+    "props": [
+     {
+      "name": "code",
+      "type": "\"invalid_key\"",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 73
+     },
+     {
+      "name": "origin",
+      "type": "\"map\" | \"record\"",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 74
+     },
+     {
+      "name": "issues",
+      "type": "$ZodIssue[]",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 75
+     },
+     {
+      "name": "input",
+      "type": "Input",
+      "optional": true,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 76
+     }
+    ],
+    "decl": "export interface $ZodIssueInvalidKey<Input = unknown> extends $ZodIssueBase {\n  readonly code: \"invalid_key\";\n  readonly origin: \"map\" | \"record\";\n  readonly issues: $ZodIssue[];\n  readonly input?: Input;\n}",
+    "lit": "\"invalid_key\"",
+    "own": [
+     {
+      "name": "origin",
+      "type": "\"map\" | \"record\"",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 74
+     },
+     {
+      "name": "issues",
+      "type": "$ZodIssue[]",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 75
+     }
+    ],
+    "shadow": [
+     "input"
+    ]
+   },
+   {
+    "name": "$ZodIssueInvalidElement",
+    "kind": "interface",
+    "doc": "",
+    "tags": [],
+    "file": "zod/src/v4/core/errors.ts",
+    "line": 79,
+    "typeParams": [
+     {
+      "name": "Input",
+      "constraint": "",
+      "dflt": "unknown"
+     }
+    ],
+    "extends": [
+     "$ZodIssueBase"
+    ],
+    "props": [
+     {
+      "name": "code",
+      "type": "\"invalid_element\"",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 80
+     },
+     {
+      "name": "origin",
+      "type": "\"map\" | \"set\"",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 81
+     },
+     {
+      "name": "key",
+      "type": "unknown",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 82
+     },
+     {
+      "name": "issues",
+      "type": "$ZodIssue[]",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 83
+     },
+     {
+      "name": "input",
+      "type": "Input",
+      "optional": true,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 84
+     }
+    ],
+    "decl": "export interface $ZodIssueInvalidElement<Input = unknown> extends $ZodIssueBase {\n  readonly code: \"invalid_element\";\n  readonly origin: \"map\" | \"set\";\n  readonly key: unknown;\n  readonly issues: $ZodIssue[];\n  readonly input?: Input;\n}",
+    "lit": "\"invalid_element\"",
+    "own": [
+     {
+      "name": "origin",
+      "type": "\"map\" | \"set\"",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 81
+     },
+     {
+      "name": "key",
+      "type": "unknown",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 82
+     },
+     {
+      "name": "issues",
+      "type": "$ZodIssue[]",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 83
+     }
+    ],
+    "shadow": [
+     "input"
+    ]
+   },
+   {
+    "name": "$ZodIssueInvalidValue",
+    "kind": "interface",
+    "doc": "",
+    "tags": [],
+    "file": "zod/src/v4/core/errors.ts",
+    "line": 87,
+    "typeParams": [
+     {
+      "name": "Input",
+      "constraint": "",
+      "dflt": "unknown"
+     }
+    ],
+    "extends": [
+     "$ZodIssueBase"
+    ],
+    "props": [
+     {
+      "name": "code",
+      "type": "\"invalid_value\"",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 88
+     },
+     {
+      "name": "values",
+      "type": "util.Primitive[]",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 89
+     },
+     {
+      "name": "input",
+      "type": "Input",
+      "optional": true,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 90
+     }
+    ],
+    "decl": "export interface $ZodIssueInvalidValue<Input = unknown> extends $ZodIssueBase {\n  readonly code: \"invalid_value\";\n  readonly values: util.Primitive[];\n  readonly input?: Input;\n}",
+    "lit": "\"invalid_value\"",
+    "own": [
+     {
+      "name": "values",
+      "type": "util.Primitive[]",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 89
+     }
+    ],
+    "shadow": [
+     "input"
+    ]
+   },
+   {
+    "name": "$ZodIssueCustom",
+    "kind": "interface",
+    "doc": "",
+    "tags": [],
+    "file": "zod/src/v4/core/errors.ts",
+    "line": 93,
+    "typeParams": [],
+    "extends": [
+     "$ZodIssueBase"
+    ],
+    "props": [
+     {
+      "name": "code",
+      "type": "\"custom\"",
+      "optional": false,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 94
+     },
+     {
+      "name": "params",
+      "type": "Record<string, any> | undefined",
+      "optional": true,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 95
+     },
+     {
+      "name": "input",
+      "type": "unknown",
+      "optional": true,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 96
+     }
+    ],
+    "decl": "export interface $ZodIssueCustom extends $ZodIssueBase {\n  readonly code: \"custom\";\n  readonly params?: Record<string, any> | undefined;\n  readonly input?: unknown;\n}",
+    "lit": "\"custom\"",
+    "own": [
+     {
+      "name": "params",
+      "type": "Record<string, any> | undefined",
+      "optional": true,
+      "readonly": true,
+      "doc": "",
+      "tags": [],
+      "file": "zod/src/v4/core/errors.ts",
+      "line": 95
+     }
+    ],
+    "shadow": [
+     "input"
+    ]
+   }
+  ],
+  "alias": {
+   "name": "ZodIssue",
+   "path": "zod · z.ZodIssue",
+   "deprecated": "Use `z.core.$ZodIssue` from `@zod/core` instead, especially if you are building a library on top of Zod.",
+   "file": "zod/src/v4/classic/errors.ts",
+   "line": 6
+  }
+ },
+ "record": {
+  "name": "$ZodIssueTooSmall",
+  "kind": "interface",
+  "doc": "",
+  "tags": [],
+  "file": "zod/src/v4/core/errors.ts",
+  "line": 35,
+  "typeParams": [
+   {
+    "name": "Input",
+    "constraint": "",
+    "dflt": "unknown"
+   }
+  ],
+  "extends": [
+   "$ZodIssueBase"
+  ],
+  "props": [
+   {
+    "name": "code",
+    "type": "\"too_small\"",
+    "optional": false,
+    "readonly": true,
+    "doc": "",
+    "tags": [],
+    "file": "zod/src/v4/core/errors.ts",
+    "line": 36
+   },
+   {
+    "name": "origin",
+    "type": "\"number\" | \"int\" | \"bigint\" | \"date\" | \"string\" | \"array\" | \"set\" | \"file\" | (string & {})",
+    "optional": false,
+    "readonly": true,
+    "doc": "",
+    "tags": [],
+    "file": "zod/src/v4/core/errors.ts",
+    "line": 37
+   },
+   {
+    "name": "minimum",
+    "type": "number | bigint",
+    "optional": false,
+    "readonly": true,
+    "doc": "",
+    "tags": [],
+    "file": "zod/src/v4/core/errors.ts",
+    "line": 38
+   },
+   {
+    "name": "inclusive",
+    "type": "boolean",
+    "optional": true,
+    "readonly": true,
+    "doc": "True if the allowable range includes the minimum",
+    "tags": [],
+    "file": "zod/src/v4/core/errors.ts",
+    "line": 40
+   },
+   {
+    "name": "exact",
+    "type": "boolean",
+    "optional": true,
+    "readonly": true,
+    "doc": "True if the allowed value is fixed (e.g.` z.length(5)`), not a range (`z.minLength(5)`)",
+    "tags": [],
+    "file": "zod/src/v4/core/errors.ts",
+    "line": 42
+   },
+   {
+    "name": "input",
+    "type": "Input",
+    "optional": true,
+    "readonly": true,
+    "doc": "",
+    "tags": [],
+    "file": "zod/src/v4/core/errors.ts",
+    "line": 43
+   }
+  ],
+  "decl": "export interface $ZodIssueTooSmall<Input = unknown> extends $ZodIssueBase {\n  readonly code: \"too_small\";\n  readonly origin: \"number\" | \"int\" | \"bigint\" | \"date\" | \"string\" | \"array\" | \"set\" | \"file\" | (string & {});\n  readonly minimum: number | bigint;\n  /** True if the allowable range includes the minimum */\n  readonly inclusive?: boolean;\n  /** True if the allowed value is fixed (e.g.` z.length(5)`), not a range (`z.minLength(5)`) */\n  readonly exact?: boolean;\n  readonly input?: Input;\n}",
+  "base": {
+   "name": "$ZodIssueBase",
+   "kind": "interface",
+   "doc": "",
+   "tags": [],
+   "file": "zod/src/v4/core/errors.ts",
+   "line": 10,
+   "typeParams": [],
+   "extends": [],
+   "props": [
+    {
+     "name": "code",
+     "type": "string",
+     "optional": true,
+     "readonly": true,
+     "doc": "",
+     "tags": [],
+     "file": "zod/src/v4/core/errors.ts",
+     "line": 11
+    },
+    {
+     "name": "input",
+     "type": "unknown",
+     "optional": true,
+     "readonly": true,
+     "doc": "",
+     "tags": [],
+     "file": "zod/src/v4/core/errors.ts",
+     "line": 12
+    },
+    {
+     "name": "path",
+     "type": "PropertyKey[]",
+     "optional": false,
+     "readonly": true,
+     "doc": "",
+     "tags": [],
+     "file": "zod/src/v4/core/errors.ts",
+     "line": 13
+    },
+    {
+     "name": "message",
+     "type": "string",
+     "optional": false,
+     "readonly": true,
+     "doc": "",
+     "tags": [],
+     "file": "zod/src/v4/core/errors.ts",
+     "line": 14
+    }
+   ],
+   "decl": "export interface $ZodIssueBase {\n  readonly code?: string;\n  readonly input?: unknown;\n  readonly path: PropertyKey[];\n  readonly message: string;\n}"
+  }
+ },
+ "callable": {
+  "name": "parse",
+  "owner": "ZodType",
+  "decl": "parse(data: unknown, params?: core.ParseContext<core.$ZodIssue>): core.output<this>;",
+  "file": "zod/src/v4/classic/schemas.ts",
+  "line": 46,
+  "params": [
+   {
+    "name": "data",
+    "type": "unknown",
+    "optional": false
+   },
+   {
+    "name": "params",
+    "type": "core.ParseContext<core.$ZodIssue>",
+    "optional": true
+   }
+  ],
+  "ret": "core.output<this>",
+  "doc": "",
+  "chain": [
+   {
+    "step": "inst.parse = (data, params) => parse.parse(inst, data, params, { callee: inst.parse })",
+    "file": "zod/src/v4/classic/schemas.ts",
+    "line": 169
+   },
+   {
+    "step": "parse: <T extends core.$ZodType>( schema: T, value: unknown, _ctx?: core.ParseContext<core.$ZodIssue>, _params?: { calle",
+    "file": "zod/src/v4/classic/parse.ts",
+    "line": 8
+   },
+   {
+    "step": "_parse(_Err) → (schema, value, _ctx, _params) => …",
+    "file": "zod/src/v4/core/parse.ts",
+    "line": 16
+   }
+  ],
+  "throws": [
+   {
+    "cls": "$ZodAsyncError",
+    "file": "zod/src/v4/core/parse.ts",
+    "line": 20,
+    "message": "Encountered Promise during synchronous parse. Use .parseAsync() instead."
+   },
+   {
+    "cls": "ZodRealError",
+    "via": "e",
+    "file": "zod/src/v4/core/parse.ts",
+    "line": 25,
+    "message": ""
+   }
+  ],
+  "siblings": {
+   "safeParse": {
+    "decl": "safeParse(data: unknown, params?: core.ParseContext<core.$ZodIssue>): parse.ZodSafeParseResult<core.output<this>>;",
+    "file": "zod/src/v4/classic/schemas.ts",
+    "line": 47
+   },
+   "parseAsync": {
+    "decl": "parseAsync(data: unknown, params?: core.ParseContext<core.$ZodIssue>): Promise<core.output<this>>;",
+    "file": "zod/src/v4/classic/schemas.ts",
+    "line": 48
+   }
+  },
+  "context": {
+   "name": "ParseContext",
+   "kind": "interface",
+   "doc": "",
+   "tags": [],
+   "file": "zod/src/v4/core/schemas.ts",
+   "line": 14,
+   "typeParams": [
+    {
+     "name": "T",
+     "constraint": "errors.$ZodIssueBase",
+     "dflt": "never"
+    }
+   ],
+   "extends": [],
+   "props": [
+    {
+     "name": "error",
+     "type": "errors.$ZodErrorMap<T>",
+     "optional": true,
+     "readonly": true,
+     "doc": "Customize error messages.",
+     "tags": [],
+     "file": "zod/src/v4/core/schemas.ts",
+     "line": 16
+    },
+    {
+     "name": "reportInput",
+     "type": "boolean",
+     "optional": true,
+     "readonly": true,
+     "doc": "Include the `input` field in issue objects. Default `false`.",
+     "tags": [],
+     "file": "zod/src/v4/core/schemas.ts",
+     "line": 18
+    },
+    {
+     "name": "jitless",
+     "type": "boolean",
+     "optional": true,
+     "readonly": true,
+     "doc": "Skip eval-based fast path. Default `false`.",
+     "tags": [],
+     "file": "zod/src/v4/core/schemas.ts",
+     "line": 20
+    }
+   ],
+   "decl": "export interface ParseContext<T extends errors.$ZodIssueBase = never> {\n  /** Customize error messages. */\n  readonly error?: errors.$ZodErrorMap<T>;\n  /** Include the `input` field in issue objects. Default `false`. */\n  readonly reportInput?: boolean;\n  /** Skip eval-based fast path. Default `false`. */\n  readonly jitless?: boolean;\n  /** Abort validation after the first error. Default `false`. */\n  // readonly abortEarly?: boolean;\n}"
+  },
+  "zodError": {
+   "name": "ZodError",
+   "kind": "interface",
+   "doc": "An Error-like class used to store Zod validation issues.",
+   "tags": [],
+   "file": "zod/src/v4/classic/errors.ts",
+   "line": 9,
+   "typeParams": [
+    {
+     "name": "T",
+     "constraint": "",
+     "dflt": "unknown"
+    }
+   ],
+   "extends": [
+    "$ZodError"
+   ],
+   "props": [
+    {
+     "name": "isEmpty",
+     "type": "boolean",
+     "optional": false,
+     "readonly": false,
+     "doc": "",
+     "tags": [
+      {
+       "tag": "deprecated",
+       "text": "Check `err.issues.length === 0` instead."
+      }
+     ],
+     "file": "zod/src/v4/classic/errors.ts",
+     "line": 22
+    }
+   ],
+   "decl": "export interface ZodError<T = unknown> extends $ZodError<T> {\n  /** @deprecated Use the `z.treeifyError(err)` function instead. */\n  format(): core.$ZodFormattedError<T>;\n  format<U>(mapper: (issue: core.$ZodIssue) => U): core.$ZodFormattedError<T, U>;\n  /** @deprecated Use the `z.treeifyError(err)` function instead. */\n  flatten(): core.$ZodFlattenedError<T>;\n  flatten<U>(mapper: (issue: core.$ZodIssue) => U): core.$ZodFlattenedError<T, U>;\n  /** @deprecated Push directly to `.issues` instead. */\n  addIssue(issue: core.$ZodIssue): void;\n  /** @deprecated Push directly to `.issues` instead. */\n  addIssues(issues: core.$ZodIssue[]): void;\n\n  /** @deprecated Check `err.issues.length === 0` instead. */\n  isEmpty: boolean;\n}"
+  }
+ },
+ "contract": {
+  "name": "Collection",
+  "kind": "abstract class",
+  "doc": "",
+  "file": "yaml/dist/nodes/Collection.d.ts",
+  "line": 6,
+  "extends": [
+   "NodeBase"
+  ],
+  "decl": "export declare abstract class Collection extends NodeBase {",
+  "members": [
+   {
+    "name": "schema",
+    "kind": "field",
+    "abstract": false,
+    "optional": false,
+    "readonly": false,
+    "params": [],
+    "type": "Schema | undefined",
+    "doc": "",
+    "tags": [],
+    "file": "yaml/dist/nodes/Collection.d.ts",
+    "line": 7
+   },
+   {
+    "name": "items",
+    "kind": "field",
+    "abstract": false,
+    "optional": false,
+    "readonly": false,
+    "params": [],
+    "type": "unknown[]",
+    "doc": "",
+    "tags": [],
+    "file": "yaml/dist/nodes/Collection.d.ts",
+    "line": 9
+   },
+   {
+    "name": "anchor",
+    "kind": "field",
+    "abstract": false,
+    "optional": true,
+    "readonly": false,
+    "params": [],
+    "type": "string",
+    "doc": "An optional anchor on this node. Used by alias nodes.",
+    "tags": [],
+    "file": "yaml/dist/nodes/Collection.d.ts",
+    "line": 11
+   },
+   {
+    "name": "flow",
+    "kind": "field",
+    "abstract": false,
+    "optional": true,
+    "readonly": false,
+    "params": [],
+    "type": "boolean",
+    "doc": "If true, stringify this and all child nodes using flow rather than\nblock styles.",
+    "tags": [],
+    "file": "yaml/dist/nodes/Collection.d.ts",
+    "line": 16
+   },
+   {
+    "name": "clone",
+    "kind": "method",
+    "abstract": false,
+    "optional": false,
+    "readonly": false,
+    "params": [
+     {
+      "name": "schema",
+      "type": "Schema",
+      "optional": true
+     }
+    ],
+    "type": "Collection",
+    "doc": "Create a copy of this collection.",
+    "tags": [
+     {
+      "tag": "param",
+      "text": "- If defined, overwrites the original's schema"
+     }
+    ],
+    "file": "yaml/dist/nodes/Collection.d.ts",
+    "line": 23
+   },
+   {
+    "name": "add",
+    "kind": "method",
+    "abstract": true,
+    "optional": false,
+    "readonly": false,
+    "params": [
+     {
+      "name": "value",
+      "type": "unknown",
+      "optional": false
+     }
+    ],
+    "type": "void",
+    "doc": "Adds a value to the collection.",
+    "tags": [],
+    "file": "yaml/dist/nodes/Collection.d.ts",
+    "line": 25
+   },
+   {
+    "name": "delete",
+    "kind": "method",
+    "abstract": true,
+    "optional": false,
+    "readonly": false,
+    "params": [
+     {
+      "name": "key",
+      "type": "unknown",
+      "optional": false
+     }
+    ],
+    "type": "boolean",
+    "doc": "Removes a value from the collection.",
+    "tags": [
+     {
+      "tag": "returns",
+      "text": "`true` if the item was found and removed."
+     }
+    ],
+    "file": "yaml/dist/nodes/Collection.d.ts",
+    "line": 30
+   },
+   {
+    "name": "get",
+    "kind": "method",
+    "abstract": true,
+    "optional": false,
+    "readonly": false,
+    "params": [
+     {
+      "name": "key",
+      "type": "unknown",
+      "optional": false
+     },
+     {
+      "name": "keepScalar",
+      "type": "boolean",
+      "optional": true
+     }
+    ],
+    "type": "unknown",
+    "doc": "Returns item at `key`, or `undefined` if not found. By default unwraps\nscalar values from their surrounding node; to disable set `keepScalar` to\n`true` (collections are always returned intact).",
+    "tags": [],
+    "file": "yaml/dist/nodes/Collection.d.ts",
+    "line": 36
+   },
+   {
+    "name": "has",
+    "kind": "method",
+    "abstract": true,
+    "optional": false,
+    "readonly": false,
+    "params": [
+     {
+      "name": "key",
+      "type": "unknown",
+      "optional": false
+     }
+    ],
+    "type": "boolean",
+    "doc": "Checks if the collection includes a value with the key `key`.",
+    "tags": [],
+    "file": "yaml/dist/nodes/Collection.d.ts",
+    "line": 40
+   },
+   {
+    "name": "set",
+    "kind": "method",
+    "abstract": true,
+    "optional": false,
+    "readonly": false,
+    "params": [
+     {
+      "name": "key",
+      "type": "unknown",
+      "optional": false
+     },
+     {
+      "name": "value",
+      "type": "unknown",
+      "optional": false
+     }
+    ],
+    "type": "void",
+    "doc": "Sets a value in this collection. For `!!set`, `value` needs to be a\nboolean to add/remove the item from the set.",
+    "tags": [],
+    "file": "yaml/dist/nodes/Collection.d.ts",
+    "line": 45
+   },
+   {
+    "name": "addIn",
+    "kind": "method",
+    "abstract": false,
+    "optional": false,
+    "readonly": false,
+    "params": [
+     {
+      "name": "path",
+      "type": "Iterable<unknown>",
+      "optional": false
+     },
+     {
+      "name": "value",
+      "type": "unknown",
+      "optional": false
+     }
+    ],
+    "type": "void",
+    "doc": "Adds a value to the collection. For `!!map` and `!!omap` the value must\nbe a Pair instance or a `{ key, value }` object, which may not have a key\nthat already exists in the map.",
+    "tags": [],
+    "file": "yaml/dist/nodes/Collection.d.ts",
+    "line": 51
+   },
+   {
+    "name": "deleteIn",
+    "kind": "method",
+    "abstract": false,
+    "optional": false,
+    "readonly": false,
+    "params": [
+     {
+      "name": "path",
+      "type": "Iterable<unknown>",
+      "optional": false
+     }
+    ],
+    "type": "boolean",
+    "doc": "Removes a value from the collection.",
+    "tags": [
+     {
+      "tag": "returns",
+      "text": "`true` if the item was found and removed."
+     }
+    ],
+    "file": "yaml/dist/nodes/Collection.d.ts",
+    "line": 56
+   },
+   {
+    "name": "getIn",
+    "kind": "method",
+    "abstract": false,
+    "optional": false,
+    "readonly": false,
+    "params": [
+     {
+      "name": "path",
+      "type": "Iterable<unknown>",
+      "optional": false
+     },
+     {
+      "name": "keepScalar",
+      "type": "boolean",
+      "optional": true
+     }
+    ],
+    "type": "unknown",
+    "doc": "Returns item at `key`, or `undefined` if not found. By default unwraps\nscalar values from their surrounding node; to disable set `keepScalar` to\n`true` (collections are always returned intact).",
+    "tags": [],
+    "file": "yaml/dist/nodes/Collection.d.ts",
+    "line": 62
+   },
+   {
+    "name": "hasAllNullValues",
+    "kind": "method",
+    "abstract": false,
+    "optional": false,
+    "readonly": false,
+    "params": [
+     {
+      "name": "allowScalar",
+      "type": "boolean",
+      "optional": true
+     }
+    ],
+    "type": "boolean",
+    "doc": "",
+    "tags": [],
+    "file": "yaml/dist/nodes/Collection.d.ts",
+    "line": 63
+   },
+   {
+    "name": "hasIn",
+    "kind": "method",
+    "abstract": false,
+    "optional": false,
+    "readonly": false,
+    "params": [
+     {
+      "name": "path",
+      "type": "Iterable<unknown>",
+      "optional": false
+     }
+    ],
+    "type": "boolean",
+    "doc": "Checks if the collection includes a value with the key `key`.",
+    "tags": [],
+    "file": "yaml/dist/nodes/Collection.d.ts",
+    "line": 67
+   },
+   {
+    "name": "setIn",
+    "kind": "method",
+    "abstract": false,
+    "optional": false,
+    "readonly": false,
+    "params": [
+     {
+      "name": "path",
+      "type": "Iterable<unknown>",
+      "optional": false
+     },
+     {
+      "name": "value",
+      "type": "unknown",
+      "optional": false
+     }
+    ],
+    "type": "void",
+    "doc": "Sets a value in this collection. For `!!set`, `value` needs to be a\nboolean to add/remove the item from the set.",
+    "tags": [],
+    "file": "yaml/dist/nodes/Collection.d.ts",
+    "line": 72
+   }
+  ],
+  "satisfiers": [
+   {
+    "name": "YAMLSeq",
+    "through": [],
+    "fills": [
+     "add",
+     "delete",
+     "get",
+     "has",
+     "set"
+    ],
+    "abstract": false,
+    "file": "yaml/dist/nodes/YAMLSeq.d.ts",
+    "line": 17
+   },
+   {
+    "name": "YAMLMap",
+    "through": [],
+    "fills": [
+     "add",
+     "delete",
+     "get",
+     "has",
+     "set"
+    ],
+    "abstract": false,
+    "file": "yaml/dist/nodes/YAMLMap.d.ts",
+    "line": 19
+   },
+   {
+    "name": "YAMLOMap",
+    "through": [
+     "YAMLSeq"
+    ],
+    "fills": [],
+    "abstract": false,
+    "file": "yaml/dist/schema/yaml-1.1/omap.d.ts",
+    "line": 7
+   },
+   {
+    "name": "YAMLSet",
+    "through": [
+     "YAMLMap"
+    ],
+    "fills": [
+     "add",
+     "get",
+     "set"
+    ],
+    "abstract": false,
+    "file": "yaml/dist/schema/yaml-1.1/set.d.ts",
+    "line": 9
+   }
+  ],
+  "uses": 11,
+  "usedIn": [
+   {
+    "file": "yaml/dist/nodes/YAMLSeq.d.ts",
+    "n": 3
+   },
+   {
+    "file": "yaml/dist/nodes/YAMLMap.d.ts",
+    "n": 3
+   },
+   {
+    "file": "yaml/dist/doc/Document.d.ts",
+    "n": 1
+   },
+   {
+    "file": "yaml/dist/visit.d.ts",
+    "n": 4
+   }
+  ]
+ },
+ "mentions": {
+  "issue": [],
+  "zodImports": [
+   {
+    "pkg": "@opencode-ai/plugin",
+    "file": "@opencode-ai/plugin/dist/tool.d.ts",
+    "line": 1,
+    "text": "import { z } from \"zod\";"
+   }
+  ],
+  "collection": [
+   {
+    "pkg": "effect",
+    "file": "effect/dist/unstable/reactivity/AtomRef.d.ts",
+    "line": 73,
+    "text": "export interface Collection<A> extends ReadonlyRef<ReadonlyArray<AtomRef<A>>> {"
+   },
+   {
+    "pkg": "effect",
+    "file": "effect/dist/unstable/reactivity/AtomRef.d.ts",
+    "line": 74,
+    "text": "readonly push: (item: A) => Collection<A>;"
+   },
+   {
+    "pkg": "effect",
+    "file": "effect/dist/unstable/reactivity/AtomRef.d.ts",
+    "line": 75,
+    "text": "readonly insertAt: (index: number, item: A) => Collection<A>;"
+   },
+   {
+    "pkg": "effect",
+    "file": "effect/dist/unstable/reactivity/AtomRef.d.ts",
+    "line": 76,
+    "text": "readonly remove: (ref: AtomRef<A>) => Collection<A>;"
+   },
+   {
+    "pkg": "effect",
+    "file": "effect/dist/unstable/reactivity/AtomRef.d.ts",
+    "line": 97,
+    "text": "export declare const collection: <A>(items: Iterable<A>) => Collection<A>;"
+   }
+  ]
+ }
+}

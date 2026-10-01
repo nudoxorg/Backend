@@ -309,6 +309,8 @@ pub enum AuthorityDiagnosticClass {
     Syntax,
     /// The authority could not bind a symbol, import, package, or project graph.
     Binding,
+    /// The selected source is outside the active semantic scope being reported.
+    SourceScope,
     /// The authority could not establish a required type fact.
     Type,
     /// Loading or running the selected authority itself failed.

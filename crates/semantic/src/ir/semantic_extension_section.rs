@@ -1743,7 +1743,9 @@ fn validate_fact(
     };
     let check_type_parameters = |raw| match n.type_parameters {
         crate::ir::TypeParameterListBounds::ExactRanges { count } if raw < count => Ok(()),
-        crate::ir::TypeParameterListBounds::LegacyStarts { element_count } if raw <= element_count => {
+        crate::ir::TypeParameterListBounds::LegacyStarts { element_count }
+            if raw <= element_count =>
+        {
             Ok(())
         }
         crate::ir::TypeParameterListBounds::ExactRanges { count } => {

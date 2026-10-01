@@ -60,7 +60,8 @@ fn first_draw_resize_uses_actual_embedded_region_and_preserves_native_find_focus
                 let glyph = graph.node_bounds(0).expect("focused glyph remains visible in the actual viewport");
                 assert!(glyph.left() >= region.left() && glyph.top() >= region.top() && glyph.right() <= region.right() && glyph.bottom() <= region.bottom());
                 let card = graph.card_bounds.expect("actual measured card on first draw");
-                if width < 640.0 {
+                // The card is a sheet under the map below 640 design px (width ÷ text scale).
+                if width / text_scale < 640.0 {
                     assert_eq!(card.left(), region.left() + px(12.0));
                     assert_eq!(card.right(), region.right() - px(12.0));
                     assert_eq!(card.bottom(), region.bottom() - px(40.0));
@@ -72,8 +73,17 @@ fn first_draw_resize_uses_actual_embedded_region_and_preserves_native_find_focus
                 card
             });
             let ledger = cx.update(|_, cx| crate::probe::take(cx));
-            assert_content(&ledger, card);
+            if reduced {
+                assert_content(&ledger, card);
+            }
             settle(cx);
+            if !reduced {
+                // Carried to its place, not jumped there: once it has arrived its words lie inside it.
+                cx.update(|_, cx| { crate::probe::take(cx); });
+                draw(cx);
+                let ledger = cx.update(|_, cx| crate::probe::take(cx));
+                assert_content(&ledger, card);
+            }
             graph.read_with(cx, |graph, _| assert!(!graph.node_bounds(0).expect("settled visible focus").intersects(&graph.card_bounds.expect("card"))));
             assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
         }
@@ -354,4 +364,88 @@ fn native_pending_enter_with_no_matches_keeps_the_query_editable(cx: &mut TestAp
     cx.simulate_input("x");
     assert_eq!(graph.read_with(cx, |graph, cx| graph.find.read(cx).value().to_string()), "MissingSymbolx");
     cx.simulate_keystrokes("escape"); settle(cx);
+}
+
+/// The focus card is a card beside the map from 640 design px and a sheet
+/// under it below, held 16 px through the edge: a window dragged across 640
+/// keeps the card where it was until it is 16 px past, and a window resting on
+/// the edge, ten px either side, does not swap it back and forth.
+#[gpui::test]
+fn the_focus_card_holds_its_place_on_a_window_edge(cx: &mut TestAppContext) {
+    cx.update(|cx| { gpui_component::init(cx); crate::probe::enable(cx); });
+    cx.update(|cx| set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx));
+    let initial = Bounds::new(point(px(80.0), px(50.0)), size(px(900.0), px(640.0)));
+    let (host, cx) = cx.add_window_view(|window, cx| Region {
+        graph: cx.new(|cx| GraphView::with_scene(scene(), Start::Focus(0), window, cx)), bounds: initial });
+    let graph = host.read_with(cx, |host, _| host.graph.clone());
+    settle(cx);
+    // A sheet under the map spans the region less its 12 px gutters; a card beside it is 340 wide.
+    let mut place = |cx: &mut VisualTestContext, width: f32| {
+        host.update(cx, |host, cx| { host.bounds = Bounds::new(point(px(120.0), px(60.0)), size(px(width), px(620.0))); cx.notify(); });
+        settle(cx);
+        let card = graph.read_with(cx, |graph, _| graph.card_bounds.expect("the measured card"));
+        if (f32::from(card.size.width) - (width - 24.0)).abs() < 1.0 { "sheet" } else if f32::from(card.size.width) == 340.0 { "beside" } else { "neither" }
+    };
+    assert_eq!(place(cx, 900.0), "beside");
+    assert_eq!(place(cx, 650.0), "beside", "inside the band on the way down: held");
+    assert_eq!(place(cx, 630.0), "beside", "still inside it: held");
+    assert_eq!(place(cx, 620.0), "sheet", "past it: a sheet");
+    assert_eq!(place(cx, 650.0), "sheet", "inside the band on the way up: held");
+    for pass in 0..8 {
+        let width = 640.0 + if pass % 2 == 0 { -10.0 } else { 10.0 };
+        assert_eq!(place(cx, width), "sheet", "flipped at {width}");
+    }
+    assert_eq!(place(cx, 670.0), "beside", "past the band: a card again");
+}
+
+/// A window dragged across the card's edge carries the card from where it was
+/// to where it goes: the words are drawn at the old place on the first frame,
+/// pass through places between, and arrive; no frame covers most of the way.
+/// Under reduced motion the card is simply there.
+#[gpui::test]
+fn the_focus_card_is_carried_between_beside_and_a_sheet(cx: &mut TestAppContext) {
+    cx.update(|cx| { gpui_component::init(cx); crate::probe::enable(cx); });
+    for reduced in [false, true] {
+        cx.update(|cx| set_facet(Facet { reduced_motion: reduced, ..Facet::default() }, cx));
+        let initial = Bounds::new(point(px(80.0), px(50.0)), size(px(900.0), px(640.0)));
+        let (host, cx) = cx.add_window_view(|window, cx| Region {
+            graph: cx.new(|cx| GraphView::with_scene(scene(), Start::Focus(0), window, cx)), bounds: initial });
+        settle(cx);
+        let title = |cx: &mut VisualTestContext| {
+            let ledger = cx.update(|_, cx| crate::probe::take(cx));
+            let text = ledger.texts.iter().find(|text| text.key == "graph-focus-title").expect("the card's title");
+            (text.bounds.x, text.bounds.y)
+        };
+        cx.update(|_, cx| { crate::probe::take(cx); });
+        draw(cx);
+        let beside = title(cx);
+        // One step from a card beside the map to a sheet under it.
+        host.update(cx, |host, cx| { host.bounds = Bounds::new(point(px(80.0), px(50.0)), size(px(520.0), px(640.0))); cx.notify(); });
+        let mut path = Vec::new();
+        for _ in 0..60 {
+            draw(cx);
+            path.push(title(cx));
+        }
+        let (first, last) = (path[0], path[path.len() - 1]);
+        let travel = ((last.0 - beside.0).powi(2) + (last.1 - beside.1).powi(2)).sqrt();
+        assert!(travel > 150.0, "reduced {reduced}: the sheet is a long way from the card ({travel:.0} px)");
+        let from_first = ((last.0 - first.0).powi(2) + (last.1 - first.1).powi(2)).sqrt();
+        if reduced {
+            assert!(from_first < 1.0, "reduced motion: the card is at its place on the first frame ({from_first:.0} px short)");
+            continue;
+        }
+        assert!(from_first > 0.7 * travel, "the words start near the old place: {from_first:.0} of {travel:.0} px still to go on the first frame");
+        let mut widest = 0.0_f32;
+        let mut between = 0;
+        for pair in path.windows(2) {
+            let step = ((pair[1].0 - pair[0].0).powi(2) + (pair[1].1 - pair[0].1).powi(2)).sqrt();
+            widest = widest.max(step);
+            let left = ((last.0 - pair[1].0).powi(2) + (last.1 - pair[1].1).powi(2)).sqrt();
+            if left > 8.0 && left < from_first - 8.0 {
+                between += 1;
+            }
+        }
+        assert!(between >= 4, "carried through {between} frames between the two places: {path:?}");
+        assert!(widest < 0.6 * travel, "one frame covered {widest:.0} of {travel:.0} px");
+    }
 }

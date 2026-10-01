@@ -4,11 +4,13 @@
 //! Explicit local compiler configuration and caller-owned bounded scratch.
 
 use std::{
-    collections::TryReserveError, ops::Deref, path::Path, sync::atomic::AtomicBool, time::Duration,
+    collections::TryReserveError, num::NonZeroUsize, ops::Deref, path::Path,
+    sync::atomic::AtomicBool, time::Duration,
 };
 
 use crate::driver::ToolchainSelection;
 use crate::publication::manifest::StoredFragmentFacts;
+use backend_frontend_rust::legacy::RustWorkspaceSessionLane;
 use backend_library::interface::PackageEcosystem;
 use backend_semantic::vocabulary::{MAX_NATIVE_DIAGNOSTIC_BYTES, NativeTool};
 use thiserror::Error;
@@ -380,6 +382,8 @@ pub struct LocalCompilerScratch {
     pub(crate) semantic_image_output: Vec<u8>,
     pub(crate) semantic_image_plan: Vec<crate::publication::manifest::SemanticImageRegion>,
     pub(crate) reopened_fragment_output: Vec<u8>,
+    /// One analyzer operation lane with cumulative work counts for this compiler lane.
+    pub(crate) rust_workspace_session_lane: RustWorkspaceSessionLane,
 }
 
 pub(crate) enum FragmentOutput {
@@ -397,6 +401,30 @@ impl FragmentOutput {
 }
 
 impl LocalCompilerScratch {
+    /// Returns cumulative Rust analyzer workspace work for this lane.
+    #[must_use]
+    pub fn rust_workspace_session_stats(
+        &self,
+    ) -> backend_frontend_rust::legacy::RustWorkspaceSessionStats {
+        self.rust_workspace_session_lane.stats()
+    }
+
+    /// Creates isolated lane scratch with the same admitted native fragment capacity.
+    pub(crate) fn lane_scratch(&self) -> Result<Self, LocalCompilerScratchError> {
+        match &self.fragment_output {
+            FragmentOutput::Inline(_) => Ok(Self::default()),
+            FragmentOutput::Planned(bytes) => {
+                let Some(capacity) = NonZeroUsize::new(bytes.len()) else {
+                    return Err(LocalCompilerScratchError::CapacityWidth {
+                        requested: 0,
+                        maximum: u32::MAX as usize,
+                    });
+                };
+                Self::with_fragment_capacity(capacity)
+            }
+        }
+    }
+
     pub(crate) fn prepare_publication(
         &mut self,
         artifacts: usize,
@@ -531,6 +559,7 @@ impl Default for LocalCompilerScratch {
             semantic_image_output: Vec::new(),
             semantic_image_plan: vec![crate::publication::manifest::SemanticImageRegion::EMPTY],
             reopened_fragment_output: Vec::new(),
+            rust_workspace_session_lane: RustWorkspaceSessionLane::default(),
         }
     }
 }

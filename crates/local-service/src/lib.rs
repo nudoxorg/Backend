@@ -6,6 +6,12 @@
 #![deny(unsafe_code)]
 
 pub mod builtin;
+#[cfg(feature = "search-bench")]
+pub use builtin::search_benchmark;
+pub mod cluster_owner;
+/// Owner-managed exact trust policy for remote compiler peers.
+pub mod compiler_trust;
+mod discovery;
 mod embedded;
 pub mod listener;
 pub mod process;
@@ -24,6 +30,7 @@ use backend_engine::{
 use std::fmt;
 use std::path::Path;
 
+pub use backend_engine::application::LocalHostVariable;
 pub use embedded::{EmbeddedLocalService, ServiceStart, start_or_attach};
 pub use listener::{
     DEFAULT_IDLE_TIMEOUT, FilesystemPeerPolicy, ListenerConfig, ListenerError, ListenerShutdown,
@@ -32,11 +39,14 @@ pub use listener::{
 pub use process::{
     ADVISORY_GHSA_ENV, ADVISORY_MAX_AGE_ENV, ADVISORY_OFFLINE_ENV, ADVISORY_OSV_ENV,
     ADVISORY_POLICY_ENV, ADVISORY_RUSTSEC_ENV, AUTHORITY_SECRET_ENV, AdvisoryConfig,
-    AdvisorySourceConfig, ENDPOINT_ENV, PROFILE_ENV, ProcessConfig, ProcessError,
-    REGISTRY_AUTH_ENV, REGISTRY_AUTH_FILE_ENV, REGISTRY_AUTH_SCOPES_ENV, REGISTRY_ECOSYSTEM_ENV,
-    REGISTRY_ENDPOINT_ENV, REGISTRY_NATIVE_ENV, REGISTRY_OFFLINE_ENV, REGISTRY_SOURCES_ENV,
-    RegistryConfig, WORKER_ENDPOINT_ENV, WORKSPACE_ENV,
-    main_entry, run_process, run_with_owner,
+    AdvisorySourceConfig, ENDPOINT_ENV, FORGE_AUTH_ENV, FORGE_AUTH_FILE_ENV, FORGE_AUTH_SCOPES_ENV,
+    FORGE_OFFLINE_ENV, ForgeAuthentication, ForgeConfig, PROFILE_ENV, ProcessConfig, ProcessError,
+    REGISTRY_AUTH_ENV, REGISTRY_AUTH_FILE_ENV, REGISTRY_AUTH_SCOPES_ENV,
+    REGISTRY_DISCOVERY_MAX_PAGES_ENV, REGISTRY_DISCOVERY_OFFLINE_ENV,
+    REGISTRY_DISCOVERY_SOURCES_ENV, REGISTRY_ECOSYSTEM_ENV, REGISTRY_ENDPOINT_ENV,
+    REGISTRY_NATIVE_ENV, REGISTRY_OFFLINE_ENV, REGISTRY_SOURCES_ENV, RegistryConfig,
+    RegistryDiscoveryConfig, WORKER_ENDPOINT_ENV, WORKSPACE_ENV, main_entry, run_process,
+    run_with_owner,
 };
 pub use protocol::{
     CompletionClaim, EngineRequest, EngineStatus, FrameLimits, LIFECYCLE_BYTES, LIFECYCLE_MAGIC,
@@ -45,8 +55,10 @@ pub use protocol::{
     frame, is_lifecycle, read_frame, unframe, write_frame,
 };
 pub use service::{
-    CompletionAdmission, LocaldOwner, LocaldService, NoCompletionAdmission, NoReplicationAdmission,
-    OwnerService, ReplicationAdmission, ServiceError,
+    CommandOutcome, CompletionAdmission, DeferredCommands, Handled, LocaldOwner, LocaldService,
+    NoCompletionAdmission, NoReplicationAdmission,
+    NoSemanticRangeAdmission, OwnerService, ReplicationAdmission, SemanticRangeAdmission,
+    ServiceError,
 };
 
 /// Versioned request body sent through the local transport boundary.
@@ -264,6 +276,29 @@ where
         replication: R,
     ) -> LocaldOwner<M, V, A, F, C, R> {
         LocaldOwner::with_admission(self, command, completion, replication)
+    }
+
+    /// Converts this daemon into an owner adapter with a current-head
+    /// semantic range handler in addition to ordinary replication admission.
+    pub fn into_owner_with_admission_and_semantic_ranges<F, C, R, S>(
+        self,
+        command: F,
+        completion: C,
+        replication: R,
+        semantic_ranges: S,
+    ) -> LocaldOwner<M, V, A, F, C, R, S>
+    where
+        C: CompletionAdmission<M, V, A>,
+        R: ReplicationAdmission<M, V, A>,
+        S: SemanticRangeAdmission,
+    {
+        LocaldOwner::with_semantic_range_admission(
+            self,
+            command,
+            completion,
+            replication,
+            semantic_ranges,
+        )
     }
 }
 

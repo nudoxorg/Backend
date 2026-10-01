@@ -19,6 +19,8 @@ pub struct LocalEngineClient {
     project: LocalProjectId,
     session: Option<Session>,
     subscription: Option<LocalSubscriptionTransport>,
+    /// The owner this client waits for, on the actor thread (I1).
+    gate: Option<super::owner::OwnerGate>,
 }
 
 impl LocalEngineClient {
@@ -30,6 +32,21 @@ impl LocalEngineClient {
             project,
             session: None,
             subscription: None,
+            gate: None,
+        }
+    }
+
+    /// A client whose requests wait, on the actor thread, for the owner to
+    /// answer; a request cancelled while it waited is not run.
+    #[must_use]
+    pub fn gated(
+        endpoint: impl AsRef<Path>,
+        project: LocalProjectId,
+        gate: super::owner::OwnerGate,
+    ) -> Self {
+        Self {
+            gate: Some(gate),
+            ..Self::new(endpoint, project)
         }
     }
 
@@ -94,7 +111,7 @@ impl LocalEngineClient {
             label: Arc::from(self.project.as_str()),
             packages: packages.into(),
         });
-        let catalog = self.catalog();
+        let catalog = Some(self.catalog()?);
         Ok(EngineDto::Root {
             request: *request_id,
             basis: *basis,
@@ -106,19 +123,27 @@ impl LocalEngineClient {
         })
     }
 
-    fn catalog(&mut self) -> Option<Arc<[PackageSummary]>> {
+    fn catalog(&mut self) -> Result<Arc<[PackageSummary]>, EngineFault> {
         let reply = self
             .with_reconnect(|session| {
                 session.surface(SurfaceCommand::Explore {
                     query: None,
                     limit: 64,
                 })
-            })
-            .ok()?;
-        let SurfaceReply::Explored(records) = reply else {
-            return None;
+            });
+        Self::catalog_from_reply(reply)
+    }
+
+    fn catalog_from_reply(
+        reply: Result<SurfaceReply, EngineFault>,
+    ) -> Result<Arc<[PackageSummary]>, EngineFault> {
+        let SurfaceReply::Explored(records) = reply? else {
+            return Err(EngineFault::Failed(crate::core::ErrorValue::new(
+                FaultCode::Protocol,
+                "the local service returned a non-Explore reply for the catalog request",
+            )));
         };
-        Some(
+        Ok(
             records
                 .iter()
                 .filter_map(package_summary)
@@ -191,7 +216,7 @@ impl LocalEngineClient {
         let key =
             VersionedRoot::from_revision(basis.producer_epoch(), revision, basis.observation());
         let project_state = Some(project_dto(project.clone(), project_label(project), &view));
-        let catalog = self.catalog();
+        let catalog = Some(self.catalog()?);
         Ok(EngineDto::Index {
             request: *request_id,
             basis: *basis,
@@ -232,6 +257,19 @@ impl LocalEngineClient {
 
 impl EngineClient for LocalEngineClient {
     fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
+        if let Some(gate) = &self.gate {
+            gate.wait().map_err(|message| {
+                EngineFault::Failed(crate::core::ErrorValue::new(
+                    FaultCode::Transport,
+                    format!("the index could not start: {message}"),
+                ))
+            })?;
+            // Superseded while it waited (the startup root read, once the
+            // owner's own root arrived): not run.
+            if request.cancelled() {
+                return Err(EngineFault::Cancelled);
+            }
+        }
         match request {
             EngineRequest::Root { .. } => self.request_root(request),
             EngineRequest::Surface { .. } => self.request_surface(request),
@@ -325,8 +363,36 @@ fn fault(error: ClientError) -> EngineFault {
             | ClientError::FreshnessMismatch
             | ClientError::RequestMismatch { .. }
             | ClientError::CursorMismatch
-            | ClientError::StaleCursor => FaultCode::Cancelled,
+            | ClientError::StaleCursor
+            | ClientError::StaleSelection => FaultCode::Cancelled,
         },
         error.to_string(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_explore_failure_is_preserved_as_a_typed_fault() {
+        let expected = fault(ClientError::CommandFailed(
+            backend_library::CommandFailure::NotFound,
+        ));
+        let observed = LocalEngineClient::catalog_from_reply(Err(expected.clone()))
+            .expect_err("Explore failure must not become an absent catalog");
+        assert_eq!(observed, expected);
+    }
+
+    #[test]
+    fn catalog_rejects_a_reply_from_the_wrong_surface_command() {
+        let observed = LocalEngineClient::catalog_from_reply(Ok(SurfaceReply::Projects(
+            Box::new([]),
+        )))
+        .expect_err("a non-Explore reply is a protocol fault");
+        assert!(matches!(
+            observed,
+            EngineFault::Failed(error) if error.code() == FaultCode::Protocol
+        ));
+    }
 }

@@ -362,6 +362,20 @@ impl LocalSubscriptionTransport {
             LocalControlResponse::Rejected { message, .. } => Err(ClientError::Protocol(format!(
                 "locald subscription: {message}"
             ))),
+            LocalControlResponse::SemanticStaleSelection {
+                request_id: observed,
+            } => {
+                if observed != request_id {
+                    return Err(ClientError::Protocol(
+                        "subscription response correlation mismatch".to_owned(),
+                    ));
+                }
+                Err(ClientError::StaleSelection)
+            }
+            LocalControlResponse::SemanticRangeChunk { .. }
+            | LocalControlResponse::SemanticMetadataChunk { .. } => Err(ClientError::Protocol(
+                "locald returned a semantic response to a subscription request".to_owned(),
+            )),
             LocalControlResponse::Accepted { .. }
             | LocalControlResponse::AcceptedPayload { .. }
             | LocalControlResponse::Queued { .. } => Err(ClientError::Protocol(
@@ -473,6 +487,11 @@ fn decode_control_response(
         )),
         LocalControlResponse::Subscription(_) => Err(ClientError::Protocol(
             "leased subscription response requires the lease adapter".to_owned(),
+        )),
+        LocalControlResponse::SemanticStaleSelection { .. } => Err(ClientError::StaleSelection),
+        LocalControlResponse::SemanticRangeChunk { .. }
+        | LocalControlResponse::SemanticMetadataChunk { .. } => Err(ClientError::Protocol(
+            "locald returned a semantic response to a subscription request".to_owned(),
         )),
     }
 }

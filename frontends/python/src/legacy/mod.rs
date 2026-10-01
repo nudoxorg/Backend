@@ -15,7 +15,8 @@ pub mod checker;
 
 pub use self::checker::{
     CheckerError, CheckerReport, ImportResolution, Inference, InferenceSite, InferredType, Pyrefly,
-    PyreflyExecutableError, SymbolOutcome, SymbolResolution,
+    PyreflyExecutableError, PyreflyInvocationOptionsV1,
+    PYTHON_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1, SymbolOutcome, SymbolResolution,
 };
 
 use std::collections::HashSet;
@@ -1293,9 +1294,10 @@ impl<'a> Projection<'a> {
                         return None;
                     }
                     steps.reverse();
-                    if !steps.iter().any(|step| {
-                        matches!(step, AttributeStep::Index | AttributeStep::NameIndex)
-                    }) {
+                    if !steps
+                        .iter()
+                        .any(|step| matches!(step, AttributeStep::Index | AttributeStep::NameIndex))
+                    {
                         return None;
                     }
                     return Some(OccurrenceReceiver::SubscriptedCall {
@@ -1306,9 +1308,10 @@ impl<'a> Projection<'a> {
                 ast::Expr::Name(name) => {
                     let id = name.id.as_str();
                     steps.reverse();
-                    if !steps.iter().any(|step| {
-                        matches!(step, AttributeStep::Index | AttributeStep::NameIndex)
-                    }) {
+                    if !steps
+                        .iter()
+                        .any(|step| matches!(step, AttributeStep::Index | AttributeStep::NameIndex))
+                    {
                         return None;
                     }
                     if matches!(id, "self" | "cls") {
@@ -1404,10 +1407,7 @@ impl<'a> Projection<'a> {
                             Some(OccurrenceReceiver::SubscriptedAttribute {
                                 root: AttributeChainRoot::Enclosing { .. },
                                 ..
-                            }) if self.function_depth != 1 =>
-                            {
-                                None
-                            }
+                            }) if self.function_depth != 1 => None,
                             Some(OccurrenceReceiver::SubscriptedCall { ref call, .. })
                                 if self.rejects_nested_self_call_receiver(call) =>
                             {
@@ -1442,15 +1442,11 @@ impl<'a> Projection<'a> {
         self.facts.declarations.iter().any(|declaration| {
             declaration.kind == DeclarationKind::Function
                 && declaration.name == name
-                && !self
-                    .facts
-                    .declarations
-                    .iter()
-                    .any(|class| {
-                        class.kind == DeclarationKind::Class
-                            && class.span.start <= declaration.span.start
-                            && declaration.span.end <= class.span.end
-                    })
+                && !self.facts.declarations.iter().any(|class| {
+                    class.kind == DeclarationKind::Class
+                        && class.span.start <= declaration.span.start
+                        && declaration.span.end <= class.span.end
+                })
         })
     }
 
@@ -1894,9 +1890,11 @@ impl<'a> Projection<'a> {
     }
 
     fn occurrence_owner(&self, expr: &ast::Expr) -> &str {
-        if self.decorator_ranges.iter().any(|range| {
-            range.start() <= expr.range().start() && range.end() >= expr.range().end()
-        }) {
+        if self
+            .decorator_ranges
+            .iter()
+            .any(|range| range.start() <= expr.range().start() && range.end() >= expr.range().end())
+        {
             match self.decorator_owner.as_deref() {
                 Some(owner) => owner,
                 None => &self.owner,
@@ -1928,7 +1926,6 @@ impl<'a> Projection<'a> {
             receiver,
         });
     }
-
 }
 impl<'a> Visitor<'a> for Projection<'a> {
     fn visit_stmt(&mut self, statement: &'a ast::Stmt) {
@@ -2274,8 +2271,7 @@ impl<'a> Visitor<'a> for Projection<'a> {
                 }
                 ast::Expr::Attribute(attribute) => {
                     let target = attribute.attr.as_str();
-                    let receiver =
-                        self.attribute_occurrence_receiver(attribute.value.as_ref());
+                    let receiver = self.attribute_occurrence_receiver(attribute.value.as_ref());
                     let receiver_is_module_name = matches!(
                         attribute.value.as_ref(),
                         ast::Expr::Name(name)

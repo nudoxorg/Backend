@@ -3,6 +3,7 @@ use std::{
     io::{self, Read, Seek, SeekFrom, Write},
     net::TcpListener,
     path::PathBuf,
+    process::Command,
     sync::{
         Arc, Barrier, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -14,7 +15,9 @@ use std::{
 
 use super::ecosystem::{NativeArtifactKind, resolve_archive_url};
 use super::identity::RegistryCredentialPolicy;
+use super::wire::{RegistryLog, RegistryRecord};
 use super::*;
+use crate::HashChainJournal;
 
 fn test_native_metadata() -> backend_library::RegistryNativeMetadata {
     backend_library::RegistryNativeMetadata::unavailable(RegistryEcosystem::Cargo, "test fixture")
@@ -43,6 +46,21 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use sha2::{Digest, Sha256, Sha512};
 
 static TEMPORARY: AtomicU64 = AtomicU64::new(0);
+
+fn poll_owner<T: RegistryTransport>(
+    owner: &mut RegistryOwner,
+    transport: &mut T,
+) -> Result<super::AcquisitionOutcome, AcquisitionError> {
+    // Production journal tail repair happens only while the acquisition
+    // service holds the endpoint-wide fence. Unit polling has no interprocess
+    // service wrapper, so explicitly reconcile before entering the test-only
+    // owner adapter.
+    owner.refresh_from_external()?;
+    owner.poll(
+        &crate::acquisition::test_publication_capability(),
+        transport,
+    )
+}
 
 fn unavailable_dependency_facts()
 -> backend_library::DependencyFacts<Box<[backend_library::PackageDependencyRecord]>> {
@@ -747,7 +765,9 @@ fn http_publication_and_restart_advance_one_atomic_cursor() {
             .expect("open owner");
     let mut transport =
         HttpRegistryTransport::new(endpoint.clone(), None, limits()).expect("transport");
-    let AcquisitionOutcome::Published(receipt) = owner.poll(&mut transport).expect("poll") else {
+    let AcquisitionOutcome::Published(receipt) =
+        poll_owner(&mut owner, &mut transport).expect("poll")
+    else {
         panic!("expected publication")
     };
     assert_eq!(receipt.base.sequence(), 0);
@@ -785,7 +805,9 @@ fn large_archive_streams_once_through_a_bounded_handoff() {
     .expect("open owner");
     let mut transport =
         HttpRegistryTransport::new(endpoint, None, large_archive_limits()).expect("transport");
-    let AcquisitionOutcome::Published(receipt) = owner.poll(&mut transport).expect("poll") else {
+    let AcquisitionOutcome::Published(receipt) =
+        poll_owner(&mut owner, &mut transport).expect("poll")
+    else {
         panic!("expected large archive publication")
     };
     let object = owner
@@ -876,7 +898,7 @@ fn integrity_failure_never_advances_the_cursor() {
         RegistryOwner::open(&root, endpoint.clone(), AcquisitionPolicy::Online, limits())
             .expect("owner");
     let mut transport = HttpRegistryTransport::new(endpoint, None, limits()).expect("transport");
-    let result = owner.poll(&mut transport);
+    let result = poll_owner(&mut owner, &mut transport);
     assert!(matches!(
         result,
         Err(AcquisitionError::Transport(TransportFailure::Integrity))
@@ -903,7 +925,7 @@ fn crash_after_object_write_recovers_the_same_pending_intent() {
     let mut transport =
         HttpRegistryTransport::new(endpoint.clone(), None, limits()).expect("transport");
     assert!(matches!(
-        owner.poll(&mut transport),
+        poll_owner(&mut owner, &mut transport),
         Err(AcquisitionError::Injected(_))
     ));
     server.join().expect("server");
@@ -1610,7 +1632,7 @@ fn offline_policy_never_calls_transport_and_secrets_are_redacted() {
     let (mut owner, _) =
         RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Offline, limits()).expect("owner");
     assert!(matches!(
-        owner.poll(&mut PanicTransport),
+        poll_owner(&mut owner, &mut PanicTransport),
         Ok(AcquisitionOutcome::Offline { .. })
     ));
     fs::remove_dir_all(root).expect("cleanup");
@@ -1640,7 +1662,7 @@ fn unavailable_feed_retains_one_durable_retry_intent() {
         RegistryOwner::open(&root, endpoint.clone(), AcquisitionPolicy::Online, limits())
             .expect("owner");
     assert!(matches!(
-        owner.poll(&mut UnavailableTransport),
+        poll_owner(&mut owner, &mut UnavailableTransport),
         Ok(AcquisitionOutcome::Unavailable { .. })
     ));
     drop(owner);
@@ -1681,9 +1703,7 @@ fn metadata_only_delta_advances_and_recovers_its_checkpoint() {
         RegistryOwner::open(&root, endpoint.clone(), AcquisitionPolicy::Online, limits())
             .expect("owner");
     let next = [19; 32];
-    let outcome = owner
-        .poll(&mut MetadataDelta { next })
-        .expect("metadata checkpoint");
+    let outcome = poll_owner(&mut owner, &mut MetadataDelta { next }).expect("metadata checkpoint");
     let AcquisitionOutcome::Published(receipt) = outcome else {
         panic!("metadata delta must commit")
     };
@@ -1757,7 +1777,7 @@ fn advisory_gate_denies_unknown_version_before_archive_staging() {
     });
     let mut transport = UnknownAdvisory { archive_fetches: 0 };
     assert!(matches!(
-        owner.poll(&mut transport),
+        poll_owner(&mut owner, &mut transport),
         Err(AcquisitionError::AdvisoryDenied(
             backend_advisory::AcquisitionDecision::Deny(_),
         ))
@@ -1825,11 +1845,11 @@ fn policy_delta_reuses_the_exact_archive_without_a_second_download() {
         page: 0,
         archive_fetches: 0,
     };
-    let _ = owner.poll(&mut transport).expect("initial release");
+    let _ = poll_owner(&mut owner, &mut transport).expect("initial release");
     let first_epoch = owner.policy_epoch();
     assert_ne!(first_epoch, 0);
     let first = owner.published(&coordinate).expect("published").artifact;
-    let _ = owner.poll(&mut transport).expect("yank delta");
+    let _ = poll_owner(&mut owner, &mut transport).expect("yank delta");
     let second_epoch = owner.policy_epoch();
     assert_ne!(second_epoch, first_epoch);
     let current = owner.published(&coordinate).expect("updated");
@@ -1903,7 +1923,8 @@ fn service_revalidates_cached_facts_and_reuses_archive_bytes() {
         .expect("endpoint");
     let root = temporary("service-fact-refresh");
     let (owner, _) =
-        RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits()).expect("owner");
+        RegistryOwner::open(&root, endpoint.clone(), AcquisitionPolicy::Online, limits())
+            .expect("owner");
     let service =
         crate::acquisition::AcquisitionService::from_owner(owner, root.join("coordination"))
             .expect("service");
@@ -1924,6 +1945,18 @@ fn service_revalidates_cached_facts_and_reuses_archive_bytes() {
     let crate::acquisition::AcquisitionOutcome::Hit(first) = first else {
         panic!("initial acquisition must publish")
     };
+    let coordinate = PackageCoordinate::parse("pkg:cargo/demo@2.0.0").expect("coordinate");
+    let admitted = service
+        .published_package(&coordinate)
+        .expect("exact owner metadata");
+    assert_eq!(
+        first.receipt.metadata_digest,
+        admitted.metadata_evidence_digest()
+    );
+    assert_ne!(
+        first.receipt.metadata_digest,
+        admitted.provenance.as_bytes()
+    );
     let epoch = first.receipt.policy_epoch;
     assert_ne!(epoch, 0);
     let wrong_hash = crate::acquisition::AcquisitionRequest::new(
@@ -1951,7 +1984,55 @@ fn service_revalidates_cached_facts_and_reuses_archive_bytes() {
     assert_ne!(service.policy_epoch(), epoch);
     assert_eq!(transport.pages, 2);
     assert_eq!(transport.archives, 1);
+    assert!(matches!(
+        service.acquire(&wrong_hash, &mut transport),
+        crate::acquisition::AcquisitionOutcome::Corrupt(
+            crate::acquisition::CorruptReason::Integrity
+        )
+    ));
+    assert_eq!(transport.pages, 2);
     drop(service);
+
+    struct NoNetwork;
+    impl RegistryTransport for NoNetwork {
+        fn fetch_page(
+            &mut self,
+            _: FeedRequest,
+        ) -> Result<TransportResult<FeedPage>, TransportFailure> {
+            panic!("durable yanked fact must recover without a metadata request")
+        }
+
+        fn fetch_archive(
+            &mut self,
+            _: &RemotePackage,
+        ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+            panic!("durable yanked fact must not fetch an archive")
+        }
+    }
+    let (owner, _) = RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits())
+        .expect("cold reopen owner");
+    let service =
+        crate::acquisition::AcquisitionService::from_owner(owner, root.join("coordination"))
+            .expect("cold reopen acquisition service");
+    assert!(matches!(
+        service.acquire(&request, &mut NoNetwork),
+        crate::acquisition::AcquisitionOutcome::NegativeFact(crate::acquisition::NegativeFact {
+            kind: crate::acquisition::NegativeFactKind::Yanked,
+            ..
+        })
+    ));
+    let durable = service
+        .recover_product_record(&request)
+        .expect("recover yanked product record")
+        .expect("durable yanked product record");
+    let admitted = service
+        .published_package(&coordinate)
+        .expect("recovered owner metadata");
+    assert_eq!(
+        durable.metadata_digest,
+        Some(admitted.metadata_evidence_digest())
+    );
+    assert!(durable.raw_object.is_some());
     fs::remove_dir_all(root).expect("cleanup");
 }
 
@@ -2188,12 +2269,11 @@ fn cached_advisory_warning_is_rechecked_after_fail_closed_restart() {
     let mut owner = owner.with_advisory_gate(backend_advisory::AcquisitionGate {
         offline: backend_advisory::OfflinePolicy::Warn,
     });
-    owner
-        .poll(&mut AdvisorySource)
-        .expect("warn policy admits cache");
+    poll_owner(&mut owner, &mut AdvisorySource).expect("warn policy admits cache");
     drop(owner);
-    let (owner, _) = RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits())
-        .expect("restart owner");
+    let (owner, _) =
+        RegistryOwner::open(&root, endpoint.clone(), AcquisitionPolicy::Online, limits())
+            .expect("restart owner");
     let owner = owner.with_advisory_gate(backend_advisory::AcquisitionGate {
         offline: backend_advisory::OfflinePolicy::FailClosed,
     });
@@ -2215,6 +2295,45 @@ fn cached_advisory_warning_is_rechecked_after_fail_closed_restart() {
             ..
         })
     ));
+    drop(service);
+
+    struct NoNetwork;
+    impl RegistryTransport for NoNetwork {
+        fn fetch_page(
+            &mut self,
+            _: FeedRequest,
+        ) -> Result<TransportResult<FeedPage>, TransportFailure> {
+            panic!("durable advisory fact must recover without a metadata request")
+        }
+
+        fn fetch_archive(
+            &mut self,
+            _: &RemotePackage,
+        ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+            panic!("durable advisory fact must not fetch an archive")
+        }
+    }
+    let (owner, _) = RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits())
+        .expect("cold reopen owner");
+    let owner = owner.with_advisory_gate(backend_advisory::AcquisitionGate {
+        offline: backend_advisory::OfflinePolicy::FailClosed,
+    });
+    let service =
+        crate::acquisition::AcquisitionService::from_owner(owner, root.join("coordination"))
+            .expect("cold reopen acquisition service");
+    assert!(matches!(
+        service.acquire(&request, &mut NoNetwork),
+        crate::acquisition::AcquisitionOutcome::NegativeFact(crate::acquisition::NegativeFact {
+            kind: crate::acquisition::NegativeFactKind::AdvisoryBlocked,
+            ..
+        })
+    ));
+    let durable = service
+        .recover_product_record(&request)
+        .expect("recover advisory product record")
+        .expect("durable advisory product record");
+    assert!(durable.metadata_digest.is_some());
+    assert!(durable.raw_object.is_some());
     fs::remove_dir_all(root).expect("cleanup");
 }
 
@@ -2367,7 +2486,7 @@ fn metadata_404_becomes_a_durable_not_found_fact() {
         0,
     )
     .expect("request");
-    let mut transport = HttpRegistryTransport::new(endpoint, None, limits()).expect("transport");
+    let mut transport = HttpRegistryTransport::new(endpoint.clone(), None, limits()).expect("transport");
     assert!(matches!(
         service.acquire(&request, &mut transport),
         crate::acquisition::AcquisitionOutcome::NegativeFact(crate::acquisition::NegativeFact {
@@ -2375,7 +2494,141 @@ fn metadata_404_becomes_a_durable_not_found_fact() {
             ..
         })
     ));
+    let first_record = service
+        .recover_product_record(&request)
+        .expect("read durable product record")
+        .expect("404 terminal record");
+    let crate::acquisition::AcquisitionProductTerminal::NegativeFact(fact) = first_record.terminal
+    else {
+        panic!("404 cannot publish an archive")
+    };
+    assert_eq!(fact.kind, crate::acquisition::NegativeFactKind::NotFound);
+    assert_eq!(fact.cursor, first_record.owner_cursor);
+    assert_eq!(fact.policy_epoch, first_record.policy_epoch);
+    assert_eq!(first_record.metadata_digest, None);
+    assert_eq!(first_record.raw_object, None);
     server.join().expect("404 server");
+
+    struct NoNetwork;
+    impl RegistryTransport for NoNetwork {
+        fn fetch_page(
+            &mut self,
+            _: FeedRequest,
+        ) -> Result<TransportResult<FeedPage>, TransportFailure> {
+            panic!("a recovered 404 must not send metadata again")
+        }
+
+        fn fetch_archive(
+            &mut self,
+            _: &RemotePackage,
+        ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+            panic!("a recovered 404 has no archive request")
+        }
+    }
+    drop(service);
+    let (owner, _) = RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits())
+        .expect("reopen owner");
+    let service =
+        crate::acquisition::AcquisitionService::from_owner(owner, root.join("coordination"))
+            .expect("reopen acquisition service");
+    assert!(matches!(
+        service.acquire(&request, &mut NoNetwork),
+        crate::acquisition::AcquisitionOutcome::NegativeFact(crate::acquisition::NegativeFact {
+            kind: crate::acquisition::NegativeFactKind::NotFound,
+            ..
+        })
+    ));
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn partial_archive_transfer_never_publishes_a_product_receipt() {
+    struct TruncatedArchive {
+        package: RemotePackage,
+    }
+    impl RegistryTransport for TruncatedArchive {
+        fn fetch_page(
+            &mut self,
+            request: FeedRequest,
+        ) -> Result<TransportResult<FeedPage>, TransportFailure> {
+            Ok(TransportResult::Available(FeedPage {
+                base: request.cursor,
+                next_token: [31; 32],
+                packages: vec![self.package.clone()],
+            }))
+        }
+
+        fn fetch_archive(
+            &mut self,
+            _: &RemotePackage,
+        ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+            // The advertised checksum covers the full representation while
+            // the transport hands over only a prefix, as a truncated send
+            // would do before the HTTP adapter rejects its body length.
+            Ok(TransportResult::Available(ArchiveArtifact::from_bytes(
+                b"partial".to_vec(),
+            )))
+        }
+    }
+
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://registry.example.test")
+        .expect("endpoint");
+    let root = temporary("partial-product-receipt");
+    let (owner, _) = RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits())
+        .expect("open owner");
+    let service =
+        crate::acquisition::AcquisitionService::from_owner(owner, root.join("coordination"))
+            .expect("open acquisition service");
+    let expected = b"complete archive representation";
+    let package = RemotePackage {
+        coordinate: PackageCoordinate::parse("pkg:cargo/truncated@1.0.0").expect("coordinate"),
+        integrity: transport::ArchiveIntegrity::Canonical(
+            *CapabilityArtifactId::from_value(expected).as_bytes(),
+        ),
+        provenance: ProvenanceDigest::from_authenticated_feed([32; 32]),
+        facts: test_facts(),
+        native_metadata: test_native_metadata(),
+        advisory: None,
+        dependency_facts: unavailable_dependency_facts(),
+        archive_url: Arc::from("https://registry.example.test/truncated.crate"),
+    };
+    let request = crate::acquisition::AcquisitionRequest::for_coordinate(
+        service.source_id(),
+        package.coordinate.to_string(),
+        1,
+        0,
+    )
+    .expect("request");
+    assert!(matches!(
+        service.acquire(&request, &mut TruncatedArchive { package }),
+        crate::acquisition::AcquisitionOutcome::Corrupt(
+            crate::acquisition::CorruptReason::Integrity
+        )
+    ));
+    assert!(
+        service
+            .recover_product_record(&request)
+            .expect("read product receipt")
+            .is_none()
+    );
+    drop(service);
+    let (owner, _) = RegistryOwner::open(
+        &root,
+        RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://registry.example.test")
+            .expect("endpoint"),
+        AcquisitionPolicy::Online,
+        limits(),
+    )
+    .expect("cold reopen owner");
+    let reopened =
+        crate::acquisition::AcquisitionService::from_owner(owner, root.join("coordination"))
+            .expect("cold reopen acquisition service");
+    assert!(
+        reopened
+            .recover_product_record(&request)
+            .expect("recover after truncated send")
+            .is_none()
+    );
     fs::remove_dir_all(root).expect("cleanup");
 }
 
@@ -2709,7 +2962,10 @@ retract [v1.2.0, v1.2.3]
         .iter()
         .find(|row| row.target.name.as_str() == "example.com/indirect")
         .expect("indirect require");
-    assert_eq!(indirect.scope, backend_library::DependencyScope::Development);
+    assert_eq!(
+        indirect.scope,
+        backend_library::DependencyScope::Development
+    );
     assert!(!indirect.optional);
 }
 
@@ -2747,6 +3003,82 @@ require (
     assert_eq!(rows[0].target.name.as_str(), "example.com/shared");
     assert_eq!(rows[0].scope, backend_library::DependencyScope::Runtime);
     assert!(!rows[0].optional);
+}
+
+#[test]
+fn dependency_coalescing_keeps_distinct_requirements_sources_and_evidence() {
+    use backend_library::{
+        DependencyAuthority, DependencyEvidence, DependencyScope, PackageDependencyRecord,
+        PackageDependencyTarget, PackageGraphSourceAuthority, PackageReference,
+    };
+
+    let make_row = |source: &str, requirement: &str, scope, optional, frontier| {
+        PackageDependencyRecord::new(
+            PackageReference::parse(source.to_owned()).expect("source coordinate"),
+            PackageDependencyTarget::new(RegistryEcosystem::Npm, "lodash", requirement, None)
+                .expect("target coordinate"),
+            scope,
+            optional,
+            DependencyEvidence {
+                authority: DependencyAuthority::RegistryMetadata,
+                frontier: [frontier; 32],
+                provenance: [9; 32],
+            },
+        )
+    };
+
+    let source_v1 = "pkg:npm/demo@1.0.0";
+    let source_v2 = "pkg:npm/demo@2.0.0";
+    let rows = coalesce_runtime_development_dependency_rows(vec![
+        make_row(source_v1, "^4.0.0", DependencyScope::Runtime, true, 1),
+        make_row(source_v1, "^4.0.0", DependencyScope::Development, false, 1),
+        make_row(source_v1, "^5.0.0", DependencyScope::Development, false, 1),
+        make_row(source_v2, "^4.0.0", DependencyScope::Development, false, 1),
+        make_row(source_v1, "^4.0.0", DependencyScope::Development, false, 2),
+        PackageDependencyRecord::new_with_source_authority(
+            PackageReference::parse(source_v1.to_owned()).expect("source coordinate"),
+            PackageGraphSourceAuthority::Archive([7; 32]),
+            PackageDependencyTarget::new(RegistryEcosystem::Npm, "lodash", "^4.0.0", None)
+                .expect("target coordinate"),
+            DependencyScope::Development,
+            false,
+            DependencyEvidence {
+                authority: DependencyAuthority::ArchiveManifest,
+                frontier: [1; 32],
+                provenance: [9; 32],
+            },
+        ),
+    ]);
+
+    assert_eq!(rows.len(), 5);
+    assert!(rows.iter().any(|row| {
+        row.source.as_str() == source_v1
+            && row.target.requirement.as_str() == "^4.0.0"
+            && row.scope == DependencyScope::Runtime
+            && row.optional
+    }));
+    assert!(rows.iter().any(|row| {
+        row.source.as_str() == source_v1
+            && row.target.requirement.as_str() == "^5.0.0"
+            && row.scope == DependencyScope::Development
+    }));
+    assert!(rows.iter().any(|row| {
+        row.source.as_str() == source_v2
+            && row.target.requirement.as_str() == "^4.0.0"
+            && row.scope == DependencyScope::Development
+    }));
+    assert!(rows.iter().any(|row| {
+        row.source.as_str() == source_v1
+            && row.target.requirement.as_str() == "^4.0.0"
+            && row.scope == DependencyScope::Development
+            && row.evidence.frontier == [2; 32]
+    }));
+    assert!(rows.iter().any(|row| {
+        row.source.as_str() == source_v1
+            && row.source_authority == PackageGraphSourceAuthority::Archive([7; 32])
+            && row.target.requirement.as_str() == "^4.0.0"
+            && row.scope == DependencyScope::Development
+    }));
 }
 
 #[test]
@@ -3169,7 +3501,8 @@ fn native_cargo_adapter_runs_through_shared_owner_and_cursor() {
     let root = temporary("native-owner");
     let (mut owner, _) = RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits())
         .expect("native owner");
-    let AcquisitionOutcome::Published(receipt) = owner.poll(&mut transport).expect("native poll")
+    let AcquisitionOutcome::Published(receipt) =
+        poll_owner(&mut owner, &mut transport).expect("native poll")
     else {
         panic!("expected native publication")
     };
@@ -3285,7 +3618,7 @@ fn cold_cache_resolution_is_typed_for_every_ecosystem() {
         assert_eq!(recovery.cursor.sequence(), 0);
         assert!(
             matches!(
-                owner.poll(&mut PanicTransport).expect("typed offline"),
+                poll_owner(&mut owner, &mut PanicTransport).expect("typed offline"),
                 AcquisitionOutcome::Offline { .. }
             ),
             "{ecosystem:?} cold cache must resolve to a typed offline terminal"
@@ -3361,7 +3694,7 @@ fn unavailable_source_is_a_typed_terminal_for_every_ecosystem() {
             RegistryOwner::open(&root, endpoint.clone(), AcquisitionPolicy::Online, limits())
                 .expect("owner");
         assert!(matches!(
-            owner.poll(&mut UnavailableTransport).expect("typed"),
+            poll_owner(&mut owner, &mut UnavailableTransport).expect("typed"),
             AcquisitionOutcome::Unavailable { .. }
         ));
         assert_eq!(owner.cursor().sequence(), 0);
@@ -3445,7 +3778,7 @@ fn archive_extent_over_the_cap_is_a_measured_typed_overrun() {
     .expect("owner");
     let mut overrun = OverrunTransport { package };
     assert!(matches!(
-        owner.poll(&mut overrun),
+        poll_owner(&mut owner, &mut overrun),
         Err(AcquisitionError::Transport(TransportFailure::Overrun {
             measured: 257,
             limit: 256
@@ -3701,7 +4034,7 @@ fn native_checksum_mismatch_never_advances_the_cursor() {
             .expect("owner");
     let mut transport = HttpRegistryTransport::new(endpoint, None, limits()).expect("transport");
     assert!(matches!(
-        owner.poll(&mut transport),
+        poll_owner(&mut owner, &mut transport),
         Err(AcquisitionError::Transport(TransportFailure::Integrity))
     ));
     assert_eq!(owner.cursor().sequence(), 0);
@@ -3756,7 +4089,7 @@ fn receipt_catalog_overrun_is_measured_and_durable() {
     .expect("owner");
     let mut transport =
         HttpRegistryTransport::new(endpoint.clone(), None, constrained).expect("transport");
-    match owner.poll(&mut transport) {
+    match poll_owner(&mut owner, &mut transport) {
         Err(AcquisitionError::Overrun { measured, limit }) => {
             assert_eq!((measured, limit), (2, 1));
         }
@@ -4444,7 +4777,9 @@ fn read_artifact_unknown_is_none_and_tamper_is_corruption() {
         package,
         archive: archive.to_vec(),
     };
-    let AcquisitionOutcome::Published(receipt) = owner.poll(&mut transport).expect("poll") else {
+    let AcquisitionOutcome::Published(receipt) =
+        poll_owner(&mut owner, &mut transport).expect("poll")
+    else {
         panic!("expected publication")
     };
     // The owner catalog is the materialization bridge: unknown coordinates
@@ -4468,6 +4803,398 @@ fn read_artifact_unknown_is_none_and_tamper_is_corruption() {
         owner.read_artifact(&receipt.packages[0].coordinate),
         Err(AcquisitionError::CorruptJournal)
     ));
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn cold_replay_checks_object_references_without_reading_archive_payloads() {
+    struct MultiArchiveTransport {
+        packages: Vec<RemotePackage>,
+        archives: std::collections::BTreeMap<String, Vec<u8>>,
+    }
+
+    impl RegistryTransport for MultiArchiveTransport {
+        fn fetch_page(
+            &mut self,
+            request: FeedRequest,
+        ) -> Result<TransportResult<FeedPage>, TransportFailure> {
+            Ok(TransportResult::Available(FeedPage {
+                base: request.cursor,
+                next_token: [0x4a; 32],
+                packages: self.packages.clone(),
+            }))
+        }
+
+        fn fetch_archive(
+            &mut self,
+            package: &RemotePackage,
+        ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+            let Some(bytes) = self.archives.get(package.coordinate.as_str()) else {
+                return Err(TransportFailure::Protocol);
+            };
+            Ok(TransportResult::Available(ArchiveArtifact::from_bytes(
+                bytes.clone(),
+            )))
+        }
+    }
+
+    let root = temporary("lazy-cold-replay");
+    let endpoint = RegistryEndpoint::new(
+        RegistryEcosystem::Cargo,
+        "http://127.0.0.1:9/lazy-cold-replay",
+    )
+    .expect("endpoint");
+    let first_bytes = vec![0x31; 2 * 1024 * 1024];
+    let second_bytes = vec![0x72; 2 * 1024 * 1024];
+    let first_coordinate =
+        PackageCoordinate::parse("pkg:cargo/multi@1.0.0").expect("first coordinate");
+    let second_coordinate =
+        PackageCoordinate::parse("pkg:cargo/multi@2.0.0").expect("second coordinate");
+    let package = |coordinate: PackageCoordinate, bytes: &[u8]| RemotePackage {
+        coordinate,
+        integrity: transport::ArchiveIntegrity::Canonical(
+            *CapabilityArtifactId::from_value(bytes).as_bytes(),
+        ),
+        provenance: ProvenanceDigest::from_authenticated_feed([0x9a; 32]),
+        facts: test_facts(),
+        native_metadata: test_native_metadata(),
+        advisory: None,
+        dependency_facts: unavailable_dependency_facts(),
+        archive_url: Arc::from("http://127.0.0.1:9/lazy-cold-replay/archive"),
+    };
+    let first = package(first_coordinate.clone(), &first_bytes);
+    let second = package(second_coordinate.clone(), &second_bytes);
+    let mut transport = MultiArchiveTransport {
+        packages: vec![first.clone(), second.clone()],
+        archives: [
+            (first_coordinate.as_str().to_owned(), first_bytes.clone()),
+            (second_coordinate.as_str().to_owned(), second_bytes.clone()),
+        ]
+        .into_iter()
+        .collect(),
+    };
+    let (mut owner, _) = RegistryOwner::open(
+        &root,
+        endpoint.clone(),
+        AcquisitionPolicy::Online,
+        large_archive_limits(),
+    )
+    .expect("owner");
+    let AcquisitionOutcome::Published(receipt) =
+        poll_owner(&mut owner, &mut transport).expect("poll")
+    else {
+        panic!("expected publication");
+    };
+    assert_eq!(receipt.packages.len(), 2);
+    drop(owner);
+
+    // Same-size tampering preserves the cheap extent check. Cold replay may
+    // rebuild the catalog, but only the later selected read can authenticate
+    // these payload bytes.
+    let tampered = &receipt.packages[1];
+    let encoded = transport::hex(&tampered.raw_object.to_bytes());
+    let object_path = storage_root(&root, &endpoint)
+        .join("registry-content")
+        .join("objects")
+        .join(&encoded[..2])
+        .join(&encoded[2..]);
+    let mut changed = second_bytes.clone();
+    changed[0] ^= 0xff;
+    fs::write(&object_path, &changed).expect("same-size tamper");
+
+    let (owner, recovery) = RegistryOwner::open(
+        &root,
+        endpoint,
+        AcquisitionPolicy::Offline,
+        large_archive_limits(),
+    )
+    .expect("cold owner replay");
+    assert_eq!(recovery.last_receipt, Some(receipt.clone()));
+    assert_eq!(owner.published_packages().len(), 2);
+    assert_eq!(owner.archive_bytes_read_for_tests(), 0);
+
+    assert!(
+        owner
+            .read_artifact(&first_coordinate)
+            .expect("authenticate selected first archive")
+            .is_some()
+    );
+    assert_eq!(
+        owner.archive_bytes_read_for_tests(),
+        u64::try_from(first_bytes.len()).expect("first extent")
+    );
+    assert!(matches!(
+        owner.read_artifact(&second_coordinate),
+        Err(AcquisitionError::CorruptJournal)
+    ));
+    assert_eq!(
+        owner.archive_bytes_read_for_tests(),
+        u64::try_from(first_bytes.len() + second_bytes.len()).expect("read volume")
+    );
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn distinct_coordinate_registry_journal_process_worker() {
+    let Some(root) = env::var_os("BACKEND_ACQUISITION_JOURNAL_WORKER_ROOT") else {
+        return;
+    };
+    let root = PathBuf::from(root);
+    let worker = env::var("BACKEND_ACQUISITION_JOURNAL_WORKER_ID").expect("worker id");
+    let other = if worker == "one" { "two" } else { "one" };
+    let coordinate = format!("pkg:cargo/process-{worker}@1.0.0");
+    let archive = format!("archive payload for {worker}").into_bytes();
+    let endpoint = RegistryEndpoint::new(
+        RegistryEcosystem::Cargo,
+        "http://127.0.0.1:9/process-journal",
+    )
+    .expect("endpoint");
+    let package = RemotePackage {
+        coordinate: PackageCoordinate::parse(&coordinate).expect("coordinate"),
+        integrity: transport::ArchiveIntegrity::Canonical(
+            *CapabilityArtifactId::from_value(&archive).as_bytes(),
+        ),
+        provenance: ProvenanceDigest::from_authenticated_feed(if worker == "one" {
+            [0x11; 32]
+        } else {
+            [0x22; 32]
+        }),
+        facts: test_facts(),
+        native_metadata: test_native_metadata(),
+        advisory: None,
+        dependency_facts: unavailable_dependency_facts(),
+        archive_url: Arc::from("http://127.0.0.1:9/process-journal/archive"),
+    };
+
+    struct BarrierTransport {
+        package: RemotePackage,
+        archive: Vec<u8>,
+        barrier: PathBuf,
+        worker: String,
+        other: String,
+    }
+    impl RegistryTransport for BarrierTransport {
+        fn fetch_page(
+            &mut self,
+            request: FeedRequest,
+        ) -> Result<TransportResult<FeedPage>, TransportFailure> {
+            fs::write(
+                self.barrier.join(format!("{}.fetch", self.worker)),
+                b"ready",
+            )
+            .map_err(|_| TransportFailure::Configuration)?;
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while !self.barrier.join(format!("{}.fetch", self.other)).is_file() {
+                if std::time::Instant::now() >= deadline {
+                    return Err(TransportFailure::DownloadUnavailable);
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+            let next_token = if self.worker == "one" {
+                [0x41; 32]
+            } else {
+                [0x42; 32]
+            };
+            Ok(TransportResult::Available(FeedPage {
+                base: request.cursor,
+                next_token,
+                packages: vec![self.package.clone()],
+            }))
+        }
+
+        fn fetch_archive(
+            &mut self,
+            _package: &RemotePackage,
+        ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+            Ok(TransportResult::Available(ArchiveArtifact::from_bytes(
+                self.archive.clone(),
+            )))
+        }
+    }
+
+    let sync = root.join("process-barrier");
+    fs::create_dir_all(&sync).expect("barrier directory");
+    let (owner, _) =
+        RegistryOwner::open(&root, endpoint.clone(), AcquisitionPolicy::Online, limits())
+            .expect("open worker owner");
+    let service =
+        crate::acquisition::AcquisitionService::from_owner(owner, root.join("coordination"))
+            .expect("worker service");
+    let request = crate::acquisition::AcquisitionRequest::for_coordinate(
+        endpoint.id().as_bytes(),
+        coordinate,
+        CanonicalFeedV1::VERSION,
+        0,
+    )
+    .expect("request");
+    let mut transport = BarrierTransport {
+        package,
+        archive,
+        barrier: sync,
+        worker,
+        other: other.to_owned(),
+    };
+    assert!(matches!(
+        service.acquire(&request, &mut transport),
+        crate::acquisition::AcquisitionOutcome::Hit(_)
+    ));
+}
+
+#[test]
+fn deferred_registry_tail_process_worker() {
+    let Some(root) = env::var_os("BACKEND_REGISTRY_TAIL_WORKER_ROOT") else {
+        return;
+    };
+    let root = PathBuf::from(root);
+    let endpoint =
+        RegistryEndpoint::new(RegistryEcosystem::Cargo, "http://127.0.0.1:9/deferred-tail")
+            .expect("endpoint");
+    let journal_path = storage_root(&root, &endpoint).join("registry.journal");
+    fs::create_dir_all(journal_path.parent().expect("journal parent")).expect("journal directory");
+
+    let source_path = root.join("complete-frame.journal");
+    let (mut source, _) =
+        HashChainJournal::<RegistryLog>::open(&source_path).expect("temporary complete journal");
+    let intent = AcquisitionIntent::new(FeedCursor::genesis(endpoint.id()), limits().max_items);
+    source
+        .append(&RegistryRecord::Prepared(intent))
+        .expect("append complete prepared frame");
+    drop(source);
+    let frame = fs::read(source_path).expect("read complete frame");
+    let split_at = (frame.len() / 2).max(1);
+    let mut target = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&journal_path)
+        .expect("target journal");
+    target
+        .write_all(&frame[..split_at])
+        .expect("publish partial frame prefix");
+    target.sync_all().expect("sync partial prefix");
+    fs::write(root.join("tail.ready"), frame.len().to_string()).expect("signal partial frame");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !root.join("tail.continue").is_file() {
+        if std::time::Instant::now() >= deadline {
+            panic!("timed out waiting for cold-open assertion");
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    let mut target = fs::OpenOptions::new()
+        .append(true)
+        .open(&journal_path)
+        .expect("reopen target journal");
+    target
+        .write_all(&frame[split_at..])
+        .expect("complete frame suffix");
+    target.sync_all().expect("sync complete frame");
+}
+
+#[test]
+fn cold_registry_open_does_not_truncate_an_active_partial_frame() {
+    let root = temporary("cold-open-active-tail");
+    let executable = env::current_exe().expect("test executable");
+    let mut worker = Command::new(&executable)
+        .arg("--nocapture")
+        .arg("deferred_registry_tail_process_worker")
+        .env("BACKEND_REGISTRY_TAIL_WORKER_ROOT", &root)
+        .spawn()
+        .expect("spawn partial-frame writer");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !root.join("tail.ready").is_file() {
+        if std::time::Instant::now() >= deadline {
+            let _ = worker.kill();
+            panic!("timed out waiting for partial-frame writer");
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    let expected_frame_len = fs::read_to_string(root.join("tail.ready"))
+        .expect("frame size marker")
+        .parse::<u64>()
+        .expect("frame size");
+    let endpoint =
+        RegistryEndpoint::new(RegistryEcosystem::Cargo, "http://127.0.0.1:9/deferred-tail")
+            .expect("endpoint");
+    let journal_path = storage_root(&root, &endpoint).join("registry.journal");
+    let prefix_len = fs::metadata(&journal_path).expect("partial journal").len();
+    let (owner, recovery) = RegistryOwner::open(
+        &root,
+        endpoint.clone(),
+        AcquisitionPolicy::Offline,
+        limits(),
+    )
+    .expect("cold open with active writer");
+    assert!(recovery.repaired_tail, "partial tail is reported to caller");
+    assert_eq!(
+        fs::metadata(&journal_path)
+            .expect("journal after open")
+            .len(),
+        prefix_len,
+        "cold open must not truncate a writer's incomplete frame"
+    );
+    drop(owner);
+    fs::write(root.join("tail.continue"), b"complete").expect("release writer");
+    let output = worker.wait_with_output().expect("wait for frame writer");
+    assert!(
+        output.status.success(),
+        "frame writer failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::metadata(&journal_path)
+            .expect("completed journal")
+            .len(),
+        expected_frame_len,
+        "writer's suffix remains attached to its original frame"
+    );
+
+    let (_, recovery) = RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Offline, limits())
+        .expect("cold replay completed frame");
+    assert!(!recovery.repaired_tail);
+    assert!(recovery.pending.is_some());
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn distinct_coordinate_processes_serialize_the_shared_registry_journal() {
+    let root = temporary("registry-journal-processes");
+    let executable = env::current_exe().expect("test executable");
+    let spawn_worker = |worker: &str| {
+        Command::new(&executable)
+            .arg("--nocapture")
+            .arg("distinct_coordinate_registry_journal_process_worker")
+            .env("BACKEND_ACQUISITION_JOURNAL_WORKER_ROOT", &root)
+            .env("BACKEND_ACQUISITION_JOURNAL_WORKER_ID", worker)
+            .spawn()
+            .expect("spawn journal worker")
+    };
+    let first = spawn_worker("one");
+    let second = spawn_worker("two");
+    let first = first.wait_with_output().expect("wait for first worker");
+    let second = second.wait_with_output().expect("wait for second worker");
+    assert!(
+        first.status.success(),
+        "first worker failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(
+        second.status.success(),
+        "second worker failed: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+
+    let endpoint = RegistryEndpoint::new(
+        RegistryEcosystem::Cargo,
+        "http://127.0.0.1:9/process-journal",
+    )
+    .expect("endpoint");
+    let (owner, recovery) =
+        RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Offline, limits())
+            .expect("cold replay after concurrent processes");
+    assert_eq!(recovery.cursor.sequence(), 2);
+    assert_eq!(owner.published_packages().len(), 2);
     fs::remove_dir_all(root).expect("cleanup");
 }
 

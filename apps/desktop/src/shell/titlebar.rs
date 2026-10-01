@@ -8,9 +8,14 @@
 //! declaration) opens its siblings; hovering the plate shows the
 //! `nudox://` address (⌘⇧C copies it).
 //!
-//! It degrades from its own measured width: below 700 effective px the
-//! plate drops the package segment, below 560 the module segments, below
-//! 520 the icon buttons go.
+//! It degrades from its own measured room, in three modes
+//! (`facet::tokens::fluid::BAR`): everything from 760 design px; from 560 the
+//! plate drops the package segment and the view switch gives way to it; below
+//! that the plate keeps only the name and the inbox button goes. The modes
+//! hold through a hysteresis band, and what arrives or leaves glides to its
+//! place (`Flow`) instead of jumping. The shelf toggle never goes: below 640
+//! the shelf is not inline, and this button is the pointer's only way to open
+//! it over the reader.
 
 use super::focus::{Target, Targets};
 use super::jump::{self, Here, Mark, Segment};
@@ -18,16 +23,19 @@ use super::kit::{keycap, text};
 use super::region::{Links, Region, RegionCore};
 use crate::model::AppSnapshot;
 use crate::model::pages::PageKey;
-use crate::navigation::{Intent, OrbitRoute, Route, View};
+use crate::navigation::{Intent, OrbitRoute, Overlay, Route, View};
 use crate::runtime::store::{Branch, DataStore, route_package, route_symbol};
 use facet::icons::{self, Icon, IconSize, KindSize};
+use facet::motion::{Flow, Motion};
+use facet::tokens::fluid::{BAR, Bar};
 use facet::overlay::float::{self, FloatKind, FloatRequest, Side};
 use facet::overlay::menu::{self, Menu, MenuItem};
 use facet::paint::{Bevel, Chamfer, cut};
 use facet::tokens::ty;
-use facet::{ActiveFacet as _, Measure, Palette, Space};
+use facet::{ActiveFacet as _, Measure, Palette, Set as _, Space};
+use gpui_component::input::{Input, InputState};
 use gpui::{
-    AnyElement, App, ClickEvent, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, Render, SharedString,
+    AnyElement, App, ClickEvent, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, SharedString,
     StatefulInteractiveElement, Styled, Task, Window, WindowControlArea, div, px,
 };
 use std::cell::Cell;
@@ -46,6 +54,14 @@ pub(crate) struct Titlebar {
     press: Option<Task<()>>,
     /// The press became a long press: its click is not a step back.
     long: Rc<Cell<bool>>,
+    /// What the bar's modes move: the plate's segments and name glide to
+    /// their new places when a control arrives or leaves (the controls at the
+    /// window's edges follow the edge and need no flow of their own).
+    flow: Flow,
+    /// The bar's mode changes: what arrives fades in.
+    motion: Motion,
+    /// Ask's field (`Ask::input`): drawn in the bar's place while Ask is open.
+    ask_input: Option<gpui::Entity<InputState>>,
 }
 
 impl Titlebar {
@@ -56,11 +72,19 @@ impl Titlebar {
             targets: Targets::named("titlebar"),
             press: None,
             long: Rc::new(Cell::new(false)),
+            flow: Flow::new("titlebar"),
+            motion: Motion::new(),
+            ask_input: None,
         }
     }
 
     pub(crate) const fn renders(&self) -> u64 {
         self.core.renders()
+    }
+
+    /// Hands the bar Ask's field, which it draws while Ask is open.
+    pub(crate) fn set_ask_input(&mut self, input: gpui::Entity<InputState>) {
+        self.ask_input = Some(input);
     }
 }
 
@@ -80,19 +104,23 @@ impl Region for Titlebar {
 }
 
 impl Render for Titlebar {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.core.rendered();
         self.targets.begin();
         let measure = self.core.measure(cx);
         let facet = cx.facet();
         let palette = facet.palette();
         let keys = facet.reveal.keys;
-        let effective = measure.effective();
-        let icons_shown = effective > 520.0;
+        let bar = self.core.modes().settle(&BAR, measure.fluid_room());
+        self.flow.epoch(bar.epoch);
+        // What a change of mode brings in fades in as the rest glides to its
+        // place; a settled bar (or reduced motion) is fully drawn.
+        let arriving = bar.progress(&self.motion, window, cx);
+        let inbox_shown = bar.mode >= Bar::Snug;
         let snapshot = self.links.snapshot(cx);
         let (here, segments) = {
             let store = self.links.store.read(cx);
-            (jump::here(&snapshot, store), jump::segments(snapshot.route(), store))
+            (jump::here(&snapshot, store), jump::bar_segments(&snapshot, store))
         };
         let orbit = matches!(snapshot.route(), Route::Orbit(OrbitRoute::Home)) && snapshot.overlay().is_none();
         let shelf_on = snapshot.settings().shelf_open;
@@ -100,47 +128,50 @@ impl Render for Titlebar {
 
         let inset = if cfg!(target_os = "macos") { px(78.0) } else { measure.space(Space::Roomy) };
         let mut left = div().flex().flex_none().items_center().gap(measure.space(Space::Base)).pl(inset);
-        if icons_shown {
-            let id: SharedString = "tb-shelf".into();
-            let toggle_links = links.clone();
-            let act: super::focus::Act = Rc::new(move |_, cx| {
-                toggle_links.shell(cx, |shell, cx| shell.toggle_shelf(cx));
-            });
-            self.targets.push(Target { id: id.clone(), label: "Toggle the shelf".into(), act: Rc::clone(&act), peek: None, source: None });
-            left = left.child(
-                self.targets.track(
-                    id.clone(),
-                    facet::controls::icon_button(id, Icon::SideL, "Toggle the shelf", &measure)
-                        .on(shelf_on)
-                        .key("⌘\\")
-                        .on_click(move |window, cx| act(window, cx)),
-                ),
-            );
-        }
+        let id: SharedString = "tb-shelf".into();
+        let toggle_links = links.clone();
+        let act: super::focus::Act = Rc::new(move |_, cx| {
+            toggle_links.shell(cx, |shell, cx| shell.toggle_shelf(cx));
+        });
+        self.targets.push(Target { id: id.clone(), label: "Toggle the shelf".into(), act: Rc::clone(&act), peek: None, source: None });
+        left = left.child(
+            self.targets.track(
+                id.clone(),
+                facet::controls::icon_button(id, Icon::SideL, "Toggle the shelf", &measure)
+                    .on(shelf_on)
+                    .key("⌘\\")
+                    .on_click(move |window, cx| act(window, cx)),
+            ),
+        );
         // The altimeter's slot is the view switch (§8.4): Graph · Page · Code,
         // only the active view named. Below 760 it gives way to the bar.
         if let Some(active) = view_of(snapshot.route())
-            && effective > 760.0
+            && bar.mode == Bar::Full
         {
-            left = left.child(self.view_switch(active, &measure, palette, keys));
+            let fade = if bar.from.is_some_and(|from| from < Bar::Full) { arriving } else { 1.0 };
+            left = left.child(div().opacity(fade).child(self.view_switch(active, &measure, palette, keys)));
         }
 
-        let center = if orbit {
+        let asking = snapshot.overlay() == Some(Overlay::CommandPalette);
+        let center = if let (true, Some(input)) = (asking, self.ask_input.clone()) {
+            Self::ask_typing(&input, &measure, palette)
+        } else if orbit {
             self.ask_field(&measure, palette, keys, cx)
         } else {
-            self.jump_bar(&snapshot, &here, &segments, effective, &measure, palette, keys, cx)
+            self.jump_bar(&snapshot, &here, &segments, bar.mode, &measure, palette, keys, cx)
         };
 
         let mut right = div().flex().flex_none().items_center().gap(measure.space(Space::Tight)).pr(measure.space(Space::Roomy));
-        if icons_shown {
+        if inbox_shown {
             let id = "tb-inbox";
             let target_links = links.clone();
             let act: super::focus::Act = Rc::new(move |_, cx| target_links.dispatch(Intent::OpenInbox, cx));
             self.targets.push(Target { id: id.into(), label: "Inbox".into(), act: Rc::clone(&act), peek: None, source: None });
-            right = right.child(self.targets.track(
+            let fade = if bar.from.is_some_and(|from| from < Bar::Snug) { arriving } else { 1.0 };
+            right = right.child(div().opacity(fade).child(self.targets.track(
                 id,
                 facet::controls::icon_button(id, Icon::Inbox, "Inbox", &measure).on_click(move |window, cx| act(window, cx)),
-            ));
+            )));
         }
 
         let glow = self.targets.glow(&measure);
@@ -207,7 +238,7 @@ impl Titlebar {
         snapshot: &AppSnapshot,
         here: &Here,
         segments: &[Segment],
-        effective: f32,
+        mode: Bar,
         measure: &Measure,
         palette: &'static Palette,
         keys: bool,
@@ -216,7 +247,18 @@ impl Titlebar {
         let scale = measure.scale();
         let height = px(32.0 * scale);
         let session = snapshot.session();
-        let mut bar = div().flex().items_center().min_w(px(0.0)).gap(measure.space(Space::Snug));
+        // `flex_1`: without it this row sizes itself from its own content
+        // (width: auto), and its one real child, `here` below, is itself
+        // `flex_1().min_w(0)` — a 0%-basis, 0-floor item contributes ~0 to
+        // that auto computation, so `bar` collapsed to nearly nothing and
+        // handed `here`/`plate` almost no room to lay out in. `plate`'s
+        // fixed-size children (each segment, each `›`) kept painting at
+        // their own natural size regardless (nothing shrinks a `flex_none`
+        // item below it), so the only child with no floor of its own — the
+        // current name, `min_w(0)` for its own truncation — absorbed the
+        // whole shortfall, down to a literal 0 px box (`ask_field`'s field
+        // has no such wrapper and never collapses this way).
+        let mut bar = div().flex().items_center().min_w(px(0.0)).flex_1().gap(measure.space(Space::Snug));
 
         // Back: a click steps back; a long press or a right click lists.
         let can_back = !session.back.is_empty();
@@ -241,9 +283,9 @@ impl Titlebar {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .size(px(24.0 * scale))
+                    .size(hit_side(measure))
                     .cursor_pointer()
-                    .child(text(ty::ROW, measure, if can_back { palette.ink2 } else { palette.ink4 }).child("‹"))
+                    .child(text(ty::ROW, measure, if can_back { palette.ink2 } else { palette.ink3 }).child("‹"))
                     .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                         let links = press_links.clone();
                         let targets = press_targets.clone();
@@ -293,7 +335,7 @@ impl Titlebar {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .size(px(24.0 * scale))
+                        .size(hit_side(measure))
                         .cursor_pointer()
                         .child(text(ty::ROW, measure, palette.ink2).child("›"))
                         .on_click(move |_: &ClickEvent, window, cx| act(window, cx)),
@@ -313,6 +355,7 @@ impl Titlebar {
             .min_w(px(0.0))
             .overflow_hidden()
             .whitespace_nowrap()
+            .text_ellipsis()
             .child(here.name.clone());
         #[cfg(test)]
         let name = facet::probe::text(
@@ -338,25 +381,33 @@ impl Titlebar {
         // Package › module segments before the name (the name is the last
         // segment); the narrow bar keeps the name and what is nearest it.
         let lead = segments.len().saturating_sub(1);
-        let keep_from = if effective < 560.0 {
-            lead
-        } else if effective < 700.0 {
-            1.min(lead)
-        } else {
-            0
+        let keep_from = match mode {
+            Bar::Bare => lead,
+            Bar::Snug => 1.min(lead),
+            Bar::Full => 0,
         };
         for (index, segment) in segments.iter().enumerate().take(lead).skip(keep_from) {
             let id: SharedString = format!("jump-seg-{index}").into();
-            plate = plate.child(self.segment(id, index, segment, measure, palette)).child(text(ty::SMALL, measure, palette.ink4).child("›"));
+            // `ink4` reads 2.72:1 on the abyss ground — tokens.rs documents
+            // it as "rules and inactive ticks only, never text", and this
+            // separator is drawn as a text glyph. `ink3` ("quiet words",
+            // already this file's tone for the plate's own quiet line) is
+            // the nearest step up that clears 4.5:1 (6.12:1 here).
+            let segment = self.segment(id, index, segment, measure, palette, cx);
+            plate = plate
+                .child(self.flow.item(SharedString::from(format!("tb-flow-segment-{index}")), segment))
+                .child(self.flow.item(SharedString::from(format!("tb-flow-segment-{index}-sep")), text(ty::SMALL, measure, palette.ink3).child("›")));
         }
         let last_id: SharedString = format!("jump-seg-{lead}").into();
         let last_links = self.links.clone();
         let last_targets = self.targets.clone();
-        plate = plate.child(
+        let here_name = self.targets.track(
+            last_id.clone(),
             div()
                 .id(last_id.clone())
                 .flex()
                 .items_center()
+                .h(hit_side(measure))
                 .gap(measure.space(Space::Snug))
                 .min_w(px(0.0))
                 .cursor_pointer()
@@ -366,6 +417,7 @@ impl Titlebar {
                     siblings_menu(&last_links, &last_targets, lead, window, cx);
                 }),
         );
+        plate = plate.child(self.flow.item("tb-flow-name", here_name));
         // Not a declaration: the place names itself (`registry`, `Appearance`).
         let quiet: Option<SharedString> = if segments.is_empty() || here.path.starts_with("viewing ") {
             Some(here.path.clone())
@@ -394,7 +446,14 @@ impl Titlebar {
                 .on_click(move |_: &ClickEvent, _, cx| ask_links.shell(cx, |shell, cx| shell.open_ask(cx))),
         );
         let hover_targets = self.targets.clone();
-        let address = SharedString::from(jump::address_parts(snapshot).full());
+        // A graph focus is fixture data, and the tip says so.
+        let address = SharedString::from(
+            self.links
+                .store
+                .read(cx)
+                .graph_focus()
+                .map_or_else(|| jump::address_parts(snapshot).full(), crate::runtime::graph_focus::GraphFocus::status),
+        );
         let ask_act_links = self.links.clone();
         let act: super::focus::Act = Rc::new(move |_, cx| ask_act_links.shell(cx, |shell, cx| shell.open_ask(cx)));
         self.targets.push(Target { id: "here".into(), label: here.name.clone(), act, peek: None, source: None });
@@ -430,7 +489,7 @@ impl Titlebar {
 
     /// One segment before the name: its siblings, or its page when it has
     /// none to list (the package).
-    fn segment(&mut self, id: SharedString, index: usize, segment: &Segment, measure: &Measure, palette: &Palette) -> AnyElement {
+    fn segment(&mut self, id: SharedString, index: usize, segment: &Segment, measure: &Measure, palette: &Palette, cx: &App) -> AnyElement {
         let links = self.links.clone();
         let targets = self.targets.clone();
         let route = segment.route.clone();
@@ -443,7 +502,14 @@ impl Titlebar {
                 }
             })
         };
+        if segment.quiet {
+            return text(ty::SMALL, measure, palette.ink3).flex_none().whitespace_nowrap().child(segment.name.clone()).into_any_element();
+        }
         self.targets.push(Target { id: id.clone(), label: segment.name.clone(), act: Rc::clone(&act), peek: None, source: None });
+        // At least 24 × 24 to hit (gui-plan.md:213), grown by padding that
+        // a matching negative margin takes back: the plate looks the same.
+        let side = hit_side(measure);
+        let pad = ((side - super::text_fit::text_width(&segment.name, &measure.role(ty::SMALL), cx)) / 2.0).max(px(0.0));
         self.targets
             .track(
                 id.clone(),
@@ -451,6 +517,11 @@ impl Titlebar {
                     .id(id)
                     .cursor_pointer()
                     .flex_none()
+                    .h(side)
+                    .flex()
+                    .items_center()
+                    .px(pad)
+                    .mx(-pad)
                     .child(text(ty::SMALL, measure, palette.ink2).whitespace_nowrap().child(segment.name.clone()))
                     .on_click(move |_: &ClickEvent, window, cx| {
                         if index == 0 {
@@ -459,6 +530,41 @@ impl Titlebar {
                             siblings_menu(&links, &targets, index, window, cx);
                         }
                     }),
+            )
+            .into_any_element()
+    }
+
+    /// The bar while Ask is open: the query, live, on the plate the field
+    /// rests on (the results are the plate over the shelf's column).
+    fn ask_typing(input: &gpui::Entity<InputState>, measure: &Measure, palette: &Palette) -> AnyElement {
+        let height = px(32.0 * measure.scale());
+        div()
+            .id("ask-typing")
+            .relative()
+            .min_w(px(0.0))
+            .flex_1()
+            .max_w(px(460.0 * measure.scale()))
+            .child(
+                cut()
+                    .chamfer(Chamfer::Float)
+                    .bevel(Bevel::Focus)
+                    .fill(palette.plate)
+                    .h(height)
+                    .px(measure.space(Space::Roomy))
+                    .flex()
+                    .items_center()
+                    .gap(measure.space(Space::Base))
+                    .child(icons::ui(Icon::Search, IconSize::S14, palette.ink2).size(measure.icon(14.0)))
+                    .child(
+                        Input::new(input)
+                            .appearance(false)
+                            .bordered(false)
+                            .focus_bordered(false)
+                            .set(ty::ROW, measure)
+                            .px(px(0.0))
+                            .flex_1()
+                            .min_w(px(0.0)),
+                    ),
             )
             .into_any_element()
     }
@@ -567,25 +673,70 @@ impl Titlebar {
     }
 }
 
+/// The smallest hit area, 24 × 24 px at any text size (gui-plan.md:213).
+fn hit_side(measure: &Measure) -> Pixels {
+    px((24.0 * measure.scale()).max(24.0))
+}
+
+/// Whether a menu is open (the jump bar's back places and siblings, the
+/// symbol page's package menu): it owns the plain keys.
+pub(crate) fn menu_open(window: &Window, cx: &mut App) -> bool {
+    facet::overlay::float::menu_open(window, cx)
+}
+
 /// Opens the siblings of segment `index` under it: the outline level it
 /// sits at; choosing one opens its page.
 fn siblings_menu(links: &Links, targets: &Targets, index: usize, window: &mut Window, cx: &mut App) {
     let Some(anchor) = targets.bounds_of(&format!("jump-seg-{index}")).or_else(|| targets.bounds_of("here")) else {
         return;
     };
-    let route = links.snapshot(cx).route().clone();
+    let route = jump::bar_route(&links.snapshot(cx), links.store.read(cx));
     let siblings = jump::siblings(&route, index, links.store.read(cx));
     if siblings.is_empty() {
         return;
     }
-    let items = siblings.iter().map(|sibling| MenuItem::new(sibling.name.clone())).collect();
+    open_siblings(links, anchor, index, siblings, false, window, cx);
+}
+
+/// The siblings menu: the real entries, then the test-only modules folded
+/// into one "tests" row (choosing it reopens the menu with them unfolded).
+fn open_siblings(
+    links: &Links,
+    anchor: gpui::Bounds<gpui::Pixels>,
+    index: usize,
+    siblings: jump::Siblings,
+    unfolded: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let mut items: Vec<MenuItem> = siblings.real.iter().map(|sibling| MenuItem::new(sibling.name.clone())).collect();
+    let folded = !siblings.tests.is_empty() && !unfolded;
+    if !siblings.tests.is_empty()
+        && let Some(last) = items.last_mut()
+    {
+        last.separator_after = true;
+    }
+    if folded {
+        items.push(MenuItem::new("tests"));
+    } else {
+        items.extend(siblings.tests.iter().map(|sibling| MenuItem::new(sibling.name.clone())));
+    }
     let links = links.clone();
-    let menu = Menu::new(items, move |choice, _, cx| {
-        if let Some(route) = siblings.get(choice).and_then(|sibling| sibling.route.clone()) {
+    let menu = Menu::new(items, move |choice, window, cx| {
+        if folded && choice == siblings.real.len() {
+            let (links, siblings) = (links.clone(), siblings.clone());
+            window.defer(cx, move |window, cx| open_siblings(&links, anchor, index, siblings, true, window, cx));
+            return;
+        }
+        let chosen = siblings.real.iter().chain(siblings.tests.iter()).nth(choice);
+        if let Some(route) = chosen.and_then(|sibling| sibling.route.clone()) {
             links.dispatch(Intent::Navigate(route), cx);
         }
     });
-    menu::open(format!("jump-siblings-{index}"), anchor, Side::Below, menu, window, cx);
+    // Unfolded, it is a new menu in the same place (the closing one keeps
+    // its key until it has left).
+    let key = if unfolded { format!("jump-siblings-{index}-tests") } else { format!("jump-siblings-{index}") };
+    menu::open(key, anchor, Side::Below, menu, window, cx);
 }
 
 /// The view a place shows, when it is a declaration or the world graph.

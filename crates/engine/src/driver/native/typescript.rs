@@ -48,8 +48,7 @@ impl NativeFrontend for TypeScriptFrontend {
                 "--noEmit", "--pretty", "false", "--target", "ES2022", "--module", "ESNext",
             ])
             .arg(source_file(profile))
-            .current_dir(native_work.join(WORK_DIRECTORY))
-            .env_clear();
+            .current_dir(native_work.join(WORK_DIRECTORY));
         if profile == TypeScriptSource::Tsx {
             command.args(["--jsx", "preserve"]);
         }

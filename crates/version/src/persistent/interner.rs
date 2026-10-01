@@ -1,6 +1,7 @@
-use super::build::{build_tree, empty_node};
+use super::build::{build_tree, build_tree_owned, empty_node};
 use super::update::{
-    apply_structural, collect_target_range, find_node, get_node, replace_existing, target_shape,
+    apply_structural, collect_target_range, find_node, get_node, replace_existing,
+    replacement_keeps_encoded_width, target_shape,
 };
 use super::{Item, Node, PersistentTree, PreparedUpdate, TreeChange, TreeWork};
 use super::{
@@ -99,6 +100,32 @@ impl<R: Relation> PersistentTree<R, NoInterner> {
         ))
     }
 
+    /// Builds a canonical tree by moving a caller-owned sorted run directly
+    /// into immutable leaf slabs. Its root and work are identical to the
+    /// borrowed constructor. Payload values are never cloned; for a single
+    /// leaf the source allocation becomes the leaf allocation directly.
+    pub fn from_sorted_items_owned_with_work(
+        items: Vec<(R::Key, R::Value)>,
+    ) -> Result<(Self, TreeWork), TreeError> {
+        if items.windows(2).any(|window| window[0].0 >= window[1].0) {
+            return Err(TreeError::UnsortedOrDuplicate);
+        }
+        let mut work = TreeWork::default();
+        let root = build_tree_owned(items, &mut work, &NoInterner)?;
+        Ok((
+            Self {
+                root,
+                interner: NoInterner,
+            },
+            work,
+        ))
+    }
+
+    /// Builds a canonical tree while consuming its sorted input run.
+    pub fn from_sorted_items_owned(items: Vec<(R::Key, R::Value)>) -> Result<Self, TreeError> {
+        Self::from_sorted_items_owned_with_work(items).map(|(tree, _)| tree)
+    }
+
     pub(crate) fn from_items(items: &[Item<R>]) -> Result<Self, TreeError> {
         Self::from_sorted_items_with_work(items).map(|(tree, _)| tree)
     }
@@ -157,7 +184,11 @@ impl<R: Relation> PersistentTree<R, NoInterner> {
                 work,
             ));
         }
-        if changes.len() == 1 && changes[0].after.is_some() && single_present {
+        if changes.len() == 1
+            && changes[0].after.is_some()
+            && single_present
+            && replacement_keeps_encoded_width(&self.root, &changes[0])
+        {
             let mut work = TreeWork::default();
             let root = replace_existing(
                 &self.root,
@@ -393,7 +424,11 @@ impl<R: Relation, I: TreeInterner<R> + Clone> PersistentTree<R, I> {
                 work,
             ));
         }
-        if changes.len() == 1 && changes[0].after.is_some() && single_present {
+        if changes.len() == 1
+            && changes[0].after.is_some()
+            && single_present
+            && replacement_keeps_encoded_width(&self.root, &changes[0])
+        {
             let mut work = TreeWork::default();
             let root = replace_existing(
                 &self.root,

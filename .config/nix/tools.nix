@@ -28,14 +28,10 @@ let
     "apps"
     "tests"
     "tools"
-    # Every path target of the root `Cargo.toml` `[patch]` table must survive
-    # the filter: Cargo reads `[patch]` while resolving even the trimmed
-    # control-plane member set, so a missing `vendor/<crate>/Cargo.toml` fails
-    # the build with "failed to load source for dependency".
+    "vendor/gpui-ce"
     "vendor/gpui_ce_components"
     "vendor/gpui_ce_components_base"
     "vendor/gpui_ce_macos"
-    "vendor/gpui-ce"
   ];
   workspaceSource =
     if workspaceAvailable then

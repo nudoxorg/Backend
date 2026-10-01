@@ -6,6 +6,48 @@ use crate::{
     ViewStateRoot,
 };
 use backend_semantic::ReadManifest;
+use serde::{Deserialize, Serialize};
+
+/// Why the optional semantic-search lane could not supply an authoritative
+/// result for a query.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticSearchReason {
+    /// No Qdrant/embedding configuration was supplied at process startup.
+    Unconfigured,
+    /// The supplied semantic configuration was malformed or incomplete.
+    InvalidConfiguration,
+    /// The configured Qdrant provider or its query operation failed.
+    ProviderUnavailable,
+    /// No active vector projection is available for this view.
+    NoActiveProjection,
+    /// The active projection belongs to another immutable view.
+    StaleProjection,
+    /// The embedding producer could not provide a query vector.
+    ModelUnavailable,
+}
+
+/// Per-query result from the optional semantic retrieval lane.
+///
+/// Search snapshots remain complete lexical results when this status is not
+/// [`Self::Available`]. The status describes only whether semantic ordering
+/// was applied to those rows.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SemanticSearchStatus {
+    /// A current, admitted semantic projection contributed to this search.
+    Available,
+    /// Semantic search could not produce an authoritative result.
+    Unavailable {
+        /// Stable reason code for the unavailable lane.
+        reason: SemanticSearchReason,
+    },
+    /// A semantic projection exists but is bound to an older or different view.
+    Stale {
+        /// Stable reason code for the stale lane.
+        reason: SemanticSearchReason,
+    },
+}
 
 /// One compiler-verified use of a declaration, before the view names it.
 ///
@@ -115,10 +157,28 @@ pub enum CommandId {
     ProjectTree,
     /// Refresh the configured advisory sources.
     AdvisoryRefresh,
+    /// Read one package graph page fenced to its selected root and facts witness.
+    PackageGraphPage,
     /// Read engine health.
     Health,
     /// Read the constant-size current revision token.
     Revision,
+}
+
+/// The caller's requested execution class for compiling an added package.
+///
+/// Interactive is the latency-protecting default. Background work may use
+/// bounded remote calibration before choosing an owner route.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum CompileExecutionIntent {
+    /// Prioritize the local latency budget for foreground work.
+    #[default]
+    Interactive,
+    /// Run as background work and permit bounded remote calibration.
+    Background,
 }
 
 /// Constant-size handle for the owner's current immutable view.
@@ -827,6 +887,8 @@ pub enum Command {
     Add {
         /// Package identity.
         package: PackageKey,
+        /// Public compile execution intent; ordinary callers use Interactive.
+        execution_intent: CompileExecutionIntent,
     },
     /// Append a remove-package intent.
     Remove {
@@ -1098,10 +1160,19 @@ mod tests {
         assert_eq!(query.cursor(), Some(cursor));
         assert_eq!(
             Command::Add {
-                package: package_key("pkg")
+                package: package_key("pkg"),
+                execution_intent: CompileExecutionIntent::Interactive,
             }
             .id(),
             CommandId::Add
+        );
+    }
+
+    #[test]
+    fn compile_execution_defaults_to_the_latency_protecting_class() {
+        assert_eq!(
+            CompileExecutionIntent::default(),
+            CompileExecutionIntent::Interactive
         );
     }
 

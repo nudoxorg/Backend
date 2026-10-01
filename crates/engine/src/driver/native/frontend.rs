@@ -39,6 +39,10 @@ pub(super) trait NativeFrontend {
         native_work: &Path,
     ) -> Command;
 
+    /// Applies only adapter-owned values after the shared empty-environment
+    /// policy has removed inherited process state.
+    fn configure_environment(_native_work: &Path, _command: &mut Command) {}
+
     /// Whether exact request source must be sent through the child input lease.
     fn source_via_stdin() -> bool {
         true

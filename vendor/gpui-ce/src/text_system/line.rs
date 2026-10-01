@@ -101,6 +101,16 @@ impl ShapedLine {
             window,
             cx,
         )?;
+        trace_line(
+            &self.text,
+            origin,
+            (self.layout.width, line_height),
+            align,
+            align_width,
+            self.decoration_runs.iter(),
+            window,
+            cx,
+        );
 
         Ok(())
     }
@@ -297,6 +307,20 @@ impl WrappedLine {
             window,
             cx,
         )?;
+        let lines = self.wrap_boundaries.len() as f32 + 1.0;
+        let width = align_width.map_or(self.layout.unwrapped_layout.width, |width| {
+            if lines > 1.0 { width } else { width.min(self.layout.unwrapped_layout.width) }
+        });
+        trace_line(
+            &self.text,
+            origin,
+            (width, line_height * lines),
+            if lines > 1.0 { TextAlign::Left } else { align },
+            align_width,
+            self.decoration_runs.iter(),
+            window,
+            cx,
+        );
 
         Ok(())
     }
@@ -330,6 +354,32 @@ impl WrappedLine {
 
         Ok(())
     }
+}
+
+/// NUDOX: records a painted line for the harness's legibility law (see `Window::painted_texts`):
+/// its aligned box and the most visible alpha among its runs.
+#[allow(clippy::too_many_arguments)]
+fn trace_line<'a>(
+    text: &SharedString,
+    origin: Point<Pixels>,
+    (width, height): (Pixels, Pixels),
+    align: TextAlign,
+    align_width: Option<Pixels>,
+    runs: impl Iterator<Item = &'a DecorationRun>,
+    window: &mut Window,
+    cx: &App,
+) {
+    if text.trim().is_empty() {
+        return;
+    }
+    let room = align_width.unwrap_or(width);
+    let x = match align {
+        TextAlign::Left => origin.x,
+        TextAlign::Center => origin.x + (room - width) / 2.0,
+        TextAlign::Right => origin.x + room - width,
+    };
+    let alpha = runs.map(|run| run.color.alpha).fold(0.0_f32, f32::max);
+    window.trace_text(cx, text, Bounds::new(point(x, origin.y), size(width, height)), alpha);
 }
 
 fn paint_line(

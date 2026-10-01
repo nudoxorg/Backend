@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-struct StoredSnapshot {
+pub(super) struct StoredSnapshot {
     snapshot: WorkspaceSnapshot,
     directory: PathBuf,
 }
@@ -110,8 +110,9 @@ pub(super) fn measure_search_source_page() {
 /// Times a full source-relation page against one package's key lookups.
 ///
 /// The relation is written before the timer. `page` clones every file, which
-/// is what a package graph query used to do. `lookup` opens the same tree and
-/// reads one project's frontier plus its files.
+/// is what a package graph query used to do. `lookup` opens the same tree,
+/// reads one project's frontier, and batches its sorted file keys so shared
+/// branch and leaf paths are loaded once.
 #[allow(clippy::expect_used, clippy::print_stdout)]
 pub(super) fn measure_package_source_lookup() -> (u128, u128) {
     const PROJECTS: usize = 64;
@@ -185,9 +186,11 @@ pub(super) fn measure_package_source_lookup() -> (u128, u128) {
             .expect("project row");
         let fields = project.project_fields().expect("project fields");
         let mut files = Vec::with_capacity(fields.files.len());
-        for key in fields.files {
-            let record = tree.lookup(key).expect("lookup file").expect("file row");
-            files.push((*key, record));
+        let records = tree
+            .lookup_many_sorted(fields.files)
+            .expect("lookup package files");
+        for (key, record) in fields.files.iter().copied().zip(records) {
+            files.push((key, record.expect("file row")));
         }
         files.sort_by_key(|(key, _)| *key);
         files
@@ -225,11 +228,12 @@ pub(super) fn measure_package_source_lookup() -> (u128, u128) {
             .expect("lookup project")
             .expect("project row");
         let fields = project.project_fields().expect("project fields");
-        let mut files = Vec::with_capacity(fields.files.len());
-        for key in fields.files {
-            files.push(tree.lookup(key).expect("lookup file").expect("file row"));
-        }
-        files.len()
+        tree.lookup_many_sorted(fields.files)
+            .expect("lookup package files")
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .expect("file rows")
+            .len()
     });
     let (page_median, page_p95) = percentiles(&page);
     let (lookup_median, lookup_p95) = percentiles(&lookup);
@@ -308,29 +312,55 @@ fn store_relation(
     })
 }
 
+/// A stored snapshot whose source relation names exactly `labels`, one file
+/// each: the fixture for residences keyed by the relation root.
+#[cfg(test)]
+pub(super) fn snapshot_of_projects(labels: &[String]) -> Result<StoredSnapshot, BuiltinModelError> {
+    let declarations = shared_declarations(1).map_err(BuiltinModelError)?;
+    let entries = labelled_source_entries(labels.iter().cloned(), 1, &declarations)?;
+    let relation =
+        backend_engine::RelationState::<backend_engine::ProductSourceRelation>::from_entries(
+            entries,
+            super::admitted_coverage()?,
+        )
+        .map_err(|error| BuiltinModelError(error.to_string()))?;
+    store_relation(relation, format!("projects-{}", labels.len()))
+}
+
 fn source_entries(
     projects: usize,
     files_per_project: usize,
     declarations: &Arc<[backend_compile::SourceDeclaration]>,
 ) -> Result<Vec<([u8; 32], ProductSourceRecord)>, BuiltinModelError> {
+    labelled_source_entries(
+        (0..projects).map(|project_index| format!("pkg-{project_index}")),
+        files_per_project,
+        declarations,
+    )
+}
+
+fn labelled_source_entries(
+    labels: impl ExactSizeIterator<Item = String>,
+    files_per_project: usize,
+    declarations: &Arc<[backend_compile::SourceDeclaration]>,
+) -> Result<Vec<([u8; 32], ProductSourceRecord)>, BuiltinModelError> {
+    let projects = labels.len();
     let mut entries =
         Vec::with_capacity(projects.saturating_add(projects.saturating_mul(files_per_project)));
-    let mut next_file = 0u32;
-    for project_index in 0..projects {
-        let label = format!("pkg-{project_index}");
+    for label in labels {
         let project_key = backend_engine::package_key(&label).to_bytes();
         let mut file_keys = Vec::with_capacity(files_per_project);
         for file_index in 0..files_per_project {
-            let key = file_key(next_file);
-            next_file = next_file.saturating_add(1);
+            let path = format!("src/f{file_index}.rs");
+            let key = backend_engine::product_source_file_key(project_key, &path);
             if key == project_key {
                 return Err(BuiltinModelError(
-                    "synthetic file key collided with its project coordinate".to_owned(),
+                    "source file key collided with its project coordinate".to_owned(),
                 ));
             }
             let record = ProductSourceRecord::file(
                 project_key,
-                format!("src/f{file_index}.rs"),
+                path,
                 backend_compile::SourceLanguage::Rust,
                 [1; 32],
                 [2; 32],

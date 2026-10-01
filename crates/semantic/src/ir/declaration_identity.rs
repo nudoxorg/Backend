@@ -101,7 +101,10 @@ impl<'bytes> ScopedDeclarationKey<'bytes> {
 
     /// Writes the fully framed declaration family after proving all capacity
     /// and fixed-width cells. Structural variants are never accepted here.
-    pub fn write_family_preimage(&self, out: &mut [u8]) -> Result<usize, crate::ir::PreimageOverflow> {
+    pub fn write_family_preimage(
+        &self,
+        out: &mut [u8],
+    ) -> Result<usize, crate::ir::PreimageOverflow> {
         let needed = self.family_preimage_len()?;
         if out.len() < needed {
             return Err(crate::ir::PreimageOverflow::OutputShort {
@@ -160,7 +163,10 @@ impl<'bytes> ScopedDeclarationKey<'bytes> {
     }
 }
 
-fn checked_length(accumulated: usize, additional: usize) -> Result<usize, crate::ir::PreimageOverflow> {
+fn checked_length(
+    accumulated: usize,
+    additional: usize,
+) -> Result<usize, crate::ir::PreimageOverflow> {
     accumulated
         .checked_add(additional)
         .ok_or(crate::ir::PreimageOverflow::AggregateTooLong {

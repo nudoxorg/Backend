@@ -20,7 +20,10 @@ fn parser_native_kind(node_kind: &str) -> Option<DeclarationKind> {
             Some(DeclarationKind::Struct)
         }
         "enum_item" | "enum_specifier" | "enum_declaration" => Some(DeclarationKind::Enum),
-        "enum_variant" | "enumerator" | "enum_constant" | "enum_member_declaration"
+        "enum_variant"
+        | "enumerator"
+        | "enum_constant"
+        | "enum_member_declaration"
         | "enum_assignment" => Some(DeclarationKind::Variant),
         "trait_item" => Some(DeclarationKind::Trait),
         "union_item" | "union_specifier" => Some(DeclarationKind::Union),

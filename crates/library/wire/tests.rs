@@ -6,16 +6,16 @@ use crate::canonical::{
 use crate::{
     AuthorityScopeClaim, Basis, Command, CommandDto, CommandReply, CompleteViewProjection,
     CoverageCapability, Cursor, CursorEvent, DTO_VERSION, Document, DocumentQuery, EventDto,
-    Fragment, Freshness, Frontier, GraphNeighborhoodQuery, NameQuery, Outline, OutlineNode,
-    OutlineQuery, Query, QueryLimit, ReplyDto, RequestAdmissionError, Row, RowId, ScopeRoot,
-    SemanticObject, SnapshotPageDto, SourceAvailability, SourceExcerpt, SourceExcerptExtent,
-    SourceLocation, SubscriptionDto, ViewDelta, ViewDto, ViewPageCursor, ViewRoot, ViewSnapshot,
-    ViewStateRoot, ViewError, WireCertificate, WireClaim, WireSchema, RowIdentityPreimage,
-    MAX_ROW_IDENTITY_PREIMAGE_BYTES, admit_reply,
+    Fragment, Freshness, Frontier, GraphNeighborhoodQuery, MAX_ROW_IDENTITY_PREIMAGE_BYTES,
+    NameQuery, Outline, OutlineNode, OutlineQuery, Query, QueryLimit, ReplyDto,
+    RequestAdmissionError, Row, RowId, RowIdentityPreimage, ScopeRoot, SemanticObject,
+    SnapshotPageDto, SourceAvailability, SourceExcerpt, SourceExcerptExtent, SourceLocation,
+    SubscriptionDto, ViewDelta, ViewDto, ViewError, ViewPageCursor, ViewRoot, ViewSnapshot,
+    ViewStateRoot, WireCertificate, WireClaim, WireSchema, admit_reply,
     admit_reply_with_capability, admit_request, encode_id,
 };
 
-fn capability(object: SemanticObject) -> CoverageCapability {
+pub(super) fn capability(object: SemanticObject) -> CoverageCapability {
     let declared = AuthorityScopeClaim::from_object_version(object);
     let scope = ScopeRoot::from_bytes(object.to_bytes());
     let observation = crate::admit_producer_observation(
@@ -103,7 +103,7 @@ impl crate::ProducerObservationVerifier for TestCoverageVerifier {
     }
 }
 
-fn certificate(root: &ViewRoot) -> WireCertificate {
+pub(super) fn certificate(root: &ViewRoot) -> WireCertificate {
     let cursor = Cursor::for_view_root(root);
     let mut certificate = WireCertificate::new().with_claim(WireClaim::KeyBytes {
         schema: WireSchema::ViewRecipe,
@@ -259,8 +259,8 @@ fn declaration_facts_cross_the_wire_with_their_text() {
         )),
         obligation: crate::Fact::Present(crate::Obligation::Required),
     };
-    let row = Row::new(RowId::Symbol(symbol_key("pkg::stale")), basis, "stale")
-        .with_facts(facts.clone());
+    let row =
+        Row::new(RowId::Symbol(symbol_key("pkg::stale")), basis, "stale").with_facts(facts.clone());
     let prepared = base
         .prepare(ViewDelta::Upsert { row }, capability(basis.object))
         .expect("prepare");
@@ -284,7 +284,10 @@ fn declaration_facts_cross_the_wire_with_their_text() {
     let encoded = serde_json::to_string(&dto).expect("encode");
     assert!(encoded.contains(r#""since":"1.2.0""#), "{encoded}");
     assert!(encoded.contains(r#""note":"use `fresh`""#), "{encoded}");
-    assert!(encoded.contains(r#""present","data":"required""#), "{encoded}");
+    assert!(
+        encoded.contains(r#""present","data":"required""#),
+        "{encoded}"
+    );
     let decoded = EventDto::decode_against(encoded.as_bytes(), &dto).expect("decode");
     assert_eq!(decoded, dto);
     let CursorEvent::View { delta } = &decoded.event else {
@@ -293,7 +296,11 @@ fn declaration_facts_cross_the_wire_with_their_text() {
     let ViewDelta::Upsert { row } = delta.delta() else {
         panic!("an upsert");
     };
-    let notice = row.facts.deprecation.present().expect("deprecation crossed");
+    let notice = row
+        .facts
+        .deprecation
+        .present()
+        .expect("deprecation crossed");
     assert_eq!(notice.since(), Some("1.2.0"));
     assert_eq!(notice.note(), Some("use `fresh`"));
     assert_eq!(
@@ -359,9 +366,7 @@ fn occurrence_disambiguated_row_identity_is_admitted_from_its_explicit_preimage(
     let preimage = "pkg::src/lib.rs:1::run\0method\0fn run()\01";
     let symbol = symbol_key(preimage);
     let row = Row::new(RowId::Symbol(symbol), basis, "pkg::src/lib.rs:1::run")
-        .with_identity_preimage(
-            RowIdentityPreimage::try_new(preimage).expect("bounded preimage"),
-        );
+        .with_identity_preimage(RowIdentityPreimage::try_new(preimage).expect("bounded preimage"));
     let root = ViewRoot::new_checked(
         view_key(b"view"),
         basis,
@@ -408,8 +413,9 @@ fn occurrence_disambiguated_row_identity_is_admitted_from_its_explicit_preimage(
     )
     .with_certificate(forged);
     let forged_encoded = serde_json::to_vec(&forged_view).expect("encode forged view");
-    assert!(ViewDto::decode_with_certificate(&forged_encoded, Some(capability(basis.object)))
-        .is_err());
+    assert!(
+        ViewDto::decode_with_certificate(&forged_encoded, Some(capability(basis.object))).is_err()
+    );
 
     let mixed = certificate(&root)
         .with_claim(WireClaim::RowIdentity {
@@ -434,17 +440,20 @@ fn occurrence_disambiguated_row_identity_is_admitted_from_its_explicit_preimage(
     )
     .with_certificate(mixed);
     let mixed_encoded = serde_json::to_vec(&mixed_view).expect("encode mixed view");
-    assert!(ViewDto::decode_with_certificate(&mixed_encoded, Some(capability(basis.object)))
-        .is_err());
+    assert!(
+        ViewDto::decode_with_certificate(&mixed_encoded, Some(capability(basis.object))).is_err()
+    );
 
     let oversized = certificate(&root).with_claim(WireClaim::RowIdentity {
         schema: WireSchema::Symbol,
         id: encode_id(symbol.as_bytes()),
         preimage: "x".repeat(MAX_ROW_IDENTITY_PREIMAGE_BYTES + 1),
     });
-    assert!(oversized
-        .row_identity_preimage(WireSchema::Symbol, &encode_id(symbol.as_bytes()))
-        .is_err());
+    assert!(
+        oversized
+            .row_identity_preimage(WireSchema::Symbol, &encode_id(symbol.as_bytes()))
+            .is_err()
+    );
 }
 
 #[test]
@@ -466,10 +475,9 @@ fn row_identity_witness_is_bounded_before_ownership_and_root_rechecks_the_digest
     )
     .expect_err("a wrong witness digest must remain a typed identity failure");
     assert_eq!(error, ViewError::InvalidIdentity);
-    assert!(RowIdentityPreimage::try_new(
-        &"x".repeat(MAX_ROW_IDENTITY_PREIMAGE_BYTES + 1)
-    )
-    .is_err());
+    assert!(
+        RowIdentityPreimage::try_new(&"x".repeat(MAX_ROW_IDENTITY_PREIMAGE_BYTES + 1)).is_err()
+    );
 }
 
 #[test]
@@ -553,6 +561,7 @@ fn expected_decode_rejects_forged_hash_and_context_claims() {
         4,
         Command::Add {
             package: crate::package_key("pkg"),
+            execution_intent: crate::CompileExecutionIntent::Interactive,
         },
     );
     let mut forged = serde_json::to_value(&expected).expect("encode expected");
@@ -568,6 +577,39 @@ fn expected_decode_rejects_forged_hash_and_context_claims() {
 }
 
 #[test]
+fn add_execution_intent_has_one_strict_canonical_wire_spelling() {
+    let command = CommandDto::new(
+        9,
+        Command::Add {
+            package: crate::package_key("pkg"),
+            execution_intent: crate::CompileExecutionIntent::Background,
+        },
+    );
+    let mut value = serde_json::to_value(&command).expect("encode Add");
+    assert_eq!(value["version"], serde_json::json!(DTO_VERSION));
+    assert_eq!(value["command"]["data"]["execution_intent"], "background");
+    let encoded = serde_json::to_vec(&command).expect("encode Add");
+    assert_eq!(
+        CommandDto::decode_against(&encoded, &command).expect("strict Add decode"),
+        command
+    );
+
+    assert!(
+        value["command"]["data"]
+            .as_object_mut()
+            .expect("Add data")
+            .remove("execution_intent")
+            .is_some()
+    );
+    let encoded = serde_json::to_vec(&value).expect("encode missing intent");
+    assert!(CommandDto::decode_against(&encoded, &command).is_err());
+
+    value["command"]["data"]["execution_intent"] = serde_json::json!("remote");
+    let encoded = serde_json::to_vec(&value).expect("encode invalid intent");
+    assert!(CommandDto::decode_against(&encoded, &command).is_err());
+}
+
+#[test]
 fn command_dto_round_trips_every_command_variant() {
     let basis = view_state_root(&[]);
     let cursor = Cursor::new().with_query_offset(4);
@@ -579,7 +621,10 @@ fn command_dto_round_trips_every_command_variant() {
             crate::PageRequest::new(basis, QueryLimit::default())
                 .with_continuation(crate::PageContinuation::from_cursor(cursor)),
         ),
-        Command::Add { package },
+        Command::Add {
+            package,
+            execution_intent: crate::CompileExecutionIntent::Interactive,
+        },
         Command::Remove { package },
         Command::Document(DocumentQuery {
             symbol: crate::SymbolAddress::canonical(symbol),
@@ -758,9 +803,7 @@ fn graph_query_continuation_decodes_only_against_its_owner_cursor() {
         43,
         Command::GraphQuery(request.with_continuation(continuation)),
     )
-    .with_certificate(WireCertificate {
-        claims: claims.into_boxed_slice(),
-    });
+    .with_certificate(WireCertificate::from_claims(claims.into_boxed_slice()));
     let encoded = crate::encode_command_body(&expected).expect("encode opaque continuation");
 
     assert!(
@@ -927,6 +970,43 @@ fn reply_and_view_dtos_round_trip_every_reply_variant() {
 }
 
 #[test]
+fn search_reply_round_trips_semantic_lane_status_without_rewriting_lexical_rows() {
+    let (_, _, replies) = reply_round_trip_fixtures();
+    let snapshot = replies
+        .into_iter()
+        .find_map(|reply| match reply {
+            CommandReply::Search(snapshot) => Some(snapshot),
+            _ => None,
+        })
+        .expect("search fixture");
+    let status = crate::SemanticSearchStatus::Unavailable {
+        reason: crate::SemanticSearchReason::ProviderUnavailable,
+    };
+    let dto = ReplyDto::new(13, CommandReply::Search(snapshot.clone()))
+        .with_semantic_search_status(status);
+    let encoded = serde_json::to_vec(&dto).expect("encode search reply");
+    let envelope: serde_json::Value = serde_json::from_slice(&encoded).expect("reply envelope");
+    assert_eq!(envelope["version"], serde_json::json!(DTO_VERSION));
+    assert_eq!(
+        envelope["semantic_search"],
+        serde_json::json!({
+            "status": "unavailable",
+            "reason": "provider_unavailable"
+        })
+    );
+    let decoded = ReplyDto::decode_against(&encoded, &dto).expect("decode search status");
+    assert_eq!(decoded.semantic_search_status(), Some(status));
+    let CommandReply::Search(decoded_snapshot) = decoded.reply else {
+        panic!("search reply shape changed")
+    };
+    assert_eq!(decoded_snapshot, snapshot);
+
+    let misplaced =
+        ReplyDto::new(14, CommandReply::Names(snapshot)).with_semantic_search_status(status);
+    assert!(serde_json::to_vec(&misplaced).is_err());
+}
+
+#[test]
 fn document_and_outline_wire_bind_the_complete_source_basis() {
     let root = view_state_root(&[]);
     let source = Basis::with_context(
@@ -1002,6 +1082,10 @@ fn dto_versions_and_outer_fields_are_strict() {
     let mut command_json = serde_json::to_value(&command).expect("command JSON");
     command_json["version"] = serde_json::json!(DTO_VERSION + 1);
     assert!(serde_json::from_value::<CommandDto>(command_json).is_err());
+
+    let mut old_command_json = serde_json::to_value(&command).expect("command JSON");
+    old_command_json["version"] = serde_json::json!(DTO_VERSION - 1);
+    assert!(serde_json::from_value::<CommandDto>(old_command_json).is_err());
 
     let reply = ReplyDto::error(2, "error");
     let mut reply_json = serde_json::to_value(&reply).expect("reply JSON");

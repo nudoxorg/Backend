@@ -111,7 +111,7 @@ impl LocalProjectId {
     }
 
     fn from_native_with_coordinate(native: NativePath, coordinate: Arc<str>) -> Self {
-        let key = backend_library::object_version(&native.key().as_bytes());
+        let key = backend_library::object_version(native.key().as_bytes());
         Self {
             key,
             native,
@@ -212,7 +212,7 @@ impl PartialOrd for LocalProjectId {
 
 impl Ord for LocalProjectId {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.native.key().cmp(&other.native.key())
+        self.native.key().cmp(other.native.key())
     }
 }
 
@@ -456,6 +456,23 @@ impl VersionedRoot {
         }
     }
 
+    /// The authority a window holds before any owner has answered: the
+    /// empty view at the genesis cursor (`Cursor::new`), epoch 1, the epoch
+    /// every owner-issued root this process admits carries. It is not a
+    /// fabricated root: it is the one state that is true of every index
+    /// before its first answer, and no read is ever asked at it (the store
+    /// holds reads while the owner starts, `runtime::owner`).
+    #[must_use]
+    pub fn unserved() -> Self {
+        Self::from_revision(1, backend_library::Cursor::new(), 0)
+    }
+
+    /// Whether this is [`Self::unserved`]: no owner has answered yet.
+    #[must_use]
+    pub fn is_unserved(self) -> bool {
+        self.same_authority(Self::unserved())
+    }
+
     /// Creates a synthetic authority for reducer/model fixtures.
     ///
     /// Production code must use [`Self::from_revision`]. Keeping this
@@ -542,10 +559,15 @@ impl VersionedRoot {
 
     /// Returns whether this key is older in producer order. Observation order
     /// is never consulted for admission.
+    ///
+    /// Within an epoch the order is the cursor's sequence, which every
+    /// publication advances. Not the cursor as a whole: its derived order
+    /// compares the view root (a hash) first, so a later publication was
+    /// judged older about half the time and its root read was dropped.
     #[must_use]
     pub fn is_older_authority(self, other: Self) -> bool {
         if self.producer_epoch() == other.producer_epoch() {
-            return self.revision() < other.revision();
+            return self.generation() < other.generation();
         }
         self.producer_epoch() < other.producer_epoch()
     }

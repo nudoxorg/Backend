@@ -321,7 +321,9 @@ fn python_obligation(node: Node<'_>, source: &str, decorations: &[&str]) -> Opti
     if holder.kind() != "block" {
         return None;
     }
-    let class = holder.parent().filter(|class| class.kind() == "class_definition")?;
+    let class = holder
+        .parent()
+        .filter(|class| class.kind() == "class_definition")?;
     if decorations
         .iter()
         .any(|decorator| is_abstract_method_decorator(decorator))
@@ -360,7 +362,10 @@ fn clang_obligation(node: Node<'_>, source: &str) -> Option<Obligation> {
     while matches!(owner.kind(), "pointer_declarator" | "reference_declarator") {
         owner = owner.parent()?;
     }
-    if !matches!(owner.kind(), "field_declaration" | "function_definition" | "declaration") {
+    if !matches!(
+        owner.kind(),
+        "field_declaration" | "function_definition" | "declaration"
+    ) {
         return None;
     }
     let pure = has_child_kind(owner, "pure_virtual_clause")

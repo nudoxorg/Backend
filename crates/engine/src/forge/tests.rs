@@ -94,7 +94,10 @@ fn serve_loopback_request(mut stream: TcpStream, root: &Path) {
     }
     let mut request = [0_u8; 4096];
     let mut bytes = 0;
-    while !request[..bytes].windows(4).any(|window| window == b"\r\n\r\n") {
+    while !request[..bytes]
+        .windows(4)
+        .any(|window| window == b"\r\n\r\n")
+    {
         match stream.read(&mut request[bytes..]) {
             Ok(0) | Err(_) => break,
             Ok(read) => bytes += read,
@@ -300,16 +303,12 @@ fn fixture_acquisition_reuses_content_and_restarts_offline() {
         .expect("registry lineage");
     assert!(lineage.is_resolved());
     assert_eq!(lineage.candidates.len(), 1);
-    assert_eq!(
-        lineage.candidates[0].source.coordinate,
-        first.coordinate
-    );
+    assert_eq!(lineage.candidates[0].source.coordinate, first.coordinate);
     let RegistryForgeAssociationState::Resolved { blobs, .. } = &lineage.state else {
         panic!("receipt lineage must resolve");
     };
     assert!(blobs.iter().any(|blob| {
-        blob.kind == RegistryForgeBlobKind::Archive
-            && blob.content_id == first.archive.to_bytes()
+        blob.kind == RegistryForgeBlobKind::Archive && blob.content_id == first.archive.to_bytes()
     }));
     assert!(blobs.iter().any(|blob| {
         blob.kind == RegistryForgeBlobKind::TreeManifest
@@ -341,6 +340,214 @@ fn fixture_acquisition_reuses_content_and_restarts_offline() {
     assert_eq!(recovered.snapshot.id(), first.snapshot.id());
     assert_eq!(recovered.delta.id(), first.delta.id());
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn forge_owner_refreshes_cross_instance_publications_for_reference_and_search() {
+    let root = std::env::temp_dir().join(format!(
+        "nudox-forge-cross-instance-{}-{}",
+        std::process::id(),
+        now_millis()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let first_coordinate = coordinate();
+    let second_coordinate = ForgeCoordinate::new(
+        "https://github.com/acme/mono.git",
+        ForgeRevision::Tag(ForgeRefName::new("v2.0.0").expect("tag")),
+        Some("crates/widget"),
+    )
+    .expect("second coordinate");
+    let mut first_transport = Fixture {
+        calls: AtomicUsize::new(0),
+        archive: tar_one(
+            "crates/widget/Cargo.toml",
+            b"[package]\nname=\"widget\"\nversion=\"1.0.0\"\n",
+        ),
+    };
+    let mut second_transport = Fixture {
+        calls: AtomicUsize::new(0),
+        archive: tar_one(
+            "crates/widget/Cargo.toml",
+            b"[package]\nname=\"widget\"\nversion=\"2.0.0\"\n",
+        ),
+    };
+    let first_owner = ForgeAcquisitionService::open(
+        &root,
+        ForgeAcquisitionPolicy::Online,
+        ForgeAcquisitionLimits::default(),
+    )
+    .expect("first owner");
+    let second_owner = ForgeAcquisitionService::open(
+        &root,
+        ForgeAcquisitionPolicy::Online,
+        ForgeAcquisitionLimits::default(),
+    )
+    .expect("second owner");
+
+    assert!(matches!(
+        first_owner.acquire(&first_coordinate, &mut first_transport),
+        ForgeAcquisitionOutcome::Hit(_)
+    ));
+    assert!(matches!(
+        second_owner.acquire(&second_coordinate, &mut second_transport),
+        ForgeAcquisitionOutcome::Hit(_)
+    ));
+
+    let recovered = first_owner
+        .reference(&second_coordinate)
+        .expect("refresh external forge record")
+        .expect("second owner publication visible");
+    assert_eq!(recovered.coordinate, second_coordinate);
+    assert_eq!(
+        first_owner
+            .search_records()
+            .expect("refreshed search")
+            .len(),
+        2
+    );
+    drop(second_owner);
+    drop(first_owner);
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn concurrent_forge_journal_process_worker() {
+    let Some(root) = std::env::var_os("BACKEND_FORGE_JOURNAL_WORKER_ROOT") else {
+        return;
+    };
+    let root = PathBuf::from(root);
+    let worker = std::env::var("BACKEND_FORGE_JOURNAL_WORKER_ID").expect("worker id");
+    let other = if worker == "one" { "two" } else { "one" };
+    let barrier = root.join("forge-barrier");
+    fs::create_dir_all(&barrier).expect("barrier directory");
+    let coordinate = ForgeCoordinate::new(
+        "https://github.com/acme/multiprocess.git",
+        ForgeRevision::Tag(
+            ForgeRefName::new(if worker == "one" { "v1.0.0" } else { "v2.0.0" }).expect("tag"),
+        ),
+        None::<String>,
+    )
+    .expect("coordinate");
+
+    struct BarrierTransport {
+        worker: String,
+        other: String,
+        barrier: PathBuf,
+    }
+    impl ForgeTransport for BarrierTransport {
+        fn resolve(
+            &mut self,
+            coordinate: &ForgeCoordinate,
+        ) -> Result<ForgeResolution, ForgeTransportError> {
+            fs::write(
+                self.barrier.join(format!("{}.ready", self.worker)),
+                b"ready",
+            )
+            .map_err(|_| ForgeTransportError::Unavailable)?;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !self.barrier.join(format!("{}.ready", self.other)).is_file() {
+                if std::time::Instant::now() >= deadline {
+                    return Err(ForgeTransportError::Unavailable);
+                }
+                thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let commit = if self.worker == "one" {
+                sha("0123456789012345678901234567890123456789")
+            } else {
+                sha("abcdefabcdefabcdefabcdefabcdefabcdefabcd")
+            };
+            ForgeResolution::for_coordinate(coordinate, commit, None, self.worker.clone())
+                .map_err(|_| ForgeTransportError::Integrity)
+        }
+
+        fn fetch_archive(
+            &mut self,
+            _coordinate: &ForgeCoordinate,
+            _resolution: &ForgeResolution,
+        ) -> Result<ForgeArchive, ForgeTransportError> {
+            Ok(ForgeArchive::tar(
+                tar_one(
+                    "Cargo.toml",
+                    format!(
+                        "[package]\nname=\"process-{}\"\nversion=\"1.0.0\"\n",
+                        self.worker
+                    )
+                    .as_bytes(),
+                ),
+                None::<String>,
+            ))
+        }
+
+        fn fetch_metadata(
+            &mut self,
+            coordinate: &ForgeCoordinate,
+            _resolution: &ForgeResolution,
+        ) -> Result<ForgeRepositoryMetadata, ForgeTransportError> {
+            Ok(ForgeRepositoryMetadata::unavailable(
+                coordinate.owner(),
+                ForgeUnavailableReason::AuthorityOmitted,
+            ))
+        }
+    }
+
+    let service = ForgeAcquisitionService::open(
+        &root,
+        ForgeAcquisitionPolicy::Online,
+        ForgeAcquisitionLimits::default(),
+    )
+    .expect("service");
+    let mut transport = BarrierTransport {
+        worker,
+        other: other.to_owned(),
+        barrier,
+    };
+    assert!(matches!(
+        service.acquire(&coordinate, &mut transport),
+        ForgeAcquisitionOutcome::Hit(_)
+    ));
+}
+
+#[test]
+fn concurrent_forge_processes_serialize_the_shared_journal() {
+    let root = std::env::temp_dir().join(format!(
+        "nudox-forge-process-journal-{}-{}",
+        std::process::id(),
+        now_millis()
+    ));
+    let executable = std::env::current_exe().expect("test executable");
+    let spawn_worker = |worker: &str| {
+        Command::new(&executable)
+            .arg("--nocapture")
+            .arg("concurrent_forge_journal_process_worker")
+            .env("BACKEND_FORGE_JOURNAL_WORKER_ROOT", &root)
+            .env("BACKEND_FORGE_JOURNAL_WORKER_ID", worker)
+            .spawn()
+            .expect("spawn forge journal worker")
+    };
+    let first = spawn_worker("one");
+    let second = spawn_worker("two");
+    let first = first.wait_with_output().expect("wait for first worker");
+    let second = second.wait_with_output().expect("wait for second worker");
+    assert!(
+        first.status.success(),
+        "first worker failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(
+        second.status.success(),
+        "second worker failed: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let service = ForgeAcquisitionService::open(
+        &root,
+        ForgeAcquisitionPolicy::Offline,
+        ForgeAcquisitionLimits::default(),
+    )
+    .expect("cold reopen forge journal");
+    let records = service.search_records().expect("recover both processes");
+    assert_eq!(records.len(), 2);
+    drop(service);
+    fs::remove_dir_all(root).expect("cleanup");
 }
 
 #[test]
@@ -557,7 +764,12 @@ fn git_quiet(directory: Option<&Path>, args: &[&str]) {
     );
 }
 
-fn serve_smart_git(mut stream: TcpStream, project_root: &Path, backend: &Path) {
+fn serve_smart_git(
+    mut stream: TcpStream,
+    project_root: &Path,
+    backend: &Path,
+    response_bytes: &AtomicUsize,
+) {
     if stream.set_nonblocking(false).is_err() {
         return;
     }
@@ -652,8 +864,12 @@ fn serve_smart_git(mut stream: TcpStream, project_root: &Path, backend: &Path) {
         "HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
         payload.len()
     );
-    let _ = stream.write_all(response.as_bytes());
-    let _ = stream.write_all(payload);
+    if stream.write_all(response.as_bytes()).is_ok() {
+        // Count before sending the body: Git may finish as soon as it reads
+        // Content-Length, before this handler observes connection shutdown.
+        response_bytes.fetch_add(payload.len(), Ordering::Relaxed);
+        let _ = stream.write_all(payload);
+    }
 }
 
 fn start_smart_git_http(
@@ -661,19 +877,26 @@ fn start_smart_git_http(
 ) -> (
     std::net::SocketAddr,
     Arc<AtomicBool>,
+    Arc<AtomicUsize>,
     thread::JoinHandle<()>,
 ) {
     let exec_path = Command::new("git")
         .args(["--exec-path"])
         .output()
         .expect("git exec-path");
-    let backend = PathBuf::from(String::from_utf8(exec_path.stdout).expect("exec-path").trim())
-        .join("git-http-backend");
+    let backend = PathBuf::from(
+        String::from_utf8(exec_path.stdout)
+            .expect("exec-path")
+            .trim(),
+    )
+    .join("git-http-backend");
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("listener");
     listener.set_nonblocking(true).expect("nonblocking");
     let address = listener.local_addr().expect("address");
     let stopped = Arc::new(AtomicBool::new(false));
     let stopped_for_thread = Arc::clone(&stopped);
+    let response_bytes = Arc::new(AtomicUsize::new(0));
+    let response_bytes_for_thread = Arc::clone(&response_bytes);
     let project_root = project_root.to_path_buf();
     let thread = thread::spawn(move || {
         while !stopped_for_thread.load(Ordering::Relaxed) {
@@ -681,7 +904,10 @@ fn start_smart_git_http(
                 Ok((stream, _)) => {
                     let project_root = project_root.clone();
                     let backend = backend.clone();
-                    thread::spawn(move || serve_smart_git(stream, &project_root, &backend));
+                    let response_bytes = Arc::clone(&response_bytes_for_thread);
+                    thread::spawn(move || {
+                        serve_smart_git(stream, &project_root, &backend, &response_bytes);
+                    });
                 }
                 Err(error)
                     if error.kind() == std::io::ErrorKind::WouldBlock
@@ -693,7 +919,7 @@ fn start_smart_git_http(
             }
         }
     });
-    (address, stopped, thread)
+    (address, stopped, response_bytes, thread)
 }
 
 #[test]
@@ -738,18 +964,19 @@ fn partial_clone_skips_historical_blobs() {
         Some(&bare),
         &["config", "uploadpack.allowReachableSHA1InWant", "true"],
     );
-    let expected = String::from_utf8(Command::new("git")
-        .args(["-C", work.to_str().expect("work"), "rev-parse", "HEAD"])
-        .output()
-        .expect("rev-parse")
-        .stdout)
+    let expected = String::from_utf8(
+        Command::new("git")
+            .args(["-C", work.to_str().expect("work"), "rev-parse", "HEAD"])
+            .output()
+            .expect("rev-parse")
+            .stdout,
+    )
     .expect("commit text");
     let expected = expected.trim();
-    let (address, stopped, server) = start_smart_git_http(&root.join("server"));
+    let (address, stopped, response_bytes, server) = start_smart_git_http(&root.join("server"));
     let url = format!("http://{address}/acme/mono.git");
     let full = root.join("full");
     git_quiet(None, &["init", "--quiet", full.to_str().expect("full")]);
-    let started = std::time::Instant::now();
     git_quiet(
         None,
         &[
@@ -762,7 +989,10 @@ fn partial_clone_skips_historical_blobs() {
             "main",
         ],
     );
-    let full_ns = started.elapsed().as_nanos();
+    // Elapsed time is host-sensitive, and the old comparison measured only
+    // the full `fetch` against partial `resolve` plus repository setup and
+    // commit/tree lookup. Compare response payloads from the same server.
+    let full_transfer_bytes = response_bytes.swap(0, Ordering::Relaxed);
     let full_bytes = directory_bytes(&full.join(".git"));
     let coordinate = ForgeCoordinate::new(
         url.clone(),
@@ -773,9 +1003,8 @@ fn partial_clone_skips_historical_blobs() {
     let mut transport = GitCommandTransport::new(root.join("transport"))
         .expect("transport")
         .with_token(ForgeAuthToken::new("super-secret-token").expect("token"));
-    let started = std::time::Instant::now();
     let resolution = transport.resolve(&coordinate).expect("partial resolve");
-    let partial_ns = started.elapsed().as_nanos();
+    let partial_transfer_bytes = response_bytes.load(Ordering::Relaxed);
     let partial_bytes = directory_bytes(&root.join("transport/repo/.git"));
     assert_eq!(resolution.commit.as_hex(), expected);
     let config = fs::read_to_string(root.join("transport/repo/.git/config")).expect("git config");
@@ -784,16 +1013,21 @@ fn partial_clone_skips_historical_blobs() {
         "bearer token was written into git config"
     );
     eprintln!(
-        "forge_partial_clone full_bytes={full_bytes} partial_bytes={partial_bytes} \
-         full_ns={full_ns} partial_ns={partial_ns}"
+        "forge_partial_clone full_disk_bytes={full_bytes} partial_disk_bytes={partial_bytes} \
+         full_transfer_bytes={full_transfer_bytes} \
+         partial_transfer_bytes={partial_transfer_bytes}"
+    );
+    assert!(
+        full_transfer_bytes > 0 && partial_transfer_bytes > 0,
+        "expected non-empty HTTP response payloads for both fetches"
     );
     assert!(
         partial_bytes.saturating_mul(8) < full_bytes,
         "partial clone kept {partial_bytes} bytes against a full fetch of {full_bytes}"
     );
     assert!(
-        partial_ns.saturating_mul(4) < full_ns,
-        "partial clone took {partial_ns} ns against a full fetch of {full_ns} ns"
+        partial_transfer_bytes.saturating_mul(8) < full_transfer_bytes,
+        "partial clone transferred {partial_transfer_bytes} HTTP response bytes against a full fetch of {full_transfer_bytes} bytes"
     );
     let archive = transport
         .fetch_archive(&coordinate, &resolution)

@@ -1,0 +1,4 @@
+type "toml" @300                                   # find refine (type)
+route compare toml-0.8.23 toml_edit-0.22.27 @1500  # route compare
+key cmd-[ @2500                                    # back from compare (⌘[)
+route find from_str @3300                          # route find

@@ -56,6 +56,7 @@ impl CommandSpec {
                 | CommandId::TreeClose
                 | CommandId::ProjectTree
                 | CommandId::AdvisoryRefresh
+                | CommandId::PackageGraphPage
         )
     }
 }
@@ -86,7 +87,7 @@ pub enum CommandDomain {
 }
 
 /// The closed registry in stable display order.
-pub const COMMANDS: [CommandSpec; 42] = [
+pub const COMMANDS: [CommandSpec; 43] = [
     CommandSpec {
         id: CommandId::Advisory,
         name: "advisory",
@@ -423,6 +424,14 @@ pub const COMMANDS: [CommandSpec; 42] = [
         mutation: CommandMutation::Write,
         domain: CommandDomain::System,
     },
+    CommandSpec {
+        id: CommandId::PackageGraphPage,
+        name: "package-graph",
+        title: "Package Graph",
+        description: "Read one bounded page of a package's dependencies or dependents, preserving the exact source authority, ecosystem, version requirement, resolver scope, and graph snapshot.",
+        mutation: CommandMutation::Read,
+        domain: CommandDomain::Registry,
+    },
 ];
 
 /// Finds one registry row.
@@ -471,6 +480,7 @@ pub fn command_spec(id: CommandId) -> CommandSpec {
         CommandId::ForgeReference => 39,
         CommandId::ProjectTree => 40,
         CommandId::AdvisoryRefresh => 41,
+        CommandId::PackageGraphPage => 42,
     };
     COMMANDS[index]
 }

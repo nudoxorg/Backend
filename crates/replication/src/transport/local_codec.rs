@@ -1,10 +1,14 @@
 //! Canonical local control payload codec.
 
 use super::{
-    COMPLETE_BYTES, LOCAL_CONTROL_HEADER_BYTES, LOCAL_CONTROL_MAGIC, LOCAL_CONTROL_VERSION,
-    LocalControlError, LocalControlLimits, LocalControlRequest, LocalControlResponse,
-    REPLICATE_PREFIX_BYTES, STATUS_ACCEPTED, STATUS_QUEUED, STATUS_REJECTED, STATUS_SUBSCRIPTION,
-    SUBSCRIBE_PREFIX_BYTES, TAG_COMPLETE, TAG_REPLICATE, TAG_SUBSCRIBE, TAG_SUBSCRIPTION_ACK,
+    COMPLETE_BYTES, LOCAL_CONTROL_HEADER_BYTES, LOCAL_CONTROL_MAGIC,
+    LOCAL_CONTROL_MAX_SEMANTIC_METADATA_PAYLOAD, LOCAL_CONTROL_MAX_SEMANTIC_RANGE_PAYLOAD,
+    LOCAL_CONTROL_VERSION, LocalControlError, LocalControlLimits, LocalControlRequest,
+    LocalControlResponse, REPLICATE_PREFIX_BYTES, SEMANTIC_METADATA_PREFIX_BYTES,
+    SEMANTIC_RANGE_PREFIX_BYTES, STATUS_ACCEPTED, STATUS_QUEUED, STATUS_REJECTED,
+    STATUS_SEMANTIC_METADATA_CHUNK, STATUS_SEMANTIC_RANGE_CHUNK, STATUS_SEMANTIC_STALE_SELECTION,
+    STATUS_SUBSCRIPTION, SUBSCRIBE_PREFIX_BYTES, TAG_COMPLETE, TAG_REPLICATE,
+    TAG_SEMANTIC_METADATA_GET, TAG_SEMANTIC_RANGE_GET, TAG_SUBSCRIBE, TAG_SUBSCRIPTION_ACK,
     TAG_SUBSCRIPTION_CANCEL, TAG_SUBSCRIPTION_CREDIT, TAG_SUBSCRIPTION_OPEN, TAG_SUBSCRIPTION_PAGE,
     TAG_SUBSCRIPTION_RENEW, TAG_SUBSCRIPTION_RESUME, is_control,
 };
@@ -78,6 +82,36 @@ pub fn encode_request(
         }
         LocalControlRequest::Subscription(request) => {
             encode_subscription_request(&mut output, request, limits)?;
+        }
+        LocalControlRequest::SemanticRangeGet {
+            request_id,
+            payload,
+        } => {
+            if payload.is_empty() || payload.len() > LOCAL_CONTROL_MAX_SEMANTIC_RANGE_PAYLOAD {
+                return Err(LocalControlError::Invalid("semantic range payload bounds"));
+            }
+            output.push(TAG_SEMANTIC_RANGE_GET);
+            output.extend_from_slice(&request_id.to_be_bytes());
+            let length =
+                u32::try_from(payload.len()).map_err(|_| LocalControlError::FrameTooLarge)?;
+            output.extend_from_slice(&length.to_be_bytes());
+            output.extend_from_slice(payload);
+        }
+        LocalControlRequest::SemanticMetadataGet {
+            request_id,
+            payload,
+        } => {
+            if payload.is_empty() || payload.len() > LOCAL_CONTROL_MAX_SEMANTIC_METADATA_PAYLOAD {
+                return Err(LocalControlError::Invalid(
+                    "semantic metadata payload bounds",
+                ));
+            }
+            output.push(TAG_SEMANTIC_METADATA_GET);
+            output.extend_from_slice(&request_id.to_be_bytes());
+            let length =
+                u32::try_from(payload.len()).map_err(|_| LocalControlError::FrameTooLarge)?;
+            output.extend_from_slice(&length.to_be_bytes());
+            output.extend_from_slice(payload);
         }
     }
     if output.len() > limits.max_frame {
@@ -179,6 +213,54 @@ pub fn decode_request(
         | TAG_SUBSCRIPTION_RENEW
         | TAG_SUBSCRIPTION_CANCEL
         | TAG_SUBSCRIPTION_PAGE => decode_subscription_request(payload, request_id, limits),
+        TAG_SEMANTIC_RANGE_GET => {
+            if payload.len() < SEMANTIC_RANGE_PREFIX_BYTES {
+                return Err(LocalControlError::Truncated);
+            }
+            let length = read_u32(payload, LOCAL_CONTROL_HEADER_BYTES, "semantic range length")?;
+            if length == 0 || length > LOCAL_CONTROL_MAX_SEMANTIC_RANGE_PAYLOAD {
+                return Err(LocalControlError::Invalid("semantic range payload bounds"));
+            }
+            let expected = SEMANTIC_RANGE_PREFIX_BYTES
+                .checked_add(length)
+                .ok_or(LocalControlError::FrameTooLarge)?;
+            if payload.len() != expected {
+                return Err(size_error(payload.len(), expected));
+            }
+            Ok(LocalControlRequest::SemanticRangeGet {
+                request_id,
+                payload: payload[SEMANTIC_RANGE_PREFIX_BYTES..]
+                    .to_vec()
+                    .into_boxed_slice(),
+            })
+        }
+        TAG_SEMANTIC_METADATA_GET => {
+            if payload.len() < SEMANTIC_METADATA_PREFIX_BYTES {
+                return Err(LocalControlError::Truncated);
+            }
+            let length = read_u32(
+                payload,
+                LOCAL_CONTROL_HEADER_BYTES,
+                "semantic metadata length",
+            )?;
+            if length == 0 || length > LOCAL_CONTROL_MAX_SEMANTIC_METADATA_PAYLOAD {
+                return Err(LocalControlError::Invalid(
+                    "semantic metadata payload bounds",
+                ));
+            }
+            let expected = SEMANTIC_METADATA_PREFIX_BYTES
+                .checked_add(length)
+                .ok_or(LocalControlError::FrameTooLarge)?;
+            if payload.len() != expected {
+                return Err(size_error(payload.len(), expected));
+            }
+            Ok(LocalControlRequest::SemanticMetadataGet {
+                request_id,
+                payload: payload[SEMANTIC_METADATA_PREFIX_BYTES..]
+                    .to_vec()
+                    .into_boxed_slice(),
+            })
+        }
         _ => Err(LocalControlError::Invalid("request operation tag")),
     }
 }
@@ -217,6 +299,39 @@ pub fn encode_response(
             STATUS_SUBSCRIPTION,
             None,
             Cow::Owned(encode_subscription_response(response, limits)?),
+        ),
+        LocalControlResponse::SemanticRangeChunk {
+            payload,
+            request_id: _,
+        } => {
+            if payload.is_empty() || payload.len() > LOCAL_CONTROL_MAX_SEMANTIC_RANGE_PAYLOAD {
+                return Err(LocalControlError::Invalid("semantic range payload bounds"));
+            }
+            (
+                STATUS_SEMANTIC_RANGE_CHUNK,
+                None,
+                Cow::Borrowed(payload.as_ref()),
+            )
+        }
+        LocalControlResponse::SemanticMetadataChunk {
+            payload,
+            request_id: _,
+        } => {
+            if payload.is_empty() || payload.len() > LOCAL_CONTROL_MAX_SEMANTIC_METADATA_PAYLOAD {
+                return Err(LocalControlError::Invalid(
+                    "semantic metadata payload bounds",
+                ));
+            }
+            (
+                STATUS_SEMANTIC_METADATA_CHUNK,
+                None,
+                Cow::Borrowed(payload.as_ref()),
+            )
+        }
+        LocalControlResponse::SemanticStaleSelection { .. } => (
+            STATUS_SEMANTIC_STALE_SELECTION,
+            None,
+            Cow::Borrowed(&[][..]),
         ),
     };
     output.push(status);
@@ -266,7 +381,12 @@ pub fn decode_response(
         return Err(LocalControlError::FrameTooLarge);
     }
     let queued_prefix = match payload[5] {
-        STATUS_ACCEPTED | STATUS_REJECTED | STATUS_SUBSCRIPTION => 0,
+        STATUS_ACCEPTED
+        | STATUS_REJECTED
+        | STATUS_SUBSCRIPTION
+        | STATUS_SEMANTIC_RANGE_CHUNK
+        | STATUS_SEMANTIC_METADATA_CHUNK
+        | STATUS_SEMANTIC_STALE_SELECTION => 0,
         STATUS_QUEUED => 8,
         _ => return Err(LocalControlError::Invalid("response status")),
     };
@@ -315,6 +435,36 @@ pub fn decode_response(
             let start = LOCAL_CONTROL_HEADER_BYTES + 4;
             let response = decode_subscription_response(&payload[start..], request_id, limits)?;
             Ok(LocalControlResponse::Subscription(response))
+        }
+        STATUS_SEMANTIC_RANGE_CHUNK => {
+            if length == 0 || length > LOCAL_CONTROL_MAX_SEMANTIC_RANGE_PAYLOAD {
+                return Err(LocalControlError::Invalid("semantic range payload bounds"));
+            }
+            let start = LOCAL_CONTROL_HEADER_BYTES + 4;
+            Ok(LocalControlResponse::SemanticRangeChunk {
+                request_id,
+                payload: payload[start..].to_vec().into_boxed_slice(),
+            })
+        }
+        STATUS_SEMANTIC_METADATA_CHUNK => {
+            if length == 0 || length > LOCAL_CONTROL_MAX_SEMANTIC_METADATA_PAYLOAD {
+                return Err(LocalControlError::Invalid(
+                    "semantic metadata payload bounds",
+                ));
+            }
+            let start = LOCAL_CONTROL_HEADER_BYTES + 4;
+            Ok(LocalControlResponse::SemanticMetadataChunk {
+                request_id,
+                payload: payload[start..].to_vec().into_boxed_slice(),
+            })
+        }
+        STATUS_SEMANTIC_STALE_SELECTION => {
+            if length != 0 {
+                return Err(LocalControlError::Invalid(
+                    "stale semantic selection response payload",
+                ));
+            }
+            Ok(LocalControlResponse::SemanticStaleSelection { request_id })
         }
         _ => Err(LocalControlError::Invalid("response status")),
     }

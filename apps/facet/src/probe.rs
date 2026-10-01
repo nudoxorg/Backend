@@ -14,6 +14,8 @@ use gpui::{
 };
 use std::cell::RefCell;
 
+pub mod rules;
+
 /// Which engine or direct input produced a track sample.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum TrackKind {
@@ -28,6 +30,12 @@ pub enum TrackKind {
     Keys,
     /// The ambient pulse.
     Pulse,
+    /// Put where its layout is, in one frame, by design: an item of a
+    /// wrapped list that moved to another line (it lands there instead of
+    /// flying across the others), or a page's parts landing where a reflow
+    /// put them (`motion::Flow::land`). The step into it is not motion, and
+    /// continuity is not asked of it; the next motion starts from it.
+    Snap,
 }
 
 impl TrackKind {
@@ -40,6 +48,7 @@ impl TrackKind {
             Self::Spring => "spring",
             Self::Keys => "keys",
             Self::Pulse => "pulse",
+            Self::Snap => "snap",
         }
     }
 }
@@ -204,6 +213,9 @@ pub struct Ledger {
     pub scrolls: Vec<ScrollSample>,
     /// Overlay stacks, one per floating layer that published this frame.
     pub stacks: Vec<StackSample>,
+    /// Modal veils painted this frame (a dialog's scrim): what was recorded
+    /// before a veil, inside its bounds, is under it and not readable.
+    pub veils: Vec<VeilSample>,
     /// The motion gate's running count of requested frames.
     pub frames_requested: u64,
     /// Whether motion was reduced when the frame was taken (every track
@@ -297,7 +309,7 @@ impl ScrollSample {
     /// bounds it). A container whose content does not exceed its viewport on
     /// either axis does not scroll at all, so it reaches nothing extra.
     #[must_use]
-    pub(crate) fn reaches(&self, bounds: &BoundsSample) -> bool {
+    pub fn reaches(&self, bounds: &BoundsSample) -> bool {
         let scrolls_y = self.content.height > self.viewport.height + 0.5;
         let scrolls_x = self.content.width > self.viewport.width + 0.5;
         if !scrolls_x && !scrolls_y {
@@ -368,6 +380,128 @@ pub struct StackSample {
     pub layer: String,
     /// Bottom first.
     pub entries: Vec<StackEntry>,
+}
+
+/// A modal veil: a scrim that occludes the page under it, and where in the
+/// frame's paint order it was painted. Texts and targets published BEFORE it
+/// (`texts`, `targets` count them) that lie inside `bounds` are under the
+/// veil: the layout lints judge only what is above it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VeilSample {
+    /// The veil's box, logical px.
+    pub bounds: BoundsSample,
+    /// How many texts had been published when the veil was painted.
+    pub texts: usize,
+    /// How many targets had been published when the veil was painted.
+    pub targets: usize,
+}
+
+impl VeilSample {
+    /// Whether a text at index `index` with `bounds` is under this veil.
+    #[must_use]
+    pub fn covers_text(&self, index: usize, bounds: &BoundsSample) -> bool {
+        index < self.texts && self.contains_centre(bounds)
+    }
+
+    /// Whether a target at index `index` with `bounds` is under this veil.
+    #[must_use]
+    pub fn covers_target(&self, index: usize, bounds: &BoundsSample) -> bool {
+        index < self.targets && self.contains_centre(bounds)
+    }
+
+    fn contains_centre(&self, other: &BoundsSample) -> bool {
+        let (cx, cy) = (other.x + other.width / 2.0, other.y + other.height / 2.0);
+        cx >= self.bounds.x
+            && cx <= self.bounds.x + self.bounds.width
+            && cy >= self.bounds.y
+            && cy <= self.bounds.y + self.bounds.height
+    }
+}
+
+/// Publishes a modal veil's box while recording (see [`VeilSample`]).
+pub fn record_veil(cx: &mut App, key: &ElementId, bounds: Bounds<Pixels>) {
+    if enabled(cx) {
+        let probe = cx.default_global::<Probe>();
+        let sample = VeilSample {
+            bounds: bounds_sample(key, bounds),
+            texts: probe.ledger.texts.len(),
+            targets: probe.ledger.targets.len(),
+        };
+        probe.ledger.veils.push(sample);
+    }
+}
+
+/// Wraps a modal scrim so the lints know what it covers: everything
+/// published before it, inside its box, is under it.
+pub fn veil(key: impl Into<ElementId>, child: impl IntoElement) -> Veil {
+    Veil {
+        key: key.into(),
+        child: child.into_any_element(),
+    }
+}
+
+/// See [`veil`].
+pub struct Veil {
+    key: ElementId,
+    child: AnyElement,
+}
+
+impl IntoElement for Veil {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for Veil {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        (self.child.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        // Before the child: the veil's own contents are above it.
+        record_veil(cx, &self.key, bounds);
+        self.child.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        _prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.child.paint(window, cx);
+    }
 }
 
 /// A component that owns a floating stack implements this so its layer can

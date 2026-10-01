@@ -1,5 +1,20 @@
 use super::*;
 
+fn forge_fence_error(error: io::Error) -> ForgeAcquisitionError {
+    if error.kind() == io::ErrorKind::InvalidData {
+        ForgeAcquisitionError::Corrupt
+    } else {
+        ForgeAcquisitionError::Io(error)
+    }
+}
+
+fn forge_fence_busy() -> ForgeAcquisitionError {
+    ForgeAcquisitionError::Io(io::Error::new(
+        io::ErrorKind::WouldBlock,
+        "forge journal publication fence is busy",
+    ))
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ForgeJournalRecord {
@@ -77,6 +92,9 @@ pub struct ForgeAcquisitionService {
     store: ContentAddressedStore,
     journal: Arc<HashChainJournal<ForgeLog>>,
     catalog: Arc<Mutex<BTreeMap<[u8; ID_BYTES], ForgeJournalEvent>>>,
+    leases: LeaseStore,
+    journal_work_key: WorkKey,
+    root_identity: [u8; ID_BYTES],
     policy: ForgeAcquisitionPolicy,
     limits: ForgeAcquisitionLimits,
 }
@@ -102,11 +120,16 @@ impl ForgeAcquisitionService {
         let limits = limits.validate().map_err(ForgeAcquisitionError::Rejected)?;
         let root = root.into();
         fs::create_dir_all(&root).map_err(ForgeAcquisitionError::Io)?;
+        let root = fs::canonicalize(root).map_err(ForgeAcquisitionError::Io)?;
+        let root_identity = forge_root_identity(&root);
+        let journal_work_key = forge_journal_work_key(root_identity);
+        let leases =
+            LeaseStore::open(root.join("coordination")).map_err(ForgeAcquisitionError::Io)?;
         let store = ContentAddressedStore::open(root.join("content"))
             .map_err(ForgeAcquisitionError::Content)?;
         let catalog = Arc::new(Mutex::new(BTreeMap::new()));
         let catalog_for_recovery = Arc::clone(&catalog);
-        let (journal, _) = HashChainJournal::<ForgeLog>::open_streaming_with(
+        let (journal, _) = HashChainJournal::<ForgeLog>::open_streaming_with_deferred_repair(
             root.join("forge.journal"),
             JournalLimits::default(),
             move |frame| {
@@ -126,9 +149,103 @@ impl ForgeAcquisitionService {
             store,
             journal: Arc::new(journal),
             catalog,
+            leases,
+            journal_work_key,
+            root_identity,
             policy,
             limits,
         })
+    }
+
+    fn acquire_journal_lease(&self) -> io::Result<Option<LeaseGuard>> {
+        for _ in 0..32 {
+            if let Some(lease) = self
+                .leases
+                .acquire(self.journal_work_key, FORGE_LEASE_TTL)?
+            {
+                return Ok(Some(lease));
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        Ok(None)
+    }
+
+    fn with_journal_fence<T>(
+        &self,
+        read: impl FnOnce(&mut BTreeMap<[u8; ID_BYTES], ForgeJournalEvent>) -> io::Result<T>,
+    ) -> io::Result<Option<T>> {
+        let Some(mut endpoint_lease) = self.acquire_journal_lease()? else {
+            return Ok(None);
+        };
+        let refreshed = endpoint_lease.publish_if_current(FORGE_LEASE_TTL, |_endpoint_fence| {
+            let mut catalog = self
+                .catalog
+                .lock()
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "forge catalog lock"))?;
+            self.refresh_catalog_suffix(&mut catalog)?;
+            Ok(())
+        })?;
+        if refreshed.is_none() {
+            return Ok(None);
+        }
+        let mut catalog = self
+            .catalog
+            .lock()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "forge catalog lock"))?;
+        read(&mut catalog).map(Some)
+    }
+
+    fn with_product_journal_fence<T>(
+        &self,
+        expected_product_key: WorkKey,
+        product_lease: &mut LeaseGuard,
+        publish: impl FnOnce(&mut BTreeMap<[u8; ID_BYTES], ForgeJournalEvent>) -> io::Result<T>,
+    ) -> io::Result<Option<T>> {
+        if product_lease.lease().key != expected_product_key {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "forge product lease does not match coordinate",
+            ));
+        }
+        let Some(mut endpoint_lease) = self.acquire_journal_lease()? else {
+            return Ok(None);
+        };
+        endpoint_lease.publish_if_both_current(
+            product_lease,
+            FORGE_LEASE_TTL,
+            |endpoint_fence, product_fence| {
+                if endpoint_fence.key != self.journal_work_key
+                    || product_fence.key != expected_product_key
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "forge paired fence keys do not match publication",
+                    ));
+                }
+                let mut catalog = self.catalog.lock().map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidData, "forge catalog lock")
+                })?;
+                self.refresh_catalog_suffix(&mut catalog)?;
+                publish(&mut catalog)
+            },
+        )
+    }
+
+    fn refresh_catalog_suffix(
+        &self,
+        catalog: &mut BTreeMap<[u8; ID_BYTES], ForgeJournalEvent>,
+    ) -> io::Result<()> {
+        self.journal
+            .refresh_external_with(JournalLimits::default(), |frame| {
+                let event = ForgeLog::decode(frame.payload)?;
+                if !event.coordinate().identity_is_valid() {
+                    return Err(JournalError::Corrupt("forge coordinate identity"));
+                }
+                catalog.insert(event.coordinate().identity(), event);
+                Ok(())
+            })
+            .map(|_| ())
+            .map_err(journal_io_error)
     }
 
     /// Returns the shared content store used by this forge owner.
@@ -143,11 +260,9 @@ impl ForgeAcquisitionService {
         coordinate: &ForgeCoordinate,
     ) -> Result<Option<Arc<ForgeAcquisitionResult>>, ForgeAcquisitionError> {
         let event = self
-            .catalog
-            .lock()
-            .map_err(|_| ForgeAcquisitionError::Corrupt)?
-            .get(&coordinate.identity())
-            .cloned();
+            .with_journal_fence(|catalog| Ok(catalog.get(&coordinate.identity()).cloned()))
+            .map_err(forge_fence_error)?
+            .ok_or_else(forge_fence_busy)?;
         match event {
             Some(ForgeJournalEvent::Published(record)) => {
                 if !record.coordinate.identity_is_valid() || record.coordinate != *coordinate {
@@ -167,6 +282,29 @@ impl ForgeAcquisitionService {
         }
     }
 
+    /// Returns metadata-only snapshots for all currently cached forge
+    /// coordinates in stable identity order. The indexer can rebuild from
+    /// these rows without rehydrating or rereading archive objects.
+    pub fn search_records(&self) -> Result<Vec<ForgeSearchRecord>, ForgeAcquisitionError> {
+        self.with_journal_fence(|catalog| {
+            Ok(catalog
+                .values()
+                .filter_map(|event| match event {
+                    ForgeJournalEvent::Published(record) => Some(ForgeSearchRecord {
+                        coordinate: record.coordinate.clone(),
+                        resolution: record.resolution.clone(),
+                        archive: record.archive,
+                        metadata: record.metadata.clone(),
+                        manifests: record.manifests.clone().into_boxed_slice(),
+                    }),
+                    ForgeJournalEvent::Tombstone { .. } => None,
+                })
+                .collect())
+        })
+        .map_err(forge_fence_error)?
+        .ok_or_else(forge_fence_busy)
+    }
+
     /// Acquires one exact source through a typed transport and the shared CAS.
     pub fn acquire<T: ForgeTransport>(
         &self,
@@ -176,11 +314,33 @@ impl ForgeAcquisitionService {
         match self.reference(coordinate) {
             Ok(Some(result)) => return ForgeAcquisitionOutcome::Hit(result),
             Err(ForgeAcquisitionError::Corrupt) => return ForgeAcquisitionOutcome::Corrupt,
-            Err(_) => {}
+            Err(ForgeAcquisitionError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {
+                return ForgeAcquisitionOutcome::Unavailable;
+            }
+            Err(_) => return ForgeAcquisitionOutcome::Corrupt,
             Ok(None) => {}
         }
         if self.policy == ForgeAcquisitionPolicy::Offline {
             return ForgeAcquisitionOutcome::Offline;
+        }
+        let mut product_lease = match self.leases.acquire(
+            forge_product_work_key(self.root_identity, coordinate),
+            FORGE_LEASE_TTL,
+        ) {
+            Ok(Some(lease)) => lease,
+            Ok(None) => return ForgeAcquisitionOutcome::Unavailable,
+            Err(_) => return ForgeAcquisitionOutcome::Corrupt,
+        };
+        // Another process may have published while this caller waited for the
+        // coordinate lease. Re-read under the endpoint journal fence before
+        // any network work.
+        match self.reference(coordinate) {
+            Ok(Some(result)) => return ForgeAcquisitionOutcome::Hit(result),
+            Ok(None) => {}
+            Err(ForgeAcquisitionError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {
+                return ForgeAcquisitionOutcome::Unavailable;
+            }
+            Err(_) => return ForgeAcquisitionOutcome::Corrupt,
         }
         let resolution = match transport.resolve(coordinate) {
             Ok(resolution) => resolution,
@@ -189,10 +349,18 @@ impl ForgeAcquisitionService {
                 return ForgeAcquisitionOutcome::RetryAfter(millis);
             }
             Err(ForgeTransportError::NotFound) => {
-                return match self.commit_tombstone(coordinate, ForgeRejectReason::RevisionMismatch)
-                {
+                return match self.commit_tombstone(
+                    coordinate,
+                    ForgeRejectReason::RevisionMismatch,
+                    &mut product_lease,
+                ) {
                     Ok(()) => {
                         ForgeAcquisitionOutcome::Rejected(ForgeRejectReason::RevisionMismatch)
+                    }
+                    Err(ForgeAcquisitionError::Io(error))
+                        if error.kind() == io::ErrorKind::WouldBlock =>
+                    {
+                        ForgeAcquisitionOutcome::Unavailable
                     }
                     Err(_) => ForgeAcquisitionOutcome::Corrupt,
                 };
@@ -253,13 +421,22 @@ impl ForgeAcquisitionService {
                 return ForgeAcquisitionOutcome::Rejected(ForgeRejectReason::Integrity);
             }
         };
-        match self.admit(coordinate, resolution, archive, metadata) {
+        match self.admit(
+            coordinate,
+            resolution,
+            archive,
+            metadata,
+            &mut product_lease,
+        ) {
             Ok(result) => ForgeAcquisitionOutcome::Hit(Arc::new(result)),
             Err(ForgeAcquisitionError::Rejected(reason)) => {
                 ForgeAcquisitionOutcome::Rejected(reason)
             }
             Err(ForgeAcquisitionError::Content(_)) => {
                 ForgeAcquisitionOutcome::Rejected(ForgeRejectReason::Integrity)
+            }
+            Err(ForgeAcquisitionError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {
+                ForgeAcquisitionOutcome::Unavailable
             }
             Err(
                 ForgeAcquisitionError::Io(_)
@@ -371,6 +548,7 @@ impl ForgeAcquisitionService {
         resolution: ForgeResolution,
         archive: ForgeArchive,
         metadata: ForgeRepositoryMetadata,
+        product_lease: &mut LeaseGuard,
     ) -> Result<ForgeAcquisitionResult, ForgeAcquisitionError> {
         let format = archive.format;
         let root_prefix = archive.root_prefix.clone();
@@ -483,7 +661,7 @@ impl ForgeAcquisitionService {
             delta: delta.id().to_bytes(),
             observed_at_millis: receipt.observed_at_millis,
         };
-        self.commit_record(record)?;
+        self.commit_record(record, product_lease)?;
         Ok(ForgeAcquisitionResult {
             coordinate: coordinate.clone(),
             resolution,
@@ -497,17 +675,20 @@ impl ForgeAcquisitionService {
         })
     }
 
-    fn commit_record(&self, record: ForgeJournalRecord) -> Result<(), ForgeAcquisitionError> {
-        self.journal
-            .append(&ForgeJournalEvent::Published(record.clone()))
-            .map_err(ForgeAcquisitionError::Journal)?;
-        self.catalog
-            .lock()
-            .map_err(|_| ForgeAcquisitionError::Corrupt)?
-            .insert(
-                record.coordinate.identity(),
-                ForgeJournalEvent::Published(record),
-            );
+    fn commit_record(
+        &self,
+        record: ForgeJournalRecord,
+        product_lease: &mut LeaseGuard,
+    ) -> Result<(), ForgeAcquisitionError> {
+        let product_key = forge_product_work_key(self.root_identity, &record.coordinate);
+        self.with_product_journal_fence(product_key, product_lease, |catalog| {
+            let event = ForgeJournalEvent::Published(record);
+            self.journal.append(&event).map_err(journal_io_error)?;
+            catalog.insert(event.coordinate().identity(), event);
+            Ok(())
+        })
+        .map_err(forge_fence_error)?
+        .ok_or_else(forge_fence_busy)?;
         Ok(())
     }
 
@@ -515,18 +696,20 @@ impl ForgeAcquisitionService {
         &self,
         coordinate: &ForgeCoordinate,
         reason: ForgeRejectReason,
+        product_lease: &mut LeaseGuard,
     ) -> Result<(), ForgeAcquisitionError> {
-        let event = ForgeJournalEvent::Tombstone {
-            coordinate: coordinate.clone(),
-            reason,
-        };
-        self.journal
-            .append(&event)
-            .map_err(ForgeAcquisitionError::Journal)?;
-        self.catalog
-            .lock()
-            .map_err(|_| ForgeAcquisitionError::Corrupt)?
-            .insert(coordinate.identity(), event);
+        let product_key = forge_product_work_key(self.root_identity, coordinate);
+        self.with_product_journal_fence(product_key, product_lease, |catalog| {
+            let event = ForgeJournalEvent::Tombstone {
+                coordinate: coordinate.clone(),
+                reason,
+            };
+            self.journal.append(&event).map_err(journal_io_error)?;
+            catalog.insert(event.coordinate().identity(), event);
+            Ok(())
+        })
+        .map_err(forge_fence_error)?
+        .ok_or_else(forge_fence_busy)?;
         Ok(())
     }
 }

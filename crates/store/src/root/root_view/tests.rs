@@ -12,11 +12,11 @@
 use alloc::{collections::TryReserveError, vec, vec::Vec};
 use core::mem::size_of;
 
-use backend_version::{ContentAuthorityError, ContentId, DomainCode, ObjectDomain};
 use backend_version::object::{
     ObjectDescriptorDecodeError, ObjectDescriptorWireRecord, ObjectKind, ObjectLength, ObjectRef,
 };
 use backend_version::schema::SchemaId;
+use backend_version::{ContentAuthorityError, ContentId, DomainCode, ObjectDomain};
 use thiserror::Error;
 use zerocopy::IntoBytes;
 
@@ -222,7 +222,9 @@ fn typed_rows_report_parent_schema_and_authority_operands_exactly()
         ValidatedRoot::<ObjectDomain>::try_from(bad_schema.as_slice()),
         Err(RootReadError::Descriptor {
             ordinal: 0,
-            source: ObjectDescriptorDecodeError::Schema(backend_version::schema::UnknownSchemaId(u32::MAX)),
+            source: ObjectDescriptorDecodeError::Schema(backend_version::schema::UnknownSchemaId(
+                u32::MAX
+            )),
         })
     ));
 

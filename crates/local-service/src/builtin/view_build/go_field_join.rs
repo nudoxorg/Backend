@@ -1,23 +1,23 @@
 //! Go cross-file field reads join through the module import path.
 
 use super::{
-    compiled_source_path, join_project_field, query_semantic_id, semantic_coordinate, semantic_symbol,
-    ProjectCallableIndex,
-};
-use backend_extension_trustfall::{
-    CompilerSemanticEvidence, PackageScopeEvidence, SemanticQueryCancellation,
-    SemanticQueryCorpus, SemanticQueryEvent, SemanticQueryEvidence, SemanticQueryFact,
-    SemanticQueryPresentation, SemanticQueryRequest, execute_semantic_query,
+    ProjectCallableIndex, compiled_source_path, join_project_field, query_semantic_id,
+    semantic_coordinate, semantic_symbol,
 };
 use backend_engine::{RowId, package_key};
+use backend_extension_trustfall::{
+    CompilerSemanticEvidence, PackageScopeEvidence, SemanticQueryCancellation, SemanticQueryCorpus,
+    SemanticQueryEvent, SemanticQueryEvidence, SemanticQueryFact, SemanticQueryPresentation,
+    SemanticQueryRequest, execute_semantic_query,
+};
 use backend_semantic::ir::{
     BorrowedTree, CorePayloadHash, DeclarationFamilyId, DeclarationIdentity, EntityAuthorityFacts,
     EntityVersion, ExternalDeclarationIdentity, ExternalId, ExternalTarget, FactAvailability,
     ForeignDeclarationId, ForeignExternalTarget, ForeignTargetOrigin, IrBuilder, ItemKind,
-    LinkKind, LinkTarget, OccurrenceAuthorityFacts, ParentageAuthority, SemanticImageView,
-    SourceIdentity, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget,
-    VariantAvailability, VariantFingerprint, Visibility, encode_full_semantic_image,
-    full_semantic_image_len, SemanticCoreReader, SemanticReader,
+    LinkKind, LinkTarget, OccurrenceAuthorityFacts, ParentageAuthority, SemanticCoreReader,
+    SemanticImageView, SemanticReader, SourceIdentity, TreeEntityId, TreeItemInput, TreeLinkInput,
+    TreeLinkTarget, VariantAvailability, VariantFingerprint, Visibility,
+    encode_full_semantic_image, full_semantic_image_len,
 };
 use backend_semantic::vocabulary::{
     CompileRecipeFact, LanguageProfile, NativeTool, PackageUrl, RustEdition, Stage,
@@ -226,7 +226,8 @@ fn join_project_field_go_field_retargets_note() -> Result<(), String> {
     let (service_bytes, caller_bytes, note_identity, _) = go_note_drive_fixture(71)?;
     let paths = project_paths(&["example.com/demo/service.go", "example.com/demo/lib.go"]);
     let images = [&service_bytes[..], &caller_bytes[..]];
-    let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+    let index =
+        ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
     let published = BTreeSet::from([note_identity, fixture_version(2).identity()]);
     let (external, link_kind, caller_path) = foreign_field_read_from_caller(&caller_bytes)?;
     let caller_image =
@@ -252,11 +253,11 @@ fn join_project_field_go_field_retargets_note() -> Result<(), String> {
 #[test]
 fn join_project_field_go_query_corpus_referenced_by_names_drive() -> Result<(), String> {
     let package = package_key("fixture");
-    let (service_bytes, caller_bytes, note_identity, drive_identity) =
-        go_note_drive_fixture(72)?;
+    let (service_bytes, caller_bytes, note_identity, drive_identity) = go_note_drive_fixture(72)?;
     let paths = project_paths(&["example.com/demo/service.go", "example.com/demo/lib.go"]);
     let images = [&service_bytes[..], &caller_bytes[..]];
-    let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+    let index =
+        ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
     let published = BTreeSet::from([note_identity, drive_identity]);
     let (external, link_kind, caller_path) = foreign_field_read_from_caller(&caller_bytes)?;
     let caller_image =

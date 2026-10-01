@@ -4,7 +4,7 @@ use super::snapshot::{AppSnapshot, SessionState, ShelfItem, ShelfState};
 use super::workspace::{
     AppearancePreference, ConnectionStatus, ContrastPreference, DensityPreference,
     MotionPreference, PrivacyPreference, ProjectPhase, ServiceMode, SettingsState,
-    ZoomPreference, WorkspaceProject, WorkspaceState,
+    ZoomPreference, WindowSize, WorkspaceProject, WorkspaceState,
 };
 use crate::core::ids::LocalProjectId;
 use crate::navigation::{Coordinate, Overlay, PackageLane, ReleaseId, Route, SettingsPage, View};
@@ -207,6 +207,15 @@ fn symbol_route(
         .unwrap_or(Route::Orbit(crate::navigation::OrbitRoute::Home))
 }
 
+/// The window's size when it was last resized, in logical pixels.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PersistedWindow {
+    /// Width.
+    pub width: u32,
+    /// Height.
+    pub height: u32,
+}
+
 /// Versioned, forward-compatible desktop state file.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PersistedDesktopState {
@@ -265,6 +274,12 @@ pub struct PersistedDesktopState {
     /// What you hold (at most five).
     #[serde(default)]
     pub hand: Vec<PersistedHeld>,
+    /// The first-card whisper has been shown (once per install).
+    #[serde(default)]
+    pub hand_whispered: bool,
+    /// The window's size when it was last resized (absent in older files).
+    #[serde(default)]
+    pub window: Option<PersistedWindow>,
 }
 
 fn default_true() -> bool {
@@ -298,6 +313,8 @@ impl Default for PersistedDesktopState {
             cache_enabled: true,
             cache_days: 14,
             hand: Vec::new(),
+            hand_whispered: false,
+            window: None,
         }
     }
 }
@@ -446,6 +463,21 @@ pub enum PersistenceRecovery {
         /// Why the canonical path could not be admitted.
         reason: PersistenceRecoveryReason,
     },
+}
+
+impl PersistenceRecovery {
+    /// What the window says about this recovery, when there is anything to
+    /// say: an unreadable session was kept, and this launch started fresh.
+    #[must_use]
+    pub fn note(&self) -> Option<super::workspace::Note> {
+        match self {
+            Self::Current | Self::Missing => None,
+            Self::Preserved { backup, reason } => Some(super::workspace::Note::StateKept {
+                backup: Arc::from(backup.display().to_string()),
+                why: Arc::from(reason.to_string()),
+            }),
+        }
+    }
 }
 
 /// Closed reason vocabulary for persistence recovery and support diagnostics.
@@ -745,10 +777,15 @@ impl PersistentState {
                     touched_at: held.touched_at,
                 })
                 .collect(),
+            hand_whispered: snapshot.session().whispered,
+            window: snapshot
+                .settings()
+                .window
+                .map(|window| PersistedWindow { width: window.width, height: window.height }),
             route: match snapshot.overlay() {
                 Some(Overlay::Settings(_)) => PersistedRoute::Settings,
                 Some(Overlay::AddProject | Overlay::CommandPalette | Overlay::Inbox) | None => {
-                    match snapshot.route() {
+                    match snapshot.committed_route() {
                         // A browsing page reopens at home: its read model is
                         // one owner round trip away, and its route is not a
                         // persisted shape yet.
@@ -885,6 +922,7 @@ impl PersistentState {
             route,
             overlay,
             hand,
+            whispered: state.hand_whispered,
             ..SessionState::default()
         }
     }
@@ -893,6 +931,7 @@ impl PersistentState {
     #[must_use]
     pub fn cold_settings(&self, state: &PersistedDesktopState) -> SettingsState {
         SettingsState {
+            window: state.window.map(|window| WindowSize { width: window.width, height: window.height }),
             reduced_motion: state.reduced_motion,
             shelf_open: state.shelf_open,
             context_open: state.context_open,
@@ -1000,6 +1039,7 @@ impl PersistentState {
             .map(|project| project.id.clone())
             .or_else(|| projects.first().map(|project| project.id.clone()));
         WorkspaceState {
+            notes: Arc::from([]),
             active,
             host: None,
             projects: projects.into(),
@@ -1036,8 +1076,9 @@ impl PersistentState {
                 label: item.label.clone().into(),
             });
         }
-        if let Some(host) = host_project {
-            if let Ok(project) = LocalProjectId::from_path(host) {
+        if let Some(host) = host_project
+            && let Ok(project) = LocalProjectId::from_path(host)
+        {
                 if !shelf.iter().any(|item| {
                     item.identity == crate::core::ResourceIdentity::Local(project.clone())
                 }) {
@@ -1088,7 +1129,6 @@ impl PersistentState {
                 if workspace.active.is_none() {
                     workspace.active = Some(project.clone());
                 }
-            }
         }
         let selected = workspace
             .active
@@ -1356,6 +1396,34 @@ mod tests {
         let restored = PersistentState::at("unused").cold_reload(&value);
         assert_eq!(restored.route, snapshot.route().clone(), "view, release and line survive");
         assert_eq!(restored.overlay, None);
+    }
+
+    /// Quitting while the query previews a result reopens where you were,
+    /// never on the provisional page.
+    #[test]
+    fn a_previewed_route_is_never_persisted_the_place_you_were_on_is() {
+        let snapshot = AppSnapshot::empty(crate::core::VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("persistence".to_owned(), "preview".to_owned())]),
+            1,
+        ));
+        let symbol = |name: &str| Route::Symbol(crate::navigation::SymbolRoute {
+            project: None,
+            package: crate::core::PackageId::new("pkg").expect("package"),
+            id: Coordinate::new(&format!("pkg::{name}")).expect("coordinate"),
+            at: None,
+            view: View::Page,
+            line: None,
+            selected: None,
+        });
+        let session = SessionState {
+            route: symbol("Walked"),
+            preview: Some(symbol("Origin")),
+            overlay: Some(Overlay::CommandPalette),
+            ..SessionState::default()
+        };
+        let value = PersistentState::project(&snapshot.with_session(session));
+        let restored = PersistentState::at("unused").cold_reload(&value);
+        assert_eq!(restored.route, symbol("Origin"), "the provisional page is not where you reopen");
     }
 
     #[test]

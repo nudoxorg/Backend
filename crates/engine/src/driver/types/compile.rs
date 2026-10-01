@@ -1,9 +1,11 @@
 //! Defines types compile behavior for the `backend-engine` driver, whose purpose is to run bounded native toolchains and lower their output into canonical IR.
 //! This module owns the types compile invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
+use std::fmt::Write as _;
+
 use backend_semantic::ir::{FragmentView, PrepareError};
 use backend_semantic::registry::{AdapterRoute, FullRegistry};
-use backend_semantic::vocabulary::{Language, LanguageProfile, Stage};
+use backend_semantic::vocabulary::{Language, LanguageProfile, MAX_NATIVE_DIAGNOSTIC_BYTES, Stage};
 
 use crate::driver::lower::{self, AdmissionFault, typescript::TypeScriptCollectError};
 
@@ -235,6 +237,7 @@ enum EnteredAuthority<'source> {
     Clang {
         profile: LanguageProfile,
         project: Option<&'source backend_frontend_clang::ClangProject>,
+        environment: &'source backend_frontend_clang::ClangAuthorityEnvironment,
     },
     TypeScript {
         profile: backend_semantic::vocabulary::TypeScriptSource,
@@ -249,6 +252,12 @@ enum EnteredAuthority<'source> {
         project: &'source backend_frontend_rust::legacy::RustProject,
         maximum_source_bytes: backend_frontend_rust::legacy::SourceByteLimit,
         features: backend_frontend_rust::legacy::RustFeatureControl<'source>,
+    },
+    RustWorkspace {
+        profile: backend_semantic::vocabulary::RustEdition,
+        workspace: &'source backend_frontend_rust::legacy::RustWorkspace,
+        source_path: &'source std::path::Path,
+        maximum_source_bytes: backend_frontend_rust::legacy::SourceByteLimit,
     },
     Go {
         profile: backend_semantic::vocabulary::GoVersion,
@@ -312,6 +321,7 @@ impl LanguageSpec for ClangSpec {
     type Authority<'source> = (
         LanguageProfile,
         Option<&'source backend_frontend_clang::ClangProject>,
+        &'source backend_frontend_clang::ClangAuthorityEnvironment,
     );
     type Extension = backend_semantic::ir::ClangFacts;
 
@@ -324,6 +334,7 @@ impl LanguageSpec for ClangSpec {
         lower::clang::collect(
             authority.0,
             authority.1,
+            authority.2,
             prepared.lease.bytes(),
             prepared.permit.cancelled(),
             facts,
@@ -429,9 +440,14 @@ impl LanguageSpec for RustSpec {
     fn collect<'source, 'cancel, 'diagnostic>(
         authority: &Self::Authority<'source>,
         prepared: &PreparedCompile<'source, 'cancel>,
-        _: Option<&'diagnostic mut [u8]>,
+        diagnostic_output: Option<&'diagnostic mut [u8]>,
         facts: &mut lower::FactSet<'source>,
     ) -> Result<(), CompileFailure<'diagnostic>> {
+        let is_build_script = authority
+            .0
+            .source_path
+            .file_name()
+            .is_some_and(|name| name == "build.rs");
         lower::rust::collect(
             authority.0,
             authority.1,
@@ -440,7 +456,47 @@ impl LanguageSpec for RustSpec {
             prepared.lease.bytes(),
             facts,
         )
-        .map_err(|cause| rust_terminal(prepared.source, prepared.recipe, cause))
+        .map_err(|cause| {
+            rust_terminal(
+                prepared.source,
+                prepared.recipe,
+                diagnostic_output,
+                is_build_script,
+                cause,
+            )
+        })
+    }
+}
+
+impl RustSpec {
+    fn collect_workspace<'source, 'cancel, 'diagnostic>(
+        workspace: &'source backend_frontend_rust::legacy::RustWorkspace,
+        source_path: &'source std::path::Path,
+        maximum_source_bytes: backend_frontend_rust::legacy::SourceByteLimit,
+        prepared: &PreparedCompile<'source, 'cancel>,
+        diagnostic_output: Option<&'diagnostic mut [u8]>,
+        facts: &mut lower::FactSet<'source>,
+    ) -> Result<(), CompileFailure<'diagnostic>> {
+        let is_build_script = source_path
+            .file_name()
+            .is_some_and(|name| name == "build.rs");
+        lower::rust::collect_workspace(
+            workspace,
+            source_path,
+            maximum_source_bytes,
+            prepared.permit.control(),
+            prepared.lease.bytes(),
+            facts,
+        )
+        .map_err(|cause| {
+            rust_terminal(
+                prepared.source,
+                prepared.recipe,
+                diagnostic_output,
+                is_build_script,
+                cause,
+            )
+        })
     }
 }
 
@@ -605,36 +661,37 @@ fn enter_authority<'source, 'diagnostic>(
         recipe,
         profile,
     };
-    // The production buffer-only libclang lane: with no project supplied, the
-    // single caller buffer is parsed under the synthetic profile arguments, so
-    // no compilation database is consulted and no cross-file (cross-fragment)
-    // include keys are minted — only the buffer itself is analyzed (see
-    // `driver/lower/clang.rs::collect`).
     match (profile, input) {
-        (LanguageProfile::C(profile), SemanticAuthorityInput::None) => {
-            Ok(EnteredAuthority::Clang {
-                profile: LanguageProfile::C(profile),
-                project: None,
-            })
-        }
         (LanguageProfile::C(profile), SemanticAuthorityInput::Clang { project }) => {
             Ok(EnteredAuthority::Clang {
                 profile: LanguageProfile::C(profile),
                 project: Some(project),
+                environment: project.environment(),
             })
         }
-        (LanguageProfile::Cxx(profile), SemanticAuthorityInput::None) => {
+        (LanguageProfile::C(profile), SemanticAuthorityInput::ClangBuffer { environment }) => {
             Ok(EnteredAuthority::Clang {
-                profile: LanguageProfile::Cxx(profile),
+                profile: LanguageProfile::C(profile),
                 project: None,
+                environment,
             })
         }
+        (LanguageProfile::C(_), SemanticAuthorityInput::None) => Err(required()),
         (LanguageProfile::Cxx(profile), SemanticAuthorityInput::Clang { project }) => {
             Ok(EnteredAuthority::Clang {
                 profile: LanguageProfile::Cxx(profile),
                 project: Some(project),
+                environment: project.environment(),
             })
         }
+        (LanguageProfile::Cxx(profile), SemanticAuthorityInput::ClangBuffer { environment }) => {
+            Ok(EnteredAuthority::Clang {
+                profile: LanguageProfile::Cxx(profile),
+                project: None,
+                environment,
+            })
+        }
+        (LanguageProfile::Cxx(_), SemanticAuthorityInput::None) => Err(required()),
         (LanguageProfile::TypeScript(profile), SemanticAuthorityInput::None) => {
             Ok(EnteredAuthority::TypeScript {
                 profile,
@@ -671,6 +728,19 @@ fn enter_authority<'source, 'diagnostic>(
             project,
             maximum_source_bytes,
             features,
+        }),
+        (
+            LanguageProfile::Rust(profile),
+            SemanticAuthorityInput::RustWorkspace {
+                workspace,
+                source_path,
+                maximum_source_bytes,
+            },
+        ) => Ok(EnteredAuthority::RustWorkspace {
+            profile,
+            workspace,
+            source_path,
+            maximum_source_bytes,
         }),
         (LanguageProfile::Rust(_), SemanticAuthorityInput::None) => Err(required()),
         (LanguageProfile::Go(profile), SemanticAuthorityInput::Go { image }) => {
@@ -711,9 +781,11 @@ fn emit_facts<'source, 'cancel, 'diagnostic>(
 ) -> Result<(), CompileFailure<'diagnostic>> {
     checkpoint(prepared.permit, prepared.recipe)?;
     match &prepared.authority {
-        EnteredAuthority::Clang { profile, project } => {
-            ClangSpec::collect(&(*profile, *project), prepared, None, facts)?
-        }
+        EnteredAuthority::Clang {
+            profile,
+            project,
+            environment,
+        } => ClangSpec::collect(&(*profile, *project, *environment), prepared, None, facts)?,
         EnteredAuthority::TypeScript { profile, report } => {
             TypeScriptSpec::collect(&(*profile, *report), prepared, diagnostic_output, facts)?;
         }
@@ -728,7 +800,20 @@ fn emit_facts<'source, 'cancel, 'diagnostic>(
         } => RustSpec::collect(
             &(*project, *maximum_source_bytes, *features),
             prepared,
-            None,
+            diagnostic_output,
+            facts,
+        )?,
+        EnteredAuthority::RustWorkspace {
+            workspace,
+            source_path,
+            maximum_source_bytes,
+            ..
+        } => RustSpec::collect_workspace(
+            workspace,
+            source_path,
+            *maximum_source_bytes,
+            prepared,
+            diagnostic_output,
             facts,
         )?,
         EnteredAuthority::Go { image, .. } => GoSpec::collect(image, prepared, None, facts)?,
@@ -760,6 +845,7 @@ fn emit_facts<'source, 'cancel, 'diagnostic>(
             EnteredAuthority::Go { .. }
                 | EnteredAuthority::Clang { .. }
                 | EnteredAuthority::Rust { .. }
+                | EnteredAuthority::RustWorkspace { .. }
         )
     {
         require_facts(prepared.source, prepared.recipe, facts)?;
@@ -840,6 +926,8 @@ fn python_terminal<'diagnostic>(
 fn rust_terminal<'diagnostic>(
     source_identity: SourceIdentity,
     recipe: CompileRecipeFact,
+    diagnostic_output: Option<&'diagnostic mut [u8]>,
+    is_build_script: bool,
     cause: lower::rust::RustCollectError,
 ) -> CompileFailure<'diagnostic> {
     match cause {
@@ -847,7 +935,7 @@ fn rust_terminal<'diagnostic>(
             source_identity,
             recipe,
             failure: AuthorityFailure::Rust {
-                diagnostic: AuthorityDiagnostic::absent(),
+                diagnostic: rust_authority_diagnostic(diagnostic_output, &cause, is_build_script),
                 cause,
             },
         },
@@ -856,6 +944,243 @@ fn rust_terminal<'diagnostic>(
             recipe,
             cause,
         },
+    }
+}
+
+/// Writes a bounded Rust authority summary while retaining the exact typed cause separately.
+/// Cargo's raw error chain can contain absolute paths and process configuration, so the public
+/// bytes contain only a closed explanation and a validated package name when Cargo supplies one.
+fn rust_authority_diagnostic<'diagnostic>(
+    output: Option<&'diagnostic mut [u8]>,
+    cause: &backend_frontend_rust::legacy::RustAuthorityError,
+    is_build_script: bool,
+) -> AuthorityDiagnostic<'diagnostic> {
+    let Some(output) = output else {
+        return AuthorityDiagnostic::absent();
+    };
+    let mut message = BoundedAuthorityMessage::new(output);
+    use backend_frontend_rust::legacy::RustAuthorityError as RustError;
+    match cause {
+        RustError::Workspace { source, .. } => {
+            if let Some(package) = cargo_missing_package(source.as_ref()) {
+                let target = if is_build_script {
+                    "build-script"
+                } else {
+                    "crate"
+                };
+                let _ = write!(
+                    message,
+                    "Rust {target} workspace resolution could not find Cargo package `{package}` in the offline cache."
+                );
+            } else if cargo_workspace_was_offline(source.as_ref()) {
+                let target = if is_build_script {
+                    "build-script"
+                } else {
+                    "crate"
+                };
+                let _ = write!(
+                    message,
+                    "Rust {target} workspace resolution failed while Cargo was offline."
+                );
+            } else if is_build_script {
+                let _ = message.write_str("Rust build-script Cargo workspace loading failed.");
+            } else {
+                let _ = message.write_str("Rust Cargo workspace loading failed.");
+            }
+        }
+        RustError::SourceNotLoaded { .. } => {
+            let _ = message.write_str("rust-analyzer did not load the selected Cargo source.");
+        }
+        RustError::DetachedSource { .. } => {
+            let _ = message.write_str(
+                "selected Rust source is cfg-inactive or detached from every active Cargo target.",
+            );
+        }
+        RustError::EditionMismatch { .. } => {
+            let _ = message.write_str("Cargo edition differs from the requested Rust profile.");
+        }
+        RustError::MissingSemanticFact { fact } => {
+            let _ = write!(
+                message,
+                "rust-analyzer omitted required semantic fact {fact:?}."
+            );
+        }
+        RustError::UnresolvedInferredType => {
+            let _ = message.write_str("rust-analyzer could not resolve an inferred Rust type.");
+        }
+        RustError::SourceBinding { expected, observed } => {
+            let _ = write!(
+                message,
+                "Rust source differs from Cargo VFS text: request {expected} bytes, VFS {observed} bytes."
+            );
+        }
+        RustError::Toolchain(_) => {
+            let _ = message.write_str("Rust toolchain authority configuration failed.");
+        }
+        RustError::ProjectRoot { .. } | RustError::ProjectSource { .. } => {
+            let _ = message.write_str("Rust authority could not open its selected project source.");
+        }
+        RustError::SourceOutsidePackage { .. } => {
+            let _ = message.write_str("selected Rust source is outside its Cargo package root.");
+        }
+        RustError::MissingManifest { .. } => {
+            let _ = message.write_str("Rust authority could not find a Cargo package manifest.");
+        }
+        RustError::SourceNotFile { .. } => {
+            let _ = message.write_str("Rust authority source is not a regular file.");
+        }
+        RustError::SourceBudget { .. } => {
+            let _ = message.write_str("Rust source exceeded its admitted byte limit.");
+        }
+        RustError::SourceRead { .. } => {
+            let _ = message.write_str("Rust authority could not read the selected source.");
+        }
+        RustError::DocumentationInputMissing { .. } => {
+            let _ = message.write_str("Rustdoc include file was missing.");
+        }
+        RustError::DocumentationInputRead { .. } => {
+            let _ = message.write_str("Rustdoc include file could not be inspected or read.");
+        }
+        RustError::DocumentationInputBudget { .. } => {
+            let _ = message.write_str("Rustdoc include file exceeded its admitted byte limit.");
+        }
+        RustError::DocumentationInputUtf8 { .. } => {
+            let _ = message.write_str("Rustdoc include file was not valid UTF-8.");
+        }
+        RustError::DocumentationInputLimit { .. } => {
+            let _ = message
+                .write_str("Rustdoc include inputs exceeded the bounded count or byte limit.");
+        }
+        RustError::UnsupportedDocumentationExpression { .. } => {
+            let _ = message.write_str(
+                "Rustdoc include expression could not be admitted by the bounded preloader.",
+            );
+        }
+        RustError::SessionFrontierMismatch
+        | RustError::SessionSourcePath { .. }
+        | RustError::SessionSourceCardinality { .. }
+        | RustError::WorkspaceBindingMismatch => {
+            let _ = message.write_str("Rust workspace source selection could not be admitted.");
+        }
+        RustError::SessionSourceRootAmbiguous => {
+            let _ = message.write_str(
+                "rust-analyzer could not place a new editor source in one Cargo source root.",
+            );
+        }
+        RustError::SessionSourceRootLimit { .. } => {
+            let _ = message.write_str("Rust workspace source-root update exceeded its limit.");
+        }
+        RustError::InvalidSpan { .. } | RustError::Coordinate { .. } => {
+            let _ = message.write_str(
+                "rust-analyzer returned a source coordinate outside its admitted range.",
+            );
+        }
+        RustError::Admission { .. } => {
+            let _ = message.write_str("Rust semantic fact admission failed.");
+        }
+        RustError::Cancelled => {
+            let _ = message.write_str("Rust semantic analysis was cancelled.");
+        }
+        RustError::DeadlineExceeded => {
+            let _ = message.write_str("Rust semantic analysis exceeded its deadline.");
+        }
+    }
+    message.finish()
+}
+
+/// Returns a validated Cargo package token from known resolver messages.
+fn cargo_missing_package(source: &(dyn std::error::Error + 'static)) -> Option<String> {
+    let mut error = Some(source);
+    while let Some(current) = error {
+        let message = current.to_string();
+        for (prefix, terminator) in [
+            ("no matching package named `", '`'),
+            ("no matching package named '", '\''),
+            ("failed to get `", '`'),
+            ("failed to select a version for the requirement `", '`'),
+        ] {
+            let Some(candidate) = message
+                .split_once(prefix)
+                .and_then(|(_, remainder)| remainder.split_once(terminator))
+                .map(|(candidate, _)| candidate)
+            else {
+                continue;
+            };
+            let Some(first) = candidate.split_ascii_whitespace().next() else {
+                continue;
+            };
+            let package = first.split_once('=').map_or(first, |(name, _)| name);
+            if !package.is_empty()
+                && package.len() <= 64
+                && package
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+            {
+                return Some(package.to_owned());
+            }
+        }
+        error = current.source();
+    }
+    None
+}
+
+/// Detects offline Cargo resolution failures without returning any source text.
+fn cargo_workspace_was_offline(source: &(dyn std::error::Error + 'static)) -> bool {
+    let mut error = Some(source);
+    while let Some(current) = error {
+        let message = current.to_string();
+        if message.contains("offline") || message.contains("no matching package") {
+            return true;
+        }
+        error = current.source();
+    }
+    false
+}
+
+/// Fixed-capacity UTF-8 writer used to keep Rust authority messages within caller scratch.
+struct BoundedAuthorityMessage<'output> {
+    output: &'output mut [u8],
+    observed: usize,
+}
+
+impl<'output> BoundedAuthorityMessage<'output> {
+    fn new(output: &'output mut [u8]) -> Self {
+        let capacity = output.len().min(MAX_NATIVE_DIAGNOSTIC_BYTES);
+        Self {
+            output: &mut output[..capacity],
+            observed: 0,
+        }
+    }
+
+    fn finish(self) -> AuthorityDiagnostic<'output> {
+        let retained = self.observed.min(self.output.len());
+        let primary = &self.output[..retained];
+        match AuthorityDiagnostic::new(primary, self.observed, retained != self.observed) {
+            Ok(diagnostic) => diagnostic,
+            Err(AuthorityDiagnosticFault::PrefixExceedsObserved { .. })
+            | Err(AuthorityDiagnosticFault::TruncationMismatch { .. }) => {
+                AuthorityDiagnostic::absent()
+            }
+        }
+    }
+}
+
+impl std::fmt::Write for BoundedAuthorityMessage<'_> {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        let retained = self
+            .output
+            .len()
+            .saturating_sub(self.observed)
+            .min(text.len());
+        let start = self.observed.min(self.output.len());
+        if let (Some(source), Some(destination)) = (
+            text.as_bytes().get(..retained),
+            self.output.get_mut(start..start.saturating_add(retained)),
+        ) {
+            destination.copy_from_slice(source);
+        }
+        self.observed = self.observed.saturating_add(text.len());
+        Ok(())
     }
 }
 
@@ -1165,7 +1490,9 @@ mod lifecycle_tests {
     };
 
     use backend_semantic::ir::{EntityKind, SemanticProductConstructor};
-    use backend_semantic::vocabulary::{NativeTool, RustEdition};
+    use backend_semantic::vocabulary::{
+        AuthorityDiagnosticClass, AuthorityPhase, NativeTool, RustEdition,
+    };
     use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 
     use super::*;
@@ -1257,5 +1584,59 @@ mod lifecycle_tests {
             _ => panic!("compact pre-write deadline must retain its exact terminal"),
         }
         assert!(compact_output.iter().all(|byte| *byte == 0xa5));
+    }
+
+    #[test]
+    fn rust_workspace_failure_emits_bounded_path_free_diagnostic() {
+        let source = source();
+        let recipe = recipe(source);
+        let private_root = std::path::PathBuf::from("/private/work/serde_json");
+        let cause = lower::rust::RustCollectError::Authority(
+            backend_frontend_rust::legacy::RustAuthorityError::Workspace {
+                root: private_root.clone(),
+                source: std::io::Error::other(
+                    "error: no matching package named `serde_core` found; CARGO_HOME=/private/secret; root=/private/work/serde_json",
+                )
+                .into(),
+            },
+        );
+        let mut scratch = [0xa5; MAX_NATIVE_DIAGNOSTIC_BYTES];
+        let failure = rust_terminal(source, recipe, Some(&mut scratch), true, cause);
+        let CompileFailure::Authority { failure, .. } = failure else {
+            panic!("Rust workspace authority failure must remain an authority terminal");
+        };
+        let projection = failure.projection();
+        assert_eq!(projection.phase, AuthorityPhase::Resolve);
+        assert_eq!(projection.class, AuthorityDiagnosticClass::Binding);
+        assert_eq!(
+            projection.diagnostic.primary,
+            b"Rust build-script workspace resolution could not find Cargo package `serde_core` in the offline cache."
+        );
+        assert_eq!(
+            projection.diagnostic.observed,
+            projection.diagnostic.primary.len()
+        );
+        assert!(
+            !projection
+                .diagnostic
+                .primary
+                .windows(b"/private".len())
+                .any(|window| window == b"/private")
+        );
+        assert!(
+            !projection
+                .diagnostic
+                .primary
+                .windows(b"CARGO_HOME".len())
+                .any(|window| window == b"CARGO_HOME")
+        );
+        let AuthorityFailure::Rust {
+            cause: backend_frontend_rust::legacy::RustAuthorityError::Workspace { root, .. },
+            ..
+        } = failure
+        else {
+            panic!("the exact Rust workspace cause must remain attached");
+        };
+        assert_eq!(root, private_root);
     }
 }

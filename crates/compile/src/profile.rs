@@ -1,7 +1,7 @@
 //! Closed source profiles that alter parsing or semantic meaning.
 
-use backend_semantic::vocabulary::JavaRelease;
 use crate::SourceLanguage;
+use backend_semantic::vocabulary::JavaRelease;
 
 /// Rust edition selected before name resolution and macro expansion.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

@@ -207,30 +207,12 @@ impl VectorPoint {
     /// Returns [`Error::MalformedInput`] for invalid lengths, identities, or
     /// non-finite coordinates.
     pub fn from_payload(id: CandidateId, payload: &[u8]) -> Result<Self, Error> {
-        if payload.len() < 4 {
-            return Err(Error::MalformedInput);
-        }
-        let mut dimension_bytes = [0; 4];
-        dimension_bytes.copy_from_slice(&payload[..4]);
-        let dimension =
-            usize::try_from(u32::from_be_bytes(dimension_bytes)).map_err(|_| Error::SizeLimit)?;
-        let expected = dimension
-            .checked_mul(size_of::<u32>())
-            .and_then(|size| size.checked_add(4))
-            .ok_or(Error::SizeLimit)?;
-        if dimension == 0 || expected != payload.len() {
-            return Err(Error::MalformedInput);
-        }
-        let mut values = Vec::with_capacity(dimension);
-        for bytes in payload[4..].chunks_exact(4) {
-            let mut bits = [0; 4];
-            bits.copy_from_slice(bytes);
-            let value = f32::from_bits(u32::from_be_bytes(bits));
-            if !value.is_finite() {
-                return Err(Error::MalformedInput);
-            }
-            values.push(value);
-        }
+        let admitted = AdmittedEncodedPoint::validate(payload, None)?;
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(admitted.coordinates.len())
+            .map_err(|_| Error::SizeLimit)?;
+        values.extend(admitted.coordinates());
         Self::new(id, values)
     }
 }
@@ -296,6 +278,76 @@ pub struct VectorFacts {
     dimensions: usize,
 }
 
+/// Borrowed coordinates whose canonical payload, dimension, and finite-value
+/// invariants were established when their owning `VectorFacts` was created.
+/// Its private field prevents callers from manufacturing this proof wrapper
+/// around unchecked provider bytes.
+pub(super) struct AdmittedEncodedPoint<'a> {
+    coordinates: &'a [[u8; 4]],
+}
+
+impl AdmittedEncodedPoint<'_> {
+    /// Decodes the already-validated big-endian coordinate bytes without
+    /// repeating shape or finite-value checks in the per-candidate scorer.
+    pub(super) fn coordinates(&self) -> impl ExactSizeIterator<Item = f32> + '_ {
+        self.coordinates
+            .iter()
+            .map(|bytes| f32::from_bits(u32::from_be_bytes(*bytes)))
+    }
+}
+
+impl<'a> AdmittedEncodedPoint<'a> {
+    /// Proves the canonical payload shape, optional recipe dimension, and
+    /// finite IEEE-754 values without materializing decoded coordinates.
+    fn validate(payload: &'a [u8], expected_dimensions: Option<usize>) -> Result<Self, Error> {
+        let dimension_bytes: [u8; 4] = payload
+            .get(..4)
+            .ok_or(Error::MalformedInput)?
+            .try_into()
+            .map_err(|_| Error::MalformedInput)?;
+        let dimension =
+            usize::try_from(u32::from_be_bytes(dimension_bytes)).map_err(|_| Error::SizeLimit)?;
+        if dimension == 0 {
+            return Err(Error::MalformedInput);
+        }
+        let expected_bytes = dimension
+            .checked_mul(size_of::<u32>())
+            .and_then(|bytes| bytes.checked_add(4))
+            .ok_or(Error::SizeLimit)?;
+        if expected_bytes != payload.len() {
+            return Err(Error::MalformedInput);
+        }
+        let encoded_coordinates = payload.get(4..).ok_or(Error::MalformedInput)?;
+        let (coordinates, remainder) = encoded_coordinates.as_chunks::<4>();
+        if !remainder.is_empty() || coordinates.len() != dimension {
+            return Err(Error::MalformedInput);
+        }
+        for bytes in coordinates {
+            let value = f32::from_bits(u32::from_be_bytes(*bytes));
+            if !value.is_finite() {
+                return Err(Error::MalformedInput);
+            }
+        }
+        if expected_dimensions.is_some_and(|expected| expected != dimension) {
+            return Err(Error::DimensionMismatch);
+        }
+        Ok(Self { coordinates })
+    }
+
+    /// Borrows bytes from a payload already admitted by its owning facts.
+    /// The immutable state and exact dimension proof make rechecking every
+    /// coordinate unnecessary in the candidate scoring loop.
+    fn from_validated(payload: &'a [u8], dimensions: usize) -> Option<Self> {
+        let encoded_coordinates = payload.get(4..)?;
+        let (coordinates, remainder) = encoded_coordinates.as_chunks::<4>();
+        if remainder.is_empty() && coordinates.len() == dimensions {
+            Some(Self { coordinates })
+        } else {
+            None
+        }
+    }
+}
+
 impl VectorFacts {
     /// Builds exact facts only when the durable relation is bound to this complete recipe.
     ///
@@ -331,11 +383,8 @@ impl VectorFacts {
         ) {
             return Err(Error::IncompleteCoverage);
         }
-        for (id, payload) in state.iter() {
-            let point = VectorPoint::from_payload(id, payload)?;
-            if point.values().len() != dimensions {
-                return Err(Error::DimensionMismatch);
-            }
+        for (_, payload) in state.iter() {
+            AdmittedEncodedPoint::validate(payload, Some(dimensions))?;
         }
         Ok(Self {
             state,
@@ -386,6 +435,17 @@ impl VectorFacts {
             .payload(id)
             .map(|payload| VectorPoint::from_payload(id, payload))
             .transpose()
+    }
+
+    /// Returns one already-admitted point in its canonical big-endian payload
+    /// form without allocating decoded coordinates.
+    ///
+    /// The constructor validates every payload and binds its dimension to
+    /// these facts, so internal reranking can borrow the immutable bytes and
+    /// decode one coordinate at a time.
+    pub(super) fn encoded_point(&self, id: CandidateId) -> Option<AdmittedEncodedPoint<'_>> {
+        let payload = self.state.payload(id)?;
+        AdmittedEncodedPoint::from_validated(payload, self.dimensions)
     }
 
     /// Iterates exact point identities in canonical relation order.

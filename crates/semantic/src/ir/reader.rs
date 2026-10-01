@@ -13,13 +13,12 @@ use crate::ir::{
     DeclarationIdentity, DocFragment, DocId, EntityAuthorityFacts, EntityId, EntityListId,
     EntityVersion, ExternalId, ExternalTarget, ForeignTargetOrigin, FreePredicate,
     FreePredicateListId, GoExtension, GoFacts, ImageProvenance, Ir, JavaExtension, JavaFacts,
-    LanguageExtensionColumnView, Link, LinkId,
-    LinkIter, LinkOccurrence, LinkOccurrenceId, LinkOccurrenceIter, ObjectMember,
-    ObjectMemberListId, OccurrenceAuthorityFacts, PythonExtension, PythonFacts, RustExtension,
-    RustFacts, SemanticImageAuthority, SourceSpan, TemplatePart, TemplatePartListId, TupleElement,
-    TupleElementListId, TypeExpr, TypeId, TypeListId, TypeParameter, TypeParameterBound,
-    TypeParameterBoundListId, TypeParameterListId, TypeScriptExtension, TypeScriptFacts,
-    VariantAvailability,
+    LanguageExtensionColumnView, Link, LinkId, LinkIter, LinkOccurrence, LinkOccurrenceId,
+    LinkOccurrenceIter, ObjectMember, ObjectMemberListId, OccurrenceAuthorityFacts,
+    PythonExtension, PythonFacts, RustExtension, RustFacts, SemanticImageAuthority, SourceSpan,
+    TemplatePart, TemplatePartListId, TupleElement, TupleElementListId, TypeExpr, TypeId,
+    TypeListId, TypeParameter, TypeParameterBound, TypeParameterBoundListId, TypeParameterListId,
+    TypeScriptExtension, TypeScriptFacts, VariantAvailability,
 };
 
 /// Coordinate-free identity of one external endpoint admitted from a complete

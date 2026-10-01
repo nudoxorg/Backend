@@ -10,12 +10,16 @@
 //! The model is plain words: the product spells every sentence
 //! (`backend-present`), so the page shows what the CLI prints.
 
-use crate::icons::{Kind, KindSize, kind_mark};
-use crate::measure::{Measure, Room, Set, Space};
+use crate::icons::{Icon, IconSize, Kind, KindSize, kind_mark, ui};
+use crate::controls::button::button;
+use crate::fluid::Modes;
+use crate::motion::Flow;
+use crate::measure::{Measure, Set, Space};
 use crate::overlay::float::{self, FloatKind, FloatRequest};
 use crate::overlay::tooltip::Tipped;
 use crate::probe::{self, TextOverflow};
 use crate::theme::ActiveFacet;
+use crate::tokens::fluid::ROLES;
 use crate::tokens::{Palette, TypeRole, ty};
 use gpui::{
     AnyElement, App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce,
@@ -101,7 +105,7 @@ pub struct Model {
     pub facts: Vec<SharedString>,
     /// The roles, in order.
     pub roles: Vec<Role>,
-    /// "Here twice", then "60 crates compile at more than one version", when any do.
+    /// "Here twice", then "60 crates appear at more than one version", when any do.
     pub twice_heading: Option<(SharedString, SharedString)>,
     /// The packages here twice, most actionable first.
     pub twice: Vec<Twice>,
@@ -178,7 +182,7 @@ impl RenderOnce for Library {
             .gap(measure.space(Space::Wide))
             .child(hero(&id, &model, &measure, palette));
         if let Some(note) = &model.note {
-            page = page.child(words(child(&id, "note"), note.clone(), ty::CAPTION, palette.ink3, &measure, TextOverflow::Wrap));
+            page = page.child(words(child(&id, "note"), note.clone(), ty::CAPTION, palette.ink2, &measure, TextOverflow::Wrap));
         }
         page = page.child(roles(&id, &model, &measure, palette, window, cx));
         page
@@ -216,7 +220,7 @@ fn hero(id: &ElementId, model: &Model, measure: &Measure, palette: &Palette) -> 
         ));
     }
     for (index, fact) in model.facts.iter().enumerate() {
-        let color = if index == 0 && model.alerts.is_empty() { palette.ink2 } else { palette.ink3 };
+        let color = if index == 0 && model.alerts.is_empty() { palette.ink1 } else { palette.ink2 };
         facts = facts.child(words(child(id, format!("fact-{index}")), fact.clone(), ty::SMALL, color, measure, TextOverflow::Wrap));
     }
     div()
@@ -239,17 +243,26 @@ fn hero(id: &ElementId, model: &Model, measure: &Measure, palette: &Palette) -> 
 
 /// Roles in one or two columns, balanced by height, then "Here twice".
 fn roles(id: &ElementId, model: &Model, measure: &Measure, palette: &Palette, window: &mut Window, cx: &mut App) -> AnyElement {
-    let two = matches!(measure.room(), Room::Regular | Room::Wide | Room::Vast);
-    let (count, column) = if two { measure.columns(340.0, Space::Section, 2) } else { (1, *measure) };
+    let modes = Modes::keyed(child(id, "roles-modes"), window, cx);
+    let laid = modes.columns(&ROLES, measure.fluid_room(), measure.space(Space::Section));
+    let (count, column) = (laid.count, measure.within(laid.column.width()));
+    // A change of column count is an epoch: the blocks spring to their new
+    // places instead of jumping.
+    let flow = Flow::scoped(format!("library-roles-{id:?}"), cx);
+    flow.epoch((laid.epoch, count));
     // Each block's height in rows; the duplicates block goes last, in the shorter column.
     let mut blocks: Vec<(usize, AnyElement)> = model
         .roles
         .iter()
         .enumerate()
-        .map(|(index, role)| (role.rows.len() + 2, role_block(id, index, role, &column, palette)))
+        .map(|(index, role)| {
+            let block = role_block(id, index, role, &column, palette, window, cx);
+            (role.rows.len().min(6) + 2, flow.item(child(id, format!("role-flow-{index}")), block).into_any_element())
+        })
         .collect();
     if !model.twice.is_empty() {
-        blocks.push((TWICE_AT_REST + 2, twice_block(id, model, &column, palette, window, cx)));
+        let block = twice_block(id, model, &column, palette, window, cx);
+        blocks.push((TWICE_AT_REST + 2, flow.item(child(id, "twice-flow"), block).into_any_element()));
     }
     let mut columns: Vec<(usize, Vec<AnyElement>)> = (0..count).map(|_| (0, Vec::new())).collect();
     let total: usize = blocks.iter().map(|(height, _)| *height).sum();
@@ -276,32 +289,51 @@ fn roles(id: &ElementId, model: &Model, measure: &Measure, palette: &Palette, wi
     row.into_any_element()
 }
 
-fn role_block(id: &ElementId, index: usize, role: &Role, measure: &Measure, palette: &Palette) -> AnyElement {
+fn role_block(id: &ElementId, index: usize, role: &Role, measure: &Measure, palette: &Palette, window: &mut Window, cx: &mut App) -> AnyElement {
     let block_id = child(id, format!("role-{index}"));
+    let expanded = window.use_keyed_state(child(&block_id, "all"), cx, |_, _| false);
+    let showing_all = *expanded.read(cx);
+    let icon = match role.label.as_ref() {
+        "checks our work" => Icon::ShieldCheck, "draws the window" => Icon::Mosaic,
+        "reads languages" => Icon::Book, "speaks formats" => Icon::Split,
+        "keeps and finds" => Icon::Search, "runs things at once" => Icon::Zap,
+        "talks to the network" => Icon::Globe, "fingerprints and packs" => Icon::Seal,
+        "names what went wrong" => Icon::Alert, "watches itself run" => Icon::Eye,
+        "shapes memory" => Icon::Diamond, "talks to the system" => Icon::Settings, _ => Icon::Layers,
+    };
     let mut head = div()
         .flex()
         .flex_wrap()
         .items_baseline()
         .gap_x(measure.space(Space::Roomy))
+        .child(ui(icon, IconSize::S18, palette.ink2))
         .child(words(child(&block_id, "label"), role.label.clone(), ty::HEAD, palette.ink0, measure, TextOverflow::Wrap));
     if let Some(serving) = &role.serving {
-        head = head.child(words(child(&block_id, "serving"), serving.clone(), ty::SMALL, palette.ink3, measure, TextOverflow::Wrap));
+        head = head.child(words(child(&block_id, "serving"), serving.clone(), ty::SMALL, palette.ink2, measure, TextOverflow::Wrap));
     }
     let mut block = div().flex().flex_col().gap(measure.space(Space::Tight)).child(head);
-    for (at, row) in role.rows.iter().enumerate() {
-        block = block.child(row_view(&child(&block_id, format!("row-{at}")), row, measure, palette));
+    let shown = if showing_all { role.rows.len() } else { role.rows.len().min(6) };
+    for (at, row) in role.rows.iter().take(shown).enumerate() {
+        block = block.child(row_view(&child(&block_id, format!("row-{at}")), row, measure, palette, window, cx));
+    }
+    if role.rows.len() > shown {
+        block = block.child(button(child(&block_id, "more"), format!("{} more in this role", role.rows.len() - shown), measure).ghost()
+            .on_click(move |_, cx| expanded.update(cx, |expanded, cx| { *expanded = true; cx.notify(); })));
     }
     if let Some(brings) = &role.brings {
         block = block.child(
             div()
                 .pt(measure.space(Space::Tight))
-                .child(words(child(&block_id, "brings"), brings.clone(), ty::SMALL, palette.ink3, measure, TextOverflow::Wrap)),
+                .child(words(child(&block_id, "brings"), brings.clone(), ty::SMALL, palette.ink2, measure, TextOverflow::Wrap)),
         );
     }
     block.into_any_element()
 }
 
-fn row_view(id: &ElementId, row: &Row, measure: &Measure, palette: &Palette) -> AnyElement {
+fn row_view(id: &ElementId, row: &Row, measure: &Measure, palette: &Palette, window: &mut Window, cx: &mut App) -> AnyElement {
+    let expanded = window.use_keyed_state(child(id, "expanded"), cx, |_, _| false);
+    let is_expanded = *expanded.read(cx);
+    let toggle = expanded.clone();
     let mut line = div()
         .id(id.clone())
         .flex()
@@ -309,7 +341,7 @@ fn row_view(id: &ElementId, row: &Row, measure: &Measure, palette: &Palette) -> 
         .gap(measure.space(Space::Snug))
         .h(measure.row())
         .px(measure.space(Space::Tight))
-        .cursor_default()
+        .cursor_pointer()
         .hover(|style| style.bg(palette.tint))
         .child(package_mark(measure, palette))
         .child(
@@ -317,7 +349,8 @@ fn row_view(id: &ElementId, row: &Row, measure: &Measure, palette: &Palette) -> 
                 .flex_1()
                 .min_w_0()
                 .child(words(child(id, "name"), row.name.clone(), ty::MONO_ROW, palette.ink1, measure, TextOverflow::Ellipsis)),
-        );
+        )
+        .on_click(move |_, _, cx| toggle.update(cx, |expanded, cx| { *expanded = !*expanded; cx.notify(); }));
     if let Some(rest) = &row.at_rest {
         line = line.child(
             div()
@@ -329,7 +362,13 @@ fn row_view(id: &ElementId, row: &Row, measure: &Measure, palette: &Palette) -> 
     if let Some(about) = &row.about {
         lines.push((about.clone(), ty::CAPTION, Ink::Quiet));
     }
-    card_on_rest(child(id, "card"), lines, line)
+    let trigger = card_on_rest(child(id, "card"), lines, line);
+    if !is_expanded { return trigger; }
+    let mut detail = div().flex().flex_col().gap(measure.space(Space::Tight))
+        .pl(measure.space(Space::Wide)).pb(measure.space(Space::Base))
+        .child(words(child(id, "why-inline"), row.why.clone(), ty::SMALL, palette.ink2, measure, TextOverflow::Wrap));
+    if let Some(about) = &row.about { detail = detail.child(words(child(id, "about-inline"), about.clone(), ty::LEDE, palette.ink2, measure, TextOverflow::Wrap)); }
+    div().flex().flex_col().child(trigger).child(detail).into_any_element()
 }
 
 /// How strongly a card line speaks.
@@ -394,7 +433,7 @@ fn twice_block(id: &ElementId, model: &Model, measure: &Measure, palette: &Palet
     if let Some((title, caption)) = &model.twice_heading {
         head = head
             .child(words(child(&block_id, "label"), title.clone(), ty::HEAD, palette.ink0, measure, TextOverflow::Wrap))
-            .child(words(child(&block_id, "caption"), caption.clone(), ty::SMALL, palette.ink3, measure, TextOverflow::Wrap));
+            .child(words(child(&block_id, "caption"), caption.clone(), ty::SMALL, palette.ink2, measure, TextOverflow::Wrap));
     }
     let mut block = div().flex().flex_col().gap(measure.space(Space::Tight)).child(head);
     let shown = if showing_all { model.twice.len() } else { model.twice.len().min(TWICE_AT_REST) };

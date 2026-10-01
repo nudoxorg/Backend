@@ -49,7 +49,9 @@ impl DesktopHost {
     /// # Errors
     /// Returns an error when paths, credentials, composition, or binding fail.
     pub fn start() -> Result<Self, HostError> {
+        let discovering = std::time::Instant::now();
         let paths = super::paths::discover().map_err(HostError::Runtime)?;
+        crate::runtime::trace::span("boot.discover", discovering, "paths::discover");
         Self::start_with_paths(paths)
     }
 
@@ -63,19 +65,35 @@ impl DesktopHost {
     /// Returns an error when credentials, composition, or binding fail.
     pub fn start_with_paths(paths: WorkspacePaths) -> Result<Self, HostError> {
         paths.initialize().map_err(HostError::Runtime)?;
-        if Self::endpoint_is_live(&paths) {
+        let probing = std::time::Instant::now();
+        let live = Self::endpoint_is_live(&paths);
+        crate::runtime::trace::span("boot.probe_live", probing, live);
+        if live {
             return Ok(Self {
                 paths,
                 embedded: None,
             });
         }
-        let config =
+        let mut config =
             ProcessConfig::parse(Self::owner_arguments(&paths)?).map_err(HostError::Service)?;
-        match EmbeddedLocalService::start(config) {
-            Ok(embedded) => Ok(Self {
-                paths,
-                embedded: Some(embedded),
-            }),
+        // The owner finds its compilers through explicit paths only; this host is
+        // the operator that supplies what the process's own variables imply.
+        config.compiler_environment = super::toolchain::supplied_by_the_process();
+        let embedding = std::time::Instant::now();
+        // The workspace is this application's own, and its index can be made again:
+        // one an earlier build wrote is set aside, not refused.
+        let started = EmbeddedLocalService::start_replacing_state_from_another_build(config);
+        crate::runtime::trace::span("boot.embed", embedding, "EmbeddedLocalService::start");
+        match started {
+            Ok(embedded) => {
+                if let Some(moved) = embedded.state_set_aside() {
+                    crate::runtime::trace::span("boot.state_set_aside", embedding, moved.display());
+                }
+                Ok(Self {
+                    paths,
+                    embedded: Some(embedded),
+                })
+            }
             Err(refusal) => Self::attach_to_contended_owner(paths, refusal),
         }
     }
@@ -157,6 +175,16 @@ impl DesktopHost {
     #[must_use]
     pub fn data(&self) -> &Path {
         self.paths.data()
+    }
+
+    /// Returns where the workspace state of another build was moved when this
+    /// start replaced it. The projects it held are indexed again by whoever
+    /// asks for them.
+    #[must_use]
+    pub fn state_set_aside(&self) -> Option<&Path> {
+        self.embedded
+            .as_ref()
+            .and_then(EmbeddedLocalService::state_set_aside)
     }
 
     /// Returns whether this process owns or attached to the service.
@@ -260,6 +288,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one journey: embed, attach, index, read the revision")]
     fn one_gui_embeds_and_every_other_surface_attaches_to_that_owner() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -271,7 +300,7 @@ mod tests {
         let data = project.join("state");
         let endpoint =
             PathBuf::from("/tmp").join(format!("nudox-h-{}-{nonce}.sock", std::process::id()));
-        fs::create_dir_all(project.join("src")).expect("create project");
+        crate::host::private_dir(&project.join("src")).expect("create project");
         fs::write(
             project.join("Cargo.toml"),
             b"[package]\nname='embedded-proof'\nversion='0.1.0'\nedition='2024'\n",
@@ -296,7 +325,7 @@ mod tests {
             .index(project.to_str().expect("fixture path is UTF-8"))
             .expect("index through embedded owner");
         let revision = session.revision().expect("read embedded revision");
-        let revision_root = revision.root.clone();
+        let revision_root = revision.root;
         assert_ne!(
             revision.root,
             backend_library::view_state_root(&[]),

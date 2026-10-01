@@ -1,0 +1,118 @@
+{
+"id":"js-which.sync",
+"lang":"javascript",
+"pkg":"which",
+"version":"2.0.2",
+"path":[
+"which"
+],
+"name":"which.sync",
+"kind":"function",
+"summary":"Find the first instance of an executable in the PATH.",
+"docs":[
+{
+"k":"p",
+"t":"Find the first instance of an executable in the PATH."
+},
+{
+"k":"p",
+"t":"Like the unix `which` utility. Finds the first instance of a specified executable in the PATH environment variable. Does not cache the results, so `hash -r` is not needed when the PATH changes."
+}
+],
+"source":{
+"file":"which.js",
+"line":87
+},
+"decl":"const whichSync = (cmd, opt) => {",
+"sig":{
+"ins":[
+{
+"name":"cmd",
+"type":{
+"text":"",
+"word":"a program name",
+"known":"docs"
+}
+},
+{
+"name":"opt",
+"type":{
+"text":"",
+"word":"options",
+"known":"code"
+},
+"opt":true,
+"fields":[
+{
+"name":"nothrow",
+"word":"yes or no",
+"doc":"give null instead of throwing",
+"changes":"fails \u2192 none"
+},
+{
+"name":"all",
+"word":"yes or no",
+"doc":"give every match, a list",
+"changes":"one \u2192 many"
+},
+{
+"name":"path",
+"word":"text",
+"doc":"search this instead of $PATH"
+},
+{
+"name":"pathExt",
+"word":"text",
+"doc":"extensions to try (Windows)"
+}
+]
+}
+],
+"out":{
+"type":{
+"text":"",
+"word":"a path",
+"known":"code"
+},
+"fails":{
+"type":{
+"text":"Error",
+"word":"Error (code ENOENT)",
+"known":"code"
+},
+"when":"if it isn't on PATH, unless nothrow",
+"kinds":[]
+},
+"none":{
+"when":"only with nothrow",
+"known":"code"
+}
+},
+"generics":[]
+},
+"uses":[
+{
+"pkg":"cross-spawn",
+"dir":"",
+"file":"lib/util/resolveCommand.js",
+"line":27,
+"text":"resolved = which.sync(parsed.command, { path: env[getPathKey({ env })], pathExt: withoutPathExt ? path.delimiter : undef\u2026;",
+"tag":"calls"
+}
+],
+"workspace":"two node_modules trees (no JavaScript in your workspace)",
+"siblings":[
+{
+"name":"which",
+"differs":"later: a Promise, or a callback",
+"kind":"fn",
+"later":true,
+"fails":true
+}
+],
+"facts":"which ships no types: no .d.ts, no JSDoc. Every type here is read from its code or its README.",
+"history":{
+"releases":[],
+"same":true
+}
+}

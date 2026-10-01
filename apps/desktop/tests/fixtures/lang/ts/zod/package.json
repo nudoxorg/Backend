@@ -1,0 +1,8 @@
+{
+  "name": "zod",
+  "version": "4.1.8",
+  "description": "A pinned excerpt of zod 4.1.8 (src/v4/core/errors.ts, the issue shapes) for the desktop harness; see src/errors.ts.",
+  "license": "MIT",
+  "type": "module",
+  "types": "./src/errors.ts"
+}

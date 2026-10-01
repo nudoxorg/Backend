@@ -108,7 +108,7 @@ impl EngineRequest {
         }
     }
 
-    fn cancelled(&self) -> bool {
+    pub(crate) fn cancelled(&self) -> bool {
         match self {
             Self::Root { cancel, .. }
             | Self::Object { cancel, .. }
@@ -565,6 +565,9 @@ fn run_actor(
         if !index_lane && newest.is_none_or(|known| known.is_older_authority(basis)) {
             newest = Some(basis);
         }
+        // A read (not an index) counts as one the owner should answer before
+        // the next package compile (`traffic`).
+        let _reading = (!index_lane).then(super::traffic::Reading::begin);
         let result = match client.execute(&request) {
             // A cancellation request cannot revoke a synchronous producer
             // commit after it has returned. Admit that committed result; a

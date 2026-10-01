@@ -459,9 +459,11 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
             return Ok(());
         }
         let id = DeclarationId {
-            raw: u32::try_from(self.declarations).map_err(|_| CollectError::SlotOrdinalTooLarge {
-                lane: ScratchLane::Declarations,
-                observed: self.declarations,
+            raw: u32::try_from(self.declarations).map_err(|_| {
+                CollectError::SlotOrdinalTooLarge {
+                    lane: ScratchLane::Declarations,
+                    observed: self.declarations,
+                }
             })?,
         };
         self.push_declaration(DeclarationFact {
@@ -666,15 +668,12 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
         if self.unit.is_local(cursor)? {
             Ok(ReferenceTarget::Local(identity))
         } else {
-            let path = self
-                .unit
-                .cursor_relative_path(cursor)
-                .and_then(|relative| {
-                    backend_semantic::ir::PackageLineage::new("c", &relative).ok()?;
-                    let slot = u32::try_from(self.project_paths.len()).ok()?;
-                    self.project_paths.push(relative.into_boxed_str());
-                    Some(slot)
-                });
+            let path = self.unit.cursor_relative_path(cursor).and_then(|relative| {
+                backend_semantic::ir::PackageLineage::new("c", &relative).ok()?;
+                let slot = u32::try_from(self.project_paths.len()).ok()?;
+                self.project_paths.push(relative.into_boxed_str());
+                Some(slot)
+            });
             Ok(ReferenceTarget::Foreign {
                 identity,
                 file: self.unit.cursor_file_identity(cursor),

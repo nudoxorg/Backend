@@ -40,6 +40,10 @@ impl Engine for SessionEngine<'_> {
         match probe {
             Probe::Packages => self.0.packages(),
             Probe::Index(path) => self.0.index(path),
+            Probe::IndexWithExecutionIntent {
+                path,
+                execution_intent,
+            } => self.0.index_with_execution_intent(path, execution_intent),
             Probe::Remove(path) => self.0.remove(path),
             Probe::Document(at) => self.0.document(at),
             Probe::Source(at) => self.0.source(at),

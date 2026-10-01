@@ -1,23 +1,27 @@
+use super::super::product_state::CatalogLookupIndex;
 use super::super::{
     BuiltinAuthorityVerifier, BuiltinIntent, BuiltinModel, BuiltinModelError,
     BuiltinSemanticChange, BuiltinSemanticRelation, BuiltinSourceChange, BuiltinValidator,
-    BuiltinWorkspaceRelation, Command, CommandReply, ProductSourceRecord, RegistryGateway,
-    WireCertificate, WireClaim, WorkspaceModel, activate_semantic_publication, ingest, projection,
-    publish_builtin_view,
+    BuiltinWorkspaceRelation, Command, CommandReply, ForgeGateway, ProductSourceRecord,
+    RegistryGateway, WireCertificate, WireClaim, WorkspaceModel, activate_semantic_publication,
+    ingest, projection, publish_builtin_view,
 };
 use super::diff::execute_semantic_diff;
 use super::graph::{execute_certified_graph_query, execute_search};
 use super::index::{
-    index_project_intent, index_project_intent_at, remove_project_intent, semantic_version_record,
-    semantic_versions,
+    DeferredIndex, PreparedIndex, finish_deferred_index, index_project_intent,
+    index_project_intent_at, index_project_intent_with_cluster_and_intent, prepare_index_project,
+    remove_project_intent, run_deferred_compile, semantic_version_record, semantic_versions,
 };
 use super::semantic_query::{
     execute_references, execute_semantic_graph, execute_structural_call_graph,
 };
 use backend_engine::application::LocalCompilerClient;
 use backend_engine::builtin::{ProductSemanticPublicationKey, ProductSemanticPublicationRecord};
+use backend_library::CompileExecutionIntent;
 use backend_library::interface::PackageUrl;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 type ProductDaemon = crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>;
 type AdmittedReply = (CommandReply, Option<WireCertificate>);
@@ -49,33 +53,126 @@ fn classify_add_target(label: &str) -> Result<AddTarget, BuiltinModelError> {
 pub(in crate::builtin) struct CommandAdapter {
     sql_projection: backend_extension_turso::TursoProjection,
     registry: Option<RegistryGateway>,
+    forge: ForgeGateway,
+    discovery: Option<crate::discovery::DiscoveryGateway>,
     product_state: super::super::ProductState,
     compiler: LocalCompilerClient,
     search_snapshots: super::super::query::SearchSnapshotOwner,
     remote_semantic: super::super::query::RemoteSemantic,
+    pending_semantic_search: Option<backend_library::SemanticSearchStatus>,
     published: Option<super::super::view_publish::PublishedRoots>,
     manifests: super::super::local_manifest::LocalManifestResidence,
+    project_roots: super::super::project_root_residence::ProjectRootResidence,
     image_rows: super::super::view_build::ImageRowResidence,
     generations: super::super::generation_residence::SemanticGenerationResidence,
+    semantic_authority: super::super::semantic_authority::SemanticAuthority,
+    owner_cluster: Option<Arc<super::super::cluster_dispatch::OwnerCompilerClusterRuntime>>,
+    pending_stored_acks: Option<Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
     dependencies: Option<ResidentDependencies>,
     browse: super::super::browse::BrowseCache,
+    /// The index job whose compile runs off the owner loop, if one does.
+    indexing: Option<IndexJob>,
+    /// Commands that change state, waiting for that job: one writer at a
+    /// time, in arrival order. Reads never wait here.
+    waiting: std::collections::VecDeque<(u64, Vec<u8>)>,
+}
+
+/// An `Add` of a local folder whose compile runs off the owner loop.
+struct IndexJob {
+    ticket: u64,
+    request_id: u64,
+    requested_package: backend_engine::PackageKey,
+    job: DeferredIndex,
+    compiled: std::sync::mpsc::Receiver<
+        Vec<Result<backend_engine::application::StagedSemanticPackage, String>>,
+    >,
+}
+
+/// What the owner loop answers while an index job compiles: reads, from the
+/// last publication. A command not named here changes state (or might) and
+/// waits for the job.
+fn answers_while_indexing(command: &Command) -> bool {
+    use backend_library::SurfaceCommand as S;
+    match command {
+        Command::Packages
+        | Command::PackagePage(_)
+        | Command::Document(_)
+        | Command::Source(_)
+        | Command::Show { .. }
+        | Command::Outline(_)
+        | Command::OutlinePage { .. }
+        | Command::Name(_)
+        | Command::Resolve { .. }
+        | Command::Search(_)
+        | Command::Graph(_)
+        | Command::Related(_)
+        | Command::GraphPage { .. }
+        | Command::GraphQuery(_)
+        | Command::Health
+        | Command::Revision => true,
+        Command::Surface(surface) => matches!(
+            surface,
+            S::Read { .. }
+                | S::References { .. }
+                | S::Diff { .. }
+                | S::Explore { .. }
+                | S::Package { .. }
+                | S::Dependents { .. }
+                | S::Dependencies { .. }
+                | S::PackageGraphPage { .. }
+                | S::Owner { .. }
+                | S::IndexSearch { .. }
+                | S::PackageVersions { .. }
+                | S::SemanticVersions { .. }
+                | S::PackageProfile { .. }
+                | S::Subscriptions
+                | S::Releases { .. }
+                | S::Projects
+                | S::Tree
+                | S::ProjectTree { .. }
+        ),
+        Command::Add { .. } | Command::Remove { .. } => false,
+    }
+}
+
+/// The reply to an `Add` of `requested_package`, as the add path gives it.
+fn added_reply(requested_package: backend_engine::PackageKey) -> AdmittedReply {
+    let intent_id = backend_engine::intent_id("request_package", requested_package.as_bytes());
+    let certificate = WireCertificate::new().with_claim(WireClaim::Intent {
+        id: backend_engine::encode_id(intent_id.as_bytes()),
+        token: "request_package".to_owned(),
+        payload: requested_package.as_bytes().to_vec().into_boxed_slice(),
+    });
+    (CommandReply::Added(intent_id), Some(certificate))
+}
+
+/// What executing one command came to.
+pub(in crate::builtin) enum Executed {
+    /// The reply body.
+    Reply(Vec<u8>),
+    /// Answered later under its ticket ([`CommandAdapter::poll_deferred`]).
+    Deferred,
 }
 
 struct ResidentDependencies {
     stamp: [u8; 32],
     local_witness: [u8; 32],
     catalog: Vec<backend_engine::RegistryPackageRecord>,
-    catalog_index: super::super::product_state::CatalogLookupIndex,
+    selected_catalog_snapshot: [u8; 32],
+    catalog_index: Arc<super::super::product_state::CatalogLookupIndex>,
     registry_facts: Vec<backend_engine::PackageDependencySourceFacts>,
-    facts: Vec<backend_engine::PackageDependencySourceFacts>,
+    graph_facts: backend_library::CheckedPackageGraphFacts,
     index: backend_library::PackageGraphIndex,
     synced_root: Option<[u8; 32]>,
+    synced_facts_witness: Option<[u8; 32]>,
 }
 
 impl CommandAdapter {
     pub(in crate::builtin) fn new(
         sql_projection: backend_extension_turso::TursoProjection,
         registry: Option<RegistryGateway>,
+        forge: ForgeGateway,
+        discovery: Option<crate::discovery::DiscoveryGateway>,
         product_state: super::super::ProductState,
         compiler: LocalCompilerClient,
         search_snapshots: super::super::query::SearchSnapshotOwner,
@@ -83,21 +180,209 @@ impl CommandAdapter {
         published: Option<super::super::view_publish::PublishedRoots>,
         image_rows: super::super::view_build::ImageRowResidence,
         generations: super::super::generation_residence::SemanticGenerationResidence,
+        semantic_authority: super::super::semantic_authority::SemanticAuthority,
+        owner_cluster: Option<Arc<super::super::cluster_dispatch::OwnerCompilerClusterRuntime>>,
+        pending_stored_acks: Option<
+            Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>,
+        >,
     ) -> Self {
         Self {
             sql_projection,
             registry,
+            forge,
+            discovery,
             product_state,
             compiler,
             search_snapshots,
             remote_semantic,
+            pending_semantic_search: None,
             published,
             manifests: super::super::local_manifest::LocalManifestResidence::default(),
+            project_roots: super::super::project_root_residence::ProjectRootResidence::default(),
             image_rows,
             generations,
+            semantic_authority,
+            owner_cluster,
+            pending_stored_acks,
             dependencies: None,
             browse: super::super::browse::BrowseCache::default(),
+            indexing: None,
+            waiting: std::collections::VecDeque::new(),
         }
+    }
+
+    /// [`Self::execute`], except that indexing a local folder hands its
+    /// compile off the owner loop and answers under `ticket` once it is
+    /// published, and that a command that changes state waits while such a
+    /// compile runs. Reads are answered at once, from the last publication.
+    pub(in crate::builtin) fn execute_or_defer(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        body: &[u8],
+        ticket: u64,
+    ) -> Result<Executed, BuiltinModelError> {
+        let owner = daemon.engine().daemon().library().cursor();
+        let request = backend_engine::decode_command_dto_for_owner(body, owner)
+            .map_err(|error| BuiltinModelError(format!("decode command DTO: {error}")))?;
+        if self.indexing.is_some() && !answers_while_indexing(&request.command) {
+            self.waiting.push_back((ticket, body.to_vec()));
+            return Ok(Executed::Deferred);
+        }
+        if let Command::Add {
+            package,
+            execution_intent,
+        } = request.command
+            && self.owner_cluster.is_none()
+        {
+            let certificate = request.certificate().cloned();
+            if let Some(started) = self.start_index_job(
+                daemon,
+                package,
+                execution_intent,
+                certificate.as_ref(),
+                request.request_id,
+                ticket,
+            )? {
+                return Self::encode(daemon, request.request_id, started, None).map(Executed::Reply);
+            }
+            return Ok(Executed::Deferred);
+        }
+        self.execute(daemon, body).map(Executed::Reply)
+    }
+
+    /// Publishes the index job's compile once it is done, then runs the
+    /// commands that waited for it, in order, until one defers again.
+    /// Returns every reply that is ready, by ticket.
+    pub(in crate::builtin) fn poll_deferred(
+        &mut self,
+        daemon: &mut ProductDaemon,
+    ) -> Vec<(u64, Result<Vec<u8>, BuiltinModelError>)> {
+        let mut ready = Vec::new();
+        if let Some(indexing) = &self.indexing {
+            let compiled = match indexing.compiled.try_recv() {
+                Ok(compiled) => Some(compiled),
+                Err(std::sync::mpsc::TryRecvError::Empty) => return ready,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
+            };
+            let Some(IndexJob {
+                ticket,
+                request_id,
+                requested_package,
+                job,
+                ..
+            }) = self.indexing.take()
+            else {
+                return ready;
+            };
+            let reply = match compiled {
+                Some(compiled) => finish_deferred_index(daemon, &mut self.semantic_authority, job, compiled),
+                None => Err(BuiltinModelError(
+                    "the compile stopped before it answered; prior selected semantic generation was preserved"
+                        .to_owned(),
+                )),
+            }
+            .and_then(|intent| self.finish_add(daemon, intent, request_id, requested_package))
+            .or_else(|refusal| {
+                // As in place: the committed source frontier is published, so
+                // the refused project is listed with its reason.
+                let _ = self.publish_view(daemon, None);
+                Err(refusal)
+            })
+            .and_then(|admitted| Self::encode(daemon, request_id, admitted, None));
+            ready.push((ticket, reply));
+        }
+        while self.indexing.is_none()
+            && let Some((ticket, body)) = self.waiting.pop_front()
+        {
+            match self.execute_or_defer(daemon, &body, ticket) {
+                Ok(Executed::Reply(reply)) => ready.push((ticket, Ok(reply))),
+                Ok(Executed::Deferred) => {}
+                Err(error) => ready.push((ticket, Err(error))),
+            }
+        }
+        ready
+    }
+
+    /// Starts indexing a local folder: its scan and source frontier on the
+    /// loop, its compile on a thread. `Some` when there was nothing to
+    /// compile off the loop (the reply is ready), `None` when the job runs.
+    fn start_index_job(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        package: backend_engine::PackageKey,
+        execution_intent: CompileExecutionIntent,
+        certificate: Option<&WireCertificate>,
+        request_id: u64,
+        ticket: u64,
+    ) -> Result<Option<AdmittedReply>, BuiltinModelError> {
+        let label = certified_package_label(certificate, package)?;
+        let requested_package = package;
+        let (package, label) = canonical_local_package(package, label)?;
+        if !matches!(classify_add_target(&label)?, AddTarget::LocalDirectory) {
+            return self
+                .add(daemon, requested_package, execution_intent, certificate, request_id)
+                .map(Some);
+        }
+        let prepared = match prepare_index_project(
+            daemon,
+            package,
+            &label,
+            request_id,
+            execution_intent,
+            &self.compiler,
+            &mut self.semantic_authority,
+        ) {
+            Ok(prepared) => prepared,
+            Err(refusal) => {
+                let _ = self.publish_view(daemon, None);
+                return Err(refusal);
+            }
+        };
+        match prepared {
+            PreparedIndex::Ready(intent) => {
+                self.finish_add(daemon, intent, request_id, requested_package).map(Some)
+            }
+            PreparedIndex::Compile(mut job) => {
+                let work = job.take_work();
+                let compiler = self.compiler.clone();
+                let (sender, compiled) = std::sync::mpsc::sync_channel(1);
+                std::thread::Builder::new()
+                    .name("locald-index-compile".to_owned())
+                    .spawn(move || {
+                        let _ = sender.send(run_deferred_compile(&compiler, work));
+                    })
+                    .map_err(|error| BuiltinModelError(format!("start the index compile: {error}")))?;
+                self.indexing = Some(IndexJob {
+                    ticket,
+                    request_id,
+                    requested_package,
+                    job,
+                    compiled,
+                });
+                Ok(None)
+            }
+        }
+    }
+
+    /// Commits an index job's semantic intent and publishes the view: the
+    /// end of `add` for a local folder.
+    fn finish_add(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        intent: Option<BuiltinIntent>,
+        request_id: u64,
+        requested_package: backend_engine::PackageKey,
+    ) -> Result<AdmittedReply, BuiltinModelError> {
+        let committed = if let Some(intent) = intent {
+            commit_builtin_intent(daemon, request_id, &intent).map_err(|error| {
+                BuiltinModelError(format!("commit product source intent: {error}"))
+            })?;
+            Some(intent)
+        } else {
+            None
+        };
+        self.publish_view(daemon, committed.as_ref())?;
+        Ok(added_reply(requested_package))
     }
 
     pub(in crate::builtin) fn execute(
@@ -110,8 +395,24 @@ impl CommandAdapter {
             .map_err(|error| BuiltinModelError(format!("decode command DTO: {error}")))?;
         let request_id = request.request_id;
         let certificate = request.certificate().cloned();
-        let (reply, certificate) =
-            self.dispatch(daemon, request.command, certificate, request_id)?;
+        let is_search = matches!(&request.command, Command::Search(_));
+        self.pending_semantic_search = None;
+        let admitted = self.dispatch(daemon, request.command, certificate, request_id)?;
+        let status = if is_search {
+            self.pending_semantic_search.take()
+        } else {
+            None
+        };
+        Self::encode(daemon, request_id, admitted, status)
+    }
+
+    /// One admitted reply as the wire's reply DTO.
+    fn encode(
+        daemon: &ProductDaemon,
+        request_id: u64,
+        (reply, certificate): AdmittedReply,
+        search_status: Option<backend_library::SemanticSearchStatus>,
+    ) -> Result<Vec<u8>, BuiltinModelError> {
         let mut reply = match reply {
             CommandReply::Health(root) => backend_engine::ReplyDto::health(
                 request_id,
@@ -120,10 +421,330 @@ impl CommandAdapter {
             ),
             reply => backend_engine::ReplyDto::new(request_id, reply),
         };
+        if let Some(status) = search_status {
+            reply = reply.with_semantic_search_status(status);
+        }
         if let Some(certificate) = certificate {
             reply = reply.with_certificate(certificate);
         }
         backend_engine::encode_reply_dto(&reply).map_err(BuiltinModelError)
+    }
+
+    /// Decodes and serves one local semantic range against a fresh Turso head.
+    /// The payload's selected stamp is only a claim; the resolver reopens the
+    /// exact current metadata before and after the bounded CAS read.
+    pub(in crate::builtin) fn serve_semantic_range(
+        &mut self,
+        request_id: u64,
+        payload: Box<[u8]>,
+    ) -> Result<Box<[u8]>, crate::protocol::ProtocolError> {
+        use backend_replication::{SemanticRangeChunk, SemanticRangeGet};
+
+        let request = SemanticRangeGet::decode(&payload).map_err(|_| {
+            crate::protocol::ProtocolError::InvalidControl("semantic range request is malformed")
+        })?;
+        if request.request_id != request_id {
+            return Err(crate::protocol::ProtocolError::InvalidControl(
+                "semantic range correlation mismatch",
+            ));
+        }
+        let package = backend_engine::PackageReference::parse(request.target.package().to_owned())
+            .map_err(|_| {
+                crate::protocol::ProtocolError::InvalidControl(
+                    "semantic range package target is invalid",
+                )
+            })?;
+        let coordinate =
+            PackageUrl::parse(request.target.coordinate().to_owned()).map_err(|_| {
+                crate::protocol::ProtocolError::InvalidControl(
+                    "semantic range compiler coordinate is invalid",
+                )
+            })?;
+        if coordinate.as_str() != request.target.coordinate() {
+            return Err(crate::protocol::ProtocolError::InvalidControl(
+                "semantic range compiler coordinate is not canonical",
+            ));
+        }
+        let key = ProductSemanticPublicationKey::new(
+            package,
+            coordinate.clone(),
+            request.target.profile(),
+        )
+        .map_err(|_| {
+            crate::protocol::ProtocolError::InvalidControl(
+                "semantic range product target is inconsistent",
+            )
+        })?;
+        let target = backend_engine::application::CompilerPackageTargetV2::for_package(coordinate);
+        let identity = self
+            .compiler
+            .execution_identity(
+                target.target(),
+                request.target.profile(),
+                backend_semantic::vocabulary::Stage::LowerIr,
+            )
+            .ok_or(crate::protocol::ProtocolError::InvalidControl(
+                "semantic range target has no admitted compiler runtime",
+            ))?;
+        if identity.target() != target.target()
+            || identity.profile() != request.target.profile()
+            || identity.stage() != backend_semantic::vocabulary::Stage::LowerIr
+        {
+            return Err(crate::protocol::ProtocolError::InvalidControl(
+                "semantic range target differs from its compiler runtime",
+            ));
+        }
+
+        let mut resolver = super::super::versioned_planes::SemanticAuthoritySelectionSource::new(
+            &self.semantic_authority,
+            key,
+        );
+        let service = self.semantic_authority.versioned_plane_service();
+        let bytes = service
+            .serve_range_claim(
+                &mut resolver,
+                request.selected_stamp,
+                request.image,
+                request.range_request,
+                request.byte_range,
+                identity.environment_identity(),
+                identity.target_platform_identity(),
+            )
+            .map_err(|error| {
+                map_semantic_authority_error(error, "semantic range request is unavailable")
+            })?;
+        let chunk = SemanticRangeChunk::for_request(&request, bytes);
+        chunk.validate_against(&request).map_err(|_| {
+            crate::protocol::ProtocolError::InvalidControl(
+                "semantic range chunk failed identity admission",
+            )
+        })?;
+        chunk
+            .encode()
+            .map(|bytes| bytes.into_boxed_slice())
+            .map_err(|_| {
+                crate::protocol::ProtocolError::InvalidControl(
+                    "semantic range chunk exceeds bounds",
+                )
+            })
+    }
+
+    /// Dispatches the canonical semantic paging DTOs to their typed
+    /// authority handlers while preserving one bounded owner admission seam.
+    pub(in crate::builtin) fn serve_semantic_control(
+        &mut self,
+        request_id: u64,
+        payload: Box<[u8]>,
+    ) -> Result<Box<[u8]>, crate::protocol::ProtocolError> {
+        match payload.get(5).copied() {
+            Some(1) => self.serve_semantic_range(request_id, payload),
+            Some(4 | 6 | 8) => self.serve_semantic_metadata(request_id, payload),
+            _ => Err(crate::protocol::ProtocolError::InvalidControl(
+                "unknown semantic paging operation",
+            )),
+        }
+    }
+
+    /// Serves one bounded semantic catalog, manifest, or full-image page
+    /// against fresh Turso selection. The DTO's stamp and identity fields stay
+    /// claims until the local authority reopens and rechecks the current head.
+    pub(in crate::builtin) fn serve_semantic_metadata(
+        &mut self,
+        request_id: u64,
+        payload: Box<[u8]>,
+    ) -> Result<Box<[u8]>, crate::protocol::ProtocolError> {
+        use backend_replication::{
+            SelectedSemanticImageGet, SemanticCatalogGet, SemanticManifestGet,
+        };
+
+        let tag = payload
+            .get(5)
+            .copied()
+            .ok_or(crate::protocol::ProtocolError::InvalidControl(
+                "semantic metadata request is malformed",
+            ))?;
+        match tag {
+            4 => {
+                let get = SemanticCatalogGet::decode(&payload).map_err(|_| {
+                    crate::protocol::ProtocolError::InvalidControl(
+                        "semantic catalog request is malformed",
+                    )
+                })?;
+                let correlated_id = get.request_id;
+                let target = get.target.clone();
+                let (key, identity) = self.semantic_metadata_context(&target)?;
+                if correlated_id != request_id {
+                    return Err(crate::protocol::ProtocolError::InvalidControl(
+                        "semantic catalog correlation mismatch",
+                    ));
+                }
+                let mut resolver =
+                    super::super::versioned_planes::SemanticAuthoritySelectionSource::new(
+                        &self.semantic_authority,
+                        key,
+                    );
+                let service = self.semantic_authority.versioned_plane_service();
+                let chunk = service
+                    .serve_catalog_get(
+                        &mut resolver,
+                        &get,
+                        identity.environment_identity(),
+                        identity.target_platform_identity(),
+                    )
+                    .map_err(|error| {
+                        map_semantic_authority_error(
+                            error,
+                            "semantic catalog request is unavailable",
+                        )
+                    })?;
+                let encoded = chunk.encode().map_err(|_| {
+                    crate::protocol::ProtocolError::InvalidControl(
+                        "semantic catalog page exceeds bounds",
+                    )
+                })?;
+                return Ok(encoded.into_boxed_slice());
+            }
+            6 => {
+                let get = SemanticManifestGet::decode(&payload).map_err(|_| {
+                    crate::protocol::ProtocolError::InvalidControl(
+                        "semantic manifest request is malformed",
+                    )
+                })?;
+                let correlated_id = get.request_id;
+                let target = get.target.clone();
+                let (key, identity) = self.semantic_metadata_context(&target)?;
+                if correlated_id != request_id {
+                    return Err(crate::protocol::ProtocolError::InvalidControl(
+                        "semantic manifest correlation mismatch",
+                    ));
+                }
+                let mut resolver =
+                    super::super::versioned_planes::SemanticAuthoritySelectionSource::new(
+                        &self.semantic_authority,
+                        key,
+                    );
+                let service = self.semantic_authority.versioned_plane_service();
+                let chunk = service
+                    .serve_manifest_get(
+                        &mut resolver,
+                        &get,
+                        identity.environment_identity(),
+                        identity.target_platform_identity(),
+                    )
+                    .map_err(|error| {
+                        map_semantic_authority_error(
+                            error,
+                            "semantic manifest request is unavailable",
+                        )
+                    })?;
+                let encoded = chunk.encode().map_err(|_| {
+                    crate::protocol::ProtocolError::InvalidControl(
+                        "semantic manifest page exceeds bounds",
+                    )
+                })?;
+                return Ok(encoded.into_boxed_slice());
+            }
+            8 => {
+                let get = SelectedSemanticImageGet::decode(&payload).map_err(|_| {
+                    crate::protocol::ProtocolError::InvalidControl(
+                        "selected semantic image request is malformed",
+                    )
+                })?;
+                if get.request_id != request_id {
+                    return Err(crate::protocol::ProtocolError::InvalidControl(
+                        "selected semantic image correlation mismatch",
+                    ));
+                }
+                let (key, identity) = self.semantic_metadata_context(&get.target)?;
+                let chunk = super::super::selected_full_image::serve_selected_image_get(
+                    &mut self.semantic_authority,
+                    &key,
+                    &get,
+                    identity.environment_identity(),
+                    identity.target_platform_identity(),
+                )
+                .map_err(|error| {
+                    let message = match error {
+                        super::super::selected_full_image::SelectedFullImageError::StaleSelection => {
+                            "selected semantic image is stale"
+                        }
+                        super::super::selected_full_image::SelectedFullImageError::PlatformOrEnvironmentMismatch => {
+                            "selected semantic image targets another environment or platform"
+                        }
+                        _ => "selected semantic image request is unavailable",
+                    };
+                    crate::protocol::ProtocolError::InvalidControl(message)
+                })?;
+                return chunk
+                    .encode()
+                    .map(|bytes| bytes.into_boxed_slice())
+                    .map_err(|_| {
+                        crate::protocol::ProtocolError::InvalidControl(
+                            "selected semantic image page exceeds bounds",
+                        )
+                    });
+            }
+            _ => {
+                return Err(crate::protocol::ProtocolError::InvalidControl(
+                    "unknown semantic metadata operation",
+                ));
+            }
+        }
+    }
+
+    fn semantic_metadata_context(
+        &self,
+        target: &backend_replication::SemanticTargetKey,
+    ) -> Result<
+        (
+            ProductSemanticPublicationKey,
+            backend_engine::application::LocalCompilerExecutionIdentity,
+        ),
+        crate::protocol::ProtocolError,
+    > {
+        let package = backend_engine::PackageReference::parse(target.package().to_owned())
+            .map_err(|_| {
+                crate::protocol::ProtocolError::InvalidControl(
+                    "semantic metadata package target is invalid",
+                )
+            })?;
+        let coordinate = PackageUrl::parse(target.coordinate().to_owned()).map_err(|_| {
+            crate::protocol::ProtocolError::InvalidControl(
+                "semantic metadata compiler coordinate is invalid",
+            )
+        })?;
+        if coordinate.as_str() != target.coordinate() {
+            return Err(crate::protocol::ProtocolError::InvalidControl(
+                "semantic metadata compiler coordinate is not canonical",
+            ));
+        }
+        let key = ProductSemanticPublicationKey::new(package, coordinate.clone(), target.profile())
+            .map_err(|_| {
+                crate::protocol::ProtocolError::InvalidControl(
+                    "semantic metadata product target is inconsistent",
+                )
+            })?;
+        let compiler_target =
+            backend_engine::application::CompilerPackageTargetV2::for_package(coordinate);
+        let identity = self
+            .compiler
+            .execution_identity(
+                compiler_target.target(),
+                target.profile(),
+                backend_semantic::vocabulary::Stage::LowerIr,
+            )
+            .ok_or(crate::protocol::ProtocolError::InvalidControl(
+                "semantic metadata target has no admitted compiler runtime",
+            ))?;
+        if identity.target() != compiler_target.target()
+            || identity.profile() != target.profile()
+            || identity.stage() != backend_semantic::vocabulary::Stage::LowerIr
+        {
+            return Err(crate::protocol::ProtocolError::InvalidControl(
+                "semantic metadata target differs from its compiler runtime",
+            ));
+        }
+        Ok((key, identity))
     }
 
     fn dispatch(
@@ -134,24 +755,31 @@ impl CommandAdapter {
         request_id: u64,
     ) -> Result<AdmittedReply, BuiltinModelError> {
         match command {
-            Command::Add { package } => self.add(daemon, package, certificate.as_ref(), request_id),
+            Command::Add {
+                package,
+                execution_intent,
+            } => self.add(
+                daemon,
+                package,
+                execution_intent,
+                certificate.as_ref(),
+                request_id,
+            ),
             Command::Remove { package } => {
                 self.remove(daemon, package, certificate.as_ref(), request_id)
             }
             Command::Search(query) => self.search(daemon, &query, certificate),
             Command::Graph(query) => self.graph(daemon, query, certificate, false),
             Command::Related(query) => self.graph(daemon, query, certificate, true),
-            Command::GraphQuery(request) => {
-                execute_certified_graph_query(
-                    daemon,
-                    &self.compiler,
-                    &mut self.search_snapshots,
-                    &mut self.generations,
-                    &mut self.image_rows,
-                    &request,
-                    certificate,
-                )
-            }
+            Command::GraphQuery(request) => execute_certified_graph_query(
+                daemon,
+                &self.compiler,
+                &mut self.search_snapshots,
+                &mut self.generations,
+                &mut self.image_rows,
+                &request,
+                certificate,
+            ),
             Command::Surface(surface) => self.surface(daemon, surface, request_id),
             command => self.standard(daemon, &command, certificate),
         }
@@ -161,6 +789,7 @@ impl CommandAdapter {
         &mut self,
         daemon: &mut ProductDaemon,
         package: backend_engine::PackageKey,
+        execution_intent: CompileExecutionIntent,
         certificate: Option<&WireCertificate>,
         request_id: u64,
     ) -> Result<AdmittedReply, BuiltinModelError> {
@@ -168,9 +797,28 @@ impl CommandAdapter {
         let requested_package = package;
         let (package, label) = canonical_local_package(package, label)?;
         let intent = match classify_add_target(&label)? {
-            AddTarget::LocalDirectory => {
-                index_project_intent(daemon, package, &label, request_id, &self.compiler)?
-            }
+            AddTarget::LocalDirectory => match index_project_intent_with_cluster_and_intent(
+                daemon,
+                package,
+                &label,
+                request_id,
+                execution_intent,
+                &self.compiler,
+                &mut self.semantic_authority,
+                self.owner_cluster.as_deref(),
+                self.pending_stored_acks.as_ref(),
+            ) {
+                Ok(intent) => intent,
+                Err(refusal) => {
+                    // The source frontier commits before the compiler runs, so a
+                    // refused compile leaves that frontier durable. Publish it now:
+                    // the project is listed, on its structural rows, in the same
+                    // boot that names why it was refused, instead of staying out of
+                    // the view until the next command or restart.
+                    let _ = self.publish_view(daemon, None);
+                    return Err(refusal);
+                }
+            },
             AddTarget::PackageUrl => self.registry_intent(daemon, package, &label, request_id)?,
         };
         let committed = if let Some(intent) = intent {
@@ -182,25 +830,18 @@ impl CommandAdapter {
             None
         };
         self.publish_view(daemon, committed.as_ref())?;
-        let intent_id = backend_engine::intent_id("request_package", requested_package.as_bytes());
-        let certificate = WireCertificate::new().with_claim(WireClaim::Intent {
-            id: backend_engine::encode_id(intent_id.as_bytes()),
-            token: "request_package".to_owned(),
-            payload: requested_package.as_bytes().to_vec().into_boxed_slice(),
-        });
-        Ok((CommandReply::Added(intent_id), Some(certificate)))
+        Ok(added_reply(requested_package))
     }
 
     fn registry_intent(
         &mut self,
-        daemon: &ProductDaemon,
+        daemon: &mut ProductDaemon,
         package: backend_engine::PackageKey,
         label: &str,
         request_id: u64,
     ) -> Result<Option<BuiltinIntent>, BuiltinModelError> {
-        let coordinate =
-            backend_engine::registry::PackageCoordinate::parse(label)
-                .map_err(|_| BuiltinModelError(ADD_TARGET_REQUIRED.to_owned()))?;
+        let coordinate = backend_engine::registry::PackageCoordinate::parse(label)
+            .map_err(|_| BuiltinModelError(ADD_TARGET_REQUIRED.to_owned()))?;
         if coordinate.as_str() != label {
             return Err(BuiltinModelError(
                 "package URL is not in canonical form".to_owned(),
@@ -229,6 +870,7 @@ impl CommandAdapter {
             Some(&coordinate),
             request_id,
             &self.compiler,
+            &mut self.semantic_authority,
         )
     }
 
@@ -240,9 +882,11 @@ impl CommandAdapter {
     /// exact label after checking the request root instead of returning a
     /// false not-found for a published semantic declaration.
     fn canonical_claim_document(
+        &self,
         daemon: &ProductDaemon,
         query: &backend_library::DocumentQuery,
         certificate: Option<&WireCertificate>,
+        recover_excerpt: bool,
     ) -> Option<backend_library::Document> {
         let label = certificate.and_then(|certificate| {
             certificate.claims.iter().find_map(|claim| match claim {
@@ -273,13 +917,60 @@ impl CommandAdapter {
             root,
             ..library.view().basis()
         };
+        let excerpt =
+            if recover_excerpt && row.excerpt == backend_library::SourceExcerpt::NotHydrated {
+                self.recover_indexed_excerpt(daemon, row, label)
+                    .unwrap_or_else(|| row.excerpt.clone())
+            } else {
+                row.excerpt.clone()
+            };
         let mut document = backend_library::Document::new(symbol, root, row.document.clone())
             .with_source_basis(source_basis)
             .with_location(row.source.clone())
-            .with_excerpt(row.excerpt.clone())
+            .with_excerpt(excerpt)
             .with_facts(row.facts.clone());
         document.signature.clone_from(&row.signature);
         Some(document)
+    }
+
+    /// Rehydrates a shed declaration excerpt from the exact package source
+    /// file admitted by the current source relation. The indexed source
+    /// identity must still match before the baseline parser can produce text.
+    fn recover_indexed_excerpt(
+        &self,
+        daemon: &ProductDaemon,
+        row: &backend_library::Row,
+        label: &str,
+    ) -> Option<backend_compile::SourceExcerpt> {
+        let location = row.source.captured()?;
+        let package = row.package?;
+        let workspace = self.product_state.workspace_path().ok()?;
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        let sources = super::super::read_package_sources(&snapshot, package).ok()?;
+        let project = sources.projects.get(&package.to_bytes())?;
+        let (claimed_project, _) = label.split_once("::")?;
+        if project.package != package
+            || claimed_project != project.label
+            || backend_engine::PackageKey::from_value(&project.label) != package
+        {
+            return None;
+        }
+        let source_root = admitted_project_source_root(package, &project.label, workspace)?;
+        let fields = sources.files.iter().find_map(|(_, record)| {
+            let fields = record.file_fields()?;
+            (fields.project == package.to_bytes() && fields.path == location.path())
+                .then_some(fields)
+        })?;
+        let source_identity = fields.source_identity?;
+        super::super::ingest::recover_indexed_excerpt(
+            &source_root,
+            fields.path,
+            source_identity,
+            fields.language,
+            label,
+            location.start_line(),
+            row.kind,
+        )
     }
 
     fn remove(
@@ -292,7 +983,9 @@ impl CommandAdapter {
         let label = certified_package_label(certificate, package)?;
         let requested_package = package;
         let (package, label) = canonical_local_package(package, label)?;
-        let committed = if let Some(intent) = remove_project_intent(daemon, package, &label)? {
+        let committed = if let Some(intent) =
+            remove_project_intent(daemon, package, &label, &mut self.semantic_authority)?
+        {
             commit_builtin_intent(daemon, request_id, &intent).map_err(|error| {
                 BuiltinModelError(format!("commit product source intent: {error}"))
             })?;
@@ -336,7 +1029,8 @@ impl CommandAdapter {
         )
         .map_err(|error| BuiltinModelError(format!("publish product source view: {error}")))?;
         self.published = Some(outcome.roots);
-        project_view_deltas(&mut self.sql_projection, daemon, &outcome.deltas)
+        project_view_deltas(&mut self.sql_projection, daemon, &outcome.deltas)?;
+        self.semantic_authority.mark_projections_current()
     }
 
     fn search(
@@ -346,7 +1040,7 @@ impl CommandAdapter {
         certificate: Option<WireCertificate>,
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let command = Command::Search(query.clone());
-        let reply = execute_search(
+        let (reply, status) = execute_search(
             daemon,
             &self.compiler,
             &mut self.search_snapshots,
@@ -355,7 +1049,11 @@ impl CommandAdapter {
             &mut self.image_rows,
             query,
         )
-        .unwrap_or_else(|error| CommandReply::Error(error.to_string()));
+        .map_or_else(
+            |error| (CommandReply::Error(error.to_string()), None),
+            |(reply, status)| (reply, Some(status)),
+        );
+        self.pending_semantic_search = status;
         Self::certify(daemon, &command, reply, certificate)
     }
 
@@ -450,20 +1148,56 @@ impl CommandAdapter {
         request_id: u64,
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let reply = match surface {
+            backend_engine::SurfaceCommand::ForgeAdd { coordinate } => {
+                self.forge.acquire(coordinate.as_str()).map_or_else(
+                    |error| {
+                        CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(
+                            error.to_string(),
+                        ))
+                    },
+                    |record| {
+                        CommandReply::Surface(backend_engine::SurfaceReply::ForgePackageAdded(
+                            record,
+                        ))
+                    },
+                )
+            }
+            backend_engine::SurfaceCommand::ForgeReference { coordinate } => {
+                self.forge.reference(coordinate.as_str()).map_or_else(
+                    |error| {
+                        CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(
+                            error.to_string(),
+                        ))
+                    },
+                    |record| {
+                        CommandReply::Surface(backend_engine::SurfaceReply::ForgePackageReferenced(
+                            record,
+                        ))
+                    },
+                )
+            }
             backend_engine::SurfaceCommand::ProjectTree { root } => {
                 let authority = self.registry.as_ref().map(RegistryGateway::advisory);
                 self.browse
                     .project_tree(Path::new(root.as_str()), authority)
                     .map_or_else(
-                        |error| CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error)),
+                        |error| {
+                            CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(
+                                error,
+                            ))
+                        },
                         |tree| {
-                            CommandReply::Surface(backend_engine::SurfaceReply::ProjectTree(Box::new(tree)))
+                            CommandReply::Surface(backend_engine::SurfaceReply::ProjectTree(
+                                Box::new(tree),
+                            ))
                         },
                     )
             }
             backend_engine::SurfaceCommand::AdvisoryRefresh => match self.registry.as_mut() {
                 Some(gateway) => gateway.refresh_advisories().map_or_else(
-                    |error| CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error)),
+                    |error| {
+                        CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error))
+                    },
                     |states| {
                         CommandReply::Surface(backend_engine::SurfaceReply::AdvisoryRefreshed(
                             states.into_boxed_slice(),
@@ -474,47 +1208,43 @@ impl CommandAdapter {
                     "no advisory authority is open in this owner".to_owned(),
                 )),
             },
-            backend_engine::SurfaceCommand::References { target } => {
-                execute_references(
-                    daemon,
-                    &self.compiler,
-                    &mut self.generations,
-                    &mut self.image_rows,
-                    &target,
-                )
-                .map_or_else(
-                    |error| {
-                        CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(
-                            error.to_string(),
-                        ))
-                    },
-                    CommandReply::Surface,
-                )
-            }
-            backend_engine::SurfaceCommand::Diff { from, to } => {
-                execute_semantic_diff(
-                    daemon,
-                    &self.compiler,
-                    &mut self.generations,
-                    &mut self.image_rows,
-                    &from,
-                    &to,
-                )
-                    .map_or_else(
-                    |error| {
-                        CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(
-                            error.to_string(),
-                        ))
-                    },
-                    |rows| CommandReply::Surface(backend_engine::SurfaceReply::Diff(rows)),
-                )
-            }
+            backend_engine::SurfaceCommand::References { target } => execute_references(
+                daemon,
+                &self.compiler,
+                &mut self.generations,
+                &mut self.image_rows,
+                &target,
+            )
+            .map_or_else(
+                |error| {
+                    CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(
+                        error.to_string(),
+                    ))
+                },
+                CommandReply::Surface,
+            ),
+            backend_engine::SurfaceCommand::Diff { from, to } => execute_semantic_diff(
+                daemon,
+                &self.compiler,
+                &mut self.generations,
+                &mut self.image_rows,
+                &from,
+                &to,
+            )
+            .map_or_else(
+                |error| {
+                    CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(
+                        error.to_string(),
+                    ))
+                },
+                |rows| CommandReply::Surface(backend_engine::SurfaceReply::Diff(rows)),
+            ),
             backend_engine::SurfaceCommand::SemanticVersions { package } => {
                 let workspace = self
                     .registry
                     .as_ref()
                     .map(|gateway| gateway.workspace_root());
-                semantic_versions(daemon, &package, workspace)
+                semantic_versions(daemon, &package, workspace, &self.semantic_authority)
             }
             .map_or_else(
                 |error| {
@@ -548,7 +1278,12 @@ impl CommandAdapter {
                     },
                 ),
             surface => {
-                let roots = local_project_roots(daemon)?;
+                if let Some(discovery) = self.discovery.as_mut() {
+                    discovery.apply_pending();
+                }
+                let roots = self
+                    .project_roots
+                    .roots(&daemon.engine().daemon().owner().snapshot())?;
                 self.manifests
                     .refresh(roots.iter().map(std::path::PathBuf::as_path))
                     .map_err(BuiltinModelError)?;
@@ -557,13 +1292,7 @@ impl CommandAdapter {
                     Some(registry) => registry.publication_stamp().map_err(BuiltinModelError)?,
                     None => [0; 32],
                 };
-                let root = *daemon
-                    .engine()
-                    .daemon()
-                    .library()
-                    .view()
-                    .root()
-                    .as_bytes();
+                let root = *daemon.engine().daemon().library().view().root().as_bytes();
                 let stamp_changed = self
                     .dependencies
                     .as_ref()
@@ -573,16 +1302,34 @@ impl CommandAdapter {
                     .as_ref()
                     .is_none_or(|cached| cached.local_witness != local_witness);
                 if stamp_changed || local_changed {
-                    let (catalog, catalog_index, registry_facts, synced_root) = if stamp_changed {
-                        let catalog = self
-                            .registry
-                            .as_mut()
-                            .map_or(Ok(Vec::new()), RegistryGateway::catalog)
-                            .map_err(BuiltinModelError)?;
-                        let catalog_index =
-                            super::super::product_state::CatalogLookupIndex::from_catalog(
-                                &catalog,
-                            );
+                    let (
+                        catalog,
+                        catalog_index,
+                        selected_catalog_snapshot,
+                        registry_facts,
+                        synced_root,
+                        synced_facts_witness,
+                    ) = if stamp_changed {
+                        let (catalog, catalog_index, selected_catalog_snapshot) =
+                            if let Some(gateway) = self.registry.as_mut() {
+                                let projection =
+                                    gateway.catalog_projection().map_err(BuiltinModelError)?;
+                                (
+                                    projection.records.clone(),
+                                    Arc::clone(&projection.index),
+                                    projection.selected_rows_snapshot,
+                                )
+                            } else {
+                                let catalog = Vec::new();
+                                let index = Arc::new(
+                                    super::super::product_state::CatalogLookupIndex::from_catalog(
+                                        &catalog,
+                                    ),
+                                );
+                                let selected_catalog_snapshot =
+                                    CatalogLookupIndex::snapshot_for_catalog(&catalog);
+                                (catalog, index, selected_catalog_snapshot)
+                            };
                         let registry_facts = self
                             .registry
                             .as_mut()
@@ -591,7 +1338,18 @@ impl CommandAdapter {
                             .dependencies
                             .as_ref()
                             .and_then(|cached| cached.synced_root);
-                        (catalog, catalog_index, registry_facts, synced_root)
+                        let synced_facts_witness = self
+                            .dependencies
+                            .as_ref()
+                            .and_then(|cached| cached.synced_facts_witness);
+                        (
+                            catalog,
+                            catalog_index,
+                            selected_catalog_snapshot,
+                            registry_facts,
+                            synced_root,
+                            synced_facts_witness,
+                        )
                     } else {
                         let cached = self.dependencies.take().ok_or_else(|| {
                             BuiltinModelError(
@@ -601,22 +1359,31 @@ impl CommandAdapter {
                         (
                             cached.catalog,
                             cached.catalog_index,
+                            cached.selected_catalog_snapshot,
                             cached.registry_facts,
                             cached.synced_root,
+                            cached.synced_facts_witness,
                         )
                     };
                     let mut facts = registry_facts.clone();
                     facts.extend(self.manifests.facts().cloned());
-                    let index = backend_library::PackageGraphIndex::from_facts(&facts);
+                    let graph_facts = backend_library::CheckedPackageGraphFacts::new(facts)
+                        .map_err(|error| {
+                            BuiltinModelError(format!("check package dependency facts: {error}"))
+                        })?;
+                    let index =
+                        backend_library::PackageGraphIndex::from_checked_facts(&graph_facts);
                     self.dependencies = Some(ResidentDependencies {
                         stamp,
                         local_witness,
                         catalog,
+                        selected_catalog_snapshot,
                         catalog_index,
                         registry_facts,
-                        facts,
+                        graph_facts,
                         index,
                         synced_root,
+                        synced_facts_witness,
                     });
                 }
                 let workspace = self
@@ -626,25 +1393,65 @@ impl CommandAdapter {
                 let mut cached = self.dependencies.take().ok_or_else(|| {
                     BuiltinModelError("dependency index disappeared after refresh".to_owned())
                 })?;
-                if cached.synced_root != Some(root) {
-                    futures_executor::block_on(self.sql_projection.synchronize_package_graph(
-                        daemon.engine().daemon().library().view().root(),
-                        &cached.facts,
-                    ))
+                if cached.synced_root != Some(root)
+                    || cached.synced_facts_witness != Some(cached.graph_facts.witness())
+                {
+                    futures_executor::block_on(
+                        self.sql_projection.synchronize_checked_package_graph(
+                            daemon.engine().daemon().library().view().root(),
+                            &cached.graph_facts,
+                        ),
+                    )
                     .map_err(|error| {
                         BuiltinModelError(format!("align package graph projection: {error}"))
                     })?;
                     cached.synced_root = Some(root);
+                    cached.synced_facts_witness = Some(cached.graph_facts.witness());
                 }
-                let reply = self.product_state.execute(
-                    surface,
-                    daemon.engine().daemon().library().view(),
-                    &cached.catalog,
-                    &cached.catalog_index,
-                    &cached.facts,
-                    &cached.index,
-                    workspace.as_deref(),
-                );
+                let discovery_store = self.discovery.as_ref().map(|gateway| gateway.store());
+                let forge_records = if matches!(
+                    &surface,
+                    backend_engine::SurfaceCommand::IndexSearch { .. }
+                        | backend_engine::SurfaceCommand::Package { .. }
+                ) {
+                    self.forge.search_records().map_err(BuiltinModelError)?
+                } else {
+                    Vec::new()
+                };
+                let reply = match &surface {
+                    backend_engine::SurfaceCommand::PackageGraphPage { request } => request
+                        .clone()
+                        .bind_catalog_snapshot(cached.selected_catalog_snapshot)
+                        .map_err(|error| error.to_string())
+                        .and_then(|request| {
+                            let page = futures_executor::block_on(
+                                self.sql_projection.read_package_graph_page(&request),
+                            )
+                            .map_err(|error| error.to_string())?;
+                            page.admit_against_checked_facts(
+                                &request,
+                                root,
+                                &cached.graph_facts,
+                                &cached.index,
+                            )
+                            .map_err(|error| error.to_string())?;
+                            Ok(backend_engine::SurfaceReply::PackageGraphPage(page))
+                        }),
+                    _ => self
+                        .product_state
+                        .execute_with_discovery_and_forge_snapshot(
+                            surface.clone(),
+                            daemon.engine().daemon().library().view(),
+                            &cached.catalog,
+                            &cached.catalog_index,
+                            cached.graph_facts.facts(),
+                            &cached.index,
+                            workspace.as_deref(),
+                            discovery_store,
+                            cached.selected_catalog_snapshot,
+                            &forge_records,
+                        ),
+                };
                 self.dependencies = Some(cached);
                 reply.map_or_else(
                     |error| {
@@ -701,13 +1508,16 @@ impl CommandAdapter {
                     BuiltinModelError(format!("read selected semantic generation: {error}"))
                 })?;
                 let committed = if before != Some(record.clone()) {
-                    let intent = BuiltinIntent::select_semantic_generation(
+                    self.semantic_authority
+                        .select_existing(&selected_key, claim)?;
+                    let intent = BuiltinIntent::index_with_semantics(
                         package_key,
                         package.as_str(),
-                        selected_key.clone(),
-                        history_key,
-                        before,
-                        record,
+                        Vec::new(),
+                        vec![BuiltinSemanticChange {
+                            key: selected_key.clone(),
+                            after: Some(record.clone()),
+                        }],
                     )?;
                     commit_builtin_intent(daemon, request_id, &intent).map_err(|error| {
                         BuiltinModelError(format!("commit semantic generation selection: {error}"))
@@ -722,6 +1532,7 @@ impl CommandAdapter {
                     coverage,
                     claim,
                     true,
+                    self.semantic_authority.freshness(&selected_key, claim),
                 ));
             }
         }
@@ -756,14 +1567,18 @@ impl CommandAdapter {
         certificate: Option<WireCertificate>,
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let reply = match command {
-            Command::Document(query) | Command::Source(query) => {
-                Self::canonical_claim_document(daemon, query, certificate.as_ref())
-                    .map_or_else(
-                        || daemon.engine().daemon().library().execute(command.clone()),
-                        |document| Ok(CommandReply::Document(document)),
-                    )
-                    .unwrap_or_else(|error| CommandReply::Error(error.to_string()))
-            }
+            Command::Document(query) | Command::Source(query) => self
+                .canonical_claim_document(
+                    daemon,
+                    query,
+                    certificate.as_ref(),
+                    matches!(command, Command::Source(_)),
+                )
+                .map_or_else(
+                    || daemon.engine().daemon().library().execute(command.clone()),
+                    |document| Ok(CommandReply::Document(document)),
+                )
+                .unwrap_or_else(|error| CommandReply::Error(error.to_string())),
             _ => daemon
                 .engine()
                 .daemon()
@@ -899,7 +1714,7 @@ fn certified_package_label(
     })
 }
 
-fn commit_builtin_intent(
+pub(in crate::builtin) fn commit_builtin_intent(
     daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     request_id: u64,
     intent: &BuiltinIntent,
@@ -941,32 +1756,50 @@ fn symbol_row_by_label<'a>(
 ) -> Option<&'a backend_engine::Row> {
     match view.row_by_label(label) {
         Some(row) if matches!(row.id, backend_engine::RowId::Symbol(_)) => Some(row),
-        Some(_) => view.row_refs().find(|row| {
-            row.label == label && matches!(row.id, backend_engine::RowId::Symbol(_))
-        }),
+        Some(_) => view
+            .row_refs()
+            .find(|row| row.label == label && matches!(row.id, backend_engine::RowId::Symbol(_))),
         None => None,
     }
 }
 
-fn local_project_roots(daemon: &ProductDaemon) -> Result<Vec<std::path::PathBuf>, BuiltinModelError> {
-    let indexed =
-        super::super::read_indexed_sources(&daemon.engine().daemon().owner().snapshot())?;
-    let mut roots = Vec::new();
-    for project in indexed.projects.values() {
-        if project.label.starts_with("pkg:") {
-            continue;
-        }
-        let project_root = Path::new(&project.label);
-        if project_root.is_dir() {
-            roots.push(project_root.to_path_buf());
-        }
+/// Resolves the source root named by the package's admitted project record.
+/// Local projects are stored under their canonical directory label; staged
+/// packages retain their canonical pinned package URL.
+fn admitted_project_source_root(
+    package: backend_engine::PackageKey,
+    project_label: &str,
+    workspace: &Path,
+) -> Option<std::path::PathBuf> {
+    if backend_engine::PackageKey::from_value(project_label) != package {
+        return None;
     }
-    Ok(roots)
+    let root =
+        super::super::local_manifest::indexed_package_source_root(project_label, workspace).ok()?;
+    let canonical = root.canonicalize().ok()?;
+    if !project_label.starts_with("pkg:") && Path::new(project_label) != canonical {
+        return None;
+    }
+    Some(canonical)
+}
+
+fn map_semantic_authority_error(
+    error: super::super::versioned_planes::VersionedPlaneServiceError,
+    unavailable: &'static str,
+) -> crate::protocol::ProtocolError {
+    match error {
+        super::super::versioned_planes::VersionedPlaneServiceError::StaleSelection => {
+            crate::protocol::ProtocolError::SemanticStaleSelection
+        }
+        _ => crate::protocol::ProtocolError::InvalidControl(unavailable),
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ADD_TARGET_REQUIRED, AddTarget, classify_add_target};
+    use super::{
+        ADD_TARGET_REQUIRED, AddTarget, admitted_project_source_root, classify_add_target,
+    };
     use crate::builtin::BuiltinIntent;
     use std::fs;
     use std::path::PathBuf;
@@ -1070,5 +1903,27 @@ mod tests {
             classify_add_target("PKG:cargo/serde@1.0.0"),
             Ok(AddTarget::PackageUrl)
         ));
+    }
+
+    #[test]
+    fn admitted_local_project_label_resolves_its_canonical_source_root() {
+        let tree = TempTree::new();
+        let project = tree.0.join("project");
+        fs::create_dir(&project).expect("project dir");
+        let label = label(&project.canonicalize().expect("canonical project"));
+        let package = backend_engine::PackageKey::from_value(&label);
+
+        assert_eq!(
+            admitted_project_source_root(package, &label, &tree.0),
+            Some(project.canonicalize().expect("canonical project"))
+        );
+        assert!(
+            admitted_project_source_root(
+                backend_engine::PackageKey::from_value("/outside/project"),
+                &label,
+                &tree.0,
+            )
+            .is_none()
+        );
     }
 }

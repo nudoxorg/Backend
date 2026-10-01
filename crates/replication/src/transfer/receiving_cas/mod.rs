@@ -21,7 +21,7 @@ mod sink;
 pub use sink::ReceivingCasSink;
 
 mod session;
-pub use session::ReceivingCas;
+pub use session::{ReceivingCas, ReceivingCasStreamAdmission};
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;

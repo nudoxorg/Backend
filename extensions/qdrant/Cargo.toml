@@ -42,3 +42,8 @@ harness = false
 name = "coordinate_warm"
 path = "benches/coordinate_warm.rs"
 harness = false
+
+[[bench]]
+name = "rerank"
+path = "benches/rerank.rs"
+harness = false

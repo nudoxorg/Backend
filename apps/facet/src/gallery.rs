@@ -20,6 +20,7 @@ pub mod cli;
 pub(crate) mod native_trace;
 pub mod compose;
 pub mod json;
+pub mod legible;
 pub mod lint;
 pub mod matrix;
 pub mod perf;
@@ -72,6 +73,10 @@ pub fn all() -> Vec<Scene> {
         crate::chrome::gallery::SCENES,
         crate::graph::gallery::SCENES,
         crate::anatomy::gallery::SCENES,
+        crate::anatomy::glyph_gallery::SCENES,
+        crate::anatomy::symbol::gallery::SCENES,
+        crate::marks::gallery::SCENES,
+        crate::folio::gallery::SCENES,
         bench::SCENES,
     ];
     groups
@@ -305,6 +310,8 @@ pub fn bootstrap(facet: Facet, record: bool, cx: &mut App) -> Result<(), Gallery
     pulse::freeze(0.0, cx);
     if record {
         probe::enable(cx);
+        // Every painted text line, for the legibility law (gallery::legible).
+        cx.set_global(gpui::TextTrace);
     }
     motion::reset_epoch(cx);
     Ok(())
@@ -417,7 +424,7 @@ pub fn run(
     shot: &Shot,
     observe: &mut dyn FnMut(&Tick<'_>, &mut Window, &mut App) -> Result<(), GalleryError>,
 ) -> Result<Script, GalleryError> {
-    run_with_timing_history(scene, shot, true, observe)
+    run_with_timing_history(scene, shot, true, false, observe)
 }
 
 /// A memory-only run consumes GPUI trace samples without retaining their
@@ -427,13 +434,22 @@ pub(crate) fn run_without_timing_history(
     shot: &Shot,
     observe: &mut dyn FnMut(&Tick<'_>, &mut Window, &mut App) -> Result<(), GalleryError>,
 ) -> Result<Script, GalleryError> {
-    run_with_timing_history(scene, shot, false, observe)
+    run_with_timing_history(scene, shot, false, false, observe)
+}
+
+/// The script `scene` declares at mount: no quiesce, no timeline, no draw.
+///
+/// # Errors
+/// An invalid viewport, a renderer or font failure, or a bad declared script.
+pub fn declared(scene: &Scene, shot: &Shot) -> Result<Script, GalleryError> {
+    run_with_timing_history(scene, shot, false, true, &mut |_, _, _| Ok(()))
 }
 
 fn run_with_timing_history(
     scene: &Scene,
     shot: &Shot,
     retain_frame_timings: bool,
+    declare_only: bool,
     observe: &mut dyn FnMut(&Tick<'_>, &mut Window, &mut App) -> Result<(), GalleryError>,
 ) -> Result<Script, GalleryError> {
     fonts::verify().map_err(GalleryError::from_display)?;
@@ -471,6 +487,9 @@ fn run_with_timing_history(
             .update(|_, cx| declared_script(cx))
             .map_err(GalleryError::from_display)??,
     };
+    if declare_only {
+        return Ok(script);
+    }
     let quiet = session
         .update(|_, cx| cx.try_global::<DeclaredQuiet>().and_then(|quiet| quiet.0))
         .map_err(GalleryError::from_display)?;

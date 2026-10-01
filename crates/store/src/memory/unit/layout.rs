@@ -47,7 +47,10 @@ fn capacity_rejection_returns_owner_with_zero_allocator_activity() -> Result<(),
 
 #[test]
 fn static_backings_have_exact_layout_and_allocation_cliffs() -> Result<(), ScenarioError> {
-    assert_eq!(size_of::<crate::memory::index::BucketSlot>(), size_of::<u32>());
+    assert_eq!(
+        size_of::<crate::memory::index::BucketSlot>(),
+        size_of::<u32>()
+    );
     assert_eq!(size_of::<MemoryStore<ObjectDomain>>(), 104);
     assert_eq!(size_of::<LeanMemoryStore<ObjectDomain>>(), 360);
 
@@ -96,8 +99,10 @@ fn static_backings_have_exact_layout_and_allocation_cliffs() -> Result<(), Scena
 
     let large = measure_heap_construction(SUSTAINED_OBJECT_SLOTS)?;
     let large_entry_bytes = u64::from(SUSTAINED_OBJECT_SLOTS)
-        * u64::try_from(size_of::<crate::memory::store::StoredObject<ObjectDomain, Box<[u8]>>>())
-            .map_err(ScenarioError::FixtureLength)?;
+        * u64::try_from(size_of::<
+            crate::memory::store::StoredObject<ObjectDomain, Box<[u8]>>,
+        >())
+        .map_err(ScenarioError::FixtureLength)?;
     let large_index_bytes = u64::from(262_144_u32)
         * u64::try_from(size_of::<crate::memory::index::BucketSlot>())
             .map_err(ScenarioError::FixtureLength)?;

@@ -102,9 +102,7 @@ impl IdentityDto {
             trail: identity.trail_within(None),
             name: identity.name().to_owned(),
             shape: shape_name(identity),
-            project: identity
-                .project()
-                .map(|project| project.root().to_owned()),
+            project: identity.project().map(|project| project.root().to_owned()),
             path: identity.path().map(|path| path.as_str().to_owned()),
             line: identity.line().map(crate::identity::LineNumber::get),
             segments: identity
@@ -338,7 +336,10 @@ impl PageDto {
             kind: page.kind().map(|kind| kind.name().to_owned()),
             language: page.language().name().to_owned(),
             signature: page.signature().map(Signature::text),
-            tokens: page.signature().map(SignatureTokenDto::all).unwrap_or_default(),
+            tokens: page
+                .signature()
+                .map(SignatureTokenDto::all)
+                .unwrap_or_default(),
             prose: page
                 .prose()
                 .iter()
@@ -465,6 +466,9 @@ pub struct RecordListDto {
     /// Why an empty page is empty, when the caller proved a reason.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub empty_reason: Option<String>,
+    /// Per-query outcome of the optional semantic ranking lane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_search: Option<backend_library::SemanticSearchStatus>,
 }
 
 impl RecordListDto {
@@ -478,6 +482,7 @@ impl RecordListDto {
             records: list.records().iter().map(RecordDto::new).collect(),
             more: list.has_more(),
             empty_reason: list.empty_reason().map(str::to_owned),
+            semantic_search: list.coverage().semantic_search_status(),
         }
     }
 }
@@ -724,6 +729,23 @@ pub struct ProductDto {
     /// Why the configured feed does not publish this fact.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fault: Option<FaultDto>,
+    /// Stable index-search snapshot and continuation metadata, when present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index_search_page: Option<ProductIndexSearchPageDto>,
+}
+
+/// Shared page envelope projected for CLI, MCP, and desktop product replies.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ProductIndexSearchPageDto {
+    /// Structural index snapshot shared by pages in the cursor chain.
+    pub snapshot: [u8; 32],
+    /// Time at which mutable overlays were evaluated.
+    pub evaluated_at_millis: u64,
+    /// Exact count, lower bound, or unknown count state.
+    pub result_count: backend_library::IndexSearchResultCount,
+    /// Opaque continuation for the next page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 /// One product record.
@@ -739,6 +761,18 @@ pub struct ProductRecordDto {
     /// Typed native registry facts when this row came from a package release.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_metadata: Option<RegistryNativeMetadata>,
+    /// Exact bounded forge commit, manifest, and repository metadata facts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forge: Option<backend_library::ForgePackageRecord>,
+    /// Typed forge manifest details, including a source pin with no release PURL.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forge_package_detail: Option<backend_library::ForgePackageDetailRecord>,
+    /// Source-attributed, source-only registry facts for a discovered row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub discovery: Option<backend_library::RegistryDiscoveryCandidate>,
+    /// Source-scoped, version-specific lineage group for index search.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package_group: Option<backend_library::RegistryPackageSearchGroup>,
 }
 
 impl ProductDto {
@@ -755,10 +789,22 @@ impl ProductDto {
                     operand: record.operand().map(ToOwned::to_owned),
                     tags: record.tags().to_vec(),
                     native_metadata: record.native_metadata().cloned(),
+                    forge: record.forge_details().cloned(),
+                    forge_package_detail: record.forge_package_detail().cloned(),
+                    discovery: record.discovery_details().cloned(),
+                    package_group: record.package_group().cloned(),
                 })
                 .collect(),
             note: view.note().map(ToOwned::to_owned),
             fault: view.fault().map(FaultDto::new),
+            index_search_page: view
+                .index_search_page()
+                .map(|page| ProductIndexSearchPageDto {
+                    snapshot: *page.snapshot(),
+                    evaluated_at_millis: page.evaluated_at_millis(),
+                    result_count: page.result_count(),
+                    next_cursor: page.next_cursor().map(ToOwned::to_owned),
+                }),
         }
     }
 }

@@ -1,8 +1,7 @@
 //! Schema-parametric relation-node admission and reference indexing.
 
 use super::super::{
-    FileStore, Hash, ObjectEdge, ObjectId, StoreError, TypedObject, fs, io_error, map_read_error,
-    sync_directory,
+    FileStore, Hash, ObjectEdge, ObjectId, StoreError, TypedObject, fs, io_error, sync_directory,
 };
 use super::{TreeWriteStats, wire};
 use backend_version::{
@@ -10,6 +9,7 @@ use backend_version::{
     TreeNodeLoader, TreeNodeView, UntrustedId, admit_canonical_root_claim,
 };
 use std::collections::{BTreeSet, HashSet};
+use std::io::Read as _;
 
 /// An owned, read-only adapter for the version layer's lazy relation tree.
 ///
@@ -32,6 +32,15 @@ impl<R: CanonicalRelation> TreeNodeLoader<R> for OwnedRelationNodeLoader {
 struct NodeWriteCounters {
     nodes_written: usize,
     bytes_written: usize,
+}
+
+fn relation_write_checkpoint() -> Result<(), StoreError> {
+    if super::super::artifact_fs::maybe_test_fault(14) {
+        return Err(StoreError::Io(
+            "injected interruption after relation object and reference".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 /// One authenticated child summary paired with its durable object identity.
@@ -94,6 +103,29 @@ impl<R: CanonicalRelation> RelationNodeRead<R> {
 }
 
 impl FileStore {
+    /// Installs or checks the schema/version reference for an object already
+    /// streamed into the immutable object CAS.
+    pub(in crate::durable) fn write_relation_reference(
+        &self,
+        schema: SchemaIdentity,
+        version: &Hash,
+        object: ObjectId,
+    ) -> Result<bool, StoreError> {
+        if !self.relation_registry.contains_schema(schema) {
+            return Ok(false);
+        }
+        let path = self.relation_ref_path(schema, version);
+        if path.is_file() {
+            return if self.read_relation_ref(schema, version)? == object {
+                Ok(false)
+            } else {
+                Err(StoreError::Corrupt)
+            };
+        }
+        fs::create_dir_all(self.root.join("nodes")).map_err(|error| io_error(&error))?;
+        wire::write_relation_ref(&path, schema, version, object, &self.root.join("nodes"))
+    }
+
     /// Writes the relation objects in one root-only closure and installs their
     /// schema/version references after validating the complete batch. Every
     /// child is either in this batch or already present in the durable CAS;
@@ -316,7 +348,18 @@ impl FileStore {
                 root_object = Some(object_id);
             }
         }
-        let root = root_object.ok_or(StoreError::Corrupt)?;
+        let root = if let Some(root) = root_object {
+            root
+        } else if self.relation_ref_matches(schema, &target)? {
+            self.read_relation_ref(schema, &target)?
+        } else {
+            // An empty initial tree has no changed frontier but still needs a
+            // durable root node so its closure descriptor survives reopen.
+            let object =
+                TypedObject::from_state_root(update.target().root(), update.target().node())?;
+            self.write_relation_object(&object, schema, &target, &mut counters)?
+                .0
+        };
         Ok(super::RelationNodeWriteStats {
             root,
             nodes_written: counters.nodes_written,
@@ -459,6 +502,7 @@ impl FileStore {
                 .checked_add(wire::relation_ref_encoded_len())
                 .ok_or(StoreError::Bounds)?;
         }
+        relation_write_checkpoint()?;
         Ok((object.id(), index_created))
     }
 
@@ -505,6 +549,7 @@ impl FileStore {
                 .checked_add(wire::relation_ref_encoded_len())
                 .ok_or(StoreError::Bounds)?;
         }
+        relation_write_checkpoint()?;
         Ok(())
     }
 
@@ -513,23 +558,38 @@ impl FileStore {
         schema: SchemaIdentity,
         version: &Hash,
     ) -> Result<bool, StoreError> {
-        let path = self.relation_ref_path(schema, version);
-        match fs::metadata(path) {
-            Ok(metadata) if metadata.is_file() => {
-                let object_id = self.read_relation_ref(schema, version)?;
+        match self.read_relation_ref_if_present(schema, version)? {
+            Some(object_id) => {
+                // Relation references are a rebuildable local index. GC may
+                // sweep the unrooted immutable node while leaving its tiny
+                // reference file behind; treat that dangling cache entry as
+                // a miss so a later closure can reinstall the deterministic
+                // node. An existing but malformed or conflicting object is
+                // still rejected below.
+                if super::super::artifact_fs::open_object(self, object_id)?.is_none() {
+                    return Ok(false);
+                }
                 let object = self.read_object(object_id)?;
                 if object.schema() != schema || object.version() != version {
                     return Err(StoreError::Corrupt);
                 }
                 Ok(true)
             }
-            Ok(_) => Err(StoreError::Corrupt),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(error) => Err(io_error(&error)),
+            None => Ok(false),
         }
     }
 
-    pub(super) fn relation_ref_path(
+    pub(in crate::durable) fn relation_ref_exists(
+        &self,
+        schema: SchemaIdentity,
+        version: &Hash,
+    ) -> Result<bool, StoreError> {
+        Ok(self
+            .read_relation_ref_if_present(schema, version)?
+            .is_some())
+    }
+
+    pub(in crate::durable) fn relation_ref_path(
         &self,
         schema: SchemaIdentity,
         version: &Hash,
@@ -548,9 +608,41 @@ impl FileStore {
         schema: SchemaIdentity,
         version: &Hash,
     ) -> Result<ObjectId, StoreError> {
+        self.read_relation_ref_if_present(schema, version)?
+            .ok_or(StoreError::Corrupt)
+    }
+
+    fn read_relation_ref_if_present(
+        &self,
+        schema: SchemaIdentity,
+        version: &Hash,
+    ) -> Result<Option<ObjectId>, StoreError> {
         let path = self.relation_ref_path(schema, version);
-        let bytes = fs::read(path).map_err(|error| map_read_error(&error))?;
-        wire::decode_relation_ref(&bytes, schema, version)
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(StoreError::Corrupt)?;
+        let Some(mut file) = super::super::artifact_fs::open_store_file(self, "nodes", name)?
+        else {
+            return Ok(None);
+        };
+        let expected_len = wire::relation_ref_encoded_len();
+        if usize::try_from(file.metadata().map_err(|error| io_error(&error))?.len())
+            .map_err(|_| StoreError::Bounds)?
+            != expected_len
+        {
+            return Err(StoreError::Corrupt);
+        }
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(expected_len)
+            .map_err(|_| StoreError::Bounds)?;
+        file.read_to_end(&mut bytes)
+            .map_err(|error| io_error(&error))?;
+        if bytes.len() != expected_len {
+            return Err(StoreError::Corrupt);
+        }
+        wire::decode_relation_ref(&bytes, schema, version).map(Some)
     }
 }
 

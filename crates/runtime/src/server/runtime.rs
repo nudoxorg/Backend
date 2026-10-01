@@ -276,7 +276,10 @@ where
         &mut self,
     ) -> RuntimeSplit<'_, Generation, Work, Failure, AccountingPolicy, StoragePolicy> {
         let fabric = &self.fabric;
-        (crate::server::Admission { fabric }, crate::server::Owner { fabric })
+        (
+            crate::server::Admission { fabric },
+            crate::server::Owner { fabric },
+        )
     }
 
     /// Returns eventually consistent telemetry; conservation is exact after producers quiesce.

@@ -8,8 +8,14 @@ use backend_version::WorkspaceRoot;
 use std::{
     fs::{File, OpenOptions, TryLockError},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::{Duration, Instant},
 };
+
+static ACTIVE_GC_PINS: AtomicUsize = AtomicUsize::new(0);
 
 /// Kernel-held capability required to select a durable store head.
 ///
@@ -137,6 +143,91 @@ impl ProcessLock {
 impl Drop for ProcessLock {
     fn drop(&mut self) {
         let _ = self.file.unlock();
+    }
+}
+
+/// Shared live-capture pin, separate from the store mutation lock so a long
+/// compiler stream does not block head reads or unrelated immutable writes.
+#[derive(Debug)]
+pub(super) struct GcPinLease {
+    file: File,
+}
+
+impl GcPinLease {
+    fn open(root: &Path) -> Result<File, super::StoreError> {
+        OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(root.join("GC-PINS.lock"))
+            .map_err(|error| super::io_error(&error))
+    }
+
+    pub(super) fn shared(root: &Path) -> Result<Self, super::StoreError> {
+        let file = Self::open(root)?;
+        file.lock_shared()
+            .map_err(|error| super::io_error(&error))?;
+        Ok(Self { file })
+    }
+
+    pub(super) fn exclusive(root: &Path) -> Result<Self, super::StoreError> {
+        let file = Self::open(root)?;
+        file.lock().map_err(|error| super::io_error(&error))?;
+        Ok(Self { file })
+    }
+
+    pub(super) fn try_exclusive(root: &Path) -> Result<Option<Self>, super::StoreError> {
+        let file = Self::open(root)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(Self { file })),
+            Err(TryLockError::WouldBlock) => Ok(None),
+            Err(TryLockError::Error(error)) => Err(super::io_error(&error)),
+        }
+    }
+}
+
+impl Drop for GcPinLease {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+/// Shared lease that prevents garbage collection while an external product
+/// reference is being published or read for a collection root snapshot.
+/// Product stores acquire this before their own mutation lock and hold it
+/// until the reference or root snapshot is durable.
+#[derive(Debug)]
+pub struct GcPinGuard {
+    _lease: GcPinLease,
+    root_identity: Hash,
+    acquired_at: Instant,
+}
+
+impl GcPinGuard {
+    pub(super) fn covers_identity(&self, identity: Hash) -> bool {
+        self.root_identity == identity
+    }
+
+    /// Elapsed time since this shared collection pin was acquired.
+    #[must_use]
+    pub fn held_for(&self) -> Duration {
+        self.acquired_at.elapsed()
+    }
+
+    /// Number of shared collection-pin guards held in this process.
+    ///
+    /// Pins held by other processes are not included; a failed nonblocking
+    /// exclusive lease still reports that another process may be holding one.
+    #[must_use]
+    pub fn active_count() -> usize {
+        ACTIVE_GC_PINS.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for GcPinGuard {
+    fn drop(&mut self) {
+        ACTIVE_GC_PINS.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -376,6 +467,7 @@ impl SelectedHead {
 #[derive(Clone, Debug)]
 pub struct FileStore {
     pub(super) root: PathBuf,
+    pub(super) gc_identity: Hash,
     pub(super) max_pack_bytes: usize,
     pub(super) lock: Arc<Mutex<()>>,
     pub(super) journal_tail: Arc<Mutex<super::recovery::JournalTail>>,
@@ -386,6 +478,59 @@ pub struct FileStore {
 impl FileStore {
     pub(super) fn acquire_process_lock(&self) -> Result<Arc<ProcessLock>, super::StoreError> {
         ProcessLock::acquire(&self.root.join("LOCK"))
+    }
+
+    pub(super) fn acquire_gc_pin(&self) -> Result<GcPinLease, super::StoreError> {
+        GcPinLease::shared(&self.root)
+    }
+
+    pub(super) fn acquire_gc_exclusive(&self) -> Result<GcPinLease, super::StoreError> {
+        GcPinLease::exclusive(&self.root)
+    }
+
+    /// Acquires the shared collection lease for an external product mutation.
+    /// A collector waits for this guard before resolving external roots.
+    /// Product writers should acquire it before their owner lock, persist the
+    /// product ref, then drop it to preserve lock ordering with root resolvers.
+    pub fn pin_garbage_collection(&self) -> Result<GcPinGuard, super::StoreError> {
+        let lease = self.acquire_gc_pin()?;
+        ACTIVE_GC_PINS.fetch_add(1, Ordering::Relaxed);
+        Ok(GcPinGuard {
+            _lease: lease,
+            root_identity: self.gc_identity,
+            acquired_at: Instant::now(),
+        })
+    }
+
+    /// Runs a product metadata operation while holding the exclusive garbage
+    /// collection lease.
+    ///
+    /// This is for external metadata which must be reclaimed under the same
+    /// cross-process barrier as FileStore objects. The callback must not call
+    /// a FileStore method that acquires a shared GC pin or starts collection;
+    /// either would wait on this lease. Product owners should acquire their
+    /// own lock inside the callback, preserving the global `GC-PINS.lock`
+    /// before owner-lock ordering used by readers and writers.
+    pub fn with_gc_exclusive_lease<T>(
+        &self,
+        operation: impl FnOnce() -> Result<T, super::StoreError>,
+    ) -> Result<T, super::StoreError> {
+        let _gc_exclusive = self.acquire_gc_exclusive()?;
+        operation()
+    }
+
+    /// Attempts a product metadata operation under the exclusive collection
+    /// lease without waiting for shared readers. `Ok(None)` signals that a
+    /// reader or another process currently holds a pin, so the caller should
+    /// apply backpressure and retry later.
+    pub fn try_with_gc_exclusive_lease<T>(
+        &self,
+        operation: impl FnOnce() -> Result<T, super::StoreError>,
+    ) -> Result<Option<T>, super::StoreError> {
+        let Some(_gc_exclusive) = GcPinLease::try_exclusive(&self.root)? else {
+            return Ok(None);
+        };
+        operation().map(Some)
     }
 
     /// Acquires this store's canonical head-selection capability.
@@ -404,4 +549,8 @@ impl FileStore {
     ) -> Result<StorePublicationAuthority, PublicationAuthorityError> {
         StorePublicationAuthority::acquire(publication_lock_path(&self.root))
     }
+}
+
+pub(in crate::durable) fn collection_pin_root_identity(root: &Path) -> Hash {
+    *blake3::hash(root.as_os_str().as_encoded_bytes()).as_bytes()
 }

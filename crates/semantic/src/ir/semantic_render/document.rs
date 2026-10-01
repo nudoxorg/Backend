@@ -19,11 +19,10 @@ use crate::ir::{
     FactAvailability, ForeignTargetOrigin, FreePredicate, FreePredicateListId, GoFacts, GoVersion,
     JavaFacts, JavaRelease, LanguageProfile, ObjectMemberListId, ParentageAuthority, PythonFacts,
     PythonParameterKind, PythonVersion, RustEdition, RustFacts, SemanticImageAuthority,
-    SemanticReader, SourceSpan,
-    TemplatePartListId, TupleElementListId, TypeId, TypeListId, TypeParameter, TypeParameterBound,
-    TypeParameterBoundListId, TypeParameterInference, TypeParameterListId,
-    TypeParameterPrimaryRequirement, TypeParameterRequirements, TypeScriptSource,
-    prepare_canonical_type,
+    SemanticReader, SourceSpan, TemplatePartListId, TupleElementListId, TypeId, TypeListId,
+    TypeParameter, TypeParameterBound, TypeParameterBoundListId, TypeParameterInference,
+    TypeParameterListId, TypeParameterPrimaryRequirement, TypeParameterRequirements,
+    TypeScriptSource, prepare_canonical_type,
 };
 
 use super::{kind_name, visibility_name};

@@ -35,6 +35,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
@@ -232,6 +233,10 @@ func extractSelectedPackage(moduleDir, sourcePath string) (*Output, error) {
 
 // extractWithPattern loads one go/packages pattern under dir and serializes it.
 func extractWithPattern(dir, pattern string) (*Output, error) {
+	packageEnv, err := packagesAuthorityEnvironment()
+	if err != nil {
+		return nil, err
+	}
 	cfg := &packages.Config{
 		Mode: packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles |
 			packages.NeedImports | packages.NeedDeps | packages.NeedTypes |
@@ -241,6 +246,10 @@ func extractWithPattern(dir, pattern string) (*Output, error) {
 		// Load augmented package variants so declarations from _test.go files
 		// participate in the same semantic package model as production files.
 		Tests: true,
+		// The Rust parent launches this helper with a closed environment. Pass
+		// only that typed environment to go/packages and select the package-root
+		// workspace independently from the outer `go run` build.
+		Env: packageEnv,
 	}
 
 	pkgs, err := packages.Load(cfg, pattern)
@@ -249,6 +258,11 @@ func extractWithPattern(dir, pattern string) (*Output, error) {
 	}
 	if len(pkgs) == 0 {
 		return nil, fmt.Errorf("no packages found under %s", dir)
+	}
+	if packagePath, err := firstIgnoredCgoPackage(pkgs); err != nil {
+		return nil, err
+	} else if packagePath != "" {
+		return nil, fmt.Errorf("%s: package %s contains cgo files while CGO_ENABLED=0", unsupportedCgoSentinel, packagePath)
 	}
 
 	out := &Output{SchemaVersion: SchemaVersion}
@@ -306,6 +320,100 @@ func extractWithPattern(dir, pattern string) (*Output, error) {
 		return out.Packages[i].ImportPath < out.Packages[j].ImportPath
 	})
 	return out, nil
+}
+
+const unsupportedCgoSentinel = "NUDOX_GO_UNSUPPORTED_CGO_CLOSURE"
+
+// packagesAuthorityEnvironment projects the explicit parent policy into the
+// nested `go list` processes. The private workspace value exists because the
+// outer `go run` must use GOWORK=off while the target package loader may need a
+// selected workspace rooted above the module.
+func packagesAuthorityEnvironment() ([]string, error) {
+	workspace := os.Getenv("NUDOX_GO_AUTHORITY_GOWORK")
+	if workspace == "" {
+		return nil, fmt.Errorf("missing explicit Go package workspace selection")
+	}
+	allowed := []string{
+		"PATH",
+		"GOROOT",
+		"GOMODCACHE",
+		"GOCACHE",
+		"GOENV",
+		"GOTOOLCHAIN",
+		"GOPROXY",
+		"GOSUMDB",
+		"GOPACKAGESDRIVER",
+		"CGO_ENABLED",
+		"SystemRoot",
+	}
+	env := make([]string, 0, len(allowed)+1)
+	for _, key := range allowed {
+		if key == "GOWORK" {
+			continue
+		}
+		if value, ok := os.LookupEnv(key); ok {
+			env = append(env, key+"="+value)
+		}
+	}
+	env = append(env, "GOWORK="+workspace)
+	return env, nil
+}
+
+// firstIgnoredCgoPackage walks the complete loaded import graph and detects
+// cgo source that CGO_ENABLED=0 moved out of the package. Without this check a
+// best-effort go/packages load could serialize a partial package as complete.
+func firstIgnoredCgoPackage(roots []*packages.Package) (string, error) {
+	visited := make(map[*packages.Package]bool)
+	var visit func(*packages.Package) (string, error)
+	visit = func(pkg *packages.Package) (string, error) {
+		if pkg == nil || visited[pkg] {
+			return "", nil
+		}
+		visited[pkg] = true
+		files := append([]string(nil), pkg.IgnoredFiles...)
+		files = append(files, pkg.GoFiles...)
+		sort.Strings(files)
+		previous := ""
+		for _, filename := range files {
+			if filename == previous {
+				continue
+			}
+			previous = filename
+			if !strings.HasSuffix(filename, ".go") {
+				continue
+			}
+			parsed, err := parser.ParseFile(token.NewFileSet(), filename, nil, parser.ImportsOnly)
+			if err != nil {
+				return "", fmt.Errorf("checking ignored Go source %s for cgo: %w", filename, err)
+			}
+			for _, imported := range parsed.Imports {
+				path, err := strconv.Unquote(imported.Path.Value)
+				if err != nil {
+					return "", fmt.Errorf("reading import in ignored Go source %s: %w", filename, err)
+				}
+				if path == "C" {
+					return pkg.PkgPath, nil
+				}
+			}
+		}
+		importPaths := make([]string, 0, len(pkg.Imports))
+		for importPath := range pkg.Imports {
+			importPaths = append(importPaths, importPath)
+		}
+		sort.Strings(importPaths)
+		for _, importPath := range importPaths {
+			if path, err := visit(pkg.Imports[importPath]); err != nil || path != "" {
+				return path, err
+			}
+		}
+		return "", nil
+	}
+	for _, pkg := range roots {
+		if path, err := visit(pkg); err != nil || path != "" {
+			return path, err
+		}
+	}
+	return "", nil
 }
 
 // interfaceCandidate is one non-empty interface eligible for cross-package

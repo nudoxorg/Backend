@@ -236,6 +236,20 @@ fn append_compiler_query_facts(
                             }
                         }
                         LinkTarget::External(external) => {
+                            // The view gives every external link target its
+                            // own row (`project_image_rows`), joined to a
+                            // project declaration or not; the corpus covers
+                            // the view exactly, so each gets its fact here.
+                            let identity = ExternalTargetIdentity::capture(image, external)
+                                .map_err(|error| {
+                                    BuiltinModelError(format!(
+                                        "identify semantic query external target: {error}"
+                                    ))
+                                })?;
+                            let target_id = query_external_id(package, image_digest, identity);
+                            external_targets
+                                .entry(target_id.clone())
+                                .or_insert((identity, external));
                             if let Some(callable_index) = callable_index {
                                 if let Some(joined) = join_project_call(
                                     image,
@@ -286,19 +300,17 @@ fn append_compiler_query_facts(
                                     continue;
                                 }
                             }
-                            let identity = ExternalTargetIdentity::capture(image, external)
-                                .map_err(|error| {
-                                    BuiltinModelError(format!(
-                                        "identify semantic query external target: {error}"
-                                    ))
-                                })?;
-                            let target_id = query_external_id(package, image_digest, identity);
-                            external_targets
-                                .entry(target_id.clone())
-                                .or_insert((identity, external));
                             related.push(target_id);
                         }
                     }
+                }
+                // The view gives each external declaration a documentation
+                // link names its own row (`project_image_rows`); the corpus
+                // covers the view exactly, so each gets its external fact.
+                for (identity, external) in &content.documentation_targets {
+                    external_targets
+                        .entry(query_external_id(package, image_digest, *identity))
+                        .or_insert((*identity, *external));
                 }
                 related.sort_unstable();
                 related.dedup();

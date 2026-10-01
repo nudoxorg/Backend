@@ -52,6 +52,7 @@ pub struct EmbeddedLocalService {
     endpoint: PathBuf,
     shutdown: ListenerShutdown,
     thread: Option<JoinHandle<Result<RunReport, ListenerError>>>,
+    set_aside: Option<PathBuf>,
 }
 
 /// How a surface reached the local service.
@@ -186,7 +187,49 @@ impl EmbeddedLocalService {
             endpoint,
             shutdown,
             thread: Some(thread),
+            set_aside: None,
         })
+    }
+
+    /// Starts like [`Self::start`], for a host that owns its workspace and can
+    /// index it again: a workspace another build of the product wrote
+    /// ([`ProcessError::StateFromAnotherBuild`]) is set aside whole and a fresh
+    /// one is started in its place.
+    ///
+    /// Nothing is deleted. Every entry of the workspace moves into a
+    /// directory of it named `from-another-build` (`-2`, `-3`, ... when one
+    /// exists), except the owner lock and its epoch and the authority
+    /// credential, which are not index state. The set-aside state is a
+    /// snapshot for the operator; nothing reads it back. The host must index
+    /// its projects again, and can say where the old state went
+    /// ([`Self::state_set_aside`]).
+    ///
+    /// The workspace is set aside only while this process holds its lock, so a
+    /// workspace another process owns is never moved; that contention is the
+    /// returned error, as for [`Self::start`].
+    ///
+    /// # Errors
+    /// Returns the error of [`Self::start`], including for the fresh
+    /// workspace, or the reason the old state could not be set aside.
+    pub fn start_replacing_state_from_another_build(
+        config: ProcessConfig,
+    ) -> Result<Self, ProcessError> {
+        match Self::start(config.clone()) {
+            Err(ProcessError::StateFromAnotherBuild(_)) => {
+                let set_aside = set_aside_workspace_state(&config)?;
+                let mut started = Self::start(config)?;
+                started.set_aside = Some(set_aside);
+                Ok(started)
+            }
+            started => started,
+        }
+    }
+
+    /// Returns where the workspace state this service replaced was moved, when
+    /// it replaced one ([`Self::start_replacing_state_from_another_build`]).
+    #[must_use]
+    pub fn state_set_aside(&self) -> Option<&Path> {
+        self.set_aside.as_deref()
     }
 
     /// Returns the authenticated endpoint shared with every local surface.
@@ -226,8 +269,340 @@ impl EmbeddedLocalService {
     }
 }
 
+/// Name of the directory, inside a workspace, that receives state from another
+/// build.
+const SET_ASIDE_DIRECTORY: &str = "from-another-build";
+
+/// Moves every index entry of the workspace into a fresh [`SET_ASIDE_DIRECTORY`]
+/// of it, under the workspace lock, and returns that directory.
+///
+/// The lock file and its epoch stay: the lock is what makes moving safe, and
+/// they are not state anybody could read back. So does the authority
+/// credential when it lives in the workspace: the fresh state is opened under
+/// the same secret its clients already hold.
+fn set_aside_workspace_state(config: &ProcessConfig) -> Result<PathBuf, ProcessError> {
+    let refused = |what: String| {
+        ProcessError::Profile(format!(
+            "set aside workspace state from another build ({}): {what}",
+            config.workspace.display()
+        ))
+    };
+    let _lock =
+        backend_store::StorePublicationAuthority::acquire(&config.workspace.join("OWNER.lock"))
+            .map_err(|error| refused(error.to_string()))?;
+    let destination = (1..1000)
+        .map(|number| match number {
+            1 => config.workspace.join(SET_ASIDE_DIRECTORY),
+            number => config
+                .workspace
+                .join(format!("{SET_ASIDE_DIRECTORY}-{number}")),
+        })
+        .find(|candidate| !candidate.exists())
+        .ok_or_else(|| refused("a thousand earlier sets exist".to_owned()))?;
+    backend_platform::durable::ensure_private_directory(&destination)
+        .map_err(|error| refused(format!("create {}: {error}", destination.display())))?;
+    let entries = std::fs::read_dir(&config.workspace)
+        .map_err(|error| refused(format!("read the workspace: {error}")))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| refused(format!("read the workspace: {error}")))?;
+        let path = entry.path();
+        let name = entry.file_name();
+        let kept = name == "OWNER.lock"
+            || name == "OWNER.state"
+            || name.to_string_lossy().starts_with(SET_ASIDE_DIRECTORY)
+            || config.authority_secret.as_deref() == Some(path.as_path());
+        if !kept {
+            std::fs::rename(&path, destination.join(&name))
+                .map_err(|error| refused(format!("move {}: {error}", path.display())))?;
+        }
+    }
+    Ok(destination)
+}
+
 impl Drop for EmbeddedLocalService {
     fn drop(&mut self) {
         let _ = self.finish();
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use backend_runtime::WorkspacePaths;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// A private scratch root, an initialised workspace in it, and the
+    /// configuration that starts an owner on that workspace.
+    fn scratch_workspace(tag: &str) -> (PathBuf, ProcessConfig) {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        // `/tmp`: a socket path under a nix temp directory is too long.
+        let root =
+            PathBuf::from("/tmp").join(format!("nx-ls-{tag}-{}-{nonce}", std::process::id()));
+        // The owner refuses a state directory whose parent anyone else can enter.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt as _;
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(&root)
+                .expect("private scratch root");
+        }
+        #[cfg(not(unix))]
+        std::fs::create_dir_all(&root).expect("scratch root");
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).expect("project");
+        let paths = WorkspacePaths::discover(
+            Some(project),
+            Some(root.join("data")),
+            Some(root.with_extension("sock")),
+        )
+        .expect("paths");
+        paths.initialize().expect("initialize the workspace");
+        let config = ProcessConfig::parse([
+            "--endpoint".to_owned(),
+            paths.endpoint().to_string_lossy().into_owned(),
+            "--workspace".to_owned(),
+            paths.data().to_string_lossy().into_owned(),
+            "--authority-secret-file".to_owned(),
+            paths.authority_secret().to_string_lossy().into_owned(),
+            "--profile".to_owned(),
+            "builtin".to_owned(),
+        ])
+        .expect("configuration");
+        (root, config)
+    }
+
+    /// A workspace an earlier build wrote, and the configuration that starts
+    /// an owner on it.
+    fn state_from_another_build(tag: &str) -> (PathBuf, ProcessConfig) {
+        let (root, config) = scratch_workspace(tag);
+        let secret = config.authority_secret.clone().expect("credential path");
+        crate::builtin::write_state_from_another_build(&config.workspace, &secret)
+            .expect("write the workspace an earlier build left");
+        (root, config)
+    }
+
+    /// How another build's view journal differs from the one this build writes.
+    #[derive(Clone, Copy)]
+    enum Journal {
+        /// Its snapshots carry a view of an older wire version: the
+        /// `unsupported view DTO version` refusal.
+        WireVersion,
+        /// Its frames are of another journal format.
+        FrameFormat,
+    }
+
+    /// A workspace this build wrote (an owner booted on it and closed, so its
+    /// view journal is the one this build writes), with that journal then
+    /// rewritten as another build would have left it.
+    fn view_journal_from_another_build(tag: &str, how: Journal) -> (PathBuf, ProcessConfig) {
+        let (root, config) = scratch_workspace(tag);
+        EmbeddedLocalService::start(config.clone())
+            .expect("this build boots on a fresh workspace")
+            .close()
+            .expect("and closes it");
+        let path = config.workspace.join("view.journal");
+        let old = std::fs::read(&path).expect("the view journal this build wrote");
+        // A frame: magic (8), format (1), kind (1), length (8, big endian),
+        // BLAKE3 of the payload (32), payload.
+        let (mut new, mut at, mut rewritten) = (Vec::new(), 0, 0);
+        while at < old.len() {
+            let length = usize::try_from(u64::from_be_bytes(
+                old[at + 10..at + 18].try_into().expect("length"),
+            ))
+            .expect("length fits");
+            let payload = &old[at + 50..at + 50 + length];
+            let mut header = old[at..at + 50].to_vec();
+            let mut payload = payload.to_vec();
+            match how {
+                Journal::FrameFormat => {
+                    header[8] = header[8].wrapping_add(1);
+                    rewritten += 1;
+                }
+                Journal::WireVersion => {
+                    let mut envelope: serde_json::Value =
+                        serde_json::from_slice(&payload).expect("a JSON envelope");
+                    if let Some(view) = envelope.get_mut("view").filter(|view| !view.is_null()) {
+                        view["version"] = serde_json::json!(backend_library::DTO_VERSION - 1);
+                        payload = serde_json::to_vec(&envelope).expect("envelope");
+                        header[10..18].copy_from_slice(&(payload.len() as u64).to_be_bytes());
+                        header[18..50].copy_from_slice(blake3::hash(&payload).as_bytes());
+                        rewritten += 1;
+                    }
+                }
+            }
+            new.extend_from_slice(&header);
+            new.extend_from_slice(&payload);
+            at += 50 + length;
+        }
+        assert!(rewritten > 0, "the journal held no frame to rewrite");
+        std::fs::write(&path, new).expect("write the rewritten journal");
+        (root, config)
+    }
+
+    #[test]
+    fn a_workspace_an_earlier_build_wrote_is_refused_as_state_from_another_build() {
+        let (root, config) = state_from_another_build("typed");
+        let workspace = config.workspace.clone();
+
+        let refusal = EmbeddedLocalService::start(config)
+            .err()
+            .expect("a build that cannot read this layout must not start on it");
+
+        // Before: `ProcessError::Profile("repair product view: source file is outside its
+        // project's canonical frontier")`, indistinguishable from a corrupt workspace.
+        let ProcessError::StateFromAnotherBuild(words) = &refusal else {
+            panic!("refused as something else: {refusal}");
+        };
+        assert!(
+            words.contains("1 indexed source files are keyed by the source-file key layout an earlier build wrote"),
+            "the refusal says what was recognised: {words}"
+        );
+        assert!(
+            workspace.join("workspace.journal").is_file()
+                && !workspace.join(SET_ASIDE_DIRECTORY).exists(),
+            "starting alone moves nothing: the operator's directory is as it was"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn replacing_state_from_another_build_keeps_the_old_state_whole_and_starts_a_fresh_owner() {
+        let (root, config) = state_from_another_build("replace");
+        let workspace = config.workspace.clone();
+        let old_journal = std::fs::read(workspace.join("workspace.journal")).expect("old journal");
+        let secret = std::fs::read(workspace.join("authority.secret")).expect("credential");
+
+        let service = EmbeddedLocalService::start_replacing_state_from_another_build(config)
+            .expect("the fresh owner starts where the old state was");
+
+        let set_aside = service
+            .state_set_aside()
+            .expect("says where the old state went")
+            .to_path_buf();
+        assert_eq!(set_aside, workspace.join(SET_ASIDE_DIRECTORY));
+        assert_eq!(
+            std::fs::read(set_aside.join("workspace.journal")).expect("kept journal"),
+            old_journal,
+            "the old state is kept byte for byte"
+        );
+        assert_eq!(
+            std::fs::read(workspace.join("authority.secret")).expect("credential"),
+            secret,
+            "the credential its clients hold is not replaced"
+        );
+        assert!(
+            workspace.join("OWNER.lock").is_file(),
+            "the lock file stays where it is"
+        );
+        assert_ne!(
+            std::fs::read(workspace.join("workspace.journal")).expect("fresh journal"),
+            old_journal,
+            "the workspace the owner runs on is a fresh one"
+        );
+        assert!(service.is_running(), "the owner is serving");
+        service.close().expect("clean shutdown");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_workspace_another_process_holds_the_lock_of_is_never_moved() {
+        let (root, config) = state_from_another_build("held");
+        let workspace = config.workspace.clone();
+        let _held =
+            backend_store::StorePublicationAuthority::acquire(&workspace.join("OWNER.lock"))
+                .expect("this test is the other process");
+
+        let refusal =
+            set_aside_workspace_state(&config).expect_err("a held workspace is not set aside");
+
+        assert!(
+            refusal.to_string().contains("held by another process"),
+            "the refusal says why: {refusal}"
+        );
+        assert!(
+            workspace.join("workspace.journal").is_file()
+                && !workspace.join(SET_ASIDE_DIRECTORY).exists(),
+            "nothing moved"
+        );
+        drop(_held);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_view_journal_another_build_wrote_is_state_from_another_build_and_is_set_aside() {
+        for (how, evidence) in [
+            (Journal::WireVersion, "its view snapshot is wire version"),
+            (Journal::FrameFormat, "its view journal is format"),
+        ] {
+            let (root, config) = view_journal_from_another_build("journal", how);
+            let workspace = config.workspace.clone();
+            let old_journal = std::fs::read(workspace.join("view.journal")).expect("old journal");
+
+            let refusal = EmbeddedLocalService::start(config.clone())
+                .err()
+                .expect("a build that cannot read this journal must not start on it");
+
+            // Before: `ProcessError::Profile("unsupported view DTO version")` (or
+            // `view journal version mismatch`), which refused the directory whole.
+            let ProcessError::StateFromAnotherBuild(words) = &refusal else {
+                panic!("refused as something else: {refusal}");
+            };
+            assert!(
+                words.contains(evidence),
+                "the refusal says what was recognised: {words}"
+            );
+
+            let service = EmbeddedLocalService::start_replacing_state_from_another_build(config)
+                .expect("the fresh owner starts where the old journal was");
+            let set_aside = service
+                .state_set_aside()
+                .expect("says where the old state went");
+            assert_eq!(
+                std::fs::read(set_aside.join("view.journal")).expect("kept journal"),
+                old_journal,
+                "the old journal is kept byte for byte"
+            );
+            assert_ne!(
+                std::fs::read(workspace.join("view.journal")).expect("fresh journal"),
+                old_journal,
+                "the owner runs on a fresh journal"
+            );
+            assert!(service.is_running());
+            service.close().expect("clean shutdown");
+            let _ = std::fs::remove_dir_all(&root);
+        }
+    }
+
+    #[test]
+    fn a_damaged_view_journal_is_not_state_from_another_build() {
+        let (root, config) = scratch_workspace("damaged");
+        EmbeddedLocalService::start(config.clone())
+            .expect("this build boots on a fresh workspace")
+            .close()
+            .expect("and closes it");
+        let path = config.workspace.join("view.journal");
+        let mut bytes = std::fs::read(&path).expect("journal");
+        // Flip a byte inside the first frame's payload: a checksum failure is damage.
+        let inside = 60.min(bytes.len() - 1);
+        bytes[inside] ^= 0xff;
+        // Keep it an interior frame: a bad checksum on the last frame is a torn tail.
+        bytes.extend_from_slice(&bytes.clone());
+        std::fs::write(&path, bytes).expect("write");
+
+        let refusal = EmbeddedLocalService::start(config)
+            .err()
+            .expect("a damaged journal is refused");
+
+        assert!(
+            matches!(refusal, ProcessError::Profile(_)),
+            "damage stays a plain refusal, never a reason to set state aside: {refusal}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

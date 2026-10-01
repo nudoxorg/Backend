@@ -59,14 +59,23 @@ pub(crate) fn semantic_publication_terminal(
             attempted: attempt(source, recipe),
             cause: PublicationCause::CancelledBeforeStorage,
         },
-        PublishSemanticError::Canonical(_) => rejected(source, recipe, PublicationPhase::Canonical),
+        PublishSemanticError::Canonical(_)
+        | PublishSemanticError::ArtifactDescriptorAllocation(_) => {
+            rejected(source, recipe, PublicationPhase::Canonical)
+        }
         PublishSemanticError::ManifestWrite(_) => {
             rejected(source, recipe, PublicationPhase::Manifest)
         }
         PublishSemanticError::FragmentStorageOwner(_)
         | PublishSemanticError::FragmentStorage { .. }
-        | PublishSemanticError::FragmentManifest { .. } => {
+        | PublishSemanticError::FragmentManifest { .. }
+        | PublishSemanticError::FragmentValidation { .. } => {
             rejected(source, recipe, PublicationPhase::Fragment)
+        }
+        PublishSemanticError::ImageCountMismatch { .. }
+        | PublishSemanticError::ImageRegionOffset { .. }
+        | PublishSemanticError::ImageBytesLength { .. } => {
+            rejected(source, recipe, PublicationPhase::SemanticImage)
         }
         PublishSemanticError::ImagePlanTooSmall { .. }
         | PublishSemanticError::ImageMeasure { .. }
@@ -127,6 +136,86 @@ const fn rejected(
     CompilerTerminal::Publication {
         attempted: attempt(source, recipe),
         cause: PublicationCause::Rejected(phase),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use backend_library::interface::{
+        CompilerTerminal, PublicationCause, PublicationPhase, SourceAuthority,
+    };
+    use backend_semantic::vocabulary::{
+        CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage,
+    };
+    use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
+
+    use crate::publication::PublishSemanticError;
+
+    use super::semantic_publication_terminal;
+
+    fn source_and_recipe() -> (SourceAuthority, CompileRecipeFact) {
+        let source = SourceAuthority {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"terminal"),
+            byte_len: 8,
+        };
+        let recipe = CompileRecipeFact::derive(
+            LanguageProfile::Rust(RustEdition::Rust2024),
+            Stage::LowerIr,
+            NativeTool::Rustc,
+            source.identity,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"terminal-toolchain"),
+        );
+        (source, recipe)
+    }
+
+    fn assert_phase(error: PublishSemanticError, expected: PublicationPhase) {
+        let (source, recipe) = source_and_recipe();
+        let CompilerTerminal::Publication { cause, .. } =
+            semantic_publication_terminal(source, recipe, error)
+        else {
+            panic!("semantic publication maps to a publication terminal");
+        };
+        assert_eq!(cause, PublicationCause::Rejected(expected));
+    }
+
+    #[test]
+    fn staged_byte_failures_keep_their_publication_phase() {
+        let allocation = Vec::<u8>::new()
+            .try_reserve_exact(usize::MAX)
+            .expect_err("oversized descriptor reservation is rejected");
+        assert_phase(
+            PublishSemanticError::ArtifactDescriptorAllocation(allocation),
+            PublicationPhase::Canonical,
+        );
+        assert_phase(
+            PublishSemanticError::FragmentValidation {
+                ordinal: 0,
+                source: backend_semantic::ir::FragmentError::Magic { actual: *b"bad!" },
+            },
+            PublicationPhase::Fragment,
+        );
+        assert_phase(
+            PublishSemanticError::ImageCountMismatch {
+                fragments: 1,
+                semantic_images: 0,
+            },
+            PublicationPhase::SemanticImage,
+        );
+        assert_phase(
+            PublishSemanticError::ImageRegionOffset {
+                ordinal: 0,
+                expected: 0,
+                observed: 1,
+            },
+            PublicationPhase::SemanticImage,
+        );
+        assert_phase(
+            PublishSemanticError::ImageBytesLength {
+                expected: 8,
+                observed: 9,
+            },
+            PublicationPhase::SemanticImage,
+        );
     }
 }
 

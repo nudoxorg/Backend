@@ -277,6 +277,9 @@ pub struct UnixListenerService<O> {
     workers: Vec<JoinHandle<()>>,
     inbound: Receiver<Inbound>,
     inbound_sender: SyncSender<Inbound>,
+    /// Replies owed to requests the owner took and answers later, by ticket.
+    deferred: std::collections::BTreeMap<u64, SyncSender<Result<Vec<u8>, ProtocolError>>>,
+    next_ticket: u64,
     peer_policy: Arc<dyn PeerPolicy>,
     streams: Arc<Mutex<std::collections::BTreeMap<usize, backend_engine::LocalStream>>>,
     next_connection_id: AtomicUsize,
@@ -356,6 +359,8 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
             workers: Vec::new(),
             inbound,
             inbound_sender,
+            deferred: std::collections::BTreeMap::new(),
+            next_ticket: 1,
             peer_policy,
             streams: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
             next_connection_id: AtomicUsize::new(1),
@@ -427,11 +432,12 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
         let mut last_progress = Instant::now();
         while !self.is_shutdown() {
             self.accept_available()?;
-            if self.drain_owner_once() || self.active.load(Ordering::Acquire) != 0 {
+            let made_progress = self.drain_owner_once();
+            let active = self.active.load(Ordering::Acquire);
+            if made_progress || active != 0 {
                 last_progress = Instant::now();
-                continue;
             }
-            if self.idle_window_elapsed(last_progress) {
+            if active == 0 && self.idle_window_elapsed(last_progress) {
                 // Nothing has been connected and no owner work has progressed
                 // for the whole window. A detached daemon has no parent to
                 // reap it, so this branch is the only thing between one
@@ -443,7 +449,12 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
                 self.stop.store(true, Ordering::Release);
                 break;
             }
-            thread::sleep(self.config.poll_interval);
+            // Keep a connected but idle client alive without hot-spinning the
+            // embedded owner poll. Real owner/request progress immediately
+            // drains again, so this wait is never inserted after a frame.
+            if !made_progress {
+                thread::sleep(self.config.poll_interval);
+            }
         }
         self.finish_workers();
         self.service.close();
@@ -551,10 +562,33 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
         // Keep owner progress independent of whether clients are currently
         // producing requests.
         let owner_progress = self.service.owner_mut().serve_one();
+        // Replies the owner owed and can now give: a deferred command's long
+        // part (an index job's compile) ran off this loop while it answered
+        // other requests.
+        let mut deferred_progress = false;
+        for (ticket, result) in self.service.poll_deferred() {
+            if let Some(reply) = self.deferred.remove(&ticket) {
+                if result.is_err() {
+                    self.report.failures = self.report.failures.saturating_add(1);
+                }
+                let _ = reply.send(result);
+                self.report.frames = self.report.frames.saturating_add(1);
+                deferred_progress = true;
+            }
+        }
         match self.inbound.try_recv() {
             Ok(inbound) => {
                 let started = Instant::now();
-                let result = self.service.handle_payload(&inbound.payload);
+                let ticket = self.next_ticket;
+                self.next_ticket = self.next_ticket.wrapping_add(1);
+                let result = match self.service.handle_payload_or_defer(&inbound.payload, ticket) {
+                    Ok(crate::service::Handled::Deferred) => {
+                        self.deferred.insert(ticket, inbound.reply);
+                        return true;
+                    }
+                    Ok(crate::service::Handled::Reply(reply)) => Ok(reply),
+                    Err(error) => Err(error),
+                };
                 let failed = result.is_err();
                 self.telemetry.record_with(|| backend_engine::Observation {
                     family: backend_engine::MetricFamily::Transport,
@@ -573,7 +607,7 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
                 }
                 true
             }
-            Err(TryRecvError::Empty) => owner_progress,
+            Err(TryRecvError::Empty) => owner_progress || deferred_progress,
             Err(TryRecvError::Disconnected) => {
                 self.stop.store(true, Ordering::Release);
                 false
@@ -583,6 +617,13 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
 
     fn finish_workers(&mut self) {
         self.shutdown();
+        // A deferred command's long part is abandoned, as a crash would leave
+        // it: its durable steps before the hand-off stand, and nothing after
+        // it is published. Its client hears that the owner closed now rather
+        // than when the compile would have ended.
+        for (_, reply) in std::mem::take(&mut self.deferred) {
+            let _ = reply.send(Err(ProtocolError::Closed));
+        }
         // A wire shutdown request sets the stop flag while its worker is still
         // waiting to write the acknowledgement.  Drain admitted requests
         // until those workers have handed their replies to the socket; only
@@ -738,6 +779,30 @@ mod tests {
         fn close(&mut self) {}
     }
 
+    #[derive(Debug)]
+    struct CountingOwner(Arc<AtomicUsize>);
+
+    impl OwnerService for CountingOwner {
+        fn command(&mut self, body: &[u8]) -> Result<Vec<u8>, ProtocolError> {
+            Ok(body.to_vec())
+        }
+
+        fn engine(
+            &mut self,
+            _request_id: u64,
+            _request: EngineRequest,
+        ) -> Result<EngineStatus, ProtocolError> {
+            Ok(EngineStatus::Accepted)
+        }
+
+        fn serve_one(&mut self) -> bool {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            false
+        }
+
+        fn close(&mut self) {}
+    }
+
     /// An owner that takes longer than any per-frame deadline to answer.
     #[derive(Debug)]
     struct SlowOwner(Duration);
@@ -761,6 +826,119 @@ mod tests {
         }
 
         fn close(&mut self) {}
+    }
+
+    /// An owner that takes an `index` command now and answers it later (its
+    /// long part runs elsewhere), and answers anything else at once.
+    #[derive(Debug)]
+    struct DeferringOwner {
+        long: Duration,
+        pending: Option<(u64, Instant)>,
+    }
+
+    impl OwnerService for DeferringOwner {
+        fn command(&mut self, body: &[u8]) -> Result<Vec<u8>, ProtocolError> {
+            Ok(body.to_vec())
+        }
+
+        fn command_or_defer(
+            &mut self,
+            body: &[u8],
+            ticket: u64,
+        ) -> Result<crate::service::CommandOutcome, ProtocolError> {
+            if body == b"index" {
+                self.pending = Some((ticket, Instant::now()));
+                return Ok(crate::service::CommandOutcome::Deferred);
+            }
+            Ok(crate::service::CommandOutcome::Reply(body.to_vec()))
+        }
+
+        fn poll_deferred(&mut self) -> Vec<(u64, Result<Vec<u8>, ProtocolError>)> {
+            match self.pending {
+                Some((ticket, started)) if started.elapsed() >= self.long => {
+                    self.pending = None;
+                    vec![(ticket, Ok(b"indexed".to_vec()))]
+                }
+                _ => Vec::new(),
+            }
+        }
+
+        fn engine(
+            &mut self,
+            _request_id: u64,
+            _request: EngineRequest,
+        ) -> Result<EngineStatus, ProtocolError> {
+            Ok(EngineStatus::Accepted)
+        }
+
+        fn serve_one(&mut self) -> bool {
+            false
+        }
+
+        fn close(&mut self) {}
+    }
+
+    #[test]
+    fn a_read_is_answered_while_a_deferred_command_runs_and_the_deferred_reply_arrives_after() {
+        let path = socket_path("deferred");
+        let config = ListenerConfig {
+            path: path.clone(),
+            limits: limits(),
+            io_timeout: Duration::from_secs(5),
+            request_idle_timeout: Duration::from_secs(5),
+            owner_reply_timeout: Duration::from_secs(10),
+            max_clients: 4,
+            poll_interval: Duration::from_millis(1),
+            idle_timeout: None,
+        };
+        let long = Duration::from_millis(900);
+        let service = LocaldService::new(DeferringOwner { long, pending: None }, config.limits)
+            .unwrap_or_else(|error| panic!("service: {error}"));
+        let mut listener = UnixListenerService::bind(service, config)
+            .unwrap_or_else(|error| panic!("bind: {error}"));
+        let ask = |body: &'static [u8]| {
+            let path = path.clone();
+            thread::spawn(move || {
+                let mut stream = std::os::unix::net::UnixStream::connect(path)
+                    .unwrap_or_else(|error| panic!("connect: {error}"));
+                let request = crate::protocol::frame(body, limits())
+                    .unwrap_or_else(|error| panic!("frame: {error}"));
+                stream
+                    .write_all(&request)
+                    .unwrap_or_else(|error| panic!("write: {error}"));
+                let reply = read_frame(&mut stream, limits());
+                (reply, Instant::now())
+            })
+        };
+        let started = Instant::now();
+        let indexing = ask(b"index");
+        let drive = |listener: &mut UnixListenerService<DeferringOwner>, until: &dyn Fn() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while Instant::now() < deadline && !until() {
+                let _ = listener
+                    .run_once()
+                    .unwrap_or_else(|error| panic!("run once: {error}"));
+                thread::sleep(Duration::from_millis(1));
+            }
+        };
+        // The index command is with the owner before the read arrives.
+        drive(&mut listener, &|| started.elapsed() >= Duration::from_millis(100));
+        let reading = ask(b"read");
+        drive(&mut listener, &|| reading.is_finished());
+        assert!(!indexing.is_finished(), "the index command is still running when the read is answered");
+        let (read, read_at) = reading.join().unwrap_or_else(|_| panic!("read thread"));
+        assert_eq!(read.unwrap_or_else(|error| panic!("read: {error}")), b"read");
+        assert!(
+            read_at.duration_since(started) < long,
+            "the read waited for the deferred command: answered after {:?}",
+            read_at.duration_since(started)
+        );
+        drive(&mut listener, &|| indexing.is_finished());
+        let (indexed, indexed_at) = indexing.join().unwrap_or_else(|_| panic!("index thread"));
+        assert_eq!(indexed.unwrap_or_else(|error| panic!("index: {error}")), b"indexed");
+        assert!(indexed_at.duration_since(started) >= long, "the deferred reply came when its work was done");
+        listener.shutdown();
+        drop(listener);
     }
 
     #[derive(Debug)]
@@ -1035,7 +1213,24 @@ mod tests {
 
     #[test]
     fn a_connected_client_holds_the_idle_window_open() {
+        struct RunningListener {
+            shutdown: super::ListenerShutdown,
+            worker: Option<thread::JoinHandle<Result<usize, super::ListenerError>>>,
+            client: Option<std::os::unix::net::UnixStream>,
+        }
+
+        impl Drop for RunningListener {
+            fn drop(&mut self) {
+                self.client.take();
+                self.shutdown.request();
+                if let Some(worker) = self.worker.take() {
+                    let _ = worker.join();
+                }
+            }
+        }
+
         let path = socket_path("idle-held-open");
+        let owner_polls = Arc::new(AtomicUsize::new(0));
         let config = ListenerConfig {
             path: path.clone(),
             limits: limits(),
@@ -1049,33 +1244,50 @@ mod tests {
             poll_interval: Duration::from_millis(1),
             idle_timeout: Some(Duration::from_millis(100)),
         };
-        let service = LocaldService::new(FakeOwner, config.limits)
+        let service = LocaldService::new(CountingOwner(Arc::clone(&owner_polls)), config.limits)
             .unwrap_or_else(|error| panic!("service: {error}"));
         let mut listener = UnixListenerService::bind(service, config)
             .unwrap_or_else(|error| panic!("bind: {error}"));
-        let held = std::os::unix::net::UnixStream::connect(&path)
+        let mut held = std::os::unix::net::UnixStream::connect(&path)
             .unwrap_or_else(|error| panic!("connect: {error}"));
-        let runner = thread::spawn(move || listener.run().map(|report| report.connections));
+        held.set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap_or_else(|error| panic!("read timeout: {error}"));
+        let shutdown = listener.shutdown_handle();
+        let worker = thread::spawn(move || listener.run().map(|report| report.connections));
+        let mut runner = RunningListener { shutdown, worker: Some(worker), client: Some(held) };
 
         // Six idle windows with the client connected. Nothing may retire.
         thread::sleep(Duration::from_millis(600));
         assert!(
-            !runner.is_finished(),
+            !runner.worker.as_ref().is_some_and(thread::JoinHandle::is_finished),
             "a listener retired while a client was connected"
         );
         assert!(path.exists());
+        let poll_count = owner_polls.load(Ordering::Relaxed);
+        assert!(poll_count < 5_000, "idle connected client caused {poll_count} owner polls in 600ms");
 
-        drop(held);
+        // The no-work wait must not add a request-sized delay after a client
+        // actually submits work on the connection it already holds.
+        let request = crate::protocol::frame(b"ping", limits())
+            .unwrap_or_else(|error| panic!("frame: {error}"));
+        let held = runner.client.as_mut().expect("held client");
+        held.write_all(&request).unwrap_or_else(|error| panic!("write: {error}"));
+        assert_eq!(
+            read_frame(held, limits()).unwrap_or_else(|error| panic!("read: {error}")),
+            b"ping"
+        );
+
+        runner.client.take();
         let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline && !runner.is_finished() {
+        while Instant::now() < deadline && !runner.worker.as_ref().is_some_and(thread::JoinHandle::is_finished) {
             thread::sleep(Duration::from_millis(5));
         }
         assert!(
-            runner.is_finished(),
+            runner.worker.as_ref().is_some_and(thread::JoinHandle::is_finished),
             "a listener stayed resident after its last client left"
         );
         assert_eq!(
-            runner
+            runner.worker.take().expect("listener worker")
                 .join()
                 .unwrap_or_else(|_| panic!("listener thread panicked"))
                 .unwrap_or_else(|error| panic!("run: {error}")),

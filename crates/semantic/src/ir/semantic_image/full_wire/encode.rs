@@ -12,13 +12,58 @@ use super::{
     },
 };
 
+/// One lane-local plan that measures and writes the same complete portable image.
+///
+/// Keeping the plan alive avoids rebuilding its canonical remapping between a
+/// bounded output reservation and the write. It borrows the source `Ir` and
+/// must remain on the thread that owns that image.
+pub struct PreparedFullSemanticImage<'image> {
+    plan: FullSemanticImagePlan<'image>,
+}
+
+impl<'image> PreparedFullSemanticImage<'image> {
+    /// Prepares the complete image without touching caller output.
+    pub fn new(
+        ir: &'image crate::ir::Ir,
+    ) -> Result<Self, crate::ir::semantic_image::SemanticImageEncodeError> {
+        Ok(Self {
+            plan: FullSemanticImagePlan::build(ir)?,
+        })
+    }
+
+    /// Exact encoded byte count admitted by this plan.
+    #[must_use]
+    pub const fn byte_len(&self) -> usize {
+        self.plan.required
+    }
+
+    /// Writes the prepared image into caller-owned output.
+    ///
+    /// A short buffer is unchanged. On success exactly [`Self::byte_len`]
+    /// bytes are written and can be reopened as [`super::SemanticImageView`].
+    pub fn encode_into(
+        &self,
+        output: &mut [u8],
+    ) -> Result<usize, crate::ir::semantic_image::SemanticImageEncodeError> {
+        if output.len() < self.plan.required {
+            return Err(FullSemanticImageFault::OutputTooShort {
+                required: self.plan.required,
+                actual: output.len(),
+            }
+            .into());
+        }
+        write_plan(output, &self.plan);
+        Ok(self.plan.required)
+    }
+}
+
 /// Measures the complete portable semantic image without touching caller
 /// bytes. All writer failure is confined to the measured planning phase;
 /// callers can reopen the resulting prefix as [`super::SemanticImageView`].
 pub fn full_semantic_image_len(
     ir: &crate::ir::Ir,
 ) -> Result<usize, crate::ir::semantic_image::SemanticImageEncodeError> {
-    Ok(FullSemanticImagePlan::build(ir)?.required)
+    Ok(PreparedFullSemanticImage::new(ir)?.byte_len())
 }
 
 /// Writes a fully prepared portable image. All fallible preparation occurs
@@ -28,16 +73,7 @@ pub fn encode_full_semantic_image(
     ir: &crate::ir::Ir,
     output: &mut [u8],
 ) -> Result<usize, crate::ir::semantic_image::SemanticImageEncodeError> {
-    let plan = FullSemanticImagePlan::build(ir)?;
-    if output.len() < plan.required {
-        return Err(FullSemanticImageFault::OutputTooShort {
-            required: plan.required,
-            actual: output.len(),
-        }
-        .into());
-    }
-    write_plan(output, &plan);
-    Ok(plan.required)
+    PreparedFullSemanticImage::new(ir)?.encode_into(output)
 }
 
 fn write_plan(output: &mut [u8], plan: &FullSemanticImagePlan<'_>) {

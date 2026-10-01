@@ -45,10 +45,16 @@ pub enum ArgumentKind {
     SubjectKind,
     /// A closed compiler language and dialect profile.
     LanguageProfile,
+    /// The requested Add compilation execution class.
+    ExecutionIntent,
     /// An immutable compiler generation identity, as 64 hexadecimal digits.
     Generation,
+    /// Direction around a package in the dependency graph.
+    GraphDirection,
     /// A bounded page size between 1 and 200.
     Limit,
+    /// Opaque continuation token returned by a previous page.
+    Cursor,
     /// A boolean switch that is absent or present.
     Flag,
 }
@@ -70,8 +76,11 @@ impl ArgumentKind {
             Self::NodeId => "NODE",
             Self::SubjectKind => "SUBJECT",
             Self::LanguageProfile => "PROFILE",
+            Self::ExecutionIntent => "INTENT",
             Self::Generation => "GENERATION",
+            Self::GraphDirection => "DIRECTION",
             Self::Limit => "COUNT",
+            Self::Cursor => "CURSOR",
             Self::Flag => "",
         }
     }
@@ -102,6 +111,8 @@ impl ArgumentKind {
                 "c",
                 "cpp",
             ],
+            Self::ExecutionIntent => &["interactive", "background"],
+            Self::GraphDirection => &["dependencies", "dependents"],
             _ => &[],
         }
     }
@@ -110,7 +121,10 @@ impl ArgumentKind {
 /// One operand of one command.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ArgumentSpec {
+    /// CLI option spelling and the shared lowering key.
     name: &'static str,
+    /// MCP input property spelling, when it differs from the CLI name.
+    json_name: &'static str,
     kind: ArgumentKind,
     required: bool,
     repeated: bool,
@@ -121,6 +135,7 @@ impl ArgumentSpec {
     const fn required(name: &'static str, kind: ArgumentKind, help: &'static str) -> Self {
         Self {
             name,
+            json_name: name,
             kind,
             required: true,
             repeated: false,
@@ -131,6 +146,7 @@ impl ArgumentSpec {
     const fn optional(name: &'static str, kind: ArgumentKind, help: &'static str) -> Self {
         Self {
             name,
+            json_name: name,
             kind,
             required: false,
             repeated: false,
@@ -141,6 +157,7 @@ impl ArgumentSpec {
     const fn repeated(name: &'static str, kind: ArgumentKind, help: &'static str) -> Self {
         Self {
             name,
+            json_name: name,
             kind,
             required: true,
             repeated: true,
@@ -148,10 +165,32 @@ impl ArgumentSpec {
         }
     }
 
-    /// Returns the operand name shared by the CLI flag and the MCP field.
+    const fn optional_with_json_name(
+        name: &'static str,
+        json_name: &'static str,
+        kind: ArgumentKind,
+        help: &'static str,
+    ) -> Self {
+        Self {
+            name,
+            json_name,
+            kind,
+            required: false,
+            repeated: false,
+            help,
+        }
+    }
+
+    /// Returns the CLI option spelling and lowering key.
     #[must_use]
     pub const fn name(self) -> &'static str {
         self.name
+    }
+
+    /// Returns the MCP input property name.
+    #[must_use]
+    pub const fn json_name(self) -> &'static str {
+        self.json_name
     }
 
     /// Returns what the operand means.
@@ -307,7 +346,8 @@ impl CommandGrammar {
             | CommandId::Health
             | CommandId::Revision
             | CommandId::ProjectTree
-            | CommandId::AdvisoryRefresh => false,
+            | CommandId::AdvisoryRefresh
+            | CommandId::PackageGraphPage => false,
         }
     }
 
@@ -410,9 +450,14 @@ const LIMIT: ArgumentSpec = ArgumentSpec::optional(
     ArgumentKind::Limit,
     "Maximum rows in this page, 1 to 200.",
 );
+const CURSOR: ArgumentSpec = ArgumentSpec::optional(
+    "cursor",
+    ArgumentKind::Cursor,
+    "Opaque continuation returned by the preceding page; bound to its query and index snapshot.",
+);
 
 /// The calling convention of every registry row, in registry order.
-pub const GRAMMARS: [CommandGrammar; 42] = [
+pub const GRAMMARS: [CommandGrammar; 43] = [
     CommandGrammar {
         name: "advisory",
         tool: "backend.advisory",
@@ -463,8 +508,13 @@ pub const GRAMMARS: [CommandGrammar; 42] = [
             ArgumentKind::ProjectPath,
             "Absolute project directory to add to the shelf.",
         )],
-        options: &[],
-        when: "Pass the absolute project directory. This adds that package to the shelf. Call it when packages does not list the project, or when its source changed.",
+        options: &[ArgumentSpec::optional_with_json_name(
+            "execution-intent",
+            "execution_intent",
+            ArgumentKind::ExecutionIntent,
+            "Compilation class: interactive protects local latency; background permits bounded remote calibration. Defaults to interactive.",
+        )],
+        when: "Pass the absolute project directory. This adds that package to the shelf. Call it when packages does not list the project, or when its source changed. Use background execution when the request may be calibrated remotely.",
     },
     CommandGrammar {
         name: "remove",
@@ -578,7 +628,7 @@ pub const GRAMMARS: [CommandGrammar; 42] = [
             ArgumentKind::Text,
             "A readable declaration name or address.",
         )],
-        options: &[LIMIT],
+        options: &[LIMIT, CURSOR],
         when: "Use when you have a name from prose or a stack trace and need the exact coordinates it could mean.",
     },
     CommandGrammar {
@@ -682,7 +732,7 @@ pub const GRAMMARS: [CommandGrammar; 42] = [
             ArgumentKind::Text,
             "Name prefix or term.",
         )],
-        options: &[LIMIT],
+        options: &[LIMIT, CURSOR],
         when: "Use for a name-first lookup across every package the local registry index knows, indexed or not.",
     },
     CommandGrammar {
@@ -969,5 +1019,40 @@ pub const GRAMMARS: [CommandGrammar; 42] = [
         )],
         options: &[],
         when: "Use offline or during restart to read an exact source snapshot from the local cache.",
+    },
+    CommandGrammar {
+        name: "package-graph",
+        tool: "backend.package_graph",
+        aliases: &[],
+        positional: &[
+            ArgumentSpec::required(
+                "package",
+                ArgumentKind::PackageReference,
+                "Pinned package URL at the center of the graph page.",
+            ),
+            ArgumentSpec::required(
+                "direction",
+                ArgumentKind::GraphDirection,
+                "Read outgoing dependencies or incoming dependents.",
+            ),
+        ],
+        options: &[
+            ArgumentSpec::optional(
+                "authority",
+                ArgumentKind::Text,
+                "Exact source selector copied from an ambiguous dependency answer.",
+            ),
+            ArgumentSpec::optional(
+                "limit",
+                ArgumentKind::Limit,
+                "Rows to return, from 1 to 128.",
+            ),
+            ArgumentSpec::optional(
+                "cursor",
+                ArgumentKind::Cursor,
+                "JSON continuation from the preceding package-graph page.",
+            ),
+        ],
+        when: "Use for a package's exact dependency or dependent edges, with each source authority, ecosystem, resolver scope, version requirement, and selected graph snapshot preserved.",
     },
 ];

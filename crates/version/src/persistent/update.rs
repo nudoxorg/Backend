@@ -60,9 +60,7 @@ pub(super) fn find_node<'a, R: Relation>(
         })
         .saturating_sub(1)
         .min(children.len().saturating_sub(1));
-    children
-        .get(index)
-        .and_then(|child| find_node(child, ord))
+    children.get(index).and_then(|child| find_node(child, ord))
 }
 pub(super) fn target_shape<R: Relation>(
     root: &Node<R>,
@@ -85,6 +83,27 @@ pub(super) fn target_shape<R: Relation>(
     }
     Ok((len, single_present, single_noop))
 }
+
+/// Returns whether a present row replacement keeps the encoded value width.
+///
+/// Leaf anchors account for encoded entry sizes. Keeping a one-row replacement
+/// on the existing leaf is canonical only when its encoded width is unchanged;
+/// width changes must use the structural splice path so neighboring leaf cuts
+/// can be recomputed under the canonical byte bound.
+pub(super) fn replacement_keeps_encoded_width<R: Relation>(
+    root: &Node<R>,
+    change: &TreeChange<R>,
+) -> bool {
+    let (Some(before), Some(after)) = (get_node(root, &change.key), change.after.as_ref()) else {
+        return false;
+    };
+    let mut before_bytes = Vec::new();
+    R::encode_value(before, &mut before_bytes);
+    let mut after_bytes = Vec::new();
+    R::encode_value(after, &mut after_bytes);
+    before_bytes.len() == after_bytes.len()
+}
+
 pub(super) fn collect_target_range<R: Relation>(changes: &[TreeChange<R>]) -> Vec<Item<R>> {
     changes
         .iter()
@@ -198,7 +217,10 @@ fn leaf_boundary_is_cut<R: Relation>(
     )
 }
 
-fn merge_segment<R: Relation>(existing: &[Item<R>], changes: &[TreeChange<R>]) -> Vec<Item<R>> {
+pub(super) fn merge_segment<R: Relation>(
+    existing: &[(R::Key, R::Value)],
+    changes: &[TreeChange<R>],
+) -> Vec<(R::Key, R::Value)> {
     let mut output = Vec::with_capacity(existing.len().saturating_add(changes.len()));
     let mut change_at = 0usize;
     for (key, value) in existing {

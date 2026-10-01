@@ -1,6 +1,6 @@
 //! Durable root lease publication and epoch recovery for the input CAS.
 
-use super::{File, InputCas, Path, ReplicationError, Schema, Write, fs};
+use super::{InputCas, Path, ReplicationError, Schema, Write, create_new_temp_nofollow, fs};
 
 fn write_root_lease(
     directory: &Path,
@@ -12,7 +12,7 @@ fn write_root_lease(
     }
     let temporary = directory.join(".ROOT_LEASE.part");
     let target = directory.join("ROOT_LEASE");
-    let mut file = File::create(&temporary).map_err(|_| ReplicationError::Disconnected)?;
+    let mut file = create_new_temp_nofollow(&temporary)?;
     file.write_all(&root.schema().to_be_bytes())
         .and_then(|()| file.write_all(&root.digest().as_bytes()))
         .and_then(|()| file.write_all(&epoch.to_be_bytes()))
@@ -84,7 +84,7 @@ impl<T: Schema> InputCas<T> {
         write_root_lease(directory, root, epoch)?;
         let temporary = directory.join(".ROOT.part");
         let target = directory.join("ROOT");
-        let mut file = File::create(&temporary).map_err(|_| ReplicationError::Disconnected)?;
+        let mut file = create_new_temp_nofollow(&temporary)?;
         file.write_all(&root.schema().to_be_bytes())
             .and_then(|()| file.write_all(&root.digest().as_bytes()))
             .and_then(|()| file.sync_all())

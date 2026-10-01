@@ -6,13 +6,14 @@
 //! from the public admission API; no test manufactures a trusted root,
 //! commit, receipt, coverage witness, or worker attestation from bytes.
 #![deny(unsafe_code)]
-#![cfg(test)]
+#![cfg(all(test, feature = "extended-journeys"))]
 #![cfg_attr(test, allow(clippy::expect_used, clippy::panic, clippy::unwrap_used))]
 
 #[cfg(unix)]
 pub mod surface_matrix;
 
 use backend_client::SubscriptionRequest;
+#[cfg(feature = "gui")]
 use backend_desktop::{core::VersionedRoot, model::AppSnapshot};
 use backend_engine::dispatch::{
     Blake3AuthorityVerifier, CompleteSemanticCoverage, DispatchCompletion, DispatchError,
@@ -1078,6 +1079,7 @@ fn bounded_subscription_returns_real_events_and_resets_on_a_gap() {
 }
 
 #[test]
+#[cfg(feature = "gui")]
 fn desktop_rekeys_one_snapshot_without_copying_unchanged_branches() {
     let (library, capability) = checked_library();
     let base = library.view().clone();

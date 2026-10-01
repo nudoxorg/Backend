@@ -1,0 +1,3 @@
+click 600,140 @300   # focus find field (click)
+type "toml" @500     # find refine (type)
+click 540,222 @1500  # open result (click)

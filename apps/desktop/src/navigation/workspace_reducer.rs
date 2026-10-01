@@ -124,6 +124,12 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
                 for path in paths.iter() {
                     next = admit_project_path(&next, path);
                 }
+                // The dialog the picker was opened from has done its work.
+                if next.overlay() == Some(Overlay::AddProject) {
+                    let mut session = next.session().clone();
+                    session.overlay = None;
+                    next = next.with_session(session);
+                }
                 effects.push(Effect::Persist);
             }
             FolderPickerOutcome::Cancelled => {}
@@ -177,12 +183,6 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
             next = next.with_workspace(workspace);
         }
         Intent::ActivateProject(project) => {
-            let previous_request = next
-                .workspace()
-                .projects
-                .iter()
-                .find(|item| item.id == *project)
-                .and_then(|item| item.request);
             let on_shelf = next
                 .workspace()
                 .projects
@@ -195,6 +195,11 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
                 ));
                 next = next.with_workspace(workspace);
             } else {
+                // Choosing a project among several is choosing which one is
+                // yours right now. Every project shares the owner's one
+                // index, so nothing is indexed again: a ready project stays
+                // ready, one that is running keeps running, one that stopped
+                // stays stopped until someone presses "Try again".
                 let mut workspace = next.workspace().clone();
                 workspace.active = Some(project.clone());
                 workspace.path_error = None;
@@ -209,13 +214,9 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
                     .collect::<Vec<_>>()
                     .into();
                 next = next.with_workspace(workspace);
-                next = set_project_phase(&next, project, ProjectPhase::Indexing, None, None);
                 let mut shelf = next.shelf().clone();
                 shelf.selected = Some(ResourceIdentity::Local(project.clone()));
                 next = next.with_shelf(shelf);
-                if let Some(request) = previous_request {
-                    effects.push(Effect::Cancel(request));
-                }
             }
             effects.push(Effect::Persist);
         }
@@ -226,7 +227,6 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
                 .iter()
                 .find(|item| item.id == *project)
                 .and_then(|item| item.request);
-            let removed_active = next.workspace().active.as_ref() == Some(project);
             let mut workspace = next.workspace().clone();
             workspace.projects = workspace
                 .projects
@@ -239,11 +239,6 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
                 workspace.active = workspace.projects.first().map(|item| item.id.clone());
             }
             next = next.with_workspace(workspace);
-            if removed_active {
-                if let Some(fallback) = next.workspace().active.clone() {
-                    next = set_project_phase(&next, &fallback, ProjectPhase::Indexing, None, None);
-                }
-            }
             let mut shelf = next.shelf().clone();
             shelf.items = shelf
                 .items
@@ -259,7 +254,7 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
             }
             effects.push(Effect::Persist);
         }
-        Intent::RevealProject(_) => {}
+        Intent::RevealProject(_) | Intent::OpenSource { .. } => {}
         Intent::RetryIndex(project) => {
             let previous_request = next
                 .workspace()
@@ -306,6 +301,57 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
                 ConnectionStatus::Disconnected
             };
             next = next.with_settings(settings);
+        }
+        Intent::OwnerReady { key, mode } => {
+            // The owner's own root, read by the owner thread the moment it
+            // answered; no read was ever asked at the unserved one.
+            next = next.with_key(*key, None);
+            let mut settings = next.settings().clone();
+            settings.service_mode = *mode;
+            settings.connection = ConnectionStatus::Connected;
+            next = next.with_settings(settings);
+        }
+        Intent::DismissNote(note) => {
+            let mut workspace = next.workspace().clone();
+            workspace.notes = workspace.notes.iter().filter(|held| *held != note).cloned().collect::<Vec<_>>().into();
+            next = next.with_workspace(workspace);
+        }
+        Intent::LibraryRebuilding { kept_at } => {
+            // The index every ready project stood on is gone from the owner's
+            // side (set aside), so "ready" on the shelf is no longer true: each
+            // project that still has a folder is indexed again, from nothing.
+            let mut workspace = next.workspace().clone();
+            workspace.projects = workspace
+                .projects
+                .iter()
+                .cloned()
+                .map(|mut project| {
+                    if project.phase != ProjectPhase::Missing {
+                        project.phase = ProjectPhase::Indexing;
+                        project.progress = None;
+                        project.files_indexed = None;
+                        project.request = None;
+                        project.error = None;
+                    }
+                    project
+                })
+                .collect::<Vec<_>>()
+                .into();
+            let note = crate::model::Note::LibraryRebuilding { kept_at: Arc::clone(kept_at) };
+            if !workspace.notes.contains(&note) {
+                workspace.notes = workspace.notes.iter().cloned().chain([note]).collect::<Vec<_>>().into();
+            }
+            next = next.with_workspace(workspace);
+            effects.push(Effect::Persist);
+        }
+        Intent::WindowResized { width, height } => {
+            let size = crate::model::WindowSize { width: *width, height: *height };
+            if next.settings().window != Some(size) {
+                let mut settings = next.settings().clone();
+                settings.window = Some(size);
+                next = next.with_settings(settings);
+                effects.push(Effect::Persist);
+            }
         }
         Intent::OpenHelp => {
             let mut session = next.session().clone();
@@ -568,6 +614,116 @@ mod tests {
                 .iter()
                 .all(|project| project.phase == ProjectPhase::Indexing)
         );
+    }
+
+    fn two_ready_projects() -> (AppSnapshot, LocalProjectId, LocalProjectId) {
+        let (first, second) = (
+            LocalProjectId::new("/tmp/nudox-switch-first").expect("identity"),
+            LocalProjectId::new("/tmp/nudox-switch-second").expect("identity"),
+        );
+        let mut snapshot = snapshot();
+        for project in [&first, &second] {
+            snapshot = reduce(&snapshot, &Intent::AddProject { project: project.clone() }).expect("workspace").snapshot;
+        }
+        let mut workspace = snapshot.workspace().clone();
+        workspace.projects = workspace
+            .projects
+            .iter()
+            .cloned()
+            .map(|mut project| {
+                project.phase = ProjectPhase::Ready;
+                project
+            })
+            .collect::<Vec<_>>()
+            .into();
+        (snapshot.with_workspace(workspace), first, second)
+    }
+
+    #[test]
+    fn switching_between_ready_projects_indexes_nothing_again() {
+        let (snapshot, first, second) = two_ready_projects();
+        let switched = reduce(&snapshot, &Intent::ActivateProject(first.clone())).expect("workspace");
+        assert_eq!(switched.snapshot.workspace().active.as_ref(), Some(&first), "the chosen project is the active one");
+        assert!(
+            switched.snapshot.workspace().projects.iter().all(|project| project.phase == ProjectPhase::Ready),
+            "a ready project stays ready: switching is instant, never a fresh compile"
+        );
+        assert!(
+            !switched.effects.iter().any(|effect| matches!(effect, Effect::Engine(_) | Effect::Cancel(_))),
+            "and no engine work is asked for: {:?}",
+            switched.effects
+        );
+        assert_eq!(switched.effects, [Effect::Persist], "the choice is remembered");
+        let back = reduce(&switched.snapshot, &Intent::ActivateProject(second.clone())).expect("workspace");
+        assert_eq!(back.snapshot.workspace().active.as_ref(), Some(&second));
+        assert_eq!(back.snapshot.shelf().selected, Some(ResourceIdentity::Local(second)), "the shelf follows");
+    }
+
+    #[test]
+    fn a_stopped_project_stays_stopped_until_someone_presses_try_again() {
+        let (snapshot, first, _) = two_ready_projects();
+        let failed = set_project_phase(&snapshot, &first, ProjectPhase::Failed, Some(Arc::from("the compiler stopped")), None);
+        let activated = reduce(&failed, &Intent::ActivateProject(first.clone())).expect("workspace");
+        let row = &activated.snapshot.workspace().projects[0];
+        assert_eq!((row.phase, row.error.as_deref()), (ProjectPhase::Failed, Some("the compiler stopped")), "choosing it does not hide what happened");
+        let retried = reduce(&activated.snapshot, &Intent::RetryIndex(first)).expect("workspace");
+        let row = &retried.snapshot.workspace().projects[0];
+        assert_eq!((row.phase, row.error.as_deref()), (ProjectPhase::Indexing, None), "Try again starts it again and forgets the old reason");
+    }
+
+    #[test]
+    fn removing_the_active_project_makes_another_active_and_forgets_the_row() {
+        let (snapshot, first, second) = two_ready_projects();
+        let active = snapshot.workspace().active.clone().expect("the last added is active");
+        assert_eq!(active, second);
+        let removed = reduce(&snapshot, &Intent::RemoveProject(second.clone())).expect("workspace");
+        assert_eq!(removed.snapshot.workspace().projects.len(), 1);
+        assert_eq!(removed.snapshot.workspace().active.as_ref(), Some(&first), "the shelf never has no active project while it has projects");
+        assert_eq!(removed.snapshot.shelf().items.len(), 1);
+        assert_eq!(removed.snapshot.workspace().projects[0].phase, ProjectPhase::Ready, "the one that stays is not indexed again");
+        assert!(removed.effects.contains(&Effect::Persist));
+    }
+
+    #[test]
+    fn the_folder_the_picker_chose_closes_the_dialog_it_was_opened_from() {
+        let opened = reduce(&snapshot(), &Intent::OpenAddProject).expect("workspace").snapshot;
+        assert_eq!(opened.overlay(), Some(Overlay::AddProject));
+        let chosen: Arc<[std::path::PathBuf]> = vec!["/tmp/nudox-picker-chosen".into()].into();
+        let picked = reduce(&opened, &Intent::FolderPickerResult { outcome: FolderPickerOutcome::Selected(chosen) }).expect("workspace");
+        assert_eq!(picked.snapshot.overlay(), None);
+        assert_eq!(picked.snapshot.workspace().projects.len(), 1);
+        let cancelled = reduce(&opened, &Intent::FolderPickerResult { outcome: FolderPickerOutcome::Cancelled }).expect("workspace");
+        assert_eq!(cancelled.snapshot.overlay(), Some(Overlay::AddProject), "a cancelled picker leaves the dialog where it was");
+    }
+
+    #[test]
+    fn a_library_set_aside_is_told_once_and_every_project_is_indexed_again() {
+        let (snapshot, first, _) = two_ready_projects();
+        let gone = set_project_phase(&snapshot, &first, ProjectPhase::Missing, None, None);
+        let told = reduce(&gone, &Intent::LibraryRebuilding { kept_at: Arc::from("/data/from-another-build") }).expect("workspace");
+        let phases: Vec<_> = told.snapshot.workspace().projects.iter().map(|project| project.phase).collect();
+        assert_eq!(phases, [ProjectPhase::Missing, ProjectPhase::Indexing], "a folder that is gone stays gone; the rest are indexed again");
+        assert_eq!(
+            told.snapshot.workspace().notes.as_ref(),
+            [crate::model::Note::LibraryRebuilding { kept_at: Arc::from("/data/from-another-build") }]
+        );
+        let again = reduce(&told.snapshot, &Intent::LibraryRebuilding { kept_at: Arc::from("/data/from-another-build") }).expect("workspace");
+        assert_eq!(again.snapshot.workspace().notes.len(), 1, "said once");
+        let dismissed = reduce(
+            &again.snapshot,
+            &Intent::DismissNote(crate::model::Note::LibraryRebuilding { kept_at: Arc::from("/data/from-another-build") }),
+        )
+        .expect("workspace");
+        assert!(dismissed.snapshot.workspace().notes.is_empty(), "and let go when dismissed");
+    }
+
+    #[test]
+    fn the_window_size_is_remembered_only_when_it_changed() {
+        let resized = reduce(&snapshot(), &Intent::WindowResized { width: 1100, height: 800 }).expect("workspace");
+        assert_eq!(resized.snapshot.settings().window, Some(crate::model::WindowSize { width: 1100, height: 800 }));
+        assert_eq!(resized.effects, [Effect::Persist]);
+        let same = reduce(&resized.snapshot, &Intent::WindowResized { width: 1100, height: 800 }).expect("workspace");
+        assert!(same.effects.is_empty(), "the same size writes nothing");
     }
 
     #[test]

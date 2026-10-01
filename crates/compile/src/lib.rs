@@ -48,8 +48,13 @@ pub use contract::{
     typed_of,
 };
 pub use embedding::{
-    EmbeddingArtifact, EmbeddingArtifactId, EmbeddingCoordinates, EmbeddingExecutable,
-    EmbeddingExecutableError, EmbeddingInvocation, EmbeddingNormalization, EmbeddingPurpose,
+    EmbeddingArtifact, EmbeddingArtifactId, EmbeddingBatchProtocol, EmbeddingCoordinates,
+    EmbeddingExecutable, EmbeddingExecutableError, EmbeddingExecutionIdentity,
+    EmbeddingInputIdentity, EmbeddingInvocation, EmbeddingNormalization, EmbeddingPayloadError,
+    EmbeddingPurpose, EmbeddingRuntimeSpecError, EmbeddingRuntimeSpecV1,
+    MAX_EMBEDDING_BATCH_COORDINATE_BYTES, MAX_EMBEDDING_BATCH_INPUT_BYTES,
+    MAX_EMBEDDING_BATCH_INPUTS, MAX_EMBEDDING_BATCH_ITEMS, MAX_EMBEDDING_BATCH_METADATA_BYTES,
+    MAX_EMBEDDING_CACHE_COORDINATE_BYTES, MAX_EMBEDDING_MODEL_BYTES, MAX_EMBEDDING_TOKENIZER_BYTES,
 };
 pub use errors::{FrameError, PoolError, ProcessError, UnsupportedLimit};
 pub use facts::{

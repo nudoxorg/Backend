@@ -10,7 +10,9 @@
 
 use std::{marker::PhantomData, sync::Arc};
 
-use backend_version::{ObjectKey, ObjectVersion, ObjectVersionHasher, Schema, SchemaIdentity};
+use backend_version::{
+    ObjectKey, ObjectKeyHasher, ObjectVersion, ObjectVersionHasher, Schema, SchemaIdentity,
+};
 
 use crate::{ReplicationError, TransferId};
 
@@ -105,6 +107,7 @@ pub fn canonical_object_digest<T: Schema>(
 /// [`super::Transfer::stream_into`].
 pub struct CanonicalDigest<T: Schema> {
     hasher: Option<ObjectVersionHasher>,
+    key_hasher: Option<ObjectKeyHasher>,
     expected_len: u64,
     written: u64,
     next_offset: u64,
@@ -121,8 +124,14 @@ impl<T: Schema> CanonicalDigest<T> {
             expected,
         )
         .ok();
+        let key_hasher = ObjectKeyHasher::new(
+            SchemaIdentity::new(T::DOMAIN, T::TYPE, T::VERSION),
+            expected,
+        )
+        .ok();
         Self {
             hasher,
+            key_hasher,
             expected_len,
             written: 0,
             next_offset: 0,
@@ -154,6 +163,11 @@ impl<T: Schema> CanonicalDigest<T> {
             .ok_or(ReplicationError::Overflow)?
             .update(bytes)
             .map_err(|_| ReplicationError::Range)?;
+        self.key_hasher
+            .as_mut()
+            .ok_or(ReplicationError::Overflow)?
+            .update(bytes)
+            .map_err(|_| ReplicationError::Range)?;
         self.written = next;
         self.next_offset = next;
         Ok(())
@@ -166,13 +180,31 @@ impl<T: Schema> CanonicalDigest<T> {
     /// Returns [`ReplicationError::Incomplete`] when fewer than the declared
     /// number of bytes were incorporated.
     pub fn finish(self) -> Result<[u8; 32], ReplicationError> {
+        self.finish_identities()
+            .map(|(_, version)| version.to_bytes())
+    }
+
+    /// Finishes both typed object identities after exactly the declared byte
+    /// length has been streamed in order.
+    ///
+    /// # Errors
+    /// Returns an incomplete, range, or overflow error when the stream cannot
+    /// be converted into typed identities.
+    pub fn finish_identities(self) -> Result<(ObjectKey<T>, ObjectVersion<T>), ReplicationError> {
         if self.written != self.expected_len {
             return Err(ReplicationError::Incomplete);
         }
-        self.hasher
+        let key = self
+            .key_hasher
             .ok_or(ReplicationError::Overflow)?
-            .finish()
-            .map_err(|_| ReplicationError::Incomplete)
+            .finish_key::<T>()
+            .map_err(|_| ReplicationError::Incomplete)?;
+        let version = self
+            .hasher
+            .ok_or(ReplicationError::Overflow)?
+            .finish_version::<T>()
+            .map_err(|_| ReplicationError::Incomplete)?;
+        Ok((key, version))
     }
 
     /// Returns the number of bytes incorporated so far.

@@ -6,8 +6,15 @@
 //! an observable unavailable state and never prevents local lexical queries.
 
 use super::{LocalAnswer, QueryCoordinator, QueryResult, SemanticAcceleration, SemanticDocument};
+use backend_compile::{
+    EmbeddingArtifact, EmbeddingBatchProtocol, EmbeddingExecutable, EmbeddingExecutableError,
+    EmbeddingInputIdentity, EmbeddingInvocation, EmbeddingNormalization, EmbeddingPurpose,
+    EmbeddingRuntimeSpecV1, MAX_EMBEDDING_BATCH_ITEMS, ProcessEnvironment, ProcessLimits,
+    ToolchainArtifact,
+};
 use backend_engine::RowId;
 use backend_extension_qdrant as qdrant;
+use backend_library::{SemanticSearchReason, SemanticSearchStatus};
 use backend_version::{CoverageWitness, RelationState};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -15,12 +22,13 @@ use std::fmt;
 use std::fs;
 use std::io::{Read, Write};
 use std::mem::size_of;
-use std::num::{NonZeroU8, NonZeroU32};
+use std::num::{NonZeroU8, NonZeroU16, NonZeroU32};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Qdrant endpoint environment variable.
 pub const QDRANT_ENDPOINT_ENV: &str = "BACKEND_QDRANT_ENDPOINT";
@@ -44,6 +52,8 @@ pub const EMBEDDING_DIMENSIONS_ENV: &str = "BACKEND_EMBEDDING_DIMENSIONS";
 pub const EMBEDDING_QUERY_TREATMENT_ENV: &str = "BACKEND_EMBEDDING_QUERY_TREATMENT";
 /// Document treatment/prefix revision label.
 pub const EMBEDDING_DOCUMENT_TREATMENT_ENV: &str = "BACKEND_EMBEDDING_DOCUMENT_TREATMENT";
+/// Embedding worker protocol: `json-v1` (compatibility default) or shared supervised `bem2`.
+pub const EMBEDDING_PROTOCOL_ENV: &str = "BACKEND_EMBEDDING_PROTOCOL";
 
 const MAX_CONFIG_VALUE_BYTES: usize = 4096;
 const MAX_EMBEDDING_DIMENSIONS: u32 = 16_384;
@@ -55,7 +65,21 @@ const MAX_EMBEDDING_RESPONSE_BYTES: u64 = 1024 * 1024;
 const MAX_REMOTE_SEMANTIC_DOCUMENTS: usize = 65_536;
 const MAX_VECTOR_FACT_BYTES: usize = 512 * 1024 * 1024;
 const EMBEDDING_PROTOCOL_ABI: u16 = 1;
+const EMBEDDING_BATCH_PROTOCOL_ABI: u16 = 2;
 const EMBEDDING_DEADLINE: Duration = Duration::from_secs(5);
+// The environment-configured Qdrant producer is separate from the compiler's persisted
+// EmbeddingRuntimeLimits. Apply a fixed local-worker policy: bounded workspace/output, a short
+// wall/CPU deadline, and supported OS process/address-space limits. Outside 64-bit Linux the
+// process API cannot enforce a memory limit; on non-Unix platforms it cannot enforce CPU/process
+// limits, so the configured local executable remains trusted code within the portable I/O, wall,
+// and workspace bounds.
+const EMBEDDING_WORKSPACE_GROWTH_BYTES: usize = 256 * 1024 * 1024;
+#[cfg(unix)]
+const EMBEDDING_PROCESS_COUNT_LIMIT: usize = 256;
+#[cfg(unix)]
+const EMBEDDING_CPU_TIME_LIMIT: Duration = EMBEDDING_DEADLINE;
+#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+const EMBEDDING_ADDRESS_SPACE_LIMIT_BYTES: usize = 8 * 1024 * 1024 * 1024;
 const PRODUCER_RETRY_DELAY: Duration = Duration::from_secs(5);
 
 fn embedding_capability_recipe(
@@ -194,6 +218,61 @@ impl RemoteSemantic {
         }
     }
 
+    /// Searches while retaining a per-query semantic-lane status beside the
+    /// complete lexical result.
+    #[must_use]
+    pub fn search_with_status(
+        &mut self,
+        coordinator: &QueryCoordinator,
+        coverage: CoverageWitness,
+        local: LocalAnswer,
+        text: &str,
+        reconciliation_failed: bool,
+    ) -> (QueryResult, SemanticSearchStatus) {
+        match self {
+            Self::Unconfigured => (
+                local.finish(),
+                SemanticSearchStatus::Unavailable {
+                    reason: SemanticSearchReason::Unconfigured,
+                },
+            ),
+            Self::Unavailable(_) => (
+                local.finish(),
+                SemanticSearchStatus::Unavailable {
+                    reason: SemanticSearchReason::InvalidConfiguration,
+                },
+            ),
+            Self::Configured(configured) => {
+                let active_matches = configured.active.as_ref().is_some_and(|active| {
+                    active.matches(coordinator) && active.coverage() == coverage
+                });
+                let fallback = if configured.producer.is_none() {
+                    SemanticSearchStatus::Unavailable {
+                        reason: SemanticSearchReason::ModelUnavailable,
+                    }
+                } else if configured.active.is_some() && !active_matches {
+                    SemanticSearchStatus::Stale {
+                        reason: SemanticSearchReason::StaleProjection,
+                    }
+                } else if reconciliation_failed
+                    || configured.producer_health.failure().is_some()
+                    || active_matches
+                {
+                    SemanticSearchStatus::Unavailable {
+                        reason: SemanticSearchReason::ProviderUnavailable,
+                    }
+                } else {
+                    SemanticSearchStatus::Unavailable {
+                        reason: SemanticSearchReason::NoActiveProjection,
+                    }
+                };
+                let result = configured.search(coordinator, coverage, local, text);
+                let status = semantic_status_from_result(&result).unwrap_or(fallback);
+                (result, status)
+            }
+        }
+    }
+
     /// Replaces the baseline embedding slot with this process's honest
     /// configured state while preserving every independently owned status.
     ///
@@ -268,6 +347,25 @@ impl RemoteSemantic {
         rows.sort_unstable_by_key(backend_engine::CapabilityStatus::id);
         backend_engine::CapabilityInventory::try_new(rows)
             .map_err(|_| RemoteConfigError::InvalidInventory)
+    }
+}
+
+fn semantic_status_from_result(result: &QueryResult) -> Option<SemanticSearchStatus> {
+    let semantic = result
+        .lanes
+        .iter()
+        .rev()
+        .find(|lane| lane.lane == super::Lane::Semantic)?;
+    match (semantic.coverage, semantic.freshness) {
+        (super::CoverageBasis::CandidateSubset { .. }, super::Freshness::Current) => {
+            Some(SemanticSearchStatus::Available)
+        }
+        (super::CoverageBasis::Unavailable, super::Freshness::Stale) => {
+            Some(SemanticSearchStatus::Stale {
+                reason: SemanticSearchReason::StaleProjection,
+            })
+        }
+        _ => None,
     }
 }
 
@@ -362,7 +460,7 @@ impl ConfiguredQdrant {
             .map_err(RemoteConfigError::Provider)?;
         let attempts =
             NonZeroU8::new(2).ok_or(RemoteConfigError::InvalidValue(QDRANT_ENDPOINT_ENV))?;
-        let producer = EmbeddingProducer::from_environment(dimensions)?;
+        let mut producer = EmbeddingProducer::from_environment(dimensions)?;
         EmbeddingProducer::verify_revision(
             EMBEDDING_MODEL_ENV,
             &model_revision,
@@ -384,6 +482,7 @@ impl ConfiguredQdrant {
             query_treatment: qdrant::TreatmentVersion::from_value(query_treatment.as_bytes()),
             document_treatment: qdrant::TreatmentVersion::from_value(document_treatment.as_bytes()),
         };
+        producer.activate_batch_runtime(recipe)?;
         let transport = qdrant::QdrantHttpConfig {
             endpoint,
             collection,
@@ -549,26 +648,47 @@ impl ConfiguredQdrant {
         let planned = documents
             .iter()
             .map(|document| {
-                DocumentEmbeddingId::new(self.recipe.version(), &document.text)
-                    .map(|identity| (document, identity))
+                let identity = producer.input_identity(
+                    self.recipe.version(),
+                    EmbeddingTreatment::Document,
+                    &document.text,
+                );
+                (document, DocumentEmbeddingId(identity.as_bytes()))
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Vec<_>>();
         let live = planned
             .iter()
             .map(|(_, identity)| *identity)
             .collect::<BTreeSet<_>>();
+        let mut misses = Vec::new();
+        let mut requested = BTreeSet::new();
+        for (document, identity) in &planned {
+            if !self.document_embeddings.contains_key(identity) && requested.insert(*identity) {
+                misses.push((*identity, document.text.as_str()));
+            }
+        }
         let mut pending = BTreeMap::new();
+        if !misses.is_empty() {
+            let texts = misses.iter().map(|(_, text)| *text).collect::<Vec<_>>();
+            let coordinates = producer.embed_many(EmbeddingTreatment::Document, &texts)?;
+            if coordinates.len() != misses.len() {
+                return Err(RemoteConfigError::ProducerProtocol);
+            }
+            pending.extend(
+                misses
+                    .into_iter()
+                    .zip(coordinates)
+                    .map(|((identity, _), coordinates)| (identity, coordinates)),
+            );
+        }
         let mut embedded = Vec::with_capacity(planned.len());
         for (document, identity) in planned {
-            let coordinates = if let Some(coordinates) = self.document_embeddings.get(&identity) {
-                Arc::clone(coordinates)
-            } else {
-                let coordinates: Arc<[f32]> = producer
-                    .embed(EmbeddingTreatment::Document, &document.text)?
-                    .into();
-                pending.insert(identity, Arc::clone(&coordinates));
-                coordinates
-            };
+            let coordinates = self
+                .document_embeddings
+                .get(&identity)
+                .or_else(|| pending.get(&identity))
+                .cloned()
+                .ok_or(RemoteConfigError::ProducerProtocol)?;
             let write = if self.document_embeddings.contains_key(&identity) {
                 qdrant::CoordinateWrite::Hold
             } else {
@@ -675,14 +795,23 @@ type ProducerFailure = backend_engine::CapabilityUnavailable;
 struct DocumentEmbeddingId([u8; 32]);
 
 impl DocumentEmbeddingId {
-    fn new(recipe: qdrant::Recipe, text: &str) -> Result<Self, RemoteConfigError> {
-        let length = u64::try_from(text.len()).map_err(|_| RemoteConfigError::EmbeddingInput)?;
-        let mut identity = blake3::Hasher::new();
-        identity.update(b"backend.embedding.document.v1\0");
-        identity.update(recipe.as_bytes());
-        identity.update(&length.to_be_bytes());
-        identity.update(text.as_bytes());
-        Ok(Self(*identity.finalize().as_bytes()))
+    fn new(
+        recipe: qdrant::Recipe,
+        producer_manifest: [u8; 32],
+        text: &str,
+    ) -> Result<Self, RemoteConfigError> {
+        let mut configuration =
+            blake3::Hasher::new_derive_key("backend.local-service.embedding-configuration.v1");
+        configuration.update(recipe.as_bytes());
+        configuration.update(&producer_manifest);
+        let identity = EmbeddingInputIdentity::for_configuration(
+            *configuration.finalize().as_bytes(),
+            EmbeddingInvocation {
+                purpose: EmbeddingPurpose::Document,
+                text,
+            },
+        );
+        Ok(Self(identity.as_bytes()))
     }
 }
 
@@ -728,6 +857,73 @@ struct EmbeddingProducer {
     tokenizer_identity: [u8; 32],
     dimensions: NonZeroU32,
     manifest: [u8; 32],
+    protocol: EmbeddingProducerProtocol,
+    batch_runtime: Option<EmbeddingExecutable>,
+    _batch_workspace: Option<EmbeddingRuntimeWorkspace>,
+}
+
+struct EmbeddingRuntimeWorkspace {
+    path: PathBuf,
+}
+
+impl fmt::Debug for EmbeddingRuntimeWorkspace {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("EmbeddingRuntimeWorkspace(<private>)")
+    }
+}
+
+static EMBEDDING_WORKSPACE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+impl EmbeddingRuntimeWorkspace {
+    fn create() -> Result<Self, RemoteConfigError> {
+        for _ in 0..32 {
+            let sequence = EMBEDDING_WORKSPACE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let stamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| RemoteConfigError::ProducerProtocol)?
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "backend-qdrant-embedding-{}-{stamp}-{sequence}",
+                std::process::id(),
+            ));
+            #[cfg(unix)]
+            let result = {
+                use std::os::unix::fs::DirBuilderExt as _;
+
+                let mut builder = fs::DirBuilder::new();
+                builder.mode(0o700).create(&path)
+            };
+            #[cfg(not(unix))]
+            let result = fs::create_dir(&path);
+            match result {
+                Ok(()) => return Ok(Self { path }),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(RemoteConfigError::ProducerIo(error)),
+            }
+        }
+        Err(RemoteConfigError::ProducerProtocol)
+    }
+}
+
+impl Drop for EmbeddingRuntimeWorkspace {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EmbeddingProducerProtocol {
+    JsonV1,
+    Bem2,
+}
+
+impl EmbeddingProducerProtocol {
+    const fn abi(self) -> u16 {
+        match self {
+            Self::JsonV1 => EMBEDDING_PROTOCOL_ABI,
+            Self::Bem2 => EMBEDDING_BATCH_PROTOCOL_ABI,
+        }
+    }
 }
 
 impl EmbeddingProducer {
@@ -742,13 +938,19 @@ impl EmbeddingProducer {
             EMBEDDING_TOKENIZER_FILE_ENV,
         )?;
         let program_bytes = read_bounded(&program, MAX_PROGRAM_BYTES, EMBEDDING_PROGRAM_ENV)?;
+        let protocol = match optional(EMBEDDING_PROTOCOL_ENV)?.as_deref() {
+            None | Some("json-v1") => EmbeddingProducerProtocol::JsonV1,
+            Some("bem2") => EmbeddingProducerProtocol::Bem2,
+            Some(_) => return Err(RemoteConfigError::InvalidValue(EMBEDDING_PROTOCOL_ENV)),
+        };
+        let protocol_abi = protocol.abi();
         let program_identity = *blake3::hash(&program_bytes).as_bytes();
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"backend.embedding.producer.v1\0");
         hasher.update(&program_bytes);
         hasher.update(&model_bytes);
         hasher.update(&tokenizer_bytes);
-        hasher.update(&EMBEDDING_PROTOCOL_ABI.to_be_bytes());
+        hasher.update(&protocol_abi.to_be_bytes());
         let manifest = *hasher.finalize().as_bytes();
         let model_identity = *blake3::hash(&model_bytes).as_bytes();
         let tokenizer_identity = *blake3::hash(&tokenizer_bytes).as_bytes();
@@ -761,11 +963,125 @@ impl EmbeddingProducer {
             tokenizer_identity,
             dimensions,
             manifest,
+            protocol,
+            batch_runtime: None,
+            _batch_workspace: None,
         })
+    }
+
+    fn activate_batch_runtime(
+        &mut self,
+        recipe: qdrant::EmbeddingRecipe,
+    ) -> Result<(), RemoteConfigError> {
+        if self.protocol != EmbeddingProducerProtocol::Bem2 {
+            return Ok(());
+        }
+        self.verify_artifacts()?;
+        let program = ToolchainArtifact::from_path(&self.program, Vec::new())
+            .map_err(|_| RemoteConfigError::ProducerProtocol)?;
+        let model_bytes = read_bounded(&self.model, MAX_MODEL_BYTES, EMBEDDING_MODEL_FILE_ENV)?;
+        let tokenizer_bytes = read_bounded(
+            &self.tokenizer,
+            MAX_TOKENIZER_BYTES,
+            EMBEDDING_TOKENIZER_FILE_ENV,
+        )?;
+        let model = EmbeddingArtifact::new(Arc::from(model_bytes));
+        let tokenizer = EmbeddingArtifact::new(Arc::from(tokenizer_bytes));
+        if model.identity().as_bytes() != self.model_identity
+            || tokenizer.identity().as_bytes() != self.tokenizer_identity
+        {
+            return Err(RemoteConfigError::ArtifactChanged);
+        }
+        let dimensions = u16::try_from(self.dimensions.get())
+            .ok()
+            .and_then(NonZeroU16::new)
+            .ok_or(RemoteConfigError::InvalidValue(EMBEDDING_DIMENSIONS_ENV))?;
+        let mut options = blake3::Hasher::new_derive_key("backend.qdrant.embedding-options.v1");
+        options.update(recipe.version().as_bytes());
+        options.update(&self.manifest);
+        let maximum_text = u32::try_from(MAX_EMBEDDING_TEXT_BYTES)
+            .ok()
+            .and_then(std::num::NonZeroU32::new)
+            .ok_or(RemoteConfigError::InvalidValue(EMBEDDING_DIMENSIONS_ENV))?;
+        let normalization = match recipe.normalization {
+            qdrant::EmbeddingNormalization::None => EmbeddingNormalization::None,
+            qdrant::EmbeddingNormalization::UnitL2 => EmbeddingNormalization::L2,
+        };
+        let spec = EmbeddingRuntimeSpecV1::new(
+            model.identity().as_bytes(),
+            self.model_identity,
+            tokenizer.identity().as_bytes(),
+            program.identity().to_bytes(),
+            dimensions,
+            normalization,
+            maximum_text,
+            *options.finalize().as_bytes(),
+        );
+        let maximum_batch_output = MAX_EMBEDDING_BATCH_ITEMS
+            .checked_mul(
+                usize::from(dimensions.get())
+                    .checked_mul(size_of::<f32>())
+                    .and_then(|bytes| bytes.checked_add(32))
+                    .ok_or(RemoteConfigError::ProjectionLimit)?,
+            )
+            .and_then(|bytes| bytes.checked_add(10))
+            .ok_or(RemoteConfigError::ProjectionLimit)?;
+        let maximum_batch_input = MAX_EMBEDDING_BATCH_ITEMS
+            .checked_mul(MAX_EMBEDDING_TEXT_BYTES + 36)
+            .and_then(|bytes| bytes.checked_add(108))
+            .ok_or(RemoteConfigError::ProjectionLimit)?;
+        let resource_bound = 20 * 1024 * 1024;
+        if maximum_batch_output > resource_bound || maximum_batch_input > resource_bound {
+            return Err(RemoteConfigError::ProjectionLimit);
+        }
+        let limits = bounded_embedding_process_limits(resource_bound)?;
+        let environment = ProcessEnvironment::new(vec![("LC_ALL".into(), "C".into())])
+            .map_err(|_| RemoteConfigError::ProducerProtocol)?;
+        let workspace = EmbeddingRuntimeWorkspace::create()?;
+        let runtime = EmbeddingExecutable::activate_with_spec(
+            spec,
+            self.program.clone(),
+            Vec::new(),
+            workspace.path.clone(),
+            environment,
+            limits,
+            program,
+            model,
+            tokenizer,
+        )
+        .map_err(RemoteConfigError::ProducerRuntime)?;
+        if runtime.batch_protocol() != EmbeddingBatchProtocol::BatchV2 {
+            return Err(RemoteConfigError::ProducerProtocol);
+        }
+        self.verify_artifacts()?;
+        self.batch_runtime = Some(runtime);
+        self._batch_workspace = Some(workspace);
+        Ok(())
     }
 
     fn model_bytes(&self) -> &[u8; 32] {
         &self.model_identity
+    }
+
+    fn input_identity(
+        &self,
+        recipe: qdrant::Recipe,
+        treatment: EmbeddingTreatment,
+        text: &str,
+    ) -> EmbeddingInputIdentity {
+        let purpose = match treatment {
+            EmbeddingTreatment::Query => EmbeddingPurpose::Query,
+            EmbeddingTreatment::Document => EmbeddingPurpose::Document,
+        };
+        let invocation = EmbeddingInvocation { purpose, text };
+        if let Some(runtime) = self.batch_runtime.as_ref() {
+            return EmbeddingInputIdentity::new(runtime.execution_identity(), invocation);
+        }
+        let mut configuration =
+            blake3::Hasher::new_derive_key("backend.local-service.embedding-configuration.v1");
+        configuration.update(recipe.as_bytes());
+        configuration.update(&self.manifest);
+        EmbeddingInputIdentity::for_configuration(*configuration.finalize().as_bytes(), invocation)
     }
 
     fn tokenizer_bytes(&self) -> &[u8; 32] {
@@ -810,7 +1126,7 @@ impl EmbeddingProducer {
                 os: target_os(),
                 architecture: target_architecture(),
             },
-            EMBEDDING_PROTOCOL_ABI,
+            self.protocol.abi(),
             backend_engine::CapabilityAuthority::Embedding(capability_recipe),
             lifecycle,
         )
@@ -821,10 +1137,57 @@ impl EmbeddingProducer {
         treatment: EmbeddingTreatment,
         text: &str,
     ) -> Result<Vec<f32>, RemoteConfigError> {
+        self.embed_many(treatment, &[text])?
+            .into_iter()
+            .next()
+            .map(|coordinates| coordinates.as_ref().to_vec())
+            .ok_or(RemoteConfigError::ProducerProtocol)
+    }
+
+    fn embed_many(
+        &self,
+        treatment: EmbeddingTreatment,
+        texts: &[&str],
+    ) -> Result<Vec<Arc<[f32]>>, RemoteConfigError> {
+        if texts
+            .iter()
+            .any(|text| text.is_empty() || text.len() > MAX_EMBEDDING_TEXT_BYTES)
+        {
+            return Err(RemoteConfigError::EmbeddingInput);
+        }
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.verify_artifacts()?;
+        let coordinates = if let Some(runtime) = self.batch_runtime.as_ref() {
+            let purpose = match treatment {
+                EmbeddingTreatment::Query => EmbeddingPurpose::Query,
+                EmbeddingTreatment::Document => EmbeddingPurpose::Document,
+            };
+            runtime
+                .infer_batch(purpose, texts)
+                .map_err(RemoteConfigError::ProducerRuntime)?
+                .into_iter()
+                .map(|coordinates| coordinates.shared_values())
+                .collect::<Vec<_>>()
+        } else {
+            texts
+                .iter()
+                .map(|text| self.embed_json(treatment, text).map(Arc::from))
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        self.verify_artifacts()?;
+        Ok(coordinates)
+    }
+
+    fn embed_json(
+        &self,
+        treatment: EmbeddingTreatment,
+        text: &str,
+    ) -> Result<Vec<f32>, RemoteConfigError> {
         if text.is_empty() || text.len() > MAX_EMBEDDING_TEXT_BYTES {
             return Err(RemoteConfigError::EmbeddingInput);
         }
-        self.verify_artifacts()?;
         let mut child = Command::new(&self.program)
             .env_clear()
             .env("LC_ALL", "C")
@@ -889,9 +1252,70 @@ impl EmbeddingProducer {
         {
             return Err(RemoteConfigError::ProducerProtocol);
         }
-        self.verify_artifacts()?;
         Ok(response.values)
     }
+}
+
+fn bounded_embedding_process_limits(
+    resource_bound: usize,
+) -> Result<ProcessLimits, RemoteConfigError> {
+    let limits = ProcessLimits::new(
+        resource_bound,
+        64 * 1024,
+        EMBEDDING_DEADLINE,
+        resource_bound,
+    )
+    .and_then(|limits| limits.with_input_bytes_limit(resource_bound))
+    .and_then(|limits| limits.with_workspace_limit(EMBEDDING_WORKSPACE_GROWTH_BYTES))
+    .map_err(|_| RemoteConfigError::ProducerProtocol)?;
+    #[cfg(unix)]
+    let limits = limits
+        .with_process_count_limit(EMBEDDING_PROCESS_COUNT_LIMIT)
+        .and_then(|limits| limits.with_cpu_time_limit(EMBEDDING_CPU_TIME_LIMIT))
+        .map_err(|_| RemoteConfigError::ProducerProtocol)?;
+    #[cfg(not(unix))]
+    let limits = limits;
+    #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+    let limits = limits
+        .with_memory_bytes_limit(EMBEDDING_ADDRESS_SPACE_LIMIT_BYTES)
+        .map_err(|_| RemoteConfigError::ProducerProtocol)?;
+    #[cfg(not(all(target_os = "linux", target_pointer_width = "64")))]
+    let limits = limits;
+    Ok(limits)
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+fn test_bounded_embedding_process_limits() {
+    let limits = bounded_embedding_process_limits(20 * 1024 * 1024)
+        .expect("construct bounded embedding worker limits");
+    assert_eq!(limits.input_bytes(), 20 * 1024 * 1024);
+    assert_eq!(limits.output_bytes(), 20 * 1024 * 1024);
+    assert_eq!(
+        limits.workspace_limit(),
+        Some(EMBEDDING_WORKSPACE_GROWTH_BYTES)
+    );
+    #[cfg(unix)]
+    {
+        assert_eq!(
+            limits.process_count_limit(),
+            Some(EMBEDDING_PROCESS_COUNT_LIMIT)
+        );
+        assert_eq!(limits.cpu_time_limit(), Some(EMBEDDING_CPU_TIME_LIMIT));
+    }
+    #[cfg(not(unix))]
+    {
+        assert_eq!(limits.process_count_limit(), None);
+        assert_eq!(limits.cpu_time_limit(), None);
+    }
+    #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+    assert_eq!(
+        limits.memory_bytes_limit(),
+        Some(EMBEDDING_ADDRESS_SPACE_LIMIT_BYTES)
+    );
+    #[cfg(not(all(target_os = "linux", target_pointer_width = "64")))]
+    assert_eq!(limits.memory_bytes_limit(), None);
+    assert_eq!(limits.unsupported_limit(), None);
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -1102,6 +1526,8 @@ pub enum RemoteConfigError {
     ProducerDeadline,
     /// The embedding process violated its ABI or output bounds.
     ProducerProtocol,
+    /// The shared supervised embedding runtime failed its activation or batch protocol.
+    ProducerRuntime(EmbeddingExecutableError),
     /// The embedding process could not be started, written, read, or waited.
     ProducerIo(std::io::Error),
     /// The embedding process exchanged malformed JSON.
@@ -1149,6 +1575,7 @@ impl fmt::Display for RemoteConfigError {
             Self::ProducerProtocol => {
                 formatter.write_str("embedding producer violated its protocol")
             }
+            Self::ProducerRuntime(error) => write!(formatter, "embedding runtime failed: {error}"),
             Self::ProducerIo(error) => write!(formatter, "embedding producer I/O failed: {error}"),
             Self::ProducerJson(error) => {
                 write!(formatter, "embedding producer JSON failed: {error}")
@@ -1172,13 +1599,294 @@ mod tests {
     use std::process::Command;
     use std::thread;
 
-    const CONFIG: [(&str, &str); 5] = [
+    const CONFIG: [(&str, &str); 6] = [
         (QDRANT_ENDPOINT_ENV, "https://qdrant.invalid"),
         (QDRANT_COLLECTION_ENV, "backend-test"),
         (EMBEDDING_DIMENSIONS_ENV, "2"),
         (EMBEDDING_QUERY_TREATMENT_ENV, "query-v1"),
         (EMBEDDING_DOCUMENT_TREATMENT_ENV, "document-v1"),
+        (EMBEDDING_PROTOCOL_ENV, "json-v1"),
     ];
+
+    #[test]
+    fn bem2_producer_process_limits_are_explicit() {
+        test_bounded_embedding_process_limits();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn duplicate_document_payloads_share_one_exact_producer_result() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "backend-document-embedding-cache-{}-{stamp}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).expect("fixture directory");
+        let program = directory.join("embed.sh");
+        let model = directory.join("model.bin");
+        let tokenizer = directory.join("tokenizer.bin");
+        let calls = directory.join("calls.txt");
+        let script = format!(
+            r#"#!/bin/sh
+cat >/dev/null
+printf 'call\n' >> '{}'
+printf '{{"abi":1,"dimensions":2,"values":[1.0,0.0]}}'
+"#,
+            calls.display()
+        );
+        fs::write(&program, script).expect("producer script");
+        let mut permissions = fs::metadata(&program)
+            .expect("producer metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&program, permissions).expect("producer executable");
+        fs::write(&model, b"stable model artifact").expect("model artifact");
+        fs::write(&tokenizer, b"stable tokenizer artifact").expect("tokenizer artifact");
+        let program_bytes = fs::read(&program).expect("program bytes");
+        let model_bytes = fs::read(&model).expect("model bytes");
+        let tokenizer_bytes = fs::read(&tokenizer).expect("tokenizer bytes");
+        let model_identity = *blake3::hash(&model_bytes).as_bytes();
+        let tokenizer_identity = *blake3::hash(&tokenizer_bytes).as_bytes();
+        let mut manifest = blake3::Hasher::new();
+        manifest.update(b"backend.embedding.producer.v1\0");
+        manifest.update(&program_bytes);
+        manifest.update(&model_bytes);
+        manifest.update(&tokenizer_bytes);
+        manifest.update(&EMBEDDING_PROTOCOL_ABI.to_be_bytes());
+        let manifest = *manifest.finalize().as_bytes();
+        let producer = EmbeddingProducer {
+            program,
+            model,
+            tokenizer,
+            program_identity: *blake3::hash(&program_bytes).as_bytes(),
+            model_identity,
+            tokenizer_identity,
+            dimensions: NonZeroU32::new(2).expect("dimension"),
+            manifest,
+            protocol: EmbeddingProducerProtocol::JsonV1,
+            batch_runtime: None,
+            _batch_workspace: None,
+        };
+        let recipe = test_recipe();
+        let client =
+            qdrant::QdrantHttpClient::new(test_transport("http://127.0.0.1:9".into()), recipe)
+                .expect("HTTP client");
+        let mut configured = ConfiguredQdrant {
+            client,
+            recipe,
+            producer: Some(producer),
+            producer_health: ProducerHealth::Ready,
+            document_embeddings: BTreeMap::new(),
+            active: None,
+            retired: None,
+        };
+        let first = DocumentEmbeddingId::new(recipe.version(), manifest, "same semantic text")
+            .expect("first identity");
+        assert_ne!(
+            first,
+            DocumentEmbeddingId::new(recipe.version(), [0xA5; 32], "same semantic text")
+                .expect("changed producer identity")
+        );
+        assert_ne!(
+            first,
+            DocumentEmbeddingId::new(recipe.version(), manifest, "changed semantic text")
+                .expect("changed input identity")
+        );
+        let documents = [
+            SemanticDocument {
+                row: RowId::Symbol(backend_engine::symbol_key("duplicate::first")),
+                text: "same semantic text".into(),
+            },
+            SemanticDocument {
+                row: RowId::Symbol(backend_engine::symbol_key("duplicate::second")),
+                text: "same semantic text".into(),
+            },
+        ];
+        let cold = configured
+            .embed_documents(&documents)
+            .expect("embed the distinct input once");
+        assert_eq!(
+            fs::read_to_string(&calls).expect("calls").lines().count(),
+            1
+        );
+        assert!(Arc::ptr_eq(&cold[0].coordinates, &cold[1].coordinates));
+        assert!(
+            cold.iter()
+                .all(|document| document.write == qdrant::CoordinateWrite::Replace)
+        );
+
+        let warm = configured
+            .embed_documents(&documents)
+            .expect("reuse the exact cached vector");
+        assert_eq!(
+            fs::read_to_string(&calls).expect("calls").lines().count(),
+            1
+        );
+        assert!(Arc::ptr_eq(&cold[0].coordinates, &warm[0].coordinates));
+        assert!(
+            warm.iter()
+                .all(|document| document.write == qdrant::CoordinateWrite::Hold)
+        );
+        drop(configured);
+        fs::remove_dir_all(directory).expect("remove fixture directory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn qdrant_bem2_documents_share_one_supervised_batch() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "backend-qdrant-bem2-batch-{}-{stamp}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).expect("fixture directory");
+        let program = directory.join("embed.py");
+        let model = directory.join("model.bin");
+        let tokenizer = directory.join("tokenizer.bin");
+        let calls = directory.join("calls.txt");
+        let interpreter = Command::new("python3")
+            .arg("-c")
+            .arg("import sys; print(sys.executable)")
+            .output()
+            .expect("python interpreter");
+        assert!(interpreter.status.success());
+        let interpreter = String::from_utf8(interpreter.stdout)
+            .expect("interpreter path")
+            .trim()
+            .to_owned();
+        let script = format!(
+            r#"#!{}
+import struct, sys
+CALLS = {:?}
+frame = sys.stdin.buffer.read()
+if len(frame) < 108 or frame[:4] != b"BEM2": sys.exit(72)
+count = struct.unpack(">I", frame[104:108])[0]
+dimension = struct.unpack(">H", frame[6:8])[0]
+items = []
+offset = 108
+for _ in range(count):
+    identity = frame[offset:offset + 32]
+    length = struct.unpack(">I", frame[offset + 32:offset + 36])[0]
+    offset += 36 + length
+    if offset > len(frame): sys.exit(73)
+    items.append(identity)
+if offset != len(frame): sys.exit(74)
+with open(CALLS, "a") as output: output.write("call\n")
+sys.stdout.buffer.write(b"BEC2" + struct.pack(">HI", dimension, count))
+for identity in items:
+    values = [1.0] + [0.0] * (dimension - 1)
+    sys.stdout.buffer.write(identity + struct.pack("<" + "f" * dimension, *values))
+"#,
+            interpreter,
+            calls.to_string_lossy(),
+        );
+        fs::write(&program, script).expect("batch producer");
+        let mut permissions = fs::metadata(&program)
+            .expect("producer metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&program, permissions).expect("producer executable");
+        fs::write(&model, b"BEM2 model").expect("model artifact");
+        fs::write(&tokenizer, b"BEM2 tokenizer").expect("tokenizer artifact");
+        let program_bytes = fs::read(&program).expect("program bytes");
+        let model_bytes = fs::read(&model).expect("model bytes");
+        let tokenizer_bytes = fs::read(&tokenizer).expect("tokenizer bytes");
+        let producer = EmbeddingProducer {
+            program,
+            model,
+            tokenizer,
+            program_identity: *blake3::hash(&program_bytes).as_bytes(),
+            model_identity: *blake3::hash(&model_bytes).as_bytes(),
+            tokenizer_identity: *blake3::hash(&tokenizer_bytes).as_bytes(),
+            dimensions: NonZeroU32::new(2).expect("dimension"),
+            manifest: {
+                let mut hasher = blake3::Hasher::new();
+                hasher.update(b"backend.embedding.producer.v1\0");
+                hasher.update(&program_bytes);
+                hasher.update(&model_bytes);
+                hasher.update(&tokenizer_bytes);
+                hasher.update(&EMBEDDING_BATCH_PROTOCOL_ABI.to_be_bytes());
+                *hasher.finalize().as_bytes()
+            },
+            protocol: EmbeddingProducerProtocol::Bem2,
+            batch_runtime: None,
+            _batch_workspace: None,
+        };
+        let recipe = test_recipe();
+        let mut producer = producer;
+        producer
+            .activate_batch_runtime(recipe)
+            .expect("activate shared batch runtime");
+        assert_eq!(
+            producer
+                .batch_runtime
+                .as_ref()
+                .map(EmbeddingExecutable::batch_protocol),
+            Some(EmbeddingBatchProtocol::BatchV2)
+        );
+        let client =
+            qdrant::QdrantHttpClient::new(test_transport("http://127.0.0.1:9".into()), recipe)
+                .expect("HTTP client");
+        let mut configured = ConfiguredQdrant {
+            client,
+            recipe,
+            producer: Some(producer),
+            producer_health: ProducerHealth::Ready,
+            document_embeddings: BTreeMap::new(),
+            active: None,
+            retired: None,
+        };
+        let documents = [
+            SemanticDocument {
+                row: RowId::Symbol(backend_engine::symbol_key("bem2::first")),
+                text: "same semantic text".into(),
+            },
+            SemanticDocument {
+                row: RowId::Symbol(backend_engine::symbol_key("bem2::duplicate")),
+                text: "same semantic text".into(),
+            },
+            SemanticDocument {
+                row: RowId::Symbol(backend_engine::symbol_key("bem2::second")),
+                text: "different semantic text".into(),
+            },
+        ];
+        let cold = configured
+            .embed_documents(&documents)
+            .expect("embed unique documents in one worker");
+        assert_eq!(
+            fs::read_to_string(&calls).expect("calls").lines().count(),
+            2
+        );
+        assert!(Arc::ptr_eq(&cold[0].coordinates, &cold[1].coordinates));
+        assert!(
+            cold.iter()
+                .all(|document| document.write == qdrant::CoordinateWrite::Replace)
+        );
+        let warm = configured
+            .embed_documents(&documents)
+            .expect("reuse exact document vectors");
+        assert_eq!(
+            fs::read_to_string(&calls).expect("calls").lines().count(),
+            2
+        );
+        assert!(
+            warm.iter()
+                .all(|document| document.write == qdrant::CoordinateWrite::Hold)
+        );
+
+        drop(configured);
+        fs::remove_dir_all(directory).expect("remove fixture directory");
+    }
 
     #[cfg(unix)]
     #[test]
@@ -1306,6 +2014,153 @@ mod tests {
     }
 
     #[test]
+    fn unconfigured_cold_start_returns_lexical_rows_with_unavailable_status() {
+        let (coordinator, coverage, _, _, _) = http_projection_inputs();
+        let local = coordinator
+            .search_local(LocalQuery::prefix("alpha", 3).expect("query"))
+            .expect("local search");
+        let lexical_ids = local
+            .rows
+            .iter()
+            .map(|ranked| ranked.row.id)
+            .collect::<Vec<_>>();
+        let mut remote = RemoteSemantic::Unconfigured;
+
+        let (result, status) =
+            remote.search_with_status(&coordinator, coverage, local, "alpha", false);
+
+        assert!(!result.rows.is_empty());
+        assert_eq!(
+            result
+                .rows
+                .iter()
+                .map(|ranked| ranked.row.id)
+                .collect::<Vec<_>>(),
+            lexical_ids
+        );
+        assert_eq!(
+            status,
+            SemanticSearchStatus::Unavailable {
+                reason: SemanticSearchReason::Unconfigured,
+            }
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn qdrant_query_outage_keeps_lexical_rows_and_reports_degraded_status() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = std::env::temp_dir().join(format!(
+            "backend-query-outage-fixture-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).expect("fixture directory");
+        let program = directory.join("embed.sh");
+        let model = directory.join("model.bin");
+        let tokenizer = directory.join("tokenizer.json");
+        fs::write(
+            &program,
+            b"#!/bin/sh\nIFS= read -r input || true\nprintf '{\"abi\":1,\"dimensions\":2,\"values\":[1.0,0.0]}'\n",
+        )
+        .expect("fixture producer");
+        let mut permissions = fs::metadata(&program)
+            .expect("producer metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&program, permissions).expect("producer executable");
+        fs::write(&model, b"query outage model").expect("model artifact");
+        fs::write(&tokenizer, b"query outage tokenizer").expect("tokenizer artifact");
+        let program_bytes = fs::read(&program).expect("program bytes");
+        let model_bytes = fs::read(&model).expect("model bytes");
+        let tokenizer_bytes = fs::read(&tokenizer).expect("tokenizer bytes");
+        let program_identity = *blake3::hash(&program_bytes).as_bytes();
+        let model_identity = *blake3::hash(&model_bytes).as_bytes();
+        let tokenizer_identity = *blake3::hash(&tokenizer_bytes).as_bytes();
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"backend.embedding.producer.v1\0");
+        hasher.update(&program_bytes);
+        hasher.update(&model_bytes);
+        hasher.update(&tokenizer_bytes);
+        hasher.update(&EMBEDDING_PROTOCOL_ABI.to_be_bytes());
+        let producer = EmbeddingProducer {
+            program,
+            model,
+            tokenizer,
+            program_identity,
+            model_identity,
+            tokenizer_identity,
+            dimensions: NonZeroU32::new(2).expect("dimension"),
+            manifest: *hasher.finalize().as_bytes(),
+            protocol: EmbeddingProducerProtocol::JsonV1,
+            batch_runtime: None,
+            _batch_workspace: None,
+        };
+
+        let (coordinator, coverage, documents, selected_point, recipe) = http_projection_inputs();
+        let (endpoint, server) = serve_projection(ProjectionScript {
+            requests: 6,
+            expected_points: documents.len(),
+            selected_point,
+            count_offset: 0,
+            swap_query_id: false,
+            corrupt_coordinate: false,
+            fail_query: true,
+        });
+        let client =
+            qdrant::QdrantHttpClient::new(test_transport(endpoint), recipe).expect("HTTP client");
+        let mut configured = ConfiguredQdrant {
+            client,
+            recipe,
+            producer: Some(producer),
+            producer_health: ProducerHealth::Ready,
+            document_embeddings: BTreeMap::new(),
+            active: None,
+            retired: None,
+        };
+        configured.active = Some(
+            configured
+                .activate(&coordinator, coverage, documents)
+                .expect("initial projection activates before outage"),
+        );
+        let mut remote = RemoteSemantic::Configured(Box::new(configured));
+        let local = coordinator
+            .search_local(LocalQuery::prefix("alpha", 3).expect("query"))
+            .expect("local search");
+        let lexical_ids = local
+            .rows
+            .iter()
+            .map(|ranked| ranked.row.id)
+            .collect::<Vec<_>>();
+
+        let (result, status) =
+            remote.search_with_status(&coordinator, coverage, local, "alpha", false);
+
+        assert!(!result.rows.is_empty());
+        assert_eq!(
+            result
+                .rows
+                .iter()
+                .map(|ranked| ranked.row.id)
+                .collect::<Vec<_>>(),
+            lexical_ids
+        );
+        assert_eq!(
+            status,
+            SemanticSearchStatus::Unavailable {
+                reason: SemanticSearchReason::ProviderUnavailable,
+            }
+        );
+        let lines = server.join().expect("fixture server");
+        assert_eq!(
+            request_kinds(&lines),
+            ["get", "get", "retrieve", "put", "count", "query"]
+        );
+        drop(remote);
+        fs::remove_dir_all(directory).expect("remove fixture directory");
+    }
+
+    #[test]
     fn verified_http_projection_constructs_the_real_source() {
         let (workspace, view) = super::super::tests::selected_view();
         let coverage = crate::builtin::admitted_coverage().expect("coverage");
@@ -1362,6 +2217,10 @@ mod tests {
         let accelerated = active.accelerate(local, vec![1.0, 0.0]);
         assert_eq!(accelerated.rows[0].row.id, row);
         assert_eq!(accelerated.lanes[2].freshness, Freshness::Current);
+        assert_eq!(
+            semantic_status_from_result(&accelerated),
+            Some(SemanticSearchStatus::Available)
+        );
 
         let extra = Row::new(
             RowId::Symbol(backend_engine::symbol_key("next::generation")),
@@ -1401,6 +2260,12 @@ mod tests {
         );
         assert_eq!(stale.lanes[2].freshness, Freshness::Stale);
         assert_eq!(stale.lanes[2].coverage, CoverageBasis::Unavailable);
+        assert_eq!(
+            semantic_status_from_result(&stale),
+            Some(SemanticSearchStatus::Stale {
+                reason: SemanticSearchReason::StaleProjection,
+            })
+        );
         let lines = server.join().expect("fixture server");
         assert_eq!(
             request_kinds(&lines),
@@ -1418,6 +2283,7 @@ mod tests {
             count_offset: -1,
             swap_query_id: false,
             corrupt_coordinate: false,
+            fail_query: false,
         });
         let client =
             qdrant::QdrantHttpClient::new(test_transport(endpoint), recipe).expect("HTTP client");
@@ -1459,6 +2325,7 @@ mod tests {
             count_offset: 0,
             swap_query_id: true,
             corrupt_coordinate: false,
+            fail_query: false,
         });
         let client =
             qdrant::QdrantHttpClient::new(test_transport(endpoint), recipe).expect("HTTP client");
@@ -1500,6 +2367,7 @@ mod tests {
             count_offset: 0,
             swap_query_id: false,
             corrupt_coordinate: false,
+            fail_query: false,
         });
         let client =
             qdrant::QdrantHttpClient::new(test_transport(endpoint), recipe).expect("HTTP client");
@@ -1537,6 +2405,7 @@ mod tests {
             count_offset: 0,
             swap_query_id: false,
             corrupt_coordinate: true,
+            fail_query: false,
         });
         let client =
             qdrant::QdrantHttpClient::new(test_transport(endpoint), recipe).expect("HTTP client");
@@ -2005,6 +2874,7 @@ mod tests {
             count_offset: 0,
             swap_query_id: false,
             corrupt_coordinate: false,
+            fail_query: false,
         })
     }
 
@@ -2015,6 +2885,7 @@ mod tests {
         count_offset: i64,
         swap_query_id: bool,
         corrupt_coordinate: bool,
+        fail_query: bool,
     }
 
     fn serve_projection(script: ProjectionScript) -> (String, thread::JoinHandle<Vec<String>>) {
@@ -2084,9 +2955,14 @@ mod tests {
                 } else {
                     panic!("unexpected Qdrant request: {first}");
                 };
+                let status = if script.fail_query && first.contains("/points/query") {
+                    "503 Service Unavailable"
+                } else {
+                    "200 OK"
+                };
                 write!(
                     stream,
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
                 )
                 .expect("fixture response");

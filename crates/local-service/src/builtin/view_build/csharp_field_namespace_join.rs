@@ -12,11 +12,11 @@ use backend_extension_trustfall::{
 use backend_semantic::ir::{
     BorrowedTree, CorePayloadHash, DeclarationFamilyId, DeclarationIdentity, EntityAuthorityFacts,
     EntityVersion, ExternalDeclarationIdentity, ExternalId, ExternalTarget, FactAvailability,
-    ForeignDeclarationId, ForeignExternalTarget, ForeignTargetOrigin, IrBuilder, ItemKind, LinkKind,
-    LinkTarget, OccurrenceAuthorityFacts, ParentageAuthority, SemanticCoreReader, SemanticImageView,
-    SemanticReader, SourceIdentity, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget,
-    VariantAvailability, VariantFingerprint, Visibility, encode_full_semantic_image,
-    full_semantic_image_len,
+    ForeignDeclarationId, ForeignExternalTarget, ForeignTargetOrigin, IrBuilder, ItemKind,
+    LinkKind, LinkTarget, OccurrenceAuthorityFacts, ParentageAuthority, SemanticCoreReader,
+    SemanticImageView, SemanticReader, SourceIdentity, TreeEntityId, TreeItemInput, TreeLinkInput,
+    TreeLinkTarget, VariantAvailability, VariantFingerprint, Visibility,
+    encode_full_semantic_image, full_semantic_image_len,
 };
 use backend_semantic::vocabulary::{
     CompileRecipeFact, LanguageProfile, NativeTool, PackageUrl, RustEdition, Stage,
@@ -320,7 +320,8 @@ fn csharp_namespace_field_read_retargets_note() -> Result<(), String> {
     let note_identity = fixture_version(81).identity();
     let paths = project_paths(&["WorkoutService.cs"]);
     let images = [&service_bytes[..]];
-    let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+    let index =
+        ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
     let published = BTreeSet::from([note_identity, fixture_version(82).identity()]);
     let (external, link_kind, caller_path) =
         foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(3), LinkKind::Reads)?;
@@ -351,7 +352,8 @@ fn csharp_namespace_field_read_referenced_by_names_drive() -> Result<(), String>
     let drive_identity = fixture_version(85).identity();
     let paths = project_paths(&["WorkoutService.cs"]);
     let images = [&service_bytes[..]];
-    let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+    let index =
+        ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
     let published = BTreeSet::from([note_identity, drive_identity]);
     let (external, link_kind, caller_path) =
         foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(3), LinkKind::Reads)?;
@@ -446,7 +448,8 @@ fn csharp_namespace_field_read_ambiguous_returns_none() -> Result<(), String> {
     let duplicate_bytes = cs_namespace_note_field_image("WorkoutService.cs", 89, 90, 91, 89)?;
     let paths = project_paths(&["WorkoutService.cs"]);
     let images = [&first_bytes[..], &duplicate_bytes[..]];
-    let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+    let index =
+        ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
     let published = BTreeSet::from([
         fixture_version(87).identity(),
         fixture_version(90).identity(),

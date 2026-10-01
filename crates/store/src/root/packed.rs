@@ -4,9 +4,9 @@
 use alloc::boxed::Box;
 use core::{borrow::Borrow, mem::size_of, ops::Deref};
 
-use backend_version::{ContentId, GenerationId};
 use backend_version::object::{ObjectKind, ObjectLength, ObjectRef};
 use backend_version::schema::SchemaId;
+use backend_version::{ContentId, GenerationId};
 
 use crate::root::entry::{EntryKey, EntryRange, RootEntry};
 
@@ -475,8 +475,8 @@ impl<DomainTag> Iterator for CanonicalRows<'_, DomainTag> {
 #[cfg(test)]
 mod tests {
     use super::RootRow;
-    use core::mem::{align_of, offset_of, size_of};
     use backend_version::ObjectDomain;
+    use core::mem::{align_of, offset_of, size_of};
     #[test]
     fn resident_row_is_exactly_sixty_four_bytes() {
         assert_eq!(size_of::<RootRow<ObjectDomain>>(), 64);

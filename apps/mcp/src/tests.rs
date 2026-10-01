@@ -69,7 +69,14 @@ fn embedded_client_rejects_an_intent_for_another_package_before_execution() {
             CommandReply::Added(backend_library::Intent::request_package(package).id()),
         )),
     });
-    let reply = client.call_intent(wrong, 78, Command::Add { package });
+    let reply = client.call_intent(
+        wrong,
+        78,
+        Command::Add {
+            package,
+            execution_intent: Default::default(),
+        },
+    );
     assert!(
         matches!(reply.reply, CommandReply::Error(message) if message.contains("does not match"))
     );
@@ -105,13 +112,18 @@ fn mcp_outer_frame_matches_the_canonical_local_codec() {
 #[test]
 fn request_encoding_rejects_a_certificate_for_another_package() {
     let package = package_key("pkg");
-    let request = CommandDto::new(8, Command::Add { package }).with_certificate(
-        WireCertificate::new().with_claim(WireClaim::Key {
-            schema: WireSchema::Package,
-            id: encode_id(package.as_bytes()),
-            value: "other".to_owned(),
-        }),
-    );
+    let request = CommandDto::new(
+        8,
+        Command::Add {
+            package,
+            execution_intent: Default::default(),
+        },
+    )
+    .with_certificate(WireCertificate::new().with_claim(WireClaim::Key {
+        schema: WireSchema::Package,
+        id: encode_id(package.as_bytes()),
+        value: "other".to_owned(),
+    }));
     assert!(encode_request(&request).is_err());
 }
 
@@ -260,13 +272,18 @@ fn framed_dispatch_preserves_cli_reply_shape() {
 fn certified_framed_dispatch_admits_identity_before_presentation() {
     let package = package_key("pkg");
     let intent = backend_library::Intent::request_package(package).id();
-    let request = CommandDto::new(5, Command::Add { package }).with_certificate(
-        WireCertificate::new().with_claim(WireClaim::Key {
-            schema: WireSchema::Package,
-            id: encode_id(package.as_bytes()),
-            value: "pkg".to_owned(),
-        }),
-    );
+    let request = CommandDto::new(
+        5,
+        Command::Add {
+            package,
+            execution_intent: Default::default(),
+        },
+    )
+    .with_certificate(WireCertificate::new().with_claim(WireClaim::Key {
+        schema: WireSchema::Package,
+        id: encode_id(package.as_bytes()),
+        value: "pkg".to_owned(),
+    }));
     let request_frame = frame(&serde_json::to_vec(&request).expect("request")).expect("frame");
     let reply = ReplyDto::new(5, CommandReply::Added(intent)).with_certificate(
         WireCertificate::new().with_claim(WireClaim::Intent {
@@ -382,8 +399,14 @@ fn unix_transport_consumes_producer_certified_success_without_expected_cache() {
         .expect("reply frame");
     });
     let mut transport = UnixCommandTransport::from_stream(client);
-    let request =
-        CommandDto::new(17, Command::Add { package }).with_certificate(request_certificate);
+    let request = CommandDto::new(
+        17,
+        Command::Add {
+            package,
+            execution_intent: Default::default(),
+        },
+    )
+    .with_certificate(request_certificate);
     let reply = transport
         .request_with_certificate(request, None)
         .expect("certified success");
@@ -418,6 +441,7 @@ fn unix_transport_consumes_producer_certified_success_without_expected_cache() {
         18,
         Command::Add {
             package: package_key("pkg"),
+            execution_intent: Default::default(),
         },
     )
     .with_certificate(WireCertificate::new().with_claim(WireClaim::Key {
@@ -447,13 +471,18 @@ fn unix_transport_rejects_digest_only_identity_success() {
         )
         .expect("reply frame");
     });
-    let request = CommandDto::new(19, Command::Add { package }).with_certificate(
-        WireCertificate::new().with_claim(WireClaim::Key {
-            schema: WireSchema::Package,
-            id: encode_id(package_key("pkg").as_bytes()),
-            value: "pkg".to_owned(),
-        }),
-    );
+    let request = CommandDto::new(
+        19,
+        Command::Add {
+            package,
+            execution_intent: Default::default(),
+        },
+    )
+    .with_certificate(WireCertificate::new().with_claim(WireClaim::Key {
+        schema: WireSchema::Package,
+        id: encode_id(package_key("pkg").as_bytes()),
+        value: "pkg".to_owned(),
+    }));
     let mut transport = UnixCommandTransport::from_stream(client);
     assert!(transport.request(request).is_err());
     server_thread.join().expect("server");

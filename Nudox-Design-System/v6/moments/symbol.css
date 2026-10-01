@@ -1,0 +1,280 @@
+/* The symbol page (symbol.js). Tokens: v5/page/page.css. Plates are chamfered (top-left and bottom-right
+   cut); the family hue carries structure (spine, plate, lines); mint = yours, coral = fails, amber = changed. */
+
+.sy-root { position: absolute; inset: 0; z-index: 6; background: rgba(6,13,27,var(--bg,1)); --cham: polygon(7px 0,100% 0,100% calc(100% - 7px),calc(100% - 7px) 100%,0 100%,0 7px); }
+.sy-root.arriving .sy-top { background: transparent; }
+.sy-scroll { position: absolute; left: 0; right: 0; top: 56px; bottom: 0; overflow-y: auto; overflow-x: hidden; scrollbar-width: none; }
+.sy-scroll::-webkit-scrollbar { display: none; }
+
+/* ---------------------------------------------------------------- the top rail: module chip + siblings */
+.sy-top { position: absolute; left: 0; right: 0; top: 0; height: 56px; display: flex; align-items: center; gap: 14px; padding: 0 40px; border-bottom: 1px solid var(--line1); z-index: 3; }
+.sy-mod { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px 0 8px; background: var(--plate2); box-shadow: inset 0 0 0 1px var(--line3); clip-path: var(--cham); font: 500 12.5px var(--mono); color: var(--ink1); cursor: pointer; flex: none; outline: none; white-space: nowrap; }
+.sy-mod:hover, .sy-mod:focus { color: var(--ink0); box-shadow: inset 0 0 0 1px var(--peri); }
+.sy-mod .bk { font: 500 15px var(--ui); color: var(--ink3); margin-right: 2px; } .sy-mod .sep { color: var(--ink3); margin: 0 -3px; } .sy-mod b { font-weight: 500; color: var(--ink0); }
+.sy-mod i { font-style: normal; font-weight: 400; color: var(--ink3); margin-left: 3px; }
+.sy-strip { position: relative; flex: 1; height: 38px; overflow: hidden; }
+.sy-strip.lf::before, .sy-strip.rf::after { content: ""; position: absolute; top: 0; bottom: 0; width: 36px; z-index: 2; pointer-events: none; }
+.sy-strip.lf::before { left: 0; background: linear-gradient(90deg, var(--g1), transparent); } .sy-strip.rf::after { right: 0; background: linear-gradient(270deg, var(--g1), transparent); }
+.sy-rail { position: absolute; left: 0; top: 4px; display: flex; gap: 6px; will-change: transform; }
+.sy-sib { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px 0 6px; background: var(--g2); box-shadow: inset 0 0 0 1px var(--line2); clip-path: polygon(6px 0,100% 0,100% calc(100% - 6px),calc(100% - 6px) 100%,0 100%,0 6px);
+  font: 500 12.5px var(--mono); color: var(--ink1); white-space: nowrap; cursor: pointer; flex: none; outline: none; transition: background 140ms, color 140ms; }
+.sy-sib:hover, .sy-sib:focus { background: var(--plate2); color: var(--ink0); }
+.sy-sib em { font: normal 400 11px var(--ui); color: var(--ink3); } .sy-sib em.coral { color: var(--coral); } .sy-sib em.amber { color: var(--amber); } .sy-sib em.teal { color: var(--k-ty); } .sy-sib em.peri { color: var(--peri-hi); }
+.sy-sib.cur { background: var(--plate2); color: var(--ink0); }
+.sy-ring { position: absolute; top: 1px; height: 36px; box-shadow: inset 0 0 0 1.5px var(--peri-hi); pointer-events: none; z-index: 1; clip-path: polygon(7px 0,100% 0,100% calc(100% - 7px),calc(100% - 7px) 100%,0 100%,0 7px); }
+
+/* ---------------------------------------------------------------- sigils: icons that carry facts */
+svg.sg { display: block; overflow: visible; flex: none; }
+svg.sg.type { color: var(--k-ty); } svg.sg.callable { color: var(--k-ca); } svg.sg.contract { color: var(--k-co); } svg.sg.value { color: var(--k-va); }
+.sg .pl { fill: currentColor; fill-opacity: .24; stroke: currentColor; stroke-width: var(--sw); stroke-linejoin: miter; }
+.sg.contract .pl { fill-opacity: .12; }
+.sg .pl.dash { stroke-dasharray: 5 3; }
+.sg .ln { fill: none; stroke: currentColor; stroke-width: var(--sw); stroke-linecap: square; }
+.sg .co { fill: none; stroke: var(--coral); stroke-width: var(--sw); } .sg .cof { fill: var(--coral); } .sg .amf { fill: var(--amber); }
+.sg .sy-yd { fill: var(--mint); }
+.sg.mini .ln, .sg.mini .co { stroke-linecap: butt; }
+.sy-gm .sg .ln, .sy-gm .sg .co, .sy-gm .sg .cof, .sy-gm .sg .amf, .sy-gm .sg .sy-yd { opacity: var(--detail, 1); }
+
+/* ---------------------------------------------------------------- the page */
+.sy-page { position: relative; padding: 20px 40px 140px; --hue: var(--k-ty); transition: background 300ms; }
+.sy-page.entering { visibility: hidden; }
+.sy-page.leaving { position: absolute; left: 0; right: 0; pointer-events: none; z-index: 1; }
+.sy-page.past { background: linear-gradient(180deg, rgba(244,187,106,.11), rgba(244,187,106,.03) 40%, transparent 65%); }
+.sy-page.past .sy-hp { box-shadow: inset 0 0 0 1.5px rgba(244,187,106,.7); }
+.sy-page.past .sy-hero h1 { color: var(--ink1); }
+svg.sy-ink { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; }
+.sy-ink .sy-spine { fill: none; stroke: var(--hue); stroke-opacity: .6; stroke-width: 1.5; stroke-dasharray: 1 1; stroke-dashoffset: var(--draw, 0); }
+.sy-ink .sy-mk { fill: var(--g1); stroke: var(--hue); stroke-width: 1.5; opacity: calc(1 - var(--draw, 0)); } .sy-ink .sy-mk.yours { fill: var(--mint); stroke: var(--mint); }
+.sy-ink .sy-tk { stroke: var(--line2); opacity: calc(1 - var(--draw, 0)); }
+.sy-ink .sy-tine { fill: none; stroke: color-mix(in srgb, var(--hue) 55%, transparent); stroke-width: 1.2; stroke-dasharray: 1 1; stroke-dashoffset: var(--draw, 0); }
+
+/* hero: the plate the card grew into */
+.sy-hero { margin-left: calc(var(--sp) - 44px); }
+.sy-hp { position: relative; display: grid; grid-template-columns: 64px minmax(0, 1fr) 300px; column-gap: 20px; padding: 18px 22px 18px 12px; background: var(--plate);
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--hue) 55%, transparent); clip-path: polygon(12px 0,100% 0,100% calc(100% - 12px),calc(100% - 12px) 100%,0 100%,0 12px); }
+.sy-hp.ghosting { background: transparent; box-shadow: none; }
+.sy-hm { width: 64px; height: 64px; margin-top: 2px; }
+.sy-kw { display: flex; gap: 7px; align-items: baseline; font: 500 11.5px var(--ui); letter-spacing: .05em; text-transform: uppercase; color: var(--hue); }
+.sy-kw i { font-style: normal; color: var(--ink4); } .sy-kw span { text-transform: none; letter-spacing: 0; font: 400 12px var(--mono); color: var(--ink3); }
+.sy-hero h1 { margin: 3px 0 0; font: 700 40px/1.1 var(--display); letter-spacing: -.03em; color: var(--ink0); white-space: nowrap; transition: color 300ms; }
+.sy-hero .lede { margin-top: 4px; font: italic 400 19px/26px var(--serif); color: var(--ink1); max-width: 34em; }
+.sy-hero .lede .undoc { font: normal 400 12px var(--ui); color: var(--ink3); display: inline-flex; gap: 6px; align-items: center; }
+.sy-bdgs { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.sy-bdgs .bdg { height: 22px; font-size: 11.5px; } .sy-bdgs .bdg.quiet { color: var(--ink3); }
+.sy-bdgs.then { }
+.bdg.you-b { background: rgba(108,235,173,.1); }
+/* "can": its capabilities as stacked glyphs; hover spreads them into words */
+.sy-can { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 7px; box-shadow: inset 0 0 0 1px var(--line3); color: var(--ink2); cursor: pointer; outline: none; font: 500 11.5px var(--ui); }
+.sy-can .sy-cn-marks { display: inline-flex; gap: 3px; transition: max-width 300ms, opacity 200ms; max-width: 120px; overflow: hidden; } .sy-can .sy-cn-marks svg { color: var(--k-ty); }
+svg.ic.cap { stroke: currentColor; fill: none; stroke-width: 1.2; } svg.ic.cap .f { fill: currentColor; }
+.sy-can > b { font-weight: 500; }
+.sy-can .sy-cn-list { display: inline-flex; gap: 4px; max-width: 0; overflow: hidden; transition: max-width 320ms cubic-bezier(.3,.8,.3,1); }
+.sy-can .sy-cn-list .bdg { height: 18px; font-size: 11px; box-shadow: inset 0 0 0 1px rgba(70,210,220,.35); color: var(--k-ty); gap: 4px; }
+.sy-can:hover .sy-cn-marks, .sy-can.hov .sy-cn-marks { max-width: 0; opacity: 0; }
+.sy-can:hover .sy-cn-list, .sy-can.hov .sy-cn-list, .sy-can.open .sy-cn-list { max-width: 640px; }
+.sy-can.open .sy-cn-marks { display: none; }
+
+/* history: the release bars, the ones read on disk capped by what the symbol was there */
+.sy-hist { align-self: start; padding-top: 4px; }
+.sy-hist .sy-hk { font: 500 11px var(--ui); letter-spacing: .05em; text-transform: uppercase; color: var(--ink3); margin-bottom: 6px; }
+.sy-hist .sy-hk span { display: block; margin-top: 2px; text-transform: none; letter-spacing: 0; font: 400 12px var(--ui); color: var(--ink2); }
+.sy-hist .sy-hs { position: relative; cursor: ew-resize; outline: none; }
+.sy-hist svg { display: block; overflow: visible; }
+.sy-hist .base { stroke: var(--line3); }
+.sy-hist text { font: 400 9.5px var(--mono); fill: var(--ink3); text-anchor: middle; }
+.sy-hist rect { fill: var(--ink4); } .sy-hist rect.minor { fill: var(--ink3); } .sy-hist rect.major { fill: var(--ink2); } .sy-hist rect.yank { fill: var(--coral); }
+.sy-hist rect.read { fill: var(--ink0); } .sy-hist rect.pin { fill: var(--mint); } .sy-hist rect.chg { fill: var(--amber); } .sy-hist rect.gone { fill: var(--coral); }
+.sy-hist rect.hot { fill: var(--peri-hi); }
+.sy-hist .cap rect { fill: var(--ink1); stroke: none; } .sy-hist .cap.pin rect { fill: var(--mint); } .sy-hist .cap.chg rect { fill: var(--amber); } .sy-hist .cap.gone rect { fill: var(--coral); }
+.sy-hist .cap.absent rect { fill: none; stroke: var(--ink3); stroke-width: 1.2; stroke-dasharray: 2 1.5; } .sy-hist .cap.unread rect { fill: none; stroke: var(--ink4); }
+.sy-hist .sy-hl { position: absolute; top: calc(100% + 2px); left: 0; display: flex; gap: 7px; align-items: baseline; white-space: nowrap; padding: 2px 9px; background: var(--plate3); box-shadow: inset 0 0 0 1px var(--line3);
+  font: 400 12px var(--ui); color: var(--ink2); opacity: 0; transition: opacity 100ms; pointer-events: none; }
+.sy-hist .sy-hl.on { opacity: 1; } .sy-hist .sy-hl b { font: 500 12px var(--mono); color: var(--ink0); } .sy-hist .sy-hl i { font-style: normal; color: var(--ink3); }
+.sy-hist .sy-hl .pin { color: var(--mint); } .sy-hist .sy-hl .chg { color: var(--amber); } .sy-hist .sy-hl .gone { color: var(--coral); } .sy-hist .sy-hl .absent, .sy-hist .sy-hl .nr, .sy-hist .sy-hl .unread { color: var(--ink3); } .sy-hist .sy-hl .same { color: var(--ink1); }
+
+/* ---------------------------------------------------------------- the band: the diagram around the spine */
+.sy-bw { margin-top: 22px; }
+.sy-band { position: relative; min-height: 60px; }
+.sy-band > .z { position: absolute; }
+svg.sy-lines { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.sy-lines path { fill: none; stroke: color-mix(in srgb, var(--hue) 75%, transparent); stroke-width: 1.5; stroke-dasharray: 1 1; stroke-dashoffset: var(--draw, 0); }
+.sy-lines path.hd { stroke-dasharray: none; opacity: calc(1 - var(--draw, 0)); }
+.sy-lines path.co { stroke: var(--coral); } .sy-lines path.y { stroke: var(--mint); } .sy-lines path.k { stroke: color-mix(in srgb, var(--hue) 55%, transparent); stroke-width: 1.2; }
+.z.left { display: flex; flex-direction: column; gap: 4px; align-items: flex-end; }
+.z.right { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.z.above { display: flex; }
+.sy-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 29px; max-width: 100%; }
+.z.left .sy-row { justify-content: flex-end; }
+.sy-row.quiet .sy-w { font: italic 400 14px var(--serif); color: var(--ink3); }
+.sy-row.fold { cursor: pointer; } .sy-row.fold .sy-w { color: var(--peri-hi); text-decoration: underline; text-underline-offset: 3px; } .sy-row.fold.gone { display: none; }
+.sy-folded { display: none; } .sy-folded.on { display: contents; }
+
+/* the plate on the spine */
+.sy-plate { display: inline-flex; align-items: center; gap: 9px; padding: 9px 16px 9px 10px; background: var(--plate2); white-space: nowrap;
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--hue) 80%, transparent); clip-path: polygon(9px 0,100% 0,100% calc(100% - 9px),calc(100% - 9px) 100%,0 100%,0 9px); font: 600 15px var(--mono); color: var(--ink0); }
+.sy-plate .sy-al { display: inline-flex; align-items: center; gap: 6px; font: 400 13px var(--ui); margin-left: 6px; }
+.sy-plate.sock { flex-direction: column; align-items: stretch; gap: 0; padding: 10px 16px 10px 0; min-width: 250px; }
+.sy-plate.sock > svg, .sy-plate.sock > b { margin-left: 16px; }
+.sy-plate.sock > b { margin-top: -26px; margin-left: 46px; margin-bottom: 8px; }
+.sy-sk { display: flex; flex-direction: column; }
+.sy-sk-h { font: 500 10.5px var(--ui); letter-spacing: .05em; text-transform: uppercase; color: var(--ink3); padding: 6px 0 3px 22px; } .sy-sk-h b { color: var(--ink0); font-weight: 600; }
+.sy-sk-r { position: relative; display: flex; align-items: center; gap: 6px; height: 26px; padding-left: 22px; font: 500 13px var(--mono); color: var(--ink0); }
+.sy-sk-r > b { font-weight: 500; } .sy-sk-r.more { font: 400 12px var(--ui); color: var(--ink3); }
+.sy-sk-r .sy-nt { position: absolute; left: -1px; top: 5px; overflow: visible; }
+.sy-sk-r .sy-nt path { fill: var(--g1); stroke: var(--hue); stroke-width: 1.5; }
+.sy-sk-r.prov .sy-nt { left: auto; right: -25px; } .sy-sk-r.prov .sy-nt path { fill: color-mix(in srgb, var(--hue) 30%, var(--g1)); }
+.sy-sk-r.prov { color: var(--ink2); font-weight: 400; }
+
+/* tokens: a name you can hover (it widens to say what it is) and follow */
+.sy-tok { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px 0 5px; background: var(--g2); cursor: pointer; outline: none; white-space: nowrap; vertical-align: middle; max-width: 100%;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tk, var(--ink3)) 55%, transparent); clip-path: polygon(5px 0,100% 0,100% calc(100% - 5px),calc(100% - 5px) 100%,0 100%,0 5px);
+  font: 500 12.5px var(--mono); color: var(--ink0); transition: background 140ms, box-shadow 140ms; }
+.sy-tok.type { --tk: var(--k-ty); } .sy-tok.callable { --tk: var(--k-ca); } .sy-tok.contract { --tk: var(--k-co); } .sy-tok.value { --tk: var(--k-va); }
+.sy-tok b { font-weight: 500; }
+.sy-tok .sy-more { display: inline-block; max-width: 0; overflow: hidden; text-overflow: ellipsis; font: 400 12px var(--ui); color: var(--ink1); transition: max-width 300ms cubic-bezier(.3,.8,.3,1), margin 300ms; }
+.sy-tok .sy-more em { font: normal 500 11px var(--ui); color: var(--tk); margin-right: 7px; } .sy-tok .sy-more i { color: var(--ink3); }
+.sy-tok:hover, .sy-tok:focus, .sy-tok.hov { background: var(--plate3); box-shadow: inset 0 0 0 1.5px var(--tk); }
+.sy-tok:hover .sy-more, .sy-tok:focus .sy-more, .sy-tok.hov .sy-more { max-width: 440px; margin-left: 5px; }
+.sy-tok.cur { cursor: default; box-shadow: inset 0 0 0 1.5px var(--peri-hi); }
+.sy-tok.far { box-shadow: inset 0 0 0 1px var(--k-ns); background: rgba(169,182,204,.06); }
+.sy-tok.lit { background: rgba(108,235,173,.16); box-shadow: inset 0 0 0 1.5px var(--mint); }
+.sy-tok.from { box-shadow: inset 0 0 0 1.5px var(--peri-hi); background: rgba(147,162,250,.14); }
+.sy-tok.from::after { content: "from"; font: 400 10.5px var(--ui); color: var(--peri-hi); margin-left: 6px; }
+
+/* words: a type read aloud */
+.sy-p { display: inline-flex; align-items: center; gap: 5px; font: 400 13.5px var(--ui); color: var(--ink0); white-space: nowrap; }
+.sy-p i { width: 6px; height: 6px; border-radius: 50%; background: var(--ink2); flex: none; }
+.sy-g { display: inline-flex; align-items: center; gap: 5px; font: 400 13.5px var(--ui); color: var(--k-ty); white-space: nowrap; }
+.sy-g i { width: 7px; height: 7px; border: 1.3px solid currentColor; transform: rotate(45deg) scale(.85); flex: none; }
+.sy-x { font: 400 12.5px var(--mono); color: var(--ink1); white-space: nowrap; } .sy-x.y { color: var(--mint); }
+.sy-w { font: 400 12.5px var(--ui); color: var(--ink3); white-space: nowrap; }
+.sy-pn { font: 500 13px var(--mono); color: var(--ink0); padding-right: 2px; }
+.sy-k { font: 500 10.5px var(--ui); letter-spacing: .06em; text-transform: uppercase; color: var(--ink2); white-space: nowrap; } .sy-k.co { color: var(--coral); }
+.sy-rw { font: 400 12.5px var(--ui); color: var(--ink2); white-space: nowrap; } .sy-rw.am { color: var(--amber); }
+.sy-q { font: 700 13px var(--mono); color: var(--coral); margin-left: -2px; }
+.sy-cnt { font: 600 12px var(--mono); } .sy-cnt.y { color: var(--mint); }
+.sy-crate { display: inline-flex; align-items: center; gap: 6px; font: 500 12.5px var(--mono); color: var(--mint); }
+.sy-drop { display: flex; align-items: center; gap: 8px; min-height: 28px; padding-left: 14px; }
+/* a maker that is a trait impl: a small plate; hover says which trait */
+.sy-mini { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; background: var(--plate2); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--hue) 60%, transparent);
+  clip-path: polygon(5px 0,100% 0,100% calc(100% - 5px),calc(100% - 5px) 100%,0 100%,0 5px); font: 500 12.5px var(--mono); color: var(--ink0); outline: none; cursor: default; white-space: nowrap; }
+.sy-mini b { font-weight: 500; } .sy-mini em { font: normal 400 11.5px var(--ui); color: var(--ink2); max-width: 0; overflow: hidden; transition: max-width 260ms; }
+.sy-mini:hover em, .sy-mini.hov em { max-width: 200px; margin-left: 4px; }
+
+/* members hanging below the plate */
+.sy-members { margin: 10px 0 0 calc(var(--sp) + 26px); }
+.sy-mh { font: 500 10.5px var(--ui); letter-spacing: .06em; text-transform: uppercase; color: var(--hue); padding: 0 0 6px; } .sy-mh b { color: var(--ink0); }
+.sy-mg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2px 18px; }
+.sy-mem { display: flex; align-items: center; gap: 10px; min-height: 28px; min-width: 0; }
+.sy-mem > b.sy-mn { font: 500 13px var(--mono); color: var(--ink0); min-width: 78px; }
+.sy-mem .sy-mw { display: inline-flex; align-items: center; gap: 5px; min-width: 0; flex-wrap: wrap; }
+.sy-mem.fold { cursor: pointer; font: 400 12.5px var(--ui); color: var(--peri-hi); } .sy-mem.fold.gone { display: none; }
+.sy-mem.lit b { color: var(--mint); } .sy-mem.lit { background: linear-gradient(90deg, rgba(108,235,173,.1), transparent 70%); }
+
+/* a compact group: stacked sigils; hover spreads them into names, click opens the whole list */
+.sy-stack { display: inline-flex; align-items: flex-start; gap: 7px; min-height: 30px; padding: 3px 9px 3px 8px; background: var(--g2); box-shadow: inset 0 0 0 1px var(--line3); cursor: pointer; outline: none;
+  clip-path: polygon(6px 0,100% 0,100% calc(100% - 6px),calc(100% - 6px) 100%,0 100%,0 6px); transition: background 160ms, box-shadow 160ms; max-width: 100%; }
+.sy-stack > .sy-st-l, .sy-stack > .sy-st-marks, .sy-stack > .sy-st-n { height: 24px; display: inline-flex; align-items: center; flex: none; }
+.sy-st-l { font: 500 12px var(--ui); color: var(--ink1); white-space: nowrap; } .sy-stack.am .sy-st-l { color: var(--amber); }
+.sy-st-marks { transition: max-width 300ms, opacity 200ms; max-width: 80px; overflow: visible; }
+.sy-st-marks svg + svg { margin-left: -9px; } .sy-st-marks svg { filter: drop-shadow(1px 0 0 var(--g2)); }
+.sy-st-n { font: 600 12px var(--mono); color: var(--ink0); }
+.sy-st-list { display: flex; flex-wrap: wrap; gap: 4px; max-width: 0; max-height: 24px; overflow: hidden; transition: max-width 360ms cubic-bezier(.3,.8,.3,1), max-height 360ms cubic-bezier(.3,.8,.3,1); }
+.sy-st-i { display: inline-flex; align-items: center; gap: 6px; }
+.sy-st-g { display: none; align-items: center; gap: 5px; }
+.sy-stack:hover, .sy-stack.hov, .sy-stack.open, .sy-stack.lit { background: var(--plate); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--hue) 70%, transparent); }
+.sy-stack:hover .sy-st-marks, .sy-stack.hov .sy-st-marks, .sy-stack.open .sy-st-marks, .sy-stack.lit .sy-st-marks { max-width: 0; opacity: 0; overflow: hidden; }
+.sy-stack:hover .sy-st-list, .sy-stack.hov .sy-st-list, .sy-stack.lit .sy-st-list { max-width: 560px; max-height: 200px; }
+.sy-stack.open .sy-st-list { max-width: 620px; max-height: 900px; flex-direction: column; flex-wrap: nowrap; gap: 3px; }
+.sy-stack.open .sy-st-g { display: inline-flex; }
+.sy-stack.lit { box-shadow: inset 0 0 0 1.5px var(--mint); }
+
+/* ---------------------------------------------------------------- sections along the spine */
+.sy-sec { position: relative; margin: 36px 0 0 calc(var(--sp) + 26px); }
+.sy-stub { position: absolute; right: calc(100% + 64px); top: -6px; text-align: right; font: 700 24px/26px var(--display); color: var(--ink0); white-space: nowrap; }
+.sy-stub small { display: block; font: 400 11.5px var(--ui); color: var(--ink3); letter-spacing: 0; }
+.sy-sh { display: flex; gap: 14px; align-items: baseline; margin-bottom: 12px; }
+.sy-sh h2 { margin: 0; font: 600 14px/16px var(--ui); color: var(--ink0); }
+.sy-sh span { font: 400 12.5px var(--ui); color: var(--ink3); }
+.sy-none { font: italic 400 16px var(--serif); color: var(--ink2); margin-bottom: 8px; }
+.sy-foot { margin: 54px 0 0 calc(var(--sp) + 26px); font: 400 12px var(--ui); color: var(--ink3); max-width: 60em; }
+
+/* the reach bar: a relation you can scrub */
+.sy-reach { margin: 2px 0 14px; outline: none; }
+.sy-reach .sy-rk { display: flex; gap: 10px; align-items: baseline; font: 500 12px var(--ui); color: var(--ink1); margin-bottom: 6px; }
+.sy-reach .sy-rk span { font: 400 11px var(--ui); color: var(--ink3); padding: 0 6px; box-shadow: inset 0 0 0 1px var(--line2); }
+.sy-reach .sy-rb { display: flex; gap: 2px; height: 30px; cursor: ew-resize; }
+.sy-reach .sy-rb i { display: flex; align-items: center; gap: 5px; min-width: 6px; padding: 0 7px; overflow: hidden; white-space: nowrap; font-style: normal; background: rgba(108,235,173,.14); box-shadow: inset 0 0 0 1px rgba(108,235,173,.38);
+  transition: flex-grow 260ms cubic-bezier(.2,.9,.3,1), background 140ms; }
+.sy-reach .sy-rb i b { font: 500 12px var(--mono); color: var(--mint); overflow: hidden; text-overflow: ellipsis; } .sy-reach .sy-rb i em { font: normal 400 11px var(--mono); color: var(--ink2); }
+.sy-reach .sy-rb i.bare { background: rgba(163,174,193,.1); box-shadow: inset 0 0 0 1px var(--line3); } .sy-reach .sy-rb i.bare b { color: var(--ink1); }
+.sy-reach .sy-rb i.c b { color: var(--mint); }
+.sy-reach .sy-rb i.hot { background: rgba(108,235,173,.34); box-shadow: inset 0 0 0 1.5px var(--mint); } .sy-reach .sy-rb i.hot b { color: var(--ink0); } .sy-reach .sy-rb i.bare.hot { background: rgba(188,198,255,.2); box-shadow: inset 0 0 0 1.5px var(--peri-hi); }
+.sy-reach .sy-rc { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; min-height: 30px; padding-top: 4px; font: 400 12.5px var(--ui); color: var(--ink2); }
+.sy-reach .sy-rc > b { font: 600 13px var(--mono); color: var(--ink0); }
+.sy-reach .sy-rc .sy-rwho { display: inline-flex; gap: 10px; margin-left: 8px; } .sy-reach .sy-rc .sy-rwho span { font: 400 12px var(--mono); color: var(--mint); } .sy-reach .sy-rc .sy-rwho b { color: var(--ink0); font-weight: 500; }
+.sy-reach .sy-rc em { font: normal 400 11.5px var(--mono); color: var(--ink3); }
+
+/* your crates: a row each, and their call sites as a deck */
+.sy-yrs { display: flex; flex-direction: column; }
+.sy-yr { padding: 10px 0 10px; border-top: 1px solid var(--line1); transition: opacity 200ms; }
+.sy-yr.dim { opacity: .32; }
+.sy-yh { display: flex; align-items: center; gap: 12px; min-height: 22px; }
+.sy-yr .sy-yc { display: inline-flex; gap: 7px; align-items: center; width: 150px; flex: none; font: 500 13px var(--mono); color: var(--mint); }
+.sy-yr .sy-yc.o { color: var(--ink1); } .sy-yr .sy-yc.o a.pk { font: 500 13px var(--mono); }
+.sy-yr .sy-yb { width: 110px; height: 6px; background: var(--line2); flex: none; } .sy-yr .sy-yb i { display: block; height: 6px; background: var(--mint); }
+.sy-yr .sy-yn { font: 600 12.5px var(--mono); color: var(--ink0); width: 30px; }
+.sy-yr .sy-ym { display: inline-flex; gap: 8px; flex-wrap: wrap; font: 400 12px var(--mono); color: var(--ink1); }
+.sy-yr .sy-ym span i { font-style: normal; color: var(--ink3); margin-left: 3px; }
+.sy-not { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; padding: 8px 0; border-top: 1px solid var(--line1); font: 400 13px var(--ui); color: var(--ink2); }
+.sy-not b { font: 500 12.5px var(--mono); color: var(--mint); } .sy-not .nm { font: 500 12.5px var(--mono); color: var(--ink0); }
+.sy-not.o { color: var(--ink3); }
+
+.sy-deck { position: relative; margin: 8px 0 2px 162px; height: calc(28px + (var(--n) - 1) * 4px); cursor: pointer; outline: none; transition: height 300ms cubic-bezier(.2,.9,.3,1); }
+.sy-deck.empty { height: auto; cursor: default; }
+.sy-deck .sy-dk { position: absolute; left: calc(var(--i) * 5px); right: calc(24px - var(--i) * 5px); top: calc(var(--i) * 4px); height: 28px; display: flex; align-items: center; gap: 14px; padding: 0 12px;
+  background: var(--g2); box-shadow: inset 0 0 0 1px var(--line3); z-index: calc(20 - var(--i)); clip-path: polygon(6px 0,100% 0,100% calc(100% - 6px),calc(100% - 6px) 100%,0 100%,0 6px);
+  transition: top 300ms cubic-bezier(.2,.9,.3,1), left 300ms cubic-bezier(.2,.9,.3,1), right 300ms, opacity 200ms, background 160ms; }
+.sy-deck .sy-dk.deep { opacity: 0; pointer-events: none; }
+.sy-deck .sy-dk > * { transition: opacity 180ms; } .sy-deck .sy-dk:not(:first-child) > * { opacity: 0; }
+.sy-deck .sy-dk em { flex: none; width: 200px; font: normal 400 11px var(--mono); color: var(--ink3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
+.sy-deck .sy-dk code { font: 400 12.5px var(--mono); color: var(--ink1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.sy-deck .sy-dk code u { color: var(--ink0); text-decoration: underline; text-decoration-color: var(--mint); text-decoration-thickness: 1.5px; text-underline-offset: 3px; }
+.sy-deck.o .sy-dk code u { text-decoration-color: var(--peri); }
+.sy-deck .sy-dk.more span { font: 400 12px var(--ui); color: var(--ink3); }
+.sy-deck .sy-dk-n { position: absolute; right: 0; top: 4px; font: 600 12px var(--mono); color: var(--mint); } .sy-deck.o .sy-dk-n { color: var(--ink2); }
+.sy-deck:hover, .sy-deck.hov, .sy-deck.scrub { height: calc(var(--n) * 30px); }
+.sy-deck:hover .sy-dk, .sy-deck.hov .sy-dk, .sy-deck.open .sy-dk { left: 0; right: 24px; top: calc(var(--i) * 30px); }
+.sy-deck.scrub .sy-dk { left: 0; right: 24px; top: calc(var(--j) * 30px); }
+.sy-deck.scrub .sy-dk.deep, .sy-deck:hover .sy-dk.deep, .sy-deck.hov .sy-dk.deep { opacity: 0; }
+.sy-deck:hover .sy-dk > *, .sy-deck.hov .sy-dk > *, .sy-deck.scrub .sy-dk > *, .sy-deck.open .sy-dk > * { opacity: 1; }
+.sy-deck.open { height: auto; }
+.sy-deck.open .sy-dk, .sy-deck.open .sy-dk.deep { position: relative; top: 0; margin-bottom: 2px; opacity: 1; pointer-events: auto; }
+.sy-deck.open .sy-dk-n { top: 4px; }
+.sy-deck.scrub .sy-dk:not(.lit):not(.deep) { opacity: .32; } .sy-deck.scrub .sy-dk.lit { background: rgba(108,235,173,.1); box-shadow: inset 0 0 0 1px rgba(108,235,173,.5); }
+
+/* beneath: what its file names in the packages it rests on */
+.sy-bn { display: grid; grid-template-columns: 150px 1fr; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line1); }
+.sy-bn .sy-bl { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.sy-bn .sy-bi { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.sy-bn .sy-bi em { flex: none; font: normal 400 11px var(--mono); color: var(--ink3); }
+.sy-bn .sy-bi code { font: 400 12.5px var(--mono); color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.sy-bn .sy-bi code u { color: var(--ink0); text-decoration-color: var(--k-ns); text-underline-offset: 3px; }
+
+/* ---------------------------------------------------------------- ghosts: what travels between states */
+.sy-ghosts { position: fixed; inset: 0; pointer-events: none; z-index: 70; }
+.sy-gf { position: fixed; background: var(--plate); clip-path: polygon(10px 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%,0 10px); --hue: var(--k-ty); box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--hue) 60%, transparent); overflow: hidden; }
+.sy-gf.callable { --hue: var(--k-ca); } .sy-gf.contract { --hue: var(--k-co); } .sy-gf.value { --hue: var(--k-va); }
+.sy-gf.sib { background: var(--g2); box-shadow: inset 0 0 0 1px var(--line2); clip-path: polygon(6px 0,100% 0,100% calc(100% - 6px),calc(100% - 6px) 100%,0 100%,0 6px); }
+.sy-gf .sy-gtext { padding: 11px 12px 10px; display: flex; flex-direction: column; gap: 6px; width: 280px; }
+.sy-gf .sy-gtext.own .c3t b, .sy-gf .sy-gtext.own .km3 { visibility: hidden; }
+.sy-gm { position: fixed; } .sy-gm svg { width: 100%; height: 100%; }
+.sy-gn { position: fixed; white-space: nowrap; color: var(--ink0); }
+
+/* the side: the module's names, the current one lit */
+.sy-side .r.in { padding-left: 30px; height: 25px; font-size: 12px; } .sy-side .r.in svg { margin-right: 2px; }
+.sy-side .r.in.on { color: var(--ink0); background: var(--plate2); box-shadow: inset 2px 0 0 var(--peri-hi); }
+
+.sy-x.plug { padding: 1px 7px; box-shadow: inset 0 0 0 1px var(--line3); }
+.sy-tw { font: 400 12.5px var(--ui); color: var(--ink2); } .sy-tw b.y { color: var(--mint); font-weight: 500; } .sy-tw a.pk { font: 400 12.5px var(--mono); }
+.sy-ink .sy-mk.twins { stroke: var(--k-ns); } .sy-ink .sy-mk.beneath { stroke: var(--k-ns); } .sy-ink .sy-mk.others { stroke: var(--ink2); }

@@ -1,8 +1,9 @@
 use blake3::Hasher;
+use serde::{Deserialize, Serialize};
 use std::{
     fmt,
     fs::{self, File},
-    io::{self, Read},
+    io::{self, Read, Write},
     path::Path,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -24,25 +25,98 @@ pub(super) fn frame(out: &mut Vec<u8>, bytes: &[u8]) {
 }
 
 pub(super) fn digest(domain: &[u8], fields: &[&[u8]]) -> [u8; ID_BYTES] {
-    let mut hasher = Hasher::new();
-    hasher.update(b"backend.acquisition.identity.v1\0");
-    hasher.update(&(domain.len() as u64).to_be_bytes());
-    hasher.update(domain);
+    let mut hasher = begin_identity_hash(domain);
     for field in fields {
-        hasher.update(&((*field).len() as u64).to_be_bytes());
-        hasher.update(field);
+        append_field(&mut hasher, field);
     }
     *hasher.finalize().as_bytes()
 }
 
+fn begin_identity_hash(domain: &[u8]) -> Hasher {
+    let mut hasher = Hasher::new();
+    hasher.update(b"backend.acquisition.identity.v1\0");
+    hasher.update(&(domain.len() as u64).to_be_bytes());
+    hasher.update(domain);
+    hasher
+}
+
+fn append_field(hasher: &mut Hasher, bytes: &[u8]) {
+    hasher.update(&(bytes.len() as u64).to_be_bytes());
+    hasher.update(bytes);
+}
+
+/// Bounded writer for one length-framed identity field. The caller declares
+/// the byte count up front, so serialized identities can stream into the
+/// canonical identity grammar without building a second field-sized buffer.
+pub(super) struct IdentityFieldWriter {
+    hasher: Hasher,
+    expected: u64,
+    written: u64,
+}
+
+impl IdentityFieldWriter {
+    fn new(domain: &[u8], preceding_fields: &[&[u8]], expected: u64) -> Self {
+        let mut hasher = begin_identity_hash(domain);
+        for field in preceding_fields {
+            append_field(&mut hasher, field);
+        }
+        hasher.update(&expected.to_be_bytes());
+        Self {
+            hasher,
+            expected,
+            written: 0,
+        }
+    }
+
+    fn finish(self) -> io::Result<[u8; ID_BYTES]> {
+        if self.written != self.expected {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "identity streamed field length mismatch",
+            ));
+        }
+        Ok(*self.hasher.finalize().as_bytes())
+    }
+}
+
+impl Write for IdentityFieldWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let length = u64::try_from(bytes.len())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "identity length overflow"))?;
+        if length > self.expected.saturating_sub(self.written) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "identity streamed field exceeds declared length",
+            ));
+        }
+        self.hasher.update(bytes);
+        self.written += length;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 macro_rules! identity {
     ($name:ident, $domain:literal) => {
-        #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+        #[derive(Clone, Copy, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
         pub struct $name([u8; ID_BYTES]);
 
         impl $name {
             pub(super) fn derive(fields: &[&[u8]]) -> Self {
                 Self(digest($domain, fields))
+            }
+
+            pub(super) fn derive_with_streamed_field(
+                preceding_fields: &[&[u8]],
+                field_length: u64,
+                write_field: impl FnOnce(&mut IdentityFieldWriter) -> io::Result<()>,
+            ) -> io::Result<Self> {
+                let mut writer = IdentityFieldWriter::new($domain, preceding_fields, field_length);
+                write_field(&mut writer)?;
+                Ok(Self(writer.finish()?))
             }
 
             /// Returns the fixed-width canonical identity bytes.
@@ -86,6 +160,7 @@ identity!(TreeManifestId, b"tree-manifest");
 identity!(SourceSnapshotId, b"source-snapshot");
 identity!(AcquisitionDeltaId, b"acquisition-delta");
 identity!(AcquisitionReceiptId, b"acquisition-receipt");
+identity!(AcquisitionRecordId, b"acquisition-record");
 identity!(PublicationRootId, b"publication-root");
 
 /// A canonical release claim, independent of mutable release facts.
@@ -232,7 +307,7 @@ impl RawArchiveObjectId {
 }
 
 /// One canonical path/object row in a tree manifest.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ManifestEntry {
     /// Slash-separated relative path.
     pub path: Arc<str>,
@@ -243,7 +318,7 @@ pub struct ManifestEntry {
 }
 
 /// Immutable sorted tree manifest shared by local directories and archives.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TreeManifest {
     id: TreeManifestId,
     entries: Arc<[ManifestEntry]>,
@@ -292,6 +367,14 @@ impl TreeManifest {
             id,
             entries: Arc::from(entries),
         })
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), IdentityError> {
+        let rebuilt = Self::from_sorted(self.entries.to_vec())?;
+        if rebuilt.id != self.id {
+            return Err(IdentityError::LengthMismatch);
+        }
+        Ok(())
     }
 
     /// Returns the immutable manifest identity.
@@ -377,7 +460,7 @@ pub(super) fn collect_directory(
 }
 
 /// Immutable source snapshot that carries a manifest and release claims.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SourceSnapshot {
     source: [u8; ID_BYTES],
     cursor: [u8; ID_BYTES],
@@ -442,6 +525,28 @@ impl SourceSnapshot {
             claims: Arc::from(claims),
             id,
         })
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), IdentityError> {
+        self.manifest.validate()?;
+        if self.claims.windows(2).any(|window| window[0] == window[1]) {
+            return Err(IdentityError::Duplicate);
+        }
+        if self.claims.windows(2).any(|window| window[0] > window[1]) {
+            return Err(IdentityError::Unsorted);
+        }
+        let rebuilt = Self::new_with_frontier(
+            self.source,
+            self.cursor,
+            self.policy_epoch,
+            self.facts_frontier,
+            Arc::clone(&self.manifest),
+            self.claims.to_vec(),
+        )?;
+        if rebuilt.id != self.id {
+            return Err(IdentityError::LengthMismatch);
+        }
+        Ok(())
     }
 
     /// Returns the exact snapshot root.

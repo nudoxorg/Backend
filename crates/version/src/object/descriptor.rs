@@ -114,8 +114,8 @@ impl<DomainTag> Hash for ObjectRef<DomainTag> {
 mod tests {
     use core::mem::{align_of, size_of};
 
-    use crate::{ContentId, ObjectDomain};
     use crate::schema::SchemaId;
+    use crate::{ContentId, ObjectDomain};
 
     use super::ObjectRef;
 

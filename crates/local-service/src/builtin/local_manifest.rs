@@ -3,8 +3,9 @@
 use backend_engine::{PackageDependencyRecord, PackageReference, RegistryPackageRecord};
 use backend_library::{
     AdvisoryPackageDto, DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope,
-    PackageDependencySourceFacts, PackageDependencyTarget, ProductText, RegistryDownloadCount,
-    RegistryEcosystem, RegistryFactAvailability, RegistryNativeMetadata, RegistryReleaseStanding,
+    PackageDependencySourceFacts, PackageDependencyTarget, PackageGraphSourceAuthority,
+    PackageGraphSourceKey, ProductText, RegistryDownloadCount, RegistryEcosystem,
+    RegistryFactAvailability, RegistryNativeMetadata, RegistryReleaseStanding,
     admit_dependency_rows,
 };
 use backend_semantic::vocabulary::{
@@ -89,7 +90,12 @@ fn cargo_package_fields(
     let package = root
         .get("package")
         .and_then(toml::Value::as_table)
-        .ok_or_else(|| format!("local manifest {} has no [package] table", manifest.display()))?;
+        .ok_or_else(|| {
+            format!(
+                "local manifest {} has no [package] table",
+                manifest.display()
+            )
+        })?;
     let name = package_string_field(package, project_root, &manifest, "name")?;
     let version = package_string_field(package, project_root, &manifest, "version")?;
     let source = PackageReference::parse(format!("pkg:cargo/{name}@{version}")).map_err(|_| {
@@ -106,27 +112,38 @@ fn cargo_package_fields(
 }
 
 fn resolve_staged_package_root(directory: &Path, version: &str) -> Result<PathBuf, String> {
-    let mut entries = fs::read_dir(directory)
+    let mut wrapper = None;
+    for entry in fs::read_dir(directory)
         .map_err(|error| format!("read staged archive {}: {error}", directory.display()))?
-        .map(|entry| entry.map_err(|error| error.to_string()))
-        .collect::<Result<Vec<_>, String>>()?;
-    if entries.len() != 1 {
-        return Ok(directory.to_path_buf());
-    }
-    let only = entries.pop().expect("single staged archive entry");
-    let name = only.file_name();
-    let wrapper = name
-        .to_str()
-        .is_some_and(|name| name == "package" || (!version.is_empty() && name.ends_with(version)));
-    if wrapper
-        && only
+    {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name();
+        if !name.to_str().is_some_and(|name| {
+            name == "package" || (!version.is_empty() && name.ends_with(version))
+        }) || !entry
             .file_type()
             .map_err(|error| error.to_string())?
             .is_dir()
-    {
-        return Ok(only.path());
+        {
+            continue;
+        }
+        if wrapper.replace(entry.path()).is_some() {
+            return Ok(directory.to_path_buf());
+        }
     }
-    Ok(directory.to_path_buf())
+    Ok(wrapper.unwrap_or_else(|| directory.to_path_buf()))
+}
+
+fn is_virtual_cargo_workspace(project_root: &Path) -> Result<bool, String> {
+    if !project_root.join("Cargo.toml").is_file() {
+        return Ok(false);
+    }
+    let (_, root) = read_cargo_package_table(project_root)?;
+    Ok(root
+        .get("workspace")
+        .and_then(toml::Value::as_table)
+        .is_some()
+        && root.get("package").is_none())
 }
 
 /// Returns the on-disk source root for one indexed project label.
@@ -220,9 +237,22 @@ pub(crate) fn cargo_language_profile(project_root: &Path) -> Result<LanguageProf
     let package = root
         .get("package")
         .and_then(toml::Value::as_table)
-        .ok_or_else(|| format!("local manifest {} has no [package] table", manifest.display()))?;
-    let edition = package_string_field(package, project_root, &manifest, "edition")?;
+        .ok_or_else(|| {
+            format!(
+                "local manifest {} has no [package] table",
+                manifest.display()
+            )
+        })?;
+    // Cargo's rule: a package that declares no edition is a 2015-edition
+    // package (the owner's own registry staging reads it so, `registry.rs`).
+    // Many published crates omit it; refusing them refused their whole index.
+    let edition = match package.get("edition") {
+        None => "2015".to_owned(),
+        Some(_) => package_string_field(package, project_root, &manifest, "edition")?,
+    };
     match edition.as_str() {
+        "2015" => Ok(LanguageProfile::Rust(RustEdition::Rust2015)),
+        "2018" => Ok(LanguageProfile::Rust(RustEdition::Rust2018)),
         "2021" => Ok(LanguageProfile::Rust(RustEdition::Rust2021)),
         "2024" => Ok(LanguageProfile::Rust(RustEdition::Rust2024)),
         other => Err(format!(
@@ -254,11 +284,20 @@ pub(crate) fn cargo_dependency_facts(
     let package = root
         .get("package")
         .and_then(toml::Value::as_table)
-        .ok_or_else(|| format!("local manifest {} has no [package] table", manifest.display()))?;
+        .ok_or_else(|| {
+            format!(
+                "local manifest {} has no [package] table",
+                manifest.display()
+            )
+        })?;
     let name = package_string_field(package, project_root, &manifest, "name")?;
     let version = package_string_field(package, project_root, &manifest, "version")?;
-    let source = PackageReference::parse(format!("pkg:cargo/{name}@{version}"))
-        .map_err(|_| format!("local manifest {} has an invalid package identity", manifest.display()))?;
+    let source = PackageReference::parse(format!("pkg:cargo/{name}@{version}")).map_err(|_| {
+        format!(
+            "local manifest {} has an invalid package identity",
+            manifest.display()
+        )
+    })?;
     let provenance = *blake3::hash(&bytes).as_bytes();
     let frontier = *blake3::hash(project_root.as_os_str().as_encoded_bytes()).as_bytes();
     let mut rows = Vec::new();
@@ -293,8 +332,10 @@ pub(crate) fn cargo_dependency_facts(
                 None,
             )
             .map_err(|error| format!("admit local dependency {dependency_name}: {error:?}"))?;
-            rows.push(PackageDependencyRecord::new(
+            let source_authority = PackageGraphSourceAuthority::Local(frontier);
+            rows.push(PackageDependencyRecord::new_with_source_authority(
                 source.clone(),
+                source_authority,
                 target,
                 scope,
                 optional,
@@ -309,7 +350,10 @@ pub(crate) fn cargo_dependency_facts(
     let facts = admit_dependency_rows(rows)
         .map(DependencyFacts::Known)
         .map_err(|error| format!("local manifest dependency rows are invalid: {error:?}"))?;
-    Ok(Some((source, facts)))
+    Ok(Some((
+        PackageGraphSourceKey::new(source, PackageGraphSourceAuthority::Local(frontier)),
+        facts,
+    )))
 }
 
 /// Identity and language profile proved by one indexed local manifest.
@@ -392,7 +436,7 @@ pub(crate) fn staged_manifest_root(
     version: &str,
     label: &str,
 ) -> Result<Option<PathBuf>, String> {
-    let mut candidates = vec![directory.to_path_buf()];
+    let mut candidates = Vec::with_capacity(3);
     let descended = resolve_staged_package_root(directory, version)?;
     if descended != directory {
         candidates.push(descended);
@@ -401,11 +445,15 @@ pub(crate) fn staged_manifest_root(
     if package_dir.is_dir() && !candidates.iter().any(|candidate| candidate == &package_dir) {
         candidates.push(package_dir);
     }
+    candidates.push(directory.to_path_buf());
     for root in candidates {
-        if let Some(manifest) = read_local_manifest(&root)?
-            && manifest.record.coordinate.as_str() == label
-        {
-            return Ok(Some(root));
+        match read_local_manifest(&root) {
+            Ok(Some(manifest)) if manifest.record.coordinate.as_str() == label => {
+                return Ok(Some(root));
+            }
+            Err(_) if root == directory && is_virtual_cargo_workspace(&root)? => {}
+            Err(error) => return Err(error),
+            Ok(_) => {}
         }
     }
     Ok(None)
@@ -429,6 +477,7 @@ fn manifest_record(
         standing: RegistryReleaseStanding::Available,
         downloads: RegistryDownloadCount::Unavailable(RegistryFactAvailability::Unsupported),
         facts_version: *blake3::hash(bytes).as_bytes(),
+        authority: None,
         native_metadata_version: native_metadata
             .identity()
             .map_err(|error| error.to_string())?,
@@ -1007,6 +1056,16 @@ pub(crate) fn local_dependency_facts(
     dependencies::local_dependency_facts(project_root)
 }
 
+/// Builds the exact local source key used by both resident indexing and path
+/// lookups, so local dependency facts cannot alias a registry fact at the same
+/// coordinate.
+pub(crate) fn dependency_source_key(
+    project_root: &Path,
+    coordinate: PackageReference,
+) -> PackageGraphSourceKey {
+    dependencies::source_key(project_root, coordinate)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1250,11 +1309,13 @@ mod tests {
             &root.join("package.json"),
             r#"{"name":"not-cargo","version":"9.9.9"}"#,
         );
-        let missing_edition = read_local_manifest(&root);
-        assert!(
-            missing_edition
-                .expect_err("missing edition")
-                .contains("edition")
+        // No edition is Cargo's 2015 edition, never a refusal.
+        let missing_edition = read_local_manifest(&root)
+            .expect("a manifest without an edition")
+            .expect("identity");
+        assert_eq!(
+            missing_edition.profile,
+            LanguageProfile::Rust(RustEdition::Rust2015)
         );
 
         write(
@@ -1269,6 +1330,14 @@ mod tests {
             manifest.profile,
             LanguageProfile::Rust(RustEdition::Rust2021)
         );
+        write(
+            &root.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"1.0.0\"\nedition = \"2018\"\n",
+        );
+        let legacy = read_local_manifest(&root)
+            .expect("2018 cargo manifest")
+            .expect("identity");
+        assert_eq!(legacy.profile, LanguageProfile::Rust(RustEdition::Rust2018));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1325,6 +1394,29 @@ mod tests {
         assert!(
             indexed_package_source_root("pkg:golang/github.com/pkg/errors@v0.9.2", &workspace)
                 .is_err()
+        );
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn staged_cargo_member_survives_a_virtual_workspace_wrapper() {
+        let workspace = fixture("staged-cargo-workspace");
+        let wrapper = workspace.join("registry/registry-staging/hash-serde");
+        let member = wrapper.join("serde-1.0.228");
+        write(
+            &wrapper.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"serde-1.0.228\"]\nresolver = \"2\"\n",
+        );
+        write(
+            &member.join("Cargo.toml"),
+            "[package]\nname = \"serde\"\nversion = \"1.0.228\"\nedition = \"2018\"\n",
+        );
+
+        assert!(read_local_manifest(&wrapper).is_err());
+        assert_eq!(
+            indexed_package_source_root("pkg:cargo/serde@1.0.228", &workspace)
+                .expect("staged member root"),
+            member.canonicalize().expect("canonical member root")
         );
         let _ = fs::remove_dir_all(workspace);
     }

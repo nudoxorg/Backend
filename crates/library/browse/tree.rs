@@ -2,8 +2,8 @@
 
 use super::roles::{Declared, RoleEvidence, RoleId, cohort_role, declared_role, described_role};
 use backend_advisory::{
-    AdvisoryCoverage, AdvisoryObservation, AdvisoryStatus, FreshnessState, cargo_compatibility_class,
-    cargo_version_cmp,
+    AdvisoryCoverage, AdvisoryObservation, AdvisoryStatus, FreshnessState,
+    cargo_compatibility_class, cargo_version_cmp,
 };
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -229,12 +229,16 @@ pub struct ProjectTree {
 impl ProjectTree {
     /// The direct dependencies playing `role`, in display order.
     pub fn in_role(&self, role: RoleId) -> impl Iterator<Item = &DirectDependency> {
-        self.direct.iter().filter(move |dependency| dependency.role == role)
+        self.direct
+            .iter()
+            .filter(move |dependency| dependency.role == role)
     }
 
     /// Packages brought only by direct dependencies of `role`.
     pub fn brought_by(&self, role: RoleId) -> impl Iterator<Item = &TreePackage> {
-        self.packages.iter().filter(move |package| package.role == PackageRole::Brought(role))
+        self.packages
+            .iter()
+            .filter(move |package| package.role == PackageRole::Brought(role))
     }
 
     /// The package record for one exact version.
@@ -324,17 +328,34 @@ impl<F: Fn(&str, &str) -> AdvisoryObservation> AdvisoryObserver for F {
 /// Builds the tree: members, why-paths, roles, duplicates and advisory health.
 #[must_use]
 pub fn build_tree(input: &TreeInput, advisories: &dyn AdvisoryObserver) -> ProjectTree {
-    let index: BTreeMap<&str, usize> =
-        input.packages.iter().enumerate().map(|(at, package)| (package.id.as_str(), at)).collect();
-    let prefix = shared_prefix(input.packages.iter().filter(|package| package.member).map(|package| package.name.as_str()));
-    let short = |package: &TreeInputPackage| package.name.strip_prefix(prefix.as_str()).unwrap_or(&package.name).to_owned();
+    let index: BTreeMap<&str, usize> = input
+        .packages
+        .iter()
+        .enumerate()
+        .map(|(at, package)| (package.id.as_str(), at))
+        .collect();
+    let prefix = shared_prefix(
+        input
+            .packages
+            .iter()
+            .filter(|package| package.member)
+            .map(|package| package.name.as_str()),
+    );
+    let short = |package: &TreeInputPackage| {
+        package
+            .name
+            .strip_prefix(prefix.as_str())
+            .unwrap_or(&package.name)
+            .to_owned()
+    };
 
     // Adjacency, deterministic: each node's dependencies by (name, version).
     let mut outgoing: Vec<Vec<usize>> = vec![Vec::new(); input.packages.len()];
     let mut incoming: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); input.packages.len()];
     let mut member_edges: BTreeMap<usize, BTreeMap<usize, (bool, bool, bool)>> = BTreeMap::new();
     for edge in &input.edges {
-        let (Some(&from), Some(&to)) = (index.get(edge.from.as_str()), index.get(edge.to.as_str())) else {
+        let (Some(&from), Some(&to)) = (index.get(edge.from.as_str()), index.get(edge.to.as_str()))
+        else {
             continue;
         };
         if !outgoing[from].contains(&to) {
@@ -342,21 +363,37 @@ pub fn build_tree(input: &TreeInput, advisories: &dyn AdvisoryObserver) -> Proje
         }
         incoming[to].insert(from);
         if input.packages[from].member && !input.packages[to].member {
-            let kinds = member_edges.entry(to).or_default().entry(from).or_insert((false, false, false));
+            let kinds = member_edges
+                .entry(to)
+                .or_default()
+                .entry(from)
+                .or_insert((false, false, false));
             kinds.0 |= edge.normal;
             kinds.1 |= edge.dev;
             kinds.2 |= edge.build;
         }
     }
-    let order = |at: &usize| (input.packages[*at].name.clone(), VersionOrder(input.packages[*at].version.clone()));
+    let order = |at: &usize| {
+        (
+            input.packages[*at].name.clone(),
+            VersionOrder(input.packages[*at].version.clone()),
+        )
+    };
     for targets in &mut outgoing {
         targets.sort_by_key(order);
     }
 
     // Why-paths: one breadth-first search from every member at once,
     // members with a binary first, then by name.
-    let mut members: Vec<usize> = (0..input.packages.len()).filter(|at| input.packages[*at].member).collect();
-    members.sort_by_key(|at| (!input.packages[*at].has_bin, input.packages[*at].name.clone()));
+    let mut members: Vec<usize> = (0..input.packages.len())
+        .filter(|at| input.packages[*at].member)
+        .collect();
+    members.sort_by_key(|at| {
+        (
+            !input.packages[*at].has_bin,
+            input.packages[*at].name.clone(),
+        )
+    });
     let mut parent: Vec<Option<Option<usize>>> = vec![None; input.packages.len()];
     let mut queue = VecDeque::new();
     for &member in &members {
@@ -374,9 +411,15 @@ pub fn build_tree(input: &TreeInput, advisories: &dyn AdvisoryObserver) -> Proje
     let hop = |at: usize| {
         let package = &input.packages[at];
         if package.member {
-            WhyHop { name: short(package), version: None }
+            WhyHop {
+                name: short(package),
+                version: None,
+            }
         } else {
-            WhyHop { name: package.name.clone(), version: Some(package.version.clone()) }
+            WhyHop {
+                name: package.name.clone(),
+                version: Some(package.version.clone()),
+            }
         }
     };
     let why = |at: usize| -> Box<[WhyHop]> {
@@ -399,7 +442,10 @@ pub fn build_tree(input: &TreeInput, advisories: &dyn AdvisoryObserver) -> Proje
     // Direct dependencies and their roles.
     let mut direct_nodes: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (&dependency, _) in &member_edges {
-        direct_nodes.entry(input.packages[dependency].name.clone()).or_default().push(dependency);
+        direct_nodes
+            .entry(input.packages[dependency].name.clone())
+            .or_default()
+            .push(dependency);
     }
     struct Draft {
         name: String,
@@ -423,18 +469,31 @@ pub fn build_tree(input: &TreeInput, advisories: &dyn AdvisoryObserver) -> Proje
             }
             let by = by
                 .into_iter()
-                .map(|(member, (normal, dev, build))| MemberEdge { member, normal, dev, build })
+                .map(|(member, (normal, dev, build))| MemberEdge {
+                    member,
+                    normal,
+                    dev,
+                    build,
+                })
                 .collect::<Vec<_>>();
             let newest = &input.packages[*nodes.last().unwrap_or(&nodes[0])];
             let declared = Declared {
                 categories: &newest.categories,
                 keywords: &newest.keywords,
                 description: newest.description.as_deref(),
-                dev_only: by.iter().all(|edge| edge.dev && !edge.normal && !edge.build),
+                dev_only: by
+                    .iter()
+                    .all(|edge| edge.dev && !edge.normal && !edge.build),
             };
             let role = declared_role(&declared);
             let described = described_role(&declared);
-            Draft { name, nodes, by, role, described }
+            Draft {
+                name,
+                nodes,
+                by,
+                role,
+                described,
+            }
         })
         .collect();
     let cohorts = drafts
@@ -446,7 +505,8 @@ pub fn build_tree(input: &TreeInput, advisories: &dyn AdvisoryObserver) -> Proje
             cohort_role(drafts.iter().filter_map(|peer| {
                 let (role, evidence) = peer.role.as_ref()?;
                 let declared = matches!(evidence, RoleEvidence::Declared { .. });
-                (declared && peer.name != draft.name && peer.by == draft.by).then_some((peer.name.as_str(), *role))
+                (declared && peer.name != draft.name && peer.by == draft.by)
+                    .then_some((peer.name.as_str(), *role))
             }))
         })
         .collect::<Vec<_>>();
@@ -477,12 +537,19 @@ pub fn build_tree(input: &TreeInput, advisories: &dyn AdvisoryObserver) -> Proje
                 if at != node {
                     brought[at].insert(role);
                 }
-                stack.extend(outgoing[at].iter().copied().filter(|next| !input.packages[*next].member));
+                stack.extend(
+                    outgoing[at]
+                        .iter()
+                        .copied()
+                        .filter(|next| !input.packages[*next].member),
+                );
             }
         }
     }
 
-    let mut externals: Vec<usize> = (0..input.packages.len()).filter(|at| !input.packages[*at].member).collect();
+    let mut externals: Vec<usize> = (0..input.packages.len())
+        .filter(|at| !input.packages[*at].member)
+        .collect();
     externals.sort_by_key(order);
     let packages = externals
         .iter()
@@ -499,7 +566,9 @@ pub fn build_tree(input: &TreeInput, advisories: &dyn AdvisoryObserver) -> Proje
                 } else {
                     match brought[at].len() {
                         0 => PackageRole::Unreached,
-                        1 => brought[at].first().map_or(PackageRole::Unreached, |role| PackageRole::Brought(*role)),
+                        1 => brought[at]
+                            .first()
+                            .map_or(PackageRole::Unreached, |role| PackageRole::Brought(*role)),
                         _ => PackageRole::Shared,
                     }
                 },
@@ -514,7 +583,11 @@ pub fn build_tree(input: &TreeInput, advisories: &dyn AdvisoryObserver) -> Proje
             let (role, evidence) = draft.role.unwrap_or((RoleId::Other, RoleEvidence::Unknown));
             DirectDependency {
                 name: draft.name,
-                versions: draft.nodes.iter().map(|at| input.packages[*at].version.clone()).collect(),
+                versions: draft
+                    .nodes
+                    .iter()
+                    .map(|at| input.packages[*at].version.clone())
+                    .collect(),
                 by: draft.by.into_boxed_slice(),
                 description: newest.description.as_deref().map(one_line),
                 role,
@@ -526,7 +599,10 @@ pub fn build_tree(input: &TreeInput, advisories: &dyn AdvisoryObserver) -> Proje
     // Packages here at more than one compatibility class.
     let mut by_name: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
     for &at in &externals {
-        by_name.entry(input.packages[at].name.as_str()).or_default().push(at);
+        by_name
+            .entry(input.packages[at].name.as_str())
+            .or_default()
+            .push(at);
     }
     let twice = by_name
         .into_iter()
@@ -608,9 +684,10 @@ pub fn build_tree(input: &TreeInput, advisories: &dyn AdvisoryObserver) -> Proje
         schema: PROJECT_TREE_SCHEMA,
         source: input.source.clone(),
         root: input.root.clone(),
-        name: std::path::Path::new(&input.root)
-            .file_name()
-            .map_or_else(|| input.root.clone(), |name| name.to_string_lossy().into_owned()),
+        name: std::path::Path::new(&input.root).file_name().map_or_else(
+            || input.root.clone(),
+            |name| name.to_string_lossy().into_owned(),
+        ),
         members: members_out.into_boxed_slice(),
         packages,
         direct,
@@ -659,7 +736,10 @@ fn shared_prefix<'a>(names: impl Iterator<Item = &'a str>) -> String {
             continue;
         }
         let candidate = &first[..=at];
-        if names.iter().all(|name| name.starts_with(candidate) && name.len() > candidate.len()) {
+        if names
+            .iter()
+            .all(|name| name.starts_with(candidate) && name.len() > candidate.len())
+        {
             best = candidate.to_owned();
         } else {
             break;
@@ -682,7 +762,11 @@ const fn coverage_rank(coverage: AdvisoryCoverage) -> u8 {
 }
 
 const fn weaker_coverage(left: AdvisoryCoverage, right: AdvisoryCoverage) -> AdvisoryCoverage {
-    if coverage_rank(right) > coverage_rank(left) { right } else { left }
+    if coverage_rank(right) > coverage_rank(left) {
+        right
+    } else {
+        left
+    }
 }
 
 const fn freshness_rank(freshness: FreshnessState) -> u8 {
@@ -695,7 +779,11 @@ const fn freshness_rank(freshness: FreshnessState) -> u8 {
 }
 
 const fn weaker_freshness(left: FreshnessState, right: FreshnessState) -> FreshnessState {
-    if freshness_rank(right) > freshness_rank(left) { right } else { left }
+    if freshness_rank(right) > freshness_rank(left) {
+        right
+    } else {
+        left
+    }
 }
 
 /// One advisory source after a refresh.

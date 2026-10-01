@@ -76,6 +76,10 @@ actions!(
         HandCard5,
         /// Copy this place's `nudox://` address.
         CopyAddress,
+        /// Tour this package in the graph.
+        Tour,
+        /// Add a folder to the shelf.
+        AddFolder,
     ]
 );
 
@@ -151,6 +155,10 @@ pub(crate) enum Command {
     HandCard5,
     /// ⌘⇧C.
     CopyAddress,
+    /// T.
+    Tour,
+    /// ⌘O.
+    AddFolder,
 }
 
 /// Where a row listens.
@@ -229,6 +237,8 @@ pub(crate) const TABLE: &[Key] = &[
     key(Command::HandCard4, "secondary-4", "⌘4", Scope::Shell, "the hand's fourth card"),
     key(Command::HandCard5, "secondary-5", "⌘5", Scope::Shell, "the hand's fifth card"),
     key(Command::CopyAddress, "secondary-shift-c", "⌘⇧C", Scope::Shell, "copy the address"),
+    key(Command::Tour, "t", "T", Scope::Plain, "tour this package in the graph"),
+    key(Command::AddFolder, "secondary-o", "⌘O", Scope::Shell, "add a folder"),
 ];
 
 /// The cap a command shows (its first row).
@@ -240,15 +250,23 @@ pub(crate) fn cap(command: Command) -> &'static str {
         .map_or("", |key| key.cap)
 }
 
-fn binding(key: &Key) -> KeyBinding {
+fn binding_context(key: &Key) -> String {
+    // Graph, menus and Compare each own a different part of the keyboard.
     let graph_owns = matches!(key.command,
-        Command::FocusNext | Command::FocusPrev | Command::Activate | Command::Ask | Command::Escape);
-    let context = Some(match (key.scope, graph_owns) {
-        (Scope::Shell, true) => "NudoxShell && !Graph",
-        (Scope::Plain, true) => "NudoxShell && !Input && !Graph",
-        (Scope::Shell, false) => "NudoxShell",
-        (Scope::Plain, false) => "NudoxShell && !Input",
-    });
+        Command::FocusNext | Command::FocusPrev | Command::Activate | Command::Ask | Command::Escape | Command::Peek | Command::Tour);
+    let menu_owns = key.scope == Scope::Plain || key.command == Command::Escape;
+    let compare_owns = matches!(key.command, Command::FocusNext | Command::FocusPrev);
+    let mut context = String::from(CONTEXT);
+    if key.scope == Scope::Plain { context.push_str(" && !Input"); }
+    if graph_owns { context.push_str(" && !Graph"); }
+    if menu_owns { context.push_str(" && !Menu"); }
+    if compare_owns { context.push_str(" && !BrowseCompare"); }
+    context
+}
+
+fn binding(key: &Key) -> KeyBinding {
+    let context_text = binding_context(key);
+    let context = Some(context_text.as_str());
     let chord = key.chord;
     match key.command {
         Command::FocusNext => KeyBinding::new(chord, FocusNext, context),
@@ -284,6 +302,8 @@ fn binding(key: &Key) -> KeyBinding {
         Command::HandCard4 => KeyBinding::new(chord, HandCard4, context),
         Command::HandCard5 => KeyBinding::new(chord, HandCard5, context),
         Command::CopyAddress => KeyBinding::new(chord, CopyAddress, context),
+        Command::Tour => KeyBinding::new(chord, Tour, context),
+        Command::AddFolder => KeyBinding::new(chord, AddFolder, context),
     }
 }
 
@@ -297,6 +317,16 @@ pub fn bindings() -> Vec<KeyBinding> {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn compare_keeps_its_own_row_keys_without_losing_shell_shortcuts() {
+        for chord in ["j", "k", "down", "up"] {
+            let key = TABLE.iter().find(|key| key.chord == chord).expect("row key is bound");
+            assert!(binding_context(key).contains("!BrowseCompare"), "{chord} must reach the focused Compare page");
+        }
+        let ask = TABLE.iter().find(|key| key.command == Command::Ask).expect("Ask is bound");
+        assert!(!binding_context(ask).contains("BrowseCompare"), "Ask stays available over Compare");
+    }
 
     #[test]
     fn no_chord_is_bound_twice_and_every_command_has_a_cap() {

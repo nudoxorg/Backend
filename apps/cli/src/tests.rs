@@ -17,9 +17,8 @@ use backend_library::{
     encode_id, log_key, object_version, package_key, view_key,
 };
 use backend_present::{FaultSlug, grammar_for};
-use std::process::ExitCode;
 use backend_replication::{LocalControlLimits, frame as canonical_frame};
-
+use std::process::ExitCode;
 
 struct Fake;
 impl LocalEngine for Fake {
@@ -177,13 +176,18 @@ fn cli_outer_frame_matches_the_canonical_local_codec() {
 #[test]
 fn request_encoding_rejects_a_certificate_for_another_package() {
     let package = package_key("pkg");
-    let request = CommandDto::new(8, Command::Add { package }).with_certificate(
-        WireCertificate::new().with_claim(WireClaim::Key {
-            schema: WireSchema::Package,
-            id: encode_id(package.as_bytes()),
-            value: "other".to_owned(),
-        }),
-    );
+    let request = CommandDto::new(
+        8,
+        Command::Add {
+            package,
+            execution_intent: Default::default(),
+        },
+    )
+    .with_certificate(WireCertificate::new().with_claim(WireClaim::Key {
+        schema: WireSchema::Package,
+        id: encode_id(package.as_bytes()),
+        value: "other".to_owned(),
+    }));
     assert!(encode_request(&request).is_err());
 }
 
@@ -283,8 +287,14 @@ fn unix_transport_consumes_producer_certified_success_without_expected_cache() {
         .expect("reply frame");
     });
     let mut transport = UnixCommandTransport::from_stream(client);
-    let request =
-        CommandDto::new(15, Command::Add { package }).with_certificate(request_certificate);
+    let request = CommandDto::new(
+        15,
+        Command::Add {
+            package,
+            execution_intent: Default::default(),
+        },
+    )
+    .with_certificate(request_certificate);
     let reply = transport
         .request_with_certificate(request, None)
         .expect("certified success");
@@ -319,6 +329,7 @@ fn unix_transport_consumes_producer_certified_success_without_expected_cache() {
         16,
         Command::Add {
             package: package_key("pkg"),
+            execution_intent: Default::default(),
         },
     )
     .with_certificate(WireCertificate::new().with_claim(WireClaim::Key {
@@ -348,13 +359,18 @@ fn unix_transport_rejects_digest_only_identity_success() {
         )
         .expect("reply frame");
     });
-    let request = CommandDto::new(19, Command::Add { package }).with_certificate(
-        WireCertificate::new().with_claim(WireClaim::Key {
-            schema: WireSchema::Package,
-            id: encode_id(package_key("pkg").as_bytes()),
-            value: "pkg".to_owned(),
-        }),
-    );
+    let request = CommandDto::new(
+        19,
+        Command::Add {
+            package,
+            execution_intent: Default::default(),
+        },
+    )
+    .with_certificate(WireCertificate::new().with_claim(WireClaim::Key {
+        schema: WireSchema::Package,
+        id: encode_id(package_key("pkg").as_bytes()),
+        value: "pkg".to_owned(),
+    }));
     let mut transport = UnixCommandTransport::from_stream(client);
     assert!(transport.request(request).is_err());
     server_thread.join().expect("server");
@@ -384,8 +400,8 @@ fn plain() -> Options {
 #[test]
 fn every_registry_row_is_reachable_by_the_words_a_person_types() {
     for spec in COMMANDS {
-        let grammar = grammar_for(spec.name)
-            .unwrap_or_else(|| panic!("`{}` has no CLI grammar", spec.name));
+        let grammar =
+            grammar_for(spec.name).unwrap_or_else(|| panic!("`{}` has no CLI grammar", spec.name));
         assert_eq!(grammar.name(), spec.name);
         let help = invoke::help();
         assert!(
@@ -434,7 +450,10 @@ fn a_missing_operand_prints_the_exact_usage_line() {
     let fault = invoke::parse(&words("show"), None).expect_err("missing coordinate");
     assert_eq!(fault.slug(), FaultSlug::Usage);
     assert!(
-        fault.cause().sentence().contains("backend show <COORDINATE>"),
+        fault
+            .cause()
+            .sentence()
+            .contains("backend show <COORDINATE>"),
         "{}",
         fault.cause().sentence()
     );
@@ -446,6 +465,49 @@ fn a_page_bound_outside_its_range_is_refused_with_the_value() {
     let fault = lower(&invocation, "/abs/project").expect_err("out of range");
     assert_eq!(fault.operand().render(), "limit");
     assert!(fault.cause().sentence().contains("`900`"));
+}
+
+#[test]
+fn add_defaults_to_interactive_and_advertises_the_background_option() {
+    let invocation = invoke::parse(&words("add /abs/project"), None).expect("parse Add");
+    let Request::Index(path) = lower(&invocation, "/unused").expect("lower Add") else {
+        panic!("default add lowers to the interactive index request");
+    };
+    assert_eq!(path, "/abs/project");
+
+    let help = invoke::help_for(grammar_for("add").expect("Add grammar"));
+    assert!(help.contains("--execution-intent INTENT"));
+    assert!(help.contains("bounded remote calibration"));
+}
+
+#[test]
+fn add_accepts_background_and_rejects_unknown_execution_intents() {
+    let invocation = invoke::parse(
+        &words("add /abs/project --execution-intent background"),
+        None,
+    )
+    .expect("parse background Add");
+    let Request::IndexWithExecutionIntent {
+        execution_intent, ..
+    } = lower(&invocation, "/unused").expect("lower background Add")
+    else {
+        panic!("add lowers to an index request");
+    };
+    assert_eq!(
+        execution_intent,
+        backend_library::CompileExecutionIntent::Background
+    );
+
+    let invocation = invoke::parse(&words("add /abs/project --execution-intent remote"), None)
+        .expect("the grammar parses the option value before semantic validation");
+    let fault = lower(&invocation, "/unused").expect_err("unknown intent");
+    assert_eq!(fault.operand().render(), "execution-intent");
+    assert!(
+        fault
+            .cause()
+            .sentence()
+            .contains("choose interactive or background")
+    );
 }
 
 #[test]
@@ -466,7 +528,9 @@ fn typed_rows_lower_without_the_json_escape_hatch() {
         ("show /p::src/lib.rs:1::f", |request| {
             matches!(request, Request::Page(_))
         }),
-        ("outline /p", |request| matches!(request, Request::Outline(_))),
+        ("outline /p", |request| {
+            matches!(request, Request::Outline(_))
+        }),
         ("related /p::src/lib.rs:1::f", |request| {
             matches!(request, Request::Neighbourhood { incoming: true, .. })
         }),
@@ -534,7 +598,16 @@ fn an_unknown_semantic_profile_lists_the_closed_set() {
     let invocation = invoke::parse(&words(line), None).expect("parse");
     let fault = lower(&invocation, "/abs/project").expect_err("unknown profile");
     assert_eq!(fault.operand().render(), "profile");
-    for expected in ["rust", "typescript", "python", "go", "java", "csharp", "c", "cpp"] {
+    for expected in [
+        "rust",
+        "typescript",
+        "python",
+        "go",
+        "java",
+        "csharp",
+        "c",
+        "cpp",
+    ] {
         assert!(
             fault.cause().sentence().contains(expected),
             "the closed profile set omits {expected}"

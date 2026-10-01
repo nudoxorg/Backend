@@ -21,6 +21,8 @@ control(job_or_subscription, cancel_or_priority_or_release) -> Status
 
 Commands resolve product identity and policy inside `library`; the transport carries stable versioned DTOs. No client receives raw pointers or generation-local integer IDs. Large local views can later use read-only mapped pack handles with explicit leases; the initial protocol can use bounded column batches. Shared memory is an optional physical transport, not a second data model.
 
+Add carries a typed `CompileExecutionIntent`. The default `Interactive` intent protects the local latency path across GUI, CLI, and MCP; callers that explicitly request `Background` may use the bounded remote calibration path before owner distribution. CLI exposes this as `add --execution-intent background`, while MCP accepts `execution_intent: "background"`. An omitted value means `Interactive`. Command DTO version 11 makes the intent part of Add's canonical shape and accepts only the current version; an immediate accepted-intent reply does not claim which route eventually ran.
+
 ## 2. Separate semantic work identity from execution attempts
 
 ```text

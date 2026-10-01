@@ -187,10 +187,10 @@ fn pipe(world: &World, names: &Names, i: NodeId) -> Pipe {
     if let Some(words) = Receiver::of(node.recv.as_deref(), owner_copies).input()
         && node.recv.is_some()
     {
-        inputs.push(Input { name: SharedString::new_static(words), ty: None });
+        inputs.push(Input { name: SharedString::new_static(words), ty: None, receiver: Some(Receiver::of(node.recv.as_deref(), owner_copies)) });
     }
     for p in params(&node.params) {
-        inputs.push(Input { name: SharedString::from(p.name), ty: Some(sc.spell_text(&p.ty)) });
+        inputs.push(Input { name: SharedString::from(p.name), ty: Some(sc.spell_text(&p.ty)), receiver: None });
     }
     let (output, fails) = match node.ret.as_deref() {
         None => (None, None),
@@ -239,9 +239,21 @@ fn pipe(world: &World, names: &Names, i: NodeId) -> Pipe {
 
 fn sig_line(sc: &Scope<'_>, world: &World, j: NodeId) -> SigLine {
     let m = world.node(j);
+    let (success, fails) = result_ports(sc, m.ret.as_deref());
     SigLine {
         params: params(&m.params).iter().map(|p| sc.spell_text(&p.ty)).collect(),
         ret: m.ret.as_deref().map(|r| sc.spell_text(r)),
+        success,
+        fails,
+    }
+}
+
+fn result_ports(sc: &Scope<'_>, result: Option<&str>) -> (Option<super::types::Spelled>, Option<Option<super::types::Spelled>>) {
+    let Some(result) = result else { return (None, None); };
+    let expression = parse(result);
+    match sc.fallible(&expression) {
+        Some((ok, error)) => ((ok != TypeExpr::Tuple(Vec::new())).then(|| sc.spell(&ok)), Some(error.map(|e| sc.spell(&e)))),
+        None => ((expression != TypeExpr::Tuple(Vec::new())).then(|| sc.spell(&expression)), None),
     }
 }
 
@@ -280,6 +292,7 @@ fn rows(world: &World, resolver: &InWorld<'_>, list: &[NodeId]) -> Vec<Row> {
                     seen.push(p.ty);
                 }
             }
+            let (success, fails) = result_ports(&sc, world.node(first).ret.as_deref());
             Row::Fold(FoldRow {
                 suffixes: members
                     .iter()
@@ -288,6 +301,8 @@ fn rows(world: &World, resolver: &InWorld<'_>, list: &[NodeId]) -> Vec<Row> {
                 prefix: SharedString::from(prefix),
                 inputs,
                 ret: world.node(first).ret.as_deref().map(|r| sc.spell_text(r)),
+                success,
+                fails,
                 members,
             })
         })

@@ -22,8 +22,9 @@ pub use self::checker::{
     BoundDeclaration, BoundNarrowing, BoundReference, Checker, CheckerError, CheckerIndex,
     Declaration, ExplicitTypeScriptChecker, LiteralBase, MappedModifier, Narrowing, ObjectMember,
     Origin, Parameter, Reference, Report, TemplatePart, TypeScriptCheckerProgram,
-    TypeScriptCheckerProgramError, TypeScriptCheckerProgramView, TypeScriptModuleRoot,
-    TypeScriptModuleRootView, TypeTree, source_digest,
+    TypeScriptCheckerProgramError, TypeScriptCheckerProgramView, TypeScriptInvocationModeV1,
+    TypeScriptModuleRoot, TypeScriptModuleRootView, TypeTree,
+    TYPESCRIPT_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1, source_digest,
 };
 pub use self::coordinate::{CoordinateError, Utf8Span, Utf8ToUtf16Cursor, Utf16Span};
 pub use self::error::AuthorityError;

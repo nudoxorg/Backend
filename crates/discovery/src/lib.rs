@@ -62,6 +62,12 @@ pub const DEFAULT_IGNORED_DIRECTORIES: &[&str] = &[
 /// Compatibility alias for callers that used the original name.
 pub const HARD_IGNORED_DIRECTORIES: &[&str] = DEFAULT_IGNORED_DIRECTORIES;
 
+/// The lock file an index owner holds in its workspace. A directory that
+/// holds one is an owner's state, never a project's source, wherever it
+/// lives: an owner whose workspace sits inside the folder it indexes would
+/// otherwise scan its own journal and see its own writes as source edits.
+pub const OWNER_WORKSPACE_MARKER: &str = "OWNER.lock";
+
 /// Returns whether a path component is one of Nudox's hard generated roots.
 #[must_use]
 pub fn is_hard_ignored_directory(name: &OsStr) -> bool {
@@ -363,22 +369,12 @@ impl DiscoveryPolicy {
         self.includes.iter().any(|pattern| {
             let pattern = normalize_pattern(pattern);
             let pattern = pattern.trim_start_matches('!').trim_start_matches('/');
-            if pattern == "**" || pattern.is_empty() {
-                return true;
-            }
-            let prefix = pattern
-                .find(['*', '?', '['])
-                .map_or(pattern, |index| &pattern[..index])
-                .trim_end_matches('/')
-                .to_owned();
-            let (prefix, relative) = if self.case_insensitive {
-                (prefix.to_ascii_lowercase(), relative.to_ascii_lowercase())
-            } else {
-                (prefix, relative.clone())
-            };
-            prefix == relative
-                || prefix.starts_with(&format!("{relative}/"))
-                || relative.starts_with(&format!("{prefix}/"))
+            pattern.is_empty()
+                || glob_path_matches_prefix(&pattern, &relative, self.case_insensitive)
+                // A literal directory include means “include everything
+                // below this directory,” even when the directory itself is
+                // already past the pattern's last component.
+                || self.include_reopens_directory_contents(root, path)
         })
     }
 
@@ -411,6 +407,9 @@ impl DiscoveryPolicy {
         let Ok(relative) = path.strip_prefix(root) else {
             return false;
         };
+        if path.join(OWNER_WORKSPACE_MARKER).is_file() {
+            return false;
+        }
         let generated = relative
             .components()
             .any(|component| self.generated_component(component.as_os_str()));
@@ -438,6 +437,28 @@ impl DiscoveryPolicy {
     /// reopen a generated default when the caller asks for that path.
     #[must_use]
     pub fn walk(self, root: impl AsRef<Path>) -> Discovery {
+        self.walk_with_workspace_entries(root, false)
+    }
+
+    /// Creates a deterministic full-workspace traversal that reports
+    /// symlinks as entries while never following them.
+    ///
+    /// Ordinary source discovery omits symlinks because callers generally
+    /// want a read-ready set of regular files. Workspace capture needs to
+    /// reject a symlink rather than silently leave it out of its input
+    /// inventory, so this traversal surfaces the link for admission to fail
+    /// closed. Git ignore and generated-directory rules remain identical to
+    /// [`Self::walk`].
+    #[must_use]
+    pub fn walk_workspace_entries(self, root: impl AsRef<Path>) -> Discovery {
+        self.walk_with_workspace_entries(root, true)
+    }
+
+    fn walk_with_workspace_entries(
+        self,
+        root: impl AsRef<Path>,
+        report_symlinks: bool,
+    ) -> Discovery {
         let root = root.as_ref().to_owned();
         let mut builder = WalkBuilder::new(&root);
         let policy = self.clone();
@@ -467,7 +488,7 @@ impl DiscoveryPolicy {
             .current_dir(root.clone());
         builder.filter_entry(move |entry| {
             entry.path() == root_for_filter
-                || (!entry.path_is_symlink()
+                || ((report_symlinks || !entry.path_is_symlink())
                     && policy.admits_path(
                         &root_for_filter,
                         entry.path(),
@@ -542,6 +563,164 @@ fn normalize_pattern(pattern: &str) -> String {
     pattern.replace('\\', "/")
 }
 
+/// Returns whether `path` is a component-wise prefix of any path admitted by
+/// `pattern`. This is used before descending into generated directories, so
+/// wildcard prefixes must be matched without treating every `**` as a match
+/// for every generated tree.
+fn glob_path_matches_prefix(pattern: &str, path: &str, case_insensitive: bool) -> bool {
+    let pattern = pattern.trim_end_matches('/');
+    let pattern = pattern
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    let path = path
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+
+    // `reachable[p]` means the first `p` pattern components can match the
+    // path components consumed so far. A `**` component can consume zero or
+    // more components; ordinary glob components consume exactly one.
+    let mut reachable = vec![false; pattern.len() + 1];
+    reachable[0] = true;
+    close_recursive_components(&pattern, &mut reachable);
+    for component in path {
+        let mut next = vec![false; pattern.len() + 1];
+        for (index, pattern_component) in pattern.iter().enumerate() {
+            if !reachable[index] {
+                continue;
+            }
+            if *pattern_component == "**" {
+                // `**` remains active while consuming this path component.
+                next[index] = true;
+            } else if glob_component_matches(pattern_component, component, case_insensitive) {
+                next[index + 1] = true;
+            }
+        }
+        reachable = next;
+        close_recursive_components(&pattern, &mut reachable);
+    }
+
+    // Any surviving state proves that the visited directory is either an
+    // exact match or an ancestor of a possible match. File admission still
+    // goes through the compiled ignore override matcher.
+    reachable.into_iter().any(|matched| matched)
+}
+
+fn close_recursive_components(pattern: &[&str], reachable: &mut [bool]) {
+    for index in 0..pattern.len() {
+        if reachable[index] && pattern[index] == "**" {
+            reachable[index + 1] = true;
+        }
+    }
+}
+
+fn glob_component_matches(pattern: &str, value: &str, case_insensitive: bool) -> bool {
+    let Some(alternatives) = expand_glob_alternatives(pattern, 128) else {
+        // A pathological alternation should not turn discovery into an
+        // unbounded matcher. Conservatively open this one candidate directory;
+        // the compiled override matcher still decides which files are admitted.
+        return true;
+    };
+    alternatives.iter().any(|alternative| {
+        let Some(first_meta) = alternative.find(['*', '?', '[']) else {
+            return strings_equal(alternative, value, case_insensitive);
+        };
+        let prefix = &alternative[..first_meta];
+        if !string_starts_with(value, prefix, case_insensitive) {
+            return false;
+        }
+        let last_meta = alternative
+            .char_indices()
+            .filter(|(_, character)| matches!(character, '*' | '?' | '['))
+            .map(|(index, _)| index)
+            .last();
+        let suffix = last_meta.map_or("", |index| {
+            if alternative[index..].starts_with('[') {
+                alternative[index + 1..]
+                    .find(']')
+                    .map_or("", |close| &alternative[index + close + 2..])
+            } else {
+                &alternative[index + 1..]
+            }
+        });
+        string_ends_with(value, suffix, case_insensitive)
+            && value.chars().count() >= prefix.chars().count() + suffix.chars().count()
+    })
+}
+
+fn strings_equal(left: &str, right: &str, case_insensitive: bool) -> bool {
+    if case_insensitive {
+        left.eq_ignore_ascii_case(right)
+    } else {
+        left == right
+    }
+}
+
+fn string_starts_with(value: &str, prefix: &str, case_insensitive: bool) -> bool {
+    let Some(value_prefix) = value.get(..prefix.len()) else {
+        return false;
+    };
+    strings_equal(value_prefix, prefix, case_insensitive)
+}
+
+fn string_ends_with(value: &str, suffix: &str, case_insensitive: bool) -> bool {
+    let Some(value_suffix) = value.get(value.len().saturating_sub(suffix.len())..) else {
+        return false;
+    };
+    strings_equal(value_suffix, suffix, case_insensitive)
+}
+
+fn expand_glob_alternatives(pattern: &str, limit: usize) -> Option<Vec<String>> {
+    fn expand(pattern: &str, limit: usize, output: &mut Vec<String>) -> Option<()> {
+        let chars = pattern.char_indices().collect::<Vec<_>>();
+        let mut depth = 0usize;
+        let mut open = None;
+        let mut close = None;
+        let mut commas = Vec::new();
+        for (byte_index, character) in &chars {
+            match character {
+                '{' => {
+                    if depth == 0 {
+                        open = Some(*byte_index);
+                    }
+                    depth += 1;
+                }
+                '}' if depth > 0 => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(*byte_index);
+                        break;
+                    }
+                }
+                ',' if depth == 1 => commas.push(*byte_index),
+                _ => {}
+            }
+        }
+        let (Some(open), Some(close)) = (open, close) else {
+            output.push(pattern.to_owned());
+            return (output.len() <= limit).then_some(());
+        };
+        let alternatives = commas;
+        let mut starts = vec![open + 1];
+        starts.extend(alternatives.iter().map(|comma| comma + 1));
+        let mut ends = alternatives;
+        ends.push(close);
+        let prefix = &pattern[..open];
+        let suffix = &pattern[close + 1..];
+        for (start, end) in starts.into_iter().zip(ends) {
+            let choice = &pattern[start..end];
+            let combined = format!("{prefix}{choice}{suffix}");
+            expand(&combined, limit, output)?;
+        }
+        Some(())
+    }
+
+    let mut output = Vec::new();
+    expand(pattern, limit, &mut output)?;
+    Some(output)
+}
+
 fn slash_path(path: &Path) -> String {
     path.components()
         .map(|component| component.as_os_str().to_string_lossy())
@@ -575,6 +754,29 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn an_index_owners_workspace_inside_the_project_is_never_source() {
+        let scratch = Scratch::new("owner");
+        fs::create_dir_all(scratch.0.join("src")).expect("src");
+        fs::write(scratch.0.join("src/lib.rs"), b"pub fn one() {}").expect("source");
+        fs::create_dir_all(scratch.0.join("state/compiler")).expect("state");
+        fs::write(scratch.0.join("state/OWNER.lock"), b"").expect("lock");
+        fs::write(scratch.0.join("state/compiler/image.rs"), b"// generated").expect("state file");
+        let paths = DiscoveryPolicy::default()
+            .walk(&scratch.0)
+            .map(|entry| {
+                entry
+                    .expect("discovery")
+                    .path()
+                    .strip_prefix(&scratch.0)
+                    .expect("relative")
+                    .to_owned()
+            })
+            .filter(|path| !path.as_os_str().is_empty())
+            .collect::<Vec<_>>();
+        assert_eq!(paths, [PathBuf::from("src"), PathBuf::from("src/lib.rs")]);
     }
 
     #[test]
@@ -630,6 +832,69 @@ mod tests {
             .filter(|path| path.ends_with(".ts"))
             .collect::<Vec<_>>();
         assert_eq!(paths, [".next/server/app.ts", "src/live.ts"]);
+    }
+
+    #[test]
+    fn wildcard_include_reopens_matching_nested_generated_directories() {
+        let scratch = Scratch::new("wildcard-override");
+        fs::create_dir_all(scratch.0.join("src/target")).expect("target");
+        fs::write(scratch.0.join("src/target/keep.rs"), b"keep").expect("keep");
+        fs::write(scratch.0.join("src/target/drop.rs"), b"drop").expect("drop");
+        fs::create_dir_all(scratch.0.join("src/nested/target")).expect("nested target");
+        fs::write(scratch.0.join("src/nested/target/keep.rs"), b"nested keep")
+            .expect("nested keep");
+        fs::write(scratch.0.join("src/target/温度.rs"), b"unicode").expect("unicode");
+        fs::create_dir_all(scratch.0.join("build/unrelated")).expect("build");
+        fs::write(scratch.0.join("build/unrelated/output.rs"), b"generated")
+            .expect("unrelated generated file");
+        fs::create_dir_all(scratch.0.join("CaseTree/Target")).expect("case tree");
+        fs::write(scratch.0.join("CaseTree/Target/Keep.rs"), b"case").expect("case keep");
+
+        let paths = DiscoveryPolicy::default()
+            .include("**/target/keep.rs")
+            .include("**/target/温度.rs")
+            .walk(&scratch.0)
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                entry
+                    .is_file()
+                    .then(|| slash_path(entry.path().strip_prefix(&scratch.0).expect("relative")))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            [
+                // `Target` is ordinary source under the default case-sensitive policy.
+                "CaseTree/Target/Keep.rs",
+                "src/nested/target/keep.rs",
+                "src/target/keep.rs",
+                "src/target/温度.rs"
+            ]
+        );
+
+        let case_insensitive_paths = DiscoveryPolicy::default()
+            .case_insensitive(true)
+            .include("**/target/keep.rs")
+            .walk(&scratch.0)
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                entry
+                    .is_file()
+                    .then(|| slash_path(entry.path().strip_prefix(&scratch.0).expect("relative")))
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            case_insensitive_paths
+                .iter()
+                .any(|path| path == "CaseTree/Target/Keep.rs"),
+            "case-insensitive wildcard include must reopen differently cased generated components: {case_insensitive_paths:?}"
+        );
+        assert!(
+            !case_insensitive_paths
+                .iter()
+                .any(|path| path.starts_with("build/")),
+            "unrelated generated build files must remain excluded: {case_insensitive_paths:?}"
+        );
     }
 
     #[test]
@@ -770,10 +1035,8 @@ mod tests {
         fs::write(scratch.0.join("root-drop.rs"), b"drop").expect("root drop");
         fs::write(scratch.0.join("root-keep.rs"), b"keep").expect("root keep");
         fs::write(scratch.0.join("src/nested/drop.rs"), b"drop").expect("nested drop");
-        fs::write(scratch.0.join("src/nested/nested-drop.rs"), b"drop")
-            .expect("nested local drop");
-        fs::write(scratch.0.join("src/nested/nested-keep.rs"), b"keep")
-            .expect("nested keep");
+        fs::write(scratch.0.join("src/nested/nested-drop.rs"), b"drop").expect("nested local drop");
+        fs::write(scratch.0.join("src/nested/nested-keep.rs"), b"keep").expect("nested keep");
 
         let mut paths = DiscoveryPolicy::default()
             .walk(&scratch.0)
@@ -789,13 +1052,7 @@ mod tests {
             .filter(|path| path.ends_with(".rs"))
             .collect::<Vec<_>>();
         paths.sort();
-        assert_eq!(
-            paths,
-            [
-                "root-keep.rs",
-                "src/nested/nested-keep.rs",
-            ]
-        );
+        assert_eq!(paths, ["root-keep.rs", "src/nested/nested-keep.rs",]);
     }
 
     #[test]

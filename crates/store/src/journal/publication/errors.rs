@@ -10,8 +10,8 @@ use std::{
 };
 
 use crate::hydration::VerifiedGeneration;
-use backend_version::{ContentIdDecodeError, Domain};
 use crate::workflow::{ReductionError, StageKey, WorkflowRecord};
+use backend_version::{ContentIdDecodeError, Domain};
 use thiserror::Error;
 
 use super::facts::PublicationFacts;

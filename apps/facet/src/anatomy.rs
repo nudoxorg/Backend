@@ -30,11 +30,23 @@ pub mod does;
 pub mod fork;
 #[cfg(feature = "gallery")]
 pub(crate) mod gallery;
+#[cfg(feature = "gallery")]
+pub(crate) mod glyph_gallery;
+pub mod history;
 pub mod holds;
 pub mod in_use;
 pub mod pipe;
+pub mod operation;
+pub mod page;
+pub mod plan;
+pub mod unroll;
+pub mod fails;
 pub mod prism;
 pub mod rail;
+pub mod reach;
+pub mod reach_world;
+pub mod sigil;
+pub mod symbol;
 pub mod text;
 #[cfg(test)]
 mod tests;
@@ -46,6 +58,7 @@ pub use fork::{ForkView, fork};
 pub use holds::{HoldsView, holds};
 pub use in_use::{InUse, in_use};
 pub use pipe::{PipeView, pipe};
+pub use operation::{Operation, operation};
 pub use prism::{PrismView, ToGraph, prism};
 pub use rail::{RecipeSection, recipe};
 pub use text::{Deco, Line, Links, Open, TypeInk};

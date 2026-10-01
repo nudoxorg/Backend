@@ -59,9 +59,35 @@ pub(super) fn scan_path<D: JournalCodec, F>(
 where
     F: FnMut(JournalFrameRef<'_, D>) -> Result<(), JournalError>,
 {
-    let mut file = File::open(path)?;
-    let (start_offset, mut expected_sequence, mut previous, initial_sequence) =
+    let (start_offset, expected_sequence, previous, initial_sequence) =
         scan_start(path, checkpoint)?;
+    scan_path_from(
+        path,
+        limits,
+        start_offset,
+        expected_sequence,
+        previous,
+        initial_sequence,
+        visitor,
+    )
+}
+
+pub(super) fn scan_path_from<D: JournalCodec, F>(
+    path: &Path,
+    limits: JournalLimits,
+    start_offset: u64,
+    mut expected_sequence: u64,
+    mut previous: ChainHash<D>,
+    initial_sequence: Option<u64>,
+    mut visitor: F,
+) -> Result<JournalScan<D>, JournalError>
+where
+    F: FnMut(JournalFrameRef<'_, D>) -> Result<(), JournalError>,
+{
+    let mut file = File::open(path)?;
+    if file.metadata()?.len() < start_offset {
+        return Err(JournalError::Corrupt("journal append position"));
+    }
     file.seek(SeekFrom::Start(start_offset))?;
     let mut offset = start_offset;
     let mut frames_scanned = 0usize;

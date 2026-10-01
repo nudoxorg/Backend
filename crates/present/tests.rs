@@ -7,8 +7,9 @@
 use super::*;
 use backend_library::{
     Coverage, DeclarationKind, Document, Fragment, GraphRelation, Lane, OutlineExtent, OutlineNode,
-    Reason, RowId, SemanticLinkKind, SourceAvailability, SourceExcerpt, SourceExcerptExtent,
-    SourceLocation, package_key, symbol_key, view_state_root,
+    Reason, RowId, SemanticLinkKind, SemanticSearchReason, SemanticSearchStatus,
+    SourceAvailability, SourceExcerpt, SourceExcerptExtent, SourceLocation, package_key,
+    symbol_key, view_state_root,
 };
 
 const PROJECT: &str = "/abs/polyglot";
@@ -580,6 +581,29 @@ fn a_record_renders_identity_first_and_never_clips_the_coordinate() {
 }
 
 #[test]
+fn semantic_search_degradation_is_visible_without_dropping_lexical_records() {
+    let row = declaration_row();
+    let status = SemanticSearchStatus::Unavailable {
+        reason: SemanticSearchReason::ProviderUnavailable,
+    };
+    let list = RecordList::new(
+        "ferris",
+        CoverageLine::new(&[Coverage::Complete], Some(1)),
+        vec![Record::from_row(&row)],
+    )
+    .with_semantic_search_status(status);
+
+    let rendered = text::records(&list, None, Theme::plain());
+    assert!(rendered.contains("semantic-search unavailable (provider-unavailable)"));
+    assert!(rendered.contains("polyglot › src/lib.rs:2 › ferris"));
+    assert_eq!(list.coverage().readiness(), "unavailable");
+    assert!(list.coverage().has_failed_lane());
+    let dto = RecordListDto::new(&list);
+    assert_eq!(dto.semantic_search, Some(status));
+    assert_eq!(dto.records.len(), 1);
+}
+
+#[test]
 fn the_markdown_page_leads_with_the_identity_then_the_evidence() {
     let row = declaration_row();
     let identity = Identity::parse_with_key(&row.label, row.id.into());
@@ -713,10 +737,7 @@ fn an_empty_graph_names_the_missing_edges() {
         rendered.contains("no graph edges at this coordinate"),
         "{rendered}"
     );
-    assert!(
-        !rendered.contains("no declaration matches"),
-        "{rendered}"
-    );
+    assert!(!rendered.contains("no declaration matches"), "{rendered}");
     let wire = answer_value(&Answer::Records(Box::new(list)));
     assert_eq!(
         wire["empty_reason"],
@@ -1021,4 +1042,18 @@ fn advisory_override_is_one_typed_cli_and_mcp_command() {
     assert_eq!(package.as_str(), "pkg:cargo/demo@1.0.0");
     assert_eq!(evidence.actor, "release-bot");
     assert_eq!(evidence.policy_version, 7);
+}
+
+#[test]
+fn mcp_add_without_execution_intent_lowers_to_interactive_default() {
+    let arguments = serde_json::json!({"path": PROJECT});
+    let invocation = Invocation::from_json(
+        grammar_for("add").expect("Add grammar"),
+        arguments.as_object().expect("JSON object"),
+    )
+    .expect("default Add invocation");
+    assert!(matches!(
+        lower(&invocation, "/unused").expect("lower Add"),
+        Request::Index(path) if path == PROJECT
+    ));
 }

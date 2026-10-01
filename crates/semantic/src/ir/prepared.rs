@@ -443,7 +443,8 @@ impl<'facts> PreparedFragment<'facts> {
         }
 
         let written = &mut output[..self.layout.output_len];
-        written[HEADER_LAYOUT.magic..HEADER_LAYOUT.schema].copy_from_slice(&crate::ir::FRAGMENT_MAGIC);
+        written[HEADER_LAYOUT.magic..HEADER_LAYOUT.schema]
+            .copy_from_slice(&crate::ir::FRAGMENT_MAGIC);
         write_u16(written, HEADER_LAYOUT.schema, crate::ir::FRAGMENT_SCHEMA);
         write_u16(
             written,

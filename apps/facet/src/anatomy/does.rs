@@ -17,7 +17,7 @@ use crate::theme::ActiveFacet;
 use crate::tokens::Palette;
 use gpui::{
     AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
-    Styled, Window, div,
+    Styled, StatefulInteractiveElement, Window, div,
 };
 use std::sync::Arc;
 
@@ -102,53 +102,23 @@ pub(crate) fn row(
     links: &Links,
     palette: &Palette,
 ) -> gpui::Stateful<gpui::Div> {
-    let xray = measure.reveal().xray;
-    let room = measure.effective() >= SAY_BELOW;
-    if mark.is_none() && super::stacked(measure) {
-        return stacked_row(id, row, measure, links, palette);
-    }
-    let (line, say): (Line, Option<(SharedString, bool)>) = match row {
-        Row::One(member) => (member_line(member, links, xray, palette), member.doc.clone().map(|d| (d, true))),
-        Row::Fold(fold) => (fold_line(fold, links, xray, palette), Some((SharedString::from(fold_count(fold)), false))),
+    let (data, say) = match row {
+        Row::One(member) => (super::Operation {
+            name: member.name.clone(), target: Some(Target::Node(member.node)),
+            inputs: member.sig.params.clone(), result: member.sig.success.clone(), failure: member.sig.fails.clone(), signature_known: true,
+        }, member.doc.clone()),
+        Row::Fold(fold) => (super::Operation {
+            name: SharedString::from(format!("{}…", fold.prefix)), target: None,
+            inputs: fold.inputs.iter().take(FoldRow::SHOWN).cloned().collect(), result: fold.success.clone(), failure: fold.fails.clone(), signature_known: true,
+        }, Some(SharedString::from(fold_count(fold)))),
     };
-    let line_id = ElementId::NamedChild(Arc::new(id.clone()), SharedString::new_static("line"));
-    let mut el = div()
-        .id(id)
-        .flex()
-        .items_baseline()
-        .gap(k(measure, 12.0))
-        .py(row_pad(measure, 7.0))
-        .px(k(measure, 10.0))
-        .mx(-k(measure, 10.0))
-        .min_h(row_pad(measure, 34.0))
+    let operation = super::operation(ElementId::NamedChild(Arc::new(id.clone()), "path".into()), data, measure, links, palette);
+    div().id(id).flex().items_start().gap(k(measure, 10.0))
+        .py(row_pad(measure, 8.0)).px(k(measure, 10.0)).mx(-k(measure, 10.0))
         .hover(|s| s.bg(palette.tint.hsla()))
-        .children(mark.map(|m| div().flex_none().w(k(measure, 18.0)).child(m)))
-        .child(div().flex_shrink_1().min_w_0().child(line.element(line_id, roles::ROW, measure, links, palette)));
-    if room && let Some((say, serif)) = say {
-        let role = if serif { roles::SAY } else { crate::tokens::TypeRole { size: 12.0, line: 16.0, ..roles::QUIET } };
-        el = el.child(div().flex_1().min_w_0().truncate().set(role, measure).text_color(palette.ink3.hsla()).child(say));
-    }
-    el
-}
-
-/// A contract row in a narrow room: the name and signature (wrapping as
-/// text), then the sentence or the folded count below, whole.
-fn stacked_row(id: ElementId, row: &Row, measure: &Measure, links: &Links, palette: &Palette) -> gpui::Stateful<gpui::Div> {
-    let xray = measure.reveal().xray;
-    let (line, say, serif) = match row {
-        Row::One(member) => (member_line(member, links, xray, palette), member.doc.clone(), true),
-        Row::Fold(fold) => (fold_line(fold, links, xray, palette), Some(SharedString::from(fold_count(fold))), false),
-    };
-    let line_id = ElementId::NamedChild(Arc::new(id.clone()), SharedString::new_static("line"));
-    let role = if serif { roles::SAY } else { crate::tokens::TypeRole { size: 12.0, line: 16.0, ..roles::QUIET } };
-    div()
-        .id(id)
-        .flex()
-        .flex_col()
-        .gap(k(measure, 2.0))
-        .py(row_pad(measure, 7.0))
-        .child(line.element(line_id, roles::ROW, measure, links, palette))
-        .children(say.map(|say| div().set(role, measure).text_color(palette.ink3.hsla()).child(say)))
+        .children(mark.map(|mark| div().pt(k(measure, 8.0)).flex_none().child(mark)))
+        .child(div().flex_1().min_w_0().flex().flex_col().gap(k(measure, 3.0))
+            .child(operation).children(say.map(|say| div().set(roles::SAY, measure).text_color(palette.ink3.hsla()).child(say))))
 }
 
 /// The Does section. Build with [`does`].
@@ -158,12 +128,36 @@ pub struct DoesView {
     does: Does,
     measure: Measure,
     links: Links,
+    expanded: Vec<crate::semantics::members::Receiver>,
+    toggle: Option<std::rc::Rc<dyn Fn(crate::semantics::members::Receiver, &mut App)>>,
+    title: bool,
 }
 
 /// The Does section for `does` at `measure`.
 #[must_use]
 pub fn does(id: impl Into<ElementId>, does: Does, measure: &Measure, links: &Links) -> DoesView {
-    DoesView { id: id.into(), does, measure: *measure, links: links.clone() }
+    DoesView { id: id.into(), does, measure: *measure, links: links.clone(), expanded: Vec::new(), toggle: None, title: true }
+}
+
+impl DoesView {
+    /// Keep controls in the shell's bounded per-symbol state.
+    #[must_use]
+    pub fn disclosure(mut self, expanded: Vec<crate::semantics::members::Receiver>, toggle: impl Fn(crate::semantics::members::Receiver, &mut App) + 'static) -> Self {
+        self.expanded = expanded; self.toggle = Some(std::rc::Rc::new(toggle)); self
+    }
+    /// The enclosing page supplies its own tracked section heading.
+    #[must_use]
+    pub fn without_title(mut self) -> Self { self.title = false; self }
+}
+
+fn mode(receiver: crate::semantics::members::Receiver) -> (&'static str, crate::icons::Mod) {
+    use crate::semantics::members::Receiver as R;
+    match receiver {
+        R::Reads => ("Inspect", crate::icons::Mod::Reads),
+        R::Changes => ("Edit", crate::icons::Mod::Changes),
+        R::UsesUp => ("Take ownership", crate::icons::Mod::Consumes),
+        R::Makes => ("Associated operations", crate::icons::Mod::Makes),
+    }
 }
 
 fn group_heading(id: ElementId, text: &str, measure: &Measure, palette: &Palette) -> crate::probe::Text {
@@ -185,17 +179,30 @@ impl RenderOnce for DoesView {
         if self.does.is_empty() {
             return root;
         }
-        root = root.child(section_title("Does", &m, palette));
+        if self.title { root = root.child(section_title("What it does", &m, palette)); }
         let sub = |part: String| ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::from(part));
         for (g, group) in self.does.groups.iter().enumerate() {
-            root = root.child(group_heading(sub(format!("group-{g}-heading")), group.receiver.heading(), &m, palette));
-            for (r, member) in group.rows.iter().enumerate() {
+            let (label, glyph) = mode(group.receiver);
+            root = root.child(div().flex().items_center().gap(k(&m, 8.0))
+                .child(icons::mod_mark(glyph, 14.0 * m.scale(), palette))
+                .child(group_heading(sub(format!("group-{g}-heading")), label, &m, palette)));
+            let expanded = self.expanded.contains(&group.receiver);
+            let limit = if expanded { group.rows.len() } else { 6 };
+            for (r, member) in group.rows.iter().take(limit).enumerate() {
                 let kind = match member {
                     Row::One(one) => icon_kind(one.kind),
                     Row::Fold(_) => icons::Kind::Method,
                 };
                 let mark = icons::kind_mark(kind, KindSize::Sm, palette);
                 root = root.child(row(sub(format!("{g}-{r}")), member, Some(mark), &m, &self.links, palette));
+            }
+            if group.rows.len() > 6 {
+                let label = if expanded { "Show fewer operations".to_owned() } else { format!("Explore {} more operations", group.rows.len() - 6) };
+                let receiver = group.receiver;
+                let toggle = self.toggle.clone();
+                root = root.child(div().id(sub(format!("group-{g}-fold"))).py(k(&m, 8.0))
+                    .set(roles::QUIET, &m).text_color(palette.peri.base.hsla()).child(label)
+                    .on_click(move |_, _, cx| { if let Some(toggle) = &toggle { toggle(receiver, cx); } }));
             }
         }
         if !self.does.through.is_empty() {

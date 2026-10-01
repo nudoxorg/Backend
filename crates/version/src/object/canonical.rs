@@ -5,8 +5,8 @@
 
 use core::mem::{align_of, offset_of, size_of};
 
-use crate::{ContentIdDecodeError, Domain, FixedCanonicalRecord};
 use crate::schema::{SchemaId, UnknownSchemaId};
+use crate::{ContentIdDecodeError, Domain, FixedCanonicalRecord};
 use thiserror::Error;
 use zerocopy::{
     Immutable, IntoBytes, KnownLayout, TryFromBytes, Unalign, Unaligned,
@@ -157,10 +157,10 @@ impl FixedCanonicalRecord<OBJECT_DESCRIPTOR_RECORD_BYTES> for ObjectDescriptorWi
 
 #[cfg(test)]
 mod tests {
+    use crate::schema::SchemaId;
     use crate::{
         ContentHasher, ContentId, DependencySetDomain, FixedCanonicalRecord, ObjectDomain,
     };
-    use crate::schema::SchemaId;
     use thiserror::Error;
     use zerocopy::IntoBytes;
 

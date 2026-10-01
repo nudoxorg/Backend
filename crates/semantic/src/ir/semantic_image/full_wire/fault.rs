@@ -174,4 +174,6 @@ pub enum FullSemanticImageError {
     Core(#[from] super::super::fault::CoreSemanticImageFault),
     #[error(transparent)]
     Full(#[from] FullSemanticImageFault),
+    #[error("full semantic image proof does not name these exact backing bytes")]
+    ProofBackingMismatch,
 }

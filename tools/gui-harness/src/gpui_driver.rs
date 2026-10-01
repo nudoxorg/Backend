@@ -837,12 +837,15 @@ mod tests {
     // independent Rust tests from constructing two platforms concurrently;
     // capture journeys still exercise multiple windows and frames inside one
     // context where their lifecycle is deterministic.
-    static GPUI_HEADLESS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
+    //
+    // This has to be the crate-wide `platform_init_guard`, not a lock local
+    // to this module: `session::Session::open` constructs a platform the
+    // same way (through the same `gpui_platform::current_platform`), and a
+    // lock these two tests hold against each other but not against a
+    // concurrently running `session` test guards nothing — see
+    // `platform_init_guard`'s doc comment for the crash this produces.
     fn gpui_headless_guard() -> std::sync::MutexGuard<'static, ()> {
-        GPUI_HEADLESS_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        crate::platform_init_guard()
     }
 
     #[test]

@@ -350,7 +350,11 @@ pub(crate) fn occurrence(
     )?;
     Ok((
         LinkOccurrence {
-            link: crate::ir::LinkId::new(get_u32(bytes, offset, FullSemanticImageField::Occurrences)?),
+            link: crate::ir::LinkId::new(get_u32(
+                bytes,
+                offset,
+                FullSemanticImageField::Occurrences,
+            )?),
             confidence: confidence(bytes[offset + 4], row, FullSemanticImageField::Occurrences)?,
             source,
         },

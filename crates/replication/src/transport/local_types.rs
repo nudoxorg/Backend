@@ -86,6 +86,20 @@ pub enum LocalControlRequest {
     /// poll compatibility. New clients should use this variant so a daemon
     /// can retain the lease across replies and reconnects.
     Subscription(LocalSubscriptionRequest),
+    /// Canonical bounded semantic range request DTO bytes.
+    SemanticRangeGet {
+        /// Correlation identity.
+        request_id: u64,
+        /// Canonically encoded `SemanticRangeGet` payload.
+        payload: Box<[u8]>,
+    },
+    /// Canonical bounded semantic catalog or per-image manifest request bytes.
+    SemanticMetadataGet {
+        /// Correlation identity.
+        request_id: u64,
+        /// Canonically encoded catalog or manifest page request.
+        payload: Box<[u8]>,
+    },
 }
 
 impl LocalControlRequest {
@@ -95,7 +109,9 @@ impl LocalControlRequest {
         match self {
             Self::Replicate { request_id, .. }
             | Self::Complete { request_id, .. }
-            | Self::Subscribe { request_id, .. } => *request_id,
+            | Self::Subscribe { request_id, .. }
+            | Self::SemanticRangeGet { request_id, .. }
+            | Self::SemanticMetadataGet { request_id, .. } => *request_id,
             Self::Subscription(request) => request.request_id(),
         }
     }
@@ -265,6 +281,25 @@ pub enum LocalControlResponse {
     },
     /// A durable subscription lifecycle response.
     Subscription(LocalSubscriptionResponse),
+    /// One canonical bounded semantic-plane range chunk.
+    SemanticRangeChunk {
+        /// Correlation identity.
+        request_id: u64,
+        /// Canonically encoded `SemanticRangeChunk` payload.
+        payload: Box<[u8]>,
+    },
+    /// One canonical bounded semantic catalog or manifest page.
+    SemanticMetadataChunk {
+        /// Correlation identity copied from the request.
+        request_id: u64,
+        /// Canonically encoded metadata chunk.
+        payload: Box<[u8]>,
+    },
+    /// The exact selected generation changed before the requested bytes were exposed.
+    SemanticStaleSelection {
+        /// Correlation identity copied from the request.
+        request_id: u64,
+    },
 }
 
 impl LocalControlResponse {
@@ -277,6 +312,9 @@ impl LocalControlResponse {
             | Self::Queued { request_id, .. }
             | Self::Rejected { request_id, .. } => *request_id,
             Self::Subscription(response) => response.request_id(),
+            Self::SemanticRangeChunk { request_id, .. }
+            | Self::SemanticMetadataChunk { request_id, .. }
+            | Self::SemanticStaleSelection { request_id } => *request_id,
         }
     }
 }

@@ -2,7 +2,7 @@ use super::ids::{AtomListId, DocId, EntityListId, ExternalId, ItemKind, LinkId};
 use super::tree::TreeLinkTarget;
 use super::type_model::Visibility;
 use crate::ir::{
-    AtomId, DeclarationFamilyId, DeclarationIdentity, DenseId, EntityId,
+    AtomId, AtomInterner, DeclarationFamilyId, DeclarationIdentity, DenseId, EntityId,
     ExternalDeclarationIdentity, ExternalEntityRef, StableRef, TextId, TypeId, VariantFingerprint,
 };
 use backend_version::ContentId;
@@ -314,22 +314,36 @@ pub(super) struct LinkKey {
 
 /// Selects the deterministic compatibility evidence stored beside one
 /// canonical relation. Captured sites outrank an uncaptured representative;
-/// equal-confidence captured sites sort by `(file, start, end)`. The complete
-/// site set is deliberately held in [`LinkOccurrence`], never inferred here.
-pub(super) fn canonical_relation_evidence_precedes(candidate: Link, known: Link) -> bool {
+/// equal-confidence captured sites sort by `(path bytes, start, end)`. The
+/// complete site set is deliberately held in [`LinkOccurrence`], never
+/// inferred here.
+pub(super) fn canonical_relation_evidence_precedes(
+    candidate: Link,
+    known: Link,
+    atoms: &AtomInterner,
+) -> bool {
     match candidate.confidence.cmp(&known.confidence) {
         core::cmp::Ordering::Greater => true,
         core::cmp::Ordering::Less => false,
         core::cmp::Ordering::Equal => {
-            source_evidence_key(candidate.source) < source_evidence_key(known.source)
+            source_evidence_key(candidate.source, atoms) < source_evidence_key(known.source, atoms)
         }
     }
 }
 
-pub(super) fn source_evidence_key(source: Option<SourceSpan>) -> (u8, u32, u32, u32) {
+pub(super) fn source_evidence_key<'atoms>(
+    source: Option<SourceSpan>,
+    atoms: &'atoms AtomInterner,
+) -> (u8, &'atoms [u8], u32, u32) {
     match source {
-        // A captured coordinate is more specific than universal absence.
-        Some(span) => (0, span.file().raw, span.start(), span.end()),
-        None => (1, u32::MAX, u32::MAX, u32::MAX),
+        // Compare path bytes rather than image-local atom coordinates so the
+        // representative survives interning and authority emission reorder.
+        Some(span) => (
+            0,
+            atoms.get(span.file()).unwrap_or(&[]),
+            span.start(),
+            span.end(),
+        ),
+        None => (1, &[], u32::MAX, u32::MAX),
     }
 }

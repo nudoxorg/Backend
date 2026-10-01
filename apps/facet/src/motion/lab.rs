@@ -27,10 +27,12 @@ use super::{LINEAR, Motion, Spec, offset};
 use crate::fonts::Typeset;
 use crate::gallery::Scene;
 use crate::icons::Kind;
-use crate::measure::{Measure, Room, Set, Space};
+use crate::fluid::Modes;
+use crate::measure::{Measure, Set, Space};
 use crate::paint::{Bevel, Chamfer, cut, gem};
 use crate::probe;
 use crate::theme::{ActiveFacet, Facet, set_facet};
+use crate::tokens::fluid::{LAB_CARDS, NOTES as MARGIN_MODE, Notes};
 use crate::tokens::{Palette, ty};
 use crate::Density;
 use gpui::{
@@ -353,9 +355,9 @@ const NOTES: [&str; 3] = [
 /// A page laid out for `measure`: a title, a grid of cards (columns from the
 /// room), and a margin column that folds under the grid below `Wide`. Every
 /// card and note is a flow item.
-fn page(flow: &Flow, measure: &Measure, facet: &Facet) -> AnyElement {
+fn page(flow: &Flow, modes: &Modes, measure: &Measure, facet: &Facet) -> AnyElement {
     let palette = facet.palette();
-    let wide = measure.room() >= Room::Wide;
+    let wide = modes.settle(&MARGIN_MODE, measure.fluid_room()).mode == Notes::Beside;
     let margin_width = px(250.0 * facet.text_scale);
     let gap = measure.space(Space::Base);
     let grid_measure = if wide {
@@ -363,7 +365,8 @@ fn page(flow: &Flow, measure: &Measure, facet: &Facet) -> AnyElement {
     } else {
         *measure
     };
-    let (count, column) = grid_measure.columns(220.0, Space::Base, 4);
+    let columns = modes.columns(&LAB_CARDS, grid_measure.fluid_room(), gap);
+    let (count, column) = (columns.count, grid_measure.within(columns.column.width()));
     let card = |index: usize| {
         flow.item(
             ElementId::Name(format!("card-{index}").into()),
@@ -453,6 +456,7 @@ fn page(flow: &Flow, measure: &Measure, facet: &Facet) -> AnyElement {
 struct ReflowLab {
     motion: Motion,
     flow: Flow,
+    modes: Modes,
     width: f32,
     step: u32,
     drag: bool,
@@ -484,6 +488,7 @@ impl ReflowLab {
         Self {
             motion: Motion::new(),
             flow: Flow::new("flow-reflow"),
+            modes: Modes::new(),
             width: 1440.0,
             step: 0,
             drag: false,
@@ -510,8 +515,9 @@ impl Render for ReflowLab {
         };
         let measure = Measure::new(px(width), &facet);
         // Steps are discrete (a shelf collapsing): epochs. The drag is not;
-        // only the room class it crosses is.
-        self.flow.epoch((self.step, measure.room()));
+        // only the modes it crosses are.
+        let margin = self.modes.settle(&MARGIN_MODE, measure.fluid_room());
+        self.flow.epoch((self.step, margin.epoch));
         div()
             .size_full()
             .bg(facet.palette().g1)
@@ -522,12 +528,13 @@ impl Render for ReflowLab {
                 "reflow \u{b7} 1440 \u{2192} 1100 \u{2192} 760 \u{2192} 480 (epochs), then a drag",
                 &facet,
             ))
-            .child(page(&self.flow, &measure, &facet))
+            .child(page(&self.flow, &self.modes, &measure, &facet))
     }
 }
 
 struct ScaleLab {
     flow: Flow,
+    modes: Modes,
 }
 
 impl ScaleLab {
@@ -549,6 +556,7 @@ impl ScaleLab {
         );
         Self {
             flow: Flow::new("flow-scale"),
+            modes: Modes::new(),
         }
     }
 }
@@ -557,7 +565,8 @@ impl Render for ScaleLab {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let facet = cx.facet();
         let measure = Measure::new(px(940.0), &facet);
-        self.flow.epoch((facet.text_scale.to_bits(), facet.density, measure.room()));
+        let margin = self.modes.settle(&MARGIN_MODE, measure.fluid_room());
+        self.flow.epoch((facet.text_scale.to_bits(), facet.density, margin.epoch));
         div()
             .size_full()
             .bg(facet.palette().g1)
@@ -568,7 +577,7 @@ impl Render for ScaleLab {
                 "text scale 100 \u{2192} 150 %, density comfortable \u{2192} compact \u{2192} dense",
                 &facet,
             ))
-            .child(page(&self.flow, &measure, &facet))
+            .child(page(&self.flow, &self.modes, &measure, &facet))
     }
 }
 

@@ -11,9 +11,9 @@ use crate::acquisition::RawArchiveObjectId;
 use crate::journal::{JournalCodec, JournalDomain, JournalError};
 use backend_advisory::AdvisoryPackageDto;
 use backend_library::{
-    MAX_REGISTRY_FORGE_ASSOCIATION_BYTES,
-    MAX_REGISTRY_FORGE_ASSOCIATIONS, MAX_REGISTRY_NATIVE_METADATA_BYTES, RegistryNativeMetadata,
-    PackageReference, RegistryForgeAssociation,
+    MAX_REGISTRY_FORGE_ASSOCIATION_BYTES, MAX_REGISTRY_FORGE_ASSOCIATIONS,
+    MAX_REGISTRY_NATIVE_METADATA_BYTES, PackageReference, RegistryForgeAssociation,
+    RegistryNativeMetadata,
 };
 
 pub(crate) enum RegistryLog {}
@@ -67,9 +67,11 @@ impl JournalCodec for RegistryLog {
                 associations,
                 facts_root,
             } => {
-                debug_assert!(associations
-                    .windows(2)
-                    .all(|pair| pair[0].facts_version < pair[1].facts_version));
+                debug_assert!(
+                    associations
+                        .windows(2)
+                        .all(|pair| pair[0].facts_version < pair[1].facts_version)
+                );
                 out.push(4);
                 put_text(out, coordinate.as_str());
                 out.extend_from_slice(facts_root);
@@ -138,10 +140,9 @@ impl RegistryLog {
                     if length > MAX_REGISTRY_FORGE_ASSOCIATION_BYTES {
                         return Err(AcquisitionError::Bounds);
                     }
-                    let association = RegistryForgeAssociation::decode_canonical(
-                        take(bytes, &mut at, length)?,
-                    )
-                    .map_err(|_| AcquisitionError::CorruptJournal)?;
+                    let association =
+                        RegistryForgeAssociation::decode_canonical(take(bytes, &mut at, length)?)
+                            .map_err(|_| AcquisitionError::CorruptJournal)?;
                     if association.admit_for_registry(&registry).is_err() {
                         return Err(AcquisitionError::CorruptJournal);
                     }
@@ -227,6 +228,26 @@ fn put_package(out: &mut Vec<u8>, value: &PublishedPackage) {
         out.extend_from_slice(id);
     }
 }
+
+/// Digests the exact normalized package metadata record persisted by the owner.
+/// The provenance token remains a field within this canonical encoding, while
+/// the digest also covers the release facts, native metadata, advisory result,
+/// dependency facts, raw object identity, and declared extent selected beside
+/// it.
+pub(super) fn metadata_evidence_digest(value: &PublishedPackage) -> [u8; 32] {
+    let mut encoded = Vec::new();
+    put_package(&mut encoded, value);
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.registry.metadata-evidence.v1\0");
+    hasher.update(
+        &u64::try_from(encoded.len())
+            .unwrap_or(u64::MAX)
+            .to_be_bytes(),
+    );
+    hasher.update(&encoded);
+    *hasher.finalize().as_bytes()
+}
+
 fn read_package(bytes: &[u8], at: &mut usize) -> Result<PublishedPackage, AcquisitionError> {
     let ecosystem = RegistryEcosystem::try_from(take_byte(bytes, at)?)
         .map_err(|_| AcquisitionError::CorruptJournal)?;
@@ -265,8 +286,8 @@ fn read_package(bytes: &[u8], at: &mut usize) -> Result<PublishedPackage, Acquis
         .map_err(|_| AcquisitionError::CorruptJournal)?;
     let coordinate = coordinate_from_registry_parts(ecosystem, name.as_str(), version.as_str())?;
     let registry = admit_registry_coordinate(&coordinate)?;
-    let forge_count = usize::try_from(read_u32(bytes, at)?)
-        .map_err(|_| AcquisitionError::Bounds)?;
+    let forge_count =
+        usize::try_from(read_u32(bytes, at)?).map_err(|_| AcquisitionError::Bounds)?;
     if forge_count > MAX_REGISTRY_FORGE_ASSOCIATIONS {
         return Err(AcquisitionError::Bounds);
     }

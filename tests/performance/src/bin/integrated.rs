@@ -1677,6 +1677,55 @@ fn build_view(class: &CorpusClass) -> BenchResult<(ViewRoot, CoverageCapability)
     Ok((view, capability))
 }
 
+fn build_view_document_state(view: &ViewRoot) -> BenchResult<DocumentState> {
+    let coverage = authorized_coverage(&[7; 32]);
+    let mut documents = view
+        .row_refs()
+        .map(|row| {
+            let source = Source::new(0x4e_u128, row.id.stable_key())?;
+            let id = entity_key(&Entity::new(source, "catalog-row", None)?);
+            let mut body = row.label.clone();
+            for fragment in row.document.iter() {
+                match fragment {
+                    Fragment::Text(text) | Fragment::Code(text) => {
+                        body.push('\n');
+                        body.push_str(text);
+                    }
+                    Fragment::Link { label, .. } => {
+                        body.push('\n');
+                        body.push_str(label);
+                    }
+                    Fragment::Break => body.push('\n'),
+                }
+            }
+            let mut fields = vec![
+                ("body".to_owned(), body),
+                ("name".to_owned(), row.label.clone()),
+            ];
+            if let Some(signature) = &row.signature {
+                fields.push(("signature".to_owned(), signature.clone()));
+            }
+            Ok((id, fields))
+        })
+        .collect::<BenchResult<Vec<_>>>()?;
+    documents.sort_by_key(|(id, _)| *id);
+    let relation =
+        RelationState::<IndexRelation>::from_entries(documents.iter().cloned(), coverage)?;
+    let binding = Binding::new(
+        workspace_root(),
+        relation.root(),
+        Recipe::from_value(&[3; 32]),
+        Authority::from_value(&[4; 32]),
+        ReadManifest::from_value(b"bench-catalog-view"),
+    );
+    Ok(DocumentState::new(
+        binding,
+        coverage,
+        documents,
+        benchmark_tantivy_limits(),
+    )?)
+}
+
 #[path = "integrated/lifecycle.rs"]
 mod lifecycle;
 
@@ -1703,6 +1752,12 @@ fn run_concurrent_projection(
     next_view: &ViewRoot,
     size_class: &str,
 ) -> BenchResult<CatalogMeasurement> {
+    let search_state = build_view_document_state(view)?;
+    let search_source = Arc::new(TantivySource::build(
+        &search_state,
+        benchmark_tantivy_limits(),
+    )?);
+    let search_query = LexQuery::new(vec!["polyglot".to_owned()], benchmark_tantivy_limits())?;
     let database_path = path.join(backend_extension_turso::FILE_NAME);
     let mut initial = futures_executor::block_on(TursoProjection::open(&database_path))?;
     futures_executor::block_on(initial.synchronize(view))?;
@@ -1718,6 +1773,8 @@ fn run_concurrent_projection(
         let path = database_path.clone();
         let view = view.clone();
         let next_view = next_view.clone();
+        let search_source = Arc::clone(&search_source);
+        let search_query = search_query.clone();
         handles.push(thread::spawn(move || {
             let result: BenchResult<(u128, usize, bool)> = (|| {
                 let mut projection = futures_executor::block_on(TursoProjection::open(&path))?;
@@ -1727,10 +1784,13 @@ fn run_concurrent_projection(
                 }
                 barrier.wait();
                 let started = Instant::now();
-                let rows = futures_executor::block_on(projection.search("polyglot", 64))?;
-                let root_ok = rows.root.as_ref() == view.root().as_bytes()
-                    || rows.root.as_ref() == next_view.root().as_bytes();
-                Ok((started.elapsed().as_nanos(), rows.ids.len(), root_ok))
+                let hits = search_source.search(&search_query)?;
+                let projected =
+                    futures_executor::block_on(projection.lookup_label("polyglot@0.1.0", 64))?;
+                let root_ok = (projected.root.as_slice() == view.root().as_bytes().as_slice()
+                    || projected.root.as_slice() == next_view.root().as_bytes().as_slice())
+                    && !projected.ids.is_empty();
+                Ok((started.elapsed().as_nanos(), hits.len(), root_ok))
             })();
             let _ = sender.send(result.map_err(|error| error.to_string()));
         }));
@@ -1989,8 +2049,14 @@ fn run_catalog(class: &CorpusClass, profile: Profile) -> BenchResult<Vec<Catalog
         },
     });
 
+    let search_state = build_view_document_state(&next_view)?;
+    let search_source = TantivySource::build(&search_state, benchmark_tantivy_limits())?;
+    let search_query = LexQuery::new(vec!["polyglot".to_owned()], benchmark_tantivy_limits())?;
     let search_started = Instant::now();
-    let rows = futures_executor::block_on(restarted.search("polyglot", 16))?;
+    let hits = search_source.search(&search_query)?;
+    let projected = futures_executor::block_on(restarted.lookup_label("polyglot@0.1.0", 16))?;
+    let projected_root_matches =
+        projected.root.as_slice() == next_view.root().as_bytes().as_slice();
     measurements.push(CatalogMeasurement {
         schema: JSON_SCHEMA,
         status: "ok",
@@ -1998,13 +2064,16 @@ fn run_catalog(class: &CorpusClass, profile: Profile) -> BenchResult<Vec<Catalog
         operation: "catalog_search_read".to_owned(),
         phase: "warm".to_owned(),
         wall: stats(&mut vec![search_started.elapsed().as_nanos()]),
-        rows: rows.ids.len(),
+        rows: hits.len(),
         database_bytes: database_pack_bytes(&path).0,
         pack_bytes: database_pack_bytes(&path).1,
         output_root: root_hex(next_view.root().as_bytes()),
         correctness: Correctness {
-            passed: !rows.ids.is_empty(),
-            assertions: vec!["catalog search returned real projected rows".to_owned()],
+            passed: !hits.is_empty() && !projected.ids.is_empty() && projected_root_matches,
+            assertions: vec![
+                "Tantivy lexical search returned rows from the advanced view state".to_owned(),
+                "root-fenced Turso label lookup matched the restarted projection".to_owned(),
+            ],
         },
     });
 
@@ -2034,11 +2103,11 @@ fn run_catalog(class: &CorpusClass, profile: Profile) -> BenchResult<Vec<Catalog
         })?;
     let graph_facts = vec![
         (
-            dependency_source.clone(),
+            backend_library::PackageGraphSourceKey::unattributed(dependency_source.clone()),
             DependencyFacts::Known(vec![dependency_edge.clone()].into_boxed_slice()),
         ),
         (
-            unavailable_source.clone(),
+            backend_library::PackageGraphSourceKey::unattributed(unavailable_source.clone()),
             DependencyFacts::Unavailable(
                 ProductText::new("registry fixture unavailable").map_err(|error| {
                     std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{error:?}"))

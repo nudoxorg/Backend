@@ -271,12 +271,13 @@ fn the_executor_timer_publishes_the_original_exit_segment_terminal_before_cullin
             cx,
         )
     });
-    advance(cx, 200);
+    // Fully open (every card unfurls: 320 ms in, 300 ms out).
+    advance(cx, 400);
     draw(cx);
     cx.update(|window, cx| {
         super::close_all(window, cx);
     });
-    advance(cx, 149);
+    advance(cx, 299);
     draw(cx);
     let before = cx
         .update(|_, cx| crate::probe::take(cx))
@@ -304,4 +305,58 @@ fn the_executor_timer_publishes_the_original_exit_segment_terminal_before_cullin
         (before.started_ms, before.budget_ms)
     );
     assert!(terminal.at_ms >= terminal.started_ms + terminal.budget_ms);
+}
+
+/// A word that opens a card under a DIFFERENT key than its own id (every
+/// page reader's doors do: the word is `…-hover`, the card `peek:…`): the
+/// pointer leaving the word must still close the card, and the word moving
+/// must move it. The layer matches leave, re-anchor and unmount by the
+/// card's key, so a trigger reports under it.
+struct Door;
+
+impl Render for Door {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::hover::{Subject, hoverable};
+        use crate::theme::ActiveFacet as _;
+        let hue = cx.palette().peri.base.hsla();
+        div()
+            .size_full()
+            .child(
+                div().absolute().left(px(100.0)).top(px(100.0)).child(
+                    hoverable("word-hover", Subject::new("present::Word"), hue, |_| {
+                        div().w(px(60.0)).h(px(20.0)).into_any_element()
+                    })
+                    .peek(|bounds| {
+                        FloatRequest::new("peek:word", bounds, FloatKind::Peek, |_, _, _| {
+                            div().w(px(220.0)).h(px(80.0)).into_any_element()
+                        })
+                    }),
+                ),
+            )
+            .child(super::layer(window, cx))
+    }
+}
+
+#[gpui::test]
+fn a_card_opened_by_a_word_with_another_key_closes_when_the_pointer_leaves_the_word(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx);
+    });
+    let (_view, cx) = cx.add_window_view(|_, _| Door);
+    cx.simulate_resize(size(px(900.0), px(700.0)));
+    draw(cx);
+    let card = || -> gpui::ElementId { "peek:word".into() };
+    cx.simulate_mouse_move(point(px(120.0), px(110.0)), None, gpui::Modifiers::none());
+    advance(cx, 400);
+    assert!(cx.update(|window, cx| super::is_open(&card(), window, cx)), "a rest on the word opens its card");
+    cx.simulate_mouse_move(point(px(800.0), px(600.0)), None, gpui::Modifiers::none());
+    advance(cx, 500);
+    draw(cx);
+    assert!(
+        !cx.update(|window, cx| super::is_open(&card(), window, cx)),
+        "the pointer left the word and nothing else holds the card: it closes"
+    );
 }

@@ -3,8 +3,8 @@
 use super::{
     Arc, BTreeSet, BoundedFileImage, CasGcBudget, InputCas, MAX_GC_BYTES_PER_CALL,
     MAX_GC_FILES_PER_CALL, MAX_RETAINED_OBJECTS, MAX_RETAINED_SIDECAR_BYTES, MAX_RETAINED_SIDECARS,
-    ObjectVersion, OpenOptions, Path, ReplicationError, Schema, WireIdentity, Write, decode_hex,
-    digest_file, fs, hex, is_object_name,
+    ObjectVersion, OpenOptions, Path, ReplicationError, Schema, WireIdentity, Write,
+    checked_regular_metadata, decode_hex, fs, hex, is_object_name,
 };
 
 /// Result of one bounded input-CAS mark and sweep.
@@ -173,15 +173,15 @@ impl<T: Schema> InputCas<T> {
             .take(MAX_GC_FILES_PER_CALL)
         {
             let entry = entry.map_err(|_| ReplicationError::Disconnected)?;
-            let metadata = entry
-                .metadata()
-                .map_err(|_| ReplicationError::Disconnected)?;
             let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
                 continue;
             };
-            if !metadata.is_file() || is_object_name(&name) {
+            if is_object_name(&name) {
                 continue;
             }
+            let Some(metadata) = checked_regular_metadata(&entry.path())? else {
+                continue;
+            };
             count = count.checked_add(1).ok_or(ReplicationError::Overflow)?;
             bytes = bytes
                 .checked_add(metadata.len())
@@ -274,6 +274,7 @@ impl<T: Schema> InputCas<T> {
             let active_transfer_part = self
                 .active
                 .keys()
+                .chain(self.partial.keys())
                 .any(|transfer| name == format!(".{:016x}.part", transfer.get()));
             let remove = if let Some(digest) = name.strip_prefix(".proof-") {
                 decode_hex(digest).is_none_or(|digest| {
@@ -321,10 +322,8 @@ impl<T: Schema> InputCas<T> {
             if !remove {
                 continue;
             }
-            let metadata = entry
-                .metadata()
-                .map_err(|_| ReplicationError::Disconnected)?;
-            if metadata.is_file() {
+            let metadata = checked_regular_metadata(&entry.path())?;
+            if let Some(metadata) = metadata {
                 if !budget.take(metadata.len()) {
                     break;
                 }
@@ -384,9 +383,7 @@ impl<T: Schema> InputCas<T> {
         };
         let temporary = directory.join(format!(".proof-{}.part", hex(digest)));
         let target = directory.join(format!(".proof-{}", hex(digest)));
-        if target.is_file() {
-            let existing = BoundedFileImage::read_optional(&target, 64 * 1024)?
-                .ok_or(ReplicationError::Disconnected)?;
+        if let Some(existing) = BoundedFileImage::read_optional(&target, 64 * 1024)? {
             if existing.as_slice() != proof {
                 return Err(ReplicationError::CorruptFrame);
             }
@@ -441,23 +438,7 @@ impl<T: Schema> InputCas<T> {
         if claim.context() != backend_engine::IdContext::schema::<T>() {
             return false;
         }
-        if self
-            .sink
-            .committed
-            .keys()
-            .any(|version| version.as_bytes() == &claim.as_bytes())
-        {
-            return true;
-        }
-        self.sink.root.as_ref().is_some_and(|root| {
-            let path = root.join(hex(claim.as_bytes()));
-            let Ok(metadata) = fs::metadata(&path) else {
-                return false;
-            };
-            metadata.is_file()
-                && digest_file::<T>(&path, metadata.len())
-                    .is_ok_and(|digest| digest == claim.as_bytes())
-        })
+        self.sink.contains_wire_claim(claim.as_bytes())
     }
 
     /// Looks up a wire claim only after recomputing its typed version digest
@@ -476,9 +457,6 @@ impl<T: Schema> InputCas<T> {
             return Ok(None);
         };
         let path = root.join(hex(claim.as_bytes()));
-        if !path.is_file() {
-            return Ok(None);
-        }
         let maximum = usize::try_from(self.limits.max_object)
             .map_err(|_| ReplicationError::MessageTooLarge)?;
         let Some(bytes) = BoundedFileImage::read_optional(&path, maximum)? else {

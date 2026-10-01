@@ -128,9 +128,13 @@ impl<'fragment> FragmentView<'fragment> {
     /// payload grammar or shared references.
     pub(crate) fn validated_extension_pools(
         &self,
-    ) -> Option<Result<crate::ir::ReopenedExtensionPools<'fragment>, crate::ir::ExtensionPoolFault>> {
+    ) -> Option<Result<crate::ir::ReopenedExtensionPools<'fragment>, crate::ir::ExtensionPoolFault>>
+    {
         self.extension_pool_lane.map(|payload| {
-            crate::ir::extension_pools::reopen_validated_extension_pools(self.layout.schema, payload)
+            crate::ir::extension_pools::reopen_validated_extension_pools(
+                self.layout.schema,
+                payload,
+            )
         })
     }
 
@@ -381,8 +385,12 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
                         .count,
                 );
                 let payload = &envelope[entry.lane.range()];
-                crate::ir::semantic_facts::validate_occurrence_payload(payload, entity_count, schema)
-                    .map_err(|fault| FragmentError::Occurrences {
+                crate::ir::semantic_facts::validate_occurrence_payload(
+                    payload,
+                    entity_count,
+                    schema,
+                )
+                .map_err(|fault| FragmentError::Occurrences {
                     fault: crate::ir::semantic_facts::occurrence_view_fault(fault),
                 })?;
                 occurrences = Some(entry.lane);

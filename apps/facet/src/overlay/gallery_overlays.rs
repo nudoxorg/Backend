@@ -282,6 +282,7 @@ fn remove_dialog() -> Dialog {
             DialogButton::new("Remove", |_, _| {}).primary().danger(),
         ],
         dismissible: true,
+        sheet: None,
     }
 }
 

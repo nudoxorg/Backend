@@ -3,7 +3,7 @@
 use super::cargo::{CargoDependency, CargoMetadata, CargoPackage};
 use super::{
     CargoFailure, DependencyKind, LocalPackage, LocalPackageLoader, LocalPackageSource,
-    ReadmeBlock, origin_url, readme,
+    ReadmeBlock, active_project, origin_url, readme,
 };
 use crate::core::LocalProjectId;
 use std::collections::BTreeMap;
@@ -244,6 +244,25 @@ fn manifest_fallback_reads_members_tables_features_and_inheritance() -> Outcome 
 }
 
 #[test]
+fn workspace_membership_names_the_root_and_its_glob_members_only() -> Outcome {
+    // The same fixture `manifest_fallback_...` proves against: a root plus
+    // two glob-matched members (crates/alpha, nested/deep/beta), one
+    // excluded member (crates/ignored), and a build-output directory that
+    // matches no member pattern at all.
+    let scratch = workspace_fixture("membership")?;
+    let active = active_project(&scratch.0);
+    let names: std::collections::BTreeSet<&str> = active.members.iter().map(AsRef::as_ref).collect();
+    assert_eq!(
+        names,
+        std::collections::BTreeSet::from(["fixture-root", "alpha", "beta"]),
+        "excluded and unmatched directories must never count as workspace members"
+    );
+    assert_eq!(active.name.as_deref(), Some("fixture-root"));
+    assert_eq!(active.license.as_deref(), Some("MIT OR Apache-2.0"));
+    Ok(())
+}
+
+#[test]
 fn a_missing_cargo_program_falls_back_to_the_manifest_reader() -> Outcome {
     let scratch = workspace_fixture("no-cargo")?;
     let loader = LocalPackageLoader::default().with_cargo(scratch.0.join("no-such-cargo-binary"));
@@ -453,6 +472,147 @@ fn readme_projection_ignores_manifest_package_facts() -> Outcome {
         readme_ns[readme_ns.len() / 2]
     );
     Ok(())
+}
+
+/// `RegistryPackageRecord`, the DTO behind every "package" surface reply,
+/// has no description or license field (registry or synthesized local
+/// record alike), so a page whose record comes from the canonical graph
+/// alone renders both as unknown forever. `readme` is the projection every
+/// package with a matching canonical record falls back to
+/// (`compose_package`'s `engine_record` branch), so it must recover these
+/// two fields itself even though it still leaves name, version and
+/// dependencies to the canonical graph. This is the toml package-page bug:
+/// its own `Cargo.toml` states both, and they were rendered as unknown.
+#[test]
+fn readme_projection_still_recovers_description_and_license() -> Outcome {
+    let scratch = Scratch::new("readme-description-license")?;
+    scratch.write(
+        "Cargo.toml",
+        "[package]\nname = \"toml\"\nversion = \"0.8.23\"\ndescription = \"A native Rust encoder and decoder of TOML-formatted files and streams.\"\nlicense = \"MIT OR Apache-2.0\"\n",
+    )?;
+    scratch.write("README.md", "# toml\n\nParse and serialize TOML.\n")?;
+    let project = scratch.project()?;
+    let package = LocalPackageLoader::without_cargo()
+        .readme(&project)
+        .expect("readme");
+    assert_eq!(package.source, LocalPackageSource::Readme);
+    // Name and version stay the canonical graph's job even here.
+    assert!(package.name.as_ref() != "toml");
+    assert!(package.version.is_none());
+    assert_eq!(
+        package.description.as_deref(),
+        Some("A native Rust encoder and decoder of TOML-formatted files and streams.")
+    );
+    assert_eq!(package.license.as_deref(), Some("MIT OR Apache-2.0"));
+    Ok(())
+}
+
+/// A missing `README.md` must not discard the manifest facts `readme()`
+/// already read while looking for one to project. This was `present`'s real
+/// bug: the crate has no README file at all, yet its `Cargo.toml` states
+/// `license.workspace = true`. The projector's own emptiness check tested
+/// the *readme* text and threw the whole `LocalPackage` away on `None`,
+/// license included, before `with_local_facts` ever saw it — so the hero
+/// kept showing "license: none" even after the ancestor-walk fix, because
+/// this function never got that far.
+#[test]
+fn readme_projection_survives_a_missing_readme_file() -> Outcome {
+    let scratch = Scratch::new("readme-missing-file")?;
+    scratch.write(
+        "Cargo.toml",
+        "[package]\nname = \"present\"\nversion = \"0.1.0\"\nlicense = \"MIT OR Apache-2.0\"\n",
+    )?;
+    // Deliberately no README.md.
+    let project = scratch.project()?;
+    let package = LocalPackageLoader::without_cargo()
+        .readme(&project)
+        .expect("a manifest license is still a fact to report, even with no README file");
+    assert!(package.readme.is_empty());
+    assert_eq!(package.license.as_deref(), Some("MIT OR Apache-2.0"));
+    Ok(())
+}
+
+/// The genuine empty case is unchanged: no README, and a manifest with
+/// neither description nor license, leaves nothing for this reader to
+/// contribute, and it still says so with `None` rather than a hollow value.
+#[test]
+fn readme_projection_still_reports_nothing_when_there_is_nothing() -> Outcome {
+    let scratch = Scratch::new("readme-truly-empty")?;
+    scratch.write("Cargo.toml", "[package]\nname = \"bare\"\nversion = \"0.1.0\"\n")?;
+    let project = scratch.project()?;
+    assert!(LocalPackageLoader::without_cargo().readme(&project).is_none());
+    Ok(())
+}
+
+/// The ordinary cargo layout: the workspace root and a member crate are
+/// *different files*. `backend-present`'s own real manifest is exactly
+/// this shape (`license.workspace = true`, no `[workspace]` table of its
+/// own) — the first real capture of the wired hero showed its license as
+/// unknown because `package_facts` only followed `.workspace = true` into
+/// the *same* file's `[workspace.package]`, never an ancestor's.
+#[test]
+fn workspace_inheritance_is_followed_up_to_the_ancestor_root_not_only_the_same_file() -> Outcome {
+    let scratch = Scratch::new("ancestor-inheritance")?;
+    scratch.write(
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"member\"]\n\n[workspace.package]\nversion = \"0.4.2\"\nlicense = \"MIT OR Apache-2.0\"\n",
+    )?;
+    scratch.write(
+        "member/Cargo.toml",
+        "[package]\nname = \"member\"\nversion.workspace = true\nlicense.workspace = true\ndescription = \"Not inherited: its own line.\"\n",
+    )?;
+    scratch.write("member/src/lib.rs", "pub fn member() {}\n")?;
+    let member_root = scratch.0.join("member");
+    let active = active_project(&member_root);
+    assert_eq!(active.name.as_deref(), Some("member"));
+    assert_eq!(
+        active.license.as_deref(),
+        Some("MIT OR Apache-2.0"),
+        "license.workspace = true must resolve through the ancestor root's [workspace.package], not just the member's own file"
+    );
+    // A literal field in the member's own file still wins outright.
+    let member_project = LocalProjectId::from_path(&member_root).map_err(text)?;
+    let package = LocalPackageLoader::without_cargo()
+        .load(&member_project);
+    assert_eq!(package.version.as_deref(), Some("0.4.2"));
+    assert_eq!(package.description.as_deref(), Some("Not inherited: its own line."));
+    Ok(())
+}
+
+#[test]
+fn the_real_present_crate_readme_and_load_both_resolve_the_inherited_license() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/present");
+    let root = root.canonicalize().expect("crates/present exists");
+    let project = LocalProjectId::from_path(&root).expect("project id");
+    let loader = LocalPackageLoader::without_cargo();
+    let via_readme = loader.readme(&project).expect("readme");
+    assert_eq!(
+        via_readme.license.as_deref(),
+        Some("MIT OR Apache-2.0"),
+        "readme() source={:?}",
+        via_readme.source
+    );
+    let via_load = loader.load(&project);
+    assert_eq!(
+        via_load.license.as_deref(),
+        Some("MIT OR Apache-2.0"),
+        "load() source={:?}",
+        via_load.source
+    );
+}
+
+#[test]
+fn the_real_present_crate_resolves_its_workspace_inherited_license() {
+    // Guards the exact real-world shape that exposed the ancestor-walk gap
+    // (the first real capture of the wired package hero): `crates/present`
+    // has no `[workspace]` table of its own and writes
+    // `license.workspace = true`; the license lives two directories up, in
+    // the repository root's `[workspace.package]`.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/present");
+    let root = root.canonicalize().expect("crates/present exists");
+    let active = active_project(&root);
+    assert_eq!(active.name.as_deref(), Some("backend-present"));
+    assert_eq!(active.license.as_deref(), Some("MIT OR Apache-2.0"));
 }
 
 #[test]

@@ -306,10 +306,8 @@ fn on_key(live: &Entity<Live>, event: &KeyDownEvent, window: &mut Window, cx: &m
                 cx.stop_propagation();
             }
         }
-        "escape" => {
-            if door::close(&mark, window, cx) {
-                cx.stop_propagation();
-            }
+        "escape" if door::close(&mark, window, cx) => {
+            cx.stop_propagation();
         }
         _ => {}
     }

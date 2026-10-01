@@ -20,6 +20,8 @@ required-features = ["visual-harness"]
 
 [dependencies]
 anyhow.workspace = true
+# Unpacks a registry archive from the local cargo cache (`host::registry`).
+flate2.workspace = true
 backend-client = { path = "../../crates/client" }
 # `release-fixture`: the upgrade lens's stand-in data until the index serves
 # release diffs (`runtime::fixture_releases`).
@@ -40,15 +42,25 @@ toml.workspace = true
 
 [features]
 # Direct GPUI CE capture against the same live host/bootstrap as the product.
-visual-harness = ["dep:backend-gui-harness", "dep:image", "gpui_component/headless", "backend-facet/gallery"]
+visual-harness = ["dep:backend-gui-harness", "dep:image", "dep:rustix", "gpui_component/headless", "backend-facet/gallery"]
 
 [dependencies.backend-gui-harness]
 path = "../../tools/gui-harness"
 optional = true
 
+[[bin]]
+name = "backend-desktop-folio-capture"
+path = "src/bin/backend-desktop-folio-capture.rs"
+required-features = ["visual-harness"]
+
 [[test]]
 name = "shell_capture"
 path = "tests/shell_capture.rs"
+
+# The capture harness owns private durable state, which the owner refuses unless
+# every directory is 0700: it sets a private umask (`harness::private_umask`).
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.4", default-features = false, features = ["fs", "process"], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui_platform = { workspace = true, features = ["font-kit", "runtime_shaders"] }
@@ -61,6 +73,8 @@ gpui_platform = { workspace = true, features = ["wgpu"] }
 
 [dev-dependencies]
 backend-gui-harness = { path = "../../tools/gui-harness" }
+# `write_state_from_another_build`: the host test of a workspace an earlier build wrote.
+backend-local-service = { path = "../../crates/local-service", features = ["test-support"] }
 blake3.workspace = true
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 proptest.workspace = true

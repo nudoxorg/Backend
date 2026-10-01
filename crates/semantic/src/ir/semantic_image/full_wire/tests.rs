@@ -12,15 +12,16 @@ use crate::ir::{
     DeclarationFamilyId, EntityAuthorityFacts, EntityId, EntityVersion, FactAvailability,
     FreePredicate, Ir, IrBuilder, ItemKind, LanguageExtensionInput, LanguageProfile,
     ParentageAuthority, RustEdition, RustFacts, RustOwnership, SemanticCoreReader,
-    SemanticImageAuthority, SemanticImageEncodeError, SemanticReader, TreeItemInput,
-    TypeExpr, TypeParameterBound, TypeScriptSource, VariantFingerprint, Visibility,
+    SemanticImageAuthority, SemanticImageEncodeError, SemanticReader, TreeItemInput, TypeExpr,
+    TypeParameterBound, TypeScriptSource, VariantFingerprint, Visibility,
 };
 
 use super::wire::{
     DIRECTORY_BYTES, FullDirectoryKind, HEADER_BYTES, RANGE_ROW_BYTES, SPARSE_BINDING_ROW_BYTES,
 };
 use super::{
-    FullSemanticImageFault, SemanticImageView, encode_full_semantic_image, full_semantic_image_len,
+    FullSemanticImageError, FullSemanticImageFault, SemanticImageProofOwner, SemanticImageView,
+    encode_full_semantic_image, full_semantic_image_len,
 };
 
 fn version(value: u8) -> EntityVersion {
@@ -86,6 +87,70 @@ fn encoded(ir: &Ir) -> Result<alloc::vec::Vec<u8>, crate::ir::BuildError> {
     let mut bytes = vec![0; length];
     encode_full_semantic_image(ir, &mut bytes).expect("full image writes");
     Ok(bytes)
+}
+
+#[test]
+fn an_admission_proof_fails_closed_for_a_different_backing_allocation() {
+    let image_a = encoded(&image(false).expect("first canonical IR builds"))
+        .expect("first canonical image encodes");
+    let image_b = encoded(&csharp_image().expect("second canonical IR builds"))
+        .expect("second canonical image encodes");
+    assert_ne!(image_a, image_b);
+
+    let admitted = SemanticImageView::reopen(&image_a).expect("first image admits");
+    let proof = admitted.proof();
+    assert!(matches!(
+        SemanticImageView::reopen_proven(&image_b, proof),
+        Err(FullSemanticImageError::ProofBackingMismatch)
+    ));
+}
+
+#[test]
+fn owned_proof_cache_only_admits_successful_validation() {
+    use crate::ir::{reset_semantic_image_validations, semantic_image_validations};
+
+    let valid = encoded(&image(false).expect("canonical IR builds"))
+        .expect("canonical image encodes")
+        .into_boxed_slice();
+    let owner = SemanticImageProofOwner::new(valid);
+    reset_semantic_image_validations();
+    assert!(owner.reopen().is_ok());
+    assert!(owner.reopen().is_ok());
+    assert_eq!(semantic_image_validations(), 1);
+
+    let invalid = SemanticImageProofOwner::new(Box::<[u8]>::default());
+    reset_semantic_image_validations();
+    assert!(invalid.reopen().is_err());
+    assert!(invalid.reopen().is_err());
+    assert_eq!(semantic_image_validations(), 2);
+}
+
+#[cfg(feature = "mmap")]
+#[test]
+fn mapped_semantic_image_reopens_the_canonical_reader_without_heap_copy() {
+    use crate::ir::{GenerationId, SemanticImageIdentity, load_semantic_image_mmap};
+    use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_FILE: AtomicU64 = AtomicU64::new(1);
+    let bytes =
+        encoded(&image(false).expect("canonical IR builds")).expect("canonical image encodes");
+    let identity = SemanticImageIdentity::from_encoded_bytes(&bytes);
+    let generation = GenerationId::from_canonical_bytes(&bytes);
+    let path = std::env::temp_dir().join(format!(
+        "backend-semantic-image-mmap-{}-{}.nxf",
+        std::process::id(),
+        NEXT_FILE.fetch_add(1, Ordering::Relaxed),
+    ));
+    fs::write(&path, &bytes).expect("write immutable image fixture");
+
+    let mapped = load_semantic_image_mmap(&path, identity, generation, bytes.len())
+        .expect("full image maps and validates");
+    assert_eq!(mapped.identity(), identity);
+    assert_eq!(mapped.generation(), generation);
+    assert_eq!(mapped.view().canonical_entities().len(), 2);
+    drop(mapped);
+    fs::remove_file(path).expect("remove image fixture");
 }
 
 fn csharp_image() -> Result<Ir, crate::ir::BuildError> {
@@ -378,7 +443,8 @@ fn full_image_rejects_noncanonical_extension_bindings_and_fact_pools()
 fn rust_free_predicate_image() -> Result<Ir, crate::ir::BuildError> {
     let mut builder = IrBuilder::new();
     builder.set_language_profile(LanguageProfile::Rust(RustEdition::Rust2024))?;
-    let subject = builder.intern_type(TypeExpr::Concrete(ConcreteType::Builtin(BuiltinType::I32)))?;
+    let subject =
+        builder.intern_type(TypeExpr::Concrete(ConcreteType::Builtin(BuiltinType::I32)))?;
     let bound_type =
         builder.intern_type(TypeExpr::Concrete(ConcreteType::Builtin(BuiltinType::Bool)))?;
     let bound_lifetime = builder.intern_atom(b"'scope")?;
@@ -386,8 +452,7 @@ fn rust_free_predicate_image() -> Result<Ir, crate::ir::BuildError> {
         TypeParameterBound::Type(bound_type),
         TypeParameterBound::Lifetime(bound_lifetime),
     ])?;
-    let free_predicates =
-        builder.intern_free_predicates(&[FreePredicate { subject, bounds }])?;
+    let free_predicates = builder.intern_free_predicates(&[FreePredicate { subject, bounds }])?;
     let facts = RustFacts {
         ownership: RustOwnership::SharedBorrow,
         lifetimes: builder.intern_attributes(&[])?,
@@ -507,7 +572,11 @@ fn grouped_decode_sweeps_ten_thousand_typed_rows_in_bounded_time()
         let name = builder.intern_atom(spelling.as_bytes())?;
         shared.push(crate::ir::TypeParameter {
             name,
-            bounds: if index % 2 == 0 { mixed_bounds } else { empty_bounds },
+            bounds: if index % 2 == 0 {
+                mixed_bounds
+            } else {
+                empty_bounds
+            },
             default: None,
             variance: crate::ir::Variance::Covariant,
             kind: TypeParameterKind::Type {
@@ -540,9 +609,8 @@ fn grouped_decode_sweeps_ten_thousand_typed_rows_in_bounded_time()
         let spelling = spellings[index].as_bytes();
         let parameter_spelling = alloc::format!("P{index}");
         let parameter = builder.intern_atom(parameter_spelling.as_bytes())?;
-        let parameter_type = builder.intern_type(TypeExpr::Concrete(ConcreteType::Parameter(
-            parameter,
-        )))?;
+        let parameter_type =
+            builder.intern_type(TypeExpr::Concrete(ConcreteType::Parameter(parameter)))?;
         let semantic_type = builder.intern_type(TypeExpr::Concrete(ConcreteType::CPointer {
             target: parameter_type,
         }))?;
@@ -595,7 +663,10 @@ fn grouped_decode_sweeps_ten_thousand_typed_rows_in_bounded_time()
         bytes.len(),
         elapsed.as_millis(),
     );
-    assert!(type_rows >= 9_000, "expected ~10k type rows, saw {type_rows}");
+    assert!(
+        type_rows >= 9_000,
+        "expected ~10k type rows, saw {type_rows}"
+    );
     assert_eq!(facts_rows, ENTITIES);
     assert_eq!(parameter_rows, ENTITIES * SHARED_PARAMETERS);
     // Debug-profile CI headroom; the decode itself is single-pass and the

@@ -1959,29 +1959,29 @@ impl<'a, 'source> Emitter<'a, 'source> {
                         )))
                     }
                 }
-            }
-            OccurrenceReceiver::InstanceAttribute { class, attribute } => {
-                self.instance_or_named_attribute_target(
+            },
+            OccurrenceReceiver::InstanceAttribute { class, attribute } => self
+                .instance_or_named_attribute_target(
                     occurrence,
                     checked,
                     match self.enclosing_class_index(occurrence, class) {
-                        Some(class_index) => self
-                            .field_annotation_class_name_for_class(class_index, attribute),
+                        Some(class_index) => {
+                            self.field_annotation_class_name_for_class(class_index, attribute)
+                        }
                         None => None,
                     },
-                )
-            }
-            OccurrenceReceiver::NamedAttribute { name, attribute } => {
-                self.instance_or_named_attribute_target(
+                ),
+            OccurrenceReceiver::NamedAttribute { name, attribute } => self
+                .instance_or_named_attribute_target(
                     occurrence,
                     checked,
                     match self.named_attribute_class_index(occurrence, name) {
-                        Some(class_index) => self
-                            .field_annotation_class_name_for_class(class_index, attribute),
+                        Some(class_index) => {
+                            self.field_annotation_class_name_for_class(class_index, attribute)
+                        }
                         None => None,
                     },
-                )
-            }
+                ),
             OccurrenceReceiver::ChainedAttribute { root, attributes } => {
                 let mut class_index = match root {
                     AttributeChainRoot::Enclosing { class } => {
@@ -1996,18 +1996,12 @@ impl<'a, 'source> Emitter<'a, 'source> {
                         let Some(class_name) =
                             self.field_annotation_class_name_for_class(class_index, attribute)
                         else {
-                            return self.instance_or_named_attribute_target(
-                                occurrence,
-                                checked,
-                                None,
-                            );
+                            return self
+                                .instance_or_named_attribute_target(occurrence, checked, None);
                         };
                         let Some(next_index) = self.unique_live_class_index(&class_name) else {
-                            return self.instance_or_named_attribute_target(
-                                occurrence,
-                                checked,
-                                None,
-                            );
+                            return self
+                                .instance_or_named_attribute_target(occurrence, checked, None);
                         };
                         class_index = next_index;
                     }
@@ -2087,10 +2081,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                             ))),
                             InheritedMemberLookup::Ambiguous | InheritedMemberLookup::Absent => {
                                 Ok(Some((
-                                    foreign_method(
-                                        self.slice(occurrence.span)?,
-                                        occurrence.span,
-                                    )?,
+                                    foreign_method(self.slice(occurrence.span)?, occurrence.span)?,
                                     OccurrenceConfidence::Index,
                                 )))
                             }
@@ -2650,7 +2641,6 @@ impl<'a, 'source> Emitter<'a, 'source> {
         }
     }
 
-
     /// binding's own `value_span` spelling.
     fn imported_module_spelling(
         &self,
@@ -3073,7 +3063,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 );
             }
         }
-        let (type_name, from_local) = match self.local_binding_name(function, receiver, occurrence) {
+        let (type_name, from_local) = match self.local_binding_name(function, receiver, occurrence)
+        {
             LocalBinding::Foreign => return foreign().map(Some),
             LocalBinding::Unique(name) => (name, true),
             LocalBinding::Absent => match receiver_annotation_name(function, receiver) {
@@ -3243,7 +3234,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 );
             }
         }
-        let (type_name, from_local) = match self.local_binding_name(function, receiver, occurrence) {
+        let (type_name, from_local) = match self.local_binding_name(function, receiver, occurrence)
+        {
             LocalBinding::Foreign => return foreign().map(Some),
             LocalBinding::Unique(name) => (name, true),
             LocalBinding::Absent => match receiver_annotation_name(function, receiver) {
@@ -3440,23 +3432,21 @@ impl<'a, 'source> Emitter<'a, 'source> {
                     })
                     .map(|(_, declaration)| declaration);
                 return match scope_function {
-                    Some(scope_function) => match self.local_binding_name(
-                        scope_function,
-                        receiver,
-                        occurrence,
-                    ) {
-                        LocalBinding::Unique(name) => LocalBinding::Unique(name),
-                        LocalBinding::Foreign => LocalBinding::Foreign,
-                        LocalBinding::Absent => {
-                            match receiver_annotation_name(scope_function, receiver) {
-                                ReceiverAnnotationName::Unique(name) => {
-                                    LocalBinding::Unique(name.to_owned())
+                    Some(scope_function) => {
+                        match self.local_binding_name(scope_function, receiver, occurrence) {
+                            LocalBinding::Unique(name) => LocalBinding::Unique(name),
+                            LocalBinding::Foreign => LocalBinding::Foreign,
+                            LocalBinding::Absent => {
+                                match receiver_annotation_name(scope_function, receiver) {
+                                    ReceiverAnnotationName::Unique(name) => {
+                                        LocalBinding::Unique(name.to_owned())
+                                    }
+                                    ReceiverAnnotationName::Ambiguous
+                                    | ReceiverAnnotationName::Absent => LocalBinding::Foreign,
                                 }
-                                ReceiverAnnotationName::Ambiguous
-                                | ReceiverAnnotationName::Absent => LocalBinding::Foreign,
                             }
                         }
-                    },
+                    }
                     None => LocalBinding::Foreign,
                 };
             }
@@ -3910,12 +3900,16 @@ impl<'a, 'source> Emitter<'a, 'source> {
             OccurrenceReceiver::EnclosingClass { class } => self
                 .enclosing_class_index(occurrence, class)
                 .and_then(|class_index| self.call_return_method_return_class(class_index, method)),
-            OccurrenceReceiver::Foreign { receiver: Some(name) } => {
+            OccurrenceReceiver::Foreign {
+                receiver: Some(name),
+            } => {
                 if self.receiver_assigned_in_scope(occurrence, name) {
                     None
                 } else {
                     self.named_attribute_class_index(occurrence, name)
-                        .and_then(|class_index| self.call_return_method_return_class(class_index, method))
+                        .and_then(|class_index| {
+                            self.call_return_method_return_class(class_index, method)
+                        })
                 }
             }
             OccurrenceReceiver::None => {
@@ -3992,8 +3986,11 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 method: inner_method,
                 receiver: inner_receiver,
             } => {
-                let inner_class =
-                    self.call_return_returned_class(occurrence, inner_method, inner_receiver.as_ref())?;
+                let inner_class = self.call_return_returned_class(
+                    occurrence,
+                    inner_method,
+                    inner_receiver.as_ref(),
+                )?;
                 let class_index = self.unique_live_class_index(&inner_class)?;
                 self.call_return_method_return_class(class_index, method)
             }
@@ -4029,16 +4026,17 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 {
                     return None;
                 }
-                let in_class = self.module.declarations.iter().enumerate().any(|(class_index, class)| {
-                    class.kind == DeclarationKind::Class
-                        && self.live[class_index]
-                        && span_contains(class.span, declaration.span)
-                });
-                if in_class {
-                    None
-                } else {
-                    Some(index)
-                }
+                let in_class =
+                    self.module
+                        .declarations
+                        .iter()
+                        .enumerate()
+                        .any(|(class_index, class)| {
+                            class.kind == DeclarationKind::Class
+                                && self.live[class_index]
+                                && span_contains(class.span, declaration.span)
+                        });
+                if in_class { None } else { Some(index) }
             })
             .collect()
     }
@@ -4095,11 +4093,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
         }
     }
 
-    fn call_return_method_index(
-        &self,
-        class_index: usize,
-        method: &str,
-    ) -> CallReturnMethodLookup {
+    fn call_return_method_index(&self, class_index: usize, method: &str) -> CallReturnMethodLookup {
         let class_span = self.module.declarations[class_index].span;
         let own = self.own_method_indices_named(class_span, method);
         match own.len() {
@@ -4185,12 +4179,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
             if depth >= MAX_INHERITED_BASE_LINKS {
                 continue;
             }
-            let result = self.call_return_inherited_method_index(
-                base_index,
-                method,
-                depth + 1,
-                visited,
-            );
+            let result =
+                self.call_return_inherited_method_index(base_index, method, depth + 1, visited);
             if result != CallReturnMethodLookup::Absent {
                 base_results.push(result);
             }
@@ -4267,18 +4257,21 @@ impl<'a, 'source> Emitter<'a, 'source> {
             if !scope_local_visible(scope, occurrence, name) {
                 continue;
             }
-            let scope_function = self.module.declarations.iter().enumerate().find_map(
-                |(index, declaration)| {
-                    if declaration.kind == DeclarationKind::Function
-                        && self.live[index]
-                        && declaration.span == scope.span
-                    {
-                        Some(declaration)
-                    } else {
-                        None
-                    }
-                },
-            );
+            let scope_function =
+                self.module
+                    .declarations
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, declaration)| {
+                        if declaration.kind == DeclarationKind::Function
+                            && self.live[index]
+                            && declaration.span == scope.span
+                        {
+                            Some(declaration)
+                        } else {
+                            None
+                        }
+                    });
             let Some(scope_function) = scope_function else {
                 return true;
             };
@@ -4366,9 +4359,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                     self.instance_field_annotation_class_name(class_index, attribute)
                 {
                     match result {
-                        InstanceAttributeClassLookup::Unique { class_name, .. } => {
-                            Some(class_name)
-                        }
+                        InstanceAttributeClassLookup::Unique { class_name, .. } => Some(class_name),
                         InstanceAttributeClassLookup::Absent
                         | InstanceAttributeClassLookup::Ambiguous
                         | InstanceAttributeClassLookup::Unannotated => None,
@@ -4415,13 +4406,19 @@ impl<'a, 'source> Emitter<'a, 'source> {
                     if !span_contains(class_span, fact.span) {
                         continue;
                     }
-                    if self.module.declarations.iter().enumerate().any(|(index, declaration)| {
-                        declaration.kind == DeclarationKind::Class
-                            && self.live[index]
-                            && span_contains(class_span, declaration.span)
-                            && declaration.span != class_span
-                            && span_contains(declaration.span, fact.span)
-                    }) {
+                    if self
+                        .module
+                        .declarations
+                        .iter()
+                        .enumerate()
+                        .any(|(index, declaration)| {
+                            declaration.kind == DeclarationKind::Class
+                                && self.live[index]
+                                && span_contains(class_span, declaration.span)
+                                && declaration.span != class_span
+                                && span_contains(declaration.span, fact.span)
+                        })
+                    {
                         continue;
                     }
                     instance_facts.push(fact);
@@ -4659,7 +4656,9 @@ impl<'a, 'source> Emitter<'a, 'source> {
             }
             AttributeChainRoot::Name { name } if leading_indexes > 0 => {
                 let class_only = groups.is_empty()
-                    && steps.iter().all(|step| matches!(step, AttributeStep::NameIndex));
+                    && steps
+                        .iter()
+                        .all(|step| matches!(step, AttributeStep::NameIndex));
                 match self.raw_name_receiver_annotation(occurrence, name) {
                     RawReceiverAnnotation::Local(annotation) => self.peeled_index_class(
                         annotation,
@@ -4765,7 +4764,9 @@ impl<'a, 'source> Emitter<'a, 'source> {
             OccurrenceReceiver::EnclosingClass { class } => {
                 self.enclosing_class_index(occurrence, class)
             }
-            OccurrenceReceiver::Foreign { receiver: Some(name) } => {
+            OccurrenceReceiver::Foreign {
+                receiver: Some(name),
+            } => {
                 let assigned = self.receiver_assigned_in_scope(occurrence, name);
                 if assigned
                     && !matches!(
@@ -4907,13 +4908,19 @@ impl<'a, 'source> Emitter<'a, 'source> {
             if !span_contains(class_span, fact.span) {
                 continue;
             }
-            if self.module.declarations.iter().enumerate().any(|(index, declaration)| {
-                declaration.kind == DeclarationKind::Class
-                    && self.live[index]
-                    && span_contains(class_span, declaration.span)
-                    && declaration.span != class_span
-                    && span_contains(declaration.span, fact.span)
-            }) {
+            if self
+                .module
+                .declarations
+                .iter()
+                .enumerate()
+                .any(|(index, declaration)| {
+                    declaration.kind == DeclarationKind::Class
+                        && self.live[index]
+                        && span_contains(class_span, declaration.span)
+                        && declaration.span != class_span
+                        && span_contains(declaration.span, fact.span)
+                })
+            {
                 continue;
             }
             saw_fact = true;
@@ -5047,11 +5054,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
 
     /// Receiver class for a parameter or local annotation that is `Self`.
     /// A module constant annotated `Self` is not rewritten.
-    fn receiver_self_class_index(
-        &self,
-        occurrence: &OccurrenceFact,
-        name: &str,
-    ) -> Option<usize> {
+    fn receiver_self_class_index(&self, occurrence: &OccurrenceFact, name: &str) -> Option<usize> {
         if self.assigned_name_hides_annotation(occurrence, name) {
             return None;
         }
@@ -5226,12 +5229,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
             if depth >= MAX_INHERITED_BASE_LINKS {
                 continue;
             }
-            let result = self.inherited_field_annotation_in_class(
-                base_index,
-                attribute,
-                depth + 1,
-                visited,
-            );
+            let result =
+                self.inherited_field_annotation_in_class(base_index, attribute, depth + 1, visited);
             if result != InstanceAttributeClassLookup::Absent {
                 base_results.push(result);
             }
@@ -5948,9 +5947,7 @@ fn simple_identifier(name: &str) -> bool {
 /// Quoted bases lower to `Name` rows with `span: None` and are ignored.
 fn simple_base_name(annotation: &Annotation) -> Option<&str> {
     match annotation {
-        Annotation::Name { name, span, .. }
-            if !name.contains('.') && span.is_some() =>
-        {
+        Annotation::Name { name, span, .. } if !name.contains('.') && span.is_some() => {
             Some(name.as_str())
         }
         Annotation::Generic { base, .. } => simple_base_name(base),
@@ -5986,7 +5983,10 @@ fn merge_call_return_method_results(
             },
         }
     }
-    unique_index.map_or(CallReturnMethodLookup::Absent, CallReturnMethodLookup::Unique)
+    unique_index.map_or(
+        CallReturnMethodLookup::Absent,
+        CallReturnMethodLookup::Unique,
+    )
 }
 
 /// Combines inherited-member results from sibling base classes.
@@ -6308,9 +6308,7 @@ fn classify_receiver_annotation<'a>(annotation: &'a Annotation) -> ReceiverAnnot
     }
 }
 
-fn classify_receiver_union_members<'a>(
-    members: &'a [Annotation],
-) -> ReceiverAnnotationName<'a> {
+fn classify_receiver_union_members<'a>(members: &'a [Annotation]) -> ReceiverAnnotationName<'a> {
     let mut flattened: Vec<&Annotation> = Vec::new();
     flatten_receiver_union_members(members, &mut flattened);
     let mut unique_name: Option<&'a str> = None;

@@ -128,9 +128,13 @@ pub enum CoreSemanticImageFault {
         source: core::str::Utf8Error,
     },
     #[error("semantic image scope lineage is invalid: {cause:?}")]
-    ScopeLineage { cause: crate::ir::PackageLineageFault },
+    ScopeLineage {
+        cause: crate::ir::PackageLineageFault,
+    },
     #[error("semantic image scope declaration key is invalid: {cause:?}")]
-    ScopeKey { cause: crate::ir::DeclarationKeyFault },
+    ScopeKey {
+        cause: crate::ir::DeclarationKeyFault,
+    },
     #[error("semantic image scope preimage cannot be framed: {cause:?}")]
     ScopePreimage { cause: crate::ir::PreimageOverflow },
 }

@@ -31,11 +31,17 @@ impl<'image> TypedDependencyPlan<'image> {
         self.canonical_node(model::TypedPlanNode::Type(id))
     }
 
-    pub(crate) fn canonical_atom_list(&self, id: crate::ir::AtomListId) -> Result<u32, TypedPlanError> {
+    pub(crate) fn canonical_atom_list(
+        &self,
+        id: crate::ir::AtomListId,
+    ) -> Result<u32, TypedPlanError> {
         self.canonical_node(model::TypedPlanNode::AtomList(id))
     }
 
-    pub(crate) fn canonical_type_list(&self, id: crate::ir::TypeListId) -> Result<u32, TypedPlanError> {
+    pub(crate) fn canonical_type_list(
+        &self,
+        id: crate::ir::TypeListId,
+    ) -> Result<u32, TypedPlanError> {
         self.canonical_node(model::TypedPlanNode::TypeList(id))
     }
 

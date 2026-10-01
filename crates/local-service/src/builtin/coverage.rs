@@ -27,8 +27,10 @@ use backend_engine::{Lane, Reason, ViewCoverage, WorkspaceSnapshot};
 use std::collections::BTreeSet;
 
 /// Package/profile pairs whose semantic publication was activated in process.
-pub(super) type ActivatedProfiles =
-    BTreeSet<(backend_engine::PackageKey, backend_semantic::vocabulary::LanguageProfile)>;
+pub(super) type ActivatedProfiles = BTreeSet<(
+    backend_engine::PackageKey,
+    backend_semantic::vocabulary::LanguageProfile,
+)>;
 
 /// Whether this deployment configured the embedding half of the semantic lane.
 ///

@@ -1,9 +1,8 @@
 //! SQL schema and stable statement text for the projection.
 
-pub(crate) const SCHEMA_VERSION: i64 = 3;
+pub(crate) const SCHEMA_VERSION: i64 = 8;
 pub(crate) const MAX_AUDIT_ROOTS: i64 = 128;
-/// Rows per multi-row rebuild statement. Each statement becomes one immutable
-/// FTS segment, so batching bounds both statement size and segment count.
+/// Rows per multi-row rebuild statement.
 pub(crate) const REBUILD_BATCH_ROWS: usize = 512;
 
 pub(crate) const SCHEMA: &str = r"
@@ -31,8 +30,6 @@ CREATE INDEX IF NOT EXISTS backend_projection_rows_label
     ON backend_projection_rows(label);
 CREATE INDEX IF NOT EXISTS backend_projection_rows_package
     ON backend_projection_rows(package_id, parent_id, row_id);
-CREATE INDEX IF NOT EXISTS backend_projection_rows_fts
-    ON backend_projection_rows USING fts (label, signature, document);
 CREATE TABLE IF NOT EXISTS backend_projection_commits (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
     root BLOB NOT NULL UNIQUE,
@@ -43,12 +40,14 @@ CREATE TABLE IF NOT EXISTS backend_projection_commits (
 CREATE TABLE IF NOT EXISTS backend_projection_package_graph_meta (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     root BLOB NOT NULL,
-    edge_count INTEGER NOT NULL
+    edge_count INTEGER NOT NULL,
+    facts_witness BLOB NOT NULL
 );
 CREATE TABLE IF NOT EXISTS backend_projection_package_edges (
     edge_id BLOB PRIMARY KEY,
-    root BLOB NOT NULL,
     source TEXT NOT NULL,
+    source_authority_kind INTEGER NOT NULL CHECK (source_authority_kind BETWEEN 0 AND 4),
+    source_authority_id BLOB NOT NULL CHECK (length(source_authority_id) = 32),
     target_ecosystem INTEGER NOT NULL,
     target_name TEXT NOT NULL,
     requirement TEXT NOT NULL,
@@ -61,24 +60,32 @@ CREATE TABLE IF NOT EXISTS backend_projection_package_edges (
     facts_version BLOB NOT NULL
 );
 CREATE INDEX IF NOT EXISTS backend_projection_package_edges_source
-    ON backend_projection_package_edges(root, source, target_name);
+    ON backend_projection_package_edges(source, source_authority_kind, source_authority_id, edge_id);
 CREATE INDEX IF NOT EXISTS backend_projection_package_edges_target
-    ON backend_projection_package_edges(root, target_ecosystem, target_name, resolved);
-CREATE INDEX IF NOT EXISTS backend_projection_package_edges_by_source
-    ON backend_projection_package_edges(source, edge_id);
-CREATE INDEX IF NOT EXISTS backend_projection_package_edges_by_target
     ON backend_projection_package_edges(target_ecosystem, target_name, resolved, edge_id);
+CREATE INDEX IF NOT EXISTS backend_projection_package_edges_target_page
+    ON backend_projection_package_edges(target_ecosystem, target_name, edge_id);
 CREATE TABLE IF NOT EXISTS backend_projection_package_states (
-    root BLOB NOT NULL,
     source TEXT NOT NULL,
+    source_authority_kind INTEGER NOT NULL CHECK (source_authority_kind BETWEEN 0 AND 4),
+    source_authority_id BLOB NOT NULL CHECK (length(source_authority_id) = 32),
     state INTEGER NOT NULL,
     reason TEXT NOT NULL,
-    PRIMARY KEY(root, source)
+    PRIMARY KEY(source, source_authority_kind, source_authority_id)
 );
-CREATE INDEX IF NOT EXISTS backend_projection_package_states_source
-    ON backend_projection_package_states(root, source);
-CREATE INDEX IF NOT EXISTS backend_projection_package_states_by_source
-    ON backend_projection_package_states(source);
+CREATE TABLE IF NOT EXISTS backend_projection_package_sources (
+    source TEXT NOT NULL,
+    source_authority_kind INTEGER NOT NULL CHECK (source_authority_kind BETWEEN 0 AND 4),
+    source_authority_id BLOB NOT NULL CHECK (length(source_authority_id) = 32),
+    PRIMARY KEY(source, source_authority_kind, source_authority_id)
+);
+CREATE TABLE IF NOT EXISTS backend_projection_package_source_witnesses (
+    source TEXT NOT NULL,
+    source_authority_kind INTEGER NOT NULL CHECK (source_authority_kind BETWEEN 0 AND 4),
+    source_authority_id BLOB NOT NULL CHECK (length(source_authority_id) = 32),
+    facts_witness BLOB NOT NULL CHECK (length(facts_witness) = 32),
+    PRIMARY KEY(source, source_authority_kind, source_authority_id)
+);
 ";
 
 pub(crate) const UPSERT_ROW: &str = r"
@@ -123,4 +130,5 @@ pub(crate) struct Metadata {
 pub(crate) struct PackageGraphMetadata {
     pub(crate) root: Vec<u8>,
     pub(crate) edge_count: i64,
+    pub(crate) facts_witness: [u8; 32],
 }

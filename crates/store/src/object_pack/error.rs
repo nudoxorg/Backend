@@ -3,9 +3,9 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::num::TryFromIntError;
 
-use backend_version::{ContentId, ContentIdDecodeError};
 use backend_version::object::ObjectLength;
 use backend_version::schema::UnknownSchemaId;
+use backend_version::{ContentId, ContentIdDecodeError};
 use thiserror::Error;
 
 use super::{ObjectPackBytes, ObjectPackObjectCount};

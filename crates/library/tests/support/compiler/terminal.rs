@@ -3,12 +3,12 @@
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 use std::{path::PathBuf, time::Duration};
 
-use backend_semantic::vocabulary::FrontendError;
 use backend_library::interface::{
     CompilerCause, CompilerDiagnostic, CompilerRuntimeCause, CompilerTerminal, FragmentCause,
     PackageCompilePhase, PackageDeclarationScopeCause, PackageEcosystem, PackagePathComponentError,
     PackageSourceCause, PackageSourceIoPhase, PackageTextRange,
 };
+use backend_semantic::vocabulary::FrontendError;
 use serde::Deserialize;
 
 use super::authority::GoldenSourceAuthority;
@@ -226,6 +226,7 @@ pub(crate) enum GoldenPackageSourceCause {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum GoldenCompilerRuntimeCause {
     RequestInFlight,
+    QueueFull,
     RequestOwnerStopped,
     ResponseOwnerStopped,
     ToolchainProbeTimeout,
@@ -292,6 +293,7 @@ pub(crate) enum GoldenAuthorityPhase {
 pub(crate) enum GoldenAuthorityDiagnosticClass {
     Syntax,
     Binding,
+    SourceScope,
     Type,
     Authority,
     Projection,
@@ -553,6 +555,7 @@ impl From<CompilerRuntimeCause> for GoldenCompilerRuntimeCause {
     fn from(cause: CompilerRuntimeCause) -> Self {
         match cause {
             CompilerRuntimeCause::RequestInFlight => Self::RequestInFlight,
+            CompilerRuntimeCause::QueueFull => Self::QueueFull,
             CompilerRuntimeCause::RequestOwnerStopped => Self::RequestOwnerStopped,
             CompilerRuntimeCause::ResponseOwnerStopped => Self::ResponseOwnerStopped,
             CompilerRuntimeCause::ToolchainProbeTimeout => Self::ToolchainProbeTimeout,
@@ -574,13 +577,21 @@ impl From<CompilerCause> for GoldenCompilerCause {
                 diagnostic,
             } => Self::Authority {
                 phase: match phase {
-                    backend_semantic::vocabulary::AuthorityPhase::Open => GoldenAuthorityPhase::Open,
-                    backend_semantic::vocabulary::AuthorityPhase::Parse => GoldenAuthorityPhase::Parse,
-                    backend_semantic::vocabulary::AuthorityPhase::Resolve => GoldenAuthorityPhase::Resolve,
+                    backend_semantic::vocabulary::AuthorityPhase::Open => {
+                        GoldenAuthorityPhase::Open
+                    }
+                    backend_semantic::vocabulary::AuthorityPhase::Parse => {
+                        GoldenAuthorityPhase::Parse
+                    }
+                    backend_semantic::vocabulary::AuthorityPhase::Resolve => {
+                        GoldenAuthorityPhase::Resolve
+                    }
                     backend_semantic::vocabulary::AuthorityPhase::TypeCheck => {
                         GoldenAuthorityPhase::TypeCheck
                     }
-                    backend_semantic::vocabulary::AuthorityPhase::Project => GoldenAuthorityPhase::Project,
+                    backend_semantic::vocabulary::AuthorityPhase::Project => {
+                        GoldenAuthorityPhase::Project
+                    }
                 },
                 class: match class {
                     backend_semantic::vocabulary::AuthorityDiagnosticClass::Syntax => {
@@ -588,6 +599,9 @@ impl From<CompilerCause> for GoldenCompilerCause {
                     }
                     backend_semantic::vocabulary::AuthorityDiagnosticClass::Binding => {
                         GoldenAuthorityDiagnosticClass::Binding
+                    }
+                    backend_semantic::vocabulary::AuthorityDiagnosticClass::SourceScope => {
+                        GoldenAuthorityDiagnosticClass::SourceScope
                     }
                     backend_semantic::vocabulary::AuthorityDiagnosticClass::Type => {
                         GoldenAuthorityDiagnosticClass::Type

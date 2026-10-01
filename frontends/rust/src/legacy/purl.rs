@@ -6,7 +6,7 @@ use std::{
     process::Command,
 };
 
-use crate::legacy::{RustAuthorityError, RustProject, RustToolchain};
+use crate::legacy::{LoadError, RustAuthorityError, RustProject, RustToolchain};
 use backend_semantic::vocabulary::RustEdition;
 
 const MAX_METADATA_BYTES: usize = 4 * 1024 * 1024;
@@ -124,9 +124,16 @@ impl<'url> RustPackageUrl<'url> {
                 observed_versions: candidates,
             });
         }
-        let root = locate_root
-            .map(PathBuf::from)
-            .unwrap_or_else(|| default_cargo_home().join("registry/src"));
+        let root = match locate_root {
+            Some(root) => PathBuf::from(root),
+            None => toolchain
+                .cargo_home
+                .as_ref()
+                .ok_or(RustPurlError::Toolchain(
+                    LoadError::MissingCargoConfiguration,
+                ))?
+                .join("registry/src"),
+        };
         // Two registry-src layouts are admitted: the real Cargo cache nests
         // packages one level under a per-index directory
         // (`registry/src/<index-hash>/<name>-<version>`), while a flattened
@@ -202,17 +209,6 @@ fn valid_version(version: &str) -> bool {
                 .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-'))
 }
 
-fn default_cargo_home() -> PathBuf {
-    std::env::var_os("CARGO_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_default()
-                .join(".cargo")
-        })
-}
-
 struct MetadataPackage {
     name: String,
     version: String,
@@ -229,12 +225,29 @@ fn metadata<'url>(
     if cancelled.load(std::sync::atomic::Ordering::Acquire) {
         return Err(RustPurlError::Cancelled);
     }
-    let cargo = toolchain
-        .tool
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("cargo");
-    let output = Command::new(cargo)
+    let cargo = toolchain.cargo.as_ref().ok_or(RustPurlError::Toolchain(
+        LoadError::MissingCargoConfiguration,
+    ))?;
+    let cargo_home = toolchain
+        .cargo_home
+        .as_ref()
+        .ok_or(RustPurlError::Toolchain(
+            LoadError::MissingCargoConfiguration,
+        ))?;
+    let path = toolchain
+        .authority_path()
+        .map_err(RustPurlError::Toolchain)?;
+    let mut command = Command::new(cargo);
+    command
+        .env_clear()
+        .env("CARGO", cargo)
+        .env("CARGO_HOME", cargo_home)
+        // The explicitly selected Cargo wrapper may inspect HOME before it
+        // dispatches metadata. Bind it to the admitted Cargo cache root rather
+        // than restoring the caller's ambient home directory.
+        .env("HOME", cargo_home)
+        .env("RUSTC", &toolchain.tool)
+        .env("PATH", path)
         .current_dir(root)
         .args([
             "metadata",
@@ -242,9 +255,18 @@ fn metadata<'url>(
             "--no-deps",
             "--format-version",
             "1",
-        ])
-        .output()
-        .map_err(RustPurlError::MetadataIo)?;
+        ]);
+    if let Some(rustup_toolchain) = &toolchain.rustup_toolchain {
+        command.env("RUSTUP_TOOLCHAIN", rustup_toolchain);
+    }
+    if let Some(rustup_home) = &toolchain.rustup_home {
+        command.env("RUSTUP_HOME", rustup_home);
+    }
+    #[cfg(windows)]
+    if let Some(system_root) = std::env::var_os("SystemRoot") {
+        command.env("SystemRoot", system_root);
+    }
+    let output = command.output().map_err(RustPurlError::MetadataIo)?;
     if cancelled.load(std::sync::atomic::Ordering::Acquire) {
         return Err(RustPurlError::Cancelled);
     }
@@ -455,6 +477,8 @@ fn table_edition(contents: &str, table: &str) -> Result<EditionKey, RustPurlErro
 /// Exact parse or location failures; rejected PURLs are retained on parse errors.
 #[derive(Debug, thiserror::Error)]
 pub enum RustPurlError<'url> {
+    #[error("Rust package location toolchain configuration failed: {0}")]
+    Toolchain(#[source] LoadError),
     #[error("wrong Cargo PURL scheme: {purl}")]
     WrongScheme { purl: &'url str },
     #[error("Cargo PURL has no version: {purl}")]

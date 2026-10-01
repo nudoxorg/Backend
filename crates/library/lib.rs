@@ -30,6 +30,7 @@ mod graph_query;
 /// Transport-independent application service and reply vocabulary.
 pub mod interface;
 mod package_graph;
+mod package_graph_page;
 mod progress;
 /// Bounded transport decoding and presentation for thin CLI and MCP consumers.
 pub mod protocol;
@@ -83,9 +84,10 @@ pub use capability::{
 pub use catalog::{Library, RankedSearchSnapshot};
 pub use command::ReferenceFact;
 pub use command::{
-    Command, CommandFailure, CommandId, CommandReply, DocumentQuery, GraphNeighborhoodQuery,
-    HealthReport, NameQuery, OutlineQuery, PageContinuation, PageRequest, PageTerminal,
-    ProjectionPage, Query, QueryLimit, QueryRecord, RevisionReceipt, SymbolAddress, ViewRevision,
+    Command, CommandFailure, CommandId, CommandReply, CompileExecutionIntent, DocumentQuery,
+    GraphNeighborhoodQuery, HealthReport, NameQuery, OutlineQuery, PageContinuation, PageRequest,
+    PageTerminal, ProjectionPage, Query, QueryLimit, QueryRecord, RevisionReceipt,
+    SemanticSearchReason, SemanticSearchStatus, SymbolAddress, ViewRevision,
 };
 pub use command_registry::{
     COMMANDS, CommandDomain, CommandMutation, CommandSpec, command_spec, command_spec_named,
@@ -106,11 +108,18 @@ pub use graph_query::{
     MAX_GRAPH_VALUE_BYTES, MAX_GRAPH_VALUE_DEPTH,
 };
 pub use package_graph::{
-    DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope, DependentSources,
-    MAX_PACKAGE_GRAPH_ROWS, PackageDependencyRecord, PackageDependencySourceFacts,
-    PackageDependencyTarget, PackageGraphIndex, admit_dependency_rows, collapse_dependency_rows,
-    dependency_optional, discover_source_entries, discover_source_files, linear_dependent_sources,
+    CheckedPackageGraphFacts, DependencyAuthority, DependencyEvidence, DependencyFacts,
+    DependencyScope, DependentSources, MAX_PACKAGE_GRAPH_ROWS, PackageDependencyLookup,
+    PackageDependencyRecord, PackageDependencySourceFacts, PackageDependencyTarget,
+    PackageGraphIndex, PackageGraphSourceAuthority, PackageGraphSourceKey, RegistryAuthorityId,
+    admit_dependency_rows, collapse_dependency_rows, dependency_optional, discover_source_entries,
+    discover_source_files, linear_dependent_sources, package_dependency_facts_witness,
     source_selection_policy,
+};
+pub use package_graph_page::{
+    MAX_PACKAGE_GRAPH_AUTHORITIES, MAX_PACKAGE_GRAPH_PAGE_ROWS, PACKAGE_GRAPH_PAGE_SCHEMA,
+    PackageGraphControl, PackageGraphCursor, PackageGraphDirection, PackageGraphKnowledge,
+    PackageGraphPage, PackageGraphPageError, PackageGraphPageRequest, PackageGraphPageTerminal,
 };
 pub use progress::{
     FaultRows, IngestProgress, LanguageRows, MAX_PROGRESS_FAULTS, MAX_PROGRESS_LANGUAGES,
@@ -145,16 +154,24 @@ pub use rich_graph::{
     RichGraphSnapshot,
 };
 pub use surface::{
-    DeclarationChange, DeclarationRecord, DiffRecord, ForgeFact, ForgeManifestRecord,
-    ForgePackageRecord, ForgeRepositoryMetadataRecord, MAX_PRODUCT_ROWS, MAX_PRODUCT_TEXT_BYTES,
-    PackageCoordinate, PackageReference, ProductAdmissionError, ProductText, ProjectId,
-    ProjectName, ProjectRecord, ProjectSelector, ReferenceRecord, RegistryDownloadCount,
-    RegistryEcosystem, RegistryFactAvailability, RegistryMetadata, RegistryPackageRecord,
-    RegistryReleaseStanding, ReleaseRecord, SemanticConfidence, SemanticDeclarationIdentity,
+    DeclarationChange, DeclarationRecord, DiffRecord, ForgeDiscoveryCandidate, ForgeFact,
+    ForgeManifestRecord, ForgePackageDetailRecord, ForgePackageManifestDetail, ForgePackagePin,
+    ForgePackageRecord, ForgePackageRegistryEvidence, ForgeRepositoryMetadataRecord,
+    IndexSearchCursor, IndexSearchPage, IndexSearchResultCount, MAX_INDEX_SEARCH_CURSOR_BYTES,
+    MAX_PRODUCT_ROWS, MAX_PRODUCT_TEXT_BYTES, PackageCoordinate, PackageReference,
+    ProductAdmissionError, ProductText, ProjectId, ProjectName, ProjectRecord, ProjectSelector,
+    ReferenceRecord, RegistryDiscoveryAdvisory, RegistryDiscoveryCandidate,
+    RegistryDiscoveryCompleteness, RegistryDiscoveryFreshness, RegistryDiscoveryMetadata,
+    RegistryDiscoveryStanding, RegistryDownloadCount, RegistryEcosystem, RegistryEvidenceFacet,
+    RegistryFactAvailability, RegistryMetadata, RegistryNegativeFactKind,
+    RegistryPackageFactAuthority, RegistryPackageFactCompleteness, RegistryPackageFactFreshness,
+    RegistryPackageFactProof, RegistryPackageRecord, RegistryPackageSearchGroup,
+    RegistryReleaseMatchScope, RegistryReleaseStanding, RegistrySearchGroupKind, RegistrySearchHit,
+    RegistrySearchRelease, ReleaseRecord, SemanticConfidence, SemanticDeclarationIdentity,
     SemanticGenerationId, SemanticLanguageProfile, SemanticLinkDelta, SemanticLinkEvidence,
-    SemanticLinkKind, SemanticLinkTarget, SemanticSourceSpan, SemanticVersionRecord,
-    SubscriptionRecord, SurfaceCommand, SurfaceReply, TreeNodeId, TreeNodeRecord, TreeOpener,
-    TreeSubject,
+    SemanticLinkKind, SemanticLinkTarget, SemanticSourceSpan, SemanticVersionFreshness,
+    SemanticVersionRecord, SubscriptionRecord, SurfaceCommand, SurfaceReply, TreeNodeId,
+    TreeNodeRecord, TreeOpener, TreeSubject,
 };
 pub use view::{
     Basis, CommittedViewDelta, CompleteViewProjection, Coverage, CoverageCapability, Document,

@@ -3,8 +3,8 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Forward-only sparse locality traversal over canonical root rows.
 
-use backend_version::{Domain, GenerationId};
 use backend_version::object::RemoteBase;
+use backend_version::{Domain, GenerationId};
 
 use super::{
     Locality, RowIndex, ValidatedLocality,

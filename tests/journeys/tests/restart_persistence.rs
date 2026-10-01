@@ -16,7 +16,7 @@ mod surface_matrix;
 use backend_client::{LocalSubscriptionTransport, Session, SubscriptionRequest};
 use backend_engine::capability::CapabilityArtifactId;
 use backend_engine::registry::{
-    storage_root, RegistryEcosystem, RegistryEndpoint, RegistrySource, REGISTRY_SOURCE_ROOT_VERSION,
+    REGISTRY_SOURCE_ROOT_VERSION, RegistryEcosystem, RegistryEndpoint, RegistrySource, storage_root,
 };
 use backend_library::{
     CursorRead, GraphValue, PackageReference, PageTerminal, ProjectName, SurfaceCommand,
@@ -513,6 +513,12 @@ fn search_identity(
             path: "src/lib.rs",
             name: "RustBeaconEntry",
             source: "",
+            oracle: surface_matrix::SemanticPayloadOracle {
+                kind: "function",
+                signature_fragment: "RustBeaconEntry() -> u64",
+                documentation_marker: "ORACLE/RUST: signal level eight.",
+                payload_sentinel: "intensity: 8",
+            },
         },
     )
 }
@@ -763,6 +769,12 @@ fn surface_evidence(
             path: "src/lib.rs",
             name: "RustBeaconEntry",
             source: "",
+            oracle: surface_matrix::SemanticPayloadOracle {
+                kind: "function",
+                signature_fragment: "RustBeaconEntry() -> u64",
+                documentation_marker: "ORACLE/RUST: signal level eight.",
+                payload_sentinel: "intensity: 8",
+            },
         },
     );
     let outline_value = cli_json(
@@ -831,6 +843,32 @@ fn projects(session: &mut Session) -> Vec<(u64, String)> {
     rows.iter()
         .map(|project| (project.id.get(), project.name.as_str().to_owned()))
         .collect()
+}
+
+fn run_gui(root: &Path, journey: &str) -> Value {
+    let mut command = ProcessCommand::new(env!("CARGO_BIN_EXE_backend-journey-gui"));
+    command
+        .arg(journey)
+        .current_dir(root)
+        .env("NO_COLOR", "1")
+        .env("COLUMNS", "100");
+    scrub(&mut command);
+    command
+        .env("NUDOX_JOURNEY_HOME", root.join(".gui-journey-home"))
+        .env("NUDOX_HARNESS_STATE", root.join(".gui-harness-state"));
+    let output = bounded(command, &format!("GUI {journey}"), None);
+    assert!(
+        output.status.success(),
+        "GUI {journey} failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+        panic!(
+            "GUI {journey} returned invalid JSON: {error}; stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+    })
 }
 
 struct McpProcess {
@@ -1095,6 +1133,28 @@ fn cold_restart_preserves_atomic_roots_live_subscriptions_and_gui_shelf() {
     let endpoint = backend_runtime::derive_endpoint(&workspace);
     let mut observations = Vec::new();
 
+    let gui_started = Instant::now();
+    let first_launch = run_gui(&fixture, "first-launch");
+    assert_eq!(first_launch["journey"], "first-launch");
+    assert_eq!(
+        first_launch["verdict"], "PASS",
+        "cold GUI launch failed its production journey: {}",
+        first_launch["report"]
+    );
+    assert!(
+        first_launch["report"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("0 projects · 0 packages")
+    );
+    assert!(
+        first_launch["report"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Add a folder")
+    );
+    note(&mut observations, "gui-first-launch", gui_started, None);
+
     let mut daemon = launch(&endpoint, &workspace, &authority, false, 180_000);
     let launch_started = Instant::now();
     let mut session = Session::connect(&endpoint).expect("connect empty session");
@@ -1169,6 +1229,33 @@ fn cold_restart_preserves_atomic_roots_live_subscriptions_and_gui_shelf() {
         "pre-restart search identity drifted"
     );
     assert_eq!(before_graceful.regressions, expected_regressions);
+
+    let gui_project_started = Instant::now();
+    let gui_project = run_gui(&fixture, "choose-project");
+    assert_eq!(gui_project["journey"], "choose-project");
+    assert_eq!(
+        gui_project["verdict"], "PASS",
+        "native project choice failed its production journey: {}",
+        gui_project["report"]
+    );
+    assert!(
+        gui_project["report"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("project-on-shelf")
+    );
+    assert!(
+        gui_project["report"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("project-restored")
+    );
+    note(
+        &mut observations,
+        "gui-native-project-choice",
+        gui_project_started,
+        None,
+    );
 
     let graceful_started = Instant::now();
     surface_matrix::graceful_shutdown(&endpoint);

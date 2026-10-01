@@ -353,7 +353,7 @@ fn handle(
         }
         _ => {
             let Some(ch) = keystroke.key_char.as_deref().filter(|text| {
-                text.chars().count() == 1 && text.chars().all(|ch| ch.is_alphanumeric())
+                text.chars().count() == 1 && text.chars().all(char::is_alphanumeric)
             }) else {
                 return false;
             };

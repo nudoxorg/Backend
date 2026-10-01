@@ -7,6 +7,7 @@ use super::layout::{Box2, Layout, core};
 use super::model::{Kind, NodeId, Rel, World};
 use crate::data::spatial::Aabb;
 use crate::motion::Camera;
+use crate::tokens::fluid::{CARD, CARD_ROOM, Card, READING, Reading};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
@@ -831,7 +832,7 @@ impl Scene {
     /// Whether the foreground room fits two comfortably spaced columns.
     #[must_use]
     pub fn prism_narrow(room: &View) -> bool {
-        room.w < 900.0
+        READING.at(crate::fluid::Room::new(gpui::px(room.w), 1.0)) == Reading::Merged
     }
 
     /// Focus anchor in window coordinates, shared by camera and prism layout.
@@ -872,7 +873,8 @@ impl Scene {
     /// The card width the focus leaves on the right at this view width.
     #[must_use]
     pub fn card_room(view: &View) -> f32 {
-        if view.w > 900.0 { 380.0 } else { 0.0 }
+        let room = crate::fluid::Room::new(gpui::px(view.w), 1.0);
+        if CARD.at(room) == Card::Beside { f32::from(CARD_ROOM.at(room)) } else { 0.0 }
     }
 
     /// The symbol with its neighbourhood, trimmed to the nearest 85 % so one

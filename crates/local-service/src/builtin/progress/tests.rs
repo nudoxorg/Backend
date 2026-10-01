@@ -82,8 +82,16 @@ fn every_discovered_file_is_accounted_for_by_exactly_one_outcome() {
     let progress = report(&[
         indexed("src/lib.rs", SourceLanguage::Rust, 3),
         indexed("src/main.ts", SourceLanguage::TypeScript, 2),
-        unavailable("src/blob.rs", SourceLanguage::Rust, SourceUnavailableReason::NotText),
-        unavailable("src/huge.rs", SourceLanguage::Rust, SourceUnavailableReason::TooLarge),
+        unavailable(
+            "src/blob.rs",
+            SourceLanguage::Rust,
+            SourceUnavailableReason::NotText,
+        ),
+        unavailable(
+            "src/huge.rs",
+            SourceLanguage::Rust,
+            SourceUnavailableReason::TooLarge,
+        ),
     ]);
     assert_eq!(progress.files_discovered(), 4);
     assert_eq!(progress.files_indexed(), 2);
@@ -101,7 +109,11 @@ fn per_language_rows_carry_their_own_files_and_declarations() {
         indexed("src/lib.rs", SourceLanguage::Rust, 3),
         indexed("src/other.rs", SourceLanguage::Rust, 1),
         indexed("src/main.ts", SourceLanguage::TypeScript, 2),
-        unavailable("src/blob.py", SourceLanguage::Python, SourceUnavailableReason::NotText),
+        unavailable(
+            "src/blob.py",
+            SourceLanguage::Python,
+            SourceUnavailableReason::NotText,
+        ),
     ]);
     assert_eq!(
         progress.languages(),
@@ -120,9 +132,21 @@ fn per_language_rows_carry_their_own_files_and_declarations() {
 fn an_unreadable_file_keeps_its_typed_reason_instead_of_disappearing() {
     let progress = report(&[
         indexed("src/lib.rs", SourceLanguage::Rust, 1),
-        unavailable("src/a.rs", SourceLanguage::Rust, SourceUnavailableReason::Unreadable),
-        unavailable("src/b.rs", SourceLanguage::Rust, SourceUnavailableReason::Unreadable),
-        unavailable("src/c.rs", SourceLanguage::Rust, SourceUnavailableReason::Unparsed),
+        unavailable(
+            "src/a.rs",
+            SourceLanguage::Rust,
+            SourceUnavailableReason::Unreadable,
+        ),
+        unavailable(
+            "src/b.rs",
+            SourceLanguage::Rust,
+            SourceUnavailableReason::Unreadable,
+        ),
+        unavailable(
+            "src/c.rs",
+            SourceLanguage::Rust,
+            SourceUnavailableReason::Unparsed,
+        ),
     ]);
     assert_eq!(
         progress.faults(),

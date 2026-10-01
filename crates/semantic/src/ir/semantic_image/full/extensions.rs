@@ -578,7 +578,11 @@ fn append_rust(
             .to_le_bytes(),
     );
     out.extend_from_slice(&typed.canonical_atom_list(facts.macros)?.to_le_bytes());
-    out.extend_from_slice(&typed.canonical_atom_list(facts.const_defaults)?.to_le_bytes());
+    out.extend_from_slice(
+        &typed
+            .canonical_atom_list(facts.const_defaults)?
+            .to_le_bytes(),
+    );
     out.extend_from_slice(
         &typed
             .canonical_free_predicates(facts.free_predicates)?

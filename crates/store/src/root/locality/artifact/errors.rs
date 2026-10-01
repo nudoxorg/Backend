@@ -3,9 +3,9 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::num::TryFromIntError;
 
-use backend_version::{ContentAuthorityError, ContentIdDecodeError, GenerationId};
 use backend_version::object::ProviderSetError;
 use backend_version::schema::UnknownSchemaId;
+use backend_version::{ContentAuthorityError, ContentIdDecodeError, GenerationId};
 use thiserror::Error;
 
 use crate::root::{EntryKey, MetadataBytes, RootEntryCount};

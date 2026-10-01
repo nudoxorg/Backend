@@ -24,8 +24,18 @@ use backend_semantic::vocabulary::{NativeWorker, NativeWorkerPanic};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+mod authority_witness;
+pub use self::authority_witness::{
+    GoFilesystemTargetKind, GoLocalOnlyReason, GoPackageAuthorityWitness,
+    GoPackageAuthorityWitnessError, GoWorkFileWitness, GoWorkWitness, GoWorkWitnessError,
+};
+
 const DIAGNOSTIC_PREFIX_LIMIT: usize = 4096;
 const DIAGNOSTIC_TAIL_LIMIT: usize = 4096;
+const UNSUPPORTED_CGO_SENTINEL: &str = "NUDOX_GO_UNSUPPORTED_CGO_CLOSURE";
+
+/// Versioned identity of the explicit Go package-authority child environment.
+pub const GO_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1: &str = "go-package-child-environment.v1";
 
 // ---------------------------------------------------------------------------
 // Root
@@ -712,6 +722,32 @@ pub enum OracleError {
         #[source]
         source: std::io::Error,
     },
+    /// Package authority needs a selected Go toolchain, cache roots, and
+    /// isolated child environment before it may start an oracle.
+    #[error("Go package authority has no explicit isolated child environment")]
+    MissingChildEnvironment,
+    /// A prebuilt oracle cannot attest that cgo-disabled package loading did
+    /// not omit cgo source files.
+    #[error("Go oracle binary cannot prove a complete cgo-disabled package closure")]
+    UnsupportedCgoOracleBinary,
+    /// The selected package graph contains cgo sources, but no exact admitted
+    /// C toolchain was configured.
+    #[error("Go package authority requires an admitted C toolchain for cgo: {detail}")]
+    UnsupportedCgo { detail: String },
+    /// The selected package root's nearest Go workspace could not be captured
+    /// or revalidated before oracle execution.
+    #[error("Go workspace authority witness failed: {0}")]
+    WorkspaceWitness(String),
+    /// A selected module/workspace manifest or local filesystem closure could
+    /// not be captured or revalidated before oracle execution.
+    #[error(transparent)]
+    PackageAuthorityWitness(#[from] GoPackageAuthorityWitnessError),
+    /// The package workspace changed after its request was admitted.
+    #[error("Go package workspace changed after authority admission")]
+    WorkspaceWitnessChanged,
+    /// A selected module/workspace/local-target witness changed before spawn.
+    #[error("Go package authority witness changed before oracle execution")]
+    PackageAuthorityWitnessChanged,
     /// The configured oracle tool is unavailable.
     #[error("Go oracle tooling unavailable ({tool}): {source}")]
     ToolingUnavailable {
@@ -806,6 +842,32 @@ pub enum GoOracleConfigurationError {
         /// Caller-supplied relative executable path.
         executable: PathBuf,
     },
+    /// A required Go environment root is not absolute.
+    #[error("Go authority path is not absolute: {role}={path:?}")]
+    RelativeAuthorityPath {
+        /// Rejected authority path role.
+        role: &'static str,
+        /// Caller-supplied relative path.
+        path: PathBuf,
+    },
+    /// The admitted Go executable is not a regular file.
+    #[error("configured Go executable is not a file: {path:?}")]
+    InvalidGoExecutable {
+        /// Rejected Go executable path.
+        path: PathBuf,
+    },
+    /// A required Go environment root is not a directory.
+    #[error("configured Go {role} is not a directory: {path:?}")]
+    InvalidAuthorityDirectory {
+        /// Rejected authority directory role.
+        role: &'static str,
+        /// Rejected directory path.
+        path: PathBuf,
+    },
+    /// The Go executable configured for `go/packages` differs from the Go
+    /// executable used by `go run` to launch the vendored oracle.
+    #[error("Go oracle and isolated environment select different Go executables")]
+    GoToolchainEnvironmentMismatch,
 }
 
 impl GoOracleExecutable {
@@ -833,6 +895,184 @@ pub enum GoOracleConfiguration {
     GoToolchain(GoOracleExecutable),
 }
 
+/// Complete, explicit environment for the Go oracle and its `go/packages`
+/// subprocesses. The initial supported policy disables cgo; the vendored
+/// oracle detects cgo files omitted by that policy and fails closed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoOracleChildEnvironment {
+    go_executable: PathBuf,
+    goroot: PathBuf,
+    module_cache: PathBuf,
+    build_cache: PathBuf,
+    cgo: GoCgoPolicy,
+    path: String,
+}
+
+/// Explicit cgo execution policy. `Disabled` is safe because package
+/// authority rejects any graph containing ignored cgo source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GoCgoPolicy {
+    /// Do not run cgo or use a C compiler; reject package graphs with cgo files.
+    Disabled,
+}
+
+impl GoOracleChildEnvironment {
+    /// Admits the selected Go executable and semantic/cache roots. The cache
+    /// path may be a not-yet-created leaf under an existing work directory.
+    pub fn new(
+        go_executable: PathBuf,
+        goroot: PathBuf,
+        module_cache: PathBuf,
+        build_cache: PathBuf,
+    ) -> Result<Self, GoOracleConfigurationError> {
+        if !go_executable.is_absolute() {
+            return Err(GoOracleConfigurationError::RelativeAuthorityPath {
+                role: "executable",
+                path: go_executable,
+            });
+        }
+        if !go_executable.is_file() {
+            return Err(GoOracleConfigurationError::InvalidGoExecutable {
+                path: go_executable,
+            });
+        }
+        for (role, path) in [("GOROOT", &goroot), ("GOMODCACHE", &module_cache)] {
+            if !path.is_absolute() {
+                return Err(GoOracleConfigurationError::RelativeAuthorityPath {
+                    role,
+                    path: path.clone(),
+                });
+            }
+            if !path.is_dir() {
+                return Err(GoOracleConfigurationError::InvalidAuthorityDirectory {
+                    role,
+                    path: path.clone(),
+                });
+            }
+        }
+        if !build_cache.is_absolute() {
+            return Err(GoOracleConfigurationError::RelativeAuthorityPath {
+                role: "GOCACHE",
+                path: build_cache,
+            });
+        }
+        let go_directory = go_executable
+            .parent()
+            .unwrap_or_else(|| Path::new("/"))
+            .to_path_buf();
+        let path = std::env::join_paths([go_directory])
+            .map_err(|_| GoOracleConfigurationError::InvalidAuthorityDirectory {
+                role: "PATH",
+                path: go_executable.clone(),
+            })?
+            .to_string_lossy()
+            .into_owned();
+        Ok(Self {
+            go_executable,
+            goroot,
+            module_cache,
+            build_cache,
+            cgo: GoCgoPolicy::Disabled,
+            path,
+        })
+    }
+
+    /// Returns the selected Go compiler executable.
+    #[must_use]
+    pub fn go_executable(&self) -> &Path {
+        &self.go_executable
+    }
+
+    /// Returns the selected Go installation root.
+    #[must_use]
+    pub fn goroot(&self) -> &Path {
+        &self.goroot
+    }
+
+    /// Returns the admitted module-cache root.
+    #[must_use]
+    pub fn module_cache(&self) -> &Path {
+        &self.module_cache
+    }
+
+    /// Returns the transient Go build-cache path.
+    #[must_use]
+    pub fn build_cache(&self) -> &Path {
+        &self.build_cache
+    }
+
+    /// Returns the explicit cgo policy.
+    #[must_use]
+    pub const fn cgo_policy(&self) -> GoCgoPolicy {
+        self.cgo
+    }
+
+    fn apply_to(
+        &self,
+        command: &mut std::process::Command,
+        work: &GoWorkWitness,
+        toolchain_mode: bool,
+    ) {
+        command.env_clear();
+        command
+            .env("PATH", &self.path)
+            .env("GOROOT", &self.goroot)
+            .env("GOMODCACHE", &self.module_cache)
+            .env("GOCACHE", &self.build_cache)
+            .env("GOENV", "off")
+            .env("GOTOOLCHAIN", "local")
+            .env("GOPROXY", "off")
+            .env("GOSUMDB", "off")
+            .env("GOPACKAGESDRIVER", "off")
+            .env("CGO_ENABLED", "0");
+        // `go run` builds the vendored helper outside the selected project
+        // workspace. The helper receives a separate private value and applies
+        // it to `packages.Config.Env` after it starts. A prebuilt oracle can
+        // receive the selected GOWORK directly.
+        if toolchain_mode {
+            command
+                .env("GOWORK", "off")
+                .env("NUDOX_GO_AUTHORITY_GOWORK", work.go_work_value());
+        } else {
+            command.env("GOWORK", work.go_work_value());
+        }
+        #[cfg(windows)]
+        if let Some(system_root) = std::env::var_os("SystemRoot") {
+            command.env("SystemRoot", system_root);
+        }
+    }
+}
+
+/// Path-independent mode of one explicit Go oracle invocation.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum GoOracleInvocationModeV1 {
+    /// A selected binary directly implements the oracle protocol.
+    OracleBinary,
+    /// The selected Go compiler builds and runs the vendored oracle source.
+    GoToolchain,
+}
+
+/// Portable Go oracle options that omit host-local executable paths.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GoOracleInvocationOptionsV1 {
+    mode: GoOracleInvocationModeV1,
+    helper_source_identity: Option<[u8; 32]>,
+}
+
+impl GoOracleInvocationOptionsV1 {
+    /// Returns the exact closed command mode.
+    #[must_use]
+    pub const fn mode(self) -> GoOracleInvocationModeV1 {
+        self.mode
+    }
+
+    /// Returns the content identity of the vendored helper source in Go-toolchain mode.
+    #[must_use]
+    pub const fn helper_source_identity(self) -> Option<[u8; 32]> {
+        self.helper_source_identity
+    }
+}
+
 impl GoOracleConfiguration {
     /// Configures a direct oracle binary.
     pub fn oracle_binary(executable: PathBuf) -> Result<Self, GoOracleConfigurationError> {
@@ -850,6 +1090,7 @@ impl GoOracleConfiguration {
 pub struct ConfiguredGoOracle {
     oracle: GoOracle,
     configuration: GoOracleConfiguration,
+    child_environment: Option<GoOracleChildEnvironment>,
 }
 
 impl Default for GoOracle {
@@ -870,6 +1111,7 @@ impl GoOracle {
         ConfiguredGoOracle {
             oracle: self,
             configuration,
+            child_environment: None,
         }
     }
 
@@ -999,9 +1241,18 @@ impl GoOracle {
     fn run_configured(
         &self,
         configuration: &GoOracleConfiguration,
+        environment: Option<&GoOracleChildEnvironment>,
+        work: Option<&GoWorkWitness>,
         module: &Path,
     ) -> Result<Output, OracleError> {
         let mut command = Self::configured_command(configuration, None, module);
+        if let (Some(environment), Some(work)) = (environment, work) {
+            environment.apply_to(
+                &mut command,
+                work,
+                matches!(configuration, GoOracleConfiguration::GoToolchain(_)),
+            );
+        }
         let stdout = self.execute_configured(&mut command)?;
         self.decode(&stdout)
     }
@@ -1009,17 +1260,26 @@ impl GoOracle {
     fn authority_image_configured(
         &self,
         configuration: &GoOracleConfiguration,
+        environment: &GoOracleChildEnvironment,
+        work: &GoWorkWitness,
         source: &Path,
         module: &Path,
     ) -> Result<Vec<u8>, OracleError> {
         let mut command =
             Self::configured_command(configuration, Some(("--authority-image", source)), module);
+        environment.apply_to(
+            &mut command,
+            work,
+            matches!(configuration, GoOracleConfiguration::GoToolchain(_)),
+        );
         self.execute_configured(&mut command)
     }
 
     fn authority_image_for_package_configured(
         &self,
         configuration: &GoOracleConfiguration,
+        environment: &GoOracleChildEnvironment,
+        work: &GoWorkWitness,
         source: &Path,
         module: &Path,
     ) -> Result<Vec<u8>, OracleError> {
@@ -1027,6 +1287,11 @@ impl GoOracle {
             configuration,
             Some(("--authority-image-package", source)),
             module,
+        );
+        environment.apply_to(
+            &mut command,
+            work,
+            matches!(configuration, GoOracleConfiguration::GoToolchain(_)),
         );
         self.execute_configured(&mut command)
     }
@@ -1173,9 +1438,13 @@ impl GoOracle {
             source: std::io::Error::other("missing child status"),
         })?;
         if !status.success() {
+            let diagnostic = tail(&stderr.bytes);
+            if diagnostic.contains(UNSUPPORTED_CGO_SENTINEL) {
+                return Err(OracleError::UnsupportedCgo { detail: diagnostic });
+            }
             return Err(OracleError::Exit {
                 status: status.to_string(),
-                stderr: tail(&stderr.bytes),
+                stderr: diagnostic,
             });
         }
         Ok(stdout.bytes)
@@ -1183,6 +1452,83 @@ impl GoOracle {
 }
 
 impl ConfiguredGoOracle {
+    /// Binds the configured oracle to exact Go executable and cache roots.
+    /// Go-toolchain mode must use the same executable for the helper build;
+    /// oracle-binary mode still uses it for `go/packages` subprocesses.
+    pub fn with_child_environment(
+        mut self,
+        environment: GoOracleChildEnvironment,
+    ) -> Result<Self, GoOracleConfigurationError> {
+        if matches!(
+            &self.configuration,
+            GoOracleConfiguration::GoToolchain(configured)
+                if configured.as_ref() != environment.go_executable()
+        ) {
+            return Err(GoOracleConfigurationError::GoToolchainEnvironmentMismatch);
+        }
+        self.child_environment = Some(environment);
+        Ok(self)
+    }
+
+    /// Captures the nearest selected `go.work` for a package module root.
+    pub fn go_work_witness(
+        &self,
+        module_root: impl AsRef<Path>,
+    ) -> Result<GoWorkWitness, GoWorkWitnessError> {
+        GoWorkWitness::capture(module_root)
+    }
+
+    /// Captures the selected module/workspace manifests and every bounded
+    /// local filesystem target that can affect package loading.
+    pub fn package_authority_witness(
+        &self,
+        package_root: impl AsRef<Path>,
+    ) -> Result<GoPackageAuthorityWitness, GoPackageAuthorityWitnessError> {
+        GoPackageAuthorityWitness::capture(package_root)
+    }
+
+    /// Returns path-independent invocation mode and helper-source identity.
+    #[must_use]
+    pub fn portable_invocation_options(&self) -> GoOracleInvocationOptionsV1 {
+        let (mode, helper_source_identity) = match &self.configuration {
+            GoOracleConfiguration::OracleBinary(_) => {
+                (GoOracleInvocationModeV1::OracleBinary, None)
+            }
+            GoOracleConfiguration::GoToolchain(_) => {
+                let mut digest = Sha256::new();
+                for source in [
+                    include_bytes!("oracle/go.mod").as_slice(),
+                    include_bytes!("oracle/go.sum").as_slice(),
+                    include_bytes!("oracle/main.go").as_slice(),
+                    include_bytes!("oracle/docs.go").as_slice(),
+                    include_bytes!("oracle/image.go").as_slice(),
+                    include_bytes!("oracle/serialize.go").as_slice(),
+                ] {
+                    digest.update((source.len() as u64).to_be_bytes());
+                    digest.update(source);
+                }
+                (
+                    GoOracleInvocationModeV1::GoToolchain,
+                    Some(digest.finalize().into()),
+                )
+            }
+        };
+        GoOracleInvocationOptionsV1 {
+            mode,
+            helper_source_identity,
+        }
+    }
+
+    /// Reports whether Go-toolchain mode uses the exact executable selected as the native Go
+    /// toolchain. Oracle-binary mode has a separate, unversioned executable authority.
+    #[must_use]
+    pub fn uses_toolchain_executable(&self, executable: &Path) -> bool {
+        matches!(
+            &self.configuration,
+            GoOracleConfiguration::GoToolchain(configured) if configured.as_ref() == executable
+        )
+    }
+
     /// Returns a host-local fingerprint of the explicit oracle command,
     /// bundled Go producer closure, and process bounds. Path bytes make this
     /// a drift detector rather than a cross-host closure identity.
@@ -1209,18 +1555,74 @@ impl ConfiguredGoOracle {
                 digest.update(include_bytes!("oracle/serialize.go"));
             }
         }
+        if let Some(environment) = &self.child_environment {
+            digest.update(GO_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1.as_bytes());
+            digest.update([0]);
+            update_path_digest(&mut digest, &environment.go_executable);
+            update_path_digest(&mut digest, &environment.goroot);
+            update_path_digest(&mut digest, &environment.module_cache);
+            digest.update([match environment.cgo {
+                GoCgoPolicy::Disabled => 0,
+            }]);
+        } else {
+            digest.update(b"go-child-environment.missing\0");
+        }
         digest.finalize().into()
+    }
+
+    /// Returns the package-root-specific identity, including the exact
+    /// nearest `go.work` path and contents. The transient GOCACHE is omitted.
+    pub fn local_configuration_fingerprint_for_module(
+        &self,
+        module_root: impl AsRef<Path>,
+    ) -> Result<[u8; 32], GoWorkWitnessError> {
+        let mut digest = Sha256::new();
+        digest.update(self.local_configuration_fingerprint());
+        digest.update(self.go_work_witness(module_root)?.identity());
+        Ok(digest.finalize().into())
+    }
+
+    /// Returns the host-local oracle fingerprint bound to the package's Go
+    /// manifests and bounded local-target witness. Incomplete witnesses stay
+    /// local-only and must not authorize semantic reuse.
+    pub fn local_configuration_fingerprint_for_package(
+        &self,
+        package_root: impl AsRef<Path>,
+    ) -> Result<[u8; 32], GoPackageAuthorityWitnessError> {
+        let witness = self.package_authority_witness(package_root)?;
+        let mut digest = Sha256::new();
+        digest.update(b"compiler.go.package-authority-local.v1\0");
+        digest.update(self.local_configuration_fingerprint());
+        digest.update(witness.identity());
+        Ok(digest.finalize().into())
     }
 
     /// Runs the selected oracle configuration over one module.
     pub fn run(&self, module: &Path) -> Result<Output, OracleError> {
-        self.oracle.run_configured(&self.configuration, module)
+        let work = self
+            .child_environment
+            .as_ref()
+            .map(|_| GoWorkWitness::capture(module))
+            .transpose()
+            .map_err(|error| OracleError::WorkspaceWitness(error.to_string()))?;
+        self.oracle.run_configured(
+            &self.configuration,
+            self.child_environment.as_ref(),
+            work.as_ref(),
+            module,
+        )
     }
 
     /// Produces the authority image for one selected source file and module.
     pub fn authority_image(&self, source: &Path, module: &Path) -> Result<Vec<u8>, OracleError> {
-        self.oracle
-            .authority_image_configured(&self.configuration, source, module)
+        let (environment, work) = self.authority_child_context(module, None)?;
+        self.oracle.authority_image_configured(
+            &self.configuration,
+            environment,
+            &work,
+            source,
+            module,
+        )
     }
 
     /// Produces the authority image for exactly the package that owns
@@ -1235,8 +1637,91 @@ impl ConfiguredGoOracle {
         source: &Path,
         module: &Path,
     ) -> Result<Vec<u8>, OracleError> {
-        self.oracle
-            .authority_image_for_package_configured(&self.configuration, source, module)
+        let witness = GoPackageAuthorityWitness::capture(module)?;
+        self.authority_image_for_package_with_authority_witness(source, module, &witness)
+    }
+
+    /// Produces the selected package image under the exact workspace witness
+    /// captured when the package request was admitted. The witness is
+    /// revalidated immediately before spawning the oracle.
+    pub fn authority_image_for_package_with_witness(
+        &self,
+        source: &Path,
+        module: &Path,
+        witness: &GoWorkWitness,
+    ) -> Result<Vec<u8>, OracleError> {
+        let (environment, work) = self.authority_child_context(module, Some(witness))?;
+        self.oracle.authority_image_for_package_configured(
+            &self.configuration,
+            environment,
+            &work,
+            source,
+            module,
+        )
+    }
+
+    /// Produces the selected package image under the exact package-authority
+    /// witness captured at admission. The complete bounded closure is
+    /// re-captured after command construction and immediately before spawn.
+    pub fn authority_image_for_package_with_authority_witness(
+        &self,
+        source: &Path,
+        package_root: &Path,
+        witness: &GoPackageAuthorityWitness,
+    ) -> Result<Vec<u8>, OracleError> {
+        let environment = self
+            .child_environment
+            .as_ref()
+            .ok_or(OracleError::MissingChildEnvironment)?;
+        if matches!(&self.configuration, GoOracleConfiguration::OracleBinary(_))
+            && environment.cgo_policy() == GoCgoPolicy::Disabled
+        {
+            return Err(OracleError::UnsupportedCgoOracleBinary);
+        }
+
+        let mut command = GoOracle::configured_command(
+            &self.configuration,
+            Some(("--authority-image-package", source)),
+            package_root,
+        );
+        environment.apply_to(
+            &mut command,
+            witness.go_work_witness(),
+            matches!(&self.configuration, GoOracleConfiguration::GoToolchain(_)),
+        );
+        if !witness.matches_current(package_root)? {
+            return Err(OracleError::PackageAuthorityWitnessChanged);
+        }
+        self.oracle.execute_configured(&mut command)
+    }
+
+    fn authority_child_context(
+        &self,
+        module: &Path,
+        captured: Option<&GoWorkWitness>,
+    ) -> Result<(&GoOracleChildEnvironment, GoWorkWitness), OracleError> {
+        let environment = self
+            .child_environment
+            .as_ref()
+            .ok_or(OracleError::MissingChildEnvironment)?;
+        if matches!(&self.configuration, GoOracleConfiguration::OracleBinary(_))
+            && environment.cgo_policy() == GoCgoPolicy::Disabled
+        {
+            return Err(OracleError::UnsupportedCgoOracleBinary);
+        }
+        let work = if let Some(captured) = captured {
+            if !captured
+                .matches_current(module)
+                .map_err(|error| OracleError::WorkspaceWitness(error.to_string()))?
+            {
+                return Err(OracleError::WorkspaceWitnessChanged);
+            }
+            captured.clone()
+        } else {
+            GoWorkWitness::capture(module)
+                .map_err(|error| OracleError::WorkspaceWitness(error.to_string()))?
+        };
+        Ok((environment, work))
     }
 }
 
@@ -1325,9 +1810,14 @@ fn tail(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod read_tests {
-    use super::{GoOracleConfiguration, GoOracleConfigurationError, read_bounded};
+    use super::{
+        GoCgoPolicy, GoOracle, GoOracleChildEnvironment, GoOracleConfiguration,
+        GoOracleConfigurationError, GoOracleInvocationModeV1, GoPackageAuthorityWitness,
+        GoWorkWitness, read_bounded,
+    };
     use std::io::{self, Read};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
 
     struct FaultyReader {
         interrupted: bool,
@@ -1364,5 +1854,524 @@ mod read_tests {
             GoOracleConfigurationError::RelativeExecutable { executable }
                 if executable == PathBuf::from("go")
         ));
+    }
+
+    #[test]
+    fn portable_invocation_snapshot_ignores_tool_path_and_binds_mode() {
+        let first = GoOracle::default().with_configuration(
+            GoOracleConfiguration::go_toolchain(PathBuf::from("/host-a/bin/go"))
+                .expect("absolute Go executable"),
+        );
+        let relocated = GoOracle::default().with_configuration(
+            GoOracleConfiguration::go_toolchain(PathBuf::from("/host-b/sdk/go"))
+                .expect("absolute Go executable"),
+        );
+        let binary = GoOracle::default().with_configuration(
+            GoOracleConfiguration::oracle_binary(PathBuf::from("/host-c/bin/go-oracle"))
+                .expect("absolute oracle executable"),
+        );
+
+        let first_options = first.portable_invocation_options();
+        let relocated_options = relocated.portable_invocation_options();
+        let binary_options = binary.portable_invocation_options();
+        assert_eq!(first_options, relocated_options);
+        assert_eq!(first_options.mode(), GoOracleInvocationModeV1::GoToolchain);
+        assert!(first_options.helper_source_identity().is_some());
+        assert_ne!(first_options, binary_options);
+        assert_eq!(
+            binary_options.mode(),
+            GoOracleInvocationModeV1::OracleBinary
+        );
+        assert!(binary_options.helper_source_identity().is_none());
+        assert!(first.uses_toolchain_executable(Path::new("/host-a/bin/go")));
+        assert!(!first.uses_toolchain_executable(Path::new("/host-b/bin/go")));
+    }
+
+    #[test]
+    fn go_workspace_witness_tracks_nearest_file_contents_and_selection() {
+        let root = std::env::temp_dir().join(format!(
+            "go-work-witness-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let package = root.join("module");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&package).expect("module fixture directory");
+        let workspace = root.join("go.work");
+        std::fs::write(&workspace, b"go 1.23\nuse ./module\n").expect("workspace fixture");
+
+        let captured = GoWorkWitness::capture(&package).expect("capture nearest workspace");
+        let canonical_workspace = workspace.canonicalize().expect("canonical workspace");
+        assert_eq!(captured.path(), Some(canonical_workspace.as_path()));
+        assert!(captured.content_digest().is_some());
+        assert!(
+            captured
+                .matches_current(&package)
+                .expect("same workspace remains current")
+        );
+
+        std::fs::write(&workspace, b"go 1.23\nuse ./module\n\n").expect("change workspace");
+        assert!(
+            !captured
+                .matches_current(&package)
+                .expect("re-read workspace")
+        );
+
+        std::fs::remove_file(&workspace).expect("remove workspace");
+        let disabled = GoWorkWitness::capture(&package).expect("capture workspace absence");
+        assert!(matches!(&disabled, GoWorkWitness::Disabled));
+        assert_ne!(captured.identity(), disabled.identity());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn go_module_local_replace_witness_tracks_target_changes() {
+        let root = std::env::temp_dir().join(format!(
+            "go-module-replace-witness-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let module = root.join("module");
+        let shared = root.join("shared");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&module).expect("module fixture directory");
+        std::fs::create_dir_all(&shared).expect("replacement fixture directory");
+        std::fs::write(
+            module.join("go.mod"),
+            "module example.com/root\n\ngo 1.23\n\nreplace example.com/shared => ../shared\n",
+        )
+        .expect("module manifest");
+        std::fs::write(
+            shared.join("go.mod"),
+            "module example.com/shared\n\ngo 1.23\n",
+        )
+        .expect("replacement module manifest");
+        std::fs::write(
+            shared.join("shared.go"),
+            "package shared\nconst Value = 1\n",
+        )
+        .expect("replacement package source");
+
+        let witness = GoPackageAuthorityWitness::capture(&module)
+            .expect("capture package-local replacement closure");
+        assert!(witness.is_complete());
+        assert!(witness.requires_local_execution());
+        assert!(
+            witness
+                .local_only_reasons()
+                .iter()
+                .any(|reason| { reason.code() == "go.module_replace.local.v1" })
+        );
+        assert!(
+            witness
+                .matches_current(&module)
+                .expect("same closure remains current")
+        );
+
+        std::fs::write(
+            shared.join("shared.go"),
+            "package shared\nconst Value = 2\n",
+        )
+        .expect("change replacement source");
+        assert!(
+            !witness
+                .matches_current(&module)
+                .expect("replacement tree can be revalidated")
+        );
+        let updated = GoPackageAuthorityWitness::capture(&module)
+            .expect("capture changed replacement closure");
+        assert_ne!(witness.identity(), updated.identity());
+
+        std::fs::remove_dir_all(&shared).expect("remove local replacement target");
+        assert!(
+            !updated
+                .matches_current(&module)
+                .expect("deleted replacement target can be revalidated")
+        );
+
+        let missing_module = root.join("missing-module");
+        let appearing_target = root.join("appearing-target");
+        std::fs::create_dir_all(&missing_module).expect("second module fixture directory");
+        std::fs::write(
+            missing_module.join("go.mod"),
+            "module example.com/missing\n\ngo 1.23\n\nreplace example.com/appearing => ../appearing-target\n",
+        )
+        .expect("second module manifest");
+        let missing = GoPackageAuthorityWitness::capture(&missing_module)
+            .expect("capture absent local replacement target");
+        assert!(
+            missing
+                .local_only_reasons()
+                .iter()
+                .any(|reason| { reason.code() == "go.authority_witness.unsupported_target.v1" })
+        );
+        std::fs::create_dir_all(&appearing_target).expect("create replacement target");
+        std::fs::write(
+            appearing_target.join("go.mod"),
+            "module example.com/appearing\n\ngo 1.23\n",
+        )
+        .expect("appearing replacement module manifest");
+        std::fs::write(
+            appearing_target.join("appearing.go"),
+            "package appearing\nconst Value = 1\n",
+        )
+        .expect("appearing replacement source");
+        assert!(
+            !missing
+                .matches_current(&missing_module)
+                .expect("appearing replacement target can be revalidated")
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn go_local_replacement_witness_tracks_nested_symlink_target_drift() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "go-replace-symlink-witness-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let module = root.join("module");
+        let shared = root.join("shared");
+        let first = root.join("first");
+        let second = root.join("second");
+        let _ = std::fs::remove_dir_all(&root);
+        for directory in [&module, &shared, &first, &second] {
+            std::fs::create_dir_all(directory).expect("symlink fixture directory");
+        }
+        std::fs::write(
+            module.join("go.mod"),
+            "module example.com/root\n\ngo 1.23\n\nreplace example.com/shared => ../shared\n",
+        )
+        .expect("module manifest");
+        std::fs::write(
+            shared.join("go.mod"),
+            "module example.com/shared\n\ngo 1.23\n",
+        )
+        .expect("replacement module manifest");
+        std::fs::write(first.join("value.go"), "package value\nconst Value = 1\n")
+            .expect("first symlink target");
+        std::fs::write(second.join("value.go"), "package value\nconst Value = 2\n")
+            .expect("second symlink target");
+        symlink(&first, shared.join("link")).expect("create directory symlink");
+
+        let witness = GoPackageAuthorityWitness::capture(&module)
+            .expect("capture replacement containing a directory symlink");
+        assert!(witness.requires_local_execution());
+        assert!(!witness.is_complete());
+        assert!(
+            witness
+                .matches_current(&module)
+                .expect("symlink remains current")
+        );
+
+        std::fs::remove_file(shared.join("link")).expect("remove directory symlink");
+        symlink(&second, shared.join("link")).expect("retarget directory symlink");
+        assert!(
+            !witness
+                .matches_current(&module)
+                .expect("directory symlink target drift is revalidated")
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn go_workspace_use_replace_and_sum_changes_are_witnessed() {
+        let root = std::env::temp_dir().join(format!(
+            "go-workspace-closure-witness-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let module = root.join("module");
+        let other = root.join("other");
+        let replacement = root.join("replacement");
+        let _ = std::fs::remove_dir_all(&root);
+        for directory in [&module, &other, &replacement] {
+            std::fs::create_dir_all(directory).expect("workspace module directory");
+        }
+        std::fs::write(
+            root.join("go.work"),
+            "go 1.23\n\nuse (\n ./module\n ./other\n)\n\nreplace example.com/replacement => ./replacement\n",
+        )
+        .expect("workspace manifest");
+        std::fs::write(
+            module.join("go.mod"),
+            "module example.com/module\n\ngo 1.23\n",
+        )
+        .expect("selected module manifest");
+        std::fs::write(
+            other.join("go.mod"),
+            "module example.com/other\n\ngo 1.23\n",
+        )
+        .expect("workspace use module manifest");
+        std::fs::write(other.join("other.go"), "package other\nconst Value = 1\n")
+            .expect("workspace use package source");
+        std::fs::write(
+            replacement.join("go.mod"),
+            "module example.com/replacement\n\ngo 1.23\n",
+        )
+        .expect("workspace replacement module manifest");
+        std::fs::write(
+            replacement.join("replacement.go"),
+            "package replacement\nconst Value = 1\n",
+        )
+        .expect("workspace replacement source");
+        let workspace_sum = root.join("go.work.sum");
+        std::fs::write(&workspace_sum, "example.com/sum v1.2.3 h1:one\n")
+            .expect("workspace checksum manifest");
+
+        let witness = GoPackageAuthorityWitness::capture(&module)
+            .expect("capture workspace module and filesystem closure");
+        assert!(witness.is_complete());
+        assert!(witness.requires_local_execution());
+        let codes = witness
+            .local_only_reasons()
+            .iter()
+            .map(|reason| reason.code())
+            .collect::<Vec<_>>();
+        assert!(codes.contains(&"go.workspace.local.v1"));
+        assert!(codes.contains(&"go.workspace_use.local.v1"));
+        assert!(codes.contains(&"go.workspace_replace.local.v1"));
+        assert!(
+            witness
+                .matches_current(&module)
+                .expect("same closure remains current")
+        );
+
+        std::fs::write(
+            replacement.join("replacement.go"),
+            "package replacement\nconst Value = 2\n",
+        )
+        .expect("change workspace replacement source");
+        assert!(
+            !witness
+                .matches_current(&module)
+                .expect("workspace replacement target can be revalidated")
+        );
+
+        let with_workspace_replace_change = GoPackageAuthorityWitness::capture(&module)
+            .expect("capture updated workspace replacement target");
+        std::fs::write(other.join("other.go"), "package other\nconst Value = 2\n")
+            .expect("change workspace use source");
+        assert!(
+            !with_workspace_replace_change
+                .matches_current(&module)
+                .expect("workspace use target can be revalidated")
+        );
+
+        let with_target_change = GoPackageAuthorityWitness::capture(&module)
+            .expect("capture updated workspace use target");
+        std::fs::write(&workspace_sum, "example.com/sum v1.2.3 h1:two\n")
+            .expect("change workspace checksum manifest");
+        assert!(
+            !with_target_change
+                .matches_current(&module)
+                .expect("workspace checksum can be revalidated")
+        );
+
+        std::fs::remove_file(&workspace_sum).expect("remove workspace checksum manifest");
+        let absent_sum = GoPackageAuthorityWitness::capture(&module)
+            .expect("capture negative workspace checksum observation");
+        std::fs::write(&workspace_sum, "example.com/sum v1.2.3 h1:three\n")
+            .expect("create workspace checksum manifest");
+        assert!(
+            !absent_sum
+                .matches_current(&module)
+                .expect("negative workspace checksum observation can be revalidated")
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn go_environment_keeps_build_cache_leaf_uncreated_for_inspection() {
+        let root = std::env::temp_dir().join(format!("go-child-env-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let go_dir = root.join("go/bin");
+        let goroot = root.join("go/root");
+        let module_cache = root.join("modules");
+        std::fs::create_dir_all(&go_dir).expect("Go executable directory");
+        std::fs::create_dir_all(&goroot).expect("GOROOT fixture");
+        std::fs::create_dir_all(&module_cache).expect("module cache fixture");
+        let go = go_dir.join("go");
+        std::fs::write(&go, b"fixture").expect("Go executable fixture");
+        let build_cache = root.join("native-work/go-oracle-cache");
+        let environment =
+            GoOracleChildEnvironment::new(go, goroot, module_cache, build_cache.clone())
+                .expect("cache leaf is an inspection-safe typed path");
+        assert_eq!(environment.cgo_policy(), GoCgoPolicy::Disabled);
+        assert!(!build_cache.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn go_toolchain_rejects_cgo_in_root_and_import_dependency()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!(
+            "go-cgo-authority-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root)?;
+
+        let go = std::env::var_os("COMPILER_GO_COMPILER")
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                io::Error::other("COMPILER_GO_COMPILER is required for Go authority tests")
+            })?
+            .canonicalize()?;
+        let (goroot, module_cache) = explicit_go_roots(&go)?;
+        let child_environment = GoOracleChildEnvironment::new(
+            go.clone(),
+            goroot,
+            module_cache,
+            root.join("native-work/go-oracle-cache"),
+        )?;
+        let oracle = GoOracle {
+            output_limit: 32 * 1024 * 1024,
+            timeout: std::time::Duration::from_secs(180),
+        }
+        .with_configuration(GoOracleConfiguration::go_toolchain(go)?)
+        .with_child_environment(child_environment)?;
+
+        let root_cgo_module = root.join("root-cgo-module");
+        std::fs::create_dir_all(&root_cgo_module)?;
+        std::fs::write(
+            root_cgo_module.join("go.mod"),
+            "module example.com/rootcgo\n\ngo 1.23\n",
+        )?;
+        std::fs::write(
+            root_cgo_module.join("root.go"),
+            "package rootcgo\nconst Value = 1\n",
+        )?;
+        std::fs::write(
+            root_cgo_module.join("cgo.go"),
+            "package rootcgo\nimport \"C\"\n",
+        )?;
+        assert_cgo_rejected(&oracle, &root_cgo_module, &root_cgo_module.join("root.go"))?;
+
+        let dependency_module = root.join("dependency-cgo-module");
+        let dependency_package = dependency_module.join("dep");
+        std::fs::create_dir_all(&dependency_package)?;
+        std::fs::write(
+            dependency_module.join("go.mod"),
+            "module example.com/dependencycgo\n\ngo 1.23\n",
+        )?;
+        std::fs::write(
+            dependency_module.join("root.go"),
+            "package dependencycgo\nimport \"example.com/dependencycgo/dep\"\nconst Value = dep.Value\n",
+        )?;
+        std::fs::write(
+            dependency_package.join("dep.go"),
+            "package dep\nconst Value = 1\n",
+        )?;
+        std::fs::write(
+            dependency_package.join("cgo.go"),
+            "package dep\nimport \"C\"\n",
+        )?;
+        assert_cgo_rejected(
+            &oracle,
+            &dependency_module,
+            &dependency_module.join("root.go"),
+        )?;
+
+        let _ = std::fs::remove_dir_all(root);
+        Ok(())
+    }
+
+    fn explicit_go_roots(go: &Path) -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error>> {
+        let go_directory = go
+            .parent()
+            .ok_or_else(|| io::Error::other("Go executable has no parent"))?;
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| io::Error::other("HOME is required to locate the Go module cache"))?
+            .canonicalize()?;
+        let mut command = Command::new(go);
+        command
+            .args(["env", "GOROOT", "GOMODCACHE"])
+            .env_clear()
+            .env("PATH", go_directory)
+            .env("HOME", &home)
+            .env("GOENV", "off")
+            .env("GOTOOLCHAIN", "local")
+            .env("GOPROXY", "off")
+            .env("GOSUMDB", "off");
+        let output = command.output()?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "selected Go compiler could not report its roots: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ))
+            .into());
+        }
+        let roots = String::from_utf8(output.stdout)?;
+        let mut lines = roots.lines();
+        let goroot = PathBuf::from(
+            lines
+                .next()
+                .ok_or_else(|| io::Error::other("go env omitted GOROOT"))?,
+        );
+        let module_cache = PathBuf::from(
+            lines
+                .next()
+                .ok_or_else(|| io::Error::other("go env omitted GOMODCACHE"))?,
+        );
+        let goroot = goroot.canonicalize()?;
+        let configured_module_cache = std::env::var_os("NUDOX_GO_ROOT")
+            .or_else(|| std::env::var_os("GOMODCACHE"))
+            .map(PathBuf::from)
+            .filter(|path| path.is_dir())
+            .and_then(|path| path.canonicalize().ok())
+            .filter(|path| oracle_modules_are_cached(path));
+        let module_cache = match configured_module_cache {
+            Some(path) => path,
+            None => module_cache.canonicalize()?,
+        };
+        if !module_cache.is_dir() || !oracle_modules_are_cached(&module_cache) {
+            return Err(io::Error::other(format!(
+                "Go module cache {} does not contain the oracle dependencies",
+                module_cache.display()
+            ))
+            .into());
+        }
+        Ok((goroot, module_cache))
+    }
+
+    fn oracle_modules_are_cached(module_cache: &Path) -> bool {
+        [
+            ("golang.org/x/tools", "v0.30.0"),
+            ("golang.org/x/mod", "v0.23.0"),
+            ("golang.org/x/sync", "v0.11.0"),
+        ]
+        .into_iter()
+        .all(|(module, version)| {
+            let module_directory = module_cache.join(format!("{module}@{version}"));
+            let download_archive = module_cache
+                .join("cache/download")
+                .join(module)
+                .join("@v")
+                .join(format!("{version}.zip"));
+            module_directory.is_dir()
+                || (download_archive.is_file()
+                    && download_archive.with_extension("ziphash").is_file())
+        })
+    }
+
+    fn assert_cgo_rejected(
+        oracle: &super::ConfiguredGoOracle,
+        module: &Path,
+        source: &Path,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let witness = GoWorkWitness::capture(module)?;
+        let result = oracle.authority_image_for_package_with_witness(source, module, &witness);
+        assert!(matches!(
+            result,
+            Err(super::OracleError::UnsupportedCgo { .. })
+        ));
+        Ok(())
     }
 }

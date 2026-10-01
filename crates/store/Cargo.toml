@@ -18,6 +18,9 @@ strum.workspace = true
 thiserror.workspace = true
 zerocopy.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.4", default-features = false, features = ["fs", "std"] }
+
 [features]
 loom-model = ["dep:loom"]
 
@@ -37,6 +40,11 @@ trybuild.workspace = true
 [[bench]]
 name = "capacity-planning"
 path = "benches/capacity_planning.rs"
+harness = false
+
+[[bench]]
+name = "verified-object-read"
+path = "benches/verified_object_read.rs"
 harness = false
 
 [[example]]

@@ -19,7 +19,7 @@ use crate::paint::{Chamfer, cut};
 use crate::theme::ActiveFacet;
 use crate::tokens::ty;
 use gpui::{
-    AnyElement, App, FocusHandle, Global, InteractiveElement, IntoElement,
+    AnyElement, App, FocusHandle, Global, InteractiveElement, IntoElement, StatefulInteractiveElement,
     KeyDownEvent, MouseButton, ParentElement, SharedString, Styled, Window, WindowId, div, px,
 };
 use std::cell::RefCell;
@@ -31,6 +31,9 @@ const ENTER: Duration = Duration::from_millis(380);
 const EXIT: Duration = Duration::from_millis(200);
 
 type Action = Rc<dyn Fn(&mut Window, &mut App)>;
+
+/// Builds a sheet's content for the width it is given.
+pub type SheetContent = Rc<dyn Fn(&Measure, &mut Window, &mut App) -> AnyElement>;
 
 /// One button.
 #[derive(Clone)]
@@ -82,6 +85,9 @@ pub struct Dialog {
     pub buttons: Vec<DialogButton>,
     /// Esc and a press on the scrim close it.
     pub dismissible: bool,
+    /// A sheet: this content stands where the prose body would, on a wider
+    /// plate that scrolls when it is long (the heads-up sheet).
+    pub sheet: Option<SheetContent>,
 }
 
 struct Open {
@@ -195,7 +201,7 @@ pub fn element(measure: &Measure, window: &mut Window, cx: &mut App) -> Option<A
     }
     let palette = cx.facet().palette();
     let scale = measure.scale();
-    let width = px(440.0 * scale).min(measure.width() - px(32.0));
+    let width = px(if dialog.sheet.is_some() { 700.0 } else { 440.0 } * scale).min(measure.width() - px(32.0));
     let inner = measure.within(width - px(48.0 * scale));
     let count = dialog.buttons.len();
     let mut buttons = div().flex().justify_end().gap(px(8.0 * scale));
@@ -228,11 +234,18 @@ pub fn element(measure: &Measure, window: &mut Window, cx: &mut App) -> Option<A
                 .text_color(palette.ink0.hsla())
                 .child(dialog.title.clone()),
         )
-        .child(
-            prose("dialog-body", dialog.body.clone(), ty::BODY, &inner)
+        .child(match &dialog.sheet {
+            Some(content) => div()
+                .max_h(window.viewport_size().height * 0.62)
+                .id("dialog-sheet")
+                .overflow_y_scroll()
+                .child(content(&inner, window, cx))
+                .into_any_element(),
+            None => prose("dialog-body", dialog.body.clone(), ty::BODY, &inner)
                 .color(palette.ink2)
-                .code_color(palette.ink1),
-        )
+                .code_color(palette.ink1)
+                .into_any_element(),
+        })
         .child(buttons);
     let scrim = div()
         .id("dialog-scrim")
@@ -303,7 +316,8 @@ pub fn element(measure: &Measure, window: &mut Window, cx: &mut App) -> Option<A
             .translate(gpui::point(px(0.0), px((1.0 - t) * 10.0 * scale)))
             .opacity(t),
         );
-    Some(scrim.into_any_element())
+    // The scrim occludes the page: tell the lints what is under it.
+    Some(crate::probe::veil("dialog-scrim", scrim).into_any_element())
 }
 
 #[cfg(test)]
@@ -359,7 +373,63 @@ mod tests {
             body: "Its pages stay in the index.".into(),
             buttons: vec![DialogButton::new("Keep", |_, _| {}), DialogButton::new("Remove", |_, _| {}).primary()],
             dismissible,
+            sheet: None,
         }
+    }
+
+    /// A page with one published text under the float layer.
+    struct Labelled;
+
+    impl Render for Labelled {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(crate::probe::text(
+                    "page-text",
+                    "the page under the dialog",
+                    crate::tokens::ty::BODY,
+                    1.0,
+                    crate::probe::TextOverflow::Clip,
+                    div().child("the page under the dialog"),
+                ))
+                .child(float::layer(window, cx))
+        }
+    }
+
+    /// The scrim publishes itself as a veil: what was published before it, inside it, is under it.
+    #[gpui::test]
+    fn an_open_dialog_publishes_a_veil_over_the_page_beneath(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::probe::enable(cx));
+        let (_view, cx) = cx.add_window_view(|_, _| Labelled);
+        cx.simulate_resize(size(px(900.0), px(700.0)));
+        frame(cx);
+        let ledger = cx.update(|_, cx| crate::probe::take(cx));
+        assert!(ledger.veils.is_empty(), "no dialog, no veil");
+        cx.update(|window, cx| open(a_dialog(true), window, cx));
+        frame(cx);
+        // One draw's worth of ledger: a frame's texts and veils, in paint order.
+        cx.update(|_, cx| {
+            crate::probe::take(cx);
+        });
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+        let ledger = cx.update(|_, cx| crate::probe::take(cx));
+        assert_eq!(ledger.veils.len(), 1, "one scrim, one veil: {:?}", ledger.veils);
+        let veil = &ledger.veils[0];
+        let (index, page) = ledger
+            .texts
+            .iter()
+            .enumerate()
+            .find(|(_, text)| text.key == "page-text")
+            .expect("the page text is published");
+        assert!(veil.covers_text(index, &page.bounds), "the page text is under the veil: {veil:?} vs {:?}", page.bounds);
+        assert!(veil.bounds.width >= 899.0 && veil.bounds.height >= 699.0, "the scrim fills the window: {:?}", veil.bounds);
+        assert!(
+            ledger.texts.iter().enumerate().filter(|(i, _)| *i >= veil.texts).all(|(i, t)| !veil.covers_text(i, &t.bounds)),
+            "what the dialog paints above the veil is not covered by it"
+        );
     }
 
     #[gpui::test]

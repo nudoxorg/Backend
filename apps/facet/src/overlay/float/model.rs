@@ -26,6 +26,7 @@
 //!   edge), rests on other triggers at that level are deferred; they apply
 //!   only if the pointer stops on them for [`AIM_IDLE`].
 
+use super::unfurl::{self, Bands};
 use super::{Content, FloatKind, FloatRequest, Side};
 use crate::paint::cut;
 use crate::tokens::motion::{Bezier, DROP, GLIDE};
@@ -58,19 +59,21 @@ impl FloatKind {
     #[must_use]
     pub const fn rest_delay(self) -> Duration {
         match self {
-            Self::Tip => ms(450),
-            Self::Peek | Self::Lens => ms(350),
+            Self::Tip | Self::Peek | Self::Lens => ms(350),
             Self::Menu => ms(0),
         }
     }
 
-    /// How long an unheld card waits before it closes.
+    /// How long an unheld card waits before it closes. A tip cannot be
+    /// entered, so it waits only the jitter of a pointer crossing its
+    /// trigger; cards a pointer may travel into wait for that journey (the
+    /// aim triangle holds them while it lasts).
     #[must_use]
     pub const fn grace(self) -> Duration {
         match self {
-            Self::Tip => ms(90),
-            Self::Peek | Self::Lens => ms(160),
-            Self::Menu => ms(220),
+            Self::Tip => ms(30),
+            Self::Peek | Self::Lens => ms(100),
+            Self::Menu => ms(120),
         }
     }
 
@@ -84,13 +87,25 @@ impl FloatKind {
         }
     }
 
-    /// Exit duration (full).
+    /// An unfurl card's whole exit (its body rolls up in the first 120 ms
+    /// of [`super::UNFURL_EXIT`], then the edge and the underline follow).
+    /// A tip runs it three quarters as long, so its body is gone 90 ms after
+    /// its grace: 120 ms after the pointer left.
+    #[must_use]
+    pub const fn unfurl_exit(self) -> Duration {
+        match self {
+            Self::Tip => ms(225),
+            Self::Peek | Self::Lens | Self::Menu => super::UNFURL_EXIT,
+        }
+    }
+
+    /// Exit duration (full) of a card that does not unfurl.
     #[must_use]
     pub const fn exit(self) -> Duration {
         match self {
-            Self::Tip => ms(110),
-            Self::Peek | Self::Lens => ms(150),
-            Self::Menu => ms(120),
+            Self::Tip => ms(90),
+            Self::Peek | Self::Lens => ms(120),
+            Self::Menu => ms(100),
         }
     }
 
@@ -150,6 +165,18 @@ pub struct Presence {
     to: f32,
     since: Instant,
     duration: Duration,
+    path: Path,
+}
+
+/// How a presence runs between 0 and 1.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Path {
+    /// One eased curve: GLIDE in, DROP out.
+    Eased,
+    /// An unfurl's three bands on their own schedule (see [`unfurl`]):
+    /// `from` is where the bands were when this segment began, `offset` how
+    /// far into its schedule (ms) the segment joined it.
+    Unfurl { from: Bands, offset: f32 },
 }
 
 impl Presence {
@@ -161,22 +188,82 @@ impl Presence {
             to: 1.0,
             since: now,
             duration,
+            path: Path::Eased,
+        }
+    }
+
+    /// Unfurling from nothing at `now`: `duration` is the whole entrance
+    /// ([`super::UNFURL_ENTER`], or zero under reduced motion).
+    #[must_use]
+    pub fn unfurling(now: Instant, duration: Duration) -> Self {
+        Self {
+            path: Path::Unfurl { from: Bands::CLOSED, offset: 0.0 },
+            ..Self::entering(now, duration)
+        }
+    }
+
+    /// Settled on its target at `now` (the harness's "settle").
+    #[must_use]
+    pub fn settled(self, now: Instant) -> Self {
+        let path = match self.path {
+            Path::Eased => Path::Eased,
+            Path::Unfurl { .. } => Path::Unfurl {
+                from: Bands::all(self.to),
+                offset: 0.0,
+            },
+        };
+        Self {
+            from: self.to,
+            to: self.to,
+            since: now,
+            duration: Duration::ZERO,
+            path,
+        }
+    }
+
+    /// How far the segment has run at `now` (0..1).
+    fn progress(&self, now: Instant) -> f32 {
+        if self.duration.is_zero() {
+            return 1.0;
+        }
+        let run = now.saturating_duration_since(self.since).as_secs_f32();
+        (run / self.duration.as_secs_f32()).clamp(0.0, 1.0)
+    }
+
+    /// Where an unfurl is on its schedule at linear progress `progress`, ms.
+    fn schedule(&self, offset: f32, progress: f32) -> f32 {
+        let end = if self.to >= self.from { unfurl::ENTER_MS } else { unfurl::EXIT_MS };
+        offset + (end - offset) * progress
+    }
+
+    /// The unfurl's bands at `now` (a card that does not unfurl has every
+    /// band at its value).
+    #[must_use]
+    pub fn bands(&self, now: Instant) -> Bands {
+        match self.path {
+            Path::Eased => Bands::all(self.value(now)),
+            Path::Unfurl { from, offset } => {
+                let progress = self.progress(now);
+                if progress >= 1.0 {
+                    return Bands::all(self.to);
+                }
+                unfurl::at(from, unfurl::Run::toward(self.from, self.to), self.schedule(offset, progress))
+            }
+        }
+    }
+
+    /// The value at `now`: an unfurl's is its bands' mean.
+    #[must_use]
+    pub fn value(&self, now: Instant) -> f32 {
+        let progress = self.progress(now);
+        match self.path {
+            Path::Eased => self.from + (self.to - self.from) * self.curve().ease(progress),
+            Path::Unfurl { .. } => self.bands(now).mean(),
         }
     }
 
     fn curve(&self) -> Bezier {
         if self.to >= self.from { GLIDE } else { DROP }
-    }
-
-    /// The value at `now`.
-    #[must_use]
-    pub fn value(&self, now: Instant) -> f32 {
-        if self.duration.is_zero() {
-            return self.to;
-        }
-        let run = now.saturating_duration_since(self.since).as_secs_f32();
-        let progress = (run / self.duration.as_secs_f32()).clamp(0.0, 1.0);
-        self.from + (self.to - self.from) * self.curve().ease(progress)
     }
 
     /// Where it is heading.
@@ -185,7 +272,7 @@ impl Presence {
         self.to
     }
 
-    /// The rate of change at `now`, in units per second: the same easing
+    /// The rate of change at `now`, in units per second: the same curve
     /// [`value`](Self::value) samples, differentiated (matches
     /// `motion::store`'s own tween velocity, `(to - from) * slope / span`),
     /// so a probe reading this alongside `value` sees one consistent curve
@@ -201,7 +288,20 @@ impl Presence {
             return 0.0;
         }
         let progress = (run / span).clamp(0.0, 1.0);
-        (self.to - self.from) * self.curve().slope(progress) / span
+        match self.path {
+            Path::Eased => (self.to - self.from) * self.curve().slope(progress) / span,
+            Path::Unfurl { from, offset } => {
+                // The bands' mean, differentiated across a millisecond of
+                // schedule (each band is piecewise smooth on its window).
+                let run = unfurl::Run::toward(self.from, self.to);
+                let ms = self.schedule(offset, progress);
+                let per_second = (self.schedule(offset, 1.0) - offset) / span;
+                let h = 0.5;
+                let after = unfurl::at(from, run, ms + h).mean();
+                let before = unfurl::at(from, run, (ms - h).max(offset)).mean();
+                (after - before) / (ms + h - (ms - h).max(offset)) * per_second
+            }
+        }
     }
 
     /// When the current segment ends.
@@ -228,18 +328,36 @@ impl Presence {
         (self.to - self.from).abs() > f32::EPSILON && now < self.ends()
     }
 
-    /// Heads for `to` from wherever it is now, taking the share of `full`
-    /// that the remaining distance is of the whole way.
+    /// Heads for `to` from wherever it is now. An eased presence takes the
+    /// share of `full` that the remaining distance is of the whole way; an
+    /// unfurl joins the other schedule where its bands are ([`unfurl::resume`])
+    /// and takes the share of `full` that is left of it.
     pub fn retarget(&mut self, to: f32, full: Duration, now: Instant) {
         if (self.to - to).abs() <= f32::EPSILON {
             return;
         }
         let value = self.value(now);
-        *self = Self {
-            from: value,
-            to,
-            since: now,
-            duration: full.mul_f32((to - value).abs().clamp(0.0, 1.0)),
+        *self = match self.path {
+            Path::Eased => Self {
+                from: value,
+                to,
+                since: now,
+                duration: full.mul_f32((to - value).abs().clamp(0.0, 1.0)),
+                path: Path::Eased,
+            },
+            Path::Unfurl { .. } => {
+                let from = self.bands(now);
+                let run = unfurl::Run::toward(value, to);
+                let offset = unfurl::resume(from, run);
+                let end = run.ms();
+                Self {
+                    from: value,
+                    to,
+                    since: now,
+                    duration: full.mul_f32(((end - offset) / end).clamp(0.0, 1.0)),
+                    path: Path::Unfurl { from, offset },
+                }
+            }
         };
     }
 }
@@ -287,6 +405,14 @@ pub struct Card {
     pub shown: Instant,
     /// The pointer rested on it again: it shows its deeper sections.
     pub deep: bool,
+    /// Enters by unfurling from its anchor instead of growing and fading
+    /// ([`FloatRequest::unfurl`]).
+    pub unfurl: bool,
+    /// The content a warm swap replaced (an unfurl card wipes it out while
+    /// the new content wipes in).
+    pub previous: Option<Content>,
+    /// How it lines up with its anchor.
+    pub align: super::place::Align,
 }
 
 impl Card {
@@ -530,7 +656,7 @@ impl Model {
         if warm {
             self.show(request, None, false, now);
         } else {
-            let due = now + request.kind.rest_delay();
+            let due = now + request.rest.unwrap_or_else(|| request.kind.rest_delay());
             self.tip_pending = Some(Pending {
                 request,
                 level: None,
@@ -597,7 +723,7 @@ impl Model {
         if warm {
             self.show(request, Some(level), false, now);
         } else {
-            let due = now + request.kind.rest_delay();
+            let due = now + request.rest.unwrap_or_else(|| request.kind.rest_delay());
             self.pending = Some(Pending {
                 request,
                 level: Some(level),
@@ -953,22 +1079,10 @@ impl Model {
     /// current state; the harness's "settle").
     pub fn snap(&mut self, now: Instant) {
         for card in &mut self.cards {
-            let target = card.presence.target();
-            card.presence = Presence {
-                from: target,
-                to: target,
-                since: now,
-                duration: Duration::ZERO,
-            };
+            card.presence = card.presence.settled(now);
         }
         for pin in &mut self.pins {
-            let target = pin.presence.target();
-            pin.presence = Presence {
-                from: target,
-                to: target,
-                since: now,
-                duration: Duration::ZERO,
-            };
+            pin.presence = pin.presence.settled(now);
         }
         self.tick(now);
     }
@@ -1193,15 +1307,21 @@ impl Model {
         if level.is_none() {
             self.tip_pending = None;
         }
-        let enter = self.duration(request.kind.enter());
+        let enter = self.duration(if request.unfurl { super::UNFURL_ENTER } else { request.kind.enter() });
         let id = match reuse {
             Some(index) => {
                 let card = &mut self.cards[index];
                 let swapped = card.key != request.key;
+                if swapped {
+                    // An unfurl card wipes from this to the new content.
+                    card.previous = Some(card.content.clone());
+                }
                 card.key = request.key;
                 card.anchor = request.anchor;
                 card.content = request.content;
                 card.side = request.side;
+                card.unfurl = request.unfurl;
+                card.align = request.align;
                 card.sticky = sticky;
                 card.trigger_hover = !sticky;
                 card.leave_at = None;
@@ -1232,7 +1352,11 @@ impl Model {
                     content: request.content,
                     level,
                     sticky,
-                    presence: Presence::entering(now, enter),
+                    presence: if request.unfurl {
+                        Presence::unfurling(now, enter)
+                    } else {
+                        Presence::entering(now, enter)
+                    },
                     closing: false,
                     trigger_hover: !sticky,
                     card_hover: false,
@@ -1244,6 +1368,9 @@ impl Model {
                     title: None,
                     shown: now,
                     deep: false,
+                    unfurl: request.unfurl,
+                    previous: None,
+                    align: request.align,
                 });
                 id
             }
@@ -1260,7 +1387,11 @@ impl Model {
     }
 
     fn close_index(&mut self, index: usize, now: Instant) {
-        let exit = self.duration(self.cards[index].kind.exit());
+        let exit = self.duration(if self.cards[index].unfurl {
+            self.cards[index].kind.unfurl_exit()
+        } else {
+            self.cards[index].kind.exit()
+        });
         let (id, kind, level) = {
             let card = &mut self.cards[index];
             if card.closing {

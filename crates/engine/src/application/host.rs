@@ -14,16 +14,20 @@ use std::{
     fs, io,
     num::NonZeroUsize,
     path::{Path, PathBuf},
+    sync::Arc,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 
 use authority::NativeExecutables;
+use arrayvec::ArrayVec;
+use backend_compile::EmbeddingExecutable;
 use backend_semantic::vocabulary::NativeTool;
 use backend_store::journal::PublicationLimits;
 use paths::create_directory;
 
 use crate::application::{
+    EmbeddingProvisioningFailure, EmbeddingRequirement, LocalCompilerCapabilities,
     LocalCompilerClient, LocalCompilerRuntimeConfiguration, LocalCompilerRuntimePaths,
     LocalCompilerScratch, LocalCompilerTimeout, ToolchainProbeLimits,
 };
@@ -59,8 +63,14 @@ pub enum LocalHostVariable {
     NudoxRustc,
     /// Explicit Rust sysroot paired with `NUDOX_RUSTC` or the admitted default compiler.
     NudoxRustSysroot,
+    /// Explicit Cargo executable paired with the selected Rust compiler.
+    NudoxCargo,
+    /// Explicit Cargo home containing the admitted registry/cache state.
+    NudoxCargoHome,
     /// Explicit Clang compiler.
     NudoxClang,
+    /// Explicit libclang shared library or containing directory.
+    LibclangPath,
     /// Explicit Python interpreter.
     NudoxPython,
     /// Explicit TypeScript compiler.
@@ -174,6 +184,64 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
     /// Explicitly configured broken paths fail admission; they never become silent unavailable
     /// rows. A genuinely absent optional tool remains an honest unavailable row.
     pub fn open(&self) -> Result<LocalCompilerClient, LocalCompilerHostError> {
+        self.open_with_embedding_state(None, None, EmbeddingRequirement::Optional)
+    }
+
+    /// Opens the compiler with one already activated shared embedding runtime.
+    ///
+    /// Passing `None` means embeddings were not configured; if configured provisioning failed,
+    /// use [`Self::open_with_embedding_provisioning_failure`] so staged output can report that
+    /// state distinctly.
+    pub fn open_with_embedding_runtime(
+        &self,
+        runtime: Option<Arc<EmbeddingExecutable>>,
+        requirement: EmbeddingRequirement,
+    ) -> Result<LocalCompilerClient, LocalCompilerHostError> {
+        self.open_with_embedding_state(runtime, None, requirement)
+    }
+
+    /// Opens the compiler with a closed status for configured embedding provisioning failure.
+    ///
+    /// Optional compilation keeps IR available and reports this status; required compilation
+    /// fails when the first package is staged.
+    pub fn open_with_embedding_provisioning_failure(
+        &self,
+        cause: EmbeddingProvisioningFailure,
+        requirement: EmbeddingRequirement,
+    ) -> Result<LocalCompilerClient, LocalCompilerHostError> {
+        self.open_with_embedding_state(None, Some(cause), requirement)
+    }
+
+    /// Inspects the exact host compiler capability table without creating runtime directories or
+    /// starting a compiler owner.
+    ///
+    /// This performs the same bounded executable and authority probes used by runtime admission.
+    /// Its result matches a locald process only when both processes admit the same compiler and
+    /// authority configuration for the same target platform.
+    ///
+    /// # Errors
+    ///
+    /// Returns exact path, resource-bound, authority, or configuration causes.
+    pub fn inspect_capabilities(
+        &self,
+    ) -> Result<LocalCompilerCapabilities, LocalCompilerHostError> {
+        let data_root = self.data_root()?;
+        let paths = LocalCompilerRuntimePaths::new(
+            data_root.join("artifacts"),
+            data_root.join("journal"),
+            data_root.join("native-work").join("scope-inspection"),
+        )?;
+        let configuration =
+            self.runtime_configuration(paths, None, None, EmbeddingRequirement::Optional, true)?;
+        Ok(configuration.capabilities())
+    }
+
+    fn open_with_embedding_state(
+        &self,
+        embedding_runtime: Option<Arc<EmbeddingExecutable>>,
+        embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
+        embedding_requirement: EmbeddingRequirement,
+    ) -> Result<LocalCompilerClient, LocalCompilerHostError> {
         let data_root = self.data_root()?;
         create_directory(LocalHostDirectory::DataRoot, &data_root)?;
         let artifact_directory = data_root.join("artifacts");
@@ -181,7 +249,29 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         create_directory(LocalHostDirectory::Artifacts, &artifact_directory)?;
         create_directory(LocalHostDirectory::Journal, &journal_directory)?;
         let native_work_directory = self.create_native_work(&data_root)?;
+        let paths = LocalCompilerRuntimePaths::new(
+            artifact_directory,
+            journal_directory,
+            native_work_directory,
+        )?;
+        let configuration = self.runtime_configuration(
+            paths,
+            embedding_runtime,
+            embedding_provisioning_failure,
+            embedding_requirement,
+            false,
+        )?;
+        LocalCompilerClient::start(configuration).map_err(Into::into)
+    }
 
+    fn runtime_configuration(
+        &self,
+        paths: LocalCompilerRuntimePaths,
+        embedding_runtime: Option<Arc<EmbeddingExecutable>>,
+        embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
+        embedding_requirement: EmbeddingRequirement,
+        admit_toolchains_now: bool,
+    ) -> Result<LocalCompilerRuntimeConfiguration, LocalCompilerHostError> {
         let probe_limits =
             ToolchainProbeLimits::new(VERSION_PROBE_TIMEOUT, nonzero(VERSION_PROBE_STREAM_BYTES))?;
         let home = self.optional_absolute_path(LocalHostVariable::Home)?;
@@ -195,6 +285,16 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 LocalHostVariable::NudoxRustc,
                 LocalHostPathRole::Native(NativeTool::Rustc),
                 self.executable_candidates(home.as_deref(), NativeTool::Rustc),
+            )?,
+            cargo: self.executable(
+                LocalHostVariable::NudoxCargo,
+                LocalHostPathRole::Cargo,
+                self.auxiliary_candidates(home.as_deref(), "cargo"),
+            )?,
+            cargo_home: self.directory(
+                LocalHostVariable::NudoxCargoHome,
+                LocalHostPathRole::CargoHome,
+                ArrayVec::new(),
             )?,
             clang: self.executable(
                 LocalHostVariable::NudoxClang,
@@ -227,14 +327,23 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 self.executable_candidates(home.as_deref(), NativeTool::CSharpCompiler),
             )?,
         };
-        let toolchains = executables.toolchain_rows();
+        let toolchains = if admit_toolchains_now {
+            executables.admitted_toolchain_rows(probe_limits)
+        } else {
+            executables.toolchain_rows()
+        };
         let package_roots = self.package_roots(home.as_deref())?;
-        let package_authority =
-            self.package_authority(home.as_deref(), &executables, jdk_root, probe_limits)?;
-        let paths = LocalCompilerRuntimePaths::new(
-            artifact_directory,
-            journal_directory,
-            native_work_directory,
+        let go_module_cache = package_roots
+            .iter()
+            .find(|root| root.ecosystem == backend_library::interface::PackageEcosystem::Golang)
+            .map(|root| root.path.to_path_buf());
+        let package_authority = self.package_authority(
+            home.as_deref(),
+            &executables,
+            jdk_root,
+            go_module_cache.as_deref(),
+            &paths.native_work_directory,
+            probe_limits,
         )?;
         let configuration = LocalCompilerRuntimeConfiguration::new(
             paths,
@@ -247,8 +356,19 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 nonzero(PUBLICATION_GROUP_CAPACITY),
             )?,
             LocalCompilerScratch::with_fragment_capacity(nonzero(FRAGMENT_SCRATCH_BYTES))?,
-        )?;
-        LocalCompilerClient::start(configuration).map_err(Into::into)
+        )?
+        .with_embedding_requirement(embedding_requirement);
+        let configuration = match embedding_runtime {
+            Some(runtime) => configuration.with_embedding_runtime(runtime, embedding_requirement),
+            None => configuration,
+        };
+        let configuration = match embedding_provisioning_failure {
+            Some(cause) => {
+                configuration.with_embedding_provisioning_failure(cause, embedding_requirement)
+            }
+            None => configuration,
+        };
+        Ok(configuration)
     }
 
     fn data_root(&self) -> Result<PathBuf, LocalCompilerHostError> {
@@ -331,6 +451,114 @@ impl LocalCompilerHost<WorkspaceCompilerEnvironment> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use backend_semantic::vocabulary::{LanguageProfile, RustEdition};
+
+    struct InspectionEnvironment(PathBuf);
+
+    impl LocalHostEnvironment for InspectionEnvironment {
+        fn value(&self, variable: LocalHostVariable) -> Option<OsString> {
+            (variable == LocalHostVariable::NudoxDataRoot).then(|| self.0.clone().into_os_string())
+        }
+    }
+
+    fn inspected_environment_identity() -> [u8; 32] {
+        let executable = std::env::current_exe().expect("test executable");
+        let data_root = executable
+            .parent()
+            .expect("test executable directory")
+            .join("unused-scope-inspection-root");
+        let host = LocalCompilerHost::new(
+            InspectionEnvironment(data_root),
+            LocalHostDiscovery::ExplicitOnly,
+        );
+        host.inspect_capabilities()
+            .expect("capability inspection")
+            .for_profile(LanguageProfile::Rust(RustEdition::Rust2024))
+            .environment_identity()
+            .expect("closed compiler-child environment identity")
+    }
+
+    #[test]
+    fn emit_scope_identity_for_environment_regression() {
+        if std::env::var_os("BACKEND_SCOPE_ENV_REGRESSION").is_none() {
+            return;
+        }
+        let identity = inspected_environment_identity();
+        let mut hex = String::with_capacity(identity.len().saturating_mul(2));
+        for byte in identity {
+            use std::fmt::Write as _;
+            let _ = write!(hex, "{byte:02x}");
+        }
+        println!("scope-environment-identity={hex}");
+    }
+
+    #[test]
+    fn unrelated_owner_environment_does_not_churn_scope_identity() {
+        fn inspect_with_owner_environment(
+            working_directory: &str,
+            terminal: &str,
+            secret: &str,
+        ) -> String {
+            let output =
+                std::process::Command::new(std::env::current_exe().expect("test executable"))
+                    .args([
+                        "--exact",
+                        "application::host::tests::emit_scope_identity_for_environment_regression",
+                        "--nocapture",
+                    ])
+                    .env_clear()
+                    .env("BACKEND_SCOPE_ENV_REGRESSION", "1")
+                    .env("PWD", working_directory)
+                    .env("TERM", terminal)
+                    .env("AWS_ACCESS_KEY_ID", "access-key")
+                    .env("AWS_SECRET_ACCESS_KEY", secret)
+                    .output()
+                    .expect("spawn isolated scope identity probe");
+            assert!(
+                output.status.success(),
+                "identity probe failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout)
+                .expect("identity probe output is UTF-8")
+                .lines()
+                .find_map(|line| line.strip_prefix("scope-environment-identity="))
+                .expect("identity probe emitted its result")
+                .to_owned()
+        }
+
+        let first = inspect_with_owner_environment("/work/one", "dumb", "secret-one");
+        let changed = inspect_with_owner_environment("/work/two", "xterm-256color", "secret-two");
+        assert_eq!(first, changed);
+    }
+
+    #[test]
+    fn capability_inspection_does_not_create_runtime_directories() {
+        let data_root = std::env::temp_dir().join(format!(
+            "backend-compiler-inspection-{}-{}",
+            std::process::id(),
+            NEXT_NATIVE_WORK.fetch_add(1, Ordering::Relaxed),
+        ));
+        assert!(!data_root.exists());
+
+        let host = LocalCompilerHost::new(
+            InspectionEnvironment(data_root.clone()),
+            LocalHostDiscovery::ExplicitOnly,
+        );
+        let capabilities = host
+            .inspect_capabilities()
+            .expect("capabilities can be inspected without an installed toolchain");
+
+        assert!(capabilities.as_slice().iter().all(|capability| {
+            capability.state() == crate::application::LocalCompilerCapabilityState::Unavailable
+        }));
+        assert!(!data_root.exists());
+    }
+}
+
 const fn nonzero(value: usize) -> NonZeroUsize {
     match NonZeroUsize::new(value) {
         Some(value) => value,
@@ -346,7 +574,10 @@ const fn variable_name(variable: LocalHostVariable) -> &'static str {
         LocalHostVariable::LocalAppData => "LOCALAPPDATA",
         LocalHostVariable::NudoxRustc => "NUDOX_RUSTC",
         LocalHostVariable::NudoxRustSysroot => "NUDOX_RUST_SYSROOT",
+        LocalHostVariable::NudoxCargo => "NUDOX_CARGO",
+        LocalHostVariable::NudoxCargoHome => "NUDOX_CARGO_HOME",
         LocalHostVariable::NudoxClang => "NUDOX_CLANG",
+        LocalHostVariable::LibclangPath => "LIBCLANG_PATH",
         LocalHostVariable::NudoxPython => "NUDOX_PYTHON",
         LocalHostVariable::NudoxTypeScriptCompiler => "NUDOX_TSC",
         LocalHostVariable::NudoxGo => "NUDOX_GO",

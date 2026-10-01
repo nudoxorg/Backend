@@ -17,6 +17,8 @@ use backend_version::{
     admit_producer_observation,
 };
 use serde::{Deserialize, Serialize};
+use std::hash::{DefaultHasher, Hasher};
+use std::sync::OnceLock;
 
 /// Schema marker carried by a producer certificate.  The marker is part of
 /// the certificate grammar so a preimage for one identity class cannot be
@@ -207,12 +209,139 @@ pub enum WireClaim {
 /// duplicate, or mismatched claims.  This makes standalone CLI, MCP, and
 /// desktop processes able to verify successful replies without having an
 /// out-of-band typed snapshot supplied by their caller.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WireCertificate {
     /// Canonical identity claims covering every identity-bearing field in the
     /// enclosing command, reply, view, or event.
     pub claims: Box<[WireClaim]>,
+    /// Claim positions by claimed id, built on the first id lookup.
+    #[serde(skip)]
+    index: ClaimIndex,
+}
+
+impl std::fmt::Debug for WireCertificate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WireCertificate")
+            .field("claims", &self.claims)
+            .finish()
+    }
+}
+
+/// Positions of id-bearing claims, ordered by a hash of the claimed id.
+///
+/// Admission asks for one id's claims once per row. Scanning every claim for
+/// each row made admitting a view O(rows x claims): the desktop fixture's
+/// journal frame has 10,460 rows and 20,928 claims, and admitting it took
+/// 7-9 s at opt-level 2. A lookup visits only the positions filed under its
+/// id's hash, in claim order, and keeps every schema and id comparison, so a
+/// hash collision adds a claim that comparison rejects and never changes an
+/// answer, a duplicate, or an error. The index remembers the slice it was
+/// built from; once `claims` is replaced, lookups scan instead of trusting it.
+#[derive(Default)]
+struct ClaimIndex(OnceLock<Option<IdPositions>>);
+
+impl Clone for ClaimIndex {
+    fn clone(&self) -> Self {
+        // A clone owns another allocation, so this index could never cover it.
+        Self::default()
+    }
+}
+
+impl PartialEq for ClaimIndex {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for ClaimIndex {}
+
+/// Certificates smaller than this are scanned: building costs more.
+const INDEXED_FROM: usize = 64;
+
+struct IdPositions {
+    /// Address and length of the claims this index was built from.
+    source: (usize, usize),
+    hash: fn(&str) -> u64,
+    /// `(hash of id, claim position)`, sorted: equal hashes keep claim order.
+    filed: Box<[(u64, u32)]>,
+}
+
+impl IdPositions {
+    fn build(claims: &[WireClaim], hash: fn(&str) -> u64) -> Option<Self> {
+        let mut filed = Vec::with_capacity(claims.len());
+        for (position, claim) in claims.iter().enumerate() {
+            if let Some(id) = claim_id(claim) {
+                filed.push((hash(id), u32::try_from(position).ok()?));
+            }
+        }
+        filed.sort_unstable();
+        Some(Self {
+            source: (claims.as_ptr() as usize, claims.len()),
+            hash,
+            filed: filed.into_boxed_slice(),
+        })
+    }
+
+    fn covers(&self, claims: &[WireClaim]) -> bool {
+        self.source == (claims.as_ptr() as usize, claims.len())
+    }
+
+    fn lookup<'a>(&'a self, claims: &'a [WireClaim], id: &str) -> ClaimsFor<'a> {
+        let key = (self.hash)(id);
+        let start = self.filed.partition_point(|&(filed, _)| filed < key);
+        let rest = self.filed.get(start..).unwrap_or_default();
+        let end = rest.partition_point(|&(filed, _)| filed == key);
+        ClaimsFor::Filed {
+            claims,
+            positions: rest.get(..end).unwrap_or_default().iter(),
+        }
+    }
+}
+
+/// The id every id-bearing claim is filed under.
+fn claim_id(claim: &WireClaim) -> Option<&str> {
+    match claim {
+        WireClaim::Key { id, .. }
+        | WireClaim::KeyBytes { id, .. }
+        | WireClaim::KeyCommitment { id, .. }
+        | WireClaim::RowIdentity { id, .. }
+        | WireClaim::Version { id, .. }
+        | WireClaim::Root { id, .. }
+        | WireClaim::RootCommitment { id, .. }
+        | WireClaim::Intent { id, .. }
+        | WireClaim::Delta { id, .. } => Some(id),
+        WireClaim::Cursor { .. } | WireClaim::Coverage { .. } => None,
+    }
+}
+
+fn id_hash(id: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    hasher.write(id.as_bytes());
+    hasher.finish()
+}
+
+/// The claims a lookup for one id must visit, in claim order: every claim
+/// (a scan), or exactly the ones filed under the id's hash.
+enum ClaimsFor<'a> {
+    Scan(std::slice::Iter<'a, WireClaim>),
+    Filed {
+        claims: &'a [WireClaim],
+        positions: std::slice::Iter<'a, (u64, u32)>,
+    },
+}
+
+impl<'a> Iterator for ClaimsFor<'a> {
+    type Item = &'a WireClaim;
+
+    fn next(&mut self) -> Option<&'a WireClaim> {
+        match self {
+            Self::Scan(claims) => claims.next(),
+            Self::Filed { claims, positions } => positions
+                .next()
+                .and_then(|&(_, position)| claims.get(usize::try_from(position).ok()?)),
+        }
+    }
 }
 
 impl WireCertificate {
@@ -220,18 +349,54 @@ impl WireCertificate {
     /// envelopes; identity-bearing payloads reject an incomplete certificate.
     #[must_use]
     pub fn new() -> Self {
+        Self::from_claims(Box::new([]))
+    }
+
+    /// Creates a certificate carrying exactly `claims`, in order.
+    #[must_use]
+    pub fn from_claims(claims: Box<[WireClaim]>) -> Self {
         Self {
-            claims: Box::new([]),
+            claims,
+            index: ClaimIndex::default(),
         }
     }
 
     /// Returns a certificate with one additional producer claim.
     #[must_use]
-    pub fn with_claim(mut self, claim: WireClaim) -> Self {
+    pub fn with_claim(self, claim: WireClaim) -> Self {
         let mut claims = self.claims.into_vec();
         claims.push(claim);
-        self.claims = claims.into_boxed_slice();
-        self
+        Self::from_claims(claims.into_boxed_slice())
+    }
+
+    /// The claims a lookup for `id` must visit, in claim order.
+    fn claims_for(&self, id: &str) -> ClaimsFor<'_> {
+        self.claims_for_with(id, id_hash)
+    }
+
+    fn claims_for_with(&self, id: &str, hash: fn(&str) -> u64) -> ClaimsFor<'_> {
+        if self.claims.len() >= INDEXED_FROM
+            && let Some(positions) = self
+                .index
+                .0
+                .get_or_init(|| IdPositions::build(&self.claims, hash))
+            && positions.covers(&self.claims)
+        {
+            return positions.lookup(&self.claims, id);
+        }
+        ClaimsFor::Scan(self.claims.iter())
+    }
+
+    /// Builds the index with `hash` (tests force collisions with it).
+    #[cfg(test)]
+    pub(crate) fn index_with(&self, hash: fn(&str) -> u64) {
+        let _ = self.claims_for_with("", hash);
+    }
+
+    /// Makes every lookup scan (the reference the index must equal).
+    #[cfg(test)]
+    pub(crate) fn scan_only(&self) {
+        let _ = self.index.0.set(None);
     }
 
     /// Returns a certificate containing this exact claim once.
@@ -276,7 +441,7 @@ impl WireCertificate {
     ) -> Result<Option<&'a str>, String> {
         let mut result = None;
         let mut ordinary_claim = false;
-        for claim in &self.claims {
+        for claim in self.claims_for(id) {
             match claim {
                 WireClaim::RowIdentity {
                     schema: actual,
@@ -371,7 +536,7 @@ impl WireCertificate {
     /// fixed-width bytes that an owner must resolve against a pinned view.
     pub(crate) fn key_commitment(&self, schema: WireSchema, id: &str) -> Result<(), String> {
         let mut observed = false;
-        for claim in &self.claims {
+        for claim in self.claims_for(id) {
             let WireClaim::KeyCommitment {
                 schema: actual,
                 id: actual_id,
@@ -413,7 +578,7 @@ impl WireCertificate {
     /// Requires one exact deferred relation-root commitment claim.
     pub(crate) fn root_commitment(&self, schema: WireSchema, id: &str) -> Result<(), String> {
         let mut observed = false;
-        for claim in &self.claims {
+        for claim in self.claims_for(id) {
             let WireClaim::RootCommitment {
                 schema: actual,
                 id: actual_id,
@@ -599,7 +764,7 @@ impl WireCertificate {
 
     fn unique_key(&self, schema: WireSchema, id: &str) -> Result<&str, String> {
         let mut result = None;
-        for claim in &self.claims {
+        for claim in self.claims_for(id) {
             if let WireClaim::Key {
                 schema: actual,
                 id: actual_id,
@@ -619,7 +784,7 @@ impl WireCertificate {
 
     fn unique_key_bytes(&self, schema: WireSchema, id: &str) -> Result<&[u8], String> {
         let mut result = None;
-        for claim in &self.claims {
+        for claim in self.claims_for(id) {
             let value = match claim {
                 WireClaim::Key {
                     schema: actual,
@@ -643,7 +808,7 @@ impl WireCertificate {
 
     fn unique_version(&self, schema: WireSchema, id: &str) -> Result<&[u8], String> {
         let mut result = None;
-        for claim in &self.claims {
+        for claim in self.claims_for(id) {
             if let WireClaim::Version {
                 schema: actual,
                 id: actual_id,
@@ -663,7 +828,7 @@ impl WireCertificate {
 
     fn unique_root(&self, schema: WireSchema, id: &str) -> Result<&[u8], String> {
         let mut result = None;
-        for claim in &self.claims {
+        for claim in self.claims_for(id) {
             if let WireClaim::Root {
                 schema: actual,
                 id: actual_id,
@@ -683,7 +848,7 @@ impl WireCertificate {
 
     fn unique_intent(&self, id: &str) -> Result<(&str, &[u8]), String> {
         let mut result = None;
-        for claim in &self.claims {
+        for claim in self.claims_for(id) {
             if let WireClaim::Intent {
                 id: actual_id,
                 token,
@@ -702,7 +867,7 @@ impl WireCertificate {
 
     fn unique_delta(&self, schema: WireSchema, id: &str) -> Result<(&str, &str, &[u8]), String> {
         let mut result = None;
-        for claim in &self.claims {
+        for claim in self.claims_for(id) {
             if let WireClaim::Delta {
                 schema: actual,
                 id: actual_id,

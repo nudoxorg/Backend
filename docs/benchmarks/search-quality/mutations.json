@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "checks": [
+    {
+      "id": "remove-alias",
+      "corpus": "adversarial",
+      "document_id": "fixture:cargo/hyper-transport@0.4.0",
+      "operation": {"field": "aliases", "status": "absent", "values": []},
+      "query_id": "alias.only-net-client",
+      "assertion": "the mutated result set must not contain the target document"
+    },
+    {
+      "id": "remove-description",
+      "corpus": "adversarial",
+      "document_id": "fixture:cargo/hyper-transport@0.4.0",
+      "operation": {"field": "description", "status": "absent", "values": []},
+      "query_id": "description.protocol-adapter",
+      "assertion": "the mutated result set must not contain the target document"
+    },
+    {
+      "id": "hide-forge-lane",
+      "corpus": "primary",
+      "hide_source_kind": "forge",
+      "query_id": "exact.forge.yaml-cpp",
+      "assertion": "the mutated result set must not contain the pinned forge document"
+    },
+    {
+      "id": "ignore-yank-status",
+      "corpus": "primary",
+      "query_id": "freshness.serde-current",
+      "promote_document_id": "cargo:serde@1.0.95",
+      "assertion": "the deliberately stale top result must increment yank_error and stale_top1"
+    },
+    {
+      "id": "float-irrelevant-near-match",
+      "corpus": "adversarial",
+      "query_id": "alias.only-net-client",
+      "promote_document_id": "fixture:npm/@example/net-client@2.1.0",
+      "assertion": "moving the grade-zero near-match above the judged alias target must lower MRR and nDCG"
+    }
+  ]
+}

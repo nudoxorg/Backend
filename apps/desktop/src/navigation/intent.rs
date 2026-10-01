@@ -74,12 +74,30 @@ pub enum FolderPickerOutcome {
 pub enum Intent {
     /// Replace the current typed route.
     Navigate(Route),
+    /// Refine the current Find page without adding a history stop per keystroke.
+    /// An old field callback cannot replace a different page or newer query.
+    RefineFind {
+        /// Query owning the field when it scheduled the refinement.
+        expected: Option<crate::model::pages::SearchQuery>,
+        /// Latest admitted query.
+        query: Option<crate::model::pages::SearchQuery>,
+    },
+    /// The query walks its results: show this place provisionally. The
+    /// first preview remembers where you were; none of them is history.
+    Preview(Route),
+    /// Keep the place the query is showing: where you were becomes Back.
+    CommitPreview,
+    /// Put the place you were on back (Esc, or the query emptied).
+    EndPreview,
     /// Show the current declaration another way. Replaces the current
     /// history entry's view: not navigation, so Back leaves the declaration.
     SetView(super::route::View),
     /// View the current package or declaration at another release (`None`:
     /// the pinned one). Replaces the current entry, like a view switch.
     SetRelease(Option<super::route::ReleaseId>),
+    /// Tour a package in the graph (T): the world, flying the package's
+    /// reading path from its first stop. A place (Back returns).
+    Tour(crate::core::PackageId),
     /// Hold a thing in the hand (touching it when it is already held).
     Hold(crate::model::hand::Held),
     /// Let go of a held thing.
@@ -180,8 +198,20 @@ pub enum Intent {
     RemoveProject(LocalProjectId),
     /// Reveal a project folder in the platform file browser.
     RevealProject(LocalProjectId),
+    /// Open a file at a line in the editor: the configured one, else `code`,
+    /// then `zed`, then whatever the platform opens the file with.
+    OpenSource {
+        /// The file's absolute path.
+        path: Arc<str>,
+        /// The one-based line.
+        line: u32,
+    },
     /// Retry a stopped or failed index job.
     RetryIndex(LocalProjectId),
+    /// Add a registry release to the library: its source is resolved and the
+    /// owner indexes it (`runtime::acquire`, run by the window root; never
+    /// reduced).
+    AddRelease(crate::model::release::Release),
     /// Cancel an active index job while retaining the shelf row.
     CancelIndex(LocalProjectId),
     /// Run a local connection probe.
@@ -191,8 +221,31 @@ pub enum Intent {
         /// Whether the service answered.
         connected: bool,
     },
+    /// The index owner answered for the first time (W-Open I1): the window
+    /// opened before it, at the unserved root, and adopts this one.
+    OwnerReady {
+        /// The owner's root when it first answered.
+        key: VersionedRoot,
+        /// Embedded in this process, or attached to a live owner.
+        mode: crate::model::ServiceMode,
+    },
     /// Open the help page in Settings.
     OpenHelp,
+    /// Let go of a note that was said.
+    DismissNote(crate::model::Note),
+    /// The index an earlier build wrote was set aside: say so, and index every
+    /// project on the shelf again.
+    LibraryRebuilding {
+        /// Where the earlier index was moved to.
+        kept_at: Arc<str>,
+    },
+    /// The window stopped being resized at this size (logical pixels).
+    WindowResized {
+        /// Width.
+        width: u32,
+        /// Height.
+        height: u32,
+    },
     /// Stop all currently running engine work without changing the route.
     Stop,
     /// Begin a version-pinned root refresh.

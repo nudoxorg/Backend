@@ -5,11 +5,11 @@ use core::{num::NonZeroU64, ops::Deref};
 
 use crate::root::packed::RowIndex;
 use crate::root::{Locality, MetadataBytes, RootEntryCount};
-use fearless_simd::Level;
+use backend_version::object::{ObjectKind, ObjectLength, ObjectRef, ProviderSet, RemoteBase};
 use backend_version::{
     ContentAuthority, Domain, Encoding, EncodingTag, GenerationId, LocalitySortedEncoding,
 };
-use backend_version::object::{ObjectKind, ObjectLength, ObjectRef, ProviderSet, RemoteBase};
+use fearless_simd::Level;
 use zerocopy::{
     Immutable, KnownLayout, TryFromBytes, Unalign, Unaligned,
     byteorder::{BigEndian, U32},

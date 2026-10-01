@@ -126,6 +126,13 @@ pub enum WorkspaceRelationRejection {
     MissingKey,
     /// An insertion targeted a key that is already present.
     DuplicateKey,
+    /// Bounded update metadata exceeded the explicit caller budget.
+    MetadataBudgetExceeded {
+        /// Conservative bytes required by the update.
+        required_bytes: usize,
+        /// Maximum bytes allowed by the update budget.
+        max_bytes: usize,
+    },
 }
 
 impl fmt::Display for WorkspaceRelationRejection {
@@ -141,6 +148,13 @@ impl fmt::Display for WorkspaceRelationRejection {
             Self::Node(error) => write!(formatter, "canonical node rejected: {error}"),
             Self::MissingKey => formatter.write_str("key is not present in the relation"),
             Self::DuplicateKey => formatter.write_str("key is already present in the relation"),
+            Self::MetadataBudgetExceeded {
+                required_bytes,
+                max_bytes,
+            } => write!(
+                formatter,
+                "relation update needs {required_bytes} metadata bytes, above the {max_bytes} byte budget"
+            ),
         }
     }
 }
@@ -252,6 +266,13 @@ fn map_tree_error<R: Relation>(
         LazyTreeError::Node(error) => WorkspaceRelationRejection::Node(error),
         LazyTreeError::MissingKey => WorkspaceRelationRejection::MissingKey,
         LazyTreeError::DuplicateKey => WorkspaceRelationRejection::DuplicateKey,
+        LazyTreeError::MetadataBudgetExceeded {
+            required_bytes,
+            max_bytes,
+        } => WorkspaceRelationRejection::MetadataBudgetExceeded {
+            required_bytes,
+            max_bytes,
+        },
     };
     WorkspaceRelationError::Tree(WorkspaceRelationFault {
         relation: RelationIdentity::of::<R>(),
@@ -630,6 +651,22 @@ impl<R: CanonicalRelation> WorkspaceRelationHandle<R> {
         self.tree()
             .lookup(key)
             .map_err(|error| map_tree_error::<R>(error, Some(RelationKeyPrefix::of::<R>(key))))
+    }
+
+    /// Looks up strictly increasing keys through this handle's exact selected
+    /// root while reusing each authenticated branch and leaf within the batch.
+    /// Missing keys produce `None` in their corresponding result slots.
+    ///
+    /// # Errors
+    /// Returns an error when keys are not strictly increasing or a requested
+    /// node cannot be loaded and admitted.
+    pub fn lookup_many_sorted(
+        &self,
+        keys: &[R::Key],
+    ) -> Result<Vec<Option<R::Value>>, WorkspaceRelationError> {
+        self.tree()
+            .lookup_many_sorted(keys)
+            .map_err(|error| map_tree_error::<R>(error, None))
     }
 
     /// Reads one bounded page in canonical key order.

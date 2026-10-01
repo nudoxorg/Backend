@@ -26,6 +26,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+mod artifact;
+mod artifact_fs;
+mod closure_composer;
 mod gc;
 mod layout;
 mod nodes;
@@ -34,25 +37,39 @@ mod publication;
 mod publication_api;
 mod recovery;
 mod store_api;
+mod streaming_closure;
 
-pub use gc::{GcLimits, GcReport, GcRoot, GcRoots};
+pub use artifact::{
+    ArtifactBudget, ArtifactChunkReceipt, ArtifactClosureClaim, ArtifactHaveBitmap,
+    ArtifactObjectClaim, ArtifactObjectReader, ArtifactPlan, ArtifactSession, ArtifactSink,
+    StoredClosureReceipt, VerifiedClosureMember, VerifiedObjectEnvelope, admit_object_envelope,
+    write_object_envelope, write_streamed_object_envelope,
+};
+pub use closure_composer::{
+    ClosureCompositionBudget, ClosureMembershipChange, PinnedStoredClosureReceipt,
+};
+pub use gc::{GcLimits, GcReport, GcRoot, GcRootResolver, GcRoots};
 pub use layout::{
-    FileStore, PublicationAuthorityError, PublicationBase, PublicationDescriptor, SelectedHead,
-    StorePublicationAuthority, TransactionId,
+    FileStore, GcPinGuard, PublicationAuthorityError, PublicationBase, PublicationDescriptor,
+    SelectedHead, StorePublicationAuthority, TransactionId,
 };
 pub use nodes::{
-    DurableManifest, DurableManifestPage, DurableTree, ManifestReadStats, OwnedRelationNodeLoader,
-    RelationNodeChild, RelationNodeRead, RelationNodeWriteStats, TreeReadStats, TreeWriteStats,
+    DurableManifest, DurableManifestIdPage, DurableManifestPage, DurableTree, ManifestReadStats,
+    OwnedRelationNodeLoader, RelationNodeChild, RelationNodeRead, RelationNodeWriteStats,
+    TreeReadStats, TreeWriteStats,
 };
-pub use objects::ObjectWriteReceipt;
+pub use objects::{ObjectWriteReceipt, VerifiedObjectView};
 pub use publication::{
     CheckedWorkspacePublication, FileDurable, FilePrepared, FilePublished, WorkspaceFileDurable,
     WorkspaceFilePrepared, WorkspaceFilePublished,
 };
+pub use streaming_closure::{ObjectStream, StreamingClosureBudget, StreamingClosureBuilder};
 
 #[cfg(test)]
 pub(crate) fn set_test_fault(point: u8) {
     recovery::set_test_fault(point);
+    streaming_closure::set_test_fault(point);
+    artifact_fs::set_test_fault(point);
 }
 
 use self::objects::{

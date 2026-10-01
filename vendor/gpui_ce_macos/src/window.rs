@@ -298,6 +298,11 @@ unsafe fn build_classes() {
                 sel!(characterIndexForPoint:),
                 character_index_for_point as extern "C" fn(&Object, Sel, NSPoint) -> u64,
             );
+            // NUDOX: no text input context until a text input is focused.
+            decl.add_method(
+                sel!(inputContext),
+                input_context as extern "C" fn(&Object, Sel) -> id,
+            );
             decl.register()
         };
         BLURRED_VIEW_CLASS = {
@@ -518,6 +523,9 @@ struct MacWindowState {
     close_callback: Option<Box<dyn FnOnce()>>,
     appearance_changed_callback: Option<Box<dyn FnMut()>>,
     input_handler: Option<PlatformInputHandler>,
+    // NUDOX: whether a focused text input registered its handler with the
+    // last drawn frame (see `input_context`).
+    text_input_focused: bool,
     last_key_equivalent: Option<KeyDownEvent>,
     last_left_mouse_down_event: Option<Retained<Objc2Object>>,
     synthetic_drag_counter: usize,
@@ -920,6 +928,7 @@ impl MacWindow {
                 close_callback: None,
                 appearance_changed_callback: None,
                 input_handler: None,
+                text_input_focused: false,
                 last_key_equivalent: None,
                 last_left_mouse_down_event: None,
                 synthetic_drag_counter: 0,
@@ -1378,11 +1387,15 @@ impl PlatformWindow for MacWindow {
     }
 
     fn set_input_handler(&mut self, input_handler: PlatformInputHandler) {
-        self.0.as_ref().lock().input_handler = Some(input_handler);
+        let mut lock = self.0.as_ref().lock();
+        lock.input_handler = Some(input_handler);
+        lock.text_input_focused = true; // NUDOX: see `input_context`
     }
 
     fn take_input_handler(&mut self) -> Option<PlatformInputHandler> {
-        self.0.as_ref().lock().input_handler.take()
+        let mut lock = self.0.as_ref().lock();
+        lock.text_input_focused = false; // NUDOX: see `input_context`
+        lock.input_handler.take()
     }
 
     fn prompt(
@@ -3232,6 +3245,29 @@ fn send_file_drop_event(
 fn drag_event_position(window_state: &Mutex<MacWindowState>, dragging_info: id) -> Point<Pixels> {
     let drag_location: NSPoint = unsafe { msg_send![dragging_info, draggingLocation] };
     convert_mouse_position(drag_location, window_state.lock().content_size().height)
+}
+
+// NUDOX: AppKit activates the first responder's text input context on the
+// first run-loop pass after a window becomes key. The first activation loads
+// TextInputUI and ~150 frameworks it links, on the main thread: a 123-125 ms
+// stall right after an app's first frame (W-Open I1, Instruments System Trace,
+// `-[NSTextInputContext activate]` -> `initTUINSCursorUIController`). NSView's
+// default returns a context for any NSTextInputClient, so every GPUI window
+// paid it at launch whether or not it had a text field. A window whose
+// last frame registered no input handler (nothing is focused that takes
+// text) has no context to activate; one is returned the moment a text input
+// is focused. Key events keep working: with no context, `handle_key_event`'s
+// `handleEvent:` sends to nil, returns NO, and the key goes to GPUI's own
+// dispatch. A contended lock falls back to AppKit's default.
+extern "C" fn input_context(this: &Object, _: Sel) -> id {
+    let window_state = unsafe { get_window_state(this) };
+    let focused = window_state
+        .try_lock()
+        .map_or(true, |state| state.text_input_focused);
+    if !focused {
+        return nil;
+    }
+    unsafe { msg_send![super(this, class!(NSView)), inputContext] }
 }
 
 fn with_input_handler<F, R>(window: &Object, f: F) -> Option<R>

@@ -201,6 +201,17 @@ impl RecordList {
         self
     }
 
+    /// Attaches the per-query semantic lane state without changing the
+    /// complete lexical rows in this page.
+    #[must_use]
+    pub fn with_semantic_search_status(
+        mut self,
+        status: backend_library::SemanticSearchStatus,
+    ) -> Self {
+        self.coverage = self.coverage.with_semantic_search_status(status);
+        self
+    }
+
     /// The sentence a renderer prints when [`Self::is_empty`] is true.
     #[must_use]
     pub fn empty_explanation(&self) -> String {

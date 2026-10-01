@@ -254,16 +254,18 @@ impl Holds {
 }
 
 /// One input of a pipe.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Input {
     /// The parameter's name, or the receiver's words (`reads it`).
     pub name: SharedString,
     /// Its type (`None` for the receiver).
     pub ty: Option<Spelled>,
+    /// Recorded receiver behavior, absent for a named parameter.
+    pub receiver: Option<Receiver>,
 }
 
 /// A generic parameter and its sentence.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Where {
     /// The parameter.
     pub name: SharedString,
@@ -274,7 +276,7 @@ pub struct Where {
 }
 
 /// Takes → gives.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pipe {
     /// The receiver first (if any), then the parameters.
     pub inputs: Vec<Input>,
@@ -295,6 +297,10 @@ pub struct SigLine {
     pub params: Vec<Spelled>,
     /// The result.
     pub ret: Option<Spelled>,
+    /// The normal result, with fallibility separated into its own exit.
+    pub success: Option<Spelled>,
+    /// An alternative failure exit, preserving resolved targets.
+    pub fails: Option<Option<Spelled>>,
 }
 
 /// A member row: a name, its signature, its one sentence.
@@ -325,6 +331,10 @@ pub struct FoldRow {
     pub inputs: Vec<Spelled>,
     /// The shared result.
     pub ret: Option<Spelled>,
+    /// The family's normal result; the exact legacy result stays in `ret`.
+    pub success: Option<Spelled>,
+    /// The family's alternative failure exit.
+    pub fails: Option<Option<Spelled>>,
 }
 
 impl FoldRow {
@@ -426,6 +436,18 @@ pub struct RecipeView {
     pub foot: Option<SharedString>,
     /// The one sentence when there is no rail.
     pub sentence: Option<SharedString>,
+    /// The known symbol this Getting route makes. Calling routes do not
+    /// claim an output that the recipe model has not established.
+    pub outcome: Option<Vec<super::types::Piece>>,
+}
+
+/// One semantic input to a recipe, projected from a recorded recipe key.
+/// Its optional source binding is not needed to read a single input; ⌥ still
+/// carries the full authored expression on the rail.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecipePort {
+    pub ty: Vec<super::types::Piece>,
+    pub name: Option<SharedString>,
 }
 
 /// One route as a rail.
@@ -433,6 +455,8 @@ pub struct RecipeView {
 pub struct RailView {
     /// Where it starts (`from text what`); empty when it starts at a step.
     pub lead: Vec<Piece>,
+    /// The inputs that begin this path, before any operation.
+    pub starts: Vec<RecipePort>,
     /// The steps.
     pub steps: Vec<StepView>,
     /// `also from yes or no, text … and 2 more`; empty when none.
@@ -456,6 +480,8 @@ pub struct StepView {
     pub maybe: bool,
     /// Inputs riding along, each `+ a DeclarationKind kind`.
     pub riders: Vec<Vec<Piece>>,
+    /// Inputs a step needs besides the value moving along the spine.
+    pub side_inputs: Vec<RecipePort>,
     /// The station after it (the type it makes), when a step follows.
     pub station: Option<Vec<Piece>>,
 }

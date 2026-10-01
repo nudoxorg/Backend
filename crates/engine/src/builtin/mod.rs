@@ -43,7 +43,8 @@ pub use relation::{
     ProductInput, ProductProjectRef, ProductSourceDeltaFacts, ProductSourceRecord,
     ProductSourceRelation, ProductSourceRetentionFacts, ProductSourceSnapshot,
     ProductSourceTransition, RetainedDeclarations, SourceDeclaration, SourceLanguage,
-    SourceLocation, SourceUnavailableReason, product_source_file_key,
+    SourceLocation, SourceUnavailableReason, legacy_product_source_file_key,
+    product_source_file_key,
 };
 pub use semantic_relation::{
     ActivatedSemanticPublication, PartialSemanticCoverage, ProductSemanticPublicationKey,

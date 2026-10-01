@@ -579,13 +579,70 @@ pub enum ActivationError<E> {
     },
 }
 
+impl<E: fmt::Display> fmt::Display for ActivationError<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Start(error) => write!(formatter, "runtime start failed: {error}"),
+            Self::Readiness {
+                probe,
+                revoke: None,
+            } => write!(formatter, "runtime readiness probe failed: {probe}"),
+            Self::Readiness {
+                probe,
+                revoke: Some(revoke),
+            } => write!(
+                formatter,
+                "runtime readiness probe failed: {probe}; cleanup also failed: {revoke}"
+            ),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for ActivationError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Start(error) => Some(error),
+            Self::Readiness { probe, .. } => Some(probe),
+        }
+    }
+}
+
 /// Failed activation returns the verified resident lease for retry or eviction.
-#[derive(Debug)]
 pub struct ActivationFailure<K: CapabilityKind, R: CapabilityRuntime<K>> {
     /// Still-valid resident artifact.
     pub resident: ResidentCapability<K>,
     /// Exact runtime failure.
     pub error: ActivationError<R::Error>,
+}
+
+impl<K: CapabilityKind, R: CapabilityRuntime<K>> fmt::Debug for ActivationFailure<K, R>
+where
+    R::Error: fmt::Debug,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ActivationFailure")
+            .field("error", &self.error)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<K: CapabilityKind, R: CapabilityRuntime<K>> fmt::Display for ActivationFailure<K, R>
+where
+    R::Error: fmt::Display,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "capability activation failed: {}", self.error)
+    }
+}
+
+impl<K: CapabilityKind, R: CapabilityRuntime<K>> std::error::Error for ActivationFailure<K, R>
+where
+    R::Error: std::error::Error + 'static,
+{
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
 }
 
 /// Active runtime owner. Its constructor is private and its `Drop` revokes the runtime.

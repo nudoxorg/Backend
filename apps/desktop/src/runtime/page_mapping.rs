@@ -100,6 +100,28 @@ impl OutlineIndex {
         self.rows.is_empty()
     }
 
+    /// A bounded comparison packet, built on the read worker from the original
+    /// rows so names never stand in for missing type or signature evidence.
+    pub fn comparison_api(&self, package: &PackageRef) -> crate::model::browse::PackageApi {
+        const LIMIT: usize = 2048;
+        let mut candidates = self.rows.iter().filter_map(|row| {
+            let decl = DeclRef::from_row(row)?;
+            matches!(row.kind, Some(DeclarationKind::Module | DeclarationKind::Function | DeclarationKind::Method | DeclarationKind::Constructor | DeclarationKind::Struct | DeclarationKind::Class | DeclarationKind::Enum | DeclarationKind::Trait | DeclarationKind::Interface | DeclarationKind::Type | DeclarationKind::Union | DeclarationKind::Macro))
+                .then_some((decl, row))
+        }).collect::<Vec<_>>();
+        candidates.sort_by(|(left, _), (right, _)| left.name.cmp(&right.name).then_with(|| left.coordinate.cmp(&right.coordinate)));
+        let complete = self.complete && candidates.len() <= LIMIT;
+        let items = candidates.into_iter().take(LIMIT).map(|(decl, row)| {
+            let summary = row.document.iter().find_map(|fragment| match fragment {
+                Fragment::Text(text) if !text.trim().is_empty() && text != &row.label => Some(Arc::from(text.lines().next().unwrap_or_default().trim())),
+                _ => None,
+            });
+            let signature = signature_text(row.signature.as_deref(), decl.language, decl.key, Some(self));
+            crate::model::browse::ApiItem { decl, signature, summary }
+        }).collect::<Vec<_>>();
+        crate::model::browse::PackageApi { package: package.clone(), items: items.into(), complete }
+    }
+
     /// Returns one row by key.
     #[must_use]
     pub fn row(&self, key: SymbolKey) -> Option<&Row> {
@@ -310,7 +332,7 @@ const fn token_class(kind: TokenKind) -> TokenClass {
 pub fn signature_text(
     text: Option<&str>,
     language: Language,
-    own: Option<SymbolKey>,
+    own: Option<crate::model::pages::RowKey>,
     outline: Option<&OutlineIndex>,
 ) -> Known<SignatureText> {
     let Some(text) = text.filter(|text| !text.trim().is_empty()) else {
@@ -343,7 +365,7 @@ pub fn signature_text(
             .then(|| {
                 outline?
                     .resolve_name(token.text(), is_type_like)
-                    .filter(|row| own.is_none_or(|own| row.id != RowId::Symbol(own)))
+                    .filter(|row| own.is_none_or(|own| !matches!(row.id, RowId::Symbol(key) if crate::model::pages::RowKey::from(key) == own)))
                     .and_then(|row| SymbolRef::new(&row.label).ok())
             })
             .flatten()
@@ -370,7 +392,7 @@ pub fn doc_fragments(fragments: &[Fragment], outline: Option<&OutlineIndex>) -> 
             Fragment::Code(code) => DocFragment::Code(Arc::from(code.as_str())),
             Fragment::Link { label, target } => DocFragment::Link {
                 label: Arc::from(label.as_str()),
-                target: *target,
+                target: crate::model::pages::RowKey::from(*target),
                 coordinate: outline
                     .and_then(|outline| outline.row(*target))
                     .and_then(|row| SymbolRef::new(&row.label).ok()),
@@ -1261,17 +1283,7 @@ pub fn symbol_page(inputs: &SymbolInputs<'_>) -> SymbolPage {
                 .unwrap_or_else(|| Gap::new(GapReason::ReadFailed, "members were not read")),
         )
     };
-    // Without a compiler publication the engine answers references from
-    // structure alone, and an empty structural answer cannot prove there are
-    // none: that stays a typed gap rather than a claimed empty list.
-    let unpublished = neighbourhood.is_some_and(|hood| hood.relations.is_none());
-    let references = match references(inputs.references, outline) {
-        Known::Known(sites) if sites.is_empty() && unpublished => Known::unknown(
-            GapReason::NoSemanticPublication,
-            "no use was found structurally; proving there are none needs a complete semantic publication for this package",
-        ),
-        other => other,
-    };
+    let references = references(inputs.references, outline);
     SymbolPage {
         package: coordinate.package().map_or_else(
             || {
@@ -1296,6 +1308,9 @@ pub fn symbol_page(inputs: &SymbolInputs<'_>) -> SymbolPage {
             neighbourhood,
             inputs.related.as_ref().err().cloned(),
         ),
+        // The lines your files hold at each span are read by the caller, which
+        // may touch the disk; the mapping stays pure.
+        workspace: Arc::from([]),
         references,
         outline: outline_position(centre, outline, inputs.outline.as_ref().err().cloned()),
         identity,
@@ -1348,7 +1363,7 @@ pub fn verify_local_file(file: &str, excerpt: &str, line: u32) -> bool {
 
 fn identifier_spans(
     text: &str,
-    own: Option<SymbolKey>,
+    own: Option<crate::model::pages::RowKey>,
     outline: Option<&OutlineIndex>,
 ) -> Known<Arc<[IdentifierSpan]>> {
     let Some(outline) = outline else {
@@ -1369,7 +1384,7 @@ fn identifier_spans(
                 && let Some(row) = outline.resolve_name(word, |kind| {
                     is_type_like(kind) && kind != Some(DeclarationKind::Type)
                 })
-                && own.is_none_or(|own| row.id != RowId::Symbol(own))
+                && own.is_none_or(|own| !matches!(row.id, RowId::Symbol(key) if crate::model::pages::RowKey::from(key) == own))
                 && let (Some(span), Ok(target)) = (
                     u32::try_from(start)
                         .ok()
@@ -1415,7 +1430,7 @@ pub fn source_view(
         .or_else(|| DeclRef::from_label(coordinate.as_str(), Some(document.symbol), None, captured))
         .unwrap_or_else(|| DeclRef {
             coordinate: coordinate.clone(),
-            key: Some(document.symbol),
+            key: Some(crate::model::pages::RowKey::from(document.symbol)),
             name: Arc::from(leaf_name(coordinate.as_str())),
             kind: None,
             family: crate::model::pages::KindFamily::Namespace,
@@ -1592,6 +1607,31 @@ pub fn registry_record(record: &RegistryPackageRecord) -> PackageRecord {
     }
 }
 
+/// Fills description and license from `local`'s manifest read when the
+/// registry-shaped record left them unknown.
+///
+/// `registry_record` is honest that the wire DTO behind every "package"
+/// surface reply never carries these two facts (real registry releases and
+/// the engine's own local-manifest fallback alike — see `not_served`
+/// above). For a package this session has also read locally (`compose_package`'s
+/// `local`, whether through `LocalPackageLoader::readme` or `::load`), the
+/// manifest already states them; without this merge, that local read is
+/// computed and then discarded; this was the toml/present package-page bug.
+fn with_local_facts(mut record: PackageRecord, local: Option<&LocalPackage>) -> PackageRecord {
+    let Some(local) = local else { return record };
+    if record.description.known().is_none()
+        && let Some(description) = &local.description
+    {
+        record.description = Known::Known(Arc::clone(description));
+    }
+    if record.license.known().is_none()
+        && let Some(license) = &local.license
+    {
+        record.license = Known::Known(Arc::clone(license));
+    }
+    record
+}
+
 fn local_manifest_facts(local: &LocalPackage) -> bool {
     matches!(
         local.source,
@@ -1699,7 +1739,7 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
             .map_or_else(
                 || local_manifest_record(package, inputs.local, local),
                 |record| {
-                    let mut head = registry_record(record);
+                    let mut head = with_local_facts(registry_record(record), inputs.local);
                     // An engine record for a local project still has no
                     // registry release behind it: its missing download count
                     // is a local-project gap, not an unsupported feed.
@@ -1873,8 +1913,12 @@ pub fn search_rows(
     next: Option<backend_library::PageContinuation>,
     worker: usize,
 ) -> SearchPage {
-    let rows = rows
-        .iter()
+    // A snapshot holds its rows in key order; the owner's ranking is each
+    // row's score (higher first). Rows without one keep their order, after.
+    let mut ranked = rows.iter().collect::<Vec<_>>();
+    ranked.sort_by_key(|row| std::cmp::Reverse(row.score));
+    let rows = ranked
+        .into_iter()
         .enumerate()
         .filter_map(|(rank, row)| {
             let decl = DeclRef::from_row(row)?;
@@ -2156,6 +2200,29 @@ mod tests {
             RowSpec { label: identity.clone(), kind: DeclarationKind::Struct, signature: Some("pub struct Identity"), parent: Some(&identity_module), doc: Some("One parsed row identity."), site: Some(("identity.rs", 339)) },
         ];
         specs.iter().map(row).collect()
+    }
+
+    #[test]
+    fn comparison_packets_keep_callable_shapes_docs_and_exact_identity_without_promising_public_api() {
+        let package = PackageRef::parse("/repo/crates/present").unwrap();
+        let index = OutlineIndex::new(present_rows(), true);
+        let api = index.comparison_api(&package);
+        assert!(api.complete);
+        let method = api.items.iter().find(|item| item.decl.name.as_ref() == "retitle").unwrap();
+        assert_eq!(method.decl.kind, Some(DeclarationKind::Method));
+        assert_eq!(method.signature.known().unwrap().text.as_ref(), "pub fn retitle(&mut self, title: &str)");
+        assert_eq!(method.summary, None);
+        let constructor = api.items.iter().find(|item| item.decl.name.as_ref() == "new").unwrap();
+        assert_eq!(constructor.summary.as_deref(), Some("Assembles one page from already-typed parts."));
+        assert_eq!(constructor.decl.coordinate.as_str(), present("page.rs:410::new"));
+        let modules = api.items.iter().filter(|item| item.decl.kind == Some(DeclarationKind::Module))
+            .map(|item| item.decl.coordinate.as_str()).collect::<Vec<_>>();
+        assert_eq!(modules.len(), 2, "both recorded file modules survive the comparison projection");
+        assert!(modules.contains(&present("page.rs").as_str()));
+        assert!(modules.contains(&present("identity.rs").as_str()));
+        assert!(!api.items.iter().any(|item| item.decl.name.as_ref() == "prose"));
+        let partial = OutlineIndex::new(present_rows(), false).comparison_api(&package);
+        assert!(!partial.complete);
     }
 
     fn present_document(label: &str, signature: &str, doc: &str, site: (&str, u32), excerpt: &str) -> Document {
@@ -2501,6 +2568,69 @@ mod tests {
         assert_eq!(dependents.detail.as_ref(), "the configured feed does not record dependency metadata");
         assert_eq!(dossier.readme.gap().map(|gap| gap.reason), Some(GapReason::NotServed));
         assert_eq!(dossier.outline.gap().map(|gap| gap.detail.as_ref()), Some("outline refused"));
+    }
+
+    /// The toml/present package-page bug: a package can be *both* registry-
+    /// shaped (the "package" surface reply matches, so `standing`/
+    /// `downloads`/etc. are real registry facts) *and* locally readable
+    /// (the engine indexed its actual source, so `PackageInputs::local` is
+    /// `Some`). The record-selection branch that picks a registry-shaped
+    /// record used to ignore `local` completely, so description and
+    /// license — which the wire DTO never carries for *any* release, see
+    /// `not_served` — stayed unknown even though the manifest states both.
+    #[test]
+    fn a_registry_dossier_still_states_its_own_manifests_description_and_license() {
+        let package = PackageRef::parse("pkg:cargo/beta@1.0.0").expect("package");
+        let record = crate::runtime::tests::registry_record("beta", "1.0.0");
+        let records = SurfaceReply::Package(Box::new([record.clone()]));
+        let versions = SurfaceReply::PackageVersions(Box::new([record]));
+        let dependencies = SurfaceReply::Dependencies(backend_library::DependencyFacts::Unavailable(
+            backend_library::ProductText::new("dependency facts are unavailable because the package is not recorded")
+                .expect("reason"),
+        ));
+        let dependents = SurfaceReply::Dependents(backend_library::RegistryMetadata::NotRecorded(
+            backend_library::ProductText::new("the configured feed does not record dependency metadata")
+                .expect("reason"),
+        ));
+        let local = LocalPackage {
+            project: crate::core::LocalProjectId::new("beta").expect("project"),
+            source: LocalPackageSource::Readme,
+            name: Arc::from("beta"),
+            version: None,
+            description: Some(Arc::from("A native Rust encoder and decoder.")),
+            license: Some(Arc::from("MIT OR Apache-2.0")),
+            rust_version: None,
+            repository: None,
+            homepage: None,
+            documentation: None,
+            keywords: Arc::from([]),
+            categories: Arc::from([]),
+            readme: Arc::from([]),
+            dependencies: Arc::from([]),
+            features: Arc::from([]),
+            members: 0,
+        };
+        let dossier = package_dossier(&PackageInputs {
+            package: &package,
+            records: Ok(&records),
+            versions: Ok(&versions),
+            dependencies: Ok(&dependencies),
+            dependents: Ok(&dependents),
+            outline: Err(Gap::new(GapReason::ReadFailed, "outline refused")),
+            local: Some(&local),
+        });
+        let head = dossier.record.known().expect("record");
+        // The registry-shaped facts are untouched...
+        assert_eq!(head.source, RecordSource::Registry);
+        assert_eq!(head.standing.known(), Some(&Standing::Available));
+        assert_eq!(head.downloads.known(), Some(&Downloads::Exact(42)));
+        // ...but description and license come from the manifest `local`
+        // already read, not the hardcoded "not served" gap.
+        assert_eq!(
+            head.description.known().map(AsRef::as_ref),
+            Some("A native Rust encoder and decoder.")
+        );
+        assert_eq!(head.license.known().map(AsRef::as_ref), Some("MIT OR Apache-2.0"));
     }
 
     #[test]
@@ -3021,7 +3151,7 @@ mod tests {
             DocFragment::Text(Arc::from("@throws ")),
             DocFragment::Link {
                 label: Arc::from("TypeError"),
-                target,
+                target: crate::model::pages::RowKey::from(target),
                 coordinate: None,
             },
             DocFragment::Text(Arc::from(" when the input is bad")),

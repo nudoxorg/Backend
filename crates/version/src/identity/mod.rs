@@ -20,11 +20,13 @@ mod index_snapshot;
 mod marker;
 mod raw;
 
+use self::raw::{ARTIFACT_PERSONALIZATION, CONTENT_PERSONALIZATION};
+pub use self::raw::{HASH_BYTES, TAG_BYTES};
 pub use artifact::{ArtifactHasher, ArtifactId, ArtifactIdDecodeError};
 pub use authority::{ContentAuthority, ContentAuthorityError};
 pub use content::{
-    CONTENT_PAYLOAD_BYTES, ContentHasher, ContentId, ContentIdDecodeError, ContentRoutingWord,
-    FixedCanonicalRecord,
+    CONTENT_PAYLOAD_BYTES, ContentHasher, ContentId, ContentIdDecodeError, ContentPayloadHasher,
+    ContentPayloadHasherError, ContentRoutingWord, FixedCanonicalRecord,
 };
 pub use generation::{GenerationHasher, GenerationId};
 pub use index_snapshot::{IndexSnapshotIdentityError, derive_index_snapshot};
@@ -40,8 +42,6 @@ pub use marker::{
     OperationDomain, RootDomain, SemanticScopeDomain, SourceFactDomain, StageKeyDomain,
     ToolchainDomain,
 };
-use self::raw::{ARTIFACT_PERSONALIZATION, CONTENT_PERSONALIZATION};
-pub use self::raw::{HASH_BYTES, TAG_BYTES};
 
 /// Identity of one immutable index snapshot.
 ///

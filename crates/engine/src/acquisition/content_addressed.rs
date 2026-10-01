@@ -25,7 +25,11 @@ const ID_BYTES: usize = 32;
 const OBJECT_DOMAIN: &[u8] = b"backend.acquisition.archive.v1\0";
 const TRANSFER_MAGIC: &[u8; 8] = b"NDOXTR02";
 const TEMP_TTL: Duration = Duration::from_secs(15 * 60);
+const TRANSFER_OWNER_LOCK_STRIPES: usize = 256;
 const MAX_VALIDATOR_BYTES: usize = 1024;
+const MAX_CHECKPOINT_BYTES: usize =
+    8 + ID_BYTES + 1 + ID_BYTES + 8 + 8 + 2 * (2 + MAX_VALIDATOR_BYTES);
+const LEASE_MARKER_BYTES: usize = ID_BYTES + 8;
 
 fn now_millis() -> u64 {
     SystemTime::now()
@@ -107,10 +111,13 @@ pub enum ContentStoreError {
     },
     /// A resumable transfer has inconsistent state and bytes.
     TransferStateMismatch,
+    /// A checkpoint update had an ambiguous durability result; reopen the
+    /// transfer before issuing more operations.
+    TransferNeedsReopen,
     /// A resumable response was authenticated by a different representation
     /// validator than the bytes already persisted for the transfer.
     TransferValidatorChanged,
-    /// Another process or thread owns the transfer lease.
+    /// Another process or thread holds the transfer's exclusive owner lock.
     TransferBusy,
     /// A claimed object on disk failed an explicit integrity verification.
     CorruptObject { path: PathBuf },
@@ -153,6 +160,8 @@ impl fmt::Display for ContentStoreError {
             Self::TransferStateMismatch => {
                 formatter.write_str("resumable transfer state is inconsistent")
             }
+            Self::TransferNeedsReopen => formatter
+                .write_str("resumable transfer must be reopened after an uncertain checkpoint"),
             Self::TransferValidatorChanged => {
                 formatter.write_str("resumable transfer representation validator changed")
             }
@@ -393,21 +402,40 @@ fn validate_archive_path(path: &str, maximum: usize) -> Result<(), ContentStoreE
 pub struct ContentAddressedStore {
     root: Arc<PathBuf>,
     nonce: Arc<Mutex<u64>>,
-    active_temps: Arc<Mutex<BTreeSet<PathBuf>>>,
+    active_artifacts: Arc<Mutex<BTreeSet<PathBuf>>>,
 }
 
 impl ContentAddressedStore {
     /// Opens or creates an object root. Existing published digest directories
     /// are never removed or recreated by this call.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, ContentStoreError> {
-        let root = root.into();
+        let requested_root = root.into();
+        let root_existed = requested_root.is_dir();
+        fs::create_dir_all(&requested_root)?;
+        // Resolve configured root aliases once. All store-owned children are
+        // then checked relative to this trusted root without following links.
+        let root = fs::canonicalize(&requested_root)?;
         for directory in ["objects", "temps", "transfers", "quarantine"] {
-            fs::create_dir_all(root.join(directory))?;
+            let path = root.join(directory);
+            match fs::create_dir(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error.into()),
+            }
+            validate_store_directory(&root, &path)?;
+        }
+        sync_directory(&root)?;
+        if !root_existed {
+            let parent = root
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            sync_directory(parent)?;
         }
         Ok(Self {
             root: Arc::new(root),
             nonce: Arc::new(Mutex::new(now_millis() ^ u64::from(std::process::id()))),
-            active_temps: Arc::new(Mutex::new(BTreeSet::new())),
+            active_artifacts: Arc::new(Mutex::new(BTreeSet::new())),
         })
     }
 
@@ -442,6 +470,170 @@ impl ContentAddressedStore {
             .join(&encoded[2..])
     }
 
+    fn ensure_object_parent(&self, target: &Path) -> Result<(), ContentStoreError> {
+        let parent = target.parent().ok_or_else(|| {
+            ContentStoreError::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "content object path has no parent directory",
+            ))
+        })?;
+        let objects = self.root.join("objects");
+        validate_store_directory(self.root.as_ref(), &objects)?;
+        let relative = parent.strip_prefix(&objects).map_err(|_| {
+            ContentStoreError::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "content object fanout escaped its object root",
+            ))
+        })?;
+        let mut current = objects;
+        for component in relative.components() {
+            let std::path::Component::Normal(name) = component else {
+                return Err(ContentStoreError::Io(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "content object fanout has a non-normal component",
+                )));
+            };
+            current.push(name);
+            match fs::symlink_metadata(&current) {
+                Ok(metadata) if metadata.file_type().is_dir() => {
+                    validate_store_directory(self.root.as_ref(), &current)?;
+                }
+                Ok(_) => {
+                    return Err(ContentStoreError::CorruptObject {
+                        path: current.clone(),
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    match fs::create_dir(&current) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                        Err(error) => return Err(error.into()),
+                    }
+                    validate_store_directory(self.root.as_ref(), &current)?;
+                    let parent = current.parent().expect("fanout component has a parent");
+                    sync_directory(parent)?;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
+    }
+
+    fn verify_file_identity(
+        &self,
+        path: &Path,
+        object: RawArchiveObjectId,
+        bytes: u64,
+    ) -> Result<(), ContentStoreError> {
+        let mut file = open_content_file(self.root.as_ref(), path)?;
+        let (length, hash) = match archive_hash(&mut file, bytes) {
+            Ok(identity) => identity,
+            Err(ContentStoreError::Bounds { .. }) => {
+                return Err(ContentStoreError::CorruptObject {
+                    path: path.to_path_buf(),
+                });
+            }
+            Err(error) => return Err(error),
+        };
+        if length != bytes || object_from_hash(length, hash) != object {
+            return Err(ContentStoreError::CorruptObject {
+                path: path.to_path_buf(),
+            });
+        }
+        Ok(())
+    }
+
+    fn publish_file_with_hook<F>(
+        &self,
+        source: &Path,
+        object: RawArchiveObjectId,
+        bytes: u64,
+        mut hook: F,
+    ) -> Result<ObjectAdmission, ContentStoreError>
+    where
+        F: FnMut(PublishPoint) -> io::Result<()>,
+    {
+        // Producer-visible input paths are never linked into the CAS. Recheck
+        // their identity, copy into a destination sibling, then verify the
+        // exact staged bytes before no-clobber publication.
+        self.verify_file_identity(source, object, bytes)?;
+
+        let target = self.object_path_for(object);
+        self.ensure_object_parent(&target)?;
+        self.publish_staged_file_with_hook(source, &target, object, bytes, &mut hook)
+    }
+
+    fn publish_staged_file_with_hook<F>(
+        &self,
+        source: &Path,
+        target: &Path,
+        object: RawArchiveObjectId,
+        bytes: u64,
+        hook: &mut F,
+    ) -> Result<ObjectAdmission, ContentStoreError>
+    where
+        F: FnMut(PublishPoint) -> io::Result<()>,
+    {
+        let parent = target.parent().ok_or_else(|| {
+            ContentStoreError::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "content object path has no parent directory",
+            ))
+        })?;
+        let mut stage = DestinationStage::create(self, parent, target)?;
+        hook(PublishPoint::StageCreated)?;
+
+        let mut source_file = open_content_file(self.root.as_ref(), source)?;
+        let mut buffer = [0_u8; CHUNK_BYTES];
+        let mut copied = 0_u64;
+        loop {
+            let read = source_file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            copied = copied
+                .checked_add(read as u64)
+                .ok_or_else(|| io::Error::other("staged content extent overflowed"))?;
+            if copied > bytes {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "staged content extent exceeds its authenticated length",
+                )
+                .into());
+            }
+            stage.file_mut()?.write_all(&buffer[..read])?;
+            hook(PublishPoint::StageCopyProgress)?;
+        }
+        if copied != bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "staged content extent differs from its authenticated length",
+            )
+            .into());
+        }
+        hook(PublishPoint::StageWritten)?;
+        stage.file_mut()?.sync_all()?;
+        self.verify_file_identity(stage.path(), object, bytes)?;
+        hook(PublishPoint::StageSynced)?;
+
+        let admission = match fs::hard_link(stage.path(), target) {
+            Ok(()) => {
+                hook(PublishPoint::ObjectLinked)?;
+                ObjectAdmission::Published { object, bytes }
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                self.verify_file_identity(target, object, bytes)?;
+                ObjectAdmission::Reused { object, bytes }
+            }
+            Err(error) => return Err(error.into()),
+        };
+        drop(stage);
+        hook(PublishPoint::BeforeDirectorySync)?;
+        sync_directory(parent)?;
+        hook(PublishPoint::DirectorySynced)?;
+        Ok(admission)
+    }
+
     /// Returns the immutable path for one content identity.
     #[must_use]
     pub fn object_path(&self, object: RawArchiveObjectId) -> PathBuf {
@@ -451,8 +643,22 @@ impl ContentAddressedStore {
     /// Returns the object extent when a published object is present.
     pub fn object_len(&self, object: RawArchiveObjectId) -> Result<Option<u64>, ContentStoreError> {
         let path = self.object_path_for(object);
-        match fs::metadata(&path) {
-            Ok(metadata) if metadata.is_file() => Ok(Some(metadata.len())),
+        match validate_store_directory(
+            self.root.as_ref(),
+            path.parent().expect("object path has a fanout parent"),
+        ) {
+            Ok(()) => {}
+            Err(ContentStoreError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        }
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_file() => Ok(Some(
+                open_content_file(self.root.as_ref(), &path)?
+                    .metadata()?
+                    .len(),
+            )),
             Ok(_) => Err(ContentStoreError::CorruptObject { path }),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error.into()),
@@ -467,7 +673,7 @@ impl ContentAddressedStore {
         maximum: u64,
     ) -> Result<u64, ContentStoreError> {
         let path = self.object_path_for(object);
-        let mut file = File::open(&path)?;
+        let mut file = open_content_file(self.root.as_ref(), &path)?;
         let (length, hash) = archive_hash(&mut file, maximum)?;
         if object_from_hash(length, hash) != object {
             return Err(ContentStoreError::CorruptObject { path });
@@ -477,10 +683,11 @@ impl ContentAddressedStore {
 
     /// Opens an admitted object without copying it into a caller buffer.
     pub fn open_object(&self, object: RawArchiveObjectId) -> Result<File, ContentStoreError> {
-        Ok(File::open(self.object_path_for(object))?)
+        open_content_file(self.root.as_ref(), &self.object_path_for(object))
     }
 
     fn create_temp(&self, label: &str) -> Result<TempArtifact, ContentStoreError> {
+        validate_store_directory(self.root.as_ref(), &self.root.join("temps"))?;
         let safe_label: String = label
             .bytes()
             .filter(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
@@ -491,7 +698,7 @@ impl ContentAddressedStore {
         } else {
             &safe_label
         };
-        let (token, path, file) = loop {
+        let (token, path, file, lock) = loop {
             let token = self.next_token();
             let path = self
                 .root
@@ -503,7 +710,31 @@ impl ContentAddressedStore {
                 .create_new(true)
                 .open(&path)
             {
-                Ok(file) => break (token, path, file),
+                Ok(file) => {
+                    let lock =
+                        match backend_platform::durability::open_or_create_regular_file_nofollow(
+                            &path,
+                        ) {
+                            Ok(lock) => lock,
+                            Err(error) => {
+                                drop(file);
+                                let _ = fs::remove_file(&path);
+                                return Err(error.into());
+                            }
+                        };
+                    if let Err(error) = lock.try_lock() {
+                        drop(lock);
+                        drop(file);
+                        let _ = fs::remove_file(&path);
+                        return Err(match error {
+                            std::fs::TryLockError::WouldBlock => ContentStoreError::Io(
+                                io::Error::other("new private temp lock was unexpectedly busy"),
+                            ),
+                            std::fs::TryLockError::Error(error) => ContentStoreError::Io(error),
+                        });
+                    }
+                    break (token, path, file, lock);
+                }
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(error) => return Err(error.into()),
             }
@@ -514,10 +745,12 @@ impl ContentAddressedStore {
             token,
             now_millis().saturating_add(TEMP_TTL.as_millis() as u64),
         ) {
+            drop(lock);
+            drop(file);
             let _ = fs::remove_file(&path);
             return Err(error);
         }
-        self.active_temps
+        self.active_artifacts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(path.clone());
@@ -527,6 +760,7 @@ impl ContentAddressedStore {
             lease_path,
             token,
             file: Some(file),
+            _lock: lock,
             preserve: false,
         })
     }
@@ -568,6 +802,11 @@ impl ContentAddressedStore {
             && let Some(bytes) = self.object_len(object)?
         {
             self.verify_object(object, maximum)?;
+            let object_path = self.object_path_for(object);
+            let parent = object_path
+                .parent()
+                .expect("object path has a fanout parent");
+            sync_directory(parent)?;
             return Ok(ObjectAdmission::Reused { object, bytes });
         }
         let mut temp = self.create_temp("object")?;
@@ -598,21 +837,26 @@ impl ContentAddressedStore {
     /// content-addressed object root used by registry archives, then returns
     /// one canonical tree. Paths are slash-separated and traversal is
     /// deterministic, so an archive adapter can construct the identical tree
-    /// without copying or rehashing unchanged file bytes.
+    /// without copying or rehashing unchanged file bytes. The source tree must
+    /// remain stable during admission: entries are opened without following
+    /// leaf links, but ancestor traversal is still pathname-based.
     pub fn admit_directory(
         &self,
         root: impl AsRef<Path>,
         budget: ArchiveBudget,
     ) -> Result<ArchiveManifest, ContentStoreError> {
-        let root = root.as_ref();
+        let root = fs::canonicalize(root.as_ref())?;
         if !root.is_dir() {
             return Err(ContentStoreError::Io(io::Error::new(
                 io::ErrorKind::NotADirectory,
                 "source root is not a directory",
             )));
         }
+        let mut preflight = DirectoryAdmissionProgress::default();
+        preflight_directory_entries(&root, &root, budget, &mut preflight)?;
         let mut builder = ArchiveManifestBuilder::new(budget);
-        admit_directory_entries(self, root, root, &mut builder, budget.max_entry_bytes)?;
+        let mut admission = DirectoryAdmissionProgress::default();
+        admit_directory_entries(self, &root, &root, budget, &mut admission, &mut builder)?;
         builder.finish()
     }
 
@@ -623,53 +867,25 @@ impl ContentAddressedStore {
         bytes: u64,
     ) -> Result<ObjectAdmission, ContentStoreError> {
         temp.sync_close()?;
-        let target = self.object_path_for(object);
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let admission = match fs::hard_link(temp.path(), &target) {
-            Ok(()) => ObjectAdmission::Published { object, bytes },
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                let existing = self.verify_object(object, bytes)?;
-                ObjectAdmission::Reused {
-                    object,
-                    bytes: existing,
-                }
-            }
-            Err(error) if error.kind() == io::ErrorKind::CrossesDevices => {
-                let mut source = File::open(temp.path())?;
-                let mut destination = match OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&target)
-                {
-                    Ok(file) => file,
-                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                        let existing = self.verify_object(object, bytes)?;
-                        return Ok(ObjectAdmission::Reused {
-                            object,
-                            bytes: existing,
-                        });
-                    }
-                    Err(error) => return Err(error.into()),
-                };
-                io::copy(&mut source, &mut destination)?;
-                destination.sync_all()?;
-                ObjectAdmission::Published { object, bytes }
-            }
-            Err(error) => return Err(error.into()),
-        };
+        // Never link a producer or verifier-visible inode into the CAS. The
+        // destination sibling is a fresh inode, copied and rehashed after any
+        // adapter callback has returned, then published no-clobber.
+        let admission = self.publish_file_with_hook(temp.path(), object, bytes, |_| Ok(()))?;
         temp.preserve = false;
         Ok(admission)
     }
 
-    /// Removes only owned, expired private temps. A live in-process temp is
-    /// protected by the active set even if its mtime is old; another process
-    /// is protected by the expiring lease marker and must renew it.
+    /// Removes only owned, expired private artifacts. A live in-process temp
+    /// or destination stage is protected by the active set even if its mtime
+    /// is old. Cross-process temps and destination stages also hold OS locks,
+    /// so a verifier or stalled operation cannot be removed merely because
+    /// its lease timestamp expired.
     pub fn scavenge_stale(&self, older_than: Duration) -> Result<usize, ContentStoreError> {
+        validate_store_directory(self.root.as_ref(), &self.root.join("temps"))?;
+        validate_store_directory(self.root.as_ref(), &self.root.join("objects"))?;
         let now = now_millis();
         let active = self
-            .active_temps
+            .active_artifacts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
@@ -677,7 +893,8 @@ impl ContentAddressedStore {
         for entry in fs::read_dir(self.root.join("temps"))? {
             let entry = entry?;
             let path = entry.path();
-            if !path.is_file() || path.extension().and_then(|value| value.to_str()) != Some("part")
+            if !entry.file_type()?.is_file()
+                || path.extension().and_then(|value| value.to_str()) != Some("part")
             {
                 continue;
             }
@@ -692,57 +909,245 @@ impl ContentAddressedStore {
             let age = SystemTime::now()
                 .duration_since(modified)
                 .unwrap_or_default();
-            if age >= older_than {
-                fs::remove_file(&path)?;
-                let _ = fs::remove_file(marker);
-                removed += 1;
+            if age >= older_than.max(TEMP_TTL) {
+                let temp_lock =
+                    match backend_platform::durability::open_regular_file_readwrite_nofollow(&path)
+                    {
+                        Ok(file) => file,
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                        Err(error) => return Err(error.into()),
+                    };
+                match temp_lock.try_lock() {
+                    Ok(()) => match fs::remove_file(&path) {
+                        Ok(()) => {
+                            let _ = fs::remove_file(marker);
+                            removed += 1;
+                        }
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(error.into()),
+                    },
+                    Err(std::fs::TryLockError::WouldBlock) => {}
+                    Err(std::fs::TryLockError::Error(error))
+                        if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
+                }
+            }
+        }
+        for bucket in fs::read_dir(self.root.join("objects"))? {
+            let bucket = bucket?;
+            if !bucket.file_type()?.is_dir() {
+                continue;
+            }
+            validate_store_directory(self.root.as_ref(), &bucket.path())?;
+            for entry in fs::read_dir(bucket.path())? {
+                let entry = entry?;
+                let path = entry.path();
+                if !entry.file_type()?.is_file()
+                    || !is_destination_stage(&path)
+                    || active.contains(&path)
+                {
+                    continue;
+                }
+                let modified = entry.metadata()?.modified().unwrap_or(UNIX_EPOCH);
+                let age = SystemTime::now()
+                    .duration_since(modified)
+                    .unwrap_or_default();
+                if age >= older_than.max(TEMP_TTL) {
+                    let removed_stage = {
+                        let active_now = self
+                            .active_artifacts
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if active_now.contains(&path) {
+                            false
+                        } else {
+                            let stage_lock =
+                                match backend_platform::durability::open_regular_file_readwrite_nofollow(
+                                    &path,
+                                ) {
+                                    Ok(file) => file,
+                                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                                        continue;
+                                    }
+                                    Err(error) => return Err(error.into()),
+                                };
+                            match stage_lock.try_lock() {
+                                Ok(()) => match fs::remove_file(&path) {
+                                    Ok(()) => true,
+                                    Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+                                    Err(error) => return Err(error.into()),
+                                },
+                                Err(std::fs::TryLockError::WouldBlock) => false,
+                                Err(std::fs::TryLockError::Error(error))
+                                    if error.kind() == io::ErrorKind::NotFound =>
+                                {
+                                    false
+                                }
+                                Err(std::fs::TryLockError::Error(error)) => {
+                                    return Err(error.into());
+                                }
+                            }
+                        }
+                    };
+                    if removed_stage {
+                        removed += 1;
+                    }
+                }
             }
         }
         Ok(removed)
     }
 
     /// Opens or resumes one durable range-capable transfer.
+    ///
+    /// A fixed set of `.owner-lock-*` markers is retained for safe
+    /// interprocess locking. Transfer IDs that map to the same marker serialize
+    /// while active; the marker set remains bounded and its files are never
+    /// unlinked.
     pub fn resume_or_start(
         &self,
         id: TransferId,
         expected: Option<RawArchiveObjectId>,
         expected_length: Option<u64>,
     ) -> Result<ResumableTransfer, ContentStoreError> {
+        validate_store_directory(self.root.as_ref(), &self.root.join("transfers"))?;
         ResumableTransfer::open(self.clone(), id, expected, expected_length)
     }
+}
+
+#[derive(Default)]
+struct DirectoryAdmissionProgress {
+    entries: usize,
+    bytes: u64,
+}
+
+impl DirectoryAdmissionProgress {
+    fn check_file(
+        &self,
+        path: &str,
+        bytes: u64,
+        budget: ArchiveBudget,
+    ) -> Result<(), ContentStoreError> {
+        validate_archive_path(path, budget.max_path_bytes)?;
+        if bytes > budget.max_entry_bytes {
+            return Err(ContentStoreError::ArchiveBytesLimit);
+        }
+        if self.entries >= budget.max_entries {
+            return Err(ContentStoreError::ArchiveEntryLimit);
+        }
+        let total = self
+            .bytes
+            .checked_add(bytes)
+            .ok_or(ContentStoreError::ArchiveBytesLimit)?;
+        if total > budget.max_bytes {
+            return Err(ContentStoreError::ArchiveBytesLimit);
+        }
+        Ok(())
+    }
+
+    fn record_file(
+        &mut self,
+        path: &str,
+        bytes: u64,
+        budget: ArchiveBudget,
+    ) -> Result<(), ContentStoreError> {
+        self.check_file(path, bytes, budget)?;
+        self.entries += 1;
+        self.bytes += bytes;
+        Ok(())
+    }
+}
+
+fn archive_relative_path(
+    root: &Path,
+    path: &Path,
+    budget: ArchiveBudget,
+) -> Result<String, ContentStoreError> {
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| ContentStoreError::InvalidArchivePath)?;
+    let relative = relative
+        .to_str()
+        .ok_or(ContentStoreError::InvalidArchivePath)?
+        .replace(std::path::MAIN_SEPARATOR, "/");
+    validate_archive_path(&relative, budget.max_path_bytes)?;
+    Ok(relative)
+}
+
+fn preflight_directory_entries(
+    root: &Path,
+    directory: &Path,
+    budget: ArchiveBudget,
+    progress: &mut DirectoryAdmissionProgress,
+) -> Result<(), ContentStoreError> {
+    // Traversal remains path-based; this handle and each no-follow child open
+    // reject links present during the check. Concurrent ancestor replacement
+    // requires a separate descriptor-relative traversal API.
+    let _directory_handle = backend_platform::durability::open_directory_nofollow(directory)?;
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            backend_platform::durability::open_directory_nofollow(&path)?;
+            preflight_directory_entries(root, &path, budget, progress)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            return Err(ContentStoreError::InvalidArchivePath);
+        }
+        let relative = archive_relative_path(root, &path, budget)?;
+        let file =
+            backend_platform::durability::open_regular_file_nofollow(&path).map_err(|error| {
+                if error.kind() == io::ErrorKind::InvalidData {
+                    ContentStoreError::InvalidArchivePath
+                } else {
+                    ContentStoreError::Io(error)
+                }
+            })?;
+        progress.record_file(&relative, file.metadata()?.len(), budget)?;
+    }
+    Ok(())
 }
 
 fn admit_directory_entries(
     store: &ContentAddressedStore,
     root: &Path,
     directory: &Path,
+    budget: ArchiveBudget,
+    progress: &mut DirectoryAdmissionProgress,
     builder: &mut ArchiveManifestBuilder,
-    maximum_entry_bytes: u64,
 ) -> Result<(), ContentStoreError> {
-    let mut children = fs::read_dir(directory)?
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<Result<Vec<_>, _>>()?;
-    children.sort();
-    for path in children {
-        let file_type = fs::symlink_metadata(&path)?.file_type();
+    // As in preflight, final components are opened no-follow. This path-based
+    // traversal does not pin every parent against concurrent replacement.
+    let _directory_handle = backend_platform::durability::open_directory_nofollow(directory)?;
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
         if file_type.is_dir() {
-            admit_directory_entries(store, root, &path, builder, maximum_entry_bytes)?;
+            backend_platform::durability::open_directory_nofollow(&path)?;
+            admit_directory_entries(store, root, &path, budget, progress, builder)?;
             continue;
         }
         if !file_type.is_file() {
             return Err(ContentStoreError::InvalidArchivePath);
         }
-        let relative = path
-            .strip_prefix(root)
-            .map_err(|_| ContentStoreError::InvalidArchivePath)?
-            .to_string_lossy()
-            .replace(std::path::MAIN_SEPARATOR, "/");
-        let metadata = fs::metadata(&path)?;
-        if metadata.len() > maximum_entry_bytes {
-            return Err(ContentStoreError::ArchiveBytesLimit);
-        }
-        let mut file = File::open(&path)?;
-        let admission = store.admit_reader(None, &mut file, maximum_entry_bytes)?;
+        let relative = archive_relative_path(root, &path, budget)?;
+        let mut file =
+            backend_platform::durability::open_regular_file_nofollow(&path).map_err(|error| {
+                if error.kind() == io::ErrorKind::InvalidData {
+                    ContentStoreError::InvalidArchivePath
+                } else {
+                    ContentStoreError::Io(error)
+                }
+            })?;
+        let length = file.metadata()?.len();
+        progress.check_file(&relative, length, budget)?;
+        let remaining_bytes = budget.max_bytes - progress.bytes;
+        let maximum = budget.max_entry_bytes.min(remaining_bytes);
+        let admission = store.admit_reader(None, &mut file, maximum)?;
+        progress.record_file(&relative, admission.bytes(), budget)?;
         builder.push_file(relative, admission.object(), admission.bytes(), 0)?;
     }
     Ok(())
@@ -776,12 +1181,233 @@ fn stream_to_temp<R: Read>(
     Ok((length, *hasher.finalize().as_bytes()))
 }
 
+fn sync_directory(path: &Path) -> Result<(), ContentStoreError> {
+    backend_platform::durability::open_directory_nofollow(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(ContentStoreError::Io)
+}
+
+fn open_content_file(root: &Path, path: &Path) -> Result<File, ContentStoreError> {
+    // The metadata check gives a typed corruption error for an already
+    // visible symlink/non-file. The platform opener repeats the regular-file
+    // check on the opened handle and refuses link following, closing the
+    // metadata/open race.
+    let parent = path.parent().ok_or_else(|| {
+        ContentStoreError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "content file path has no parent directory",
+        ))
+    })?;
+    validate_store_directory(root, parent)?;
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => {}
+        Ok(_) => {
+            return Err(ContentStoreError::CorruptObject {
+                path: path.to_path_buf(),
+            });
+        }
+        Err(error) => return Err(error.into()),
+    }
+    backend_platform::durability::open_regular_file_nofollow(path).map_err(|error| {
+        if error.kind() == io::ErrorKind::InvalidData {
+            ContentStoreError::CorruptObject {
+                path: path.to_path_buf(),
+            }
+        } else {
+            ContentStoreError::Io(error)
+        }
+    })
+}
+
+fn validate_store_directory(root: &Path, directory: &Path) -> Result<(), ContentStoreError> {
+    // Each component is opened without following its final link, so a symlink
+    // or reparse point already present is rejected. The caller's subsequent
+    // mutations are still path-based; concurrent ancestor replacement would
+    // require descriptor-relative operations and remains outside this helper.
+    let relative = directory.strip_prefix(root).map_err(|_| {
+        ContentStoreError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "content store directory escaped its root",
+        ))
+    })?;
+    let mut current = root.to_path_buf();
+    let open_checked = |path: &Path| {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_dir() => {}
+            Ok(_) => {
+                return Err(ContentStoreError::CorruptObject {
+                    path: path.to_path_buf(),
+                });
+            }
+            Err(error) => return Err(error.into()),
+        }
+        backend_platform::durability::open_directory_nofollow(path).map_err(|error| {
+            if error.kind() == io::ErrorKind::InvalidData {
+                ContentStoreError::CorruptObject {
+                    path: path.to_path_buf(),
+                }
+            } else {
+                ContentStoreError::Io(error)
+            }
+        })
+    };
+    drop(open_checked(&current)?);
+    for component in relative.components() {
+        match component {
+            std::path::Component::Normal(name) => current.push(name),
+            _ => {
+                return Err(ContentStoreError::Io(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "content store directory has a non-normal component",
+                )));
+            }
+        }
+        drop(open_checked(&current)?);
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PublishPoint {
+    StageCreated,
+    StageCopyProgress,
+    StageWritten,
+    StageSynced,
+    ObjectLinked,
+    BeforeDirectorySync,
+    DirectorySynced,
+}
+
+struct DestinationStage {
+    store: ContentAddressedStore,
+    path: PathBuf,
+    file: Option<File>,
+}
+
+impl DestinationStage {
+    fn create(
+        store: &ContentAddressedStore,
+        parent: &Path,
+        target: &Path,
+    ) -> Result<Self, ContentStoreError> {
+        let name = target
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                ContentStoreError::Io(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "content object path needs a Unicode file name",
+                ))
+            })?;
+        loop {
+            let path = parent.join(format!(".{name}.{}.stage", hex(&store.next_token())));
+            let inserted = store
+                .active_artifacts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(path.clone());
+            if !inserted {
+                continue;
+            }
+            match OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(file) => {
+                    if let Err(error) = file.try_lock() {
+                        drop(file);
+                        let _ = fs::remove_file(&path);
+                        store
+                            .active_artifacts
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .remove(&path);
+                        return Err(match error {
+                            std::fs::TryLockError::WouldBlock => {
+                                ContentStoreError::Io(io::Error::other(
+                                    "new destination stage lock was unexpectedly busy",
+                                ))
+                            }
+                            std::fs::TryLockError::Error(error) => ContentStoreError::Io(error),
+                        });
+                    }
+                    return Ok(Self {
+                        store: store.clone(),
+                        path,
+                        file: Some(file),
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    store
+                        .active_artifacts
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .remove(&path);
+                }
+                Err(error) => {
+                    store
+                        .active_artifacts
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .remove(&path);
+                    return Err(error.into());
+                }
+            }
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn file_mut(&mut self) -> Result<&mut File, ContentStoreError> {
+        self.file
+            .as_mut()
+            .ok_or_else(|| ContentStoreError::Io(io::Error::other("stage file is closed")))
+    }
+}
+
+impl Drop for DestinationStage {
+    fn drop(&mut self) {
+        self.file.take();
+        let _ = fs::remove_file(&self.path);
+        self.store
+            .active_artifacts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.path);
+    }
+}
+
+fn is_destination_stage(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let Some(rest) = name.strip_prefix('.') else {
+        return false;
+    };
+    let Some((object_tail, rest)) = rest.split_once('.') else {
+        return false;
+    };
+    let Some((token, extension)) = rest.split_once('.') else {
+        return false;
+    };
+    extension == "stage"
+        && object_tail.len() == ID_BYTES * 2 - 2
+        && object_tail.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && token.len() == ID_BYTES * 2
+        && token.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 struct TempArtifact {
     store: ContentAddressedStore,
     path: PathBuf,
     lease_path: PathBuf,
     token: [u8; ID_BYTES],
     file: Option<File>,
+    _lock: File,
     preserve: bool,
 }
 
@@ -835,7 +1461,7 @@ impl Drop for TempArtifact {
         }
         let _ = fs::remove_file(&self.lease_path);
         self.store
-            .active_temps
+            .active_artifacts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&self.path);
@@ -855,8 +1481,11 @@ fn write_lease_marker(
 }
 
 fn read_lease_expiry(path: &Path) -> Option<u64> {
-    let bytes = fs::read(path).ok()?;
-    if bytes.len() < ID_BYTES + 8 {
+    let mut file = backend_platform::durability::open_regular_file_nofollow(path).ok()?;
+    let mut bytes = [0_u8; LEASE_MARKER_BYTES];
+    file.read_exact(&mut bytes).ok()?;
+    let mut extra = [0_u8; 1];
+    if file.read(&mut extra).ok()? != 0 {
         return None;
     }
     let mut expiry = [0_u8; 8];
@@ -1028,12 +1657,14 @@ pub struct ResumableTransfer {
     checkpoint: TransferCheckpoint,
     data_path: PathBuf,
     state_path: PathBuf,
-    owner_path: PathBuf,
+    // This stable stripe marker is also the interprocess lock. Never unlink
+    // it: replacing a locked pathname could split ownership across inodes.
+    owner_file: File,
     owner_token: [u8; ID_BYTES],
     file: Option<File>,
     hasher: Option<Hasher>,
     telemetry: TransferTelemetry,
-    finished: bool,
+    needs_reopen: bool,
 }
 
 impl fmt::Debug for ResumableTransfer {
@@ -1056,18 +1687,12 @@ impl ResumableTransfer {
         let key = hex(&id.0);
         let data_path = store.root.join("transfers").join(format!("{key}.part"));
         let state_path = store.root.join("transfers").join(format!("{key}.state"));
-        let owner_path = store.root.join("transfers").join(format!("{key}.owner"));
+        let owner_path = transfer_owner_lock_path(store.root.as_ref(), id);
         let owner_token = store.next_token();
-        acquire_transfer_owner(&owner_path, owner_token)?;
-
-        let cleanup_owner_path = owner_path.clone();
+        let owner_file = acquire_transfer_owner(&owner_path, owner_token)?;
         let open_result = (|| {
-            let mut file = OpenOptions::new()
-                .create(true)
-                .read(true)
-                .write(true)
-                .append(true)
-                .open(&data_path)?;
+            let mut file =
+                backend_platform::durability::open_or_create_append_file_nofollow(&data_path)?;
             let file_length = file.metadata()?.len();
             let saved_checkpoint = read_checkpoint(&state_path)?;
             let persisted_length = saved_checkpoint
@@ -1129,7 +1754,7 @@ impl ResumableTransfer {
                 checkpoint,
                 data_path,
                 state_path,
-                owner_path,
+                owner_file,
                 owner_token,
                 file: Some(file),
                 hasher: Some(hasher),
@@ -1137,12 +1762,9 @@ impl ResumableTransfer {
                     resumed_bytes: received,
                     downloaded_bytes: 0,
                 },
-                finished: false,
+                needs_reopen: false,
             })
         })();
-        if open_result.is_err() {
-            let _ = fs::remove_file(cleanup_owner_path);
-        }
         open_result
     }
 
@@ -1170,23 +1792,59 @@ impl ResumableTransfer {
         self.telemetry
     }
 
+    fn check_owner(&mut self) -> Result<(), ContentStoreError> {
+        if self.needs_reopen {
+            return Err(ContentStoreError::TransferNeedsReopen);
+        }
+        validate_store_directory(self.store.root.as_ref(), &self.store.root.join("transfers"))?;
+        let mut marker = [0_u8; ID_BYTES + 8];
+        self.owner_file.seek(SeekFrom::Start(0))?;
+        if self.owner_file.read_exact(&mut marker).is_err()
+            || marker[..ID_BYTES] != self.owner_token
+        {
+            return Err(ContentStoreError::TransferBusy);
+        }
+        Ok(())
+    }
+
+    fn poison_for_reopen(&mut self) {
+        self.needs_reopen = true;
+        self.file.take();
+        self.hasher.take();
+    }
+
+    fn persist_checkpoint(&mut self) -> Result<(), ContentStoreError> {
+        if let Err(error) = write_checkpoint(&self.state_path, &self.checkpoint) {
+            self.poison_for_reopen();
+            return Err(error);
+        }
+        Ok(())
+    }
+
     /// Binds the representation validator before appending a response body.
     pub fn set_validator(
         &mut self,
         validator: Option<TransferValidator>,
     ) -> Result<(), ContentStoreError> {
+        self.check_owner()?;
         if self.checkpoint.received != 0
             && self.checkpoint.validator.is_some()
             && self.checkpoint.validator != validator
         {
             return Err(ContentStoreError::TransferValidatorChanged);
         }
+        let previous = self.checkpoint.clone();
         self.checkpoint.validator = validator;
-        write_checkpoint(&self.state_path, &self.checkpoint)
+        if let Err(error) = self.persist_checkpoint() {
+            self.checkpoint = previous;
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Binds the authenticated final extent once a response exposes it.
     pub fn bind_expected_length(&mut self, length: u64) -> Result<(), ContentStoreError> {
+        self.check_owner()?;
         if let Some(expected) = self.checkpoint.expected_length
             && expected != length
         {
@@ -1201,8 +1859,13 @@ impl ResumableTransfer {
                 actual: self.checkpoint.received,
             });
         }
+        let previous = self.checkpoint.clone();
         self.checkpoint.expected_length = Some(length);
-        write_checkpoint(&self.state_path, &self.checkpoint)
+        if let Err(error) = self.persist_checkpoint() {
+            self.checkpoint = previous;
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Restarts the transfer at byte zero, preserving no unvalidated prefix.
@@ -1210,17 +1873,22 @@ impl ResumableTransfer {
         &mut self,
         reason: Option<TransferResetReason>,
     ) -> Result<(), ContentStoreError> {
+        self.check_owner()?;
         let had_prefix = self.checkpoint.received != 0;
         if had_prefix {
             // Publish the reset in the checkpoint before moving or truncating
             // bytes. A kill in either window then reopens as an empty transfer
             // and can safely discard any uncommitted old tail.
+            let previous = self.checkpoint.clone();
             self.checkpoint.received = 0;
             self.checkpoint.validator = None;
             if reason.is_some() {
                 self.checkpoint.expected_length = None;
             }
-            write_checkpoint(&self.state_path, &self.checkpoint)?;
+            if let Err(error) = self.persist_checkpoint() {
+                self.checkpoint = previous;
+                return Err(error);
+            }
             if let Some(reason) = reason
                 && reason.quarantine_prefix()
             {
@@ -1231,8 +1899,14 @@ impl ResumableTransfer {
             .file
             .as_mut()
             .ok_or_else(|| ContentStoreError::Io(io::Error::other("transfer is closed")))?;
-        file.set_len(0)?;
-        file.seek(SeekFrom::Start(0))?;
+        if let Err(error) = file
+            .set_len(0)
+            .and_then(|()| file.sync_data())
+            .and_then(|()| file.seek(SeekFrom::Start(0)).map(|_| ()))
+        {
+            self.poison_for_reopen();
+            return Err(error.into());
+        }
         self.checkpoint.received = 0;
         self.checkpoint.validator = None;
         if reason.is_some() {
@@ -1246,30 +1920,37 @@ impl ResumableTransfer {
             hasher.update(OBJECT_DOMAIN);
             hasher
         });
-        write_checkpoint(&self.state_path, &self.checkpoint)
+        self.persist_checkpoint()
     }
 
-    /// Renews the transfer lease while a remote range request is in flight.
-    pub fn renew(&self) -> Result<(), ContentStoreError> {
+    /// Refreshes the owner marker while a remote range request is in flight.
+    /// The exclusive OS lock, rather than the timestamp, is the ownership
+    /// fence and remains held until this transfer handle is dropped.
+    pub fn renew(&mut self) -> Result<(), ContentStoreError> {
+        self.check_owner()?;
         let expires = now_millis().saturating_add(TEMP_TTL.as_millis() as u64);
-        let mut file = OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .open(&self.owner_path)?;
-        file.write_all(&self.owner_token)?;
-        file.write_all(&expires.to_be_bytes())?;
-        file.sync_all()?;
-        Ok(())
+        write_transfer_owner(&mut self.owner_file, self.owner_token, expires)
     }
 
     /// Appends one bounded response body and persists its new range start.
-    pub fn append<R: Read>(
+    pub fn append<R: Read>(&mut self, source: R, maximum: u64) -> Result<u64, ContentStoreError> {
+        self.append_with_checkpoint_writer(source, maximum, write_checkpoint)
+    }
+
+    fn append_with_checkpoint_writer<R, W>(
         &mut self,
         mut source: R,
         maximum: u64,
-    ) -> Result<u64, ContentStoreError> {
+        mut checkpoint_writer: W,
+    ) -> Result<u64, ContentStoreError>
+    where
+        R: Read,
+        W: FnMut(&Path, &TransferCheckpoint) -> Result<(), ContentStoreError>,
+    {
+        self.check_owner()?;
         let mut buffer = [0_u8; CHUNK_BYTES];
         loop {
+            self.check_owner()?;
             let read = source.read(&mut buffer)?;
             if read == 0 {
                 break;
@@ -1311,9 +1992,17 @@ impl ResumableTransfer {
                 return Err(error.into());
             }
             self.checkpoint.received = next;
-            if let Err(error) = write_checkpoint(&self.state_path, &self.checkpoint) {
-                self.checkpoint.received = previous;
-                self.rollback_append(previous)?;
+            let previous_checkpoint = TransferCheckpoint {
+                received: previous,
+                ..self.checkpoint.clone()
+            };
+            if let Err(error) = checkpoint_writer(&self.state_path, &self.checkpoint) {
+                // The state rename may already be visible even when its
+                // parent-directory flush fails. Keep the synced .part extent
+                // intact and require reopen: recovery accepts either the old
+                // checkpoint (discarding a tail) or the new checkpoint.
+                self.checkpoint = previous_checkpoint;
+                self.poison_for_reopen();
                 return Err(error);
             }
             self.hasher
@@ -1326,17 +2015,12 @@ impl ResumableTransfer {
         Ok(self.checkpoint.received)
     }
 
-    fn rollback_append(&mut self, previous: u64) -> Result<(), ContentStoreError> {
-        let file = self
-            .file
-            .as_mut()
-            .ok_or_else(|| ContentStoreError::Io(io::Error::other("transfer is closed")))?;
-        file.set_len(previous)?;
-        file.seek(SeekFrom::End(0))?;
-        Ok(())
-    }
-
     fn quarantine_prefix(&mut self, reason: TransferResetReason) -> Result<(), ContentStoreError> {
+        validate_store_directory(self.store.root.as_ref(), &self.store.root.join("transfers"))?;
+        validate_store_directory(
+            self.store.root.as_ref(),
+            &self.store.root.join("quarantine"),
+        )?;
         if let Some(file) = self.file.take() {
             file.sync_all()?;
         }
@@ -1346,13 +2030,10 @@ impl ResumableTransfer {
             reason.code()
         ));
         fs::rename(&self.data_path, destination)?;
+        sync_directory(&self.store.root.join("transfers"))?;
+        sync_directory(&self.store.root.join("quarantine"))?;
         self.file = Some(
-            OpenOptions::new()
-                .create(true)
-                .read(true)
-                .write(true)
-                .append(true)
-                .open(&self.data_path)?,
+            backend_platform::durability::open_or_create_append_file_nofollow(&self.data_path)?,
         );
         Ok(())
     }
@@ -1372,6 +2053,7 @@ impl ResumableTransfer {
     where
         V: FnOnce(&Path, u64, RawArchiveObjectId) -> Result<(), ContentStoreError>,
     {
+        self.check_owner()?;
         let received = self.checkpoint.received;
         if let Some(expected_length) = self.checkpoint.expected_length
             && received != expected_length
@@ -1381,16 +2063,39 @@ impl ResumableTransfer {
                 actual: received,
             });
         }
-        let hash = *self
+        let checkpoint_hash = *self
             .hasher
             .take()
             .ok_or_else(|| ContentStoreError::Io(io::Error::other("transfer has no digest")))?
             .finalize()
             .as_bytes();
-        let actual = object_from_hash(received, hash);
+        if let Some(file) = self.file.take() {
+            file.sync_all()?;
+        }
+
+        // Never publish the transfer inode: another stale descriptor may
+        // still be writable even though this handle owns the transfer lock.
+        // Copy into a fresh private inode, derive identity from those exact
+        // bytes, and run the adapter verifier on that sealed copy.
+        let mut sealed = self.store.create_temp("sealed-transfer")?;
+        let mut source = open_content_file(self.store.root.as_ref(), &self.data_path)?;
+        let (sealed_length, sealed_hash) = stream_to_temp(&mut source, &mut sealed, received)?;
+        if sealed_length != received {
+            return Err(ContentStoreError::LengthMismatch {
+                expected: received,
+                actual: sealed_length,
+            });
+        }
+        let actual = object_from_hash(sealed_length, sealed_hash);
+        if object_from_hash(received, checkpoint_hash) != actual {
+            return Err(ContentStoreError::CorruptObject {
+                path: self.data_path.clone(),
+            });
+        }
         if let Some(expected) = self.checkpoint.expected
             && expected != actual
         {
+            drop(sealed);
             let quarantine = self.quarantine("digest-mismatch")?;
             return Err(ContentStoreError::DigestMismatch {
                 expected,
@@ -1398,82 +2103,50 @@ impl ResumableTransfer {
                 quarantine: Some(quarantine),
             });
         }
-        if let Some(file) = self.file.take() {
-            file.sync_all()?;
-        }
-        if let Err(error) = verifier(&self.data_path, received, actual) {
+        sealed.sync_close()?;
+        if let Err(error) = verifier(sealed.path(), sealed_length, actual) {
+            drop(sealed);
             let quarantine = self.quarantine("verification").ok();
             if matches!(error, ContentStoreError::VerificationRejected { .. }) {
                 return Err(ContentStoreError::VerificationRejected { quarantine });
             }
             return Err(error);
         }
-        let target = self.store.object_path_for(actual);
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        self.file.take();
-        let result = match fs::hard_link(&self.data_path, &target) {
-            Ok(()) => ObjectAdmission::Published {
-                object: actual,
-                bytes: received,
-            },
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => ObjectAdmission::Reused {
-                object: actual,
-                bytes: self.store.verify_object(actual, received)?,
-            },
-            Err(error) if error.kind() == io::ErrorKind::CrossesDevices => {
-                let mut source = File::open(&self.data_path)?;
-                let mut destination = match OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&target)
-                {
-                    Ok(file) => file,
-                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                        return self.finish_existing(actual);
-                    }
-                    Err(error) => return Err(error.into()),
-                };
-                io::copy(&mut source, &mut destination)?;
-                destination.sync_all()?;
-                ObjectAdmission::Published {
-                    object: actual,
-                    bytes: received,
-                }
-            }
-            Err(error) => return Err(error.into()),
-        };
+        self.check_owner()?;
+        let result = self
+            .store
+            .publish_temp(&mut sealed, actual, sealed_length)?;
+
+        // The checkpoint is removed and made durable before its data file is
+        // removed. A crash can therefore leave an orphaned .part, but cannot
+        // leave an acknowledged checkpoint referring to missing bytes.
+        fs::remove_file(&self.state_path)?;
+        sync_directory(&self.store.root.join("transfers"))?;
         fs::remove_file(&self.data_path)?;
-        let _ = fs::remove_file(&self.state_path);
-        let _ = fs::remove_file(&self.owner_path);
-        self.finished = true;
+        sync_directory(&self.store.root.join("transfers"))?;
         Ok(result)
     }
 
-    fn finish_existing(
-        mut self,
-        object: RawArchiveObjectId,
-    ) -> Result<ObjectAdmission, ContentStoreError> {
-        let bytes = self.store.verify_object(object, self.checkpoint.received)?;
-        fs::remove_file(&self.data_path)?;
-        let _ = fs::remove_file(&self.state_path);
-        let _ = fs::remove_file(&self.owner_path);
-        self.finished = true;
-        Ok(ObjectAdmission::Reused { object, bytes })
-    }
-
     fn quarantine(&mut self, reason: &str) -> Result<PathBuf, ContentStoreError> {
+        validate_store_directory(self.store.root.as_ref(), &self.store.root.join("transfers"))?;
+        validate_store_directory(
+            self.store.root.as_ref(),
+            &self.store.root.join("quarantine"),
+        )?;
         self.file.take();
         let destination = self.store.root.join("quarantine").join(format!(
             "{}.{}.part",
             hex(&self.owner_token),
             reason
         ));
+        match fs::remove_file(&self.state_path) {
+            Ok(()) => sync_directory(&self.store.root.join("transfers"))?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
         fs::rename(&self.data_path, &destination)?;
-        let _ = fs::remove_file(&self.state_path);
-        let _ = fs::remove_file(&self.owner_path);
-        self.finished = true;
+        sync_directory(&self.store.root.join("transfers"))?;
+        sync_directory(&self.store.root.join("quarantine"))?;
         Ok(destination)
     }
 }
@@ -1481,33 +2154,66 @@ impl ResumableTransfer {
 impl Drop for ResumableTransfer {
     fn drop(&mut self) {
         let _ = self.file.take();
-        if !self.finished {
-            let _ = fs::remove_file(&self.owner_path);
-        }
     }
 }
 
-fn acquire_transfer_owner(path: &Path, token: [u8; ID_BYTES]) -> Result<(), ContentStoreError> {
-    let expires = now_millis().saturating_add(TEMP_TTL.as_millis() as u64);
-    match write_lease_marker(path, token, expires) {
-        Ok(()) => Ok(()),
-        Err(ContentStoreError::Io(error)) if error.kind() == io::ErrorKind::AlreadyExists => {
-            if read_lease_expiry(path).is_some_and(|expiry| expiry <= now_millis()) {
-                let _ = fs::remove_file(path);
-                write_lease_marker(
-                    path,
-                    token,
-                    now_millis().saturating_add(TEMP_TTL.as_millis() as u64),
-                )
-            } else {
-                Err(ContentStoreError::TransferBusy)
-            }
-        }
-        Err(error) => Err(error),
+fn acquire_transfer_owner(path: &Path, token: [u8; ID_BYTES]) -> Result<File, ContentStoreError> {
+    // This inode is intentionally persistent. Unlinking a locked owner file
+    // would let another opener create and lock a replacement inode while the
+    // old owner still holds its descriptor.
+    let mut file = backend_platform::durability::open_or_create_regular_file_nofollow(path)?;
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => return Err(ContentStoreError::TransferBusy),
+        Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
     }
+    if let Some(parent) = path.parent() {
+        sync_directory(parent)?;
+    }
+    let expires = now_millis().saturating_add(TEMP_TTL.as_millis() as u64);
+    write_transfer_owner(&mut file, token, expires)?;
+    Ok(file)
+}
+
+fn transfer_owner_lock_path(root: &Path, id: TransferId) -> PathBuf {
+    let stripe = usize::from(id.0[0]) % TRANSFER_OWNER_LOCK_STRIPES;
+    root.join("transfers")
+        .join(format!(".owner-lock-{stripe:03}"))
+}
+
+fn write_transfer_owner(
+    file: &mut File,
+    token: [u8; ID_BYTES],
+    expires: u64,
+) -> Result<(), ContentStoreError> {
+    file.seek(SeekFrom::Start(0))?;
+    file.set_len(0)?;
+    file.write_all(&token)?;
+    file.write_all(&expires.to_be_bytes())?;
+    file.sync_all()?;
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CheckpointPoint {
+    TemporarySynced,
+    Renamed,
+    BeforeParentSync,
+    ParentSynced,
 }
 
 fn write_checkpoint(path: &Path, checkpoint: &TransferCheckpoint) -> Result<(), ContentStoreError> {
+    write_checkpoint_with_hook(path, checkpoint, |_| Ok(()))
+}
+
+fn write_checkpoint_with_hook<F>(
+    path: &Path,
+    checkpoint: &TransferCheckpoint,
+    mut hook: F,
+) -> Result<(), ContentStoreError>
+where
+    F: FnMut(CheckpointPoint) -> io::Result<()>,
+{
     let mut bytes = Vec::with_capacity(8 + ID_BYTES + 1 + ID_BYTES + 8 + 8 + 2 + 2 + 16_384);
     bytes.extend_from_slice(TRANSFER_MAGIC);
     bytes.extend_from_slice(&checkpoint.id.0);
@@ -1541,24 +2247,37 @@ fn write_checkpoint(path: &Path, checkpoint: &TransferCheckpoint) -> Result<(), 
     }
     let temporary = path.with_extension("state.tmp");
     {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&temporary)?;
+        let mut file =
+            backend_platform::durability::open_or_truncate_regular_file_nofollow(&temporary)?;
         file.write_all(&bytes)?;
         file.sync_all()?;
     }
+    hook(CheckpointPoint::TemporarySynced)?;
     fs::rename(temporary, path)?;
+    hook(CheckpointPoint::Renamed)?;
+    hook(CheckpointPoint::BeforeParentSync)?;
+    if let Some(parent) = path.parent() {
+        sync_directory(parent)?;
+    }
+    hook(CheckpointPoint::ParentSynced)?;
     Ok(())
 }
 
 fn read_checkpoint(path: &Path) -> Result<Option<TransferCheckpoint>, ContentStoreError> {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
+    let mut file = match backend_platform::durability::open_regular_file_nofollow(path) {
+        Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
+    if file.metadata()?.len() > MAX_CHECKPOINT_BYTES as u64 {
+        return Err(ContentStoreError::TransferStateMismatch);
+    }
+    let mut bytes = Vec::with_capacity(file.metadata()?.len() as usize);
+    file.take(MAX_CHECKPOINT_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_CHECKPOINT_BYTES {
+        return Err(ContentStoreError::TransferStateMismatch);
+    }
     const PREFIX: usize = 8 + ID_BYTES + 1 + ID_BYTES + 8 + 8;
     if bytes.len() < PREFIX || &bytes[..8] != TRANSFER_MAGIC {
         return Err(ContentStoreError::TransferStateMismatch);
@@ -1724,6 +2443,578 @@ mod tests {
     }
 
     #[test]
+    fn staged_publication_syncs_the_file_then_links_then_syncs_its_parent() {
+        let path = root("staged-publication-order");
+        clean(&path);
+        let store = ContentAddressedStore::open(&path).expect("store");
+        let bytes = b"ordered staged publication";
+        let source = path.join("temps/source.part");
+        let mut file = File::create(&source).expect("source");
+        file.write_all(bytes).expect("source bytes");
+        file.sync_all().expect("sync source");
+        drop(file);
+        let object = RawArchiveObjectId::from_bytes(bytes);
+        let mut points = Vec::new();
+
+        let admission = store
+            .publish_file_with_hook(&source, object, bytes.len() as u64, |point| {
+                points.push(point);
+                Ok(())
+            })
+            .expect("staged publication");
+
+        assert_eq!(
+            points,
+            [
+                PublishPoint::StageCreated,
+                PublishPoint::StageCopyProgress,
+                PublishPoint::StageWritten,
+                PublishPoint::StageSynced,
+                PublishPoint::ObjectLinked,
+                PublishPoint::BeforeDirectorySync,
+                PublishPoint::DirectorySynced,
+            ]
+        );
+        assert_eq!(
+            admission,
+            ObjectAdmission::Published {
+                object,
+                bytes: bytes.len() as u64,
+            }
+        );
+        let reopened = ContentAddressedStore::open(&path).expect("cold reopen");
+        assert_eq!(
+            reopened
+                .verify_object(object, bytes.len() as u64)
+                .expect("verify"),
+            bytes.len() as u64
+        );
+        clean(&path);
+    }
+
+    #[test]
+    fn publication_uses_a_private_inode_and_syncs_before_returning_winner() {
+        let path = root("direct-publication-order");
+        clean(&path);
+        let store = ContentAddressedStore::open(&path).expect("store");
+        let bytes = b"private destination-stage publication";
+        let source = path.join("temps/source.part");
+        let mut file = File::create(&source).expect("source");
+        file.write_all(bytes).expect("source bytes");
+        file.sync_all().expect("sync source");
+        drop(file);
+        let object = RawArchiveObjectId::from_bytes(bytes);
+        let mut points = Vec::new();
+
+        let admission = store
+            .publish_file_with_hook(&source, object, bytes.len() as u64, |point| {
+                points.push(point);
+                Ok(())
+            })
+            .expect("direct publication");
+
+        assert_eq!(
+            points,
+            [
+                PublishPoint::StageCreated,
+                PublishPoint::StageCopyProgress,
+                PublishPoint::StageWritten,
+                PublishPoint::StageSynced,
+                PublishPoint::ObjectLinked,
+                PublishPoint::BeforeDirectorySync,
+                PublishPoint::DirectorySynced,
+            ]
+        );
+        assert!(admission.was_published());
+        fs::write(&source, b"mutable source inode after publish").expect("mutate source inode");
+        let reopened = ContentAddressedStore::open(&path).expect("cold reopen");
+        assert_eq!(
+            reopened
+                .verify_object(object, bytes.len() as u64)
+                .expect("verify"),
+            bytes.len() as u64
+        );
+        assert_eq!(
+            fs::read(reopened.object_path(object)).expect("published bytes"),
+            bytes
+        );
+        clean(&path);
+    }
+
+    #[test]
+    // These hook failures unwind normally and exercise RAII/retry behavior;
+    // the subprocess test below covers a hard process exit.
+    fn injected_staging_faults_unwind_without_publishing_partial_bytes() {
+        let failure_points = [
+            PublishPoint::StageCreated,
+            PublishPoint::StageCopyProgress,
+            PublishPoint::StageWritten,
+            PublishPoint::StageSynced,
+            PublishPoint::ObjectLinked,
+            PublishPoint::BeforeDirectorySync,
+            PublishPoint::DirectorySynced,
+        ];
+        let bytes = vec![0x6b; CHUNK_BYTES * 2 + 17];
+        let object = RawArchiveObjectId::from_bytes(&bytes);
+
+        for (index, fail_at) in failure_points.into_iter().enumerate() {
+            let path = root(&format!("staged-interruption-{index}"));
+            clean(&path);
+            let store = ContentAddressedStore::open(&path).expect("store");
+            let source = path.join("temps/source.part");
+            let mut file = File::create(&source).expect("source");
+            file.write_all(&bytes).expect("source bytes");
+            file.sync_all().expect("sync source");
+            drop(file);
+            let mut points = Vec::new();
+
+            let error = store
+                .publish_file_with_hook(&source, object, bytes.len() as u64, |point| {
+                    points.push(point);
+                    if point == fail_at {
+                        Err(io::Error::other("simulated interruption"))
+                    } else {
+                        Ok(())
+                    }
+                })
+                .expect_err("injected interruption");
+            assert!(matches!(error, ContentStoreError::Io(_)));
+            assert_eq!(points.last(), Some(&fail_at));
+
+            let target = store.object_path(object);
+            assert!(
+                fs::read_dir(target.parent().expect("target parent"))
+                    .expect("read object parent")
+                    .all(|entry| entry
+                        .expect("object entry")
+                        .path()
+                        .extension()
+                        .and_then(|extension| extension.to_str())
+                        != Some("stage")),
+                "staging file was cleaned at {fail_at:?}"
+            );
+            let linked_before_directory_sync = matches!(
+                fail_at,
+                PublishPoint::ObjectLinked
+                    | PublishPoint::BeforeDirectorySync
+                    | PublishPoint::DirectorySynced
+            );
+            assert_eq!(target.exists(), linked_before_directory_sync);
+
+            drop(store);
+            let reopened = ContentAddressedStore::open(&path).expect("cold reopen");
+            if linked_before_directory_sync {
+                assert_eq!(
+                    reopened
+                        .verify_object(object, bytes.len() as u64)
+                        .expect("complete linked object survives"),
+                    bytes.len() as u64
+                );
+                struct Unreadable;
+                impl Read for Unreadable {
+                    fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                        panic!("an existing object must be verified and reused")
+                    }
+                }
+                assert!(matches!(
+                    reopened.admit_reader(Some(object), Unreadable, bytes.len() as u64),
+                    Ok(ObjectAdmission::Reused { .. })
+                ));
+            } else {
+                assert!(matches!(
+                    reopened.admit_reader(Some(object), &bytes[..], bytes.len() as u64),
+                    Ok(ObjectAdmission::Published { .. })
+                ));
+                assert_eq!(
+                    reopened
+                        .verify_object(object, bytes.len() as u64)
+                        .expect("retry publishes exact bytes"),
+                    bytes.len() as u64
+                );
+            }
+            clean(&path);
+        }
+    }
+
+    #[test]
+    fn cold_reopen_rejects_a_partial_existing_object() {
+        let path = root("partial-object");
+        clean(&path);
+        let bytes = b"the complete immutable object";
+        let object = RawArchiveObjectId::from_bytes(bytes);
+        let store = ContentAddressedStore::open(&path).expect("store");
+        let target = store.object_path(object);
+        fs::create_dir_all(target.parent().expect("target parent")).expect("object parent");
+        fs::write(&target, &bytes[..7]).expect("partial final target");
+        drop(store);
+
+        let reopened = ContentAddressedStore::open(&path).expect("cold reopen");
+        struct Unreadable;
+        impl Read for Unreadable {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                panic!("a corrupt existing object must fail verification before source read")
+            }
+        }
+        assert!(matches!(
+            reopened.admit_reader(Some(object), Unreadable, bytes.len() as u64),
+            Err(ContentStoreError::CorruptObject { .. })
+        ));
+        clean(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cas_reads_reject_symlink_targets() {
+        use std::os::unix::fs::symlink;
+
+        let path = root("symlink-object");
+        clean(&path);
+        let store = ContentAddressedStore::open(&path).expect("store");
+        let bytes = b"matching external mutable bytes";
+        let object = RawArchiveObjectId::from_bytes(bytes);
+        let target = store.object_path(object);
+        fs::create_dir_all(target.parent().expect("target parent")).expect("object parent");
+        let external = path.join("outside-object");
+        fs::write(&external, bytes).expect("external bytes");
+        symlink(external, &target).expect("symlink object target");
+
+        assert!(matches!(
+            store.object_len(object),
+            Err(ContentStoreError::CorruptObject { .. })
+        ));
+        assert!(matches!(
+            store.verify_object(object, 1024),
+            Err(ContentStoreError::CorruptObject { .. })
+        ));
+        assert!(matches!(
+            store.open_object(object),
+            Err(ContentStoreError::CorruptObject { .. })
+        ));
+        clean(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cas_reads_and_admission_reject_symlinked_fanout_parent() {
+        use std::os::unix::fs::symlink;
+
+        let path = root("symlink-fanout");
+        clean(&path);
+        let store = ContentAddressedStore::open(&path).expect("store");
+        let bytes = b"bytes hidden behind a fanout link";
+        let object = RawArchiveObjectId::from_bytes(bytes);
+        let encoded = hex(object.as_bytes());
+        let outside = path.join("outside-objects");
+        let outside_bucket = outside.join(&encoded[..2]);
+        fs::create_dir_all(&outside_bucket).expect("external bucket");
+        fs::write(outside_bucket.join(&encoded[2..]), bytes).expect("matching external object");
+
+        let objects = path.join("objects");
+        fs::rename(&objects, path.join("objects-original")).expect("move real object tree");
+        symlink(&outside, &objects).expect("link object tree outside store");
+
+        assert!(matches!(
+            store.object_len(object),
+            Err(ContentStoreError::CorruptObject { .. })
+        ));
+        assert!(matches!(
+            store.verify_object(object, 1024),
+            Err(ContentStoreError::CorruptObject { .. })
+        ));
+        assert!(matches!(
+            store.open_object(object),
+            Err(ContentStoreError::CorruptObject { .. })
+        ));
+        struct Unreadable;
+        impl Read for Unreadable {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                panic!("a symlinked parent must be rejected before source reads")
+            }
+        }
+        assert!(matches!(
+            store.admit_reader(Some(object), Unreadable, 1024),
+            Err(ContentStoreError::CorruptObject { .. })
+        ));
+        assert!(matches!(
+            store.admit_reader(None, &bytes[..], 1024),
+            Err(ContentStoreError::CorruptObject { .. })
+        ));
+        assert_eq!(
+            fs::read(outside_bucket.join(&encoded[2..])).expect("external bytes"),
+            bytes
+        );
+        clean(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn object_admission_does_not_create_through_a_symlinked_bucket() {
+        use std::os::unix::fs::symlink;
+
+        let path = root("symlink-object-bucket");
+        clean(&path);
+        let store = ContentAddressedStore::open(&path).expect("store");
+        let bytes = b"never write through a fanout link";
+        let object = RawArchiveObjectId::from_bytes(bytes);
+        let encoded = hex(object.as_bytes());
+        let bucket = path.join("objects").join(&encoded[..2]);
+        let external_bucket = path.join("outside-bucket");
+        fs::create_dir_all(&external_bucket).expect("external bucket");
+        symlink(&external_bucket, &bucket).expect("symlink bucket");
+
+        assert!(matches!(
+            store.admit_reader(None, &bytes[..], 1024),
+            Err(ContentStoreError::CorruptObject { .. })
+        ));
+        assert!(
+            fs::read_dir(&external_bucket)
+                .expect("read external bucket")
+                .next()
+                .is_none()
+        );
+        clean(&path);
+    }
+
+    #[test]
+    fn transfer_owner_lock_fences_expiry_stale_renew_and_stale_part_writes() {
+        let path = root("transfer-owner-fence");
+        clean(&path);
+        let store_a = ContentAddressedStore::open(&path).expect("store A");
+        let store_b = ContentAddressedStore::open(&path).expect("store B");
+        let bytes = b"hello world";
+        let object = RawArchiveObjectId::from_bytes(bytes);
+        let id = TransferId::from_parts(b"https://example/fenced", Some(object), Some(11));
+        let mut stale = store_a
+            .resume_or_start(id, Some(object), Some(11))
+            .expect("first owner");
+        stale.append(&b"hello"[..], 11).expect("first range");
+        let owner_path = transfer_owner_lock_path(&path, id);
+
+        // Expiry is informational; a held OS lock still blocks a second open.
+        write_transfer_owner(&mut stale.owner_file, stale.owner_token, 0)
+            .expect("force marker expiry");
+        assert!(matches!(
+            store_b.resume_or_start(id, Some(object), Some(11)),
+            Err(ContentStoreError::TransferBusy)
+        ));
+
+        // Simulate a stale owner after its lock was lost. The new token must
+        // fence both stale renewal and Drop, while its old writable .part fd
+        // remains open across publication.
+        stale
+            .owner_file
+            .unlock()
+            .expect("simulate lost ownership lock");
+        let mut current = store_b
+            .resume_or_start(id, Some(object), Some(11))
+            .expect("replacement owner");
+        let current_token = current.owner_token;
+        assert!(matches!(
+            stale.renew(),
+            Err(ContentStoreError::TransferBusy)
+        ));
+        let marker_before_stale_drop = fs::read(&owner_path).expect("current owner marker");
+        assert_eq!(
+            marker_before_stale_drop.get(..ID_BYTES),
+            Some(current_token.as_slice())
+        );
+
+        current.append(&b" world"[..], 11).expect("complete range");
+        let admission = current.finish().expect("publish sealed inode");
+        assert_eq!(admission.object(), object);
+
+        let stale_file = stale.file.as_mut().expect("stale writable part descriptor");
+        stale_file.set_len(0).expect("truncate unlinked old part");
+        stale_file
+            .write_all(b"changed after publication")
+            .expect("mutate stale part descriptor");
+        stale_file.sync_all().expect("sync stale part mutation");
+        drop(stale);
+
+        assert_eq!(
+            fs::read(&owner_path).expect("owner marker remains"),
+            marker_before_stale_drop
+        );
+        assert_eq!(
+            store_b
+                .verify_object(object, 1024)
+                .expect("published bytes remain immutable"),
+            bytes.len() as u64
+        );
+        assert_eq!(
+            store_b
+                .open_object(object)
+                .expect("open object")
+                .metadata()
+                .expect("metadata")
+                .len(),
+            bytes.len() as u64
+        );
+        clean(&path);
+    }
+
+    #[test]
+    fn transfer_ids_on_one_owner_stripe_serialize_with_bounded_markers() {
+        let path = root("owner-lock-stripes");
+        clean(&path);
+        let store = ContentAddressedStore::open(&path).expect("store");
+        let mut first_bytes = [0_u8; ID_BYTES];
+        first_bytes[0] = 19;
+        let mut second_bytes = first_bytes;
+        second_bytes[1] = 1;
+        let first_id = TransferId(first_bytes);
+        let second_id = TransferId(second_bytes);
+        assert_eq!(
+            transfer_owner_lock_path(&path, first_id),
+            transfer_owner_lock_path(&path, second_id)
+        );
+
+        let first = store
+            .resume_or_start(first_id, None, Some(0))
+            .expect("first striped owner");
+        assert!(matches!(
+            store.resume_or_start(second_id, None, Some(0)),
+            Err(ContentStoreError::TransferBusy)
+        ));
+        drop(first);
+        let second = store
+            .resume_or_start(second_id, None, Some(0))
+            .expect("second striped owner after release");
+        drop(second);
+
+        let marker_count = fs::read_dir(path.join("transfers"))
+            .expect("transfers")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with(".owner-lock-"))
+            })
+            .count();
+        assert_eq!(marker_count, 1, "only one persistent stripe file is needed");
+        clean(&path);
+    }
+
+    #[test]
+    fn checkpoint_rename_is_followed_by_transfer_directory_sync() {
+        let path = root("checkpoint-order");
+        clean(&path);
+        let store = ContentAddressedStore::open(&path).expect("store");
+        let id = TransferId::from_parts(b"checkpoint-order", None, Some(0));
+        let checkpoint = TransferCheckpoint {
+            id,
+            expected: None,
+            expected_length: Some(0),
+            received: 0,
+            validator: None,
+        };
+        let state_path = store
+            .root
+            .join("transfers")
+            .join(format!("{}.state", hex(&id.0)));
+        let mut points = Vec::new();
+        write_checkpoint_with_hook(&state_path, &checkpoint, |point| {
+            points.push(point);
+            Ok(())
+        })
+        .expect("write checkpoint");
+        assert_eq!(
+            points,
+            [
+                CheckpointPoint::TemporarySynced,
+                CheckpointPoint::Renamed,
+                CheckpointPoint::BeforeParentSync,
+                CheckpointPoint::ParentSynced,
+            ]
+        );
+        drop(store);
+        assert_eq!(
+            read_checkpoint(&state_path).expect("cold checkpoint"),
+            Some(checkpoint)
+        );
+        clean(&path);
+    }
+
+    #[test]
+    fn checkpoint_parent_sync_error_preserves_bytes_for_cold_retry() {
+        let path = root("checkpoint-sync-error");
+        clean(&path);
+        let store = ContentAddressedStore::open(&path).expect("store");
+        let bytes = b"hello world";
+        let object = RawArchiveObjectId::from_bytes(bytes);
+        let id = TransferId::from_parts(b"checkpoint-sync-error", Some(object), Some(11));
+        let mut transfer = store
+            .resume_or_start(id, Some(object), Some(11))
+            .expect("start transfer");
+        let part = path.join("transfers").join(format!("{}.part", hex(&id.0)));
+
+        // This is an ordinary returned I/O failure after rename, not a
+        // process/power-loss simulation. It exercises the ambiguous-commit
+        // path and verifies that rollback does not truncate checkpoint bytes.
+        let error = transfer
+            .append_with_checkpoint_writer(&b"hello"[..], 11, |state_path, checkpoint| {
+                write_checkpoint_with_hook(state_path, checkpoint, |point| {
+                    if point == CheckpointPoint::BeforeParentSync {
+                        Err(io::Error::other("injected parent directory sync failure"))
+                    } else {
+                        Ok(())
+                    }
+                })
+            })
+            .expect_err("injected checkpoint barrier failure");
+        assert!(matches!(error, ContentStoreError::Io(_)));
+        assert_eq!(fs::metadata(&part).expect("synced part remains").len(), 5);
+        assert!(matches!(
+            transfer.append(&b" world"[..], 11),
+            Err(ContentStoreError::TransferNeedsReopen)
+        ));
+        drop(transfer);
+
+        let reopened = ContentAddressedStore::open(&path).expect("cold reopen");
+        let mut retry = reopened
+            .resume_or_start(id, Some(object), Some(11))
+            .expect("resume after ambiguous checkpoint");
+        assert_eq!(retry.resume_offset(), 5);
+        retry.append(&b" world"[..], 11).expect("retry suffix");
+        assert_eq!(retry.finish().expect("publish retry").object(), object);
+        assert_eq!(
+            reopened.verify_object(object, 1024).expect("verify retry"),
+            bytes.len() as u64
+        );
+        clean(&path);
+    }
+
+    #[test]
+    fn oversized_checkpoint_and_lease_records_are_rejected_without_unbounded_reads() {
+        let path = root("oversized-records");
+        clean(&path);
+        fs::create_dir_all(&path).expect("record directory");
+
+        let marker = path.join("lease");
+        write_lease_marker(&marker, [7; ID_BYTES], 123).expect("valid lease marker");
+        assert_eq!(read_lease_expiry(&marker), Some(123));
+        OpenOptions::new()
+            .append(true)
+            .open(&marker)
+            .expect("open lease marker")
+            .write_all(b"x")
+            .expect("extend lease marker");
+        assert_eq!(read_lease_expiry(&marker), None);
+
+        let checkpoint = path.join("transfer.state");
+        File::create(&checkpoint)
+            .expect("oversized checkpoint")
+            .set_len(MAX_CHECKPOINT_BYTES as u64 + 1)
+            .expect("extend sparse checkpoint");
+        assert!(matches!(
+            read_checkpoint(&checkpoint),
+            Err(ContentStoreError::TransferStateMismatch)
+        ));
+        clean(&path);
+    }
+
+    #[test]
     fn digest_mismatch_is_quarantined_and_never_published() {
         let path = root("quarantine");
         clean(&path);
@@ -1764,6 +3055,108 @@ mod tests {
     }
 
     #[test]
+    fn verified_reader_cannot_mutate_published_bytes_through_retained_fd() {
+        let path = root("verified-retained-fd");
+        clean(&path);
+        let store = ContentAddressedStore::open(&path).expect("store");
+        let bytes = b"verified immutable payload";
+        let object = RawArchiveObjectId::from_bytes(bytes);
+        let mut retained = None;
+        let mut verifier_path = None;
+
+        let admission = store
+            .admit_reader_verified(Some(object), &bytes[..], 1024, |temp, _, _| {
+                verifier_path = Some(temp.to_path_buf());
+                retained = Some(
+                    OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(temp)
+                        .map_err(ContentStoreError::Io)?,
+                );
+                Ok(())
+            })
+            .expect("verified admission");
+        assert!(admission.was_published());
+
+        let mut retained = retained.expect("verifier descriptor");
+        retained
+            .seek(SeekFrom::Start(0))
+            .expect("rewind retained fd");
+        retained.write_all(b"X").expect("mutate verifier inode");
+        retained.sync_all().expect("sync verifier inode mutation");
+
+        assert!(!verifier_path.expect("verifier path").exists());
+        assert_eq!(
+            store
+                .verify_object(object, 1024)
+                .expect("object remains valid"),
+            bytes.len() as u64
+        );
+        assert_eq!(
+            fs::read(store.object_path(object)).expect("published bytes"),
+            bytes
+        );
+        clean(&path);
+    }
+
+    #[test]
+    fn transfer_verifier_cannot_mutate_published_bytes_through_retained_fd() {
+        let path = root("transfer-verified-retained-fd");
+        clean(&path);
+        let store = ContentAddressedStore::open(&path).expect("store");
+        let bytes = b"verified transfer payload";
+        let object = RawArchiveObjectId::from_bytes(bytes);
+        let id = TransferId::from_parts(
+            b"retained-verifier-fd",
+            Some(object),
+            Some(bytes.len() as u64),
+        );
+        let mut transfer = store
+            .resume_or_start(id, Some(object), Some(bytes.len() as u64))
+            .expect("start transfer");
+        transfer
+            .append(&bytes[..], bytes.len() as u64)
+            .expect("append bytes");
+        let mut retained = None;
+        let mut verifier_path = None;
+
+        transfer
+            .finish_verified(|temp, _, _| {
+                verifier_path = Some(temp.to_path_buf());
+                retained = Some(
+                    OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(temp)
+                        .map_err(ContentStoreError::Io)?,
+                );
+                Ok(())
+            })
+            .expect("verified transfer finish");
+
+        let mut retained = retained.expect("verifier descriptor");
+        retained
+            .seek(SeekFrom::Start(0))
+            .expect("rewind retained fd");
+        retained.write_all(b"X").expect("mutate verifier inode");
+        retained.sync_all().expect("sync verifier inode mutation");
+
+        assert!(!verifier_path.expect("verifier path").exists());
+        assert_eq!(
+            store
+                .verify_object(object, 1024)
+                .expect("object remains valid"),
+            bytes.len() as u64
+        );
+        assert_eq!(
+            fs::read(store.object_path(object)).expect("published bytes"),
+            bytes
+        );
+        clean(&path);
+    }
+
+    #[test]
     fn active_temp_survives_stale_scavenge() {
         let path = root("scavenge");
         clean(&path);
@@ -1780,6 +3173,178 @@ mod tests {
                 .and_then(Path::parent)
                 .unwrap_or_else(|| Path::new("/")),
         );
+    }
+
+    #[test]
+    fn second_store_cannot_scavenge_a_temp_held_during_long_verification() {
+        let path = root("temp-cross-store-lock");
+        clean(&path);
+        let store_a = ContentAddressedStore::open(&path).expect("store A");
+        let store_b = ContentAddressedStore::open(&path).expect("store B");
+        let mut active = store_a.create_temp("long-verifier").expect("active temp");
+        active.write_all(b"sealed bytes").expect("write temp");
+        active.sync_close().expect("close writer before verifier");
+        File::open(active.path())
+            .expect("open temp for aging")
+            .set_times(std::fs::FileTimes::new().set_modified(UNIX_EPOCH))
+            .expect("age temp");
+        let mut lease = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&active.lease_path)
+            .expect("open lease marker");
+        lease.write_all(&active.token).expect("write lease token");
+        lease.write_all(&0_u64.to_be_bytes()).expect("expire lease");
+        lease.sync_all().expect("sync expired lease");
+
+        assert_eq!(
+            store_b
+                .scavenge_stale(Duration::ZERO)
+                .expect("live scavenge"),
+            0
+        );
+        assert!(active.path().exists(), "cross-process lock protects temp");
+
+        // Releasing the lock models a crashed verifier; a second store can
+        // then collect the aged orphan even while this test retains metadata.
+        active._lock.unlock().expect("release temp lock");
+        assert_eq!(
+            store_b
+                .scavenge_stale(Duration::ZERO)
+                .expect("orphan scavenge"),
+            1
+        );
+        assert!(!active.path().exists());
+        drop(active);
+        clean(&path);
+    }
+
+    #[test]
+    fn stale_destination_stages_are_scavenged_without_removing_live_stages() {
+        let path = root("stage-scavenge");
+        clean(&path);
+        let store = ContentAddressedStore::open(&path).expect("store");
+        let object = RawArchiveObjectId::from_bytes(b"staged object");
+        let target = store.object_path(object);
+        let parent = target.parent().expect("target parent");
+        fs::create_dir_all(parent).expect("object parent");
+        let mut active = DestinationStage::create(&store, parent, &target).expect("active stage");
+        active
+            .file_mut()
+            .expect("active stage file")
+            .write_all(b"live partial stage")
+            .expect("write active stage");
+
+        let target_name = target
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("target name");
+        let stale_path = parent.join(format!(".{target_name}.{}.stage", "0".repeat(ID_BYTES * 2)));
+        fs::write(&stale_path, b"crash-left stage").expect("stale stage");
+        File::open(&stale_path)
+            .expect("open stale stage")
+            .set_times(std::fs::FileTimes::new().set_modified(UNIX_EPOCH))
+            .expect("age stale stage");
+
+        let other_store = ContentAddressedStore::open(&path).expect("second store handle");
+        assert_eq!(
+            other_store
+                .scavenge_stale(Duration::ZERO)
+                .expect("scavenge"),
+            1
+        );
+        assert!(active.path().exists(), "live stage remains protected");
+        assert!(!stale_path.exists(), "orphaned stage is removed");
+        drop(active);
+        clean(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sigkill_stage_child() {
+        let Ok(root) = std::env::var("NUDOX_SIGKILL_STAGE_ROOT") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        let store = ContentAddressedStore::open(&root).expect("child store");
+        let bytes = b"destination stage held through verification";
+        let source = root.join("temps/stage-child-source.part");
+        let mut source_file = File::create(&source).expect("child source");
+        source_file.write_all(bytes).expect("write child source");
+        source_file.sync_all().expect("sync child source");
+        drop(source_file);
+        let object = RawArchiveObjectId::from_bytes(bytes);
+        let _ = store.publish_file_with_hook(&source, object, bytes.len() as u64, |point| {
+            if point == PublishPoint::StageSynced {
+                println!("ready");
+                io::stdout().flush().expect("flush child readiness");
+                let mut input = Vec::new();
+                let _ = io::stdin().read_to_end(&mut input);
+            }
+            Ok(())
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hard_exit_releases_stage_lock_for_cold_scavenging() {
+        let path = root("stage-sigkill");
+        clean(&path);
+        let mut child = Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "acquisition::content_addressed::tests::sigkill_stage_child",
+                "--nocapture",
+            ])
+            .env("NUDOX_SIGKILL_STAGE_ROOT", &path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn stage child");
+        let stdout = child.stdout.take().expect("child stdout");
+        let mut lines = BufReader::new(stdout).lines();
+        let mut ready = false;
+        while let Some(line) = lines.next() {
+            if line.expect("read child output") == "ready" {
+                ready = true;
+                break;
+            }
+        }
+        assert!(ready, "child did not hold a synced stage");
+
+        let store = ContentAddressedStore::open(&path).expect("independent store handle");
+        let object = RawArchiveObjectId::from_bytes(b"destination stage held through verification");
+        let target = store.object_path(object);
+        let parent = target.parent().expect("object parent");
+        let stage = fs::read_dir(parent)
+            .expect("object entries")
+            .map(|entry| entry.expect("object entry").path())
+            .find(|path| is_destination_stage(path))
+            .expect("child stage");
+        File::open(&stage)
+            .expect("open stage for aging")
+            .set_times(std::fs::FileTimes::new().set_modified(UNIX_EPOCH))
+            .expect("age live stage");
+        assert_eq!(
+            store.scavenge_stale(Duration::ZERO).expect("live scavenge"),
+            0
+        );
+        assert!(
+            stage.exists(),
+            "scavenger must respect another process lock"
+        );
+
+        child.kill().expect("kill child");
+        let status = child.wait().expect("wait for child");
+        assert!(!status.success(), "child unexpectedly exited cleanly");
+        assert_eq!(
+            store
+                .scavenge_stale(Duration::ZERO)
+                .expect("orphan scavenge"),
+            1
+        );
+        assert!(!stage.exists(), "hard-exit stage can be scavenged");
+        clean(&path);
     }
 
     #[test]
@@ -1856,19 +3421,8 @@ mod tests {
         file.write_all(b"uncheckpointed").expect("child write tail");
         file.sync_all().expect("child sync tail");
         drop(file);
-        // Expire only the lease so the parent can model a restarted process
-        // without waiting for the production lease TTL.
-        let owner = root.join("transfers").join(format!("{}.owner", hex(&id.0)));
-        let mut lease = OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .open(owner)
-            .expect("child open lease");
-        lease.write_all(&[0; ID_BYTES]).expect("child lease token");
-        lease
-            .write_all(&0_u64.to_be_bytes())
-            .expect("child lease expiry");
-        lease.sync_all().expect("child sync lease");
+        // The persistent stripe marker is intentionally left intact. A hard
+        // process exit releases its OS lock and permits the parent to resume.
         println!("ready");
         io::stdout().flush().expect("flush child readiness");
         let mut input = Vec::new();
@@ -2010,6 +3564,80 @@ mod tests {
         let manifest = builder.finish().expect("manifest");
         assert_eq!(manifest.entries().len(), 1);
         assert_eq!(manifest.bytes(), 6);
+    }
+
+    #[test]
+    fn directory_budget_preflight_publishes_no_child_objects_on_rejection() {
+        let source_root = root("tree-over-budget-source");
+        let store_root = root("tree-over-budget-store");
+        clean(&source_root);
+        clean(&store_root);
+        fs::create_dir_all(&source_root).expect("source root");
+        fs::write(source_root.join("first"), b"first").expect("first file");
+        fs::write(source_root.join("second"), b"second").expect("second file");
+        let store = ContentAddressedStore::open(&store_root).expect("store");
+        let budget = ArchiveBudget {
+            max_entries: 1,
+            ..ArchiveBudget::default()
+        };
+
+        assert!(matches!(
+            store.admit_directory(&source_root, budget),
+            Err(ContentStoreError::ArchiveEntryLimit)
+        ));
+        assert!(
+            fs::read_dir(store.root().join("objects"))
+                .expect("object root")
+                .next()
+                .is_none()
+        );
+        let byte_budget = ArchiveBudget {
+            max_bytes: 5,
+            ..ArchiveBudget::default()
+        };
+        assert!(matches!(
+            store.admit_directory(&source_root, byte_budget),
+            Err(ContentStoreError::ArchiveBytesLimit)
+        ));
+        assert!(
+            fs::read_dir(store.root().join("objects"))
+                .expect("object root after byte rejection")
+                .next()
+                .is_none()
+        );
+        clean(&source_root);
+        clean(&store_root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_admission_rejects_symlink_entries() {
+        use std::os::unix::fs::symlink;
+
+        let source_root = root("tree-symlink-source");
+        let store_root = root("tree-symlink-store");
+        let external = root("tree-symlink-external");
+        clean(&source_root);
+        clean(&store_root);
+        let _ = fs::remove_file(&external);
+        fs::create_dir_all(&source_root).expect("source root");
+        fs::write(&external, b"external bytes").expect("external file");
+        symlink(&external, source_root.join("linked-file")).expect("source symlink");
+        let store = ContentAddressedStore::open(&store_root).expect("store");
+
+        assert!(matches!(
+            store.admit_directory(&source_root, ArchiveBudget::default()),
+            Err(ContentStoreError::InvalidArchivePath)
+        ));
+        assert!(
+            fs::read_dir(store.root().join("objects"))
+                .expect("object root")
+                .next()
+                .is_none()
+        );
+        clean(&source_root);
+        clean(&store_root);
+        let _ = fs::remove_file(&external);
     }
 
     #[test]

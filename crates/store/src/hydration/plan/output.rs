@@ -3,11 +3,11 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::{mem::size_of_val, ops::Deref};
 
-use backend_version::{Domain, GenerationId};
-use backend_version::object::{DepSetId, ObjectRef, ProviderSet};
 use crate::root::{
     BorrowedSelectedGeneration, GenerationEntry, Locality, MetadataBytes, SelectedGeneration,
 };
+use backend_version::object::{DepSetId, ObjectRef, ProviderSet};
+use backend_version::{Domain, GenerationId};
 
 use super::PlanCoverage;
 use crate::hydration::Projection;
@@ -147,7 +147,9 @@ impl<'selection, 'storage, DomainTag: Domain> HydrationPlanView<'selection, 'sto
 
     /// Stages this borrowed plan; only verification can advance it to publication.
     #[must_use]
-    pub const fn stage(&self) -> crate::hydration::StagedGeneration<'_, 'selection, 'storage, DomainTag> {
+    pub const fn stage(
+        &self,
+    ) -> crate::hydration::StagedGeneration<'_, 'selection, 'storage, DomainTag> {
         crate::hydration::StagedGeneration::new(self)
     }
 
@@ -258,8 +260,14 @@ impl<'selection, 'storage, 'root, 'locality, DomainTag: Domain>
     #[must_use]
     pub const fn stage(
         &self,
-    ) -> crate::hydration::BorrowedStagedGeneration<'_, 'selection, 'storage, 'root, 'locality, DomainTag>
-    {
+    ) -> crate::hydration::BorrowedStagedGeneration<
+        '_,
+        'selection,
+        'storage,
+        'root,
+        'locality,
+        DomainTag,
+    > {
         crate::hydration::BorrowedStagedGeneration::new(self)
     }
 }

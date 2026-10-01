@@ -5,7 +5,9 @@ use std::io::Write;
 use super::append::resolve_append_failure;
 use super::frame::encode_frame;
 use super::*;
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -48,6 +50,238 @@ fn limits() -> JournalLimits {
 
 fn remove(path: &Path) {
     let _ = std::fs::remove_file(path);
+}
+
+fn candidate_after(receipt: &JournalReceipt<TestLog>, payload: &[u8]) -> Vec<u8> {
+    let sequence = receipt.sequence + 1;
+    let previous = *receipt.chain.as_bytes();
+    let digest = chain_digest::<TestLog>(sequence, &previous, payload);
+    encode_frame::<TestLog>(sequence, &previous, &digest, payload).expect("candidate frame")
+}
+
+const HARD_EXIT_SUFFIX_PATH: &str = "BACKEND_JOURNAL_HARD_EXIT_SUFFIX_PATH";
+const HARD_EXIT_SUFFIX_FRAME: &str = "BACKEND_JOURNAL_HARD_EXIT_SUFFIX_FRAME";
+
+#[test]
+fn hard_exit_external_suffix_child() {
+    let (Ok(path), Ok(candidate_path)) = (
+        std::env::var(HARD_EXIT_SUFFIX_PATH),
+        std::env::var(HARD_EXIT_SUFFIX_FRAME),
+    ) else {
+        return;
+    };
+    let candidate = std::fs::read(candidate_path).expect("read candidate frame");
+    let mut external = OpenOptions::new()
+        .append(true)
+        .open(path)
+        .expect("open shared journal");
+    external
+        .write_all(&candidate)
+        .expect("write complete unsynced frame");
+    // Model process loss after the full write and before the writer's
+    // sync_data call. The OS keeps page-cache contents, so the parent test
+    // separately verifies that refresh orders its durability barrier first.
+    std::process::exit(79);
+}
+
+#[test]
+fn external_suffix_is_synced_before_visitor_and_sync_failure_fails_closed() {
+    let path = test_path("external-sync-barrier");
+    let (journal, _) = HashChainJournal::<TestLog>::open(&path).expect("open");
+    let first = journal.append(&b"first".to_vec()).expect("first");
+    let mut external = OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .expect("external append");
+    external
+        .write_all(&candidate_after(&first, b"second"))
+        .expect("complete external frame");
+    drop(external);
+
+    let order = RefCell::new(Vec::new());
+    let scan = journal
+        .refresh_external_with_sync(
+            limits(),
+            |frame| {
+                order.borrow_mut().push("visitor");
+                assert_eq!(frame.payload, b"second");
+                Ok(())
+            },
+            |file| {
+                order.borrow_mut().push("sync");
+                file.sync_data()
+            },
+        )
+        .expect("sync and adopt suffix");
+    assert_eq!(scan.frames_scanned, 1);
+    assert_eq!(*order.borrow(), vec!["sync", "visitor"]);
+
+    let second = journal.append(&b"third".to_vec()).expect("third");
+    let mut external = OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .expect("external append");
+    external
+        .write_all(&candidate_after(&second, b"fourth"))
+        .expect("complete external frame");
+    drop(external);
+
+    let visitor_called = RefCell::new(false);
+    let error = journal
+        .refresh_external_with_sync(
+            limits(),
+            |_| {
+                *visitor_called.borrow_mut() = true;
+                Ok(())
+            },
+            |_| Err(std::io::Error::other("injected sync failure")),
+        )
+        .expect_err("sync fault must prevent adoption");
+    assert!(matches!(error, JournalError::Io(_)));
+    assert!(!*visitor_called.borrow());
+    assert!(matches!(
+        journal.refresh_external_with(limits(), |_| Ok(())),
+        Err(JournalError::Corrupt("journal append state"))
+    ));
+    drop(journal);
+    remove(&path);
+}
+
+#[test]
+fn hard_exited_writer_suffix_is_durably_adopted_under_refresh_fence() {
+    let path = test_path("external-hard-exit");
+    let candidate_path = path.with_extension("candidate");
+    let (journal, _) = HashChainJournal::<TestLog>::open(&path).expect("open");
+    let first = journal.append(&b"first".to_vec()).expect("first");
+    let mut candidate_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&candidate_path)
+        .expect("create candidate");
+    candidate_file
+        .write_all(&candidate_after(&first, b"after-hard-exit"))
+        .expect("write candidate");
+    candidate_file.sync_all().expect("sync candidate fixture");
+    drop(candidate_file);
+
+    let status = Command::new(std::env::current_exe().expect("test executable"))
+        .args([
+            "--exact",
+            "journal::tests::hard_exit_external_suffix_child",
+            "--nocapture",
+        ])
+        .env(HARD_EXIT_SUFFIX_PATH, &path)
+        .env(HARD_EXIT_SUFFIX_FRAME, &candidate_path)
+        .status()
+        .expect("run hard-exit writer");
+    assert_eq!(status.code(), Some(79));
+
+    let order = RefCell::new(Vec::new());
+    let scan = journal
+        .refresh_external_with_sync(
+            limits(),
+            |frame| {
+                order.borrow_mut().push("visitor");
+                assert_eq!(frame.payload, b"after-hard-exit");
+                Ok(())
+            },
+            |file| {
+                order.borrow_mut().push("sync");
+                file.sync_data()
+            },
+        )
+        .expect("durably adopt post-crash suffix");
+    assert_eq!(scan.frames_scanned, 1);
+    assert_eq!(*order.borrow(), vec!["sync", "visitor"]);
+    drop(journal);
+    remove(&candidate_path);
+    remove(&path);
+}
+
+#[test]
+fn cold_open_syncs_a_hard_exited_writer_suffix_before_returning_the_cursor() {
+    let path = test_path("cold-open-hard-exit");
+    let candidate_path = path.with_extension("candidate");
+    let (journal, _) = HashChainJournal::<TestLog>::open(&path).expect("open");
+    let first = journal.append(&b"first".to_vec()).expect("first");
+    let mut candidate_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&candidate_path)
+        .expect("create candidate");
+    candidate_file
+        .write_all(&candidate_after(&first, b"cold-replay"))
+        .expect("write candidate");
+    candidate_file.sync_all().expect("sync candidate fixture");
+    drop(candidate_file);
+    drop(journal);
+
+    let status = Command::new(std::env::current_exe().expect("test executable"))
+        .args([
+            "--exact",
+            "journal::tests::hard_exit_external_suffix_child",
+            "--nocapture",
+        ])
+        .env(HARD_EXIT_SUFFIX_PATH, &path)
+        .env(HARD_EXIT_SUFFIX_FRAME, &candidate_path)
+        .status()
+        .expect("run hard-exit writer");
+    assert_eq!(status.code(), Some(79));
+
+    let order = RefCell::new(Vec::new());
+    let replayed = RefCell::new(Vec::new());
+    let (journal, scan) = HashChainJournal::<TestLog>::open_streaming_with_mode_and_sync(
+        &path,
+        limits(),
+        |frame| {
+            order.borrow_mut().push("visitor");
+            replayed.borrow_mut().push(frame.payload.to_vec());
+            Ok(())
+        },
+        false,
+        |file| {
+            order.borrow_mut().push("sync");
+            file.sync_data()
+        },
+    )
+    .expect("cold replay crosses durability barrier");
+    assert_eq!(scan.last_sequence, Some(1));
+    assert_eq!(*replayed.borrow(), vec![b"first".to_vec(), b"cold-replay".to_vec()]);
+    assert_eq!(*order.borrow(), vec!["visitor", "visitor", "sync"]);
+    drop(journal);
+    remove(&candidate_path);
+    remove(&path);
+}
+
+#[test]
+fn cold_open_sync_failure_returns_no_journal_cursor() {
+    let path = test_path("cold-open-sync-failure");
+    let (journal, _) = HashChainJournal::<TestLog>::open(&path).expect("open");
+    let first = journal.append(&b"first".to_vec()).expect("first");
+    let mut external = OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .expect("external append");
+    external
+        .write_all(&candidate_after(&first, b"visible-before-sync"))
+        .expect("complete external frame");
+    drop(external);
+    drop(journal);
+
+    let visitor_called = RefCell::new(false);
+    let result = HashChainJournal::<TestLog>::open_streaming_with_mode_and_sync(
+        &path,
+        limits(),
+        |_| {
+            *visitor_called.borrow_mut() = true;
+            Ok(())
+        },
+        false,
+        |_| Err(std::io::Error::other("injected cold-open sync failure")),
+    );
+    assert!(matches!(result, Err(JournalError::Io(_))));
+    assert!(*visitor_called.borrow());
+    remove(&path);
 }
 
 #[test]

@@ -9,7 +9,9 @@ use std::{fs::File, io, path::Path};
 use memmap2::{Mmap, MmapOptions};
 use thiserror::Error;
 
-use crate::ir::{FragmentRangeManifest, FragmentRangeVerifyError, FragmentView, wire::FragmentLayout};
+use crate::ir::{
+    FragmentRangeManifest, FragmentRangeVerifyError, FragmentView, wire::FragmentLayout,
+};
 
 /// Immutable facts of one complete manifest-validated mapping.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

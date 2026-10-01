@@ -42,7 +42,9 @@ pub use self::runtime::{
     InlineRuntime, LocalRuntime, RemoteRuntime, Runtime, RuntimeConfigError, RuntimeSplit,
 };
 pub use self::slot::{CancelResult, SlotClaimError, SlotIndex, WorkHandle};
-pub use self::storage::{InlineStorage, LocalRuntimeArena, LocalStorage, RemoteStorage, RuntimeStorage};
+pub use self::storage::{
+    InlineStorage, LocalRuntimeArena, LocalStorage, RemoteStorage, RuntimeStorage,
+};
 pub use self::waiter::WaiterRegistrationError;
 #[doc(hidden)]
 pub use self::waiter::WaiterSlot;

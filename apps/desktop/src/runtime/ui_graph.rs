@@ -128,6 +128,20 @@ impl UiRootEntity {
         self.runtime.has_pending_work()
     }
 
+    /// [`Self::has_pending_work`] apart from indexing (journey harness).
+    #[must_use]
+    pub fn has_pending_work_besides_indexing(&self) -> bool {
+        self.runtime.has_pending_work_besides_indexing()
+    }
+
+    /// Takes every engine result the actor has delivered now, without
+    /// waiting for its wake task (a harness that holds one input instant
+    /// while the owner works).
+    #[cfg(feature = "visual-harness")]
+    pub(crate) fn drain_now(&mut self, cx: &mut Context<Self>) {
+        self.drain_engine(cx);
+    }
+
     /// Drains every engine result the actor has delivered.
     fn drain_engine(&mut self, cx: &mut Context<Self>) {
         let events = self.runtime.poll();
@@ -210,8 +224,21 @@ impl UiRootEntity {
                     sequence: self.graph_view_generation,
                 });
             }
+            // The world, then the ask the graph flies once it shows.
+            Intent::Tour(package) => {
+                self.dispatch_runtime(Intent::Tour(package.clone()), cx);
+                if let Some(store) = &self.store
+                    && let Ok(package) = crate::model::pages::PackageRef::parse(package.as_str())
+                {
+                    store.update(cx, |store, cx| store.ask_tour(package, cx));
+                }
+            }
             Intent::OpenFolderPicker => self.start_folder_picker(cx),
             Intent::RevealProject(project) => cx.reveal_path(&project.path()),
+            Intent::OpenSource { path, line } => {
+                let launch = crate::host::editor::launcher(cx);
+                crate::host::editor::open(launch.as_ref(), None, &path, line);
+            }
             Intent::TestConnection => {
                 self.dispatch_runtime(Intent::TestConnection, cx);
                 if self.connection_probe.is_none() {
@@ -260,8 +287,37 @@ impl UiRootEntity {
                 self.dispatch_runtime(Intent::RetryIndex(project), cx);
                 self.schedule_pending_indexes(cx);
             }
+            Intent::AddRelease(release) => super::acquire::add(release, cx.weak_entity(), cx),
             other => self.dispatch_runtime(other, cx),
         }
+    }
+
+    /// The owner answered (W-Open I1): its root replaces the unserved one,
+    /// and the root read (project, catalog) is asked again at it — the one
+    /// asked at startup waited behind the owner at the unserved basis.
+    pub(crate) fn admit_owner(
+        &mut self,
+        key: crate::core::VersionedRoot,
+        mode: crate::model::ServiceMode,
+        cx: &mut Context<Self>,
+    ) {
+        self.dispatch_runtime(Intent::OwnerReady { key, mode }, cx);
+        let request = self.runtime.allocate_request();
+        self.dispatch_runtime(Intent::RefreshRoot { basis: key, request }, cx);
+        // An index an earlier build wrote was set aside while the owner
+        // started: say so, and index the shelf's projects again.
+        if let Some(moved) = crate::host::aside::take() {
+            self.dispatch(Intent::LibraryRebuilding { kept_at: Arc::from(moved.display().to_string()) }, cx);
+        }
+        // Packages an earlier launch was still adding are added now.
+        super::acquire::resume(&self.snapshot(), cx.weak_entity(), cx);
+    }
+
+    /// Reads the owner's root again: something outside the project lane
+    /// changed what it serves (a release added to the library).
+    pub(crate) fn refresh_root(&mut self, cx: &mut Context<Self>) {
+        let request = self.runtime.allocate_request();
+        self.dispatch_runtime(Intent::RefreshRoot { basis: self.snapshot().key(), request }, cx);
     }
 
     fn dispatch_runtime(&mut self, intent: Intent, cx: &mut Context<Self>) {
@@ -294,6 +350,20 @@ impl UiRootEntity {
             });
         });
         self.folder_picker_task = Some(task);
+    }
+
+    /// Answers the native folder panel this root opened, as a person would
+    /// (`Some(folders)` chosen, `None` cancelled), when nothing can click it:
+    /// the journey harness's one allowed substitution. The answer takes the
+    /// task's own path (`folder_picker_outcome`, then the same queued intent).
+    /// `false`: no panel is open.
+    pub(crate) fn answer_folder_picker(&mut self, chosen: Option<Vec<PathBuf>>, cx: &mut Context<Self>) -> bool {
+        if self.folder_picker_task.take().is_none() {
+            return false;
+        }
+        let outcome = chosen.map_or(FolderPickerOutcome::Cancelled, folder_picker_outcome);
+        self.queue(Intent::FolderPickerResult { outcome }, cx);
+        true
     }
 
     fn schedule_pending_indexes(&mut self, cx: &mut Context<Self>) {
@@ -337,6 +407,7 @@ impl UiRootEntity {
     }
 
     fn apply_events(&mut self, events: Vec<RuntimeEvent>, cx: &mut Context<Self>) {
+        let before = self.published.clone();
         for event in events {
             match event {
                 RuntimeEvent::SnapshotChanged(snapshot) => {
@@ -362,6 +433,8 @@ impl UiRootEntity {
             }
         }
         self.publish_snapshot(cx);
+        // A project the owner just indexed brings the packages it builds with.
+        super::acquire::follow_indexed_projects(before.as_deref(), &self.snapshot(), cx.weak_entity(), cx);
         // Cold restart restores durable Indexing rows without an ephemeral
         // request; reattach them once through the typed intent path.
         self.schedule_pending_indexes(cx);
@@ -480,13 +553,33 @@ impl UiEntityGraph {
         persistence: Option<PersistentState>,
         reads: Option<ReadPool>,
     ) -> Self {
-        let store = DataStore::install(cx, runtime.snapshot(), reads);
+        Self::install_with_owner(cx, runtime, persistence, reads, None, None)
+    }
+
+    /// [`Self::install_with_reads`] for a window that opens before its owner
+    /// answered (W-Open I1): the store holds reads until the gate says the
+    /// owner is ready, and every owner state arrives as a data event
+    /// ([`super::owner::watch`]). `None`: the owner already answered.
+    /// `keep` paints the launch snapshot's pages meanwhile and saves the
+    /// route's pages for the next launch (W-Open I2).
+    pub(crate) fn install_with_owner(
+        cx: &mut App,
+        runtime: DesktopRuntime,
+        persistence: Option<PersistentState>,
+        reads: Option<ReadPool>,
+        gate: Option<super::owner::OwnerGate>,
+        keep: Option<super::snapshot::Keep>,
+    ) -> Self {
+        let store = DataStore::install_with_owner(cx, runtime.snapshot(), reads, gate.clone(), keep);
         let attached = store.clone();
         let root = cx.new(|cx| {
             let mut root = UiRootEntity::new(runtime, persistence);
             root.attach(Some(attached), cx);
             root
         });
+        if let Some(gate) = gate {
+            super::owner::watch(gate, &root, &store, cx);
+        }
         Self { root, store }
     }
 }

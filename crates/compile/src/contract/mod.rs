@@ -31,7 +31,7 @@ schema!(ContractSchema, 5);
 schema!(ProfileSchema, 6);
 schema!(FlowSchema, 7);
 schema!(SemanticBasisSchema, 8);
-schema!(SessionSchema, 9);
+schema!(SessionSchema, 16);
 schema!(FactSchema, 10);
 schema!(FactKeySchema, 11);
 schema!(FactValueSchema, 12);

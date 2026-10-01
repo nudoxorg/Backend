@@ -24,18 +24,43 @@
 //! Results arrive through a coalescing wake signal awaited by one
 //! `cx.spawn` task: nothing polls, and an idle window requests no frame.
 
+mod keeper;
+mod owner_link;
+
+use self::keeper::SnapshotKeeper;
+use self::owner_link::{OwnerLink, OwnerPhase};
 use super::actor::CancellationToken;
+use super::owner::{OwnerFault, OwnerGate};
 use super::reads::{Priority, ReadJob, ReadPool, ReadRequest};
-use crate::core::{Resource, UnavailableReason};
+use super::snapshot::{Keep, kept_keys};
+use crate::core::{ErrorValue, FaultCode, Resource, UnavailableReason};
 use crate::model::AppSnapshot;
 use crate::model::pages::{
-    HealthModel, Landing, OrbitModel, PackageDossier, PackageRef, PageKey, PageStore, ReadFailure,
+    Generation, HealthModel, Landing, OrbitModel, PackageDossier, PackageRef, PageKey, PageStore, ReadFailure,
     SearchPage, SearchQuery, SourceView, Stamp, SymbolPage, SymbolRef,
 };
 use crate::navigation::Route;
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Task};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+
+/// What the read pool is doing: jobs waiting for a worker, and jobs a worker
+/// is running.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PoolLoad {
+    /// Jobs no worker has taken yet.
+    pub queued: usize,
+    /// Jobs a worker is running.
+    pub running: usize,
+}
+
+impl PoolLoad {
+    /// Whether nothing is queued or running.
+    #[must_use]
+    pub const fn is_idle(self) -> bool {
+        self.queued == 0 && self.running == 0
+    }
+}
 
 /// One snapshot branch, as named by a change event.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -181,7 +206,21 @@ pub struct DataStore {
     wake_task: Option<Task<()>>,
     stats: StoreStats,
     graph_focus: Option<super::graph_focus::GraphFocus>,
-    graph_notice: Option<super::graph_focus::GraphNotice>,
+    /// The one visit-scoped notice (§15 ruling 1), for any route: an
+    /// unresolved link, an unindexed hold, or a pinned card's failed
+    /// lookup. A newer notice replaces an older one; it never survives a
+    /// route change ([`super::graph_focus::Notice::active`]).
+    notice: Option<super::graph_focus::Notice>,
+    /// A tour asked for (T) and the ask's number: the graph flies it once
+    /// it shows the world. Leaving the world drops it.
+    tour: Option<(PackageRef, u64)>,
+    tours: u64,
+    /// The fixture world's fault the window was last told of (told once).
+    world_fault: Option<super::fixture_world::WorldFault>,
+    /// The owner behind the reads: its phase, and the pages held for it.
+    owner: OwnerLink,
+    /// The launch snapshot: seeded pages, and saving them for next time.
+    keeper: SnapshotKeeper,
 }
 
 impl std::fmt::Debug for DataStore {
@@ -206,9 +245,37 @@ pub fn route_package(route: &Route) -> Option<PackageRef> {
     };
     let pinned = PackageRef::parse(package.as_str()).ok()?;
     Some(match at {
-        Some(at) => pinned.at(at.as_str()).unwrap_or(pinned),
+        Some(at) => pinned.at(at.as_str()).or_else(|| release_tree(&pinned, at.as_str())).unwrap_or(pinned),
         None => pinned,
     })
+}
+
+/// The tree of the release `at` of the registry package whose tree `pinned`
+/// is: a registry root is read at another release by reading that release's
+/// own tree (`…/toml-0.5.11` beside `…/toml-0.8.23`), which the library holds
+/// once it is added. `None` for a person's own project, for the pinned
+/// release itself, and for a release this machine does not have.
+fn release_tree(pinned: &PackageRef, at: &str) -> Option<PackageRef> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, PoisonError};
+    static TREES: Mutex<Option<HashMap<(String, String), Option<String>>>> = Mutex::new(None);
+    let (name, version) = pinned.registry_release()?;
+    if version == at {
+        return None;
+    }
+    let key = (pinned.as_str().to_owned(), at.to_owned());
+    let known = TREES.lock().unwrap_or_else(PoisonError::into_inner).as_ref().and_then(|trees| trees.get(&key).cloned());
+    let tree = match known {
+        Some(tree) => tree,
+        None => {
+            let release = crate::model::release::Release::new(name, at).ok()?;
+            let composed = crate::host::registry::composed()?;
+            let tree = composed.source.tree_of(&release).and_then(|tree| tree.to_str().map(str::to_owned));
+            TREES.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_with(HashMap::new).insert(key, tree.clone());
+            tree
+        }
+    }?;
+    PackageRef::parse(&tree).ok()
 }
 
 /// The declaration a route reads, scoped to the release it views.
@@ -276,7 +343,12 @@ impl DataStore {
             wake_task: None,
             stats: StoreStats::default(),
             graph_focus: None,
-            graph_notice: None,
+            tour: None,
+            tours: 0,
+            notice: None,
+            world_fault: None,
+            owner: OwnerLink::serving(),
+            keeper: SnapshotKeeper::default(),
         }
     }
 
@@ -285,25 +357,69 @@ impl DataStore {
         self.graph_focus.as_ref().filter(|focus| focus.active(&self.snapshot))
     }
 
-    pub(crate) fn graph_notice(&self) -> Option<&super::graph_focus::GraphNotice> {
-        self.graph_notice.as_ref().filter(|notice| notice.active(&self.snapshot))
+    /// The current notice, when its visit and root are still the one showing.
+    pub(crate) fn notice(&self) -> Option<&super::graph_focus::Notice> {
+        self.notice.as_ref().filter(|notice| notice.active(&self.snapshot))
+    }
+
+    /// Posts (or clears) the one visit-scoped notice on its own, for a
+    /// caller with no graph focus of its own to admit alongside it (an
+    /// anatomy link, Ask, an unindexed hold). A newer notice replaces an
+    /// older one; setting `None` clears it early.
+    pub(crate) fn set_notice(&mut self, notice: Option<super::graph_focus::Notice>, cx: &mut Context<Self>) {
+        if self.notice != notice {
+            self.notice = notice;
+            self.emit(StoreEvent::Snapshot(Branch::GraphFocus), cx);
+        }
     }
 
     /// Semantic equality is the notification boundary: camera and hover frames
     /// cannot invalidate the shell regions or schedule data-plane reads.
-    pub(crate) fn admit_graph_focus(&mut self, focus: Option<super::graph_focus::GraphFocus>, notice: Option<super::graph_focus::GraphNotice>, cx: &mut Context<Self>) {
-        if self.graph_focus != focus || self.graph_notice != notice {
+    /// Asks the graph to tour `package` (the route is already the world).
+    pub(crate) fn ask_tour(&mut self, package: PackageRef, cx: &mut Context<Self>) {
+        self.tours += 1;
+        self.tour = Some((package, self.tours));
+        cx.notify();
+    }
+
+    /// The tour asked for, with its number, while the route is the world.
+    pub(crate) fn tour_ask(&self) -> Option<&(PackageRef, u64)> {
+        self.tour.as_ref().filter(|_| matches!(self.snapshot.route(), Route::World))
+    }
+
+    pub(crate) fn admit_graph_focus(&mut self, focus: Option<super::graph_focus::GraphFocus>, notice: Option<super::graph_focus::Notice>, cx: &mut Context<Self>) {
+        if self.graph_focus != focus || self.notice != notice {
             self.graph_focus = focus;
-            self.graph_notice = notice;
+            self.notice = notice;
             self.emit(StoreEvent::Snapshot(Branch::GraphFocus), cx);
         }
     }
 
     /// Creates the entity and starts its wake task.
     pub fn install(cx: &mut App, snapshot: Arc<AppSnapshot>, pool: Option<ReadPool>) -> Entity<Self> {
+        Self::install_with_owner(cx, snapshot, pool, None, None)
+    }
+
+    /// [`Self::install`] for a window whose owner may not have answered yet
+    /// (`None`: it has, as in the harness and tests), painting the launch
+    /// snapshot's pages until it does (`keep`, W-Open I2).
+    pub(crate) fn install_with_owner(
+        cx: &mut App,
+        snapshot: Arc<AppSnapshot>,
+        pool: Option<ReadPool>,
+        gate: Option<OwnerGate>,
+        keep: Option<Keep>,
+    ) -> Entity<Self> {
         cx.new(|cx| {
             let route = route_keys(snapshot.route());
             let mut store = Self::new(snapshot, pool);
+            if let Some(gate) = gate {
+                store.owner = OwnerLink::behind(gate);
+            }
+            if let Some(keep) = keep {
+                let root = store.snapshot.key();
+                store.keeper.keep(&mut store.pages, root, keep);
+            }
             store.start(cx);
             // The first route is focused like every later one.
             store.focus(route, cx);
@@ -325,6 +441,21 @@ impl DataStore {
         }));
     }
 
+    /// Saves the launch snapshot now, on this thread (quit).
+    ///
+    /// # Errors
+    /// The snapshot file's I/O error; nothing to save is `Ok(0)`.
+    pub(crate) fn save_now(&self) -> std::io::Result<usize> {
+        self.keeper.save_now(&self.pages, &self.snapshot)
+    }
+
+    /// Emits `key`'s change only when its visible state moved.
+    fn emit_moved(&mut self, key: PageKey, before: Stamp, cx: &mut Context<Self>) {
+        if self.pages.stamp(&key) != before {
+            self.emit(StoreEvent::Resource(key), cx);
+        }
+    }
+
     /// Returns the current snapshot.
     #[must_use]
     pub fn snapshot(&self) -> Arc<AppSnapshot> {
@@ -343,12 +474,20 @@ impl DataStore {
         &self.focused
     }
 
-    /// Returns the read pool's (queued, running) job counts.
+    /// What the read pool is doing now.
+    #[must_use]
+    pub fn pool_activity(&self) -> PoolLoad {
+        self.pool.as_ref().map_or_else(PoolLoad::default, |pool| PoolLoad { queued: pool.queued(), running: pool.running() })
+    }
+
+    /// The read pool's `(queued, running)` counts, as a tuple: the callers in
+    /// `harness.rs`, `shell/tests.rs`, the folio capture and `tests/` still
+    /// destructure one. They move to [`Self::pool_activity`] (MIGRATE.md, R-Open3),
+    /// then this goes.
     #[must_use]
     pub fn pool_load(&self) -> (usize, usize) {
-        self.pool
-            .as_ref()
-            .map_or((0, 0), |pool| (pool.queued(), pool.running()))
+        let PoolLoad { queued, running } = self.pool_activity();
+        (queued, running)
     }
 
     fn emit(&mut self, event: StoreEvent, cx: &mut Context<Self>) {
@@ -371,6 +510,9 @@ impl DataStore {
         }
         if old.route() != snapshot.route() {
             changed.push(Branch::Route);
+            if !matches!(snapshot.route(), Route::World) {
+                self.tour = None;
+            }
         }
         if old.overlay() != snapshot.overlay() {
             changed.push(Branch::Overlay);
@@ -402,6 +544,10 @@ impl DataStore {
         for branch in &changed {
             self.emit(StoreEvent::Snapshot(*branch), cx);
         }
+        if changed.contains(&Branch::Root) {
+            let root = self.snapshot.key();
+            self.keeper.settle(&mut self.pages, root);
+        }
         if changed.contains(&Branch::Route) {
             self.focus(route_keys(snapshot.route()), cx);
         } else if changed.contains(&Branch::Root) {
@@ -412,17 +558,49 @@ impl DataStore {
         }
     }
 
+    /// Tells the window once when the fixture world could not be read: the
+    /// graph and the hand's roads are then absent, and a person should know
+    /// why. Cheap to repeat (a views calls it from render).
+    fn announce_world_fault(&mut self, cx: &mut Context<Self>) {
+        let Some(fault) = super::fixture_world::fault(cx) else { return };
+        if self.world_fault.as_ref() == Some(&fault) {
+            return;
+        }
+        let notice = super::graph_focus::Notice {
+            visit: self.snapshot.route().clone(),
+            root: self.snapshot.key(),
+            message: Arc::from(format!("The world could not be read, so the graph and the hand's roads are missing. {fault}")),
+            retry: None,
+        };
+        self.world_fault = Some(fault);
+        self.set_notice(Some(notice), cx);
+    }
+
     /// Ensures one page is loaded at the current root. Idempotent: a page
     /// that is current or in flight costs nothing, so views may call this
     /// from render. A queued prefetch for the key is promoted.
     pub fn ensure(&mut self, key: PageKey, cx: &mut Context<Self>) -> Stamp {
+        self.announce_world_fault(cx);
         self.keep_focused_resident();
+        match self.owner.phase() {
+            OwnerPhase::Serving => {}
+            OwnerPhase::Starting => {
+                self.owner.hold(key.clone());
+                return self.pages.stamp(&key);
+            }
+            OwnerPhase::Failed(fault) => {
+                let fault = fault.clone();
+                self.fail(&key, &fault, cx);
+                return self.pages.stamp(&key);
+            }
+        }
         let root = self.snapshot.key();
+        let before = self.pages.stamp(&key);
         if let Some(generation) = self.pages.begin(&key, root) {
             self.prefetching.remove(&key);
             self.submit(key.clone(), ReadRequest::for_key(&key), generation, Priority::Normal, None, cx);
             let stamp = self.pages.stamp(&key);
-            self.emit(StoreEvent::Resource(key), cx);
+            self.emit_moved(key, before, cx);
             return stamp;
         }
         if self.prefetching.remove(&key) {
@@ -445,6 +623,7 @@ impl DataStore {
             .difference(&next)
             .cloned()
             .collect::<Vec<_>>();
+        self.owner.retain_held(|key| next.contains(key));
         self.focused = next;
         for key in dropped {
             if self.prefetching.contains(&key) {
@@ -461,13 +640,17 @@ impl DataStore {
     /// rested on a link for 120 ms. Low priority, cancellable, and a no-op
     /// when the page is current or already requested.
     pub fn prefetch(&mut self, key: PageKey, cx: &mut Context<Self>) {
+        if !self.owner.is_serving() {
+            return;
+        }
         self.keep_focused_resident();
         let root = self.snapshot.key();
+        let before = self.pages.stamp(&key);
         if let Some(generation) = self.pages.begin(&key, root) {
             self.prefetching.insert(key.clone());
             self.stats.prefetched = self.stats.prefetched.saturating_add(1);
             self.submit(key.clone(), ReadRequest::for_key(&key), generation, Priority::Prefetch, None, cx);
-            self.emit(StoreEvent::Resource(key), cx);
+            self.emit_moved(key, before, cx);
         }
     }
 
@@ -493,14 +676,28 @@ impl DataStore {
         if let Some(pool) = &self.pool {
             let _ = pool.cancel(key);
         }
+        let before = self.pages.stamp(key);
         if self.pages.cancel(key).is_some() {
             self.stats.cancelled = self.stats.cancelled.saturating_add(1);
-            self.emit(StoreEvent::Resource(key.clone()), cx);
+            self.emit_moved(key.clone(), before, cx);
         }
     }
 
     /// Fetches a page again even when it is current (retry after a fault).
     pub fn retry(&mut self, key: PageKey, cx: &mut Context<Self>) {
+        match self.owner.phase() {
+            OwnerPhase::Serving => {}
+            // "Try again" on a page the owner could not serve asks the owner
+            // to start again; the page is fetched once it answers.
+            OwnerPhase::Failed(_) => {
+                self.owner.retry(key);
+                return;
+            }
+            OwnerPhase::Starting => {
+                self.owner.hold(key);
+                return;
+            }
+        }
         let root = self.snapshot.key();
         if let Some(generation) = self.pages.begin_forced(&key, root) {
             self.prefetching.remove(&key);
@@ -512,6 +709,9 @@ impl DataStore {
     /// Requests the next page of a loaded search. Returns whether a request
     /// was issued (false when there is no continuation).
     pub fn load_more(&mut self, query: &SearchQuery, cx: &mut Context<Self>) -> bool {
+        if !self.owner.is_serving() {
+            return false;
+        }
         let Some(next) = self
             .pages
             .search(query)
@@ -544,7 +744,7 @@ impl DataStore {
         &mut self,
         key: PageKey,
         request: ReadRequest,
-        generation: u64,
+        generation: Generation,
         priority: Priority,
         affinity: Option<usize>,
         cx: &mut Context<Self>,
@@ -565,6 +765,7 @@ impl DataStore {
             return;
         };
         self.stats.submitted = self.stats.submitted.saturating_add(1);
+        super::trace::mark("read.submit", format_args!("{key:?} {priority:?}"));
         pool.submit(ReadJob {
             key,
             request,
@@ -573,6 +774,67 @@ impl DataStore {
             cancel: CancellationToken::new(),
             affinity,
         });
+    }
+
+    /// The owner answered, and its root is already admitted
+    /// (`UiRootEntity::admit_owner`): every held page, and every page the
+    /// route shows, is fetched now, at that root.
+    pub(crate) fn owner_ready(&mut self, cx: &mut Context<Self>) {
+        let mut keys = self.owner.answered();
+        keys.extend(self.focused.iter().cloned());
+        for key in keys {
+            self.ensure(key, cx);
+        }
+    }
+
+    /// The owner could not start: every held page, and every page the route
+    /// shows, lands as a fault carrying the owner's words.
+    pub(crate) fn owner_failed(&mut self, fault: &OwnerFault, cx: &mut Context<Self>) {
+        let mut keys = self.owner.failed(fault.clone());
+        keys.extend(self.focused.iter().cloned());
+        for key in keys {
+            self.fail(&key, fault, cx);
+        }
+        // The foot says it wherever the person is, with "Try again" beside
+        // it (R7). A page painted from the launch snapshot stays (it is the
+        // page as it was left), and says it could not be brought up to date.
+        let seeded = self.focused.iter().any(|key| self.pages.is_seeded(key));
+        let message = if seeded {
+            format!("The index could not start, so this is the page as you left it. {fault}")
+        } else {
+            format!("The index could not start. {fault}")
+        };
+        let notice = super::graph_focus::Notice {
+            visit: self.snapshot.route().clone(),
+            root: self.snapshot.key(),
+            message: Arc::from(message),
+            // "Try again" asks the page for itself again, which starts the
+            // owner; with no page on the route, the Library's.
+            retry: Some(self.focused.iter().next().cloned().unwrap_or(PageKey::Orbit)),
+        };
+        self.set_notice(Some(notice), cx);
+    }
+
+    /// The owner is starting (again): pages asked from now on are held.
+    pub(crate) fn owner_starting(&mut self, cx: &mut Context<Self>) {
+        if self.owner.starting() {
+            cx.notify();
+        }
+    }
+
+    /// Lands the owner's failure in `key`'s slot, once per root.
+    fn fail(&mut self, key: &PageKey, fault: &OwnerFault, cx: &mut Context<Self>) {
+        let root = self.snapshot.key();
+        let Some(generation) = self.pages.begin(key, root) else {
+            return;
+        };
+        let failure = ReadFailure::Fault(ErrorValue::new(
+            FaultCode::Transport,
+            format!("The index could not start. {fault}"),
+        ));
+        if self.pages.land(key, generation, Err(failure)) == Landing::Applied {
+            self.emit(StoreEvent::Resource(key.clone()), cx);
+        }
     }
 
     /// Lands every finished read. Called by the wake task; public so tests
@@ -584,6 +846,7 @@ impl DataStore {
         };
         let outcomes = pool.drain();
         let mut applied = 0;
+        let mut save = false;
         for outcome in outcomes {
             if self.pages.inflight(&outcome.key) == Some(outcome.generation) {
                 self.prefetching.remove(&outcome.key);
@@ -591,13 +854,25 @@ impl DataStore {
             match self.pages.land(&outcome.key, outcome.generation, outcome.result) {
                 Landing::Applied => {
                     applied += 1;
+                    super::trace::mark("read.land", format_args!("{:?}", outcome.key));
                     self.stats.landed = self.stats.landed.saturating_add(1);
+                    save |= kept_keys(self.snapshot.route()).contains(&outcome.key);
                     self.emit(StoreEvent::Resource(outcome.key), cx);
+                }
+                Landing::Unchanged => {
+                    // The launch snapshot's value, confirmed at the new root:
+                    // nothing to draw.
+                    super::trace::mark("read.same", format_args!("{:?}", outcome.key));
+                    self.stats.landed = self.stats.landed.saturating_add(1);
+                    save |= kept_keys(self.snapshot.route()).contains(&outcome.key);
                 }
                 Landing::Superseded => {
                     self.stats.superseded = self.stats.superseded.saturating_add(1);
                 }
             }
+        }
+        if save {
+            self.keeper.save_at_rest(cx);
         }
         applied
     }
@@ -711,6 +986,7 @@ mod tests {
                 implemented_by: Known::Unknown(unknown()),
             },
             references: Known::Unknown(unknown()),
+            workspace: Arc::from([]),
             outline: Known::Unknown(unknown()),
         }
     }
@@ -824,15 +1100,10 @@ mod tests {
 
         /// Runs the executor until `done` holds, letting worker threads land.
         fn until(&self, cx: &mut TestAppContext, done: impl Fn(&DataStore) -> bool) {
-            let deadline = Instant::now() + Duration::from_secs(10);
-            loop {
+            crate::runtime::wait::until("the store reached the state the test waits for", || {
                 cx.run_until_parked();
-                if self.store.read_with(cx, |store, _| done(store)) {
-                    return;
-                }
-                assert!(Instant::now() < deadline, "condition never held");
-                std::thread::sleep(Duration::from_millis(1));
-            }
+                self.store.read_with(cx, |store, _| done(store))
+            });
         }
     }
 
@@ -888,9 +1159,9 @@ mod tests {
         rig.until(cx, |store| store.symbol(&symbol("fast-new")).is_loaded());
         // The cancelled read never lands, even when its gate opens later.
         rig.open("slow-old");
-        cx.run_until_parked();
-        std::thread::sleep(Duration::from_millis(20));
-        cx.run_until_parked();
+        // Wait for the cancelled read to finish (its worker leaves the pool),
+        // not for a guessed 20 ms: only then is "it never lands" a claim.
+        rig.until(cx, |store| store.pool_activity().is_idle());
         assert!(
             rig.store
                 .read_with(cx, |store, _| store.symbol(&symbol("slow-old")).loaded_value().is_none())
@@ -957,6 +1228,14 @@ mod tests {
             orbit.terminal(),
             crate::core::ResourceTerminal::Complete | crate::core::ResourceTerminal::Unavailable(_)
         ));
+    }
+
+    #[test]
+    fn a_pool_is_idle_only_when_nothing_is_queued_and_nothing_is_running() {
+        assert!(PoolLoad::default().is_idle(), "no jobs is idle");
+        assert!(!PoolLoad { queued: 1, running: 0 }.is_idle(), "a queued job is work");
+        assert!(!PoolLoad { queued: 0, running: 1 }.is_idle(), "a running job is work");
+        assert!(!PoolLoad { queued: 2, running: 3 }.is_idle(), "both is work");
     }
 }
 

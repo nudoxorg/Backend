@@ -18,6 +18,9 @@ mod source;
 mod state;
 mod symbol;
 
+/// How many declaration pages are still reading their lines (the harness
+/// waits for none before a capture).
+
 
 use super::focus::Targets;
 use super::kit::HoverIntent;
@@ -40,6 +43,9 @@ pub(crate) struct Leaf {
     pub main: AnyElement,
     /// Its note: beside it when the reader is wide, under it otherwise.
     pub note: Option<AnyElement>,
+    /// The block takes the wide measure (`Ctx::wide`) rather than the reading
+    /// column: a table, a rail, a ring of names. Prose never does.
+    pub wide: bool,
 }
 
 impl Leaf {
@@ -47,7 +53,15 @@ impl Leaf {
         Self {
             main: main.into_any_element(),
             note: None,
+            wide: false,
         }
+    }
+
+    /// The block may take the wide measure (`Ctx::wide`): in a big window it
+    /// fills what the reading column leaves empty.
+    pub(crate) fn wide(mut self) -> Self {
+        self.wide = true;
+        self
     }
 
     pub(crate) fn with_note(mut self, note: impl gpui::IntoElement) -> Self {
@@ -64,6 +78,21 @@ pub(crate) struct Ctx<'a> {
     pub measure: Measure,
     /// The margin's measure (the folio's when notes fold under).
     pub note: Measure,
+    /// The measure wide content (tables, rails, comparisons) may take: the
+    /// folio's until 1440 px, then growing to fill a big window
+    /// (`facet::tokens::fluid::WIDE_FOLIO`). Prose keeps `measure`.
+    pub wide: Measure,
+    /// The whole room the reader gives a page, gutters excluded, exactly as
+    /// this frame's window has it (never a frame behind, as the scroller's
+    /// own bounds are): for a page that fills the window rather than a
+    /// column of it (the package page's territory).
+    pub content: Measure,
+    /// The reader's layout modes, for a page whose own arrangement changes
+    /// with its room (`Modes::settle`, `Modes::columns`): held through a
+    /// hysteresis band so a width on the edge cannot flip it every frame.
+    pub modes: facet::fluid::Modes,
+    /// The Library's ring of names: their flow (`facet::motion::Flow`).
+    pub ring_flow: facet::motion::Flow,
     /// The active palette.
     pub palette: &'static Palette,
     /// Held reveal modes.
@@ -72,12 +101,23 @@ pub(crate) struct Ctx<'a> {
     pub links: &'a Links,
     /// Keyboard targets of the reader.
     pub targets: &'a Targets,
+    /// Native reading viewport for keyboard-only reveal of a chosen row.
+    pub reader_scroll: gpui::ScrollHandle,
     /// The page's lens (tab) for declaration pages.
     pub lens: Lens,
     /// The text each body renders, recorded for content assertions.
     pub said: &'a mut Vec<SharedString>,
     /// The hero name's lines, as fitted (the name never ellipsizes).
     pub hero: &'a mut Vec<SharedString>,
+    /// Stable, bounded per-declaration disclosure and clip motion state.
+    pub symbol_disclosure: super::reader::SymbolDisclosure,
+    /// Bounded package outline; expanded only on the current package route.
+    pub package_outline_expanded: bool,
+    /// Explicit Find choices retained through Compare and route history.
+    pub find_held: Vec<facet::browse::find::HeldPackage>,
+    /// A declaration page reached by a hop forward from another declaration:
+    /// the one it came from, which the page rings where it finds it.
+    pub arrived_from: Option<crate::model::pages::SymbolRef>,
 }
 
 impl Ctx<'_> {
@@ -211,7 +251,7 @@ pub(crate) fn build(
     match route {
         Route::Orbit(crate::navigation::OrbitRoute::Browse(browse)) => browse::body(browse, store, ctx, cx),
         Route::Orbit(_) => orbit::body(snapshot, store, ctx, hover, cx),
-        Route::Package(_) => package::body(route, store, ctx, hover, cx),
+        Route::Package(_) => package::body(route, snapshot, store, ctx, hover, cx),
         Route::Symbol(symbol) => match symbol.view {
             View::Page => symbol::body(route, symbol, store, ctx, hover, cx),
             View::Code => source::body(route, symbol, store, ctx, cx),

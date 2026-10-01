@@ -39,16 +39,18 @@ mod proof;
 mod residency;
 mod tree;
 
+/// Storage-neutral streaming layout for immutable typed object-envelope packs.
+pub mod artifact_pack;
 /// Pure wanted/have planning and typed readiness publication.
 pub mod hydration;
 /// Durable generation publication journal and recovery.
 pub mod journal;
 /// Bounded first-write-wins immutable object storage in caller-selected memory.
 pub mod memory;
-/// Canonical packed generation roots, closure selection, and structural diffs.
-pub mod root;
 /// Indexed immutable object-pack writing and allocation-free borrowing.
 pub mod object_pack;
+/// Canonical packed generation roots, closure selection, and structural diffs.
+pub mod root;
 /// Structural validation witnesses and allocation-free borrowed frame views.
 pub mod view;
 /// Generic durable workflow event reduction, records, and recovery.
@@ -65,12 +67,19 @@ pub use closure::{
 pub use delta::{Change, DiffStats, MapDelta};
 pub use delta::{UpdateStats, WorkBudget};
 pub use durable::{
-    CheckedWorkspacePublication, DurableManifest, DurableManifestPage, DurableTree, FileDurable,
-    FilePrepared, FilePublished, FileStore, GcLimits, GcReport, GcRoot, GcRoots, ManifestReadStats,
-    ObjectWriteReceipt, OwnedRelationNodeLoader, PublicationAuthorityError, PublicationBase,
-    PublicationDescriptor, RelationNodeChild, RelationNodeRead, RelationNodeWriteStats,
-    SelectedHead, StorePublicationAuthority, TransactionId, TreeReadStats, TreeWriteStats,
-    WorkspaceFileDurable, WorkspaceFilePrepared, WorkspaceFilePublished,
+    ArtifactBudget, ArtifactChunkReceipt, ArtifactClosureClaim, ArtifactHaveBitmap,
+    ArtifactObjectClaim, ArtifactObjectReader, ArtifactPlan, ArtifactSession, ArtifactSink,
+    CheckedWorkspacePublication, ClosureCompositionBudget, ClosureMembershipChange,
+    DurableManifest, DurableManifestIdPage, DurableManifestPage, DurableTree, FileDurable,
+    FilePrepared, FilePublished, FileStore, GcLimits, GcPinGuard, GcReport, GcRoot, GcRootResolver,
+    GcRoots, ManifestReadStats, ObjectStream, ObjectWriteReceipt, OwnedRelationNodeLoader,
+    PinnedStoredClosureReceipt, PublicationAuthorityError, PublicationBase, PublicationDescriptor,
+    RelationNodeChild, RelationNodeRead, RelationNodeWriteStats, SelectedHead,
+    StorePublicationAuthority, StoredClosureReceipt, StreamingClosureBudget,
+    StreamingClosureBuilder, TransactionId, TreeReadStats, TreeWriteStats, VerifiedClosureMember,
+    VerifiedObjectEnvelope, VerifiedObjectView, WorkspaceFileDurable, WorkspaceFilePrepared,
+    WorkspaceFilePublished, admit_object_envelope, write_object_envelope,
+    write_streamed_object_envelope,
 };
 pub use pack::{
     LayoutId, Pack, PackId, WirePack, admit_pack, decode_pack, decode_wire_pack, encode_pack,
@@ -105,6 +114,8 @@ pub enum StoreError {
     OversizedKey,
     /// Stored canonical bytes or node metadata are inconsistent.
     Corrupt,
+    /// An immutable artifact path failed its regular-file or single-link check.
+    UnsafePath,
     /// Incremental work exceeded its publication budget.
     NeedsScopedRebuild,
     /// A delta needs an authority-produced complete coverage witness.

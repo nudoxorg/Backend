@@ -8,12 +8,17 @@
 
 use std::{path::Path, sync::atomic::Ordering, time::Instant};
 
+use crate::compiler_input_manifest_v2::CompilationUnitKeyV2;
 use crate::driver::{
     CompileControl, ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection,
 };
+use backend_frontend_clang::ClangAuthorityEnvironment;
 use backend_frontend_csharp::legacy::{
     CSharpAuthorityConfiguration, CSharpAuthorityControl, CSharpAuthorityError,
     CSharpAuthorityRequest, CSharpOracle,
+};
+use backend_frontend_go::legacy::oracle::{
+    GoPackageAuthorityWitness, GoPackageAuthorityWitnessError,
 };
 use backend_frontend_go::legacy::{ConfiguredGoOracle, OracleError};
 use backend_frontend_java::legacy::harness::{
@@ -23,7 +28,8 @@ use backend_frontend_python::legacy::{
     CheckerError as PyreflyError, CheckerReport as PythonReport, ExtractionError, Pyrefly, extract,
 };
 use backend_frontend_rust::legacy::{
-    RustAuthorityError, RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
+    RustAnalysisControl, RustAuthorityError, RustFeatureControl, RustToolchain, RustWorkspace,
+    SourceByteLimit,
 };
 use backend_frontend_typescript::legacy::{
     CheckerError as TypeScriptCheckerError, ExplicitTypeScriptChecker, Report as TypeScriptReport,
@@ -36,6 +42,8 @@ use thiserror::Error;
 /// absence is a typed terminal, never a default process lookup.
 #[derive(Clone, Copy, Debug)]
 pub struct PackageAuthorityConfiguration<'config> {
+    /// Exact driver, resource, include, and loaded libclang selection for C/C++.
+    pub clang: Option<&'config ClangAuthorityEnvironment>,
     /// TypeScript checker that stages the explicitly selected package root.
     pub typescript: Option<&'config ExplicitTypeScriptChecker>,
     /// Python pyrefly adapter that owns inferred-type and resolution facts.
@@ -55,10 +63,10 @@ pub struct PackageAuthorityConfiguration<'config> {
 impl PackageAuthorityConfiguration<'static> {
     /// Explicit absence of every sidecar authority producer.
     ///
-    /// C and C++ remain usable because libclang is entered directly by the
-    /// driver. Every other package profile reaches a typed unavailable
-    /// terminal unless its caller selects a configured authority table.
+    /// Every package profile reaches a typed unavailable terminal unless its
+    /// caller selects the corresponding explicit authority configuration.
     pub const UNAVAILABLE: Self = Self {
+        clang: None,
         typescript: None,
         python: None,
         rust: None,
@@ -115,6 +123,8 @@ pub struct PackageAuthorityRequest<'request, 'config> {
     pub source_path: &'request Path,
     /// Exact source bytes read by the package resolver.
     pub source: &'request [u8],
+    /// Exact native compilation unit selected by the admitted package target.
+    pub unit_key: &'request CompilationUnitKeyV2,
     /// Closed language profile that determines the one allowed authority.
     pub profile: LanguageProfile,
     /// Native-tool selection already routed by the compiler application.
@@ -130,8 +140,8 @@ pub struct PackageAuthorityRequest<'request, 'config> {
 /// This owner is intentionally separate from [`SemanticAuthorityInput`].
 /// Calling [`Self::input`] borrows this enum after construction, so no report
 /// pointer can outlive the transaction that owns it.
-pub enum PackageAuthorityOwner<'config> {
-    /// C or C++ compilation, where libclang is the driver's direct authority.
+pub enum PackageAuthorityOwner<'workspace> {
+    /// C or C++ compilation with the exact selected libclang authority.
     Clang {
         /// Exact C-family profile admitted by the caller.
         profile: LanguageProfile,
@@ -153,16 +163,23 @@ pub enum PackageAuthorityOwner<'config> {
         /// Report retained for the driver borrow.
         report: PythonReport,
     },
-    /// Cargo/rust-analyzer project state retained for direct driver entry.
+    /// Cargo/rust-analyzer workspace retained for package-wide driver entry.
     Rust {
         /// Exact checked profile.
         profile: LanguageProfile,
-        /// Exact Cargo project and selected crate source.
-        project: RustProject,
+        /// One analyzer database and VFS shared by all package sources.
+        workspace: RustWorkspace,
         /// Original bounded source admission policy.
         maximum_source_bytes: SourceByteLimit,
-        /// Exact caller-selected Cargo feature policy.
-        features: RustFeatureControl<'config>,
+    },
+    /// Borrowed lane-owned analyzer workspace retained by an in-progress session lease.
+    RustBorrowed {
+        /// Exact checked profile.
+        profile: LanguageProfile,
+        /// Analyzer workspace that remains owned by the caller's cache lease.
+        workspace: &'workspace RustWorkspace,
+        /// Original bounded source admission policy.
+        maximum_source_bytes: SourceByteLimit,
     },
     /// Go authority image owned for the driver's borrowed image input.
     Go {
@@ -191,23 +208,34 @@ pub enum PackageAuthorityOwner<'config> {
 
 impl PackageAuthorityOwner<'_> {
     /// Borrows this retained authority in the exact shape accepted by the
-    /// driver.  C/C++ are the only profiles permitted to carry `None` here:
-    /// their semantic authority is direct libclang collection in compilation.
+    /// driver. C/C++ use the exact retained project and selected libclang
+    /// rather than an external authority image.
     #[must_use]
-    pub fn input(&self) -> SemanticAuthorityInput<'_> {
+    pub fn input<'source>(
+        &'source self,
+        source_path: &'source Path,
+    ) -> SemanticAuthorityInput<'source> {
         match self {
             Self::Clang { project, .. } => SemanticAuthorityInput::Clang { project },
             Self::TypeScript { report, .. } => SemanticAuthorityInput::TypeScript { report },
             Self::Python { report, .. } => SemanticAuthorityInput::Python { report },
             Self::Rust {
-                project,
+                workspace,
                 maximum_source_bytes,
-                features,
                 ..
-            } => SemanticAuthorityInput::Rust {
-                project,
+            } => SemanticAuthorityInput::RustWorkspace {
+                workspace,
+                source_path,
                 maximum_source_bytes: *maximum_source_bytes,
-                features: *features,
+            },
+            Self::RustBorrowed {
+                workspace,
+                maximum_source_bytes,
+                ..
+            } => SemanticAuthorityInput::RustWorkspace {
+                workspace: *workspace,
+                source_path,
+                maximum_source_bytes: *maximum_source_bytes,
             },
             Self::Go { image, .. } => SemanticAuthorityInput::Go { image },
             Self::CSharp { image, .. } => SemanticAuthorityInput::CSharp { image },
@@ -222,6 +250,7 @@ impl PackageAuthorityOwner<'_> {
             Self::Clang { profile, .. }
             | Self::Python { profile, .. }
             | Self::Rust { profile, .. }
+            | Self::RustBorrowed { profile, .. }
             | Self::Go { profile, .. }
             | Self::CSharp { profile, .. }
             | Self::Java { profile, .. } => *profile,
@@ -239,12 +268,54 @@ impl PackageAuthorityOwner<'_> {
 /// or deadline won the enclosing compilation.
 pub fn enter_package_authority<'request, 'config>(
     request: PackageAuthorityRequest<'request, 'config>,
-) -> Result<PackageAuthorityOwner<'config>, PackageAuthorityError> {
+) -> Result<PackageAuthorityOwner<'static>, PackageAuthorityError> {
+    enter_package_authority_with_go_authority_witness(request, None)
+}
+
+pub(crate) fn enter_package_authority_with_go_authority_witness<'request, 'config>(
+    request: PackageAuthorityRequest<'request, 'config>,
+    captured_go_authority: Option<&GoPackageAuthorityWitness>,
+) -> Result<PackageAuthorityOwner<'static>, PackageAuthorityError> {
+    enter_package_authority_with_retained_rust_workspace(request, captured_go_authority, None)
+}
+
+pub(crate) fn enter_package_authority_with_rust_workspace<'request, 'config, 'workspace>(
+    request: PackageAuthorityRequest<'request, 'config>,
+    captured_go_authority: Option<&GoPackageAuthorityWitness>,
+    rust_workspace: &'workspace RustWorkspace,
+) -> Result<PackageAuthorityOwner<'workspace>, PackageAuthorityError> {
+    enter_package_authority_with_retained_rust_workspace(
+        request,
+        captured_go_authority,
+        Some(rust_workspace),
+    )
+}
+
+fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'workspace>(
+    request: PackageAuthorityRequest<'request, 'config>,
+    captured_go_authority: Option<&GoPackageAuthorityWitness>,
+    rust_workspace: Option<&'workspace RustWorkspace>,
+) -> Result<PackageAuthorityOwner<'workspace>, PackageAuthorityError> {
     checkpoint(
         request.control,
         request.profile,
         PackageAuthorityStage::Admission,
     )?;
+    let unit_supported = match request.unit_key {
+        CompilationUnitKeyV2::PackageRoot => true,
+        CompilationUnitKeyV2::RustCrate { .. } => {
+            request.profile.language() == backend_semantic::vocabulary::Language::Rust
+        }
+        CompilationUnitKeyV2::CSharpProject { .. } => {
+            request.profile.language() == backend_semantic::vocabulary::Language::CSharp
+        }
+        _ => false,
+    };
+    if !unit_supported {
+        return Err(PackageAuthorityError::CompilationUnitMismatch {
+            profile: request.profile,
+        });
+    }
     let resolved = require_resolved_toolchain(request.toolchain, request.profile)?;
     let relative = request
         .source_path
@@ -258,9 +329,24 @@ pub fn enter_package_authority<'request, 'config>(
     let owner =
         match request.profile {
             profile @ (LanguageProfile::C(_) | LanguageProfile::Cxx(_)) => {
-                let project = backend_frontend_clang::ClangProject::open(
+                let environment = request.configuration.clang.ok_or(
+                    PackageAuthorityError::AdapterUnavailable {
+                        profile,
+                        stage: PackageAuthorityStage::ClangProject,
+                    },
+                )?;
+                if environment.driver() != resolved.executable() {
+                    return Err(PackageAuthorityError::ClangToolchainExecutableMismatch {
+                        profile,
+                    });
+                }
+                environment
+                    .load_configured_libclang()
+                    .map_err(PackageAuthorityError::ClangProject)?;
+                let project = backend_frontend_clang::ClangProject::open_with_environment(
                     request.package_root,
                     request.source_path,
+                    environment.clone(),
                 )
                 .map_err(PackageAuthorityError::ClangProject)?;
                 PackageAuthorityOwner::Clang { profile, project }
@@ -298,7 +384,7 @@ pub fn enter_package_authority<'request, 'config>(
                     PackageAuthorityStage::PythonSyntax,
                 )?;
                 let report = pyrefly
-                    .analyze(request.source, profile, &syntax)
+                    .analyze_in_package(request.source, profile, &syntax, request.package_root)
                     .map_err(PackageAuthorityError::PythonPyrefly)?;
                 checkpoint(
                     request.control,
@@ -324,23 +410,67 @@ pub fn enter_package_authority<'request, 'config>(
                         resolved: resolved.as_ref().to_path_buf().into_boxed_path(),
                     });
                 }
-                let project = RustProject::open_with_source(
-                    request.package_root,
-                    request.source_path,
-                    configuration.toolchain,
-                    profile,
-                )
-                .map_err(PackageAuthorityError::RustProject)?;
-                checkpoint(
-                    request.control,
-                    request.profile,
-                    PackageAuthorityStage::RustProject,
-                )?;
-                PackageAuthorityOwner::Rust {
-                    profile: request.profile,
-                    project,
-                    maximum_source_bytes: configuration.maximum_source_bytes,
-                    features: configuration.features,
+                match request.unit_key {
+                    CompilationUnitKeyV2::PackageRoot => {}
+                    CompilationUnitKeyV2::RustCrate { root, .. } => {
+                        let selected = request.package_root.join(root.as_ref());
+                        if selected != request.source_path {
+                            return Err(PackageAuthorityError::CompilationUnitSourceMismatch {
+                                profile: request.profile,
+                            });
+                        }
+                    }
+                    _ => {
+                        return Err(PackageAuthorityError::CompilationUnitMismatch {
+                            profile: request.profile,
+                        });
+                    }
+                }
+                if request.source.len() > *configuration.maximum_source_bytes as usize {
+                    return Err(PackageAuthorityError::RustProject(
+                        RustAuthorityError::SourceBudget {
+                            actual: u64::try_from(request.source.len()).unwrap_or(u64::MAX),
+                            maximum: configuration.maximum_source_bytes,
+                        },
+                    ));
+                }
+                if let Some(workspace) = rust_workspace {
+                    workspace
+                        .validate_binding(request.package_root, profile)
+                        .map_err(PackageAuthorityError::RustProject)?;
+                    checkpoint(
+                        request.control,
+                        request.profile,
+                        PackageAuthorityStage::RustProject,
+                    )?;
+                    PackageAuthorityOwner::RustBorrowed {
+                        profile: request.profile,
+                        workspace,
+                        maximum_source_bytes: configuration.maximum_source_bytes,
+                    }
+                } else {
+                    let workspace = RustWorkspace::open_with_features(
+                        request.package_root,
+                        configuration.toolchain,
+                        profile,
+                        configuration.features,
+                        RustAnalysisControl {
+                            cancelled: request.control.cancelled,
+                            maximum_source_bytes: configuration.maximum_source_bytes,
+                            deadline: request.control.deadline,
+                        },
+                    )
+                    .map_err(PackageAuthorityError::RustProject)?;
+                    checkpoint(
+                        request.control,
+                        request.profile,
+                        PackageAuthorityStage::RustProject,
+                    )?;
+                    PackageAuthorityOwner::Rust {
+                        profile: request.profile,
+                        workspace,
+                        maximum_source_bytes: configuration.maximum_source_bytes,
+                    }
                 }
             }
             LanguageProfile::Go(_) => {
@@ -352,6 +482,19 @@ pub fn enter_package_authority<'request, 'config>(
                             profile: request.profile,
                             stage: PackageAuthorityStage::GoOracle,
                         })?;
+                let owned_witness;
+                let go_authority = match captured_go_authority {
+                    Some(witness) => witness,
+                    None => {
+                        owned_witness = oracle.package_authority_witness(request.package_root)?;
+                        &owned_witness
+                    }
+                };
+                if !go_authority.matches_current(request.package_root)? {
+                    return Err(PackageAuthorityError::GoAuthorityInputsChanged {
+                        profile: request.profile,
+                    });
+                }
                 // Scoped to exactly the package that owns `source_path`:
                 // sibling packages are import context only and are never
                 // serialized, so a module whose subpackages share a
@@ -360,7 +503,11 @@ pub fn enter_package_authority<'request, 'config>(
                 // a coordinate-free `DuplicateDeclarationIdentity` collision
                 // into the selected package's image.
                 let image = oracle
-                    .authority_image_for_package(request.source_path, request.package_root)
+                    .authority_image_for_package_with_authority_witness(
+                        request.source_path,
+                        request.package_root,
+                        go_authority,
+                    )
                     .map_err(PackageAuthorityError::GoOracle)?;
                 let image = retain_image(
                     image,
@@ -434,11 +581,23 @@ pub fn enter_package_authority<'request, 'config>(
                         stage: PackageAuthorityStage::CSharpRoslyn,
                     },
                 )?;
+                let project_file = match request.unit_key {
+                    CompilationUnitKeyV2::PackageRoot => None,
+                    CompilationUnitKeyV2::CSharpProject { project_path } => {
+                        Some(request.package_root.join(project_path.as_ref()))
+                    }
+                    _ => {
+                        return Err(PackageAuthorityError::CompilationUnitMismatch {
+                            profile: request.profile,
+                        });
+                    }
+                };
                 let image = configuration
                     .producer
                     .produce(CSharpAuthorityRequest {
                         package_root: request.package_root,
                         source_path: request.source_path,
+                        project_file: project_file.as_deref(),
                         source: request.source,
                         profile,
                         native_tool: resolved.tool,
@@ -543,6 +702,8 @@ fn retain_image(
 pub enum PackageAuthorityStage {
     /// Request control and resolved toolchain admission.
     Admission,
+    /// Explicit driver and loaded-libclang project admission.
+    ClangProject,
     /// TypeScript package staging and checker execution.
     TypeScriptChecker,
     /// Python syntax extraction before pyrefly admission.
@@ -606,6 +767,24 @@ pub enum PackageAuthorityError {
         /// Explicit source path that failed containment.
         source_path: Box<Path>,
     },
+    /// A witnessed Go manifest, workspace, or local target changed after dispatch.
+    #[error("Go package authority inputs changed before admission for {profile:?}")]
+    GoAuthorityInputsChanged {
+        /// Requested profile.
+        profile: LanguageProfile,
+    },
+    /// The exact unit key is not implemented for this language authority.
+    #[error("compilation unit is incompatible with package authority for {profile:?}")]
+    CompilationUnitMismatch {
+        /// Requested profile.
+        profile: LanguageProfile,
+    },
+    /// A Rust crate key selected a source other than its exact crate root.
+    #[error("Rust source does not match the exact crate root for {profile:?}")]
+    CompilationUnitSourceMismatch {
+        /// Requested Rust profile.
+        profile: LanguageProfile,
+    },
     /// The current package-aware TypeScript adapter cannot preserve a source
     /// path other than its exact staged entry path.
     #[error(
@@ -646,6 +825,12 @@ pub enum PackageAuthorityError {
         /// Compiler executable selected for the enclosing driver request.
         resolved: Box<Path>,
     },
+    /// The selected Clang driver differs from the executable bound by the driver.
+    #[error("Clang authority driver differs from the resolved compiler for {profile:?}")]
+    ClangToolchainExecutableMismatch {
+        /// Requested C-family profile.
+        profile: LanguageProfile,
+    },
     /// The package-aware TypeScript checker returned its exact terminal.
     #[error(transparent)]
     TypeScript(#[from] TypeScriptCheckerError),
@@ -664,6 +849,9 @@ pub enum PackageAuthorityError {
     /// Go authority-image production returned its exact terminal.
     #[error(transparent)]
     GoOracle(#[from] OracleError),
+    /// The exact Go authority filesystem witness could not be captured or revalidated.
+    #[error(transparent)]
+    GoAuthorityWitness(#[from] GoPackageAuthorityWitnessError),
     /// Roslyn authority-image production returned its exact terminal.
     #[error(transparent)]
     CSharp(#[from] CSharpAuthorityError),
@@ -688,6 +876,7 @@ mod tests {
 
     fn configuration() -> PackageAuthorityConfiguration<'static> {
         PackageAuthorityConfiguration {
+            clang: None,
             typescript: None,
             python: None,
             rust: None,
@@ -711,6 +900,7 @@ mod tests {
                 .expect("absolute Go toolchain is admissible"),
         );
         let configuration = PackageAuthorityConfiguration {
+            clang: None,
             typescript: Some(&typescript),
             python: None,
             rust: None,
@@ -742,7 +932,7 @@ mod tests {
     }
 
     #[test]
-    fn clang_is_the_only_project_carrying_authority() {
+    fn clang_requires_an_explicit_project_authority() {
         let root =
             std::env::temp_dir().join(format!("nudox-package-authority-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -750,10 +940,11 @@ mod tests {
         let entry = root.join("main.c");
         std::fs::write(&entry, b"int main(void) { return 0; }").expect("entry is writable");
         let cancelled = AtomicBool::new(false);
-        let owner = enter_package_authority(PackageAuthorityRequest {
+        let error = enter_package_authority(PackageAuthorityRequest {
             package_root: &root,
             source_path: &entry,
             source: b"int main(void) { return 0; }",
+            unit_key: &CompilationUnitKeyV2::PackageRoot,
             profile: LanguageProfile::C(CStandard::C11),
             toolchain: ToolchainSelection::ResolvedNative(clang_toolchain()),
             control: CompileControl {
@@ -762,19 +953,15 @@ mod tests {
             },
             configuration: configuration(),
         })
-        .expect("direct libclang authority needs no borrowed sidecar");
-
-        assert_eq!(owner.profile(), LanguageProfile::C(CStandard::C11));
+        .err()
+        .expect("C authority requires explicit selected Clang environment");
         assert!(matches!(
-            owner.input(),
-            SemanticAuthorityInput::Clang { .. }
+            error,
+            PackageAuthorityError::AdapterUnavailable {
+                profile: LanguageProfile::C(CStandard::C11),
+                stage: PackageAuthorityStage::ClangProject
+            }
         ));
-        if let PackageAuthorityOwner::Clang { project, .. } = &owner {
-            assert_eq!(
-                project.entry(),
-                entry.canonicalize().expect("entry canonicalizes")
-            );
-        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -785,6 +972,7 @@ mod tests {
             package_root: Path::new("/packages/example"),
             source_path: Path::new("/packages/example/main.c"),
             source: b"int main(void) { return 0; }",
+            unit_key: &CompilationUnitKeyV2::PackageRoot,
             profile: LanguageProfile::C(CStandard::C11),
             toolchain: ToolchainSelection::ResolvedNative(clang_toolchain()),
             control: CompileControl {
@@ -813,6 +1001,7 @@ mod tests {
             package_root: Path::new("/packages/example"),
             source_path: Path::new("/packages/example/Library.cs"),
             source: b"public sealed class Library {}",
+            unit_key: &CompilationUnitKeyV2::PackageRoot,
             profile: LanguageProfile::CSharp(CSharpVersion::CSharp14),
             toolchain: ToolchainSelection::ResolvedNative(csharp_toolchain()),
             control: CompileControl {

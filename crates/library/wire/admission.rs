@@ -531,7 +531,7 @@ fn admit_reply_shape(command: &Command, reply: &CommandReply) -> Result<(), Repl
                 .map_err(|error| ReplyAdmissionError::Protocol(error.to_string()))?;
             true
         }
-        (Command::Add { package }, CommandReply::Added(intent)) => {
+        (Command::Add { package, .. }, CommandReply::Added(intent)) => {
             if *intent != crate::Intent::request_package(*package).id() {
                 return Err(ReplyAdmissionError::Protocol(
                     "add reply intent does not match the requested package".to_owned(),

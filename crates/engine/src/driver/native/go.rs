@@ -54,10 +54,7 @@ impl NativeFrontend for GoFrontend {
                 OBJECT_FILE,
                 SOURCE_FILE,
             ])
-            .current_dir(native_work.join(WORK_DIRECTORY))
-            // The executable is already caller-resolved.  Go otherwise accepts ambient
-            // GOROOT/GOTOOLCHAIN state that could redirect tool discovery.
-            .env_clear();
+            .current_dir(native_work.join(WORK_DIRECTORY));
         command
     }
 

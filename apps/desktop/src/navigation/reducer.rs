@@ -11,11 +11,50 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
     }
     let mut effects = Vec::new();
     let mut next = snapshot.clone();
+    // Going anywhere keeps the place the query is showing; Back and Esc
+    // put the place you were on back instead.
+    match &intent {
+        Intent::Navigate(_) | Intent::ZoomOut | Intent::Tour(_) | Intent::Forward | Intent::SetView(_) | Intent::SetRelease(_) => {
+            commit_preview(&mut next);
+        }
+        Intent::Back | Intent::DismissOverlay if next.session().preview.is_some() => {
+            end_preview(&mut next, true);
+            return Reduction { snapshot: next, effects };
+        }
+        _ => {}
+    }
     match intent {
-        Intent::Noop => {}
+        // The window root adds a release (`runtime::acquire`): no state here.
+        Intent::Noop | Intent::AddRelease(_) => {}
         Intent::Navigate(route) => {
             navigate(&mut next, route);
             effects.push(Effect::Persist);
+        }
+        Intent::Preview(route) => {
+            let mut session = next.session().clone();
+            if session.preview.is_none() {
+                session.preview = Some(session.route.clone());
+            }
+            session.route = route;
+            next = next.with_session(session);
+        }
+        Intent::CommitPreview => {
+            if commit_preview(&mut next) {
+                effects.push(Effect::Persist);
+            }
+        }
+        Intent::EndPreview => end_preview(&mut next, false),
+        Intent::RefineFind { expected, query } => {
+            let owns_field = match snapshot.route() {
+                Route::Orbit(super::OrbitRoute::Browse(super::BrowseRoute::Find(current))) => expected.as_ref() == Some(current),
+                Route::Orbit(super::OrbitRoute::Browse(super::BrowseRoute::FindHome)) => expected.is_none(),
+                _ => false,
+            };
+            if owns_field && expected != query {
+                let route = query.map_or(super::BrowseRoute::FindHome, super::BrowseRoute::Find);
+                replace(&mut next, Route::Orbit(super::OrbitRoute::Browse(route)));
+                effects.push(Effect::Persist);
+            }
         }
         Intent::SetView(view) => {
             if let Some(route) = snapshot.route().with_view(view) {
@@ -23,8 +62,17 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
                 effects.push(Effect::Persist);
             }
         }
+        Intent::Tour(_) => {
+            navigate(&mut next, Route::World);
+            effects.push(Effect::Persist);
+        }
         Intent::Hold(held) => {
             let mut session = next.session().clone();
+            // The first card ever held is whispered once per install.
+            if !session.whispered {
+                session.whispered = true;
+                session.whisper = Some(held.clone());
+            }
             session.hand = session.hand.hold(held);
             next = next.with_session(session);
             effects.push(Effect::Persist);
@@ -191,10 +239,15 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
         | Intent::ActivateProject(_)
         | Intent::RemoveProject(_)
         | Intent::RevealProject(_)
+        | Intent::OpenSource { .. }
         | Intent::RetryIndex(_)
         | Intent::CancelIndex(_)
         | Intent::TestConnection
         | Intent::ConnectionResult { .. }
+        | Intent::OwnerReady { .. }
+        | Intent::DismissNote(_)
+        | Intent::LibraryRebuilding { .. }
+        | Intent::WindowResized { .. }
         | Intent::OpenHelp => {
             unreachable!("workspace reducer owns workspace intents")
         }
@@ -218,6 +271,31 @@ fn navigate(snapshot: &mut crate::model::AppSnapshot, route: Route) {
     session.overlay = None;
     session.back = back;
     session.forward = Default::default();
+    *snapshot = snapshot.with_session(session);
+}
+
+/// Keeps the previewed place: the place you were on becomes Back (unless
+/// the preview is that same place). The overlay stays as it is.
+fn commit_preview(snapshot: &mut crate::model::AppSnapshot) -> bool {
+    let mut session = snapshot.session().clone();
+    let Some(origin) = session.preview.take() else { return false };
+    if !origin.same_place(&session.route) {
+        session.back = session.back.push(origin);
+        session.forward = Default::default();
+    }
+    *snapshot = snapshot.with_session(session);
+    true
+}
+
+/// Puts the place you were on back; `close` also closes the query.
+fn end_preview(snapshot: &mut crate::model::AppSnapshot, close: bool) {
+    let mut session = snapshot.session().clone();
+    if let Some(origin) = session.preview.take() {
+        session.route = origin;
+    }
+    if close {
+        session.overlay = None;
+    }
     *snapshot = snapshot.with_session(session);
 }
 
@@ -279,6 +357,30 @@ mod tests {
         let reduced = reduce(&value, Intent::Noop);
         assert_eq!(reduced.snapshot, value);
         assert!(reduced.effects.is_empty());
+    }
+
+    #[test]
+    fn find_typing_keeps_one_history_stop_and_stale_callbacks_cannot_steal_navigation() {
+        use crate::model::pages::SearchQuery;
+        use crate::navigation::{BrowseRoute, OrbitRoute};
+        let initial = snapshot();
+        let first = SearchQuery::new("tom", 50).unwrap();
+        let final_query = SearchQuery::new("toml", 50).unwrap();
+        let route = Route::Orbit(OrbitRoute::Browse(BrowseRoute::Find(first.clone())));
+        let opened = reduce(&initial, Intent::Navigate(route)).snapshot;
+        let refined = reduce(&opened, Intent::RefineFind { expected: Some(first.clone()), query: Some(final_query.clone()) }).snapshot;
+        assert_eq!(refined.route(), &Route::Orbit(OrbitRoute::Browse(BrowseRoute::Find(final_query.clone()))));
+        assert_eq!(reduce(&refined, Intent::Back).snapshot.route(), initial.route());
+        let stale = reduce(&refined, Intent::RefineFind { expected: Some(first.clone()), query: Some(SearchQuery::new("old", 50).unwrap()) });
+        assert_eq!(stale.snapshot, refined);
+        assert!(stale.effects.is_empty());
+        let departed = reduce(&refined, Intent::Navigate(package_route(None))).snapshot;
+        let late = reduce(&departed, Intent::RefineFind { expected: Some(final_query.clone()), query: Some(first) });
+        assert_eq!(late.snapshot, departed);
+        assert!(late.effects.is_empty());
+        let cleared = reduce(&refined, Intent::RefineFind { expected: Some(final_query), query: None }).snapshot;
+        assert_eq!(cleared.route(), &Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome)));
+        assert_eq!(reduce(&cleared, Intent::Back).snapshot.route(), initial.route());
     }
 
     #[test]
@@ -379,6 +481,65 @@ mod tests {
             })]
         );
         Ok(())
+    }
+
+    /// The query walks results without writing history; Esc puts you back
+    /// where you were, with Back exactly as it was before you typed.
+    #[test]
+    fn a_walked_preview_is_not_history_and_esc_puts_you_back() {
+        let at = reduce(&snapshot(), Intent::Navigate(package_route(None))).snapshot;
+        let back_before = at.session().back.clone();
+        let querying = reduce(&at, Intent::OpenCommandPalette).snapshot;
+        let first = reduce(&querying, Intent::Preview(symbol_route("A", View::Page))).snapshot;
+        let second = reduce(&first, Intent::Preview(symbol_route("B", View::Page))).snapshot;
+        assert_eq!(second.route(), &symbol_route("B", View::Page), "the reader shows the walked result");
+        assert_eq!(second.committed_route(), &package_route(None), "the place you were on is what is kept");
+        assert_eq!(second.session().back, back_before, "walking results writes no history");
+        assert_eq!(second.overlay(), Some(Overlay::CommandPalette), "a preview keeps the query open");
+        let returned = reduce(&second, Intent::DismissOverlay).snapshot;
+        assert_eq!(returned.route(), &package_route(None), "Esc puts the place you were on back");
+        assert_eq!(returned.session().preview, None);
+        assert_eq!(returned.overlay(), None);
+        assert_eq!(returned.session().back, back_before);
+    }
+
+    /// ↵ keeps the previewed place, and Back then leads to where you were.
+    #[test]
+    fn committing_a_preview_makes_where_you_were_the_way_back() {
+        let at = reduce(&snapshot(), Intent::Navigate(package_route(None))).snapshot;
+        let first = reduce(&at, Intent::Preview(symbol_route("A", View::Page))).snapshot;
+        let second = reduce(&first, Intent::Preview(symbol_route("B", View::Page))).snapshot;
+        let kept = reduce(&second, Intent::CommitPreview);
+        assert!(kept.effects.contains(&Effect::Persist));
+        let kept = kept.snapshot;
+        assert_eq!(kept.route(), &symbol_route("B", View::Page));
+        assert_eq!(kept.session().preview, None);
+        assert_eq!(reduce(&kept, Intent::Back).snapshot.route(), &package_route(None), "Back skips every walked result");
+    }
+
+    /// Following a link inside a previewed page keeps both places: Back
+    /// returns to the previewed page, then to where the query started.
+    #[test]
+    fn a_link_followed_from_a_preview_keeps_the_preview_and_its_origin() {
+        let at = reduce(&snapshot(), Intent::Navigate(package_route(None))).snapshot;
+        let previewing = reduce(&at, Intent::Preview(symbol_route("A", View::Page))).snapshot;
+        let followed = reduce(&previewing, Intent::Navigate(symbol_route("C", View::Page))).snapshot;
+        assert_eq!(followed.session().preview, None);
+        let back_one = reduce(&followed, Intent::Back).snapshot;
+        assert_eq!(back_one.route(), &symbol_route("A", View::Page));
+        assert_eq!(reduce(&back_one, Intent::Back).snapshot.route(), &package_route(None));
+    }
+
+    /// An emptied query shows where you were again but stays open.
+    #[test]
+    fn ending_a_preview_without_closing_keeps_the_query_open() {
+        let at = reduce(&snapshot(), Intent::Navigate(package_route(None))).snapshot;
+        let querying = reduce(&at, Intent::OpenCommandPalette).snapshot;
+        let previewing = reduce(&querying, Intent::Preview(symbol_route("A", View::Page))).snapshot;
+        let emptied = reduce(&previewing, Intent::EndPreview).snapshot;
+        assert_eq!(emptied.route(), &package_route(None));
+        assert_eq!(emptied.overlay(), Some(Overlay::CommandPalette));
+        assert_eq!(emptied.session().preview, None);
     }
 
     #[test]

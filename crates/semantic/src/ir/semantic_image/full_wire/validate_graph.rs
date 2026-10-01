@@ -240,7 +240,9 @@ fn external_key(target: crate::ir::ExternalTarget) -> ExternalOrderKey {
                     namespace,
                 } => (1, ecosystem.raw, namespace.raw),
                 crate::ir::ForeignTargetOrigin::Universe { ecosystem } => (2, ecosystem.raw, NONE),
-                crate::ir::ForeignTargetOrigin::Unspecified { ecosystem } => (3, ecosystem.raw, NONE),
+                crate::ir::ForeignTargetOrigin::Unspecified { ecosystem } => {
+                    (3, ecosystem.raw, NONE)
+                }
             };
             let (variant_tag, variant) = match value.identity.variant {
                 crate::ir::VariantAvailability::Unavailable => (0, [0; 16]),

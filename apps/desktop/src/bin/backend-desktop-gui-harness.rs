@@ -12,6 +12,9 @@ fn main() -> std::process::ExitCode {
     if args.first().map(String::as_str) == Some("journey") {
         return backend_desktop::harness::journey::main(&args[1..]);
     }
+    if args.first().map(String::as_str) == Some("window") {
+        backend_desktop::harness::responsive_startup();
+    }
     facet::gallery::cli::main(facet::gallery::cli::Registry {
         name: "backend-desktop-gui-harness",
         all: backend_desktop::harness::scenes,

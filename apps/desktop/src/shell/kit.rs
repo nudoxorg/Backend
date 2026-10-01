@@ -347,6 +347,20 @@ pub(crate) fn kind_mark(kind: Kind, base: facet::icons::KindSize, measure: &Meas
     facet::icons::kind_mark(kind, size, palette)
 }
 
+/// Dead end #15: a link without a place is drawn as text, never as a
+/// control that looks live but goes nowhere. One rule, so every caller
+/// (a relation row, a doc reference, an Ask row) reads a route the same
+/// way: lit at `ink0` and a pointer when there is somewhere to go, `ink3`
+/// and inert otherwise. Callers still own their own hover/click wiring;
+/// this only answers the ink so the two states can never be confused.
+pub(crate) fn link_ink(has_place: bool, palette: &Palette) -> Hsla {
+    if has_place {
+        palette.ink0.into()
+    } else {
+        palette.ink3.into()
+    }
+}
+
 /// A world node's kind as the mark it wears.
 pub(crate) const fn world_kind(kind: facet::graph::Kind) -> Kind {
     use facet::graph::Kind as World;
@@ -364,5 +378,33 @@ pub(crate) const fn world_kind(kind: facet::graph::Kind) -> Kind {
         World::Field => Mark::Field,
         World::Variant => Mark::Variant,
         World::Other => Mark::Unknown,
+    }
+}
+
+/// Whether an outline row names something the package declares, as a person
+/// would list it: an identifier (a type, a function, a module), not a type
+/// written out (`&str`, `Vec<T>`) or a path keyword (`crate`, `self`,
+/// `super`) that a compiler's semantic rows also carry.
+#[must_use]
+pub(crate) fn names_a_declaration(name: &str) -> bool {
+    let mut chars = name.chars();
+    let starts = chars.next().is_some_and(|first| first.is_alphabetic() || first == '_' || first == '$');
+    starts
+        && name.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | '$' | '-' | '.'))
+        && !matches!(name, "crate" | "self" | "super" | "Self")
+}
+
+#[cfg(test)]
+mod declaration_name_tests {
+    use super::names_a_declaration;
+
+    #[test]
+    fn a_type_written_out_or_a_path_keyword_is_not_a_declaration() {
+        for name in ["Value", "read_settings", "from_str", "_private", "RUSTSEC", "value.rs"] {
+            assert!(names_a_declaration(name), "{name}");
+        }
+        for name in ["&str", "crate", "self", "super", "Self", "Vec<T>", "[u8]", "", "&'a str", "()"] {
+            assert!(!names_a_declaration(name), "{name}");
+        }
     }
 }

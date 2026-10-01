@@ -902,9 +902,82 @@ impl CanonicalRelation for ProductSourceRelation {
     }
 }
 
-/// Derives the relation key for a project-relative source file.
+/// Number of leading relation-key bytes reserved for the owning project.
+const PRODUCT_SOURCE_FILE_PROJECT_PREFIX_BYTES: usize = 16;
+
+/// Number of relation-key bytes retained from the file identity digest.
+///
+/// The digest remains 128 bits, including when a project has many files. This
+/// gives B-tree order a project-affine prefix while keeping the established
+/// collision margin within one project's file set.
+const PRODUCT_SOURCE_FILE_DIGEST_BYTES: usize = 16;
+
+/// The byte layout for an independently keyed source file.
+///
+/// This type is intentionally internal: the relation and its callers already
+/// use fixed-width byte keys, while construction here keeps the locality
+/// prefix and collision-resistant suffix explicit in one place.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ProductSourceFileKey {
+    project_prefix: [u8; PRODUCT_SOURCE_FILE_PROJECT_PREFIX_BYTES],
+    file_digest: [u8; PRODUCT_SOURCE_FILE_DIGEST_BYTES],
+}
+
+impl ProductSourceFileKey {
+    fn new(project: [u8; 32], path: &str) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        // Version the new layout independently from the former full-digest
+        // key. The complete project identity is included in the digest as
+        // well as its prefix, so equal prefixes from distinct projects do not
+        // erase project identity from the file suffix.
+        hasher.update(b"backend.product-source.file-key.v2\0");
+        hasher.update(&project);
+        hasher.update(&(path.len() as u64).to_be_bytes());
+        hasher.update(path.as_bytes());
+        let digest = hasher.finalize();
+
+        let mut project_prefix = [0; PRODUCT_SOURCE_FILE_PROJECT_PREFIX_BYTES];
+        project_prefix.copy_from_slice(&project[..PRODUCT_SOURCE_FILE_PROJECT_PREFIX_BYTES]);
+        let mut file_digest = [0; PRODUCT_SOURCE_FILE_DIGEST_BYTES];
+        file_digest.copy_from_slice(&digest.as_bytes()[..PRODUCT_SOURCE_FILE_DIGEST_BYTES]);
+        Self {
+            project_prefix,
+            file_digest,
+        }
+    }
+
+    fn to_bytes(self) -> [u8; 32] {
+        let mut bytes = [0; 32];
+        bytes[..PRODUCT_SOURCE_FILE_PROJECT_PREFIX_BYTES]
+            .copy_from_slice(&self.project_prefix);
+        bytes[PRODUCT_SOURCE_FILE_PROJECT_PREFIX_BYTES..]
+            .copy_from_slice(&self.file_digest);
+        bytes
+    }
+}
+
+/// Derives the relation key for a canonical project-relative source file.
+///
+/// The first 16 bytes are the owning project's key prefix. The remaining 16
+/// bytes are a domain-separated BLAKE3 digest over the full project key and
+/// exact canonical path bytes. Fixed-width encoding preserves the relation's
+/// byte ordering and lets all files for one project occupy a contiguous key
+/// range.
 #[must_use]
 pub fn product_source_file_key(project: [u8; 32], path: &str) -> [u8; 32] {
+    ProductSourceFileKey::new(project, path).to_bytes()
+}
+
+/// The key a build before the project-affine layout gave a source file: one
+/// 32-byte BLAKE3 digest over `backend.product-source.file.v1`, the full
+/// project key and the exact path bytes.
+///
+/// Nothing writes this key any more. It is kept so a workspace written by such
+/// a build is recognised as state from another build, not reported as a
+/// corrupt project frontier: its records decode (`SOURCE_RECORD_VERSION` did
+/// not change) and only their keys differ.
+#[must_use]
+pub fn legacy_product_source_file_key(project: [u8; 32], path: &str) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"backend.product-source.file.v1\0");
     hasher.update(&project);
@@ -1504,6 +1577,84 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
+    fn source_file_keys_cluster_by_project_and_round_trip_canonically() {
+        let project = [0x11; 32];
+        let mut same_prefix_other_project = [0x11; 32];
+        same_prefix_other_project[31] = 0x12;
+        let later_project = [0x22; 32];
+        let paths = ["src/z.rs", "src/a.rs", "src/lib.rs"];
+        let mut keys = paths
+            .iter()
+            .map(|path| super::product_source_file_key(project, path))
+            .collect::<Vec<_>>();
+
+        assert!(keys.iter().all(|key| key[..16] == project[..16]));
+        assert_ne!(keys[0], keys[1], "different paths keep distinct identities");
+        assert_ne!(
+            super::product_source_file_key(project, "src/lib.rs"),
+            super::product_source_file_key(same_prefix_other_project, "src/lib.rs"),
+            "the full project identity remains in the file digest"
+        );
+
+        let later_project_key = super::product_source_file_key(later_project, paths[0]);
+        assert!(
+            keys.iter().all(|key| *key < later_project_key),
+            "the project prefix sorts this project's full key range together"
+        );
+
+        keys.sort_unstable();
+        assert!(keys.windows(2).all(|pair| pair[0] < pair[1]));
+        let project_record = ProductSourceRecord::project("fixture", [0; 32], keys.clone())
+            .expect("sorted file frontier");
+        assert_eq!(
+            project_record.project_fields().expect("project").files,
+            keys.as_slice()
+        );
+
+        let mut key_bytes = Vec::new();
+        ProductSourceRelation::encode_key(&keys[0], &mut key_bytes);
+        let decoded = ProductSourceRelation::decode_key(&key_bytes).expect("decode key");
+        let mut encoded_again = Vec::new();
+        ProductSourceRelation::encode_key(&decoded, &mut encoded_again);
+        assert_eq!(decoded, keys[0]);
+        assert_eq!(encoded_again, key_bytes);
+    }
+
+    #[test]
+    fn the_retired_source_file_key_layout_is_reproducible_and_never_the_current_one() {
+        let project = [0x11; 32];
+        // The retired layout, spelled out independently of the function under
+        // test: one 32-byte digest, no project prefix.
+        let mut retired = blake3::Hasher::new();
+        retired.update(b"backend.product-source.file.v1\0");
+        retired.update(&project);
+        retired.update(&("src/lib.rs".len() as u64).to_be_bytes());
+        retired.update(b"src/lib.rs");
+        let retired = *retired.finalize().as_bytes();
+
+        let legacy = super::legacy_product_source_file_key(project, "src/lib.rs");
+        assert_eq!(legacy, retired);
+        assert_ne!(
+            legacy,
+            super::product_source_file_key(project, "src/lib.rs"),
+            "a workspace keyed this way is state from another build, not a current one"
+        );
+        assert_ne!(legacy[..16], project[..16], "the retired key carries no project prefix");
+    }
+
+    #[test]
+    fn a_file_key_collision_is_rejected_by_the_project_frontier() {
+        let project = [0x31; 32];
+        let key = super::product_source_file_key(project, "src/lib.rs");
+        let error = ProductSourceRecord::project("fixture", [0; 32], vec![key, key])
+            .expect_err("a colliding key cannot appear twice in a frontier");
+        assert_eq!(
+            error,
+            "project file frontier is unordered or holds a duplicate"
+        );
+    }
+
+    #[test]
     fn source_relation_round_trips_typed_declaration_metadata() {
         let declaration = SourceDeclaration::at_path(
             "src/lib.rs",
@@ -1712,14 +1863,20 @@ mod tests {
             )),
             obligation: backend_compile::Fact::Absent,
         });
-        let required =
-            SourceDeclaration::at_path("src/lib.rs", "execute", "method", 11, "fn execute(&self)", "")
-                .expect("declaration")
-                .with_container(super::Container::attached("Service"))
-                .with_facts(backend_compile::DeclarationFacts {
-                    deprecation: backend_compile::Fact::Absent,
-                    obligation: backend_compile::Fact::Present(backend_compile::Obligation::Required),
-                });
+        let required = SourceDeclaration::at_path(
+            "src/lib.rs",
+            "execute",
+            "method",
+            11,
+            "fn execute(&self)",
+            "",
+        )
+        .expect("declaration")
+        .with_container(super::Container::attached("Service"))
+        .with_facts(backend_compile::DeclarationFacts {
+            deprecation: backend_compile::Fact::Absent,
+            obligation: backend_compile::Fact::Present(backend_compile::Obligation::Required),
+        });
         let record = ProductSourceRecord::file(
             [3; 32],
             "src/lib.rs",

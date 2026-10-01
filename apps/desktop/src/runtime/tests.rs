@@ -4,6 +4,7 @@
 
 use super::actor::{EngineClient, EngineDto, EngineFault, EngineRequest};
 use super::coordinator::{DesktopRuntime, RuntimeEvent};
+use super::wait;
 use crate::core::VersionedRoot;
 use crate::model::AppSnapshot;
 use crate::navigation::{Intent, RequestId};
@@ -101,15 +102,12 @@ fn latest_root_supersedes_older_refreshes_without_ui_waiting() {
     assert!(runtime.is_inflight(request));
     // The actor wakes the owner when the result lands; the owner never spins.
     let mut wake = runtime.take_wake().expect("wake signal");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while runtime.is_inflight(request) {
+    wait::until("the root landed", || {
         if wake.try_take() {
             runtime.poll();
-        } else {
-            assert!(std::time::Instant::now() < deadline, "the root never landed");
-            std::thread::sleep(std::time::Duration::from_millis(1));
         }
-    }
+        !runtime.is_inflight(request)
+    });
     assert!(!runtime.is_inflight(request));
 }
 
@@ -138,12 +136,7 @@ fn object_result_records_its_delta_without_advancing_the_root() {
         basis,
         request,
     });
-    for _ in 0..100 {
-        if !runtime.poll().is_empty() {
-            break;
-        }
-        std::thread::yield_now();
-    }
+    wait::until("the object result was delivered", || !runtime.poll().is_empty());
     assert_eq!(runtime.snapshot().key(), basis);
     assert_eq!(runtime.snapshot().delta(), Some(delta));
 }
@@ -163,12 +156,7 @@ fn result_delivery_stays_bounded_while_the_ui_is_not_polling() {
         };
         let _ = actor.try_submit(request);
     }
-    for _ in 0..100 {
-        if actor.queued_events() == 1 {
-            break;
-        }
-        std::thread::yield_now();
-    }
+    wait::until("the actor queued its one event", || actor.queued_events() == 1);
     assert!(actor.queued_events() <= 1);
     drop(actor);
 }
@@ -192,12 +180,7 @@ fn result_coalescing_retires_the_replaced_request() {
         basis,
         request: first,
     });
-    for _ in 0..100 {
-        if runtime.queued_results() == 1 {
-            break;
-        }
-        std::thread::yield_now();
-    }
+    wait::until("the first result was queued", || runtime.queued_results() == 1);
     assert!(runtime.is_inflight(first));
     let second = RequestId::new(21);
     runtime.dispatch(Intent::RefreshObject {
@@ -211,11 +194,10 @@ fn result_coalescing_retires_the_replaced_request() {
     // has produced its own result, so poll until that happens instead of
     // stopping at the first non-empty drain, which is `first`'s leftover.
     assert!(!runtime.is_inflight(first));
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while runtime.is_inflight(second) && std::time::Instant::now() < deadline {
+    wait::until("the second request was retired by its own result", || {
         let _ = runtime.poll();
-        std::thread::yield_now();
-    }
+        !runtime.is_inflight(second)
+    });
     assert!(!runtime.is_inflight(first));
     assert!(!runtime.is_inflight(second));
 }
@@ -259,13 +241,10 @@ fn local_package_read_runs_off_the_producer_lane_and_survives_a_root_advance() -
         basis,
         request: root,
     });
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while (runtime.is_inflight(local) || runtime.is_inflight(root))
-        && std::time::Instant::now() < deadline
-    {
+    wait::until("the local package read and the root both landed", || {
         runtime.poll();
-        std::thread::yield_now();
-    }
+        !(runtime.is_inflight(local) || runtime.is_inflight(root))
+    });
     let _removed = std::fs::remove_dir_all(&folder);
     let snapshot = runtime.snapshot();
     assert!(
@@ -287,8 +266,7 @@ fn local_package_read_runs_off_the_producer_lane_and_survives_a_root_advance() -
 pub(super) fn registry_record(name: &str, version: &str) -> backend_library::RegistryPackageRecord {
     use backend_library::{
         AdvisoryPackageDto, PackageReference, ProductText, RegistryDownloadCount,
-        RegistryEcosystem, RegistryNativeMetadata, RegistryPackageRecord,
-        RegistryReleaseStanding,
+        RegistryEcosystem, RegistryNativeMetadata, RegistryPackageRecord, RegistryReleaseStanding,
     };
     let native_metadata = RegistryNativeMetadata::unavailable(RegistryEcosystem::Cargo, "fixture");
     RegistryPackageRecord {
@@ -301,6 +279,7 @@ pub(super) fn registry_record(name: &str, version: &str) -> backend_library::Reg
         standing: RegistryReleaseStanding::Available,
         downloads: RegistryDownloadCount::Exact(42),
         facts_version: [0; 32],
+        authority: None,
         native_metadata_version: native_metadata
             .identity()
             .expect("fixture metadata identity"),
@@ -362,14 +341,10 @@ impl EngineClient for CatalogClient {
 }
 
 fn poll_until(runtime: &mut DesktopRuntime, request: RequestId) {
-    for _ in 0..10_000 {
+    wait::until(format!("request {request:?} landed"), || {
         runtime.poll();
-        if !runtime.is_inflight(request) {
-            return;
-        }
-        std::thread::yield_now();
-    }
-    panic!("request {request:?} never landed");
+        !runtime.is_inflight(request)
+    });
 }
 
 fn catalog_names(runtime: &DesktopRuntime) -> Vec<String> {

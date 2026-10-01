@@ -251,7 +251,9 @@ impl DeclarationFacts {
     /// Bytes of retained text, for encoded-size budgets.
     #[must_use]
     pub fn text_bytes(&self) -> usize {
-        self.deprecation.present().map_or(0, Deprecation::text_bytes)
+        self.deprecation
+            .present()
+            .map_or(0, Deprecation::text_bytes)
     }
 }
 
@@ -390,10 +392,7 @@ fn parse_argument(text: &str) -> Argument {
     let (key, value) = match split_top_level(text, b'=').as_slice() {
         [key, value]
             if !key.trim().is_empty()
-                && key
-                    .trim()
-                    .chars()
-                    .all(|c| c.is_alphanumeric() || c == '_') =>
+                && key.trim().chars().all(|c| c.is_alphanumeric() || c == '_') =>
         {
             (Some(key.trim().to_owned()), value.trim())
         }
@@ -581,8 +580,10 @@ fn deprecation_in_item(language: SourceLanguage, text: &str) -> Option<Deprecati
         SourceLanguage::Python => (last == "deprecated").then(|| {
             Deprecation::new(
                 keyed(&item.arguments, &["version", "deprecated_in"]),
-                first_positional(&item.arguments)
-                    .or(keyed(&item.arguments, &["reason", "details", "message", "msg"])),
+                first_positional(&item.arguments).or(keyed(
+                    &item.arguments,
+                    &["reason", "details", "message", "msg"],
+                )),
             )
         }),
         SourceLanguage::Clang => (last == "deprecated").then(|| {
@@ -603,10 +604,12 @@ fn tagged_deprecation(lines: &[&str]) -> Option<Deprecation> {
             .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
     })?;
     let first = lines[start].trim();
-    let mut words = vec![first
-        .trim_start_matches("@deprecated")
-        .trim_start_matches("\\deprecated")
-        .trim()];
+    let mut words = vec![
+        first
+            .trim_start_matches("@deprecated")
+            .trim_start_matches("\\deprecated")
+            .trim(),
+    ];
     for line in &lines[start + 1..] {
         let line = line.trim();
         if line.is_empty() || line.starts_with('@') || line.starts_with('\\') {
@@ -626,7 +629,12 @@ fn go_deprecation(lines: &[&str]) -> Option<Deprecation> {
     if start > 0 && !lines[start - 1].trim().is_empty() {
         return None;
     }
-    let mut words = vec![lines[start].trim_start().trim_start_matches("Deprecated:").trim()];
+    let mut words = vec![
+        lines[start]
+            .trim_start()
+            .trim_start_matches("Deprecated:")
+            .trim(),
+    ];
     for line in &lines[start + 1..] {
         let line = line.trim();
         if line.is_empty() {
@@ -693,7 +701,10 @@ mod tests {
             deprecated(SourceLanguage::Rust, r#"deprecated = "gone""#),
             some(None, Some("gone"))
         );
-        assert_eq!(deprecated(SourceLanguage::Rust, "#[deprecated]"), some(None, None));
+        assert_eq!(
+            deprecated(SourceLanguage::Rust, "#[deprecated]"),
+            some(None, None)
+        );
         assert_eq!(
             deprecated(
                 SourceLanguage::Java,
@@ -706,7 +717,10 @@ mod tests {
             some(None, None)
         );
         assert_eq!(
-            deprecated(SourceLanguage::CSharp, r#"[Serializable, Obsolete("legacy", true)]"#),
+            deprecated(
+                SourceLanguage::CSharp,
+                r#"[Serializable, Obsolete("legacy", true)]"#
+            ),
             some(None, Some("legacy"))
         );
         assert_eq!(
@@ -714,7 +728,10 @@ mod tests {
             some(None, Some("use New"))
         );
         assert_eq!(
-            deprecated(SourceLanguage::CSharp, r#"[method: System.Obsolete(@"say ""no""")]"#),
+            deprecated(
+                SourceLanguage::CSharp,
+                r#"[method: System.Obsolete(@"say ""no""")]"#
+            ),
             some(None, Some(r#"say "no""#))
         );
         assert_eq!(
@@ -729,11 +746,17 @@ mod tests {
             some(None, Some("use g"))
         );
         assert_eq!(
-            deprecated(SourceLanguage::Clang, r#"[[nodiscard, deprecated("use g" " instead")]]"#),
+            deprecated(
+                SourceLanguage::Clang,
+                r#"[[nodiscard, deprecated("use g" " instead")]]"#
+            ),
             some(None, Some("use g instead"))
         );
         assert_eq!(
-            deprecated(SourceLanguage::Clang, r#"__attribute__((deprecated("old")))"#),
+            deprecated(
+                SourceLanguage::Clang,
+                r#"__attribute__((deprecated("old")))"#
+            ),
             some(None, Some("old"))
         );
         for (language, text) in [

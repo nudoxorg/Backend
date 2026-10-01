@@ -12,6 +12,7 @@
 pub mod tokens;
 pub mod theme;
 pub mod measure;
+pub mod fluid;
 
 pub mod fonts;
 pub mod motion;
@@ -24,15 +25,18 @@ pub mod overlay;
 pub mod probe;
 pub mod code;
 pub mod graph;
+pub mod hover;
 pub mod semantics;
 pub mod anatomy;
 pub mod browse;
+pub mod marks;
+pub mod folio;
 
 #[cfg(feature = "gallery")]
 pub mod gallery;
 
 pub use fonts::Typeset;
 pub use motion::{Motion, Pose, Pulse, Spec};
-pub use measure::{Control, Density, Measure, Needs, Reveal, Room, Rung, Set, Space};
+pub use measure::{Control, Density, Measure, Needs, Reveal, Rung, Set, Space};
 pub use theme::{ActiveFacet, Contrast, Facet, set_facet};
 pub use tokens::{Appearance, Face, Family, Palette, Tone, TypeRole, Voice};

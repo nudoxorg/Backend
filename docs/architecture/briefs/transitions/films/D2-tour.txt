@@ -1,0 +1,4 @@
+key t @1200       # graph tour (t)
+key space @2600   # tour step (space)
+key space @3600   # tour step (space)
+key escape @4600  # tour end (escape)

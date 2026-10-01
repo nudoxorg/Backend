@@ -26,7 +26,7 @@ use super::wake::{WakeReceiver, WakeSender, wake_channel};
 use crate::core::{ErrorValue, FaultCode, LocalProjectId};
 use crate::model::local_package::LocalPackageLoader;
 use crate::model::pages::{
-    Gap, GapReason, PackageRef, PageKey, PageValue, ReadFailure, SearchContinuation, SearchQuery,
+    Gap, GapReason, Generation, PackageRef, PageKey, PageValue, ReadFailure, SearchContinuation, SearchQuery,
     SymbolRef,
 };
 use backend_client::{ClientError, Session};
@@ -106,7 +106,7 @@ pub struct ReadJob {
     /// What to read.
     pub request: ReadRequest,
     /// Store generation the result must match to land.
-    pub generation: u64,
+    pub generation: Generation,
     /// Scheduling class.
     pub priority: Priority,
     /// Cancellation shared with the store.
@@ -121,7 +121,7 @@ pub struct ReadOutcome {
     /// Resource the result lands in.
     pub key: PageKey,
     /// Generation the job was issued with.
-    pub generation: u64,
+    pub generation: Generation,
     /// Worker that ran it.
     pub worker: usize,
     /// Scheduling class it ran at.
@@ -138,7 +138,11 @@ pub trait PageReader: Send + 'static {
     /// # Errors
     /// Returns the typed failure of the page's primary read; secondary reads
     /// that fail become gaps inside the returned model instead.
-    fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure>;
+    fn read(
+        &mut self,
+        request: &ReadRequest,
+        context: &ReadContext<'_>,
+    ) -> Result<PageValue, ReadFailure>;
 }
 
 /// Worker-side context for one read.
@@ -187,7 +191,15 @@ impl OutlineCache {
 }
 
 /// The job one worker is running: its key, generation, and token.
-type Running = Option<(PageKey, u64, CancellationToken)>;
+#[derive(Clone, Debug)]
+struct RunningJob {
+    key: PageKey,
+    generation: Generation,
+    cancel: CancellationToken,
+}
+
+/// What a worker is running, if anything.
+type Running = Option<RunningJob>;
 
 #[derive(Debug, Default)]
 struct Queue {
@@ -291,9 +303,9 @@ impl ReadPool {
                 true
             }
         });
-        for (key, generation, token) in queue.running.iter().flatten() {
-            if *key == job.key && *generation != job.generation {
-                token.cancel();
+        for running in queue.running.iter().flatten() {
+            if running.key == job.key && running.generation != job.generation {
+                running.cancel.cancel();
             }
         }
         queue.jobs.push_back(job);
@@ -329,9 +341,9 @@ impl ReadPool {
             }
         });
         let mut found = queue.jobs.len() != before;
-        for (running, _, token) in queue.running.iter().flatten() {
-            if running == key {
-                token.cancel();
+        for running in queue.running.iter().flatten() {
+            if running.key == *key {
+                running.cancel.cancel();
                 found = true;
             }
         }
@@ -367,8 +379,8 @@ impl ReadPool {
             for job in queue.jobs.drain(..) {
                 job.cancel.cancel();
             }
-            for (_, _, token) in queue.running.iter().flatten() {
-                token.cancel();
+            for running in queue.running.iter().flatten() {
+                running.cancel.cancel();
             }
         }
         self.shared.ready.notify_all();
@@ -409,7 +421,7 @@ fn run_worker<R: PageReader>(worker: usize, mut reader: R, shared: &Shared) {
                 }
                 if let Some(job) = next_job(&mut queue, worker) {
                     if let Some(slot) = queue.running.get_mut(worker) {
-                        *slot = Some((job.key.clone(), job.generation, job.cancel.clone()));
+                        *slot = Some(RunningJob { key: job.key.clone(), generation: job.generation, cancel: job.cancel.clone() });
                     }
                     break job;
                 }
@@ -429,6 +441,7 @@ fn run_worker<R: PageReader>(worker: usize, mut reader: R, shared: &Shared) {
             };
             // A panicking reader must not take the worker (and every later
             // read) down with it; it becomes one typed fault.
+            let _reading = super::traffic::Reading::begin();
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 reader.read(&job.request, &context)
             }))
@@ -474,6 +487,8 @@ fn run_worker<R: PageReader>(worker: usize, mut reader: R, shared: &Shared) {
 pub struct SessionEngine {
     endpoint: PathBuf,
     session: Option<Session>,
+    /// The owner this engine waits for before its first connect (I1).
+    gate: Option<super::owner::OwnerGate>,
 }
 
 impl std::fmt::Debug for SessionEngine {
@@ -492,6 +507,17 @@ impl SessionEngine {
         Self {
             endpoint: endpoint.as_ref().to_path_buf(),
             session: None,
+            gate: None,
+        }
+    }
+
+    /// An engine that, before it first connects, waits on this worker
+    /// thread for the owner to answer (the window opened before it did).
+    #[must_use]
+    pub fn gated(endpoint: impl AsRef<Path>, gate: super::owner::OwnerGate) -> Self {
+        Self {
+            gate: Some(gate),
+            ..Self::new(endpoint)
         }
     }
 
@@ -501,6 +527,10 @@ impl SessionEngine {
     ) -> Result<T, ClientError> {
         for attempt in 0..2 {
             if self.session.is_none() {
+                if let Some(gate) = &self.gate {
+                    gate.wait()
+                        .map_err(|message| ClientError::Io(format!("the index could not start: {message}")))?;
+                }
                 self.session = Some(Session::connect(&self.endpoint)?);
             }
             let Some(session) = self.session.as_mut() else {
@@ -562,7 +592,21 @@ impl Engine for SessionEngine {
         probe: Probe<'_>,
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
-        self.with_session(|session| match probe {
+        let asking = std::time::Instant::now();
+        let name = match &probe {
+            Probe::Packages => "probe.packages",
+            Probe::Document(_) => "probe.document",
+            Probe::Source(_) => "probe.source",
+            Probe::Related(_) => "probe.related",
+            Probe::Graph(_) => "probe.graph",
+            Probe::Search { .. } => "probe.search",
+            Probe::Names { .. } => "probe.names",
+            Probe::Outline(_) | Probe::OutlinePage { .. } => "probe.outline",
+            Probe::Index(_) | Probe::IndexWithExecutionIntent { .. } | Probe::Remove(_) => {
+                "probe.mutation"
+            }
+        };
+        let reply = self.with_session(|session| match probe {
             Probe::Packages => session.packages(),
             Probe::Document(at) => session.document(at),
             Probe::Source(at) => session.source(at),
@@ -572,10 +616,12 @@ impl Engine for SessionEngine {
             Probe::Names { text, limit } => session.names_page(text, limit, continuation),
             Probe::Outline(path) => session.outline(path),
             Probe::OutlinePage { path, limit } => session.outline_page(path, limit, continuation),
-            Probe::Index(_) | Probe::Remove(_) => Err(ClientError::Protocol(
-                "the read lane never mutates the owner".to_owned(),
-            )),
-        })
+            Probe::Index(_) | Probe::IndexWithExecutionIntent { .. } | Probe::Remove(_) => Err(
+                ClientError::Protocol("the read lane never mutates the owner".to_owned()),
+            ),
+        });
+        super::trace::span(name, asking, "owner round trip");
+        reply
     }
 
     fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
@@ -584,7 +630,14 @@ impl Engine for SessionEngine {
                 "the read lane never runs a mutating surface command".to_owned(),
             ));
         }
-        self.with_session(|session| session.surface(command.clone()))
+        let asking = std::time::Instant::now();
+        let name = super::trace::enabled().then(|| format!("{command:?}"));
+        let reply = self.with_session(|session| session.surface(command.clone()));
+        if let Some(name) = name {
+            let variant = name.split(|c: char| !c.is_alphanumeric()).next().unwrap_or("surface");
+            super::trace::span("surface", asking, variant);
+        }
+        reply
     }
 }
 
@@ -606,6 +659,12 @@ impl SessionReader<SessionEngine> {
     #[must_use]
     pub fn connect(endpoint: impl AsRef<Path>) -> Self {
         Self::new(SessionEngine::new(endpoint), LocalPackageLoader::default())
+    }
+
+    /// A reader whose first connect waits for the owner, on its worker.
+    #[must_use]
+    pub fn gated(endpoint: impl AsRef<Path>, gate: super::owner::OwnerGate) -> Self {
+        Self::new(SessionEngine::gated(endpoint, gate), LocalPackageLoader::default())
     }
 }
 
@@ -643,7 +702,34 @@ impl<E: Engine + Send + 'static> PageReader for SessionReader<E> {
                 .health()
                 .map(|report| PageValue::Health(page_mapping::health_model(&report)))
                 .map_err(|error| failure(&error)),
-            ReadRequest::Browse(key) => super::browse_reads::compose(&mut self.engine, key),
+            ReadRequest::Browse(key) => match key {
+                crate::model::browse::BrowseKey::Tree(_) => super::browse_reads::compose(&mut self.engine, key),
+                crate::model::browse::BrowseKey::FindHome => compose_find(&mut self.engine, None, context)
+                    .map(|page| PageValue::Browse(crate::model::browse::BrowseValue::Find(Arc::new(page)))),
+                crate::model::browse::BrowseKey::Find(query) => compose_find(&mut self.engine, Some(query), context)
+                    .map(|page| PageValue::Browse(crate::model::browse::BrowseValue::Find(Arc::new(page)))),
+                crate::model::browse::BrowseKey::Compare(selection) => {
+                    let mut packages = Vec::with_capacity(selection.packages().len());
+                    let mut apis = Vec::with_capacity(selection.packages().len());
+                    for package in selection.packages() {
+                        check(context.cancel)?;
+                        let PageValue::Package(dossier) = compose_package(&mut self.engine, &self.loader, package, context)? else {
+                            return Err(shape("compare package"));
+                        };
+                        let api = match outline(&mut self.engine, package, context) {
+                            Ok(index) => crate::model::pages::Known::Known(index.comparison_api(package)),
+                            Err(gap) => crate::model::pages::Known::Unknown(gap),
+                        };
+                        check(context.cancel)?;
+                        packages.push(dossier);
+                        apis.push(api);
+                    }
+                    let prepared = Arc::new(super::browse_views::prepare_compare(&packages, &apis));
+                    Ok(PageValue::Browse(crate::model::browse::BrowseValue::Compare(Arc::new(
+                        crate::model::browse::CompareModel { packages: packages.into(), apis: apis.into(), prepared },
+                    ))))
+                }
+            },
         }
     }
 }
@@ -667,7 +753,8 @@ pub fn failure(error: &ClientError) -> ReadFailure {
         | ClientError::FreshnessMismatch
         | ClientError::RequestMismatch { .. }
         | ClientError::CursorMismatch
-        | ClientError::StaleCursor => FaultCode::Cancelled,
+        | ClientError::StaleCursor
+        | ClientError::StaleSelection => FaultCode::Cancelled,
     };
     ReadFailure::Fault(ErrorValue::new(code, error.to_string()))
 }
@@ -687,7 +774,10 @@ fn check(cancel: &CancellationToken) -> Result<(), ReadFailure> {
     }
 }
 
-fn document(engine: &mut dyn Engine, probe: Probe<'_>) -> Result<backend_library::Document, ReadFailure> {
+fn document(
+    engine: &mut dyn Engine,
+    probe: Probe<'_>,
+) -> Result<backend_library::Document, ReadFailure> {
     match engine.probe(probe).map_err(|error| failure(&error))?.reply {
         CommandReply::Document(document) | CommandReply::Page(document) => Ok(document),
         _ => Err(shape("document")),
@@ -698,7 +788,10 @@ fn related(engine: &mut dyn Engine, symbol: &SymbolRef) -> Result<ViewSnapshot, 
     match engine.probe(Probe::Related(symbol.as_str())) {
         Ok(reply) => match reply.reply {
             CommandReply::Graph(snapshot) => Ok(snapshot),
-            _ => Err(Gap::new(GapReason::ReadFailed, "the related reply changed shape")),
+            _ => Err(Gap::new(
+                GapReason::ReadFailed,
+                "the related reply changed shape",
+            )),
         },
         Err(error) => Err(page_mapping::client_gap(&error)),
     }
@@ -716,7 +809,9 @@ fn outline(
     package: &PackageRef,
     context: &ReadContext<'_>,
 ) -> Result<Arc<OutlineIndex>, Gap> {
-    let root = engine.revision().map_err(|error| page_mapping::client_gap(&error))?;
+    let root = engine
+        .revision()
+        .map_err(|error| page_mapping::client_gap(&error))?;
     if let Some(cached) = context.outlines.get(package, root) {
         return Ok(cached);
     }
@@ -737,7 +832,10 @@ fn outline(
             )
             .map_err(|error| page_mapping::client_gap(&error))?;
         let CommandReply::ProjectionPage(page) = reply.reply else {
-            return Err(Gap::new(GapReason::ReadFailed, "the outline page reply changed shape"));
+            return Err(Gap::new(
+                GapReason::ReadFailed,
+                "the outline page reply changed shape",
+            ));
         };
         rows.extend(page.snapshot.root.rows().iter().cloned());
         match page.terminal {
@@ -750,7 +848,9 @@ fn outline(
         }
     }
     let index = Arc::new(OutlineIndex::new(rows, complete));
-    context.outlines.put(package.clone(), root, Arc::clone(&index));
+    context
+        .outlines
+        .put(package.clone(), root, Arc::clone(&index));
     Ok(index)
 }
 
@@ -773,10 +873,18 @@ fn neighbourhood(
     let snapshot = related(engine, symbol)?;
     let mut hood = Hood {
         rows: snapshot.root.rows().to_vec(),
-        relations: snapshot.graph_relations.as_ref().map(|edges| edges.to_vec()),
+        relations: snapshot
+            .graph_relations
+            .as_ref()
+            .map(|edges| edges.to_vec()),
         rich: snapshot.rich_graph.clone(),
     };
-    let Some(centre) = hood.rows.iter().find(|row| row.label == symbol.as_str()).cloned() else {
+    let Some(centre) = hood
+        .rows
+        .iter()
+        .find(|row| row.label == symbol.as_str())
+        .cloned()
+    else {
         return Ok(hood);
     };
     let nominal = matches!(
@@ -796,7 +904,10 @@ fn neighbourhood(
         .iter()
         .filter(|row| {
             row.kind == Some(backend_library::DeclarationKind::Type)
-                && row.signature.as_deref().is_some_and(|text| text.starts_with("nominal("))
+                && row
+                    .signature
+                    .as_deref()
+                    .is_some_and(|text| text.starts_with("nominal("))
                 && edges.iter().any(|edge| {
                     edge.from == row.id
                         && edge.to == centre.id
@@ -818,7 +929,9 @@ fn neighbourhood(
                 hood.rows.push(row.clone());
             }
         }
-        if let (Some(relations), Some(more)) = (hood.relations.as_mut(), extra.graph_relations.as_ref()) {
+        if let (Some(relations), Some(more)) =
+            (hood.relations.as_mut(), extra.graph_relations.as_ref())
+        {
             for edge in more {
                 if !relations.contains(edge) {
                     relations.push(*edge);
@@ -850,20 +963,28 @@ fn compose_symbol(
         |package| outline(engine, &package, context),
     );
     check(context.cancel)?;
-    Ok(PageValue::Symbol(page_mapping::symbol_page(&SymbolInputs {
-        coordinate: symbol,
-        document: &document,
-        related: related
-            .as_ref()
-            .map(|hood| page_mapping::Neighbourhood {
-                rows: &hood.rows,
-                relations: hood.relations.as_deref(),
-                rich: hood.rich.as_ref(),
-            })
-            .map_err(Clone::clone),
-        references: references.as_ref(),
-        outline: outline.as_deref().map_err(Clone::clone),
-    })))
+    let mut page = page_mapping::symbol_page(
+        &SymbolInputs {
+            coordinate: symbol,
+            document: &document,
+            related: related
+                .as_ref()
+                .map(|hood| page_mapping::Neighbourhood {
+                    rows: &hood.rows,
+                    relations: hood.relations.as_deref(),
+                    rich: hood.rich.as_ref(),
+                })
+                .map_err(Clone::clone),
+            references: references.as_ref(),
+            outline: outline.as_deref().map_err(Clone::clone),
+        },
+    );
+    // Your own files at each use's span: read here, on the worker, so the page
+    // lands with its lines and nothing reads them again on the UI thread.
+    if let Some(sites) = page.references.known() {
+        page.workspace = super::workspace_lines::read(sites, &super::workspace_lines::OnDisk);
+    }
+    Ok(PageValue::Symbol(page))
 }
 
 /// Reads a local project file for the source view. Only a local package's
@@ -898,10 +1019,8 @@ fn compose_source(
     check(context.cancel)?;
     let references_reply = references(engine, symbol);
     let outline_index = outline.as_ref().and_then(|result| result.as_ref().ok());
-    let references = page_mapping::references(
-        references_reply.as_ref(),
-        outline_index.map(AsRef::as_ref),
-    );
+    let references =
+        page_mapping::references(references_reply.as_ref(), outline_index.map(AsRef::as_ref));
     let text = match (&package, document.location.captured()) {
         (Some(package), Some(location)) => local_file(package, location.path()),
         _ => None,
@@ -963,15 +1082,17 @@ fn compose_package(
     {
         return Err(failure(error));
     }
-    Ok(PageValue::Package(page_mapping::package_dossier(&PackageInputs {
-        package,
-        records: records.as_ref(),
-        versions: versions.as_ref(),
-        dependencies: dependencies.as_ref(),
-        dependents: dependents.as_ref(),
-        outline: outline.as_deref().map_err(Clone::clone),
-        local: local.as_ref(),
-    })))
+    Ok(PageValue::Package(page_mapping::package_dossier(
+        &PackageInputs {
+            package,
+            records: records.as_ref(),
+            versions: versions.as_ref(),
+            dependencies: dependencies.as_ref(),
+            dependents: dependents.as_ref(),
+            outline: outline.as_deref().map_err(Clone::clone),
+            local: local.as_ref(),
+        },
+    )))
 }
 
 fn compose_search(
@@ -990,14 +1111,62 @@ fn compose_search(
         )
         .map_err(|error| failure(&error))?;
     check(context.cancel)?;
+    let semantic_search = reply.semantic_search_status();
     match reply.reply {
-        CommandReply::Search(snapshot) => Ok(page_mapping::search_page(
-            &query.text,
-            &snapshot,
-            context.worker,
-        )),
+        CommandReply::Search(snapshot) => {
+            let mut page = page_mapping::search_page(&query.text, &snapshot, context.worker);
+            if let Some(status) = semantic_search {
+                page.coverage = page.coverage.with_semantic_search_status(status);
+            }
+            Ok(page)
+        }
         _ => Err(shape("search")),
     }
+}
+
+fn compose_find(
+    engine: &mut dyn Engine,
+    query: Option<&SearchQuery>,
+    context: &ReadContext<'_>,
+) -> Result<crate::model::browse::FindModel, ReadFailure> {
+    use crate::model::browse::FindModel;
+    use crate::model::pages::Known;
+    let answers = match query {
+        Some(query) => match compose_search(engine, query, None, context) {
+            Ok(page) => Known::Known(page),
+            Err(ReadFailure::Cancelled) => return Err(ReadFailure::Cancelled),
+            Err(error) => Known::Unknown(Gap::new(GapReason::ReadFailed, format!("{error:?}"))),
+        },
+        None => Known::unknown(GapReason::NotCaptured, "Enter a name to find indexed declarations."),
+    };
+    check(context.cancel)?;
+    let indexed = engine.probe(Probe::Packages);
+    check(context.cancel)?;
+    let query_text = query.map(|query| ProductText::new(query.text.to_string())).transpose().map_err(|_| shape("find query"))?;
+    let catalog = engine.surface(SurfaceCommand::Explore { query: query_text, limit: EXPLORE_LIMIT });
+    check(context.cancel)?;
+    let indexed_rows = match &indexed {
+        Ok(reply) => match &reply.reply { CommandReply::Packages(rows) => Some(rows.root.rows().iter().collect::<Vec<_>>()), _ => None },
+        Err(_) => None,
+    };
+    let catalog_rows = match &catalog {
+        Ok(SurfaceReply::Explored(records)) => Some(records.as_ref()),
+        _ => None,
+    };
+    let registry = crate::host::registry::composed();
+    let packages = super::browse_reads::find_packages(query.map_or("", |query| query.text.as_ref()), indexed_rows.as_deref().unwrap_or_default(), catalog_rows.unwrap_or_default(), registry.as_ref().map(|composed| composed.source.as_ref()));
+    let package_coverage = if indexed_rows.is_some() && catalog_rows.is_some() {
+        Known::Known(())
+    } else {
+        Known::Unknown(Gap::new(GapReason::Unavailable, "Some package sources could not answer; these are the matches available locally."))
+    };
+    let prepared = Arc::new(super::browse_views::prepare_find(
+        query.map_or("", |query| query.text.as_ref()),
+        &answers,
+        &packages,
+        &package_coverage,
+    ));
+    Ok(FindModel { answers, packages: packages.into(), package_coverage, prepared })
 }
 
 fn compose_orbit(engine: &mut dyn Engine, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
@@ -1062,7 +1231,11 @@ mod tests {
     }
 
     impl PageReader for GatedReader {
-        fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+        fn read(
+            &mut self,
+            request: &ReadRequest,
+            context: &ReadContext<'_>,
+        ) -> Result<PageValue, ReadFailure> {
             let name = match request {
                 ReadRequest::Symbol(symbol) => symbol.as_str().to_owned(),
                 other => format!("{other:?}"),
@@ -1100,7 +1273,11 @@ mod tests {
             started: sender.clone(),
         })
         .expect("pool");
-        Harness { pool, gate, started }
+        Harness {
+            pool,
+            gate,
+            started,
+        }
     }
 
     impl Harness {
@@ -1119,18 +1296,17 @@ mod tests {
         }
 
         fn outcomes(&self, count: usize) -> Vec<ReadOutcome> {
-            let deadline = Instant::now() + Duration::from_secs(10);
             let mut outcomes = Vec::new();
-            while outcomes.len() < count {
+            crate::runtime::wait::until(format!("{count} outcomes arrived"), || {
                 outcomes.extend(self.pool.drain());
-                assert!(Instant::now() < deadline, "only {} outcomes arrived", outcomes.len());
-                thread::sleep(Duration::from_millis(1));
-            }
+                outcomes.len() >= count
+            });
             outcomes
         }
     }
 
     fn job(name: &str, generation: u64, priority: Priority) -> ReadJob {
+        let generation = Generation::new(generation);
         let symbol = SymbolRef::new(name).expect("symbol");
         ReadJob {
             key: PageKey::Symbol(symbol.clone()),
@@ -1179,13 +1355,22 @@ mod tests {
         let queued_token = queued.cancel.clone();
         harness.pool.submit(queued);
         harness.pool.submit(job("slow-q", 3, Priority::Normal));
-        assert!(queued_token.is_cancelled(), "the replaced queued job was cancelled");
+        assert!(
+            queued_token.is_cancelled(),
+            "the replaced queued job was cancelled"
+        );
         assert_eq!(harness.pool.queued(), 1);
         // A newer generation for the running key cancels the running job.
         harness.pool.submit(job("slow-k", 4, Priority::Normal));
-        assert!(older_token.is_cancelled(), "the running job was told to stop");
+        assert!(
+            older_token.is_cancelled(),
+            "the running job was told to stop"
+        );
         let first = harness.outcomes(1);
-        assert_eq!((first[0].key.clone(), first[0].generation), (key("slow-k"), 1));
+        assert_eq!(
+            (first[0].key.clone(), first[0].generation),
+            (key("slow-k"), Generation::new(1))
+        );
         assert_eq!(first[0].result, Err(ReadFailure::Cancelled));
         harness.release("slow-q");
         harness.release("slow-k");
@@ -1195,7 +1380,13 @@ mod tests {
             .map(|outcome| (outcome.key.to_string(), outcome.generation))
             .collect::<Vec<_>>();
         ran.sort();
-        assert_eq!(ran, [("symbol slow-k".to_owned(), 4), ("symbol slow-q".to_owned(), 3)]);
+        assert_eq!(
+            ran,
+            [
+                ("symbol slow-k".to_owned(), Generation::new(4)),
+                ("symbol slow-q".to_owned(), Generation::new(3))
+            ]
+        );
     }
 
     #[test]
@@ -1203,8 +1394,12 @@ mod tests {
         let harness = harness(1);
         harness.pool.submit(job("slow-busy", 1, Priority::Normal));
         assert_eq!(harness.started().1, "slow-busy");
-        harness.pool.submit(job("fast-hover", 2, Priority::Prefetch));
-        harness.pool.submit(job("fast-dropped", 3, Priority::Prefetch));
+        harness
+            .pool
+            .submit(job("fast-hover", 2, Priority::Prefetch));
+        harness
+            .pool
+            .submit(job("fast-dropped", 3, Priority::Prefetch));
         harness.pool.submit(job("fast-click", 4, Priority::Normal));
         assert!(harness.pool.cancel(&key("fast-dropped")));
         assert_eq!(harness.pool.queued(), 2);
@@ -1212,7 +1407,10 @@ mod tests {
         assert_eq!(harness.started().1, "fast-click");
         assert_eq!(harness.started().1, "fast-hover");
         let done = harness.outcomes(3);
-        assert!(done.iter().all(|outcome| outcome.key != key("fast-dropped")));
+        assert!(
+            done.iter()
+                .all(|outcome| outcome.key != key("fast-dropped"))
+        );
     }
 
     #[test]
@@ -1220,7 +1418,9 @@ mod tests {
         let harness = harness(1);
         harness.pool.submit(job("slow-busy", 1, Priority::Normal));
         assert_eq!(harness.started().1, "slow-busy");
-        harness.pool.submit(job("fast-hover", 2, Priority::Prefetch));
+        harness
+            .pool
+            .submit(job("fast-hover", 2, Priority::Prefetch));
         harness.pool.submit(job("fast-other", 3, Priority::Normal));
         assert!(harness.pool.promote(&key("fast-hover")));
         harness.release("slow-busy");
@@ -1246,7 +1446,9 @@ mod tests {
         let mut harness = harness(2);
         let mut receiver = harness.pool.take_wake().expect("wake receiver");
         for round in 0..8 {
-            harness.pool.submit(job(&format!("fast-{round}"), round, Priority::Normal));
+            harness
+                .pool
+                .submit(job(&format!("fast-{round}"), round, Priority::Normal));
         }
         let done = harness.outcomes(8);
         assert_eq!(done.len(), 8);

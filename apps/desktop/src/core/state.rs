@@ -247,6 +247,23 @@ impl<T> Resource<T> {
         self.value.as_ref().map(|(value, _)| value.as_ref())
     }
 
+    /// Returns the retained value's shared allocation (to keep it, or to
+    /// save it without copying).
+    #[must_use]
+    pub fn loaded_arc(&self) -> Option<&Arc<T>> {
+        self.value.as_ref().map(|(value, _)| value)
+    }
+
+    /// The same value, now known to be current at `root`: nothing a view
+    /// draws changes (W-Open I2, a launch snapshot the owner confirmed).
+    #[must_use]
+    pub fn rebased(mut self, root: VersionedRoot) -> Self {
+        if let Some((_, at)) = &mut self.value {
+            *at = root;
+        }
+        self
+    }
+
     /// Returns the producer root of the retained value.
     #[must_use]
     pub fn value_root(&self) -> Option<VersionedRoot> {

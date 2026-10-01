@@ -5,10 +5,10 @@ use alloc::{boxed::Box, vec::Vec};
 use core::{mem::size_of, num::TryFromIntError};
 
 use allocation_counter::{AllocationInfo, measure};
-use backend_version::{ContentId, ContentRoutingWord, ObjectDomain};
 use backend_version::object::ObjectRef;
 use backend_version::observe::{DropNewest, FlightRecorder};
 use backend_version::schema::SchemaId;
+use backend_version::{ContentId, ContentRoutingWord, ObjectDomain};
 use thiserror::Error;
 
 use crate::memory::{

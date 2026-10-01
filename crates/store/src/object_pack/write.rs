@@ -3,8 +3,8 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::ops::Deref;
 
-use backend_version::{ContentId, ObjectDomain};
 use backend_version::object::{ObjectDescriptorWireRecord, ObjectRef};
+use backend_version::{ContentId, ObjectDomain};
 use zerocopy::{
     IntoBytes,
     byteorder::{BigEndian, U64},

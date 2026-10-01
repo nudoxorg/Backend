@@ -616,7 +616,11 @@ mod tests {
         residence.refresh([member.as_path()]).expect("inner");
         assert_eq!(residence.disk_reads(), 2, "member and root");
         super::super::read_manifest_bytes(&root.join("Cargo.toml")).expect("still cached");
-        assert_eq!(outer.disk_reads(), 1, "inner refresh restored the outer cache");
+        assert_eq!(
+            outer.disk_reads(),
+            1,
+            "inner refresh restored the outer cache"
+        );
         let _ = fs::remove_dir_all(root);
     }
 

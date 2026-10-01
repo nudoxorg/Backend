@@ -44,6 +44,7 @@ ignore = "0.4.33"
 gpui = { package = "gpui-ce", version = "=0.2.2", default-features = false }
 gpui_platform = { package = "gpui_ce_platform", version = "=0.1.0", default-features = false }
 gpui_component = { package = "gpui_ce_components", version = "=0.2.0" }
+hmac = "0.12.1"
 loom = "0.7.2"
 opentelemetry = { version = "=0.32.0", features = ["logs", "metrics", "trace"] }
 opentelemetry-appender-tracing = "=0.32.0"
@@ -98,6 +99,63 @@ unwrap_used = "deny"
 debug = 1
 incremental = true
 
+# The local owner's start is the harness's hot path: blake3 per tree leaf, the library projection's search-posting build, certificate admission. Optimizing only these crates took a desktop capture from 123 s to 55 s (W-Instant, 2026-09-28). facet, desktop and third-party crates stay at 0 on purpose: GUI lanes rebuild them constantly. debug-assertions and overflow-checks are inherited unchanged.
+[profile.dev.package.blake3]
+opt-level = 3
+[profile.dev.package.backend-version]
+opt-level = 2
+[profile.dev.package.backend-flow]
+opt-level = 2
+[profile.dev.package.backend-library]
+opt-level = 2
+[profile.dev.package.backend-store]
+opt-level = 2
+[profile.dev.package.backend-engine]
+opt-level = 2
+
+# backend-desktop's --lib test binary stopped linking on 2026-09-28:
+# `ld: b(l) ARM64 branch out of range (-151592460 max is +/-128MB)`, a call
+# out of a gpui_ce_macos objc class-registration ctor, once __TEXT,__text
+# passed ~150MB. Confirmed by relink with cached objects that neither the
+# nixpkgs ld64-956.6 in this dev shell nor Apple's newer system linker
+# (/usr/bin/ld, ld-prime 1230.1) inserts a branch island for this call
+# pattern — a linker swap does not fix it. These are the largest opt-level-0
+# contributors to that section (rust-analyzer's query engine, used only by
+# the Rust language frontend, plus the local-service crate that links every
+# frontend together): optimizing them shrinks __text back under the range.
+# None of them are gpui/objc or anything GUI lanes rebuild. See
+# .local/lanes/wave6/tissue/LINK.md.
+[profile.dev.package.ra_ap_hir_ty]
+opt-level = 2
+[profile.dev.package.ra_ap_hir_def]
+opt-level = 2
+[profile.dev.package.ra_ap_hir_expand]
+opt-level = 2
+[profile.dev.package.ra_ap_hir]
+opt-level = 2
+[profile.dev.package.ra_ap_ide_db]
+opt-level = 2
+[profile.dev.package.ra_ap_syntax]
+opt-level = 2
+[profile.dev.package.backend-local-service]
+opt-level = 2
+# 2026-09-28 night: over again (-134 MB against the 128 MB range, W-Open I2). The next largest
+# opt-level-0 contributors that no GUI lane edits: the embedded SQL engine, search, networking,
+# the query engine, the TS parser. Sizes from the slot's debug rlibs: turso_core 143 MB,
+# tantivy 71, iroh 51, trustfall_core 22, oxc_ast 19, oxc_parser 16.
+[profile.dev.package.turso_core]
+opt-level = 2
+[profile.dev.package.tantivy]
+opt-level = 2
+[profile.dev.package.iroh]
+opt-level = 2
+[profile.dev.package.trustfall_core]
+opt-level = 2
+[profile.dev.package.oxc_ast]
+opt-level = 2
+[profile.dev.package.oxc_parser]
+opt-level = 2
+
 [profile.release]
 codegen-units = 1
 lto = "thin"
@@ -111,3 +169,11 @@ gpui_ce_components = { path = "vendor/gpui_ce_components" }
 gpui-ce = { path = "vendor/gpui-ce" }
 gpui_ce_components_base = { path = "vendor/gpui_ce_components_base" }
 gpui_ce_macos = { path = "vendor/gpui_ce_macos" }
+# The headless test scheduler took its two locks in opposite orders in
+# `block` and `schedule_local`: a journey hung for good when an engine
+# thread woke a local task (vendor/gpui_ce_scheduler/src/test_scheduler.rs).
+gpui_ce_scheduler = { path = "vendor/gpui_ce_scheduler" }
+# Rust authority pins executable discovery and child environments to the
+# admitted toolchain carried by CargoConfig.extra_env.
+ra_ap_project_model = { path = "vendor/ra_ap_project_model" }
+ra_ap_toolchain = { path = "vendor/ra_ap_toolchain" }

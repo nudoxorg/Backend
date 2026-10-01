@@ -10,9 +10,11 @@
 pub mod common;
 pub mod health;
 pub mod key;
+pub mod lines;
 pub mod orbit;
 pub mod package;
 pub mod search;
+pub(crate) mod serde_ext;
 pub mod source;
 pub mod store;
 pub mod symbol;
@@ -20,10 +22,11 @@ pub mod symbol;
 pub use backend_library::Obligation;
 pub use common::{
     ByteSpan, DeclFacts, DeclRef, Deprecation, Derivation, Gap, GapReason, KeyError, KindFamily,
-    Known, LineSpan, PackageRef, Provenance, SymbolRef, confidence_name, link_name,
+    Known, LineSpan, PackageRef, Provenance, RowKey, SymbolRef, confidence_name, link_name,
 };
 pub use health::{FaultProgress, HealthModel, IngestModel, LanguageProgress, MissingCapability};
 pub use key::{PageKey, SearchQuery};
+pub use lines::{Resolution, UseLine};
 pub use orbit::{
     IndexedPackage, OrbitModel, OrbitProject, Readiness, TreeNode, TreeOpener, TreeSubject,
 };
@@ -33,7 +36,7 @@ pub use package::{
 };
 pub use search::{MatchReason, SearchContinuation, SearchPage, SearchRow};
 pub use source::{IdentifierSpan, SourceOrigin, SourceText, SourceView};
-pub use store::{Capacity, Landing, PageStore, PageValue, ReadFailure, Stamp};
+pub use store::{Capacity, Generation, Landing, PageStore, PageValue, ReadFailure, SeedEntry, Stamp};
 pub use symbol::{
     Arrival, DocEntry, DocFragment, DocSection, DocSections, Excerpt, FileSpan, Member, Members,
     MethodGroup, OutlinePosition, SectionKind,

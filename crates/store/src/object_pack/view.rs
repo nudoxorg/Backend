@@ -1,8 +1,8 @@
 //! Defines view behavior for `backend_store::object_pack`, whose purpose is to write and borrow indexed immutable object packs.
 //! This module owns the view invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
-use backend_version::{ContentId, ObjectDomain};
 use backend_version::object::ObjectRef;
+use backend_version::{ContentId, ObjectDomain};
 
 use super::{ObjectPackError, ObjectPackIndex};
 

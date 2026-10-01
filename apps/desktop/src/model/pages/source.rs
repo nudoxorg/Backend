@@ -5,7 +5,7 @@ use super::symbol::{FileSpan, SymbolLink};
 use std::sync::Arc;
 
 /// Where the source text in a [`SourceView`] came from.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub enum SourceOrigin {
     /// The engine's bounded declaration excerpt: the declaration only, at
     /// most 4096 bytes.
@@ -16,7 +16,7 @@ pub enum SourceOrigin {
 }
 
 /// Source text with the line its first byte sits on.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SourceText {
     /// The text.
     pub text: Arc<str>,
@@ -53,7 +53,7 @@ impl SourceText {
 }
 
 /// One identifier inside the text that links to a declaration.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct IdentifierSpan {
     /// Byte span inside [`SourceText::text`].
     pub span: ByteSpan,
@@ -62,7 +62,7 @@ pub struct IdentifierSpan {
 }
 
 /// Everything the Source board renders for one declaration.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SourceView {
     /// The declaration being read.
     pub symbol: DeclRef,

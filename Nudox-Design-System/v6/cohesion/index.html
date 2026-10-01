@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Nudox v6 · Cohesion boards</title>
+<link rel="stylesheet" href="../../v5/page/page.css">
+<style>
+body { background: var(--g0); color: var(--ink1); font: 400 14px/21px var(--ui); padding: 40px 48px; }
+h1 { font: 650 30px/36px var(--display); color: var(--ink0); margin: 0 0 6px; } .lede { font: italic 400 18px/26px var(--serif); color: var(--ink2); max-width: 900px; }
+h2 { font: 600 13px var(--ui); letter-spacing: .07em; text-transform: uppercase; color: var(--ink3); margin: 34px 0 12px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 22px; }
+a.card { display: block; text-decoration: none; color: inherit; background: var(--plate); box-shadow: inset 0 0 0 1px var(--line1); padding: 10px; clip-path: polygon(0 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%); }
+a.card:hover { box-shadow: inset 0 0 0 1px var(--peri); }
+a.card img { width: 100%; display: block; }
+a.card b { display: block; margin-top: 8px; font: 500 14px var(--ui); color: var(--ink0); } a.card span { font-size: 13px; color: var(--ink3); }
+</style></head><body>
+<h1>Cohesion boards</h1>
+<div class="lede">One set of objects across every view, a sidebar with four lenses at every scope, and pages that answer what matters to you first. Everything is drawn from the fixture index and toml's real release data. Spec: <code>v6/cohesion/COHESION.md</code>. Research: <code>.local/lanes/wave6/research/NAV.md</code>.</div>
+<h2>The sidebar: scope, lenses, state</h2>
+<div class="grid">
+<a class="card" href="Cohesion.html?v=side-library"><img src="stills/side-library.png"><b>Library</b><span>Packages grouped by how they relate to you; cards with shingle overviews (mint = you use, amber = a newer release changes it).</span></a>
+<a class="card" href="Cohesion.html?v=side-contents"><img src="stills/side-contents.png"><b>Package: Contents</b><span>State on every row, a peek that follows the arrows, held items, the trail; the package page opened up beside it.</span></a>
+<a class="card" href="Cohesion.html?v=side-jump"><img src="stills/side-jump.png"><b>The path is the jump bar</b><span>Each segment opens its siblings with their rolled-up state.</span></a>
+<a class="card" href="Cohesion.html?v=side-narrow"><img src="stills/side-narrow.png"><b>Narrow</b><span>Searches the whole scope (collapsed rows too), then widens to the library with one ↵.</span></a>
+<a class="card" href="Cohesion.html?v=side-hoist"><img src="stills/side-hoist.png"><b>Hoist</b><span>Scope into one thing; browsing the sidebar never moves the page.</span></a>
+<a class="card" href="Cohesion.html?v=side-item"><img src="stills/side-item.png"><b>Item scope</b><span>The same four lenses on Value: who leans on it, beside the drawn page.</span></a>
+</div>
+<h2>Versions, dependents, dependencies</h2>
+<div class="grid">
+<a class="card" href="Cohesion.html?v=side-versions"><img src="stills/side-versions.png"><b>Versions: 0.8.23 → 1.1.6</b><span>A two-sided verdict (in general / for you), then what changes for you with every call site, then the rest by module.</span></a>
+<a class="card" href="Cohesion.html?v=side-users"><img src="stills/side-users.png"><b>Used by: how desktop uses toml</b><span>Its call sites grouped by item, and how much of toml it never touches.</span></a>
+<a class="card" href="Cohesion.html?v=side-rests"><img src="stills/side-rests.png"><b>Rests on: strata</b><span>Your code on top, layers beneath; hovering a block lights every path that explains why it's here.</span></a>
+</div>
+<h2>Browse, and how views connect</h2>
+<div class="grid">
+<a class="card" href="Cohesion.html?v=find"><img src="stills/find.png"><b>Find</b><span>One answer per package: its call shape and where it lives.</span></a>
+<a class="card" href="Cohesion.html?v=film-browse"><img src="stills/film-browse.png"><b>Browse → package (film)</b><span>The shingles open into the package: marks and frames travel, text unrolls in place.</span></a>
+<a class="card" href="Cohesion.html?v=graph"><img src="stills/graph.png"><b>Graph: the page, zoomed out</b><span>Same sides as the page: made-by left, where it goes right, made-of below.</span></a>
+</div>
+</body></html>

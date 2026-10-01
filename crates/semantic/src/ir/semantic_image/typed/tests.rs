@@ -112,7 +112,8 @@ fn anonymous_cycle_is_a_typed_terminal_not_a_synthetic_type() -> Result<(), crat
 }
 
 #[test]
-fn equal_digest_fallback_compares_structure_without_aliasing() -> Result<(), crate::ir::BuildError> {
+fn equal_digest_fallback_compares_structure_without_aliasing() -> Result<(), crate::ir::BuildError>
+{
     let ir = typed_image(false)?;
     let mut plan = TypedDependencyPlan::build(&ir).expect("baseline typed plan is admitted");
     plan.scratch
@@ -140,7 +141,8 @@ fn equal_digest_fallback_compares_structure_without_aliasing() -> Result<(), cra
 }
 
 #[test]
-fn identical_raw_typed_rows_are_rejected_after_exact_comparison() -> Result<(), crate::ir::BuildError> {
+fn identical_raw_typed_rows_are_rejected_after_exact_comparison()
+-> Result<(), crate::ir::BuildError> {
     let ir = typed_image(false)?;
     let mut plan = TypedDependencyPlan::build(&ir).expect("baseline typed plan is admitted");
     let types = plan

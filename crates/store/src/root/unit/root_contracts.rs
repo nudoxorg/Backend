@@ -150,12 +150,14 @@ fn changed_only_diff_omits_unchanged_rows_and_preserves_edge_transitions()
         resident(1, None, object(1)),
         resident(3, Some(1), object(3)),
         resident(5, None, object(5)),
+        resident(6, None, object(6)),
     ]))?;
     let newer = root(Vec::from([
         resident(1, None, object(1)),
         resident(2, None, object(2)),
-        resident(3, None, object(3)),
+        resident(3, None, object(9)),
         resident(4, None, object(4)),
+        resident(5, Some(1), object(5)),
     ]))?;
     let mut changes = older.changed_diff(&newer);
     assert_eq!(
@@ -166,9 +168,9 @@ fn changed_only_diff_omits_unchanged_rows_and_preserves_edge_transitions()
     );
     assert_eq!(
         changes.next(),
-        Some(RootChange::Reparented {
+        Some(RootChange::ContentChanged {
             old: resident(3, Some(1), object(3)),
-            new: resident(3, None, object(3)),
+            new: resident(3, None, object(9)),
         })
     );
     assert_eq!(
@@ -179,12 +181,80 @@ fn changed_only_diff_omits_unchanged_rows_and_preserves_edge_transitions()
     );
     assert_eq!(
         changes.next(),
-        Some(RootChange::Removed {
+        Some(RootChange::Reparented {
             old: resident(5, None, object(5)),
+            new: resident(5, Some(1), object(5)),
+        })
+    );
+    assert_eq!(
+        changes.next(),
+        Some(RootChange::Removed {
+            old: resident(6, None, object(6)),
         })
     );
     assert_eq!(changes.next(), None);
-    assert_eq!(changes.comparisons, 4);
+    assert_eq!(changes.comparisons, 5);
+    assert_eq!(changes.descriptor_visits(), 11);
+    Ok(())
+}
+
+#[test]
+fn equal_identity_preserves_full_diff_across_independent_residences() -> Result<(), ScenarioError> {
+    let older = root(Vec::from([
+        resident(1, None, object(1)),
+        resident(2, Some(1), object(2)),
+    ]))?;
+    let reopened = root(Vec::from([
+        resident(1, None, object(1)),
+        resident(2, Some(1), object(2)),
+    ]))?;
+    assert_eq!(older.id, reopened.id);
+    assert_ne!(older.rows.as_ptr(), reopened.rows.as_ptr());
+
+    let provider = backend_version::object::ProviderId::try_from(3_u8)?;
+    let promised_bytes = locality_bytes(
+        &older,
+        &[locality_exception(
+            &older,
+            key(2),
+            NonResident::Promised(backend_version::object::ProviderSet::only(provider)),
+        )?],
+    )?;
+    let resident_bytes = locality_bytes(&reopened, &[])?;
+    let promised = ValidatedLocality::try_from(promised_bytes.as_slice())?;
+    let resident_locality = ValidatedLocality::try_from(resident_bytes.as_slice())?;
+    let promised_view = GenerationView::new(&older, &promised)?;
+    let resident_view = GenerationView::new(&reopened, &resident_locality)?;
+    assert_eq!(
+        promised_view.get(key(2)).map(|entry| entry.locality),
+        Some(Locality::Promised(
+            backend_version::object::ProviderSet::only(provider)
+        ))
+    );
+    assert_eq!(
+        resident_view.get(key(2)).map(|entry| entry.locality),
+        Some(Locality::Resident)
+    );
+
+    let mut full = older.diff(&reopened);
+    assert_eq!(
+        full.by_ref().collect::<Vec<_>>(),
+        Vec::from([
+            RootChange::Unchanged {
+                entry: resident(1, None, object(1)),
+            },
+            RootChange::Unchanged {
+                entry: resident(2, Some(1), object(2)),
+            },
+        ])
+    );
+    assert_eq!(full.comparisons, 0);
+    assert_eq!(full.descriptor_visits(), 2);
+
+    let mut changed = older.changed_diff(&reopened);
+    assert_eq!(changed.next(), None);
+    assert_eq!(changed.comparisons, 0);
+    assert_eq!(changed.descriptor_visits(), 0);
     Ok(())
 }
 
@@ -203,10 +273,8 @@ fn changed_only_diff_streams_a_million_unchanged_rows_without_output() -> Result
     let root = root(entries)?;
     let mut changes = root.changed_diff(&root);
     assert_eq!(changes.next(), None);
-    assert_eq!(
-        changes.comparisons,
-        usize::try_from(MILLION_UNCHANGED_ROWS).map_err(ScenarioError::MillionRowCount)?
-    );
+    assert_eq!(changes.comparisons, 0);
+    assert_eq!(changes.descriptor_visits(), 0);
     Ok(())
 }
 

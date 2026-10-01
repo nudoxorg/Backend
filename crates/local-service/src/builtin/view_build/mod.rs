@@ -11,18 +11,18 @@ mod call_join;
 mod go_field_join;
 #[cfg(test)]
 mod go_type_mention_join;
+mod identity;
+mod image_reopen;
+mod image_rows;
 #[cfg(test)]
 mod java_enum_value_join;
 #[cfg(test)]
 mod py_function_field_join;
 #[cfg(test)]
 mod py_static_field_join;
-mod identity;
 mod query;
 mod semantic;
 mod structural;
-mod image_reopen;
-mod image_rows;
 
 pub(crate) use call_join::{
     ProjectCallableIndex, foreign_display_name, foreign_namespace_call_retarget,
@@ -32,16 +32,18 @@ pub(crate) use call_join::{
 };
 
 pub(crate) use identity::query_semantic_id;
-pub(super) use identity::{external_semantic_symbol, package_token, semantic_symbol};
 pub(crate) use identity::semantic_coordinate;
+pub(super) use identity::{external_semantic_symbol, package_token, semantic_symbol};
 pub(super) use query::semantic_query_corpus;
+pub(crate) use semantic::compiled_source_path;
 pub(super) use semantic::{
     ForeignPublication, ProjectedRows, StructuralSites, rows_for_indexed_sources,
 };
-pub(crate) use semantic::{EXTERNAL_SEMANTIC_TARGET_LABEL, compiled_source_path};
+pub(crate) use semantic::EXTERNAL_SEMANTIC_TARGET_LABEL;
 pub(crate) use structural::{
     resolve_specifier_paths, structural_call_coordinate_pairs, structural_call_graph_relations,
-    structural_call_graph_relations_mapped, structural_call_span, structural_reference_facts,
+    structural_call_graph_relations_mapped, structural_call_span, structural_file_span,
+    structural_reference_facts,
     structural_symbol_identity, view_row_for_structural_coordinate,
 };
 
@@ -63,7 +65,8 @@ pub(super) fn project_structural_files(
     sources: &super::IndexedSources,
     only: &std::collections::BTreeSet<[u8; 32]>,
 ) -> Result<(), super::BuiltinModelError> {
-    StructuralProjectionPlan::of_files(sources, &std::collections::BTreeSet::new(), only).map(|_| ())
+    StructuralProjectionPlan::of_files(sources, &std::collections::BTreeSet::new(), only)
+        .map(|_| ())
 }
 
 /// Times one semantic-image validation against three validations and against
@@ -175,12 +178,11 @@ mod tests {
     use super::{
         STALE_NOTE, SourceRowProjection, StructuralParent, StructuralProjectionPlan,
         append_structural_query_facts, semantic_profile_is_complete,
-        structural_call_coordinate_pairs,         structural_call_graph_relations, structural_call_graph_relations_mapped,
-        structural_excerpt_calls, structural_reference_facts, view_row_for_structural_coordinate,
+        structural_call_coordinate_pairs, structural_call_graph_relations,
+        structural_call_graph_relations_mapped, structural_excerpt_calls,
+        structural_reference_facts, view_row_for_structural_coordinate,
     };
-    use backend_engine::{
-        Row, RowId, ViewRoot, package_key, product_source_file_key, symbol_key,
-    };
+    use backend_engine::{Row, RowId, ViewRoot, package_key, product_source_file_key, symbol_key};
     use backend_semantic::ir::{
         BorrowedTree, CorePayloadHash, DeclarationFamilyId, DeclarationIdentity,
         EntityAuthorityFacts, EntityVersion, FactAvailability, IrBuilder, ItemKind,
@@ -368,16 +370,15 @@ pub fn execute() {}
         let structural_plan =
             StructuralProjectionPlan::of(&sources, &BTreeSet::new()).map_err(|e| e.to_string())?;
         let targets = super::SemanticTargets::default();
-        let mut projection =
-            SourceRowProjection::new(
-                &initial,
-                &sources.projects,
-                64,
-                &targets,
-                &structural_plan,
-                std::path::Path::new("/tmp"),
-            )
-                .map_err(|e| e.to_string())?;
+        let mut projection = SourceRowProjection::new(
+            &initial,
+            &sources.projects,
+            64,
+            &targets,
+            &structural_plan,
+            std::path::Path::new("/tmp"),
+        )
+        .map_err(|e| e.to_string())?;
         for (key, file) in &sources.files {
             projection
                 .append_file(*key, file, &BTreeSet::new(), &ProfileStalePaths::new())
@@ -551,8 +552,8 @@ pub fn execute() {}
     }
 
     #[test]
-    fn a_semantic_row_reads_deprecation_from_its_captured_attributes_and_docs()
-    -> Result<(), String> {
+    fn a_semantic_row_reads_deprecation_from_its_captured_attributes_and_docs() -> Result<(), String>
+    {
         use backend_semantic::ir::DocInput;
         let profile = LanguageProfile::Java(backend_semantic::vocabulary::JavaRelease::Java17);
         let docs = [
@@ -602,7 +603,10 @@ pub fn execute() {}
                 extension: None,
             },
         ];
-        let rows = image_rows(&facts_image(profile, NativeTool::JavaCompiler, &items)?, profile)?;
+        let rows = image_rows(
+            &facts_image(profile, NativeTool::JavaCompiler, &items)?,
+            profile,
+        )?;
         assert_eq!(
             rendered_deprecation(row_named(&rows, "make")?),
             r#"since Some("9") note Some("use Fresh instead")"#
@@ -675,7 +679,10 @@ pub fn execute() {}
                 extension: None,
             },
         ];
-        let rows = image_rows(&facts_image(profile, NativeTool::GoCompiler, &items)?, profile)?;
+        let rows = image_rows(
+            &facts_image(profile, NativeTool::GoCompiler, &items)?,
+            profile,
+        )?;
         let area = row_named(&rows, "Area")?;
         assert_eq!(
             area.facts.obligation,
@@ -683,7 +690,10 @@ pub fn execute() {}
         );
         let old = row_named(&rows, "Old")?;
         assert_eq!(old.facts.obligation, backend_compile::Fact::Absent);
-        assert_eq!(rendered_deprecation(old), r#"since None note Some("use New.")"#);
+        assert_eq!(
+            rendered_deprecation(old),
+            r#"since None note Some("use New.")"#
+        );
         Ok(())
     }
 
@@ -1103,16 +1113,15 @@ pub fn execute() {}
 
         let (initial, _) = initial_view().map_err(|e| e.to_string())?;
         let targets = super::SemanticTargets::default();
-        let mut projection =
-            SourceRowProjection::new(
-                &initial,
-                &sources.projects,
-                64,
-                &targets,
-                &plan,
-                std::path::Path::new("/tmp"),
-            )
-                .map_err(|e| e.to_string())?;
+        let mut projection = SourceRowProjection::new(
+            &initial,
+            &sources.projects,
+            64,
+            &targets,
+            &plan,
+            std::path::Path::new("/tmp"),
+        )
+        .map_err(|e| e.to_string())?;
         for (key, file) in &sources.files {
             projection
                 .append_file(*key, file, &complete, &ProfileStalePaths::new())
@@ -1432,16 +1441,15 @@ pub fn execute() {}
         let structural_plan =
             StructuralProjectionPlan::of(&sources, &complete).map_err(|e| e.to_string())?;
         let targets = super::SemanticTargets::default();
-        let mut projection =
-            SourceRowProjection::new(
-                &initial,
-                &sources.projects,
-                64,
-                &targets,
-                &structural_plan,
-                std::path::Path::new("/tmp"),
-            )
-                .map_err(|e| e.to_string())?;
+        let mut projection = SourceRowProjection::new(
+            &initial,
+            &sources.projects,
+            64,
+            &targets,
+            &structural_plan,
+            std::path::Path::new("/tmp"),
+        )
+        .map_err(|e| e.to_string())?;
         for (key, file) in &sources.files {
             projection
                 .append_file(*key, file, &complete, &stale)
@@ -1525,16 +1533,15 @@ pub fn execute() {}
         let structural_plan =
             StructuralProjectionPlan::of(&sources, &complete).map_err(|e| e.to_string())?;
         let targets = super::SemanticTargets::default();
-        let mut projection =
-            SourceRowProjection::new(
-                &initial,
-                &sources.projects,
-                64,
-                &targets,
-                &structural_plan,
-                std::path::Path::new("/tmp"),
-            )
-                .map_err(|e| e.to_string())?;
+        let mut projection = SourceRowProjection::new(
+            &initial,
+            &sources.projects,
+            64,
+            &targets,
+            &structural_plan,
+            std::path::Path::new("/tmp"),
+        )
+        .map_err(|e| e.to_string())?;
         for (key, file) in &sources.files {
             projection
                 .append_file(*key, file, &complete, &stale)
@@ -1618,16 +1625,15 @@ pub fn execute() {}
         );
         let structural_plan =
             StructuralProjectionPlan::of(&sources, &BTreeSet::new()).map_err(|e| e.to_string())?;
-        let mut projection =
-            SourceRowProjection::new(
-                &initial,
-                &sources.projects,
-                64,
-                &targets,
-                &structural_plan,
-                std::path::Path::new("/tmp"),
-            )
-                .map_err(|e| e.to_string())?;
+        let mut projection = SourceRowProjection::new(
+            &initial,
+            &sources.projects,
+            64,
+            &targets,
+            &structural_plan,
+            std::path::Path::new("/tmp"),
+        )
+        .map_err(|e| e.to_string())?;
         for (key, file) in &sources.files {
             projection
                 .append_file(*key, file, &BTreeSet::new(), &ProfileStalePaths::new())
@@ -1803,36 +1809,40 @@ pub fn execute() {}
         source: &str,
     ) -> Result<Arc<[backend_compile::SourceDeclaration]>, String> {
         match language {
-            backend_engine::SourceLanguage::TypeScript => Ok(
-                backend_frontend_typescript::syntax_frontend()
+            backend_engine::SourceLanguage::TypeScript => {
+                Ok(backend_frontend_typescript::syntax_frontend()
                     .map_err(|error| error.to_string())?
                     .analyze(std::path::Path::new(path), source.as_bytes())
                     .map_err(|error| error.to_string())?
                     .declarations()
-                    .clone(),
-            ),
-            backend_engine::SourceLanguage::Rust => Ok(
-                backend_frontend_rust::syntax_frontend()
+                    .clone())
+            }
+            backend_engine::SourceLanguage::Rust => Ok(backend_frontend_rust::syntax_frontend()
+                .map_err(|error| error.to_string())?
+                .analyze(std::path::Path::new(path), source.as_bytes())
+                .map_err(|error| error.to_string())?
+                .declarations()
+                .clone()),
+            backend_engine::SourceLanguage::Python => {
+                Ok(backend_frontend_python::syntax_frontend()
                     .map_err(|error| error.to_string())?
                     .analyze(std::path::Path::new(path), source.as_bytes())
                     .map_err(|error| error.to_string())?
                     .declarations()
-                    .clone(),
-            ),
-            backend_engine::SourceLanguage::Python => Ok(
-                backend_frontend_python::syntax_frontend()
-                    .map_err(|error| error.to_string())?
-                    .analyze(std::path::Path::new(path), source.as_bytes())
-                    .map_err(|error| error.to_string())?
-                    .declarations()
-                    .clone(),
-            ),
-            _ => Err(format!("unsupported cross-file test language: {language:?}")),
+                    .clone())
+            }
+            _ => Err(format!(
+                "unsupported cross-file test language: {language:?}"
+            )),
         }
     }
 
     fn cross_file_sources(
-        files: &[(&str, backend_engine::SourceLanguage, Arc<[backend_compile::SourceDeclaration]>)],
+        files: &[(
+            &str,
+            backend_engine::SourceLanguage,
+            Arc<[backend_compile::SourceDeclaration]>,
+        )],
     ) -> Result<(super::super::IndexedSources, backend_engine::PackageKey), String> {
         let package = package_key("fixture");
         let project_key = package.to_bytes();
@@ -1873,8 +1883,8 @@ pub fn execute() {}
         sources: &super::super::IndexedSources,
     ) -> Result<(ViewRoot, Vec<Row>), String> {
         let (initial, _) = initial_view().map_err(|error| error.to_string())?;
-        let structural_plan =
-            StructuralProjectionPlan::of(sources, &BTreeSet::new()).map_err(|error| error.to_string())?;
+        let structural_plan = StructuralProjectionPlan::of(sources, &BTreeSet::new())
+            .map_err(|error| error.to_string())?;
         let targets = super::SemanticTargets::default();
         let mut projection = SourceRowProjection::new(
             &initial,
@@ -1890,8 +1900,11 @@ pub fn execute() {}
                 .append_file(*key, file, &BTreeSet::new(), &ProfileStalePaths::new())
                 .map_err(|error| error.to_string())?;
         }
-        let rows = projection.finish(Vec::new()).map_err(|error| error.to_string())?;
-        let capability = super::super::test_builtin_view_capability().map_err(|error| error.to_string())?;
+        let rows = projection
+            .finish(Vec::new())
+            .map_err(|error| error.to_string())?;
+        let capability =
+            super::super::test_builtin_view_capability().map_err(|error| error.to_string())?;
         let view = ViewRoot::new_checked(
             initial.recipe(),
             initial.basis(),
@@ -1992,9 +2005,21 @@ pub fn execute() {}
             "export function rogue() { entriesFromItems(); }\n",
         )?;
         let (sources, package) = cross_file_sources(&[
-            ("apply-set.ts", backend_engine::SourceLanguage::TypeScript, apply),
-            ("weeks.ts", backend_engine::SourceLanguage::TypeScript, weeks),
-            ("decoy.ts", backend_engine::SourceLanguage::TypeScript, decoy),
+            (
+                "apply-set.ts",
+                backend_engine::SourceLanguage::TypeScript,
+                apply,
+            ),
+            (
+                "weeks.ts",
+                backend_engine::SourceLanguage::TypeScript,
+                weeks,
+            ),
+            (
+                "decoy.ts",
+                backend_engine::SourceLanguage::TypeScript,
+                decoy,
+            ),
         ])?;
         let (view, rows) = cross_file_view(&sources)?;
         let sync = row_for_coordinate(&rows, "fixture::weeks.ts:2::syncWorkout")?;
@@ -2003,7 +2028,9 @@ pub fn execute() {}
         let callee = row_for_coordinate(&rows, target)?;
         let incoming = calls_relations(&view, &sources, package, callee, true)?;
         if incoming.len() != 1 || incoming[0].from != sync {
-            return Err(format!("expected incoming call from syncWorkout, got {incoming:?}"));
+            return Err(format!(
+                "expected incoming call from syncWorkout, got {incoming:?}"
+            ));
         }
         let rogue = row_for_coordinate(&rows, "fixture::decoy.ts:1::rogue")?;
         assert_no_calls_target(&view, &sources, package, rogue, target, &rows)?;
@@ -2023,8 +2050,16 @@ pub fn execute() {}
             "import { entriesFromItems as items } from \"./apply-set\";\nexport function syncWorkout() { items(); }\n",
         )?;
         let (sources, package) = cross_file_sources(&[
-            ("apply-set.ts", backend_engine::SourceLanguage::TypeScript, apply),
-            ("weeks.ts", backend_engine::SourceLanguage::TypeScript, weeks),
+            (
+                "apply-set.ts",
+                backend_engine::SourceLanguage::TypeScript,
+                apply,
+            ),
+            (
+                "weeks.ts",
+                backend_engine::SourceLanguage::TypeScript,
+                weeks,
+            ),
         ])?;
         let (view, rows) = cross_file_view(&sources)?;
         let sync = row_for_coordinate(&rows, "fixture::weeks.ts:2::syncWorkout")?;
@@ -2066,9 +2101,21 @@ pub fn execute() {}
             "import { WorkoutService } from \"./workout.service\";\nexport class Weeks { service!: WorkoutService; sync() { this.service.setNote(); } }\n",
         )?;
         let (sources, package) = cross_file_sources(&[
-            ("workout.service.ts", backend_engine::SourceLanguage::TypeScript, workout),
-            ("other.service.ts", backend_engine::SourceLanguage::TypeScript, other),
-            ("weeks.ts", backend_engine::SourceLanguage::TypeScript, weeks),
+            (
+                "workout.service.ts",
+                backend_engine::SourceLanguage::TypeScript,
+                workout,
+            ),
+            (
+                "other.service.ts",
+                backend_engine::SourceLanguage::TypeScript,
+                other,
+            ),
+            (
+                "weeks.ts",
+                backend_engine::SourceLanguage::TypeScript,
+                weeks,
+            ),
         ])?;
         let (view, rows) = cross_file_view(&sources)?;
         let sync = row_for_coordinate(&rows, "fixture::weeks.ts:2::sync")?;
@@ -2110,9 +2157,21 @@ pub fn execute() {}
             "import { WorkoutService } from \"./workout.service\";\nimport { OtherService } from \"./other.service\";\nexport class Weeks { service!: WorkoutService; sync() { this.service.setNote(); } }\n",
         )?;
         let (sources, package) = cross_file_sources(&[
-            ("workout.service.ts", backend_engine::SourceLanguage::TypeScript, workout),
-            ("other.service.ts", backend_engine::SourceLanguage::TypeScript, other),
-            ("weeks.ts", backend_engine::SourceLanguage::TypeScript, weeks),
+            (
+                "workout.service.ts",
+                backend_engine::SourceLanguage::TypeScript,
+                workout,
+            ),
+            (
+                "other.service.ts",
+                backend_engine::SourceLanguage::TypeScript,
+                other,
+            ),
+            (
+                "weeks.ts",
+                backend_engine::SourceLanguage::TypeScript,
+                weeks,
+            ),
         ])?;
         let (view, rows) = cross_file_view(&sources)?;
         let sync = row_for_coordinate(&rows, "fixture::weeks.ts:3::sync")?;
@@ -2134,7 +2193,9 @@ pub fn execute() {}
         )?;
         let relations = calls_relations(&view, &sources, package, sync, false)?;
         if !relations.is_empty() {
-            return Err(format!("ambiguous import must emit no Calls edges: {relations:?}"));
+            return Err(format!(
+                "ambiguous import must emit no Calls edges: {relations:?}"
+            ));
         }
         Ok(())
     }
@@ -2152,8 +2213,16 @@ pub fn execute() {}
             "import { WorkoutService } from \"./workout.service\";\nexport class Weeks { svc!: WorkoutService; sync() { svc.setNote(); } }\n",
         )?;
         let (sources, package) = cross_file_sources(&[
-            ("workout.service.ts", backend_engine::SourceLanguage::TypeScript, workout),
-            ("weeks.ts", backend_engine::SourceLanguage::TypeScript, weeks),
+            (
+                "workout.service.ts",
+                backend_engine::SourceLanguage::TypeScript,
+                workout,
+            ),
+            (
+                "weeks.ts",
+                backend_engine::SourceLanguage::TypeScript,
+                weeks,
+            ),
         ])?;
         let (view, rows) = cross_file_view(&sources)?;
         let sync = row_for_coordinate(&rows, "fixture::weeks.ts:2::sync")?;
@@ -2182,14 +2251,24 @@ pub fn execute() {}
             "import type { WorkoutService } from \"./workout.service\";\nexport class Weeks { workoutService!: WorkoutService; sync() { this.workoutService.setNote(); } }\n",
         )?;
         let (sources, package) = cross_file_sources(&[
-            ("workout.service.ts", backend_engine::SourceLanguage::TypeScript, workout),
-            ("weeks.ts", backend_engine::SourceLanguage::TypeScript, weeks),
+            (
+                "workout.service.ts",
+                backend_engine::SourceLanguage::TypeScript,
+                workout,
+            ),
+            (
+                "weeks.ts",
+                backend_engine::SourceLanguage::TypeScript,
+                weeks,
+            ),
         ])?;
         let (view, rows) = cross_file_view(&sources)?;
         let sync = row_for_coordinate(&rows, "fixture::weeks.ts:2::sync")?;
         let relations = calls_relations(&view, &sources, package, sync, false)?;
         if !relations.is_empty() {
-            return Err(format!("type-only import must not create Calls edges: {relations:?}"));
+            return Err(format!(
+                "type-only import must not create Calls edges: {relations:?}"
+            ));
         }
         Ok(())
     }
@@ -2201,11 +2280,8 @@ pub fn parse_config() -> Result<String, String> { Ok(String::new()) }
 pub fn run_app() -> Result<String, String> { parse_config() }
 pub fn decoy_mention() { let _ = "parse_config("; }
 "#;
-        let declarations = analyze_source(
-            backend_engine::SourceLanguage::Rust,
-            "src/main.rs",
-            source,
-        )?;
+        let declarations =
+            analyze_source(backend_engine::SourceLanguage::Rust, "src/main.rs", source)?;
         let (sources, package) = cross_file_sources(&[(
             "src/main.rs",
             backend_engine::SourceLanguage::Rust,
@@ -2276,7 +2352,11 @@ pub fn decoy_mention() { let _ = "parse_config("; }
             "from apply_set import entries_from_items\n\ndef sync_week():\n    entries_from_items()\n",
         )?;
         let (sources, package) = cross_file_sources(&[
-            ("apply_set.py", backend_engine::SourceLanguage::Python, apply),
+            (
+                "apply_set.py",
+                backend_engine::SourceLanguage::Python,
+                apply,
+            ),
             ("weeks.py", backend_engine::SourceLanguage::Python, weeks),
         ])?;
         let (view, rows) = cross_file_view(&sources)?;
@@ -2306,8 +2386,16 @@ pub fn decoy_mention() { let _ = "parse_config("; }
             "import * as apply from \"./apply-set\";\nexport function syncWorkout() { apply.entriesFromItems(); }\nexport function bare() { entriesFromItems(); }\n",
         )?;
         let (sources, package) = cross_file_sources(&[
-            ("apply-set.ts", backend_engine::SourceLanguage::TypeScript, apply),
-            ("weeks.ts", backend_engine::SourceLanguage::TypeScript, weeks),
+            (
+                "apply-set.ts",
+                backend_engine::SourceLanguage::TypeScript,
+                apply,
+            ),
+            (
+                "weeks.ts",
+                backend_engine::SourceLanguage::TypeScript,
+                weeks,
+            ),
         ])?;
         let (view, rows) = cross_file_view(&sources)?;
         let sync = row_for_coordinate(&rows, "fixture::weeks.ts:2::syncWorkout")?;
@@ -2323,7 +2411,9 @@ pub fn decoy_mention() { let _ = "parse_config("; }
         let bare = row_for_coordinate(&rows, "fixture::weeks.ts:3::bare")?;
         let relations = calls_relations(&view, &sources, package, bare, false)?;
         if !relations.is_empty() {
-            return Err(format!("bare call without import must not link cross-file: {relations:?}"));
+            return Err(format!(
+                "bare call without import must not link cross-file: {relations:?}"
+            ));
         }
         Ok(())
     }
@@ -2341,8 +2431,16 @@ pub fn decoy_mention() { let _ = "parse_config("; }
             "import { entriesFromItems } from \"./apply-set\";\nexport function sync(file: { name: number }): Record<string, number> {\n  const nested = obj.inner.prop;\n  const label = \"a::b\";\n  const file = { name: 1 };\n  entriesFromItems();\n}\n",
         )?;
         let (sources, package) = cross_file_sources(&[
-            ("apply-set.ts", backend_engine::SourceLanguage::TypeScript, apply),
-            ("weeks.ts", backend_engine::SourceLanguage::TypeScript, weeks),
+            (
+                "apply-set.ts",
+                backend_engine::SourceLanguage::TypeScript,
+                apply,
+            ),
+            (
+                "weeks.ts",
+                backend_engine::SourceLanguage::TypeScript,
+                weeks,
+            ),
         ])?;
         let (view, rows) = cross_file_view(&sources)?;
         let sync = row_for_coordinate(&rows, "fixture::weeks.ts:2::sync")?;
@@ -2371,8 +2469,16 @@ pub fn decoy_mention() { let _ = "parse_config("; }
             "import * as apply from \"./apply-set\";\nexport function bare() { const obj = { apply: 1 }; entriesFromItems(); }\nexport function qualified() { apply.entriesFromItems(); }\n",
         )?;
         let (sources, package) = cross_file_sources(&[
-            ("apply-set.ts", backend_engine::SourceLanguage::TypeScript, apply),
-            ("weeks.ts", backend_engine::SourceLanguage::TypeScript, weeks),
+            (
+                "apply-set.ts",
+                backend_engine::SourceLanguage::TypeScript,
+                apply,
+            ),
+            (
+                "weeks.ts",
+                backend_engine::SourceLanguage::TypeScript,
+                weeks,
+            ),
         ])?;
         let (view, rows) = cross_file_view(&sources)?;
         let bare = row_for_coordinate(&rows, "fixture::weeks.ts:2::bare")?;
@@ -2429,12 +2535,12 @@ pub fn decoy_mention() { let _ = "parse_config("; }
         let pairs = structural_call_coordinate_pairs(sources, package)
             .map_err(|error| error.to_string())?;
         for (caller_coordinate, callee_coordinate) in pairs {
-            let caller_id = *coordinate_ids.get(&caller_coordinate).ok_or(
-                "structural call graph caller is absent from the published view",
-            )?;
-            let callee_id = *coordinate_ids.get(&callee_coordinate).ok_or(
-                "structural call graph callee is absent from the published view",
-            )?;
+            let caller_id = *coordinate_ids
+                .get(&caller_coordinate)
+                .ok_or("structural call graph caller is absent from the published view")?;
+            let callee_id = *coordinate_ids
+                .get(&callee_coordinate)
+                .ok_or("structural call graph callee is absent from the published view")?;
             relations.insert(backend_engine::GraphRelation::new(
                 caller_id,
                 callee_id,
@@ -2466,8 +2572,16 @@ pub fn decoy_mention() { let _ = "parse_config("; }
             "import { entriesFromItems } from \"./apply-set\";\nexport function syncWorkout() { entriesFromItems(); }\n",
         )?;
         let (sources, package) = cross_file_sources(&[
-            ("apply-set.ts", backend_engine::SourceLanguage::TypeScript, apply),
-            ("weeks.ts", backend_engine::SourceLanguage::TypeScript, weeks),
+            (
+                "apply-set.ts",
+                backend_engine::SourceLanguage::TypeScript,
+                apply,
+            ),
+            (
+                "weeks.ts",
+                backend_engine::SourceLanguage::TypeScript,
+                weeks,
+            ),
         ])?;
         let (view, mut rows) = cross_file_view(&sources)?;
         let sync = row_for_coordinate(&rows, "fixture::weeks.ts:2::syncWorkout")?;
@@ -2508,7 +2622,9 @@ pub fn decoy_mention() { let _ = "parse_config("; }
             return Err("sync row is not a symbol".to_owned());
         };
         if facts.len() != 1 || facts[0].site != sync_symbol {
-            return Err(format!("expected one incoming fact from syncWorkout, got {facts:?}"));
+            return Err(format!(
+                "expected one incoming fact from syncWorkout, got {facts:?}"
+            ));
         }
 
         let mut owned_samples = Vec::with_capacity(9);
@@ -2560,8 +2676,16 @@ pub fn decoy_mention() { let _ = "parse_config("; }
             "import { entriesFromItems } from \"./apply-set\";\nexport function syncWorkout() { entriesFromItems(); }\n",
         )?;
         let (sources, package) = cross_file_sources(&[
-            ("apply-set.ts", backend_engine::SourceLanguage::TypeScript, apply),
-            ("weeks.ts", backend_engine::SourceLanguage::TypeScript, weeks),
+            (
+                "apply-set.ts",
+                backend_engine::SourceLanguage::TypeScript,
+                apply,
+            ),
+            (
+                "weeks.ts",
+                backend_engine::SourceLanguage::TypeScript,
+                weeks,
+            ),
         ])?;
         let (view, rows) = cross_file_view(&sources)?;
         let sync = row_for_coordinate(&rows, "fixture::weeks.ts:2::syncWorkout")?;
@@ -2587,21 +2711,26 @@ pub fn decoy_mention() { let _ = "parse_config("; }
         let first = view_row_for_structural_coordinate(&doubled, package, target)
             .ok_or("missing first coordinate")?;
         if first != original || doubled.first_package_label(package, target) != Some(original) {
-            return Err(format!("coordinate resolved {first:?}, first row is {original:?}"));
+            return Err(format!(
+                "coordinate resolved {first:?}, first row is {original:?}"
+            ));
         }
         if doubled.last_package_label(package, target) != Some(RowId::Symbol(later)) {
             return Err("graph label map lost the later row".to_owned());
         }
         let relations = calls_relations(&doubled, &sources, package, sync, false)?;
         if relations.len() != 1 || relations[0].to != RowId::Symbol(later) {
-            return Err(format!("graph edge should keep the later label, got {relations:?}"));
+            return Err(format!(
+                "graph edge should keep the later label, got {relations:?}"
+            ));
         }
         let pairs = structural_call_coordinate_pairs(&sources, package)
             .map_err(|error| error.to_string())?;
-        let mapped =
-            structural_call_graph_relations_mapped(&doubled, &pairs, package, sync, false);
+        let mapped = structural_call_graph_relations_mapped(&doubled, &pairs, package, sync, false);
         if mapped.len() != 1 || mapped[0].to != original {
-            return Err(format!("mapped edge should keep the first label, got {mapped:?}"));
+            return Err(format!(
+                "mapped edge should keep the first label, got {mapped:?}"
+            ));
         }
         let facts = structural_reference_facts(&doubled, &sources, target)
             .map_err(|error| error.to_string())?;
@@ -2656,7 +2785,10 @@ pub fn decoy_mention() { let _ = "parse_config("; }
         let resolved = view_row_for_structural_coordinate(&view, package, callee_coordinate)
             .ok_or("semantic declaration was not resolved")?;
         if resolved != callee.id {
-            return Err(format!("resolved {resolved:?}, semantic row is {:?}", callee.id));
+            return Err(format!(
+                "resolved {resolved:?}, semantic row is {:?}",
+                callee.id
+            ));
         }
         let pairs = vec![(caller_label.to_owned(), callee_coordinate.to_owned())];
         let mapped =
@@ -2686,7 +2818,9 @@ pub fn decoy_mention() { let _ = "parse_config("; }
         let missed =
             structural_call_graph_relations_mapped(&ambiguous, &pairs, package, caller.id, false);
         if !missed.is_empty() {
-            return Err(format!("ambiguous callee must drop the edge, got {missed:?}"));
+            return Err(format!(
+                "ambiguous callee must drop the edge, got {missed:?}"
+            ));
         }
         Ok(())
     }

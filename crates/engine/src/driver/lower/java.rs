@@ -24,16 +24,14 @@ use core::{iter::ExactSizeIterator, str};
 
 use backend_frontend_java::legacy::{
     AtomError, BoundImageError, Declaration, DeclarationExtension, DeclarationKind, DocFlavor,
-    HeaderError, ImageError,
-    ImagePlane, JavaAuthorityImage, JavaImage, JavaRelease, Reference, ResolvedUse, SectionError,
-    SymbolRef, TypeFact, TypeKind, TypeRef, UseTag,
+    HeaderError, ImageError, ImagePlane, JavaAuthorityImage, JavaImage, JavaRelease, Reference,
+    ResolvedUse, SectionError, SymbolRef, TypeFact, TypeKind, TypeRef, UseTag,
 };
 use backend_semantic::ir::{
-    DocFactInput, DocFragmentInput, DocLinkTarget, EntityId, EntityKind,
-    ForeignKey, ForeignKeyFault, ForeignOrigin, JavaFacts, NominalRef, Occurrence,
-    OccurrenceConfidence, OccurrenceTarget, ProductChildRole, ReferenceKind, RelSpan,
-    SemanticProductConstructor, SemanticTypeRecord, SemanticTypeTag, TypeReason,
-    TypeWidth,
+    DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ForeignKey, ForeignKeyFault,
+    ForeignOrigin, JavaFacts, NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget,
+    ProductChildRole, ReferenceKind, RelSpan, SemanticProductConstructor, SemanticTypeRecord,
+    SemanticTypeTag, TypeReason, TypeWidth,
 };
 use backend_semantic::vocabulary::{
     JavaForeignKeyFault, JavaImageAtomFault, JavaImageFault, JavaImageHeaderFault, JavaImagePlane,
@@ -465,7 +463,7 @@ pub(crate) fn collect<'source>(
     // lane is pre-sized to the exact fragment count this image will project
     // rather than truncating at the selected source's small fixed cap.
     let documentation = documentation_fragments(image)?;
-    reserve_documentation(facts, documentation);
+    reserve_documentation(facts, documentation)?;
 
     let mut names = NameIndex::new();
     let mut ordinals = DeclarationOrdinals::new();
@@ -1669,9 +1667,8 @@ fn push_executable<'source>(
         // Their authority-proven signature position distinguishes them
         // without inventing a name.
         if !named {
-            carrier = carrier.with_identity_discriminator(unnamed_parameter_discriminator(
-                parameter_count,
-            ));
+            carrier = carrier
+                .with_identity_discriminator(unnamed_parameter_discriminator(parameter_count));
         }
         let ordinal = push(facts, carrier)?;
         if let Some(slot) = parameter_ordinals.get_mut(parameter_count) {
@@ -2156,10 +2153,11 @@ impl Utf16Index {
                 phase: JavaProjectionIndexPhase::Utf16,
             })?;
             checkpoints.push((units, byte));
-            let width =
-                u32::try_from(character.len_utf16()).map_err(|_| ProjectionFault::IndexCapacity {
+            let width = u32::try_from(character.len_utf16()).map_err(|_| {
+                ProjectionFault::IndexCapacity {
                     phase: JavaProjectionIndexPhase::Utf16,
-                })?;
+                }
+            })?;
             units = units
                 .checked_add(width)
                 .ok_or(ProjectionFault::IndexCapacity {
@@ -2181,8 +2179,15 @@ impl Utf16Index {
 /// Projects one javac UTF-16 coordinate onto the bound source's byte domain,
 /// via a binary search over the file's precomputed `Utf16Index` instead of a
 /// linear rescan from byte zero (see `Utf16Index`'s doc comment).
-fn utf16_byte_offset(index: &Utf16Index, units: u32, utf16_len: u32) -> Result<u32, ProjectionFault> {
-    match index.checkpoints.binary_search_by_key(&units, |&(seen, _)| seen) {
+fn utf16_byte_offset(
+    index: &Utf16Index,
+    units: u32,
+    utf16_len: u32,
+) -> Result<u32, ProjectionFault> {
+    match index
+        .checkpoints
+        .binary_search_by_key(&units, |&(seen, _)| seen)
+    {
         Ok(found) => Ok(index.checkpoints[found].1),
         Err(_) if units == index.total_units => Ok(index.total_bytes),
         Err(_) => Err(ProjectionFault::Utf16 { units, utf16_len }),
@@ -2328,21 +2333,25 @@ fn documentation_fragments(image: JavaImage<'_>) -> Result<usize, JavaCollectErr
     Ok(total)
 }
 
-/// Grows the shared documentation lane to hold at least `minimum` fragments.
-/// The lane is transaction-local and starts empty, so only the recorded prefix
-/// is preserved across the reallocation.
-fn reserve_documentation<'source>(facts: &mut FactSet<'source>, minimum: usize) {
+/// Reserves the shared documentation lane for at least `minimum` fragments.
+fn reserve_documentation<'source>(
+    facts: &mut FactSet<'source>,
+    minimum: usize,
+) -> Result<(), JavaCollectError> {
+    let minimum = minimum.max(facts.doc_len);
     if facts.plan.docs >= minimum {
-        return;
+        return Ok(());
     }
-    let placeholder = DocFactInput {
-        owner: EntityId::new(0),
-        fragment: DocFragmentInput::SoftBreak,
-    };
-    let mut grown = vec![placeholder; minimum].into_boxed_slice();
-    grown[..facts.doc_len].copy_from_slice(&facts.doc_facts[..facts.doc_len]);
-    facts.doc_facts = grown;
+    facts
+        .doc_facts
+        .try_reserve_exact(minimum.saturating_sub(facts.doc_facts.len()))
+        .map_err(|_| {
+            terminal(ProjectionFault::IndexCapacity {
+                phase: JavaProjectionIndexPhase::Documentation,
+            })
+        })?;
     facts.plan.docs = minimum;
+    Ok(())
 }
 
 /// Counts one declaration's documentation fragments exactly as [`push_docs`]
@@ -3370,12 +3379,7 @@ mod tests {
         let deprecated = u32::try_from(fix.atom(b"@java.lang.Deprecated"))?;
         let nonnull = u32::try_from(fix.atom(b"@org.jetbrains.annotations.NotNull"))?;
         let beta = u32::try_from(fix.atom(b"@demo.Beta"))?;
-        fix.extensions = vec![
-            (0, 2, deprecated),
-            (0, 3, 1),
-            (1, 2, nonnull),
-            (2, 2, beta),
-        ];
+        fix.extensions = vec![(0, 2, deprecated), (0, 3, 1), (1, 2, nonnull), (2, 2, beta)];
         let source = b"record P(int x) { int m() { return x; } }";
         let ir = owned(&fix, source)?;
         let named = |name: &[u8]| {
@@ -3383,17 +3387,18 @@ mod tests {
                 .find(|entity| ir.atom(entity.name) == Some(name))
                 .ok_or(TestError::Missing("declaration"))
         };
-        let annotations = |entity: backend_semantic::ir::EntityId| -> Result<Vec<Vec<u8>>, TestError> {
-            let facts = ir
-                .java_extension(entity)
-                .ok_or(TestError::Missing("java extension"))?;
-            Ok(ir
-                .atom_list(facts.annotations)
-                .ok_or(TestError::Missing("annotation list"))?
-                .iter()
-                .filter_map(|atom| ir.atom(*atom).map(<[u8]>::to_vec))
-                .collect())
-        };
+        let annotations =
+            |entity: backend_semantic::ir::EntityId| -> Result<Vec<Vec<u8>>, TestError> {
+                let facts = ir
+                    .java_extension(entity)
+                    .ok_or(TestError::Missing("java extension"))?;
+                Ok(ir
+                    .atom_list(facts.annotations)
+                    .ok_or(TestError::Missing("annotation list"))?
+                    .iter()
+                    .filter_map(|atom| ir.atom(*atom).map(<[u8]>::to_vec))
+                    .collect())
+            };
         let record = named(b"demo.P")?;
         let field = named(b"x")?;
         let method = named(b"m")?;
@@ -3401,7 +3406,9 @@ mod tests {
             || annotations(field.id)? != vec![b"@org.jetbrains.annotations.NotNull".to_vec()]
             || annotations(method.id)? != vec![b"@demo.Beta".to_vec()]
         {
-            return Err(TestError::Missing("annotation spelling on its own declaration"));
+            return Err(TestError::Missing(
+                "annotation spelling on its own declaration",
+            ));
         }
         let components: Vec<_> = ir
             .java_extension(record.id)

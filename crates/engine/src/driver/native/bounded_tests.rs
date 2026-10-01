@@ -16,6 +16,7 @@ use std::{
     io::Write,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
+    process::Command,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     time::{Duration, Instant},
 };
@@ -34,10 +35,7 @@ static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
 fn unique(prefix: &str) -> PathBuf {
     let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    env::temp_dir().join(format!(
-        "{prefix}-{}-{sequence}",
-        std::process::id()
-    ))
+    env::temp_dir().join(format!("{prefix}-{}-{sequence}", std::process::id()))
 }
 
 struct Script(PathBuf);
@@ -261,5 +259,55 @@ fn noisy_tool_exceeds_the_bounded_diagnostic_lease_before_a_compile_terminal() {
         }
         other => panic!("expected DiagnosticLimit, observed {other:?}"),
     }
+    work.assert_empty();
+}
+
+#[test]
+fn lower_ir_frontend_does_not_forward_ambient_compiler_environment() {
+    const SENTINEL: &str = "NUDOX_NATIVE_ENVIRONMENT_POLICY_TEST";
+    const SENTINEL_VALUE: &str = "ambient-value-for-child-test";
+    if env::var_os(SENTINEL).as_deref() != Some(std::ffi::OsStr::new(SENTINEL_VALUE)) {
+        let output = Command::new(env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "driver::native::bounded_tests::lower_ir_frontend_does_not_forward_ambient_compiler_environment",
+                "--nocapture",
+            ])
+            .env(SENTINEL, SENTINEL_VALUE)
+            .env("RUSTFLAGS", "--cfg ambient_compiler_setting")
+            .env("CPATH", "/ambient/include")
+            .env("PYTHONPATH", "/ambient/python")
+            .output()
+            .expect("spawn isolated lower-IR environment test");
+        assert!(
+            output.status.success(),
+            "isolated lower-IR environment test failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
+    let helper = script(
+        format!(
+            "#!/bin/sh\nif [ \"${{{SENTINEL}+x}}\" = x ]; then printf 'ambient environment leaked' >&2; exit 89; fi\nIFS= read -r ignored\nexit 0\n"
+        )
+        .as_bytes(),
+    );
+    let work = Work::create();
+    let cancelled = AtomicBool::new(false);
+    let mut diagnostic = [0; 128];
+    let result = run(
+        &helper.0,
+        b"closed-environment-fixture",
+        b"pub const alpha: bool = true;",
+        &cancelled,
+        Instant::now() + Duration::from_secs(1),
+        &mut diagnostic,
+        &work.0,
+    );
+    assert!(
+        result.is_ok(),
+        "compiler child observed ambient state: {result:?}"
+    );
     work.assert_empty();
 }

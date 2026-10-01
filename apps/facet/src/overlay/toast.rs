@@ -21,7 +21,7 @@ use crate::theme::ActiveFacet;
 use crate::tokens::{Face, TypeRole, Voice};
 use gpui::{
     AnyElement, App, Global, InteractiveElement, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, Task, Window, WindowId, div, px,
+    StatefulInteractiveElement, Styled, Window, WindowId, div, px,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -211,7 +211,7 @@ impl Stack {
 
 struct Toasts {
     stack: Stack,
-    timer: Option<(Instant, Task<()>)>,
+    timer: super::deadline::Deadline,
     motion: Motion,
 }
 
@@ -228,7 +228,7 @@ fn toasts(window: &Window, cx: &mut App) -> Rc<RefCell<Toasts>> {
         .or_insert_with(|| {
             Rc::new(RefCell::new(Toasts {
                 stack: Stack::default(),
-                timer: None,
+                timer: super::deadline::Deadline::default(),
                 motion: Motion::new(),
             }))
         })
@@ -238,29 +238,18 @@ fn toasts(window: &Window, cx: &mut App) -> Rc<RefCell<Toasts>> {
 fn changed(state: &Rc<RefCell<Toasts>>, window: &mut Window, cx: &mut App) {
     let now = motion::now(cx);
     let deadline = state.borrow().stack.deadline(now);
-    let current = state.borrow().timer.as_ref().map(|(at, _)| *at);
-    if deadline != current {
-        match deadline {
-            None => state.borrow_mut().timer = None,
-            Some(at) => {
-                let weak = Rc::downgrade(state);
-                let task = window.spawn(cx, async move |cx| {
-                    cx.background_executor()
-                        .timer(at.saturating_duration_since(now))
-                        .await;
-                    let _ = cx.update(|window, cx| {
-                        if let Some(state) = weak.upgrade() {
-                            state.borrow_mut().timer = None;
-                            let now = motion::now(cx);
-                            state.borrow_mut().stack.tick(now);
-                            changed(&state, window, cx);
-                        }
-                    });
-                });
-                state.borrow_mut().timer = Some((at, task));
-            }
-        }
-    }
+    super::deadline::arm(
+        state,
+        |state| &mut state.timer,
+        deadline,
+        now,
+        window,
+        cx,
+        |state, now, window, cx| {
+            state.borrow_mut().stack.tick(now);
+            changed(state, window, cx);
+        },
+    );
     float::refresh(window, cx);
 }
 

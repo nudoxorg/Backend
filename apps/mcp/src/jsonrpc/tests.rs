@@ -163,6 +163,9 @@ impl Engine for Fake {
             Probe::Index(_) => {
                 CommandReply::Added(Intent::request_package(package_key(PROJECT)).id())
             }
+            Probe::IndexWithExecutionIntent { .. } => {
+                CommandReply::Added(Intent::request_package(package_key(PROJECT)).id())
+            }
             Probe::Remove(_) => {
                 CommandReply::Removed(Intent::remove_package(package_key(PROJECT)).id())
             }
@@ -449,7 +452,7 @@ fn every_registry_row_is_reachable_as_exactly_one_tool() {
         assert_eq!(required, &expected, "`{}` required operands", spec.name);
         for argument in grammar.positional().iter().chain(grammar.options()) {
             assert!(
-                !tool["inputSchema"]["properties"][argument.name()].is_null(),
+                !tool["inputSchema"]["properties"][argument.json_name()].is_null(),
                 "`{}` omits operand `{}`",
                 spec.name,
                 argument.name()
@@ -498,6 +501,55 @@ fn the_session_tool_list_leads_with_packages_and_index() {
             .iter()
             .all(|name| *name != "backend.surface" && *name != "backend.query"),
         "the session list must not advertise the escape hatches: {names:?}"
+    );
+}
+
+#[test]
+fn index_tool_advertises_and_validates_execution_intent() {
+    let mut server = ready(Fake::default());
+    let listed = request(&mut server, "tools/list", &json!({}));
+    let tool = tool_named(&listed["result"]["tools"], "backend.index");
+    assert_eq!(
+        tool["inputSchema"]["properties"]["execution_intent"]["enum"],
+        json!(["interactive", "background"])
+    );
+    assert_eq!(
+        tool["inputSchema"]["properties"]["execution_intent"]["default"],
+        "interactive"
+    );
+    assert!(tool["inputSchema"]["properties"]["execution-intent"].is_null());
+
+    let accepted = call(
+        &mut server,
+        "backend.index",
+        &json!({ "path": PROJECT, "execution_intent": "background" }),
+    );
+    assert_eq!(accepted["isError"], false);
+
+    let malformed = call(
+        &mut server,
+        "backend.index",
+        &json!({ "path": PROJECT, "execution_intent": "remote" }),
+    );
+    assert_eq!(malformed["isError"], true);
+    assert!(
+        malformed["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("choose interactive or background")
+    );
+
+    let wrong_type = call(
+        &mut server,
+        "backend.index",
+        &json!({ "path": PROJECT, "execution_intent": ["background"] }),
+    );
+    assert_eq!(wrong_type["isError"], true);
+    assert!(
+        wrong_type["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("must be a string")
     );
 }
 

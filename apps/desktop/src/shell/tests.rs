@@ -123,6 +123,7 @@ pub(crate) fn page(name: &str) -> SymbolPage {
             implemented_by: Known::Known(Arc::from([])),
         },
         references: Known::Unknown(unknown(GapReason::NoSemanticPublication)),
+        workspace: Arc::from([]),
         outline: Known::Unknown(unknown(GapReason::NotServed)),
     }
 }
@@ -163,6 +164,9 @@ pub(crate) fn dossier() -> PackageDossier {
                         node("relation_label", DeclarationKind::Function, vec![]),
                     ],
                 ),
+                // A `#[cfg(test)]` module between two real ones: the shelf
+                // and the jump menu fold it into a trailing "tests" row.
+                node("glyph_tests", DeclarationKind::Module, vec![node("folds_rows", DeclarationKind::Function, vec![])]),
                 node("outline", DeclarationKind::Module, vec![node("Outline", DeclarationKind::Struct, vec![])]),
             ]),
             complete: true,
@@ -272,7 +276,7 @@ impl EngineClient for RootOnly {
 }
 
 /// A fresh index-backed open carries the actual declaration source line.
-fn indexed_view_route(name: &str, view: View) -> Route {
+pub(crate) fn indexed_view_route(name: &str, view: View) -> Route {
     let Route::Symbol(mut route) = view_route(name, view) else { unreachable!() };
     route.line = Some(138);
     Route::Symbol(route)
@@ -302,6 +306,9 @@ pub(crate) struct Rig {
     pub shell: Entity<Shell>,
     pub graph: UiEntityGraph,
     pub cx: &'static mut VisualTestContext,
+    /// How long [`Rig::settle`] waits, in real time, for reads that are in
+    /// flight (a fake engine answers at once; a real owner takes seconds).
+    pub patience: Duration,
 }
 
 /// Opens a real shell window at `route` (after an Orbit start, so the
@@ -311,6 +318,19 @@ pub(crate) fn rig(cx: &mut TestAppContext, route: Option<Route>, width: f32, hei
 }
 
 pub(crate) fn rig_with_reads(cx: &mut TestAppContext, route: Option<Route>, width: f32, height: f32, pool: ReadPool) -> Rig {
+    rig_with_engine(cx, route, width, height, pool, RootOnly)
+}
+
+/// [`rig_with_reads`] over an engine of the caller's (an index that fails,
+/// say), instead of the one that answers only the root.
+pub(crate) fn rig_with_engine(
+    cx: &mut TestAppContext,
+    route: Option<Route>,
+    width: f32,
+    height: f32,
+    pool: ReadPool,
+    engine: impl EngineClient,
+) -> Rig {
     cx.executor().allow_parking();
     cx.update(|cx| {
         gpui_component::init(cx);
@@ -327,7 +347,7 @@ pub(crate) fn rig_with_reads(cx: &mut TestAppContext, route: Option<Route>, widt
     workspace.host = LocalProjectId::from_path(&folder).ok();
     snapshot = snapshot.with_workspace(workspace);
     snapshot = snapshot.with_session(SessionState::default());
-    let actor = EngineActor::start(RootOnly, 8).expect("actor");
+    let actor = EngineActor::start(engine, 8).expect("actor");
     let runtime = DesktopRuntime::new(snapshot, actor);
     let graph = cx.update(|cx| UiEntityGraph::install_with_reads(cx, runtime, None, Some(pool)));
     let window_graph = UiEntityGraph {
@@ -356,6 +376,7 @@ pub(crate) fn rig_with_reads(cx: &mut TestAppContext, route: Option<Route>, widt
         shell,
         graph,
         cx: visual,
+        patience: Duration::from_secs(20),
     };
     rig.settle();
     if let Some(route) = route {
@@ -382,7 +403,13 @@ impl Rig {
 
     /// Lets reads land and motion finish, drawing as a platform would.
     pub(crate) fn settle(&mut self) {
-        let deadline = Instant::now() + Duration::from_secs(20);
+        /// Rounds of 700 ms of virtual time: 28 s, longer than any motion
+        /// budget. A shell still asking for work after that is not settling:
+        /// something reschedules itself (a timer that notifies a render that
+        /// arms the timer again), and this says so instead of spinning a CPU.
+        const ROUNDS: usize = 40;
+        let deadline = Instant::now() + self.patience;
+        let mut rounds = 0;
         loop {
             self.cx.run_until_parked();
             self.draw();
@@ -392,13 +419,30 @@ impl Rig {
             let frames = self.cx.update(|window, cx| window.simulate_next_frame(cx));
             self.draw();
             let (queued, running) = self.graph.store.read_with(self.cx, |store, _| store.pool_load());
-            if frames == 0 && queued == 0 && running == 0
-                && !self.graph.root.read_with(self.cx, |root, _| root.has_pending_work())
-                && self.shell.read_with(self.cx, |shell, cx| shell.graph_ready(cx)) {
+            let asking = frames > 0
+                || self.graph.root.read_with(self.cx, |root, _| root.has_pending_work())
+                || !self.shell.read_with(self.cx, |shell, cx| shell.graph_ready(cx));
+            let reading = queued > 0 || running > 0;
+            if !asking && !reading {
                 self.draw();
                 return;
             }
-            assert!(Instant::now() < deadline, "the shell never settled");
+            // Only the shell asking again is held to the rounds: a read in
+            // flight is waiting on real work, which the deadline bounds.
+            if asking {
+                rounds += 1;
+            }
+            assert!(
+                rounds <= ROUNDS,
+                "the shell never settled: after {ROUNDS} rounds of 700 ms of virtual time it still asks for {frames} frame(s), \
+                 {queued} queued and {running} running read(s); renders so far {:?}",
+                self.counts()
+            );
+            assert!(
+                Instant::now() < deadline,
+                "the shell never settled: after {:?} of real time {queued} read(s) are queued and {running} running",
+                self.patience
+            );
             std::thread::sleep(Duration::from_millis(2));
         }
     }
@@ -443,22 +487,28 @@ impl Rig {
 #[gpui::test]
 fn a_page_renders_its_real_content_through_the_shell(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    rig.repaint();
+    let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
+    let painted = |key: &str| ledger.texts.iter().filter(|text| text.key == key).map(|text| text.content.clone()).collect::<Vec<_>>();
     let said = rig.said();
-    for expected in [
-        "RelationLabel",
-        "The readable label of RelationLabel.",
-        "pub enum RelationLabel {\n    Typed(SemanticLinkKind),\n    Related,\n}",
-        "Made of",
-        "Typed(SemanticLinkKind)",
-        "A relation whose kind is known.",
-        "Does",
-        "reads",
-        "as_str(self) -> &'static str",
-        "Display",
-        "Relations need a compiler publication; this package has none.",
-    ] {
-        assert!(said.iter().any(|line| line == expected), "{expected:?} is not on screen: {said:#?}");
+    // The drawn page: the name, the lede, what it is (a fork, one row per
+    // variant with what each holds, in words), then what you can do with it.
+    assert!(said.iter().any(|line| line == "RelationLabel"), "the name is not on screen: {said:#?}");
+    assert_eq!(painted("s6-kind"), ["ENUM"]);
+    assert_eq!(painted("s6-lede"), ["The readable label of RelationLabel."]);
+    assert_eq!(painted("s6-shape-head-count"), ["one of 2"]);
+    assert_eq!(painted("s6-case-0-name"), ["Typed"]);
+    assert_eq!(painted("s6-case-0-holds-0-word"), ["SemanticLinkKind"]);
+    assert_eq!(painted("s6-case-1-name"), ["Related"]);
+    assert_eq!(painted("s6-group-0-head"), ["Reads it"]);
+    assert_eq!(painted("s6-group-0-method-0-name"), ["as_str"]);
+    // A variant's doc is its line on the row; the tabs and the relation list
+    // are gone, and source lives in Code.
+    for gone in ["One of", "Reference", "Relations", "Usage", "History"] {
+        assert!(!said.iter().any(|line| line == gone), "{gone:?} is still on screen: {said:#?}");
     }
+    assert!(!said.iter().any(|line| line.starts_with("pub enum RelationLabel {")), "source lives in Code: {said:#?}");
     // The route and the store agree, and the thread has Orbit behind.
     assert_eq!(rig.route(), page_route("RelationLabel"));
 }
@@ -524,6 +574,37 @@ fn j_and_k_walk_focus_inside_the_reader_only(cx: &mut TestAppContext) {
     assert_eq!(zone, super::focus::Zone::Titlebar);
 }
 
+/// The lead's report: on a symbol page, Tab, J and Space each changed
+/// nothing. Confirms all three are wired end to end on a fresh page: Tab
+/// moves the keyboard zone, J walks the reader's focus, and Space peeks a
+/// focused row (the §14/hand ruling "Space peeks", scoped by S9).
+#[gpui::test]
+fn tab_j_and_space_each_change_a_fresh_symbol_page(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    rig.keys("x");
+    let (zone_before, focus_before) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    assert_eq!(zone_before, super::focus::Zone::Reader, "a fresh page keeps the keyboard in the reader");
+    rig.keys("tab");
+    let (zone_after_tab, _) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    assert_ne!(zone_after_tab, zone_before, "Tab moved the keyboard to another zone");
+    rig.keys("shift-tab");
+    let (zone_back, _) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    assert_eq!(zone_back, zone_before, "shift-Tab returns to the reader");
+    rig.keys("j");
+    let (_, focus_after_j) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    assert_ne!(focus_after_j, focus_before, "J walked the focus");
+    let mut peeked = false;
+    for _ in 0..32 {
+        rig.keys("space");
+        peeked = rig.shell.read_with(rig.cx, |shell, _| shell.transients()).1;
+        if peeked {
+            break;
+        }
+        rig.keys("j");
+    }
+    assert!(peeked, "Space opened a peek on some focused row");
+}
+
 #[gpui::test]
 fn enter_descends_and_the_descent_plays_down_then_up(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(Route::Package(crate::navigation::PackageRoute {
@@ -534,7 +615,9 @@ fn enter_descends_and_the_descent_plays_down_then_up(cx: &mut TestAppContext) {
         selected: None,
     })), 1440.0, 900.0);
     let (before, _) = rig.shell.read_with(rig.cx, |shell, cx| shell.descent(cx));
-    // Walk to the first "start with" row and open it.
+    // Walk to the first module, open it, walk to its first name and open that.
+    rig.keys("j");
+    rig.keys("enter");
     rig.keys("j");
     rig.keys("enter");
     let route = rig.route();
@@ -549,6 +632,94 @@ fn enter_descends_and_the_descent_plays_down_then_up(cx: &mut TestAppContext) {
     // ⌘[ walks back along the thread.
     rig.keys("secondary-[");
     assert!(matches!(rig.route(), Route::Symbol(_)));
+}
+
+/// `shelf.rs`'s `row()` used to wrap an already self-publishing `text()`
+/// (kit's `Said`, which records its own words under `text:{content}` once
+/// `.child` is called) in a second, explicit `facet::probe::text("shelf-row:…",
+/// …)`: the same label painted twice, at (near) the same bounds — read by
+/// the harness as `overlap shelf-row:X + text:X: "X" and "X" overlap by …`,
+/// on every checkpoint of J1 that shows a shelf row.
+#[gpui::test]
+fn a_shelf_row_paints_its_label_once(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    rig.repaint();
+    let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
+    // Scoped to the shelf's own column (x < its 264 px resting width): the
+    // titlebar's current-place name and the reader's hero both also read
+    // "RelationLabel" on this route (three different, legitimate elements
+    // sharing one word), so counting the word anywhere on screen is not a
+    // duplicate-paint check — only a second box *inside the shelf* is.
+    let in_shelf: Vec<_> = ledger.texts.iter().filter(|text| text.content == "RelationLabel" && text.bounds.x < 264.0).collect();
+    assert_eq!(in_shelf.len(), 1, "the shelf's \"RelationLabel\" row should paint once, not: {in_shelf:#?}");
+    assert!(in_shelf[0].key.starts_with("shelf-row:"), "{:?}", in_shelf[0]);
+}
+
+/// A sanity check for J1's stop-1/code checkpoints (`clip text:from_str:
+/// "from_str" needs 60.0 px … in a 0.0 px box`): every breadcrumb segment,
+/// including the current name, must lay out with real width.
+///
+/// This does not itself prove the fix: `jump_bar`'s row was suspected to
+/// collapse because it sized itself from its own content (no `flex_1`)
+/// while its one real child (`here`) is `flex_1().min_w(0)` — but reverting
+/// that (and the current name's `.text_ellipsis()`) here, alone and
+/// together, still measures every segment above 0 px in this headless rig;
+/// the collapse did not reproduce outside the real harness capture (native
+/// layout is the actual failure surface — see J1.md for the trap-mutation
+/// record). Kept as a real content-level regression guard regardless.
+#[gpui::test]
+fn the_jump_bar_keeps_the_current_names_own_box(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    rig.repaint();
+    let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
+    let segments: Vec<_> = ledger.targets.iter().filter(|target| target.key.starts_with("jump-seg-")).collect();
+    assert!(
+        segments.len() >= 2,
+        "expected a multi-segment breadcrumb (present › glyph › RelationLabel): {:?}",
+        segments.iter().map(|target| &target.key).collect::<Vec<_>>()
+    );
+    for segment in &segments {
+        assert!(
+            segment.bounds.width > 0.0,
+            "{} laid out a {} px box: {:?}",
+            segment.key,
+            segment.bounds.width,
+            segments.iter().map(|target| (&target.key, target.bounds.width)).collect::<Vec<_>>()
+        );
+    }
+}
+
+/// Back does not merely leave a route, it returns to one: the row (or
+/// link) a click once left is focused again. `Reader::arrive` unfocuses
+/// every page it draws, including the one Back lands back on, so the
+/// restore has to survive that — this is what J1's back-1/back-2/back-3
+/// checkpoints assert (`focus … in reader`).
+#[gpui::test]
+fn back_to_a_route_a_click_left_restores_focus_there(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    let left = rig.route();
+    // What a click does before it navigates away (`orbit.rs`'s project
+    // tile does exactly this; any body that adopts the same pattern gets
+    // the same Back behaviour for free): focus the target, and remember
+    // which route it left.
+    let leave_id: gpui::SharedString = "left-by-test-row".into();
+    rig.shell.update(rig.cx, |shell, cx| {
+        let targets = shell.reader_targets(cx);
+        targets.focus(leave_id.clone());
+        targets.remember_leave(left.clone(), leave_id.clone());
+    });
+    let (_, focused) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    assert_eq!(focused, Some(leave_id.clone()), "the click focused its own row first");
+    // Navigate away: a fresh page starts unfocused.
+    rig.go(Intent::Navigate(page_route("Related")));
+    let (_, away) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    assert_ne!(away, Some(leave_id.clone()), "a fresh page starts unfocused");
+    // Back to the route the click left: the keyboard returns to that row.
+    rig.go(Intent::Navigate(left));
+    let (_, restored) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    assert_eq!(restored, Some(leave_id), "Back did not restore focus to the row that led away from it");
 }
 
 #[gpui::test]
@@ -638,9 +809,13 @@ fn every_setting_applies_live(cx: &mut TestAppContext) {
 fn escape_closes_the_topmost_transient_first(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     // Stand on a member row and peek it.
-    rig.keys("j j j j j j");
-    rig.keys("space");
-    let (_, peek, _) = rig.shell.read_with(rig.cx, |shell, _| shell.transients());
+    let mut peek = false;
+    for _ in 0..32 {
+        rig.keys("space");
+        peek = rig.shell.read_with(rig.cx, |shell, _| shell.transients()).1;
+        if peek { break; }
+        rig.keys("j");
+    }
     assert!(peek, "space opened a peek");
     rig.keys("f");
     let (_, peek, hints) = rig.shell.read_with(rig.cx, |shell, _| shell.transients());
@@ -658,6 +833,59 @@ fn escape_closes_the_topmost_transient_first(cx: &mut TestAppContext) {
     let (ask, _, _) = rig.shell.read_with(rig.cx, |shell, _| shell.transients());
     assert!(!ask, "esc closed Ask");
     assert_eq!(rig.route(), page_route("RelationLabel"), "and nothing else moved");
+}
+
+/// Settings › Keys lists every key a person can press, the sidebar's own
+/// (typing narrows, the `G` chords) beside the shell's table and the graph's.
+#[gpui::test]
+fn settings_keys_lists_the_sidebars_keys_beside_the_shells_and_the_graphs(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    rig.go(Intent::OpenSettings(crate::navigation::SettingsPage::Help));
+    let said = rig.said();
+    for words in ["open what the focus stands on", "In the sidebar", "narrow the list as you type; the last row widens to Find", "G C  G V  G R  G U", "In the graph"] {
+        assert!(said.iter().any(|line| line == words), "Settings › Keys says {words:?}: {said:#?}");
+    }
+    let at = |words: &str| said.iter().position(|line| line == words).unwrap_or(usize::MAX);
+    assert!(at("In the sidebar") < at("In the graph"), "the sidebar's keys come before the graph's");
+}
+
+/// GAPS D5: Esc closes Settings, whether the keyboard is still where ⌘,
+/// found it or a person has just clicked one of Settings' own controls; the
+/// page under it is where it was.
+#[gpui::test]
+fn escape_closes_settings_from_the_page_and_from_a_control_in_it(cx: &mut TestAppContext) {
+    use crate::navigation::Overlay;
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    let overlay = |rig: &mut Rig| rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay());
+    let drawn = |rig: &mut Rig, words: &str| super::fit_tests::painted(rig).texts.iter().any(|text| text.content == words);
+    rig.keys("cmd-,");
+    assert!(matches!(overlay(&mut rig), Some(Overlay::Settings(_))), "⌘, opened Settings");
+    assert!(drawn(&mut rig, "Contrast"), "and Settings is drawn");
+    rig.keys("escape");
+    assert_eq!(overlay(&mut rig), None, "Esc closed Settings");
+    assert!(!drawn(&mut rig, "Contrast"), "and it is gone from the window");
+    assert_eq!(rig.route(), page_route("RelationLabel"), "the page under it did not move");
+
+    rig.keys("cmd-,");
+    // A segmented choice paints its own label (it is not a probe text): find
+    // it where gpui painted it.
+    rig.cx.update(|_, cx| cx.set_global(gpui::TextTrace));
+    rig.repaint();
+    let choice = rig
+        .cx
+        .update(|window, _| window.painted_texts().iter().find(|text| text.text.as_ref() == "Compact").map(|text| text.bounds.center()))
+        .expect("Settings paints the Compact density");
+    rig.cx.simulate_click(choice, Modifiers::default());
+    rig.settle();
+    assert_eq!(
+        rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().settings().density),
+        crate::model::DensityPreference::Compact,
+        "the click chose Compact"
+    );
+    assert!(matches!(overlay(&mut rig), Some(Overlay::Settings(_))), "a click on a control keeps Settings open");
+    rig.keys("escape");
+    assert_eq!(overlay(&mut rig), None, "Esc closed Settings after a click in it");
+    assert!(!drawn(&mut rig, "Contrast"), "and it is gone from the window");
 }
 
 #[gpui::test]
@@ -679,13 +907,17 @@ fn hint_mode_labels_every_visible_target_and_a_code_activates_one(cx: &mut TestA
 #[gpui::test]
 fn the_regions_degrade_with_the_window_and_the_text(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 2560.0, 1440.0);
+    // Dragged narrower: each mode holds through the 32 px band around its
+    // edge (`facet::fluid`), so 899 is still a shelf and 639 still a spine.
     for (width, shelf) in [
         (2560.0, super::ShelfMode::Shelf),
         (1440.0, super::ShelfMode::Shelf),
         (1100.0, super::ShelfMode::Shelf),
-        (899.0, super::ShelfMode::Spine),
+        (899.0, super::ShelfMode::Shelf),
+        (880.0, super::ShelfMode::Spine),
         (760.0, super::ShelfMode::Spine),
-        (639.0, super::ShelfMode::Hidden),
+        (639.0, super::ShelfMode::Spine),
+        (620.0, super::ShelfMode::Hidden),
         (480.0, super::ShelfMode::Hidden),
     ] {
         rig.cx.simulate_resize(size(px(width), px(900.0)));
@@ -1393,10 +1625,20 @@ fn immediate_page_to_graph_acquires_its_actual_visible_hero(cx: &mut TestAppCont
     let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
     rig.go(Intent::Navigate(page_route("RelationLabel")));
     rig.repaint();
+    let key = super::kit::shared_id(&symbol("RelationLabel"));
+    let hero = rig.cx.update(|window, cx| facet::motion::shared::last_bounds(key, window, cx)).expect("Page A paints its hero");
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
     rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::SetView(View::Graph), cx));
     rig.frame(16);
     assert_eq!(rig.route(), view_route("RelationLabel", View::Graph));
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_gem_morphing(cx)), "the immediately visible Page A supplies the native canvas endpoint");
+    // The Fold carries the gem from the immediately visible Page A's hero
+    // into the node (W-Flip T2); the map draws no second gem of its own.
+    let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
+    let edge = |key: &str| ledger.tracks.iter().rev().find(|track| track.key == key).map(|track| track.value);
+    let gem = (edge("reader.gem.left"), edge("reader.gem.top"), edge("reader.gem.right"), edge("reader.gem.bottom"));
+    let want = (Some(f32::from(hero.left())), Some(f32::from(hero.top())), Some(f32::from(hero.right())), Some(f32::from(hero.bottom())));
+    assert_eq!(gem, want, "the travelling gem starts on Page A's painted hero");
+    assert!(!rig.shell.read_with(rig.cx, |shell, cx| shell.graph_gem_morphing(cx)), "one gem travels, not two");
     rig.settle();
     assert!(!rig.shell.read_with(rig.cx, |shell, cx| shell.graph_gem_morphing(cx)));
 }
@@ -1419,12 +1661,12 @@ fn retained_pinned_card_actions_reveal_or_open_the_cards_exact_node(cx: &mut Tes
     assert_eq!(rig.route(), indexed_view_route("RelationDirection", View::Page), "an unavailable pinned symbol does not route arbitrary A or B");
     assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx)).contains("no exact match"));
     rig.graph.store.read_with(rig.cx, |store, cx| {
-        let notice = store.graph_notice().expect("hidden pinned failure has visible current-page feedback");
+        let notice = store.notice().expect("hidden pinned failure has visible current-page feedback");
         let (lines, _) = super::status::feedback_lines(&store.snapshot(), None, Some(notice), px(1440.0), cx);
         assert!(lines.join("").contains("no exact match"));
     });
     rig.go(Intent::Navigate(page_route("RelationLabel")));
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.graph_notice().is_none()), "the previous page's failed card intent does not follow another route");
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.notice().is_none()), "the previous page's failed card intent does not follow another route");
 }
 
 #[gpui::test]

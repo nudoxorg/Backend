@@ -1,23 +1,23 @@
 //! Go cross-file type mentions join through the module import path.
 
 use super::{
-    compiled_source_path, join_project_mention, query_semantic_id, semantic_coordinate,
-    ProjectCallableIndex,
-};
-use backend_extension_trustfall::{
-    CompilerSemanticEvidence, PackageScopeEvidence, SemanticQueryCancellation,
-    SemanticQueryCorpus, SemanticQueryEvent, SemanticQueryEvidence, SemanticQueryFact,
-    SemanticQueryPresentation, SemanticQueryRequest, execute_semantic_query,
+    ProjectCallableIndex, compiled_source_path, join_project_mention, query_semantic_id,
+    semantic_coordinate,
 };
 use backend_engine::{RowId, package_key};
+use backend_extension_trustfall::{
+    CompilerSemanticEvidence, PackageScopeEvidence, SemanticQueryCancellation, SemanticQueryCorpus,
+    SemanticQueryEvent, SemanticQueryEvidence, SemanticQueryFact, SemanticQueryPresentation,
+    SemanticQueryRequest, execute_semantic_query,
+};
 use backend_semantic::ir::{
     BorrowedTree, CorePayloadHash, DeclarationFamilyId, DeclarationIdentity, EntityAuthorityFacts,
     EntityVersion, ExternalDeclarationIdentity, ExternalId, ExternalTarget, FactAvailability,
     ForeignDeclarationId, ForeignExternalTarget, ForeignTargetOrigin, IrBuilder, ItemKind,
-    LinkKind, LinkTarget, OccurrenceAuthorityFacts, ParentageAuthority, SemanticImageView,
-    SourceIdentity, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget,
-    VariantAvailability, VariantFingerprint, Visibility, encode_full_semantic_image,
-    full_semantic_image_len, SemanticCoreReader, SemanticReader,
+    LinkKind, LinkTarget, OccurrenceAuthorityFacts, ParentageAuthority, SemanticCoreReader,
+    SemanticImageView, SemanticReader, SourceIdentity, TreeEntityId, TreeItemInput, TreeLinkInput,
+    TreeLinkTarget, VariantAvailability, VariantFingerprint, Visibility,
+    encode_full_semantic_image, full_semantic_image_len,
 };
 use backend_semantic::vocabulary::{
     CompileRecipeFact, LanguageProfile, NativeTool, PackageUrl, RustEdition, Stage,
@@ -226,7 +226,8 @@ fn join_project_mention_go_record_retargets_workout() -> Result<(), String> {
     let (service_bytes, caller_bytes, workout_identity, _) = go_workout_drive_fixture(81)?;
     let paths = project_paths(&["example.com/demo/service.go", "example.com/demo/lib.go"]);
     let images = [&service_bytes[..], &caller_bytes[..]];
-    let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+    let index =
+        ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
     let published = BTreeSet::from([workout_identity, fixture_version(2).identity()]);
     let (external, link_kind, caller_path) = foreign_mention_from_caller(&caller_bytes)?;
     let caller_image =
@@ -256,7 +257,8 @@ fn join_project_mention_go_query_corpus_referenced_by_names_drive() -> Result<()
         go_workout_drive_fixture(82)?;
     let paths = project_paths(&["example.com/demo/service.go", "example.com/demo/lib.go"]);
     let images = [&service_bytes[..], &caller_bytes[..]];
-    let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+    let index =
+        ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
     let published = BTreeSet::from([workout_identity, drive_identity]);
     let (external, link_kind, caller_path) = foreign_mention_from_caller(&caller_bytes)?;
     let caller_image =
@@ -379,7 +381,8 @@ fn join_project_mention_ambiguous_go_service_paths_returns_none() -> Result<(), 
         &duplicate_service_bytes[..],
         &caller_bytes[..],
     ];
-    let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+    let index =
+        ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
     let published = BTreeSet::from([
         fixture_version(1).identity(),
         fixture_version(3).identity(),

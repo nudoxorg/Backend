@@ -39,7 +39,8 @@ fn owner() -> (backend_local_service::EmbeddedLocalService, PathBuf, PathBuf) {
     // `/tmp`, not `temp_dir()`: a long socket path exceeds `sockaddr_un`.
     let state = PathBuf::from("/tmp").join(format!("nx-browse-{nonce}"));
     let endpoint = PathBuf::from("/tmp").join(format!("nx-browse-{nonce}.sock"));
-    std::fs::create_dir_all(state.join("data")).expect("workspace");
+    // The owner refuses a state directory anyone else could enter: 0700, not the umask's 0755.
+    crate::host::private_dir(&state.join("data")).expect("workspace");
     let paths = backend_runtime::WorkspacePaths::discover(Some(repository()), Some(state.join("data")), Some(endpoint.clone()))
         .expect("workspace paths");
     paths.initialize().expect("initialize");
@@ -79,7 +80,11 @@ fn the_library_page_shows_a_real_tree_read_by_a_real_owner(cx: &mut TestAppConte
     let fixture = repository().join("apps/desktop/tests/fixtures/browse_tree");
     let reader_endpoint = endpoint.clone();
     let pool = ReadPool::start(2, move |_| SessionReader::connect(&reader_endpoint)).expect("read pool");
-    let mut rig = rig_with_reads(cx, Some(tree_route(&fixture)), 1440.0, 900.0, pool);
+    let mut rig = rig_with_reads(cx, None, 1440.0, 900.0, pool);
+    // A real owner reads the tree through `cargo metadata`: real seconds,
+    // more under load, which `settle` waits for in real time.
+    rig.patience = Duration::from_secs(120);
+    rig.go(crate::navigation::Intent::Navigate(tree_route(&fixture)));
     // `browse` runs `cargo metadata --offline`. With the fixture's crates in
     // the local cargo cache that is the host view (31 crates, with package
     // categories); without them (a CI worker, a fresh checkout) it falls back
@@ -109,7 +114,7 @@ fn the_library_page_shows_a_real_tree_read_by_a_real_owner(cx: &mut TestAppConte
         "twice · 0.8.23 · 1.1.6",
         "bincode",
         "Here twice",
-        "4 crates compile at more than one version",
+        "4 crates appear at more than one version",
     ] {
         assert!(said.iter().any(|line| line == expected), "{expected:?} is not on screen: {said:#?}");
     }
@@ -133,8 +138,9 @@ fn the_library_page_shows_a_real_tree_read_by_a_real_owner(cx: &mut TestAppConte
     });
     assert_eq!(address, "nudox://browse_tree/tree");
 
-    // The same owner reads another project without serving the first one's
-    // cached tree (the fixture sits inside this repository's directory).
+    // The same owner reads a second pinned project without serving the
+    // first one's cached tree. Neither assertion depends on this repo's
+    // live Cargo.lock or directory name.
     let mut reader = SessionReader::connect(&endpoint);
     let tree = |root: &Path, reader: &mut SessionReader| {
         let key = crate::model::browse::BrowseKey::Tree(LocalProjectId::from_path(root).expect("project"));
@@ -146,12 +152,9 @@ fn the_library_page_shows_a_real_tree_read_by_a_real_owner(cx: &mut TestAppConte
             other => panic!("the tree read failed: {other:?}"),
         }
     };
-    let repository_tree = tree(&repository(), &mut reader);
-    // A tree is named for its project directory: `backend` in a default
-    // clone, `Backend` or CI's `src` elsewhere.
-    let checkout = repository();
-    let checkout_name = checkout.file_name().and_then(|name| name.to_str()).expect("checkout name");
-    assert_eq!(repository_tree.name, checkout_name);
+    let other_fixture = repository().join("frontends/rust/fixtures/toml_pin");
+    let other_tree = tree(&other_fixture, &mut reader);
+    assert_eq!(other_tree.name, "toml_pin");
     let again = tree(&fixture, &mut reader);
     assert_eq!(again.name, "browse_tree");
     assert_eq!(again.lede, lede);

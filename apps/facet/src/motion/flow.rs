@@ -1,15 +1,16 @@
 //! Flow: FLIP layout motion on *layout epochs*.
 //!
 //! Wrap keyed elements with [`Flow::item`]. When an element's laid-out
-//! bounds change across an epoch — a room class, density, text scale, route,
+//! bounds change across an epoch — a layout mode ([`crate::fluid`]), density, text scale, route,
 //! list order or data change — it springs from where it was painted to where
 //! it now is. Between epochs layout motion is followed directly: a window or
 //! splitter drag, or a presence slot opening above it, moves it with no lag.
 //!
 //! ```ignore
 //! // Every render: the epoch token names what counts as a discrete change.
-//! // Width is not in it (drags are followed); the room class is.
-//! self.flow.epoch((measure.room(), facet.density, facet.text_scale.to_bits(), self.order));
+//! // Width is not in it (drags are followed); the layout modes are.
+//! let notes = self.modes.settle(&fluid::NOTES, measure.fluid_room());
+//! self.flow.epoch((notes.epoch, facet.density, facet.text_scale.to_bits(), self.order));
 //! div().children(self.rows.iter().map(|row| self.flow.item(row.id, render_row(row))))
 //! ```
 //!
@@ -172,7 +173,7 @@ impl Axis {
         (then, now): (Instant, Instant),
         (step, grid): (f32, f32),
         (was, carry): (f32, f32),
-        epoch: bool,
+        (epoch, only_epochs): (bool, bool),
     ) -> bool {
         let dt = now.saturating_duration_since(then).as_secs_f32();
         // Prediction classifies layout changes; physical motion determines
@@ -187,7 +188,8 @@ impl Axis {
         // spring can make the painted speed small); otherwise a grid step is
         // a jump to absorb (a slowly creeping layout stays smooth).
         let followed = !epoch
-            && (follows(step, predicted, sprung)
+            && (only_epochs
+                || follows(step, predicted, sprung)
                 || (dt > 0.0 && sprung.abs() >= grid && (step - predicted).abs() <= grid + NOISE));
         if followed && dt > 0.0 {
             // A compensated jump is not layout motion. For a followed step,
@@ -239,6 +241,9 @@ struct Record {
     reported: bool,
     /// Where it was last published.
     shown: Point<f32>,
+    /// A wrapped list's arrival (the frame it arrived in), not drawn until
+    /// a later frame finds the others standing still.
+    waiting: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -276,6 +281,11 @@ pub(crate) struct Placement {
     actual_velocity: Point<f32>,
     /// Whether the spring was rebased this frame (a new probe segment).
     rebased: bool,
+    /// Whether it was put where its layout is by design this frame (a
+    /// landing, a line change in a wrapped list): published as a snap.
+    snapped: bool,
+    /// A wrapped list's arrival still waiting for room: laid out, not drawn.
+    waiting: bool,
     /// Per axis (x, y): whether its spring is live, and the probe segment it
     /// is in.
     axes: [(bool, Option<Segment>); 2],
@@ -298,6 +308,22 @@ pub(crate) struct Model {
     drifting: bool,
     /// The device-pixel grid layout lands on (px; 0 when exact).
     grid: f32,
+    /// The frame (its generation) whose layout changes land instead of
+    /// flowing ([`Flow::land`]).
+    landing: Option<u64>,
+    /// An item that moves to another line lands there instead of flying
+    /// across the others ([`Flow::wrapped`], [`Flow::lands_lines`]).
+    wrapped: bool,
+    /// A wrapped list's arrivals, and its items that changed line, wait
+    /// until the others are still ([`Flow::wrapped`]; a page's blocks never
+    /// wait: its words are not held back).
+    waits: bool,
+    /// How many items it held when this frame began: an item that is new
+    /// to a list already on screen is an arrival.
+    prior: usize,
+    /// Only an epoch's change flows ([`Flow::only_epochs`]); every other
+    /// layout step is followed as it comes.
+    only_epochs: bool,
 }
 
 impl Model {
@@ -312,6 +338,11 @@ impl Model {
             drifted: false,
             drifting: false,
             grid: 0.0,
+            landing: None,
+            wrapped: false,
+            waits: false,
+            prior: 0,
+            only_epochs: false,
         }
     }
 
@@ -323,6 +354,7 @@ impl Model {
         self.drifted = std::mem::take(&mut self.drifting);
         let last = self.generation;
         self.generation += 1;
+        self.landing = None;
         let vanished = &mut self.vanished;
         self.records.retain(|key, record| {
             let kept = record.seen >= last;
@@ -331,6 +363,7 @@ impl Model {
             }
             kept
         });
+        self.prior = self.records.len();
     }
 
     /// Places `key`, laid out at `layout` (its origin measured from its
@@ -346,7 +379,11 @@ impl Model {
         reduced: bool,
     ) -> Placement {
         let carry = carried.layout;
-        let (spring, epoch, generation) = (self.spring, self.epoch, self.generation);
+        let (spring, epoch, generation, wrapped, prior, only_epochs) = (self.spring, self.epoch, self.generation, self.wrapped, self.prior, self.only_epochs);
+        let waits = self.waits;
+        let known = self.records.contains_key(key);
+        // Whether anything in the list is still on its way somewhere.
+        let others_moving = waits && !self.is_settled(now);
         let record = self.records.entry(key.clone()).or_insert_with(|| Record {
             layout,
             x: Axis::default(),
@@ -359,12 +396,24 @@ impl Model {
             segment: [None, None],
             reported: false,
             shown: point(f32::from(layout.origin.x), f32::from(layout.origin.y)),
+            // An arrival in a wrapped list already on screen waits, laid out
+            // but not drawn, until the others have made room for it.
+            waiting: (waits && prior > 0 && !reduced).then_some(generation),
         });
         record.seen = generation;
         let step = point(
             f32::from(layout.origin.x - record.layout.origin.x),
             f32::from(layout.origin.y - record.layout.origin.y),
         );
+        // A designed snap: a landing frame, or (in a wrapped list) a move to
+        // another line. It lands like reduced motion: nothing flies.
+        // A new arrangement (an epoch) that sends a part to another line
+        // lands it too: a flight between lines crosses what is on them.
+        let line = wrapped && known && step.y.abs() >= f32::from(layout.size.height) * 0.5;
+        let stepped = step.x.abs() > NOISE || step.y.abs() > NOISE;
+        let flying = [record.x.spring, record.y.spring, record.w, record.h].iter().any(|track| track.moving.is_some());
+        let snapped = !reduced && known && ((self.landing == Some(generation) && (stepped || flying)) || (line && stepped));
+        let reduced = reduced || snapped;
         // Reduced motion follows everything (the springs are cleared below).
         let (then, grid) = (record.at, self.grid);
         let mut rebased_x = record.x.place(
@@ -372,14 +421,14 @@ impl Model {
             (then, now),
             (step.x, grid),
             (record.carry.x, carry.x),
-            epoch,
+            (epoch, only_epochs),
         );
         let mut rebased_y = record.y.place(
             spring,
             (then, now),
             (step.y, grid),
             (record.carry.y, carry.y),
-            epoch,
+            (epoch, only_epochs),
         );
         if epoch && !reduced && resize == Resize::Scale {
             let (dw, dh) = (
@@ -454,6 +503,16 @@ impl Model {
             axes[index] = (axis_live, record.segment[index]);
         }
         let rebased = rebased_x || rebased_y;
+        // A name that changed line waits, like an arrival, for the ones
+        // already on that line to make room (it would land on them).
+        if waits && line && snapped {
+            record.waiting = Some(generation);
+        }
+        // An arrival shows once a later frame finds the others still.
+        if record.waiting.is_some_and(|arrived| generation > arrived && !others_moving) || (reduced && !snapped) {
+            record.waiting = None;
+        }
+        let waiting = record.waiting.is_some();
         Placement {
             offset: point(px(x), px(y)),
             grow: Size {
@@ -465,6 +524,8 @@ impl Model {
             velocity: point(record.x.velocity, record.y.velocity),
             actual_velocity: point(record.x.actual_velocity, record.y.actual_velocity),
             rebased: rebased && live,
+            snapped,
+            waiting,
             axes,
         }
     }
@@ -648,9 +709,74 @@ impl Flow {
         self.inner.borrow().model.is_settled(now(cx))
     }
 
+    /// A wrapped list (a ring of names that re-wraps as it grows): an item
+    /// that moves to another line lands there instead of flying across the
+    /// others; moves along a line still flow.
+    #[must_use]
+    pub fn wrapped(self) -> Self {
+        {
+            let model = &mut self.inner.borrow_mut().model;
+            model.wrapped = true;
+            model.waits = true;
+        }
+        self
+    }
+
+    /// A page of blocks: a block a new arrangement sends to another line
+    /// lands there instead of flying across the others, as in a
+    /// [`wrapped`](Self::wrapped) list, but nothing waits: a page's words
+    /// are shown the frame they arrive.
+    #[must_use]
+    pub fn lands_lines(self) -> Self {
+        self.inner.borrow_mut().model.wrapped = true;
+        self
+    }
+
+    /// Only a change of epoch flows: every other layout step is followed as
+    /// it comes (blocks that something above them carries, such as a panel
+    /// opening, move with it exactly; only a new arrangement glides them).
+    #[must_use]
+    pub fn only_epochs(self) -> Self {
+        self.inner.borrow_mut().model.only_epochs = true;
+        self
+    }
+
     /// Every item jumps to its layout.
     pub fn settle(&self) {
         self.inner.borrow_mut().model.settle();
+    }
+
+    /// Forgets every item: the flow's items are no longer drawn (their page
+    /// went away), so when they are drawn again each stands where it lays
+    /// out, never flying from where it was last seen. An item still moving
+    /// ends its tracks where it was last shown (the probe hears it go).
+    pub fn forget(&self, cx: &mut App) {
+        let (scope, gone) = {
+            let mut inner = self.inner.borrow_mut();
+            if inner.model.records.is_empty() {
+                return;
+            }
+            let gone: Vec<(ElementId, Point<f32>)> = inner.model.records.drain().filter(|(_, record)| record.reported).map(|(key, record)| (key, record.shown)).collect();
+            inner.model.vanished.clear();
+            (inner.scope.clone(), gone)
+        };
+        if probe::enabled(cx) {
+            let now = now(cx);
+            for (key, shown) in gone {
+                publish(cx, &scope, &key, Sample::gone(shown), now);
+            }
+        }
+    }
+
+    /// This frame's layout changes land where they are laid out instead of
+    /// flowing (call it before the items are prepainted). For a viewport that
+    /// jumped under the items: a reader that scrolled to keep the keyboard's
+    /// focus in view after a reflow has already broken the continuity a
+    /// flight would keep, and a flight from where the part was would carry
+    /// the focus off screen.
+    pub fn land(&self) {
+        let mut inner = self.inner.borrow_mut();
+        inner.model.landing = Some(inner.model.generation);
     }
 
     /// Items tracked.
@@ -837,8 +963,29 @@ impl gpui::Element for FlowItem {
                 vanished,
             )
         };
-        if placement.live {
+        if placement.live || placement.waiting {
             request_frame(window, cx);
+        }
+        if placement.waiting {
+            // Laid out (it holds its place) but not drawn: the others are
+            // still making room for it. A line change is said as the snap it
+            // is, at the place it will show at.
+            if probe::enabled(cx) {
+                for (key, shown) in vanished {
+                    publish(cx, &scope, &key, Sample::gone(shown), now);
+                }
+                if placement.snapped {
+                    let target = layout + context.offset;
+                    let target = point(f32::from(target.x), f32::from(target.y));
+                    publish_as(cx, &scope, &self.key, Sample::gone(target), now, TrackKind::Snap);
+                    if let Some(record) = self.inner.borrow_mut().model.records.get_mut(&self.key) {
+                        record.reported = false;
+                        record.shown = target;
+                    }
+                }
+            }
+            self.child = None;
+            return;
         }
         if probe::enabled(cx) {
             for (key, shown) in vanished {
@@ -855,7 +1002,10 @@ impl gpui::Element for FlowItem {
             let velocity = context.actual_carried + placement.actual_velocity + placement.spring;
             let moving =
                 placement.live || placement.rebased || velocity.x.abs() + velocity.y.abs() > NOISE;
-            if moving || finished {
+            if placement.snapped {
+                // Where it now stands, said as the designed snap it is.
+                publish_as(cx, &scope, &self.key, Sample::gone(target), now, TrackKind::Snap);
+            } else if moving || finished {
                 publish(
                     cx,
                     &scope,
@@ -988,6 +1138,10 @@ impl Sample {
 /// (an epoch does not move what is painted, so the track is continuous
 /// across it), with the velocity of everything that moves it.
 fn publish(cx: &mut App, scope: &SharedString, key: &ElementId, sample: Sample, now: Instant) {
+    publish_as(cx, scope, key, sample, now, TrackKind::Spring);
+}
+
+fn publish_as(cx: &mut App, scope: &SharedString, key: &ElementId, sample: Sample, now: Instant, kind: TrackKind) {
     let epoch = motion_epoch(cx);
     let millis = |at: Instant| at.saturating_duration_since(epoch).as_secs_f64() * 1000.0;
     let at_ms = millis(now);
@@ -1001,7 +1155,7 @@ fn publish(cx: &mut App, scope: &SharedString, key: &ElementId, sample: Sample, 
         let budget_ms = leg.budget.as_secs_f64() * 1000.0;
         probe::record_track(cx, || TrackSample {
             key: format!("{scope}.{key}.{axis}"),
-            kind: TrackKind::Spring,
+            kind,
             value,
             target,
             velocity,
@@ -1161,7 +1315,7 @@ mod tests {
             let now = t0 + ms(elapsed);
             let phase = SNAPPY.step(origin, elapsed as f64 / 1000.0);
             let physical = 187.5 * elapsed as f32 / 1000.0;
-            assert!(axis.place(SNAPPY, (t0, now), (step, 0.5), (0.0, 0.0), epoch));
+            assert!(axis.place(SNAPPY, (t0, now), (step, 0.5), (0.0, 0.0), (epoch, false)));
             let after = axis.spring.sample(SNAPPY, now);
             assert!((after.offset - (phase.offset + f64::from(physical - step))).abs() < 1e-5);
             assert!(
@@ -1190,7 +1344,7 @@ mod tests {
             actual_velocity: 187.5,
         };
         let now = t0 + ms(16);
-        assert!(axis.place(SNAPPY, (t0, now), (6.0, 0.5), (0.0, 0.0), false));
+        assert!(axis.place(SNAPPY, (t0, now), (6.0, 0.5), (0.0, 0.0), (false, false)));
         let after = axis.spring.sample(SNAPPY, now);
         let expected = SNAPPY.step(origin, 0.016);
         let painted = 206.0 + 6.0 + after.offset;
@@ -1203,7 +1357,7 @@ mod tests {
         );
         // Replaying the same clock must not replace physical momentum with
         // the predictor newly learned from the discontinuous layout jump.
-        assert!(!axis.place(SNAPPY, (now, now), (0.0, 0.5), (0.0, 0.0), false));
+        assert!(!axis.place(SNAPPY, (now, now), (0.0, 0.5), (0.0, 0.0), (false, false)));
         assert_eq!(axis.actual_velocity, 187.5);
         assert_eq!(axis.spring.sample(SNAPPY, now), after);
     }
@@ -1464,6 +1618,32 @@ mod tests {
         let p = model.place(&key, at(50.0, 90.0), still(), Resize::Scale, t0, true);
         assert_eq!(p.offset, origin());
         assert!(!p.live);
+    }
+
+    /// A wrapped list holds back an arrival and a name that changed line
+    /// while the others still move; a page of blocks lands the line change
+    /// too, but shows everything the frame it arrives.
+    #[test]
+    fn a_page_of_blocks_lands_a_line_change_and_holds_nothing_back() {
+        for waits in [true, false] {
+            let t0 = Instant::now();
+            let (a, b, c) = (ElementId::Integer(1), ElementId::Integer(2), ElementId::Integer(3));
+            let mut model = Model::new();
+            model.wrapped = true;
+            model.waits = waits;
+            model.frame(0);
+            model.place(&a, at(0.0, 0.0), still(), Resize::Scale, t0, false);
+            model.place(&b, at(0.0, 20.0), still(), Resize::Scale, t0, false);
+            model.frame(0);
+            let now = t0 + ms(16);
+            // A moves along its line (flies), B goes down a line, C arrives.
+            let flown = model.place(&a, at(200.0, 0.0), still(), Resize::Scale, now, false);
+            let lined = model.place(&b, at(0.0, 40.0), still(), Resize::Scale, now, false);
+            let new = model.place(&c, at(0.0, 60.0), still(), Resize::Scale, now, false);
+            assert!(flown.live && !flown.snapped, "a move along a line flies");
+            assert!(lined.snapped && lined.offset == origin(), "a move to another line lands");
+            assert_eq!((lined.waiting, new.waiting), (waits, waits), "waits = {waits}: the line change and the arrival are held back only in a wrapped list");
+        }
     }
 
     #[test]

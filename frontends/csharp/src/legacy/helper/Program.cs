@@ -145,6 +145,9 @@ internal sealed record OracleOptions
     /// <summary>Overrides the assembly name inferred from the roots.</summary>
     public string? AssemblyName { get; init; }
 
+    /// <summary>Exact project file whose directory scopes source loading.</summary>
+    public string? ProjectFile { get; init; }
+
     /// <summary>Directory of reference assemblies; <c>null</c> means the running runtime's.</summary>
     public string? ReferenceDirectory { get; init; }
 
@@ -189,6 +192,7 @@ internal sealed record OracleOptions
           --source-binding FILE Bind the authority image to this configured source file.
           --lang-version VER   C# language version (csharp-10 through csharp-14).
           --assembly-name NAME  Override the inferred assembly name.
+          --project-file FILE  Select this exact project beneath the package root.
           --ref-dir DIR         Reference assemblies (default: the running runtime's).
           --define SYM          Extra preprocessor symbol. Repeatable.
           --using NS            Extra global using. Repeatable.
@@ -207,6 +211,7 @@ internal sealed record OracleOptions
         var usings = new List<string>();
         string? outPath = null;
         string? assemblyName = null;
+        string? projectFile = null;
         string? refDir = null;
         var includeNonPublic = true;
         var implicitUsings = true;
@@ -257,6 +262,9 @@ internal sealed record OracleOptions
                     break;
                 case "--assembly-name":
                     assemblyName = Value("--assembly-name");
+                    break;
+                case "--project-file":
+                    projectFile = Value("--project-file");
                     break;
                 case "--ref-dir":
                     refDir = Value("--ref-dir");
@@ -316,6 +324,7 @@ internal sealed record OracleOptions
             LanguageVersion = languageVersion,
             SourceBinding = sourceBinding,
             AssemblyName = assemblyName,
+            ProjectFile = projectFile,
             ReferenceDirectory = refDir,
             DefineSymbols = defines,
             ExtraUsings = usings,

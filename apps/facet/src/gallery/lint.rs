@@ -5,9 +5,12 @@
 //! |---|---|
 //! | `clip` | a text box is narrower than its text (clip overflow) or than its widest word (wrap overflow) and draws no ellipsis, or shorter than one line |
 //! | `overlap` | two texts of one [`crate::probe::region`] overlap by more than 1 px in both axes |
-//! | `offscreen` | a focusable element is not entirely inside the viewport |
+//! | `offscreen` | a focusable element is not entirely inside the viewport, or a text lies wholly past its left or right edge with no scroll container reaching it |
 //! | `target` | a clickable element is smaller than 24 x 24 px |
 //! | `contrast` | the ink painted in a text box against the ground painted around it is under 4.5:1 (3:1 for large text: 24 px, or 18.66 px at weight 700) |
+//!
+//! Text and targets under a modal veil (an open dialog's scrim, `probe::veil`) are not judged:
+//! the page beneath a dialog is not readable, the dialog's own text is what the reader sees.
 //!
 //! Contrast is measured from the frame's pixels: the ground is the box's
 //! most common colour, the ink the pixel that contrasts with it most. Glyph
@@ -16,6 +19,8 @@
 
 use super::json::Json;
 use crate::probe::Ledger;
+use crate::probe::rules::{overlap, stranded};
+pub use crate::probe::rules::{fully_visible, visible_bounds};
 use backend_gui_harness::{Viewport, contrast_ratio};
 use image::RgbaImage;
 use std::collections::HashMap;
@@ -82,6 +87,11 @@ pub struct Coverage {
     pub contrast_skipped: usize,
     /// Text rectangles fully hidden by the actual native paint mask/window.
     pub hidden_texts: usize,
+    /// Texts under a modal veil (the page beneath an open dialog): not
+    /// judged, the dialog's own text is.
+    pub occluded_texts: usize,
+    /// Targets under a modal veil: not judged.
+    pub occluded_targets: usize,
 }
 
 /// The lints of one frame.
@@ -93,25 +103,6 @@ pub struct Linted {
     pub coverage: Coverage,
     /// The lowest measured contrast and where.
     pub lowest_contrast: Option<(String, f32)>,
-}
-
-fn intersection(a: &crate::probe::BoundsSample, b: &crate::probe::BoundsSample) -> (f32, f32) {
-    let width = (a.x + a.width).min(b.x + b.width) - a.x.max(b.x);
-    let height = (a.y + a.height).min(b.y + b.height) - a.y.max(b.y);
-    (width, height)
-}
-
-/// Native visibility affects pixel/overlap checks, never intrinsic layout metrics.
-fn visible_bounds(text: &crate::probe::TextSample, width: f32, height: f32) -> Option<crate::probe::BoundsSample> {
-    let bounds = &text.bounds;
-    let clip = text.paint_clip.as_ref();
-    let x = bounds.x.max(clip.map_or(0.0, |b| b.x)).max(0.0);
-    let y = bounds.y.max(clip.map_or(0.0, |b| b.y)).max(0.0);
-    let right = (bounds.x + bounds.width).min(clip.map_or(width, |b| b.x + b.width)).min(width);
-    let bottom = (bounds.y + bounds.height).min(clip.map_or(height, |b| b.y + b.height)).min(height);
-    (right > x && bottom > y).then(|| crate::probe::BoundsSample {
-        key: bounds.key.clone(), x, y, width: right - x, height: bottom - y,
-    })
 }
 
 /// Measures the contrast of the ink in a logical box of `image` (painted at
@@ -165,8 +156,29 @@ pub fn lint(image: &RgbaImage, ledger: &Ledger, viewport: Viewport) -> Linted {
     let mut out = Linted::default();
     #[allow(clippy::cast_precision_loss)]
     let (width, height) = (viewport.width as f32, viewport.height as f32);
-    for text in &ledger.texts {
+    let under_veil: Vec<bool> = ledger
+        .texts
+        .iter()
+        .enumerate()
+        .map(|(index, text)| ledger.veils.iter().any(|veil| veil.covers_text(index, &text.bounds)))
+        .collect();
+    for (index, text) in ledger.texts.iter().enumerate() {
+        if under_veil[index] {
+            out.coverage.occluded_texts += 1;
+            continue;
+        }
         out.coverage.texts += 1;
+        if let Some(side) = stranded(text, &ledger.scrolls, width) {
+            out.lints.push(Lint {
+                rule: Rule::Offscreen,
+                key: text.key.clone(),
+                detail: format!(
+                    "`{}` at ({:.1}, {:.1}) {:.1}x{:.1} lies wholly past the {} edge of the {width:.0} px viewport, \
+                     and no scroll container's content reaches it",
+                    text.content, text.bounds.x, text.bounds.y, text.bounds.width, text.bounds.height, side.name()
+                ),
+            });
+        }
         if text.clipped_without_ellipsis() {
             out.lints.push(Lint {
                 rule: Rule::Clip,
@@ -223,12 +235,15 @@ pub fn lint(image: &RgbaImage, ledger: &Ledger, viewport: Viewport) -> Linted {
     }
     // Overlap between texts of one region.
     for (index, a) in ledger.texts.iter().enumerate() {
-        for b in &ledger.texts[index + 1..] {
-            if a.region != b.region || a.key == b.key {
+        if under_veil[index] {
+            continue;
+        }
+        for (offset, b) in ledger.texts[index + 1..].iter().enumerate() {
+            if under_veil[index + 1 + offset] || a.region != b.region || a.key == b.key {
                 continue;
             }
             let (Some(a_visible), Some(b_visible)) = (visible_bounds(a, width, height), visible_bounds(b, width, height)) else { continue; };
-            let (w, h) = intersection(&a_visible, &b_visible);
+            let (w, h) = overlap(&a_visible, &b_visible);
             if w > 1.0 && h > 1.0 {
                 out.lints.push(Lint {
                     rule: Rule::Overlap,
@@ -241,7 +256,11 @@ pub fn lint(image: &RgbaImage, ledger: &Ledger, viewport: Viewport) -> Linted {
             }
         }
     }
-    for target in &ledger.targets {
+    for (index, target) in ledger.targets.iter().enumerate() {
+        if ledger.veils.iter().any(|veil| veil.covers_target(index, &target.bounds)) {
+            out.coverage.occluded_targets += 1;
+            continue;
+        }
         out.coverage.targets += 1;
         let b = &target.bounds;
         let reachable_by_scroll = ledger.scrolls.iter().any(|scroll| scroll.reaches(b));
@@ -280,6 +299,8 @@ pub fn json(linted: &Linted) -> Json {
             Json::obj([
                 ("texts", Json::num(linted.coverage.texts as f64)),
                 ("hidden_texts", Json::num(linted.coverage.hidden_texts as f64)),
+                ("occluded_texts", Json::num(linted.coverage.occluded_texts as f64)),
+                ("occluded_targets", Json::num(linted.coverage.occluded_targets as f64)),
                 ("targets", Json::num(linted.coverage.targets as f64)),
                 ("contrast", Json::num(linted.coverage.contrast as f64)),
                 (
@@ -321,7 +342,7 @@ pub fn json(linted: &Linted) -> Json {
 
 #[cfg(test)]
 mod tests {
-    use super::{ink_contrast, lint};
+    use super::{fully_visible, ink_contrast, lint};
     use crate::probe::{BoundsSample, Ledger, ScrollSample, Target, TargetSample};
     use backend_gui_harness::Viewport;
     use image::{Rgba, RgbaImage};
@@ -363,6 +384,53 @@ mod tests {
         crate::probe::TextSample { key: key.to_owned(), bounds: rect, paint_clip: clip,
             natural_width: 20.0, overflow: crate::probe::TextOverflow::Clip, content: "label".to_owned(),
             min_width: 20.0, line_height: 10.0, size: 12.0, weight: 400.0, region: Some("graph".to_owned()) }
+    }
+
+    /// A dialog over a page: the page beneath is under the scrim and is not judged (its clipped
+    /// text and its tiny target would otherwise fail lint on every dialog scene); the dialog's
+    /// own text and target are.
+    #[test]
+    fn lint_judges_only_what_is_above_a_modal_veil() {
+        use crate::probe::VeilSample;
+        let mut under = text_at("page-clipped", bounds(20.0, 20.0, 30.0, 14.0), None);
+        under.natural_width = 200.0;
+        let mut above = text_at("dialog-clipped", bounds(120.0, 120.0, 30.0, 14.0), None);
+        above.natural_width = 200.0;
+        let target = |key: &str, rect: BoundsSample| TargetSample {
+            key: key.to_owned(),
+            bounds: rect,
+            state: Target { clickable: true, ..Target::default() },
+        };
+        let ledger = Ledger {
+            texts: vec![under, above],
+            targets: vec![target("page-tiny", bounds(20.0, 60.0, 12.0, 12.0)), target("dialog-tiny", bounds(120.0, 160.0, 12.0, 12.0))],
+            veils: vec![VeilSample { bounds: bounds(0.0, 0.0, 400.0, 300.0), texts: 1, targets: 1 }],
+            ..Ledger::default()
+        };
+        let result = lint(&blank(400, 300), &ledger, viewport());
+        assert_eq!((result.coverage.occluded_texts, result.coverage.occluded_targets), (1, 1));
+        assert_eq!((result.coverage.texts, result.coverage.targets), (1, 1), "only the dialog is judged");
+        let keys: Vec<&str> = result.lints.iter().map(|lint| lint.key.as_str()).collect();
+        assert!(!keys.iter().any(|key| key.starts_with("page-")), "the page under the scrim is not judged: {keys:?}");
+        assert!(keys.contains(&"dialog-clipped") && keys.contains(&"dialog-tiny"), "the dialog is: {keys:?}");
+    }
+
+    #[test]
+    fn exact_text_visibility_handles_fractional_edges_and_clips() {
+        let intrinsic = bounds(10.1, 5.2, 30.2, 12.3);
+        let fully_contained = text_at(
+            "fractional",
+            intrinsic.clone(),
+            Some(bounds(0.1, 0.2, 40.3, 20.0)),
+        );
+        assert!(fully_visible(&fully_contained, 100.0, 100.0));
+
+        let clipped = text_at(
+            "clipped",
+            intrinsic,
+            Some(bounds(0.1, 0.2, 40.0, 20.0)),
+        );
+        assert!(!fully_visible(&clipped, 100.0, 100.0));
     }
 
     #[test]
@@ -496,5 +564,38 @@ mod tests {
         // One colour: nothing painted, nothing measured.
         let blank = RgbaImage::from_pixel(40, 20, Rgba([10, 14, 24, 255]));
         assert!(ink_contrast(&blank, 2, 0.0, 0.0, 20.0, 10.0).is_none());
+    }
+
+    /// A strip laid out past the right edge has no visible part, so the other
+    /// rules have nothing to measure and lint it clean. It is an `offscreen`
+    /// finding unless a scroll container reaches it.
+    #[test]
+    fn a_text_wholly_past_the_edge_is_an_offscreen_finding_unless_a_scroller_reaches_it() {
+        use crate::probe::{ScrollSample, TextOverflow, TextSample};
+        let strip = |x: f32| TextSample {
+            key: "strip-word".to_owned(),
+            bounds: bounds(x, 40.0, 90.0, 20.0),
+            paint_clip: None,
+            natural_width: 90.0,
+            overflow: TextOverflow::Wrap,
+            content: "as_integer".to_owned(),
+            min_width: 90.0,
+            line_height: 20.0,
+            size: 14.0,
+            weight: 400.0,
+            region: None,
+        };
+        let offscreen = |ledger: &Ledger| {
+            lint(&blank(400, 300), ledger, viewport()).lints.iter().filter(|lint| lint.rule == super::Rule::Offscreen && lint.key == "strip-word").count()
+        };
+        // Wholly right of the 400 px viewport: a finding, in words.
+        let stranded = Ledger { texts: vec![strip(420.0)], ..Ledger::default() };
+        let found = lint(&blank(400, 300), &stranded, viewport());
+        let finding = found.lints.iter().find(|lint| lint.key == "strip-word").expect("a stranded text is a finding");
+        assert!(finding.detail.contains("wholly past the right edge"), "{}", finding.detail);
+        // Inside the window, or reached by a scroller, it is not.
+        assert_eq!(offscreen(&Ledger { texts: vec![strip(100.0)], ..Ledger::default() }), 0);
+        let scroller = ScrollSample { key: "strip".to_owned(), viewport: bounds(0.0, 0.0, 400.0, 60.0), content: bounds(0.0, 0.0, 900.0, 60.0) };
+        assert_eq!(offscreen(&Ledger { texts: vec![strip(420.0)], scrolls: vec![scroller], ..Ledger::default() }), 0);
     }
 }

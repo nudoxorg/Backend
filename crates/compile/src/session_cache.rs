@@ -1,14 +1,14 @@
 //! Bounded reuse of live native authority sessions.
 //!
 //! A persistent helper is an expensive compilation resource.  This cache
-//! keeps at most one live session per complete preparation key and serializes
-//! only requests using that same session.  Different authority/version keys
+//! keeps at most one live session per stable lineage and command recipe, and
+//! serializes only requests using that same session. Different authority/version keys
 //! can proceed independently.  A protocol, cancellation, or process failure
 //! retires the slot before the next caller can accidentally reuse it.
 
 use crate::{
     Cancellation, InputManifestId, NativeAuthorityRunner, NativeObservation, NativeRunnerError,
-    PersistentNativeSession, PreparationKey,
+    PersistentNativeSession, PreparationKey, SessionId, SupervisedCommand, ToolchainId,
 };
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
@@ -82,7 +82,7 @@ pub struct SessionCacheStats {
     pub failures: u64,
 }
 
-/// One manifest-bound request submitted to a persistent session cache.
+/// One exact-input request submitted to a persistent session cache.
 #[derive(Clone, Copy)]
 pub struct PersistentRequest<'a> {
     key: PreparationKey,
@@ -117,11 +117,19 @@ impl<'a> PersistentRequest<'a> {
 }
 
 struct SessionSlot {
-    key: PreparationKey,
+    key: SessionCacheKey,
+    authority: SessionId,
+    toolchain: ToolchainId,
     session: Arc<Mutex<PersistentNativeSession>>,
     generation: u64,
     in_flight: usize,
     retiring: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+struct SessionCacheKey {
+    lineage: SessionId,
+    command: [u8; 32],
 }
 
 #[derive(Default)]
@@ -139,8 +147,8 @@ struct SessionState {
 }
 
 struct StartupGate {
-    map: Arc<Mutex<BTreeMap<PreparationKey, Arc<Mutex<()>>>>>,
-    key: PreparationKey,
+    map: Arc<Mutex<BTreeMap<SessionCacheKey, Arc<Mutex<()>>>>>,
+    key: SessionCacheKey,
     lock: Arc<Mutex<()>>,
 }
 
@@ -159,7 +167,7 @@ impl Drop for StartupGate {
 pub struct PersistentSessionCache {
     config: SessionCacheConfig,
     state: Arc<Mutex<SessionState>>,
-    startup: Arc<Mutex<BTreeMap<PreparationKey, Arc<Mutex<()>>>>>,
+    startup: Arc<Mutex<BTreeMap<SessionCacheKey, Arc<Mutex<()>>>>>,
 }
 
 impl std::fmt::Debug for PersistentSessionCache {
@@ -206,28 +214,37 @@ impl PersistentSessionCache {
                 crate::ProcessError::Cancelled,
             )));
         }
-        if request.runner.command().session_key() != Some(request.key.session())
+        let Some(command_session) = request.runner.command().session_key() else {
+            return Err(SessionCacheError::KeyMismatch);
+        };
+        if command_session.lineage() != request.key.session().lineage()
+            || command_session.authority() != request.key.session().authority()
+            || request.runner.command().toolchain() != Some(request.key.toolchain())
             || request.manifest != request.key.manifest()
         {
             return Err(SessionCacheError::KeyMismatch);
         }
+        let cache_key = SessionCacheKey {
+            lineage: request.key.session().lineage(),
+            command: command_lineage(request.runner.command()),
+        };
         let startup_lock = {
             let mut startup = lock(&self.startup);
             Arc::clone(
                 startup
-                    .entry(request.key)
+                    .entry(cache_key)
                     .or_insert_with(|| Arc::new(Mutex::new(()))),
             )
         };
         let startup_gate = StartupGate {
             map: Arc::clone(&self.startup),
-            key: request.key,
+            key: cache_key,
             lock: startup_lock,
         };
         let _startup_guard = lock_cancellable(&startup_gate.lock, request.cancellation)?;
         let session = {
             let mut state = lock(&self.state);
-            if let Some(index) = state.slots.iter().position(|slot| slot.key == request.key) {
+            if let Some(index) = state.slots.iter().position(|slot| slot.key == cache_key) {
                 let session = Arc::clone(&state.slots[index].session);
                 state.slots[index].in_flight = state.slots[index]
                     .in_flight
@@ -278,7 +295,9 @@ impl PersistentSessionCache {
                 state.starts = state.starts.saturating_add(1);
                 let session = Arc::new(Mutex::new(started));
                 state.slots.push(SessionSlot {
-                    key: request.key,
+                    key: cache_key,
+                    authority: request.key.session().authority(),
+                    toolchain: request.key.toolchain(),
                     session: Arc::clone(&session),
                     generation,
                     in_flight: 1,
@@ -290,7 +309,7 @@ impl PersistentSessionCache {
         let mut session_guard = match lock_session(&session, request.cancellation) {
             Ok(guard) => guard,
             Err(error) => {
-                self.release(&request.key, &session, true);
+                self.release(&cache_key, &session, true);
                 return Err(error);
             }
         };
@@ -301,13 +320,13 @@ impl PersistentSessionCache {
             request.cancellation,
         );
         drop(session_guard);
-        self.release(&request.key, &session, result.is_err());
+        self.release(&cache_key, &session, result.is_err());
         result.map_err(SessionCacheError::Runner)
     }
 
     fn release(
         &self,
-        key: &PreparationKey,
+        key: &SessionCacheKey,
         session: &Arc<Mutex<PersistentNativeSession>>,
         failed: bool,
     ) {
@@ -336,32 +355,23 @@ impl PersistentSessionCache {
         drop(state);
     }
 
-    /// Retires one live session, terminating it when no request holds it.
+    /// Retires sessions for the preparation's stable process lineage,
+    /// terminating them when no request holds them.
     #[must_use]
     pub fn invalidate(&self, key: PreparationKey) -> bool {
-        let mut state = lock(&self.state);
-        let Some(index) = state.slots.iter().position(|slot| slot.key == key) else {
-            return false;
-        };
-        if state.slots[index].in_flight == 0 {
-            state.slots.swap_remove(index);
-        } else {
-            state.slots[index].retiring = true;
-        }
-        state.evictions = state.evictions.saturating_add(1);
-        true
+        self.invalidate_where(|slot| slot.key.lineage == key.session().lineage()) != 0
     }
 
     /// Retires all sessions for one authority digest.
     #[must_use]
-    pub fn invalidate_authority(&self, authority: crate::SessionId) -> usize {
-        self.invalidate_where(|key| key.authority() == authority)
+    pub fn invalidate_authority(&self, authority: SessionId) -> usize {
+        self.invalidate_where(|slot| slot.authority == authority)
     }
 
     /// Retires all sessions using one revoked toolchain version.
     #[must_use]
-    pub fn invalidate_toolchain(&self, toolchain: crate::ToolchainId) -> usize {
-        self.invalidate_where(|key| key.toolchain() == toolchain)
+    pub fn invalidate_toolchain(&self, toolchain: ToolchainId) -> usize {
+        self.invalidate_where(|slot| slot.toolchain == toolchain)
     }
 
     /// Returns cache accounting.
@@ -377,11 +387,11 @@ impl PersistentSessionCache {
         }
     }
 
-    fn invalidate_where(&self, predicate: impl Fn(PreparationKey) -> bool) -> usize {
+    fn invalidate_where(&self, predicate: impl Fn(&SessionSlot) -> bool) -> usize {
         let mut state = lock(&self.state);
         let before = state.slots.len();
         for slot in &mut state.slots {
-            if predicate(slot.key) {
+            if predicate(slot) {
                 slot.retiring = true;
             }
         }
@@ -391,6 +401,110 @@ impl PersistentSessionCache {
         let removed = before - state.slots.len();
         state.evictions = state.evictions.saturating_add(removed as u64);
         removed
+    }
+}
+
+fn command_lineage(command: &SupervisedCommand) -> [u8; 32] {
+    let mut identity = blake3::Hasher::new();
+    identity.update(b"backend-compile.persistent-command-lineage.v1\0");
+    update_identity_bytes(
+        &mut identity,
+        command.program().as_os_str().as_encoded_bytes(),
+    );
+    update_identity_bytes(&mut identity, command.cwd().as_os_str().as_encoded_bytes());
+    identity.update(&(command.args().len() as u64).to_be_bytes());
+    for argument in command.args() {
+        update_identity_bytes(&mut identity, argument.as_bytes());
+    }
+    identity.update(&(command.environment().variables().len() as u64).to_be_bytes());
+    for (name, value) in command.environment().variables() {
+        update_identity_bytes(&mut identity, name.as_bytes());
+        update_identity_bytes(&mut identity, value.as_bytes());
+    }
+    match command.stdin().as_bytes() {
+        Some(bytes) => {
+            identity.update(&[1]);
+            update_identity_bytes(&mut identity, bytes);
+        }
+        None => {
+            identity.update(&[0]);
+        }
+    }
+    match command.toolchain() {
+        Some(toolchain) => {
+            identity.update(&[1]);
+            identity.update(toolchain.as_bytes());
+        }
+        None => {
+            identity.update(&[0]);
+        }
+    }
+    match command.executable_identity() {
+        Some(executable) => {
+            identity.update(&[1]);
+            identity.update(executable.digest().as_bytes());
+        }
+        None => {
+            identity.update(&[0]);
+        }
+    }
+    match command.toolchain_artifact() {
+        Some(artifact) => {
+            identity.update(&[1]);
+            identity.update(artifact.identity().as_bytes());
+        }
+        None => {
+            identity.update(&[0]);
+        }
+    }
+    if let Some(session) = command.session_key() {
+        identity.update(&[1]);
+        identity.update(session.lineage().as_bytes());
+        identity.update(session.authority().as_bytes());
+    } else {
+        identity.update(&[0]);
+    }
+    identity.update(&command.protocol().version().to_be_bytes());
+    identity.update(&[u8::from(command.protocol().supports_persistent())]);
+    let limits = command.limits();
+    for bound in [
+        limits.stdout(),
+        limits.stderr(),
+        limits.output_bytes(),
+        limits.input_bytes(),
+    ] {
+        identity.update(&(bound as u64).to_be_bytes());
+    }
+    identity.update(&limits.wall_time().as_nanos().to_be_bytes());
+    update_optional_limit(&mut identity, limits.workspace_limit());
+    update_optional_limit(&mut identity, limits.process_count_limit());
+    update_optional_limit(&mut identity, limits.memory_bytes_limit());
+    match limits.cpu_time_limit() {
+        Some(duration) => {
+            identity.update(&[1]);
+            identity.update(&duration.as_nanos().to_be_bytes());
+        }
+        None => {
+            identity.update(&[0]);
+        }
+    }
+    *identity.finalize().as_bytes()
+}
+
+fn update_identity_bytes(identity: &mut blake3::Hasher, bytes: &[u8]) {
+    identity.update(&(bytes.len() as u64).to_be_bytes());
+    identity.update(bytes);
+}
+
+fn update_optional_limit(identity: &mut blake3::Hasher, limit: Option<usize>) {
+    match limit {
+        Some(limit) => {
+            identity.update(&[1]);
+            identity.update(&(limit as u64).to_be_bytes());
+        }
+        None => {
+            identity.update(&[0]);
+        }
     }
 }
 

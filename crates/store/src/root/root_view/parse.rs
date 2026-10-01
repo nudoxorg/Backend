@@ -6,8 +6,8 @@
 use alloc::{collections::TryReserveError, vec::Vec};
 use core::mem::size_of;
 
-use backend_version::{ContentAuthority, ContentAuthorityError, Domain, GenerationId};
 use backend_version::object::ObjectDescriptorDecodeError;
+use backend_version::{ContentAuthority, ContentAuthorityError, Domain, GenerationId};
 use thiserror::Error;
 use zerocopy::{FromBytes, TryFromBytes};
 
@@ -228,8 +228,8 @@ pub(super) fn parse_root<'bytes, DomainTag: Domain>(
 fn diagnose_typed_rows(bytes: &[u8]) -> RootReadError {
     const PARENT_OFFSET: usize = core::mem::offset_of!(RootWireRecord, parent_present);
     const DESCRIPTOR_OFFSET: usize = core::mem::offset_of!(RootWireRecord, descriptor);
-    const SCHEMA_OFFSET: usize =
-        DESCRIPTOR_OFFSET + core::mem::offset_of!(backend_version::object::ObjectDescriptorWireRecord, schema);
+    const SCHEMA_OFFSET: usize = DESCRIPTOR_OFFSET
+        + core::mem::offset_of!(backend_version::object::ObjectDescriptorWireRecord, schema);
     for (ordinal, row) in (0_u32..).zip(bytes.chunks_exact(ROOT_ROW_RECORD_BYTES)) {
         if let Some(&observed) = row.get(PARENT_OFFSET)
             && observed > u8::from(ParentWire::Present)

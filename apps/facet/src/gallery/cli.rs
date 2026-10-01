@@ -21,6 +21,8 @@
 //! facet-gallery verify [--scenes all|a,b] [--seeds N] [--matrix gate|full|quick|none] [--quick]
 //!                      [--no-canaries] --out DIR
 //! facet-gallery lint --scene ID|all [--input …] [--time MS] [shot options]
+//! facet-gallery legibility --scene ID --scale 2 [--input …] [--from MS] [--to MS] [--frames] [--dump] [--out DIR]
+//! facet-gallery legibility --catalog FILE --scale 2 [--only a,b] [--frames] [--dump] [--out DIR]
 //! facet-gallery window --scene ID [--theme …] [--text-scale PCT] [--reduced-motion] [--native-trace FILE.jsonl]
 //! ```
 //!
@@ -94,7 +96,8 @@ fn fail<T>(message: impl Into<String>) -> Result<T> {
     Err(GalleryError(message.into()))
 }
 
-const FLAGS: [&str; 10] = [
+const FLAGS: [&str; 11] = [
+    "dump",
     "one-sheet",
     "full",
     "quick",
@@ -278,6 +281,7 @@ fn run(args: &[String]) -> Result<()> {
         "sequence" => sequence(&options),
         "sheet" => sheet(&options),
         "motion-report" => motion_report(&options),
+        "legibility" => legibility(&options),
         "storm" => storm(&options),
         "lint" => lint(&options),
         "matrix" => matrix(&options),
@@ -352,12 +356,7 @@ fn suffix(shot: &Shot, time: u64) -> String {
 /// names and reports name the script that actually played.
 fn resolve_script(scene: &Scene, shot: &mut Shot) -> Result<()> {
     if shot.script.is_none() {
-        let mut probe = shot.clone();
-        probe.times = vec![0];
-        probe.script = None;
-        probe.frame_ms = 0;
-        let played = gallery::run(scene, &probe, &mut |_, _, _| Ok(()))?;
-        shot.script = Some(played);
+        shot.script = Some(gallery::declared(scene, shot)?);
     }
     Ok(())
 }
@@ -524,6 +523,212 @@ fn film(options: &Options) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+/// The legibility law on a film (`gallery::legible`): samples the scene's
+/// script every 16 ms from `--from` to `--to` (default: the script's end plus
+/// 600 ms) at 2x and fails if two readable texts intersect, or a drawn text
+/// lingers under legibility, in any frame. `--out DIR` writes
+/// `<scene>-legibility.{txt,json}` and, with `--frames`, every frame that
+/// broke the law.
+///
+/// `--catalog FILE` runs every film the catalog lists instead (see
+/// [`catalog`]) and prints the ledger.
+fn legibility(options: &Options) -> Result<()> {
+    if let Some(path) = options.get("catalog") {
+        return catalog(options, Path::new(path));
+    }
+    let scene = scene(options.require("scene")?)?;
+    let mut shot = options.shot(&scene)?;
+    resolve_script(&scene, &mut shot)?;
+    let dir = options.get("out").map(PathBuf::from);
+    let span = (options.number::<u64>("from")?, options.number::<u64>("to")?);
+    let (report, _) = film_legibility(options, &scene, shot, span, dir.as_deref())?;
+    if report.passed() {
+        Ok(())
+    } else {
+        fail(format!("{}: {} legibility findings", scene.id, report.findings.len()))
+    }
+}
+
+/// Films one scene under the law from `span.0` (default 0) to `span.1`
+/// (default: the script's end plus 600 ms): prints its verdict, writes its
+/// outputs into `dir` (with `--dump` the per-frame texts, with `--frames`
+/// every frame that broke the law) and returns the report with the measured
+/// film.
+fn film_legibility(
+    options: &Options,
+    scene: &Scene,
+    mut shot: Shot,
+    span: (Option<u64>, Option<u64>),
+    dir: Option<&Path>,
+) -> Result<(gallery::legible::Report, Vec<gallery::legible::Measured>)> {
+    if shot.scale != 2 {
+        return fail("legibility measures glyph contrast from pixels: it needs --scale 2");
+    }
+    shot.probe = true;
+    let step = gallery::legible::STEP_MS;
+    let end = shot.script.as_ref().map_or(0, Script::end_ms) + 600;
+    let from = span.0.unwrap_or(0) / step * step;
+    let to = span.1.unwrap_or(end);
+    shot.times = (from..=to).step_by(usize::try_from(step).unwrap_or(16)).collect();
+    shot.until_ms = to;
+    let keep = options.flag("frames");
+    let mut film = Vec::new();
+    let mut kept = Vec::new();
+    gallery::run(scene, &shot, &mut |tick, window, _| {
+        if let Some(image) = tick.image {
+            film.push(gallery::legible::measure(
+                image,
+                window.painted_texts(),
+                shot.scale,
+                tick.drawn.at_ms,
+                !tick.ledger.any_live(),
+            ));
+            if keep {
+                kept.push((tick.drawn.at_ms, image.clone()));
+            }
+        }
+        Ok(())
+    })?;
+    let report = gallery::legible::judge(&film);
+    let text = gallery::legible::text(scene.id, &report);
+    print!("{text}");
+    if let Some(dir) = dir {
+        std::fs::create_dir_all(dir).map_err(GalleryError::from_display)?;
+        std::fs::write(dir.join(format!("{}-legibility.txt", scene.id)), &text)
+            .map_err(GalleryError::from_display)?;
+        std::fs::write(
+            dir.join(format!("{}-legibility.json", scene.id)),
+            format!("{}\n", gallery::legible::json(scene.id, &report)),
+        )
+        .map_err(GalleryError::from_display)?;
+        if options.flag("dump") {
+            let lines = film
+                .iter()
+                .map(|frame| gallery::legible::frame_json(frame).to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+            std::fs::write(dir.join(format!("{}-texts.jsonl", scene.id)), format!("{lines}\n"))
+                .map_err(GalleryError::from_display)?;
+        }
+        for (at, image) in &kept {
+            let broken = report
+                .findings
+                .iter()
+                .any(|finding| (finding.from_ms..=finding.to_ms).contains(at));
+            if broken {
+                save(image, &dir.join(format!("{}-{at:05}.png", scene.id)))?;
+            }
+        }
+    }
+    Ok((report, film))
+}
+
+/// `legibility --catalog FILE`: every film in the transition catalog, under
+/// the law, as one ledger.
+///
+/// The catalog lists one film per line, `<scene> [<script>] [from=MS]
+/// [to=MS]` (`#` starts a comment; the script is relative to the catalog; a
+/// scene that plays on its own clock names its film's end with `to=`). A film's transitions are
+/// its script's instants, each named by its act line's trailing `# comment`
+/// (`gallery::legible::windows`); a film without a script plays the scene's
+/// own and is one transition. A binary films the scenes it serves and names
+/// the rest as skipped. `--only a,b` keeps the films whose scene or script
+/// stem is listed. Prints one ledger line per transition (PASS, FAIL, or NOT
+/// EXERCISED when nothing drawn changed) and writes `DIR/<film>/…` plus
+/// `DIR/ledger.txt` with `--out DIR`. Fails when any transition fails.
+fn catalog(options: &Options, path: &Path) -> Result<()> {
+    let source = std::fs::read_to_string(path)
+        .map_err(|error| GalleryError(format!("--catalog {}: {error}", path.display())))?;
+    let base = path.parent().unwrap_or_else(|| Path::new("."));
+    let only: Option<Vec<&str>> = options.get("only").map(|only| only.split(',').map(str::trim).collect());
+    let out = options.get("out").map(PathBuf::from);
+    let known: HashSet<&str> = all_scenes()
+        .iter()
+        .map(|scene| scene.id)
+        .chain(super::bench::CANARIES.iter().map(|scene| scene.id))
+        .collect();
+    let mut ledger = String::new();
+    let (mut pass, mut failed, mut idle, mut skipped) = (0, 0, 0, Vec::new());
+    for line in source.lines() {
+        let line = line.split('#').next().unwrap_or_default().trim();
+        let mut words = line.split_whitespace();
+        let Some(scene_id) = words.next() else { continue };
+        let words: Vec<&str> = words.collect();
+        let bound = |name: &str| -> Result<Option<u64>> {
+            words
+                .iter()
+                .find_map(|word| word.strip_prefix(name))
+                .map(|value| value.parse::<u64>().map_err(|_| GalleryError(format!("{scene_id}: `{name}{value}` is not ms"))))
+                .transpose()
+        };
+        let span = (bound("from=")?, bound("to=")?);
+        let script = words.iter().copied().find(|word| !word.contains('='));
+        let stem = script.map_or(scene_id, |script| script.trim_end_matches(".txt"));
+        let name = if script.is_some() { stem.to_owned() } else { scene_id.to_owned() };
+        if only.as_ref().is_some_and(|only| !only.contains(&scene_id) && !only.contains(&stem)) {
+            continue;
+        }
+        if !known.contains(scene_id) {
+            skipped.push(name);
+            continue;
+        }
+        let scene = scene(scene_id)?;
+        let mut shot = options.shot(&scene)?;
+        let windows = match script {
+            Some(script) => {
+                let file = base.join(script);
+                let source = std::fs::read_to_string(&file)
+                    .map_err(|error| GalleryError(format!("{}: {error}", file.display())))?;
+                shot.script = Some(Script::parse(&source).map_err(GalleryError::from_display)?);
+                gallery::legible::windows(&source)
+            }
+            None => {
+                resolve_script(&scene, &mut shot)?;
+                vec![gallery::legible::Window {
+                    label: scene.id.to_owned(),
+                    act: "the scene's own script".to_owned(),
+                    from_ms: 0,
+                    to_ms: None,
+                }]
+            }
+        };
+        let started = std::time::Instant::now();
+        let dir = out.as_ref().map(|out| out.join(&name));
+        let (report, film) = film_legibility(options, &scene, shot, span, dir.as_deref())?;
+        let rows = gallery::legible::ledger(&film, &report, &windows);
+        for row in &rows {
+            match row.verdict() {
+                gallery::legible::Verdict::Pass => pass += 1,
+                gallery::legible::Verdict::Fail => failed += 1,
+                gallery::legible::Verdict::NotExercised => idle += 1,
+            }
+        }
+        let text = gallery::legible::ledger_text(&name, &rows);
+        println!("ledger  {name}  ({scene_id}, {} frames, {:.0} s)", film.len(), started.elapsed().as_secs_f32());
+        print!("{text}");
+        ledger.push_str(&text);
+    }
+    let summary = format!(
+        "catalog  {}  {pass} pass  {failed} fail  {idle} not exercised{}\n",
+        path.display(),
+        if skipped.is_empty() {
+            String::new()
+        } else {
+            format!("  (skipped, not served by {}: {})", registry().name, skipped.join(", "))
+        }
+    );
+    print!("{summary}");
+    if let Some(out) = &out {
+        std::fs::create_dir_all(out).map_err(GalleryError::from_display)?;
+        std::fs::write(out.join("ledger.txt"), format!("{ledger}{summary}")).map_err(GalleryError::from_display)?;
+    }
+    if failed == 0 {
+        Ok(())
+    } else {
+        fail(format!("{failed} catalog transitions break the legibility law"))
+    }
 }
 
 fn sheet(options: &Options) -> Result<()> {
@@ -1085,7 +1290,7 @@ fn lint(options: &Options) -> Result<()> {
         let linted = lint::lint(&frame.image, &frame.ledger, frame.drawn.viewport);
         let covered = linted.coverage.texts > 0 || linted.coverage.targets > 0;
         println!(
-            "{} {}: {}  {} texts ({} hidden), {} targets, contrast measured on {} ({} not){}",
+            "{} {}: {}  {} texts ({} hidden, {} under a veil), {} targets ({} under a veil), contrast measured on {} ({} not){}",
             scene.id,
             suffix(&shot, frame.time_ms),
             if !covered {
@@ -1097,7 +1302,9 @@ fn lint(options: &Options) -> Result<()> {
             },
             linted.coverage.texts,
             linted.coverage.hidden_texts,
+            linted.coverage.occluded_texts,
             linted.coverage.targets,
+            linted.coverage.occluded_targets,
             linted.coverage.contrast,
             linted.coverage.contrast_skipped,
             linted
@@ -1264,6 +1471,8 @@ fn storm(options: &Options) -> Result<()> {
 }
 
 fn window(options: &Options) -> Result<()> {
+    let diagnostics = std::env::var_os("NUDOX_REVIEW_DIAGNOSTICS").is_some();
+    if diagnostics { eprintln!("[w-pages-review] window command entered"); }
     let trace_path=options.get("native-trace").map(PathBuf::from);
     let scene = scene(options.require("scene")?)?;
     let shot = options.shot(&scene)?;
@@ -1273,15 +1482,19 @@ fn window(options: &Options) -> Result<()> {
     let window_size = size(px(width as f32), px(height as f32));
     let failure=std::rc::Rc::new(std::cell::RefCell::new(None));
     let boot_failure=std::rc::Rc::clone(&failure);
+    if diagnostics { eprintln!("[w-pages-review] before Application::run"); }
     gpui::Application::with_platform(gpui_platform::current_platform(false))
         .with_assets(crate::icons::Assets)
         .run(move |cx| {
+        if diagnostics { eprintln!("[w-pages-review] Application::run callback entered"); }
+        if diagnostics { eprintln!("[w-pages-review] gallery bootstrap starting"); }
         if let Err(error) = gallery::bootstrap(facet, false, cx) {
             eprintln!("facet-gallery: {error}");
             *boot_failure.borrow_mut()=Some(error);
             cx.quit();
             return;
         }
+        if diagnostics { eprintln!("[w-pages-review] gallery bootstrap complete"); }
         if let Some(path)=&trace_path {
             if let Err(error)=super::native_trace::start(path,cx) {
                 eprintln!("facet-gallery: native trace: {error}");
@@ -1299,6 +1512,7 @@ fn window(options: &Options) -> Result<()> {
             }),
             ..WindowOptions::default()
         };
+        if diagnostics { eprintln!("[w-pages-review] open_window starting"); }
         if let Err(error) = cx.open_window(options, move |window, cx| {
             gallery::mount(&scene, window, cx)
         }) {
@@ -1307,9 +1521,15 @@ fn window(options: &Options) -> Result<()> {
             cx.quit();
             return;
         }
-        cx.on_window_closed(|cx, _| cx.quit()).detach();
+        if diagnostics { eprintln!("[w-pages-review] open_window returned; windows={}", cx.windows().len()); }
+        cx.on_window_closed(move |cx, window| {
+            if diagnostics { eprintln!("[w-pages-review] window closed {window:?}; remaining={}", cx.windows().len()); }
+            cx.quit();
+        }).detach();
         cx.activate(true);
+        if diagnostics { eprintln!("[w-pages-review] application activated"); }
     });
+    if diagnostics { eprintln!("[w-pages-review] Application::run returned"); }
     if let Some(error)=failure.borrow_mut().take() { return Err(error); }
     Ok(())
 }

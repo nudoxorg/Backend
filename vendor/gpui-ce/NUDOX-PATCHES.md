@@ -93,6 +93,24 @@ measurements in `apps/facet/src/motion/compositing/headless.rs`:
 | `src/platform/test/window.rs` `TestWindow::compositing` | asks its headless renderer | headless captures report Metal's capabilities |
 | `src/view.rs` `ViewElementCacheKey` | + layer transform + element opacity | a cached view replays primitives with the transform and opacity they were painted under |
 
+## Text trace (W-Motion, 2026-09-28)
+
+The harness's legibility law (DIRECTION v5 law 2: at every frame each text is legible
+and unoverlapped, or not drawn) must see every text, not only texts a component wrapped
+in a probe (34 call sites covered almost none of the overlays or pages). With the
+`gpui::TextTrace` global set, every window records each text line it paints in the
+frame: its content, its box in window space (through the layer transform, cut by the
+content mask) and its ink's effective alpha (run colour alpha x element opacity x group
+opacity). Off by default: one `has_global` check per painted line.
+
+| Site | Change | Why |
+|---|---|---|
+| `src/window.rs` `Window::painted_texts` field, `painted_texts()`, `trace_text()`; `TextTrace` global and `PaintedText` | new; the list is cleared at the start of every `draw` | per-frame record of painted text |
+| `src/text_system/line.rs` `ShapedLine::paint`, `WrappedLine::paint`, `trace_line` | after `paint_line`, record the line's aligned box (a wrapped paragraph as one block) and the highest run alpha | every text path (div text, `StyledText`, `InteractiveText`, direct `ShapedLine`s) goes through these |
+
+Known gap: a cached view (`AnyView::cached`) that replays last frame's primitives does not
+repaint its lines, so they are not traced in the replayed frame.
+
 ## gpui_ce_macos 0.1.0 (vendored 2026-09-25, `vendor/gpui_ce_macos`)
 
 Copied verbatim from crates.io, wired through `[patch.crates-io]`. Patched
@@ -105,6 +123,7 @@ lines carry `NUDOX:` comments.
 | `src/metal_renderer.rs` `MetalHeadlessRenderer::compositing`, `src/window.rs` `MacWindow::compositing` | `{ group_opacity: true, chamfer_shadows: true }` | capability |
 | `src/shaders.metal` `shadow_vertex`, `shadow_fragment` | `inset == 2`: chamfered-rectangle drop shadow — each row's span blurred exactly along x (erf), integrated over y with 8 samples; exact SDF at zero blur | coverage error vs the CPU-convolved polygon: worst 0.0057, mean 0.00073 (the rounded box it replaces: 0.1496, 0.0066) |
 | `src/shaders.metal` `group_composite_fragment` | new: texel-exact copy of the group times opacity | group opacity |
+| `src/window.rs:3250-3271` `input_context` (new), registered as GPUIView's `inputContext` (`:301-305`); `MacWindowState::text_input_focused` (`:526-528`, `:931`) set by `set_input_handler` / cleared by `take_input_handler` (`:1390-1399`) | a window whose last frame registered no input handler returns `nil` from `-inputContext`; one with a focused text input gets NSView's default | W-Open I2: AppKit activated a text input context at every launch, whether or not anything took text; the first activation loads TextInputUI on the main thread, a 123-125 ms stall right after the first frame (Instruments System Trace, `-[NSTextInputContext activate]` -> `initTUINSCursorUIController`). The cost now falls on the first text focus. Key events are unaffected: with no context, `handleEvent:` goes to nil and the key reaches GPUI's dispatch |
 
 ## gpui_ce_components 0.2.0 (highlighter)
 

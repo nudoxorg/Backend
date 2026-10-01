@@ -51,6 +51,7 @@ fn lower_with<'output>(
     output: &'output mut [u8],
     native_work: &Path,
 ) -> Result<FragmentView<'output>, TestError> {
+    let environment = clang_environment()?;
     output.fill(0xa5);
     let mut diagnostic_output = [0_u8; 4096];
     let cancelled = AtomicBool::new(false);
@@ -69,7 +70,9 @@ fn lower_with<'output>(
             source,
             declaration_scope: backend_engine::driver::DeclarationScope::fixture(),
             toolchain,
-            authority: SemanticAuthorityInput::None,
+            authority: SemanticAuthorityInput::ClangBuffer {
+                environment: &environment,
+            },
             control: CompileControl {
                 deadline: Instant::now() + Duration::from_secs(60),
                 cancelled: &cancelled,
@@ -95,6 +98,59 @@ fn lower_with<'output>(
         return Err(TestError::Check("output tail changed"));
     }
     FragmentView::validate(&output[..length]).map_err(|_| TestError::Check("fragment validation"))
+}
+
+fn clang_environment() -> Result<backend_frontend_clang::ClangAuthorityEnvironment, TestError> {
+    let driver =
+        std::env::var_os("NUDOX_CLANG").ok_or(TestError::Check("selected Clang driver"))?;
+    let libclang =
+        std::env::var_os("LIBCLANG_PATH").ok_or(TestError::Check("selected libclang"))?;
+    backend_frontend_clang::ClangAuthorityEnvironment::probe(driver, libclang)
+        .map_err(|_| TestError::Check("probe selected Clang authority"))
+}
+
+#[test]
+fn clang_buffer_rejects_missing_explicit_authority_before_native_work() -> Result<(), TestError> {
+    let work =
+        std::env::temp_dir().join(format!("nudox-clang-no-authority-{}", std::process::id()));
+    std::fs::create_dir_all(&work).map_err(|_| TestError::Check("create native work"))?;
+    let mut output = [0xa5_u8; 4096];
+    let mut diagnostic_output = [0_u8; 1024];
+    let cancelled = AtomicBool::new(false);
+    let toolchain = ToolchainSelection::ResolvedNative(
+        ResolvedToolchain::from_identity(
+            NativeTool::Clang,
+            Path::new("/usr/bin/clang"),
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"clang-no-authority"),
+        )
+        .map_err(|_| TestError::Check("toolchain path was rejected"))?,
+    );
+    let result = compile(
+        CompileRequest {
+            profile: LanguageProfile::C(CStandard::C23),
+            stage: Stage::LowerIr,
+            source: b"int value;\n",
+            declaration_scope: backend_engine::driver::DeclarationScope::fixture(),
+            toolchain,
+            authority: SemanticAuthorityInput::None,
+            control: CompileControl {
+                deadline: Instant::now() + Duration::from_secs(60),
+                cancelled: &cancelled,
+            },
+        },
+        CompileScratch {
+            diagnostic_output: &mut diagnostic_output,
+            native_work: &work,
+        },
+        CompileOutput {
+            fragment_output: &mut output,
+        },
+    );
+    let _ = std::fs::remove_dir_all(&work);
+    match result {
+        Err(CompileFailure::AuthorityInputRequired { .. }) => Ok(()),
+        _ => Err(TestError::Check("missing Clang authority was not rejected")),
+    }
 }
 
 fn word(bytes: &[u8], at: usize) -> Result<u32, TestError> {
@@ -180,6 +236,7 @@ fn inspect_ir<F>(source: &[u8], check: F) -> Result<(), TestError>
 where
     F: FnOnce(&backend_semantic::ir::Ir) -> Result<(), TestError>,
 {
+    let environment = clang_environment()?;
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| TestError::Check("clock before epoch"))?
@@ -203,7 +260,9 @@ where
             source,
             declaration_scope: backend_engine::driver::DeclarationScope::fixture(),
             toolchain,
-            authority: SemanticAuthorityInput::None,
+            authority: SemanticAuthorityInput::ClangBuffer {
+                environment: &environment,
+            },
             control: CompileControl {
                 deadline: Instant::now() + Duration::from_secs(60),
                 cancelled: &cancelled,
@@ -435,7 +494,8 @@ fn mutual_recursion_collapses_forwards_and_names_pointer_children() -> Result<()
         }
         if !facts.iter().any(|row| {
             row.owner.raw == 0
-                && row.record.nominal == Some(NominalRef::Local(backend_semantic::ir::EntityId::new(0)))
+                && row.record.nominal
+                    == Some(NominalRef::Local(backend_semantic::ir::EntityId::new(0)))
         }) {
             return Err(TestError::Check("B self nominal"));
         }
@@ -624,7 +684,9 @@ fn signatures_and_local_call_are_content_addressed() -> Result<(), TestError> {
             return Err(TestError::Check("call ownership/span"));
         }
         if call.occurrence.target
-            != backend_semantic::ir::OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(add))
+            != backend_semantic::ir::OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(
+                add,
+            ))
         {
             return Err(TestError::Check("call target"));
         }
@@ -869,6 +931,7 @@ fn capacity_terminal_preserves_clang_scratch_capacity_cause() -> Result<(), Test
     let mut output = vec![0xa5_u8; 65_536];
     let mut diagnostic_output = [0_u8; 4096];
     let cancelled = AtomicBool::new(false);
+    let environment = clang_environment()?;
     let toolchain = ToolchainSelection::ResolvedNative(
         ResolvedToolchain::from_identity(
             NativeTool::Clang,
@@ -884,7 +947,9 @@ fn capacity_terminal_preserves_clang_scratch_capacity_cause() -> Result<(), Test
             source: source.as_bytes(),
             declaration_scope: backend_engine::driver::DeclarationScope::fixture(),
             toolchain,
-            authority: SemanticAuthorityInput::None,
+            authority: SemanticAuthorityInput::ClangBuffer {
+                environment: &environment,
+            },
             control: CompileControl {
                 deadline: Instant::now() + Duration::from_secs(60),
                 cancelled: &cancelled,
@@ -995,7 +1060,8 @@ fn recursive_pointer_rows_are_content_addressed_and_mutation_changes_shape() -> 
         if target != 0
             || anchor.owner.raw != 0
             || anchor.record.tag != SemanticTypeTag::Nominal
-            || anchor.record.nominal != Some(NominalRef::Local(backend_semantic::ir::EntityId::new(0)))
+            || anchor.record.nominal
+                != Some(NominalRef::Local(backend_semantic::ir::EntityId::new(0)))
         {
             return Err(TestError::Check("recursive row content"));
         }
@@ -1062,7 +1128,8 @@ fn local_virtual_override_is_backward_oracle_occurrence() -> Result<(), TestErro
             }
             let row = &rows[0];
             let derived = row.owner.raw;
-            let backend_semantic::ir::OccurrenceTarget::Local(base_entity) = row.occurrence.target else {
+            let backend_semantic::ir::OccurrenceTarget::Local(base_entity) = row.occurrence.target
+            else {
                 return Err(TestError::Check("local override target"));
             };
             let base = base_entity.raw;
@@ -1226,6 +1293,7 @@ fn include_list_over_the_retired_row_width_reopens_every_spelling() -> Result<()
     );
     std::fs::write(work.join("compile_commands.json"), arguments)
         .map_err(|_| TestError::Check("write database"))?;
+    let environment = clang_environment()?;
     let cancelled = AtomicBool::new(false);
     let mut output = vec![0xa5_u8; 4 << 20];
     let toolchain = ResolvedToolchain::from_identity(
@@ -1237,6 +1305,7 @@ fn include_list_over_the_retired_row_width_reopens_every_spelling() -> Result<()
     let compiled = compile_database_translation_unit(
         &work,
         Path::new("src.c"),
+        &environment,
         LanguageProfile::C(CStandard::C23),
         Stage::LowerIr,
         &source,
@@ -1317,6 +1386,7 @@ fn signature_beyond_the_child_width_is_an_exact_rejection() -> Result<(), TestEr
     );
     std::fs::write(work.join("compile_commands.json"), arguments)
         .map_err(|_| TestError::Check("write database"))?;
+    let environment = clang_environment()?;
     let cancelled = AtomicBool::new(false);
     let mut output = vec![0xa5_u8; 4 << 20];
     let toolchain = ResolvedToolchain::from_identity(
@@ -1328,6 +1398,7 @@ fn signature_beyond_the_child_width_is_an_exact_rejection() -> Result<(), TestEr
     let result = compile_database_translation_unit(
         &work,
         Path::new("src.c"),
+        &environment,
         LanguageProfile::C(CStandard::C23),
         Stage::LowerIr,
         source.as_bytes(),
@@ -1377,6 +1448,7 @@ fn admission_fault_names_its_cause_on_the_database_path() -> Result<(), TestErro
     );
     std::fs::write(work.join("compile_commands.json"), arguments)
         .map_err(|_| TestError::Check("write database"))?;
+    let environment = clang_environment()?;
     let cancelled = AtomicBool::new(false);
     let mut output = vec![0xa5_u8; 64];
     let toolchain = ResolvedToolchain::from_identity(
@@ -1388,6 +1460,7 @@ fn admission_fault_names_its_cause_on_the_database_path() -> Result<(), TestErro
     let result = compile_database_translation_unit(
         &work,
         Path::new("src.c"),
+        &environment,
         LanguageProfile::C(CStandard::C23),
         Stage::LowerIr,
         source,
@@ -1415,4 +1488,3 @@ fn admission_fault_names_its_cause_on_the_database_path() -> Result<(), TestErro
     }
     std::fs::remove_dir_all(&work).map_err(|_| TestError::Check("remove native work"))
 }
-

@@ -31,6 +31,35 @@ pub struct DurableManifestPage {
     node_ids: Vec<ObjectId>,
 }
 
+/// One bounded page of authenticated closure member identities without
+/// loading member payloads.
+#[derive(Clone, Debug)]
+pub struct DurableManifestIdPage {
+    object_ids: Vec<ObjectId>,
+    next: Option<ObjectId>,
+    stats: ManifestReadStats,
+}
+
+impl DurableManifestIdPage {
+    /// Returns member IDs in canonical ascending identity order.
+    #[must_use]
+    pub fn object_ids(&self) -> &[ObjectId] {
+        &self.object_ids
+    }
+
+    /// Returns the token to pass as `after` for the next ID page.
+    #[must_use]
+    pub const fn next(&self) -> Option<ObjectId> {
+        self.next
+    }
+
+    /// Returns authenticated manifest-node work for this page.
+    #[must_use]
+    pub const fn stats(&self) -> ManifestReadStats {
+        self.stats
+    }
+}
+
 impl DurableManifestPage {
     /// Returns the objects in canonical object-identity order.
     #[must_use]
@@ -256,5 +285,13 @@ impl FileStore {
             descriptor,
             root_node: Arc::new(root_node),
         })
+    }
+}
+
+impl DurableManifest {
+    /// Returns the checked root evidence for storage-layer path-copy updates.
+    #[must_use]
+    pub(in crate::durable) fn root_evidence(&self) -> CheckedCanonicalRoot<ManifestRelation> {
+        self.root_node.as_ref().clone()
     }
 }

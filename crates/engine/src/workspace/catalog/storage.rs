@@ -53,6 +53,7 @@ fn map_lazy_error(error: LazyTreeError<backend_store::StoreError>) -> WorkspaceE
         LazyTreeError::Node(_) => WorkspaceError::Corrupt("catalog relation node"),
         LazyTreeError::MissingKey => WorkspaceError::Corrupt("catalog relation missing key"),
         LazyTreeError::DuplicateKey => WorkspaceError::Corrupt("catalog relation duplicate key"),
+        LazyTreeError::MetadataBudgetExceeded { .. } => WorkspaceError::Bounds,
     }
 }
 

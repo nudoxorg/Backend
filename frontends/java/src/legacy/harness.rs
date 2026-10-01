@@ -17,6 +17,11 @@ const STDERR_LIMIT: u64 = 64 * 1024;
 const MARKER: &str = ".doclet-digest";
 const AUTHORITY_SOURCE: &str = include_str!("doclet/AuthorityImage.java");
 const EXTRACTOR_SOURCE: &str = include_str!("doclet/CompilerExtractor.java");
+
+/// Versioned identity of the isolated JDK child-process environment.
+pub const JAVA_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1: &str =
+    "java-package-child-environment.v1";
+
 static DIRECTORY_SERIAL: AtomicUsize = AtomicUsize::new(0);
 
 /// A JDK home whose two runtime tools are available.
@@ -636,6 +641,7 @@ fn run_command(
     stderr_path: &Path,
 ) -> Result<(), HarnessError> {
     let command_text = format!("{program} {command:?}");
+    isolate_jdk_environment(&mut command);
     // stderr is captured through a pipe that is drained to EOF before the
     // child is reaped, so the preserved excerpt cannot race the JVM's final
     // writes. The drained bytes are then persisted at `stderr_path` exactly
@@ -659,6 +665,16 @@ fn run_command(
         status,
         stderr: String::from_utf8_lossy(excerpt).into_owned(),
     })
+}
+
+/// Runs the selected JDK executable without owner runtime flags, classpaths,
+/// or credentials. All compiler inputs are passed as explicit arguments.
+fn isolate_jdk_environment(command: &mut Command) {
+    command.env_clear();
+    #[cfg(windows)]
+    if let Some(system_root) = env::var_os("SystemRoot") {
+        command.env("SystemRoot", system_root);
+    }
 }
 
 /// Failures retain the command and bounded compiler diagnostics where applicable.
@@ -812,7 +828,10 @@ App.java:1: error: package com.google.common.base does not exist
 
 #[cfg(test)]
 mod toolchain_tests {
-    use std::path::PathBuf;
+    use std::{
+        path::PathBuf,
+        process::Command,
+    };
 
     use super::{HarnessError, JdkToolchain};
 
@@ -824,6 +843,44 @@ mod toolchain_tests {
             error,
             HarnessError::RelativeJdkRoot { root } if root == PathBuf::from("jdk")
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn jdk_environment_drops_parent_java_options_and_credentials() {
+        const CHILD_PROBE: &str = "NUDOX_JAVA_CHILD_ENV_PROBE";
+        if std::env::var(CHILD_PROBE).as_deref() == Ok("run") {
+            let mut command = Command::new("/bin/sh");
+            command.args([
+                "-c",
+                "test -z \"${JAVA_TOOL_OPTIONS+x}\" && test -z \"${AWS_ACCESS_KEY_ID+x}\" && test -z \"${HOME+x}\" && test -z \"${PATH+x}\" && printf clean",
+            ]);
+            super::isolate_jdk_environment(&mut command);
+
+            let output = command.output().expect("start isolated JDK probe child");
+            assert!(output.status.success());
+            assert_eq!(output.stdout, b"clean");
+            return;
+        }
+
+        let test_name = format!(
+            "{}::jdk_environment_drops_parent_java_options_and_credentials",
+            module_path!()
+        );
+        let output = Command::new(std::env::current_exe().expect("test executable path"))
+            .args(["--exact", &test_name, "--nocapture"])
+            .env(CHILD_PROBE, "run")
+            .env("JAVA_TOOL_OPTIONS", "-Duser.language=tr")
+            .env("AWS_ACCESS_KEY_ID", "parent-secret")
+            .env("HOME", "/owner/home")
+            .env("PATH", "/owner/path")
+            .output()
+            .expect("start test process with conflicting parent environment");
+        assert!(
+            output.status.success(),
+            "nested environment regression failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
 

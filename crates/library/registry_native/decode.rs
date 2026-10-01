@@ -287,6 +287,7 @@ fn read_dependency_facts(
                 };
                 rows.push(PackageDependencyRecord {
                     source,
+                    source_authority: crate::PackageGraphSourceAuthority::Unattributed,
                     target,
                     scope,
                     optional,

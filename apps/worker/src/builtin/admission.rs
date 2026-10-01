@@ -351,18 +351,21 @@ impl JobAdmission<ProductRelation> for BuiltinAdmission {
                 return Err(WorkerError::InputProof("declared missing object"));
             }
             let frame_version = frame.version;
-            self.input_cas
-                .ingest_complete_frame(frame, self.authority_claim)
+            let complete = self
+                .input_cas
+                .ingest_authenticated_frame(root, frame, self.authority_claim)
                 .map_err(WorkerError::Replication)?;
-            self.input_cas
-                .mark_received(
-                    root,
-                    schema_object_version_identity_claim::<ImmutableObjectSchema>(
-                        frame_version.as_bytes(),
+            if complete {
+                self.input_cas
+                    .mark_received(
+                        root,
+                        schema_object_version_identity_claim::<ImmutableObjectSchema>(
+                            frame_version.as_bytes(),
+                        )
+                        .map_err(|_| WorkerError::InputProof("received object identity"))?,
                     )
-                    .map_err(|_| WorkerError::InputProof("received object identity"))?,
-                )
-                .map_err(WorkerError::Replication)?;
+                    .map_err(WorkerError::Replication)?;
+            }
             if let Some((root, _workspace, correlation)) = self.pending_root
                 && self
                     .input_cas
@@ -431,7 +434,9 @@ impl JobAdmission<ProductRelation> for BuiltinAdmission {
             // keeps the worker independent of the sender's relation shape and
             // makes arbitrary schema-valid roots first-class.
             let workspace = offer.workspace.as_bytes();
-            self.input_cas.clear_missing(offer.root);
+            self.input_cas
+                .clear_missing(offer.root)
+                .map_err(WorkerError::Replication)?;
             self.pending_root = Some((offer.root, workspace, offer.correlation));
             self.pending_need_cursor = None;
             self.pending_pages.clear();
@@ -681,5 +686,172 @@ impl JobAdmission<ProductRelation> for BuiltinAdmission {
                 )))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use backend_engine::{
+        ChunkChain, ChunkParts, ClosurePageResponse, ClosureRootOffer, Frame, MerkleChild,
+        MerklePage, MerklePageBody, NodeDigest, TransferId, WorkspaceRootClaim,
+    };
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temporary_cas_path() -> std::path::PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        std::env::temp_dir().join(format!(
+            "backend-worker-admission-chunk-{}-{nonce}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn chunk_control_receives_multiframe_input_declared_by_root_proof() {
+        let path = temporary_cas_path();
+        let limits = TransportLimits {
+            max_chunk: 8,
+            ..TransportLimits::default()
+        };
+        let mut admission = BuiltinAdmission::new(BuiltinProfile::EchoFixture, limits, &path)
+            .expect("construct admission");
+        let relation =
+            relation_state(false, admission.authority).expect("construct fixture relation");
+        let workspace_manifest =
+            backend_engine::semantic_execution_input_manifest(&relation, admission.authority)
+                .expect("construct checked workspace manifest");
+        let workspace = workspace_manifest.root();
+        let input_bytes = relation.root().to_bytes();
+        let input_version = ObjectVersion::<ImmutableObjectSchema>::from_value(&input_bytes);
+        let proof = backend_engine::product_closure_manifest(
+            workspace,
+            input_bytes,
+            input_version.to_bytes(),
+        );
+        let root = backend_engine::MerkleRoot::from_admitted_manifest(
+            1,
+            ObjectVersion::<ImmutableObjectSchema>::from_value(&proof),
+        );
+        let offer = ClosureRootOffer {
+            correlation: 19,
+            workspace: WorkspaceRootClaim::from_bytes(*workspace.as_bytes()),
+            root,
+            authority: admission.authority_claim,
+            workspace_manifest: workspace_manifest.encode(),
+        };
+        let page_request = admission
+            .admit_control(TransportMessage::ClosureRootOffer(offer))
+            .expect("admit root offer")
+            .expect("request root proof page");
+        assert!(matches!(
+            page_request,
+            TransportMessage::ClosurePageRequest(_)
+        ));
+
+        let relation_node = relation.root_handle();
+        let relation_summary = relation_node.summary();
+        let page = MerklePage {
+            root,
+            node: root.digest(),
+            level: relation_summary.level + 1,
+            cursor: backend_engine::PageCursor::origin(),
+            next: None,
+            body: MerklePageBody::Branch(vec![MerkleChild {
+                first_key: Vec::new(),
+                end_key: None,
+                digest: NodeDigest(input_bytes),
+                level: relation_summary.level,
+                row_count: relation_summary.len as u64,
+            }]),
+        };
+        let page_reply = admission
+            .admit_page_response(ClosurePageResponse {
+                correlation: 19,
+                proof: proof.clone(),
+                page,
+            })
+            .expect("admit authenticated root page")
+            .expect("request relation page");
+        assert!(matches!(
+            page_reply,
+            TransportMessage::ClosurePageRequest(_)
+        ));
+
+        let input_claim = schema_object_version_identity_claim::<ImmutableObjectSchema>(
+            &input_version.to_bytes(),
+        )
+        .expect("form typed input claim");
+        assert!(
+            admission
+                .input_cas
+                .declared_missing(root, input_claim)
+                .expect("read proof-declared missing input")
+        );
+
+        let key = ObjectKey::<ImmutableObjectSchema>::from_value(&input_bytes);
+        let transfer = TransferId::new(72).expect("valid transfer id");
+        let mut previous = ChunkChain([0; 32]);
+        let mut frames = Vec::new();
+        for (sequence, payload) in input_bytes.chunks(8).enumerate() {
+            let frame = Frame::new(
+                transfer,
+                key,
+                input_version,
+                ChunkParts {
+                    object_len: input_bytes.len() as u64,
+                    offset: (sequence * 8) as u64,
+                    sequence: sequence as u64,
+                    previous_chain: previous,
+                    payload: payload.to_vec(),
+                },
+                admission.authority_claim,
+            )
+            .expect("construct authenticated transfer frame");
+            previous = frame.chain;
+            frames.push(frame);
+        }
+        assert!(frames.len() > 1, "fixture must exercise multiple chunks");
+        for (index, frame) in frames.iter().enumerate() {
+            let validation = frame.validate(limits);
+            assert!(
+                validation.is_ok(),
+                "constructed chunk {index} is invalid: {validation:?}"
+            );
+            assert_eq!(frame.key.as_bytes(), key.as_bytes());
+            assert_eq!(frame.version.as_bytes(), input_version.as_bytes());
+            assert_eq!(frame.authority, admission.authority_claim);
+        }
+
+        // Exercise the production control dispatch with a multi-frame input
+        // whose root proof declared the exact immutable member. The final
+        // chunk commits the canonical object; closure finish remains pending
+        // because this fixture has not returned its relation proof page yet.
+        for (index, frame) in frames.iter().take(frames.len() - 1).enumerate() {
+            let result = admission.admit_control(TransportMessage::Chunk(frame.clone()));
+            assert!(
+                matches!(result, Ok(None)),
+                "chunk sequence {index} should remain incomplete: {result:?}"
+            );
+        }
+        let completion = admission.admit_control(TransportMessage::Chunk(
+            frames.last().expect("nonempty multiframe input").clone(),
+        ));
+        assert!(matches!(
+            completion,
+            Err(WorkerError::InputProof("relation proof completion"))
+        ));
+        assert!(admission.input_cas.contains_claim(input_claim));
+        let (committed_version, committed_bytes) = admission
+            .input_cas
+            .get_claim(input_claim)
+            .expect("read admitted object")
+            .expect("object was committed");
+        assert_eq!(committed_version, input_version);
+        assert_eq!(committed_bytes.as_ref(), input_bytes);
+
+        drop(admission);
+        let _ = std::fs::remove_dir_all(path);
     }
 }

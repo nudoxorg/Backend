@@ -292,11 +292,7 @@ fn name_search_excludes_only_the_synthetic_result_slot() {
     let revision = library.revision_root();
 
     let ferris_hits = library
-        .names(&NameQuery::new(
-            "ferris",
-            revision,
-            QueryLimit::default(),
-        ))
+        .names(&NameQuery::new("ferris", revision, QueryLimit::default()))
         .expect("name query")
         .root
         .rows()
@@ -353,11 +349,7 @@ fn incrementally_admitted_result_slot_is_excluded_the_same_as_a_full_rebuild() {
     let revision = library.revision_root();
 
     let hits = library
-        .names(&NameQuery::new(
-            "ferris",
-            revision,
-            QueryLimit::default(),
-        ))
+        .names(&NameQuery::new("ferris", revision, QueryLimit::default()))
         .expect("name query")
         .root
         .rows()
@@ -1386,7 +1378,9 @@ fn borrowed_reference_labels_match_cloned_rows() {
         },
     };
     let target = ProductText::new(target_label).expect("target");
-    let records = library.references(&target, &[fact.clone()]).expect("references");
+    let records = library
+        .references(&target, &[fact.clone()])
+        .expect("references");
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].site.as_str(), "pkg::caller");
     assert!(!library.view().compatibility_rows_are_materialized());
@@ -1399,7 +1393,9 @@ fn borrowed_reference_labels_match_cloned_rows() {
     let mut owned_samples = [0_u128; SAMPLES];
     for sample in 0..SAMPLES {
         let started = std::time::Instant::now();
-        let hit = library.references(&target, &[fact.clone()]).expect("references");
+        let hit = library
+            .references(&target, &[fact.clone()])
+            .expect("references");
         borrowed_samples[sample] = started.elapsed().as_nanos();
         std::hint::black_box(hit[0].site.as_str());
         let started = std::time::Instant::now();

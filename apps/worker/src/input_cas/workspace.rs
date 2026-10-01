@@ -1,8 +1,8 @@
 //! Durable workspace admission and restart binding.
 
 use super::{
-    BoundedFileImage, CheckedWorkspaceManifest, File, InputCas, ReplicationError, Schema,
-    UntrustedWorkspaceManifest, WorkspaceRoot, Write, fs, hex,
+    BoundedFileImage, CheckedWorkspaceManifest, InputCas, ReplicationError, Schema,
+    UntrustedWorkspaceManifest, WorkspaceRoot, Write, create_new_temp_nofollow, fs, hex,
 };
 
 impl<T: Schema> InputCas<T> {
@@ -18,7 +18,7 @@ impl<T: Schema> InputCas<T> {
         };
         let temporary = root.join(".WORKSPACE.part");
         let target = root.join("WORKSPACE");
-        let mut file = File::create(&temporary).map_err(|_| ReplicationError::Disconnected)?;
+        let mut file = create_new_temp_nofollow(&temporary)?;
         file.write_all(workspace.as_bytes())
             .and_then(|()| file.sync_all())
             .map_err(|_| ReplicationError::Disconnected)?;
@@ -69,7 +69,7 @@ impl<T: Schema> InputCas<T> {
         };
         let temporary = root.join(".WORKSPACE.part");
         let target = root.join("WORKSPACE");
-        let mut file = File::create(&temporary).map_err(|_| ReplicationError::Disconnected)?;
+        let mut file = create_new_temp_nofollow(&temporary)?;
         file.write_all(&workspace)
             .and_then(|()| file.sync_all())
             .map_err(|_| ReplicationError::Disconnected)?;
@@ -103,7 +103,7 @@ impl<T: Schema> InputCas<T> {
         let bytes = manifest.encode();
         let temporary = directory.join(".WORKSPACE_MANIFEST.part");
         let target = directory.join("WORKSPACE_MANIFEST");
-        let mut file = File::create(&temporary).map_err(|_| ReplicationError::Disconnected)?;
+        let mut file = create_new_temp_nofollow(&temporary)?;
         file.write_all(&bytes)
             .and_then(|()| file.sync_all())
             .map_err(|_| ReplicationError::Disconnected)?;

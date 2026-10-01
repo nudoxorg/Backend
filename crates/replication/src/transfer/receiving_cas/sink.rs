@@ -6,7 +6,7 @@ use backend_version::{ObjectKey, ObjectVersion, Schema};
 
 use crate::{ReplicationError, TransferId};
 
-use super::{ReceivingCheckpoint, StagedExtent};
+use super::{ReceivingCheckpoint, StagedExtent, WireReceivingCheckpoint};
 
 /// A storage sink whose session remains unpublished until final verification.
 pub trait ReceivingCasSink<T: Schema> {
@@ -28,6 +28,20 @@ pub trait ReceivingCasSink<T: Schema> {
         len: u64,
     ) -> Result<Self::Session, ReplicationError>;
 
+    /// Opens an unpublished session using only bounded wire identity claims.
+    /// The receiving typestate proves both identities from the complete
+    /// streamed bytes before `commit` can publish the typed object.
+    ///
+    /// # Errors
+    /// Returns a storage or resource error when the session cannot be opened.
+    fn begin_unverified(
+        &mut self,
+        _transfer: TransferId,
+        _len: u64,
+    ) -> Result<Self::Session, ReplicationError> {
+        Err(ReplicationError::IdentityMismatch)
+    }
+
     /// Reopens staged extents from an authenticated durable checkpoint.
     ///
     /// # Errors
@@ -41,6 +55,20 @@ pub trait ReceivingCasSink<T: Schema> {
         len: u64,
         checkpoint: &ReceivingCheckpoint<T>,
     ) -> Result<Self::Session, ReplicationError>;
+
+    /// Reopens an unpublished session from a validated wire checkpoint.
+    ///
+    /// # Errors
+    /// Returns a storage or checkpoint error when retained extents are
+    /// unavailable.
+    fn resume_unverified(
+        &mut self,
+        _transfer: TransferId,
+        _len: u64,
+        _checkpoint: &WireReceivingCheckpoint<T>,
+    ) -> Result<Self::Session, ReplicationError> {
+        Err(ReplicationError::IdentityMismatch)
+    }
 
     /// Writes one authenticated extent into the unpublished session.
     ///

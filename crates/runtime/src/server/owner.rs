@@ -182,9 +182,10 @@ where
             return Ok(None);
         };
         let (event, permit) = match self.fabric.payload_slot(index).take_terminal() {
-            crate::server::payload_slot::TerminalPayload::Terminal(TerminalRecord { event, permit }) => {
-                (event, permit)
-            }
+            crate::server::payload_slot::TerminalPayload::Terminal(TerminalRecord {
+                event,
+                permit,
+            }) => (event, permit),
             crate::server::payload_slot::TerminalPayload::Queued(queued) => {
                 let handle = queued.handle;
                 self.fabric.payload_slot(index).restore_queued(queued);

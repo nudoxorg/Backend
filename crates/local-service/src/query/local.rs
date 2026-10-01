@@ -21,6 +21,8 @@ pub struct LocalQuery {
     lexical: lexical::Query,
     limit: usize,
     qualified: Vec<QualifiedClause>,
+    /// The words as typed (case kept): what a match is placed by.
+    words: Vec<String>,
 }
 
 impl LocalQuery {
@@ -44,6 +46,7 @@ impl LocalQuery {
         }
         let mut terms = Vec::new();
         let mut qualified = Vec::new();
+        let words = text.split_whitespace().map(str::to_owned).collect();
         for clause in text.split_whitespace() {
             if let Some(parsed) = parse_qualified_clause(clause) {
                 terms.push(parsed.leaf.clone());
@@ -57,6 +60,7 @@ impl LocalQuery {
             lexical,
             limit,
             qualified,
+            words,
         })
     }
 
@@ -72,6 +76,77 @@ impl LocalQuery {
 
     pub(crate) fn qualified_clauses(&self) -> &[QualifiedClause] {
         &self.qualified
+    }
+
+    /// The words as typed.
+    #[must_use]
+    pub fn words(&self) -> &[String] {
+        &self.words
+    }
+}
+
+/// What a match is placed by, before its lexical relevance: a person who
+/// types `toml Value` means the declaration named `Value` in the package
+/// named `toml`, not every row whose words start with both.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Placement {
+    /// The row's own name.
+    name: String,
+    /// The name of the package it belongs to (`toml` for a registry tree
+    /// `…/toml-0.8.23`), when it belongs to one.
+    package: Option<String>,
+    /// A declaration of somewhere else that this package links to.
+    external: bool,
+    /// How much the row's kind is the thing its name names ([`kind_weight`]).
+    kind: u8,
+}
+
+/// How much a row of `kind` is the thing its name names: a type (or the
+/// package itself) before a callable, before a field or a module, before a
+/// `use` that only brings the name in.
+fn kind_weight(kind: &str) -> u8 {
+    match kind {
+        "project" | "struct" | "enum" | "trait" | "union" | "class" | "interface" => 4,
+        "type" | "function" | "method" | "macro" | "constant" | "constructor" => 3,
+        "field" | "property" | "variant" | "variable" | "module" => 2,
+        "import" => 0,
+        _ => 1,
+    }
+}
+
+impl Placement {
+    #[cfg(test)]
+    pub(crate) fn for_test(name: &str, package: &str, kind: &str, external: bool) -> Self {
+        Self { name: name.to_owned(), package: Some(package.to_owned()), external, kind: kind_weight(kind) }
+    }
+
+    /// The key a match is ordered by (higher first): a declaration before a
+    /// link to one elsewhere; a row whose whole name is one of the words (as
+    /// typed, then in any case); a row whose package another word names; a
+    /// kind that is the named thing before one that only mentions it.
+    pub(crate) fn key(&self, words: &[String]) -> (bool, u8, bool, u8) {
+        let named = words.iter().position(|word| *word == self.name).map(|at| (2, at)).or_else(|| {
+            words.iter().position(|word| word.eq_ignore_ascii_case(&self.name)).map(|at| (1, at))
+        });
+        let package_named = self.package.as_deref().is_some_and(|package| {
+            words.iter().enumerate().any(|(at, word)| {
+                named.is_none_or(|(_, name_at)| at != name_at) && word.eq_ignore_ascii_case(package)
+            })
+        });
+        (!self.external, named.map_or(0, |(strength, _)| strength), package_named, self.kind)
+    }
+}
+
+/// A package's name from its label: the last part of its path, less the
+/// version a registry tree carries (`…/toml-0.8.23` → `toml`,
+/// `…/proc-macro2-1.0.107` → `proc-macro2`, `pkg:cargo/toml@0.8.23` →
+/// `toml`); a person's own folder keeps its name (`toml_pin`).
+pub(crate) fn package_name(label: &str) -> &str {
+    let last = label.rsplit(['/', '\\']).next().unwrap_or(label);
+    let last = last.split_once('@').map_or(last, |(name, _)| name);
+    match last.rsplit_once('-') {
+        Some((name, version)) if !name.is_empty() && version.starts_with(|c: char| c.is_ascii_digit()) => name,
+        _ => last,
     }
 }
 
@@ -110,6 +185,15 @@ pub enum CoverageBasis {
     CompleteView {
         /// Cardinality of the closed canonical input relation.
         selected_rows: usize,
+    },
+    /// Every row with search evidence was considered; the view and its
+    /// evidence disagree about the rest, which were left out rather than
+    /// failing every query.
+    PartialView {
+        /// Rows considered.
+        selected_rows: usize,
+        /// What was left out, and why.
+        left_out: LeftOut,
     },
     /// A lane may rank candidates but cannot change result coverage.
     CandidateSubset {
@@ -219,6 +303,8 @@ pub(crate) struct Corpus {
     pub(crate) candidates: BTreeMap<backend_extension_qdrant::CandidateId, EntityId>,
     pub(crate) semantic_documents: Box<[SemanticDocument]>,
     pub(crate) semantic_evidence: SemanticQueryCorpus,
+    pub(crate) left_out: LeftOut,
+    pub(crate) placements: BTreeMap<EntityId, Placement>,
 }
 
 impl Corpus {
@@ -253,7 +339,32 @@ type SelectedDocuments = (
     BTreeMap<EntityId, RowId>,
     BTreeMap<backend_extension_qdrant::CandidateId, EntityId>,
     Box<[SemanticDocument]>,
+    LeftOut,
+    BTreeMap<EntityId, Placement>,
 );
+
+/// Where the selected view and its typed search evidence did not pair up.
+///
+/// Each row of the view should have exactly one fact and each fact one row.
+/// A disagreement is a producer defect, but it is one package's, and it does
+/// not take search away from every other row: what does not pair is left
+/// out, counted here, reported in the lane coverage, and said on the owner's
+/// standard error once per selected view.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LeftOut {
+    /// View rows no search evidence describes.
+    pub rows_without_evidence: usize,
+    /// Search evidence for rows the view does not hold.
+    pub evidence_without_row: usize,
+}
+
+impl LeftOut {
+    /// Whether everything paired.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.rows_without_evidence == 0 && self.evidence_without_row == 0
+    }
+}
 
 /// A complete local answer. It is immediately renderable and is the only
 /// input accepted by optional semantic acceleration.
@@ -503,6 +614,8 @@ impl QueryCoordinator {
                 candidates: prepared.candidates,
                 semantic_documents: prepared.semantic_documents,
                 semantic_evidence: prepared.semantic_evidence,
+                left_out: prepared.left_out,
+                placements: prepared.placements,
             }),
         })
     }
@@ -545,6 +658,8 @@ impl QueryCoordinator {
         corpus.candidates = prepared.candidates;
         corpus.semantic_documents = prepared.semantic_documents;
         corpus.semantic_evidence = prepared.semantic_evidence;
+        corpus.left_out = prepared.left_out;
+        corpus.placements = prepared.placements;
         Ok(Some(maintenance))
     }
 
@@ -613,6 +728,12 @@ impl QueryCoordinator {
                 })
             });
         }
+        // Placed by what the words name, then by lexical relevance (the
+        // sort is stable, so equal placements keep the lexical order).
+        let words = query.words();
+        matches.sort_by_key(|(entity, _)| {
+            std::cmp::Reverse(self.corpus.placements.get(entity).map(|placement| placement.key(words)))
+        });
         let total_matches = matches.len();
         let rows = matches
             .iter()
@@ -629,6 +750,11 @@ impl QueryCoordinator {
             })
             .collect();
         let selected_rows = self.corpus.entities.len();
+        let considered = if self.corpus.left_out.is_empty() {
+            CoverageBasis::CompleteView { selected_rows }
+        } else {
+            CoverageBasis::PartialView { selected_rows, left_out: self.corpus.left_out }
+        };
         let canonical = SourceBasis::Canonical {
             workspace: self.corpus.workspace,
             view: self.corpus.view.version(),
@@ -649,13 +775,13 @@ impl QueryCoordinator {
             lanes: vec![
                 LaneReport {
                     lane: Lane::Canonical,
-                    coverage: CoverageBasis::CompleteView { selected_rows },
+                    coverage: considered,
                     freshness: Freshness::Current,
                     source: Some(canonical),
                 },
                 LaneReport {
                     lane: Lane::Lexical,
-                    coverage: CoverageBasis::CompleteView { selected_rows },
+                    coverage: considered,
                     freshness: Freshness::Current,
                     source: Some(lexical),
                 },
@@ -790,6 +916,8 @@ struct PreparedCorpus {
     candidates: BTreeMap<backend_extension_qdrant::CandidateId, EntityId>,
     semantic_documents: Box<[SemanticDocument]>,
     semantic_evidence: SemanticQueryCorpus,
+    left_out: LeftOut,
+    placements: BTreeMap<EntityId, Placement>,
 }
 
 fn prepare_corpus(
@@ -819,8 +947,14 @@ fn prepare_corpus(
     if semantic_evidence.workspace() != workspace {
         return Err(QueryError::InvalidSemanticEvidence);
     }
-    let (documents, entities, candidates, semantic_documents) =
+    let (documents, entities, candidates, semantic_documents, left_out, placements) =
         collect_selected_documents(workspace, &view, &semantic_evidence)?;
+    if !left_out.is_empty() {
+        eprintln!(
+            "locald search: the view and its search evidence disagree ({} rows without evidence, {} evidence without a row); those are left out of search",
+            left_out.rows_without_evidence, left_out.evidence_without_row
+        );
+    }
     let state =
         RelationState::<lexical::IndexRelation>::from_entries(documents.iter().cloned(), coverage)
             .map_err(|_| QueryError::InvalidView)?;
@@ -850,6 +984,8 @@ fn prepare_corpus(
         candidates,
         semantic_documents,
         semantic_evidence,
+        left_out,
+        placements,
     })
 }
 
@@ -905,11 +1041,21 @@ fn collect_selected_documents(
         })
         .collect();
     let mut semantic_documents = Vec::with_capacity(semantic_evidence.facts().len());
+    let mut left_out = LeftOut::default();
+    let packages = semantic_evidence
+        .facts()
+        .iter()
+        .map(backend_extension_trustfall::SemanticQueryFact::presentation)
+        .filter(|presentation| presentation.kind == "project")
+        .map(|presentation| (presentation.id.as_str(), package_name(&presentation.name)))
+        .collect::<BTreeMap<_, _>>();
+    let mut placements = BTreeMap::new();
     for fact in semantic_evidence.facts() {
         let presentation = fact.presentation();
-        let row = selected_rows
-            .remove(&presentation.id)
-            .ok_or(QueryError::InvalidSemanticEvidence)?;
+        let Some(row) = selected_rows.remove(&presentation.id) else {
+            left_out.evidence_without_row += 1;
+            continue;
+        };
         {
             let entity = entity_id(workspace, row)?;
             let candidate = candidate_id(entity, semantic_evidence.evidence_digest())?;
@@ -944,16 +1090,35 @@ fn collect_selected_documents(
                 row,
                 text: semantic_text(presentation),
             });
+            placements.insert(
+                entity,
+                Placement {
+                    // A package's row is named by its package's name, not
+                    // its path.
+                    name: if presentation.kind == "project" {
+                        package_name(&presentation.name).to_owned()
+                    } else {
+                        presentation.name.clone()
+                    },
+                    package: presentation
+                        .project
+                        .as_deref()
+                        .and_then(|project| packages.get(project))
+                        .map(|name| (*name).to_owned()),
+                    external: presentation.kind == "external",
+                    kind: kind_weight(&presentation.kind),
+                },
+            );
         }
     }
-    if !selected_rows.is_empty() {
-        return Err(QueryError::InvalidSemanticEvidence);
-    }
+    left_out.rows_without_evidence = selected_rows.len();
     Ok((
         documents,
         entities,
         candidates,
         semantic_documents.into_boxed_slice(),
+        left_out,
+        placements,
     ))
 }
 
@@ -1051,7 +1216,9 @@ pub enum QueryError {
     IdentityCollision,
     /// The selected view could not form a canonical lexical relation.
     InvalidView,
-    /// Typed semantic facts do not exactly cover the selected presentation rows.
+    /// The typed search evidence belongs to another workspace. (Evidence and
+    /// rows of the right workspace that do not pair are left out of search
+    /// instead: [`LeftOut`].)
     InvalidSemanticEvidence,
     /// The view exceeds the coordinator's explicit materialization bound.
     CorpusLimit,
@@ -1069,9 +1236,9 @@ impl fmt::Display for QueryError {
             Self::IncompleteCoverage => formatter.write_str("selected view coverage is incomplete"),
             Self::IdentityCollision => formatter.write_str("cross-index identity collision"),
             Self::InvalidView => formatter.write_str("selected view is not a valid query corpus"),
-            Self::InvalidSemanticEvidence => formatter.write_str(
-                "typed semantic evidence does not exactly cover the selected query corpus",
-            ),
+            Self::InvalidSemanticEvidence => {
+                formatter.write_str("typed semantic evidence belongs to another workspace")
+            }
             Self::CorpusLimit => {
                 formatter.write_str("selected view exceeds the query corpus bound")
             }
@@ -1094,37 +1261,29 @@ pub(super) fn measure_search_corpus() {
     const SAMPLES: usize = 32;
     const WARMUPS: usize = 4;
     let workspace = super::super::genesis().expect("genesis").root();
-    let facts = (0..FACTS)
-        .map(package_query_fact)
-        .collect::<Vec<_>>();
+    let facts = (0..FACTS).map(package_query_fact).collect::<Vec<_>>();
     let limits = backend_extension_trustfall::Limits {
         max_rows: FACTS,
         ..backend_extension_trustfall::Limits::default()
     };
     let cold = corpus_time(WARMUPS, SAMPLES, || {
-        SemanticQueryCorpus::admit_with_limits(
-            workspace,
-            facts.clone(),
-            limits,
-        )
-        .expect("admit")
+        SemanticQueryCorpus::admit_with_limits(workspace, facts.clone(), limits).expect("admit")
     });
     let mut owner = SearchSnapshotOwner::default();
     owner
         .shared_corpus(workspace, || {
-            SemanticQueryCorpus::admit_with_limits(
-                workspace,
-                facts.clone(),
-                limits,
-            )
+            SemanticQueryCorpus::admit_with_limits(workspace, facts.clone(), limits)
         })
         .expect("prime");
     let before = owner.corpus_builds();
     let warm = corpus_time(WARMUPS, SAMPLES, || {
         owner
-            .shared_corpus(workspace, || -> Result<SemanticQueryCorpus, &'static str> {
-                Err("warm path rebuilt the corpus")
-            })
+            .shared_corpus(
+                workspace,
+                || -> Result<SemanticQueryCorpus, &'static str> {
+                    Err("warm path rebuilt the corpus")
+                },
+            )
             .expect("reuse")
     });
     let (cold_median, cold_p95) = corpus_percentiles(&cold);

@@ -459,6 +459,7 @@ fn clang_phase(cause: &backend_frontend_clang::legacy::CollectError) -> Authorit
         }
         backend_frontend_clang::legacy::CollectError::Cancelled
         | backend_frontend_clang::legacy::CollectError::Library(_)
+        | backend_frontend_clang::legacy::CollectError::ConfiguredLibrary(_)
         | backend_frontend_clang::legacy::CollectError::MissingApi { .. }
         | backend_frontend_clang::legacy::CollectError::IndexUnavailable
         | backend_frontend_clang::legacy::CollectError::MainFileUnavailable => AuthorityPhase::Open,
@@ -479,6 +480,7 @@ fn rust_phase(cause: &backend_frontend_rust::legacy::RustAuthorityError) -> Auth
     match cause {
         backend_frontend_rust::legacy::RustAuthorityError::Workspace { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::SourceNotLoaded { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::DetachedSource { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::EditionMismatch { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::MissingSemanticFact { .. } => {
             AuthorityPhase::Resolve
@@ -494,15 +496,30 @@ fn rust_phase(cause: &backend_frontend_rust::legacy::RustAuthorityError) -> Auth
         backend_frontend_rust::legacy::RustAuthorityError::SourceBinding { .. } => {
             AuthorityPhase::Parse
         }
+        backend_frontend_rust::legacy::RustAuthorityError::UnsupportedDocumentationExpression {
+            ..
+        } => AuthorityPhase::Parse,
         backend_frontend_rust::legacy::RustAuthorityError::Cancelled
         | backend_frontend_rust::legacy::RustAuthorityError::DeadlineExceeded
         | backend_frontend_rust::legacy::RustAuthorityError::Toolchain(_)
         | backend_frontend_rust::legacy::RustAuthorityError::ProjectRoot { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::ProjectSource { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::SourceOutsidePackage { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::MissingManifest { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::SourceNotFile { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::SourceBudget { .. }
-        | backend_frontend_rust::legacy::RustAuthorityError::SourceRead { .. } => {
+        | backend_frontend_rust::legacy::RustAuthorityError::SourceRead { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::DocumentationInputMissing { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::DocumentationInputRead { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::DocumentationInputBudget { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::DocumentationInputUtf8 { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::DocumentationInputLimit { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::SessionFrontierMismatch
+        | backend_frontend_rust::legacy::RustAuthorityError::SessionSourceRootAmbiguous
+        | backend_frontend_rust::legacy::RustAuthorityError::SessionSourceRootLimit { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::SessionSourcePath { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::SessionSourceCardinality { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::WorkspaceBindingMismatch => {
             AuthorityPhase::Open
         }
     }
@@ -511,11 +528,16 @@ fn rust_phase(cause: &backend_frontend_rust::legacy::RustAuthorityError) -> Auth
 fn rust_class(
     cause: &backend_frontend_rust::legacy::RustAuthorityError,
 ) -> AuthorityDiagnosticClass {
-    match rust_phase(cause) {
-        AuthorityPhase::Resolve => AuthorityDiagnosticClass::Binding,
-        AuthorityPhase::TypeCheck => AuthorityDiagnosticClass::Type,
-        AuthorityPhase::Project => AuthorityDiagnosticClass::Projection,
-        AuthorityPhase::Open | AuthorityPhase::Parse => AuthorityDiagnosticClass::Authority,
+    match cause {
+        backend_frontend_rust::legacy::RustAuthorityError::DetachedSource { .. } => {
+            AuthorityDiagnosticClass::SourceScope
+        }
+        _ => match rust_phase(cause) {
+            AuthorityPhase::Resolve => AuthorityDiagnosticClass::Binding,
+            AuthorityPhase::TypeCheck => AuthorityDiagnosticClass::Type,
+            AuthorityPhase::Project => AuthorityDiagnosticClass::Projection,
+            AuthorityPhase::Open | AuthorityPhase::Parse => AuthorityDiagnosticClass::Authority,
+        },
     }
 }
 
@@ -579,8 +601,19 @@ fn python_class(
 fn go_phase(cause: &backend_frontend_go::legacy::OracleError) -> AuthorityPhase {
     match cause {
         backend_frontend_go::legacy::OracleError::Decode { .. } => AuthorityPhase::Parse,
-        backend_frontend_go::legacy::OracleError::Staleness { .. } => AuthorityPhase::Project,
+        backend_frontend_go::legacy::OracleError::Staleness { .. }
+        | backend_frontend_go::legacy::OracleError::WorkspaceWitnessChanged
+        | backend_frontend_go::legacy::OracleError::PackageAuthorityWitnessChanged => {
+            AuthorityPhase::Project
+        }
+        backend_frontend_go::legacy::OracleError::WorkspaceWitness(_)
+        | backend_frontend_go::legacy::OracleError::PackageAuthorityWitness(_) => {
+            AuthorityPhase::Resolve
+        }
         backend_frontend_go::legacy::OracleError::Spawn { .. }
+        | backend_frontend_go::legacy::OracleError::MissingChildEnvironment
+        | backend_frontend_go::legacy::OracleError::UnsupportedCgoOracleBinary
+        | backend_frontend_go::legacy::OracleError::UnsupportedCgo { .. }
         | backend_frontend_go::legacy::OracleError::ToolingUnavailable { .. }
         | backend_frontend_go::legacy::OracleError::Exit { .. }
         | backend_frontend_go::legacy::OracleError::OutputLimit { .. }

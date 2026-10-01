@@ -11,35 +11,42 @@ mod coverage;
 mod delta;
 /// Canonical bounded frame writing into caller-owned storage.
 pub mod frame;
-mod ids;
 /// Domain-separated logical/object/state/workspace identities.
 pub mod identity;
+mod ids;
 /// Canonical object descriptors, providers, and residency vocabulary.
-#[allow(unsafe_code, reason = "zerocopy derives emit unsafe impls for plain-old-data wire types")]
+#[allow(
+    unsafe_code,
+    reason = "zerocopy derives emit unsafe impls for plain-old-data wire types"
+)]
 pub mod object;
 /// Allocation-free, caller-owned observability probes.
 pub mod observe;
 mod persistent;
 /// Canonical value/batch schema and complete encoding contracts.
-#[allow(unsafe_code, reason = "zerocopy derives emit unsafe impls for plain-old-data wire types")]
+#[allow(
+    unsafe_code,
+    reason = "zerocopy derives emit unsafe impls for plain-old-data wire types"
+)]
 pub mod schema;
 mod tree;
 mod workspace;
 
 pub use identity::{
-    ArtifactHasher, ArtifactId, ArtifactIdDecodeError, CONTENT_PAYLOAD_BYTES, ContentAuthority, ContentAuthorityError,
-    ContentHasher, ContentId, ContentIdDecodeError, ContentRoutingWord, Domain, DomainCode,
-    DomainTag, Encoding, EncodingCode, EncodingTag, FixedCanonicalRecord, GenerationHasher,
-    GenerationId, HASH_BYTES, IndexSnapshotIdentityError, TAG_BYTES, CapabilityDomain,
+    ArtifactHasher, ArtifactId, ArtifactIdDecodeError, CONTENT_PAYLOAD_BYTES, CapabilityDomain,
     CompilationTargetDomain, CompilePublicationDomain, CompilePublicationEncoding,
-    CompileRecipeDomain, ConfigurationDomain, DeclarationFamilyDomain, DeclarationKeyDomain,
-    DeclarationVariantDomain, DependencySetDomain, ForeignDeclarationDomain, FrameEncoding,
-    IndexExactSegmentDomain, IndexLexicalSegmentDomain, IndexPackDomain, IndexPackEncoding,
-    IndexSnapshotDomain, IndexSnapshotId, IndexVectorSegmentDomain, IrFragmentDomain,
-    IrFragmentEncoding, IrFragmentRangeEncoding, IrManifestDomain, IrManifestEncoding,
-    IrSemanticImageDomain, IrSemanticImageEncoding, LocalitySortedEncoding, ObjectDomain,
-    ObjectPackEncoding, OperationDomain, RootDomain, SemanticScopeDomain, SourceFactDomain,
-    StageKeyDomain, ToolchainDomain, derive_index_snapshot,
+    CompileRecipeDomain, ConfigurationDomain, ContentAuthority, ContentAuthorityError,
+    ContentHasher, ContentId, ContentIdDecodeError, ContentPayloadHasher,
+    ContentPayloadHasherError, ContentRoutingWord, DeclarationFamilyDomain, DeclarationKeyDomain,
+    DeclarationVariantDomain, DependencySetDomain, Domain, DomainCode, DomainTag, Encoding,
+    EncodingCode, EncodingTag, FixedCanonicalRecord, ForeignDeclarationDomain, FrameEncoding,
+    GenerationHasher, GenerationId, HASH_BYTES, IndexExactSegmentDomain, IndexLexicalSegmentDomain,
+    IndexPackDomain, IndexPackEncoding, IndexSnapshotDomain, IndexSnapshotId,
+    IndexSnapshotIdentityError, IndexVectorSegmentDomain, IrFragmentDomain, IrFragmentEncoding,
+    IrFragmentRangeEncoding, IrManifestDomain, IrManifestEncoding, IrSemanticImageDomain,
+    IrSemanticImageEncoding, LocalitySortedEncoding, ObjectDomain, ObjectPackEncoding,
+    OperationDomain, RootDomain, SemanticScopeDomain, SourceFactDomain, StageKeyDomain, TAG_BYTES,
+    ToolchainDomain, derive_index_snapshot,
 };
 
 pub use coverage::{
@@ -59,16 +66,17 @@ pub use delta::{
 pub use ids::{
     CANONICAL_CUT_POLICY_VERSION, CANONICAL_TREE_ABI, CANONICAL_VERSION, CanonicalRelation,
     CommitId, DeltaId, ID_BYTES, IdAdmissionError, IdContext, IdDecodeError, ObjectKey,
-    ObjectVersion, ObjectVersionHasher, Relation, RelationDecodeError, RuntimeIdentityError,
-    Schema, StateRoot, UntrustedId, WireId, WorkspaceRoot, admit_object_version_bytes,
-    admit_state_root_bytes, object_version_digest, state_root_digest,
+    ObjectKeyHasher, ObjectVersion, ObjectVersionHasher, Relation, RelationDecodeError,
+    RuntimeIdentityError, Schema, StateRoot, UntrustedId, WireId, WorkspaceRoot,
+    admit_object_version_bytes, admit_state_root_bytes, object_version_digest, state_root_digest,
 };
 pub use persistent::{
-    LazyPreparedUpdate, LazyTree, LazyTreeError, LazyTreePage, LazyTreeWork, NoInterner,
-    PersistedTreeRoot, PersistentTree, PreparedUpdate, TreeChange, TreeError, TreeInterner,
-    TreeIter, TreeNodeChildren, TreeNodeClosure, TreeNodeClosureWork, TreeNodeHandle, TreeNodeId,
-    TreeNodeLoader, TreeNodeSummary, TreeNodeTraversalError, TreeNodeView, TreePath, TreeRangeIter,
-    TreeWork, TreeZipper, WeakTreeNodeHandle,
+    LazyPreparedUpdate, LazyTree, LazyTreeError, LazyTreeMetadataShape, LazyTreePage,
+    LazyTreeUpdateBudget, LazyTreeWork, NoInterner, PersistedTreeRoot, PersistentTree,
+    PreparedUpdate, TreeChange, TreeError, TreeInterner, TreeIter, TreeNodeChildren,
+    TreeNodeClosure, TreeNodeClosureWork, TreeNodeHandle, TreeNodeId, TreeNodeLoader,
+    TreeNodeSummary, TreeNodeTraversalError, TreeNodeView, TreePath, TreeRangeIter, TreeWork,
+    TreeZipper, WeakTreeNodeHandle,
 };
 pub use tree::{
     CanonicalChildIter, CanonicalChildWireIter, CanonicalChildWireRef, CanonicalLeafField,

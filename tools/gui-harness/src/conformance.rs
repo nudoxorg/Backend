@@ -995,15 +995,14 @@ fn inspect_semantics(
         if let (Some(data), Some(coordinate)) = (
             nonempty_string(object, "data_revision"),
             nonempty_string(object, "coordinate_revision"),
-        ) {
-            if data != coordinate {
-                failures.push(failure(
-                    "live-data",
-                    path,
-                    format!("probe {index} coordinate revision differs from data revision"),
-                ));
-                evidence.valid = false;
-            }
+        ) && data != coordinate
+        {
+            failures.push(failure(
+                "live-data",
+                path,
+                format!("probe {index} coordinate revision differs from data revision"),
+            ));
+            evidence.valid = false;
         }
         let Some(actions) = object.get("actions").and_then(Value::as_array) else {
             failures.push(failure(
@@ -1169,7 +1168,7 @@ fn inspect_modern_semantic_probe(
         return;
     }
     let mut ids = BTreeSet::new();
-    let mut nodes_by_id = std::collections::BTreeMap::new();
+    let mut nodes_by_id = BTreeMap::new();
     let mut focus_orders = Vec::new();
     let mut measured_targets = Vec::new();
     let mut visible_enabled = false;
@@ -1613,10 +1612,10 @@ fn inspect_journeys(
                     states.insert("hover".to_owned());
                 } else if kind == "pointer-down" || kind == "click" {
                     states.insert("pressed".to_owned());
-                } else if kind == "key" {
-                    if let Some(value) = step.get("value").and_then(Value::as_str) {
-                        add_keyboard_token(keyboard, value);
-                    }
+                } else if kind == "key"
+                    && let Some(value) = step.get("value").and_then(Value::as_str)
+                {
+                    add_keyboard_token(keyboard, value);
                 }
             }
         }
@@ -1886,19 +1885,19 @@ fn runs(values: &[bool], minimum_fraction: f64, axis: &str, color: [u8; 4]) -> V
     {
         if uniform && start.is_none() {
             start = Some(index);
-        } else if !uniform {
-            if let Some(start) = start.take() {
-                let end = index;
-                let fraction = (end - start) as f64 / values.len().max(1) as f64;
-                if fraction >= minimum_fraction {
-                    output.push(UniformRegion {
-                        axis: axis.to_owned(),
-                        start: start as u32,
-                        end: end as u32,
-                        fraction,
-                        color,
-                    });
-                }
+        } else if !uniform
+            && let Some(start) = start.take()
+        {
+            let end = index;
+            let fraction = (end - start) as f64 / values.len().max(1) as f64;
+            if fraction >= minimum_fraction {
+                output.push(UniformRegion {
+                    axis: axis.to_owned(),
+                    start: start as u32,
+                    end: end as u32,
+                    fraction,
+                    color,
+                });
             }
         }
     }

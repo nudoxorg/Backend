@@ -8,7 +8,8 @@ use crate::{
 /// Explicit work performed by one lazy update.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct LazyTreeWork {
-    /// Number of authenticated nodes fetched from the loader.
+    /// Number of authenticated node load requests made through the loader,
+    /// including hits served by an in-memory overlay.
     pub loaded_nodes: usize,
     /// Number of canonical nodes emitted into the changed frontier.
     pub rebuilt_nodes: usize,
@@ -18,6 +19,12 @@ pub struct LazyTreeWork {
     pub removed_entries: usize,
     /// Total bytes in the changed frontier.
     pub emitted_bytes: usize,
+    /// Conservative peak metadata charge for a bounded batch update.
+    ///
+    /// Unbounded updates leave this at zero. For bounded updates this is the
+    /// preflight charge for the edit vectors, per-change frontier and overlay,
+    /// and the bounded path-copy scratch space.
+    pub peak_metadata_bytes: usize,
 }
 
 /// A checked target root produced by a lazy path copy.

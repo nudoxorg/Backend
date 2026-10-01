@@ -10,11 +10,11 @@ use core::num::NonZeroU16;
 use crate::ir::{
     AnnotationKind, ArrayShape, AtomId, AtomListId, BuiltinType, ChannelDirection, ComputedType,
     ConcreteType, CvQualifiers, CxxReferenceCategory, EntityId, ExternalId, FreePredicate,
-    FreePredicateListId, LiteralType, MappedModifier, Mutability, NativeCharacterRole, ObjectMember,
-    ObjectMemberListId, PropertyKey,
-    QualifiedSegments, TemplatePart, TemplatePartListId, TupleElement, TupleElementKind,
-    TupleElementListId, TypeExpr, TypeId, TypeListId, TypeParameter, TypeParameterBound,
-    TypeParameterBoundListId, TypeParameterInference, TypeParameterKind, TypeParameterListId,
+    FreePredicateListId, LiteralType, MappedModifier, Mutability, NativeCharacterRole,
+    ObjectMember, ObjectMemberListId, PropertyKey, QualifiedSegments, TemplatePart,
+    TemplatePartListId, TupleElement, TupleElementKind, TupleElementListId, TypeExpr, TypeId,
+    TypeListId, TypeParameter, TypeParameterBound, TypeParameterBoundListId,
+    TypeParameterInference, TypeParameterKind, TypeParameterListId,
     TypeParameterPrimaryRequirement, TypeParameterRequirements, TypeQuery, UnknownReason,
     UnknownType, VariadicForm, Variance, WildcardBound,
 };
@@ -335,9 +335,9 @@ pub(crate) fn template_part(
 ) -> Result<TemplatePart, FullSemanticImageFault> {
     match edges.scalar_at(13, index)? {
         0 => Ok(TemplatePart::Bytes(edges.atom_at_n(13, index, 1)?)),
-        1 => Ok(TemplatePart::Placeholder(edges.node_at_n(
-            13, index, 1, TYPE,
-        )?)),
+        1 => Ok(TemplatePart::Placeholder(
+            edges.node_at_n(13, index, 1, TYPE)?,
+        )),
         _ => Err(shape(edges.node)),
     }
 }
@@ -400,9 +400,7 @@ pub(crate) fn free_predicate(
 ) -> Result<FreePredicate, FullSemanticImageFault> {
     Ok(FreePredicate {
         subject: edges.node_at(24, index, TYPE)?,
-        bounds: TypeParameterBoundListId::new(
-            edges.node_at(25, index, TYPE_PARAMETER_BOUNDS)?.raw,
-        ),
+        bounds: TypeParameterBoundListId::new(edges.node_at(25, index, TYPE_PARAMETER_BOUNDS)?.raw),
     })
 }
 
@@ -428,7 +426,7 @@ pub(crate) fn logical_count(
             return Err(FullSemanticImageFault::TypedDomain {
                 node: edges.node,
                 domain,
-            })
+            });
         }
     };
     if edges.grouped.is_none() {

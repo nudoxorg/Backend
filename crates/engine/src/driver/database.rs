@@ -12,6 +12,7 @@ use std::{
 use backend_frontend_clang::legacy::{
     ClangInput, CompilationDatabase, DatabaseArgumentError, DatabaseError, MAX_DATABASE_ARGUMENTS,
 };
+use backend_frontend_clang::{ClangAuthorityEnvironment, ClangAuthorityError};
 use backend_semantic::ir::{
     CanonicalDataError, FragmentError, FragmentView, PrepareError, SourceIdentity, WriteError,
 };
@@ -25,6 +26,9 @@ use crate::driver::{CompiledFragment, ResolvedToolchain, lower};
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum DatabaseCompileFailure<'source> {
+    /// The explicitly selected libclang could not be loaded on this thread.
+    #[error("selected libclang authority could not be activated")]
+    ConfiguredLibrary(#[source] ClangAuthorityError),
     /// The compilation database could not be opened or decoded.
     #[error("compilation database could not be opened")]
     Database(#[source] DatabaseError),
@@ -165,6 +169,7 @@ pub enum DatabaseCompileFailure<'source> {
 pub fn compile_database_translation_unit<'source, 'toolchain, 'cancel, 'output>(
     database_directory: &Path,
     translation_unit: &Path,
+    environment: &ClangAuthorityEnvironment,
     profile: LanguageProfile,
     stage: Stage,
     source: &'source [u8],
@@ -181,7 +186,9 @@ pub fn compile_database_translation_unit<'source, 'toolchain, 'cancel, 'output>(
     if cancelled.load(Ordering::Acquire) {
         return Err(DatabaseCompileFailure::Cancelled { input: source });
     }
-    let database = CompilationDatabase::from_directory(database_directory)
+    let database = environment
+        .with_loaded_libclang(|| CompilationDatabase::from_directory(database_directory))
+        .map_err(DatabaseCompileFailure::ConfiguredLibrary)?
         .map_err(DatabaseCompileFailure::Database)?;
     let requested = translation_unit.to_string_lossy();
     let command = database
@@ -212,11 +219,21 @@ pub fn compile_database_translation_unit<'source, 'toolchain, 'cancel, 'output>(
         command.directory(),
     )
     .map_err(DatabaseCompileFailure::Arguments)?;
-    compile_database_input(input, profile, stage, source, toolchain, cancelled, output)
+    compile_database_input(
+        input,
+        environment,
+        profile,
+        stage,
+        source,
+        toolchain,
+        cancelled,
+        output,
+    )
 }
 
 fn compile_database_input<'input, 'source, 'toolchain, 'cancel, 'output>(
     input: ClangInput<'input>,
+    environment: &ClangAuthorityEnvironment,
     profile: LanguageProfile,
     stage: Stage,
     source: &'source [u8],
@@ -242,6 +259,7 @@ fn compile_database_input<'input, 'source, 'toolchain, 'cancel, 'output>(
     );
     let bytes = lower::clang::lower_database(
         input,
+        environment,
         source,
         source_identity,
         recipe,
@@ -253,6 +271,9 @@ fn compile_database_input<'input, 'source, 'toolchain, 'cancel, 'output>(
         lower::clang::ClangCollectError::Authority(
             backend_frontend_clang::legacy::CollectError::Cancelled,
         ) => DatabaseCompileFailure::Cancelled { input: source },
+        lower::clang::ClangCollectError::Authority(
+            backend_frontend_clang::legacy::CollectError::ConfiguredLibrary(cause),
+        ) => DatabaseCompileFailure::ConfiguredLibrary(cause),
         lower::clang::ClangCollectError::Authority(cause) => {
             DatabaseCompileFailure::Authority(cause)
         }

@@ -550,8 +550,9 @@ pub(crate) fn collect<'source>(
             | DeclarationKind::Property
             | DeclarationKind::Indexer
             | DeclarationKind::Event => {
-                let ordinal =
-                    push_member(facts, &image, &names, &ordinals, source, coordinate, &declared)?;
+                let ordinal = push_member(
+                    facts, &image, &names, &ordinals, source, coordinate, &declared,
+                )?;
                 ordinals.record(coordinate, ordinal).map_err(terminal)?;
             }
             DeclarationKind::Constructor
@@ -1005,7 +1006,9 @@ fn member_discriminator(
     hash.update([u8::from(implementation)]);
     if explicit {
         for reference in image.references() {
-            let reference = reference.map_err(ProjectionFault::Image).map_err(terminal)?;
+            let reference = reference
+                .map_err(ProjectionFault::Image)
+                .map_err(terminal)?;
             if usize::try_from(reference.owner).is_ok_and(|owner| owner == coordinate)
                 && reference.kind == ReferenceTag::InterfaceImplementation
             {
@@ -3831,8 +3834,7 @@ mod tests {
         };
         if local_target.raw != parse_row
             || local.occurrence.kind != backend_semantic::ir::ReferenceKind::MethodCall
-            || local.occurrence.confidence
-                != backend_semantic::ir::OccurrenceConfidence::Oracle
+            || local.occurrence.confidence != backend_semantic::ir::OccurrenceConfidence::Oracle
         {
             return Err(TestError::Missing("local method-group projection"));
         }
@@ -3852,8 +3854,7 @@ mod tests {
         if key.path != "Call"
             || key.kind != Some(EntityKind::Function)
             || foreign.occurrence.kind != backend_semantic::ir::ReferenceKind::MethodCall
-            || foreign.occurrence.confidence
-                != backend_semantic::ir::OccurrenceConfidence::Oracle
+            || foreign.occurrence.confidence != backend_semantic::ir::OccurrenceConfidence::Oracle
         {
             return Err(TestError::Missing("foreign method-group projection"));
         }
@@ -4459,8 +4460,7 @@ mod tests {
 
     #[test]
     fn bare_property_read_lowers_as_local_variable_use() -> Result<(), TestError> {
-        let source =
-            b"class Widget { public int Count { get; set; } public int Read() => Count; }";
+        let source = b"class Widget { public int Count { get; set; } public int Read() => Count; }";
         let mut fix = Fixture::default();
         let widget = fix.class(b"demo.Widget", source);
         let int_ty = fix.named(b"System.Int32");

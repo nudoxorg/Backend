@@ -17,10 +17,11 @@
 
 use crate::acquisition::{
     AcquisitionDelta, ArchiveBudget, ArchiveManifestBuilder, ContentAddressedStore,
-    ContentStoreError, DeltaChange, ManifestEntry, RawArchiveObjectId, SourceSnapshot,
-    TreeManifest,
+    ContentStoreError, DeltaChange, LeaseGuard, LeaseStore, ManifestEntry, RawArchiveObjectId,
+    SourceSnapshot, TreeManifest,
 };
 use crate::journal::{HashChainJournal, JournalCodec, JournalDomain, JournalError, JournalLimits};
+use backend_execution::{WorkKey, acquisition_work_key};
 use backend_library::{
     DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope,
     PackageDependencyRecord, PackageDependencyTarget, PackageReference, ProductText,
@@ -44,6 +45,29 @@ const MAX_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_METADATA_BYTES: usize = 2 * 1024 * 1024;
 const MAX_README_BYTES: usize = 256 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
+const FORGE_LEASE_TTL: Duration = Duration::from_secs(30);
+
+fn forge_root_identity(root: &std::path::Path) -> [u8; ID_BYTES] {
+    digest_fields(
+        b"nudox.forge.journal-root.v1\0",
+        &[root.as_os_str().to_string_lossy().as_bytes()],
+    )
+}
+
+fn forge_journal_work_key(root: [u8; ID_BYTES]) -> WorkKey {
+    acquisition_work_key(root, b"nudox.forge.owner-journal.v1", [0; ID_BYTES], 1, 0)
+}
+
+fn forge_product_work_key(root: [u8; ID_BYTES], coordinate: &ForgeCoordinate) -> WorkKey {
+    acquisition_work_key(root, &coordinate.identity(), [0; ID_BYTES], 1, 0)
+}
+
+fn journal_io_error(error: JournalError) -> io::Error {
+    match error {
+        JournalError::Io(error) => error,
+        error => io::Error::new(io::ErrorKind::InvalidData, error.to_string()),
+    }
+}
 
 fn now_millis() -> u64 {
     SystemTime::now()
@@ -122,7 +146,7 @@ pub use identity::{
 };
 pub use model::{
     ForgeAcquisitionOutcome, ForgeAcquisitionResult, ForgePackageManifest, ForgeReceipt,
-    ForgeRejectReason,
+    ForgeRejectReason, ForgeSearchRecord,
 };
 pub use policy::{ForgeAcquisitionLimits, ForgeAcquisitionPolicy};
 pub use protocol::{

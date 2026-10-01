@@ -125,6 +125,12 @@ pub enum EngineRequest {
     },
     /// A leased subscription lifecycle operation.
     Subscription(LocalSubscriptionRequest),
+    /// Canonical bounded request for one currently selected semantic-plane
+    /// byte range. The handler must decode the semantic DTO and re-read the
+    /// selected authority before returning any bytes.
+    SemanticRangeGet(Box<[u8]>),
+    /// Canonical bounded semantic catalog or image-manifest page request.
+    SemanticMetadataGet(Box<[u8]>),
     /// A request that the daemon retire itself.
     ///
     /// This is a listener lifecycle operation: it stops accepting clients,
@@ -174,6 +180,8 @@ pub enum Operation {
     Complete,
     /// Cursor subscription.
     Subscribe,
+    /// Bounded semantic-plane range read.
+    SemanticRange,
     /// Daemon lifecycle control.
     Shutdown,
 }
@@ -190,6 +198,8 @@ impl RequestFrame {
                 EngineRequest::Subscribe { .. } | EngineRequest::Subscription(_) => {
                     Operation::Subscribe
                 }
+                EngineRequest::SemanticRangeGet(_) => Operation::SemanticRange,
+                EngineRequest::SemanticMetadataGet(_) => Operation::SemanticRange,
                 EngineRequest::Shutdown => Operation::Shutdown,
             },
         }
@@ -230,6 +240,12 @@ pub enum EngineStatus {
     Rejected(String),
     /// A durable subscription response with an exact lease/cursor binding.
     Subscription(LocalSubscriptionResponse),
+    /// One canonical bounded semantic-plane byte range.
+    SemanticRangeChunk(Box<[u8]>),
+    /// One canonical bounded semantic catalog or image-manifest page.
+    SemanticMetadataChunk(Box<[u8]>),
+    /// The exact selected semantic generation changed during an admitted read.
+    SemanticStaleSelection,
 }
 
 /// A local response. Command replies remain the library JSON DTO bytes so CLI
@@ -268,6 +284,8 @@ pub enum ProtocolError {
     /// and DTO admission succeeded, so reporting an owner failure as an
     /// "invalid command frame" sends callers debugging in the wrong layer.
     CommandExecution(String),
+    /// The caller's selected semantic stamp is no longer current.
+    SemanticStaleSelection,
     /// A stream read or write failed.
     Io(io::ErrorKind),
     /// The endpoint timed out while the peer was idle.
@@ -295,7 +313,10 @@ impl ProtocolError {
     /// risk parsing a later frame from the wrong offset.
     #[must_use]
     pub const fn closes_connection(&self) -> bool {
-        !matches!(self, Self::CommandExecution(_))
+        !matches!(
+            self,
+            Self::CommandExecution(_) | Self::SemanticStaleSelection
+        )
     }
 }
 
@@ -312,6 +333,9 @@ impl fmt::Display for ProtocolError {
             Self::InvalidCommand(message) => write!(formatter, "invalid command frame: {message}"),
             Self::CommandExecution(message) => {
                 write!(formatter, "command execution failed: {message}")
+            }
+            Self::SemanticStaleSelection => {
+                formatter.write_str("selected semantic generation is stale")
             }
             Self::Io(kind) => write!(formatter, "local endpoint I/O failed: {kind:?}"),
             Self::Timeout => formatter.write_str("local endpoint timed out"),
@@ -518,6 +542,14 @@ pub fn encode_engine_request(
             }
             LocalControlRequest::Subscription(subscription.clone())
         }
+        EngineRequest::SemanticRangeGet(payload) => LocalControlRequest::SemanticRangeGet {
+            request_id,
+            payload: payload.clone(),
+        },
+        EngineRequest::SemanticMetadataGet(payload) => LocalControlRequest::SemanticMetadataGet {
+            request_id,
+            payload: payload.clone(),
+        },
     };
     backend_engine::encode_local_control_request(&raw, local_control_limits(limits))
         .map_err(map_local_error)
@@ -572,6 +604,14 @@ pub fn decode_engine_request(
                 subscription.request_id(),
                 EngineRequest::Subscription(subscription),
             ),
+            LocalControlRequest::SemanticRangeGet {
+                request_id,
+                payload,
+            } => (request_id, EngineRequest::SemanticRangeGet(payload)),
+            LocalControlRequest::SemanticMetadataGet {
+                request_id,
+                payload,
+            } => (request_id, EngineRequest::SemanticMetadataGet(payload)),
         };
     Ok((request_id, request))
 }
@@ -619,6 +659,23 @@ pub fn encode_response(
                     }
                     LocalControlResponse::Subscription(subscription.clone())
                 }
+                EngineStatus::SemanticRangeChunk(payload) => {
+                    LocalControlResponse::SemanticRangeChunk {
+                        request_id: *request_id,
+                        payload: payload.clone(),
+                    }
+                }
+                EngineStatus::SemanticMetadataChunk(payload) => {
+                    LocalControlResponse::SemanticMetadataChunk {
+                        request_id: *request_id,
+                        payload: payload.clone(),
+                    }
+                }
+                EngineStatus::SemanticStaleSelection => {
+                    LocalControlResponse::SemanticStaleSelection {
+                        request_id: *request_id,
+                    }
+                }
             };
             backend_engine::encode_local_control_response(&raw, local_control_limits(limits))
                 .map_err(map_local_error)
@@ -661,6 +718,17 @@ pub fn decode_response(
                 subscription.request_id(),
                 EngineStatus::Subscription(subscription),
             ),
+            LocalControlResponse::SemanticRangeChunk {
+                request_id,
+                payload,
+            } => (request_id, EngineStatus::SemanticRangeChunk(payload)),
+            LocalControlResponse::SemanticMetadataChunk {
+                request_id,
+                payload,
+            } => (request_id, EngineStatus::SemanticMetadataChunk(payload)),
+            LocalControlResponse::SemanticStaleSelection { request_id } => {
+                (request_id, EngineStatus::SemanticStaleSelection)
+            }
         };
     Ok(ResponseFrame::Engine { request_id, status })
 }
@@ -779,6 +847,56 @@ mod tests {
             decoded,
             EngineRequest::Subscribe { credit: 3, .. }
         ));
+    }
+
+    #[test]
+    fn semantic_range_control_round_trips_through_locald_protocol() {
+        let limits = limits();
+        let request = EngineRequest::SemanticRangeGet(Box::from(*b"canonical-range-get"));
+        let encoded = encode_engine_request(41, &request, limits).expect("encode range request");
+        let decoded = decode_request(&encoded, limits).expect("decode range request");
+        assert!(matches!(
+            &decoded,
+            RequestFrame::Engine { request_id: 41, request }
+                if matches!(&**request, EngineRequest::SemanticRangeGet(bytes)
+                    if bytes.as_ref() == b"canonical-range-get")
+        ));
+        assert_eq!(decoded.operation(), Operation::SemanticRange);
+
+        let response = ResponseFrame::Engine {
+            request_id: 41,
+            status: EngineStatus::SemanticRangeChunk(Box::from(*b"canonical-range-chunk")),
+        };
+        let encoded = encode_response(&response, limits).expect("encode range chunk");
+        assert_eq!(
+            decode_response(&encoded, limits).expect("decode range chunk"),
+            response
+        );
+    }
+
+    #[test]
+    fn semantic_metadata_control_round_trips_through_locald_protocol() {
+        let limits = limits();
+        let request = EngineRequest::SemanticMetadataGet(Box::from(*b"semantic-catalog-get"));
+        let encoded = encode_engine_request(42, &request, limits).expect("encode metadata get");
+        let decoded = decode_request(&encoded, limits).expect("decode metadata get");
+        assert!(matches!(
+            &decoded,
+            RequestFrame::Engine { request_id: 42, request }
+                if matches!(&**request, EngineRequest::SemanticMetadataGet(bytes)
+                    if bytes.as_ref() == b"semantic-catalog-get")
+        ));
+        assert_eq!(decoded.operation(), Operation::SemanticRange);
+
+        let response = ResponseFrame::Engine {
+            request_id: 42,
+            status: EngineStatus::SemanticMetadataChunk(Box::from(*b"semantic-catalog-chunk")),
+        };
+        let encoded = encode_response(&response, limits).expect("encode metadata chunk");
+        assert_eq!(
+            decode_response(&encoded, limits).expect("decode metadata chunk"),
+            response
+        );
     }
 
     #[test]

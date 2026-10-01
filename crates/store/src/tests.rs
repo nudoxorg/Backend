@@ -382,6 +382,9 @@ fn cas_reaps_dropped_history_and_keeps_live_deduplication() {
         before: Some(StoredValue::new(vec![9], 1, Vec::new())),
         after: Some(StoredValue::new(vec![10], 1, Vec::new())),
     }]));
+    // Map updates already do bounded incremental cleanup, so the explicit
+    // full sweep may have nothing left to remove.
+    let _reaped = second.reap_stale();
     let (after_reap, live_after_reap) = second.cas_counts();
     assert_eq!(after_reap, live_after_reap);
     assert!(stats.reused_nodes > 0);
@@ -1276,9 +1279,8 @@ fn root_only_extension_durably_writes_every_registered_relation_root() {
     )
     .with_root_only();
     let authority = must(store.acquire_publication_authority());
-    let published =
-        must(must(store.prepare_checked_workspace_publication(publication)).durable())
-            .publish_with_authority(&authority);
+    let published = must(must(store.prepare_checked_workspace_publication(publication)).durable())
+        .publish_with_authority(&authority);
     drop(must(published));
 
     let reopened = must(FileStore::open_with_registry(

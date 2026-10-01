@@ -71,18 +71,19 @@
 //! | `TUPLE_FIELD_NAMES` (256 positional spellings) | positional-name fold | a tuple field whose index has no spelling is not materialized |
 //! | computed rows (`MAX_COMPUTED_TYPE_ROWS`, 32768) | `ComputedRowCapacity` | a proven let-initializer or method-call result type beyond the cap is dropped, never truncated into a fabricated row |
 
-use std::{collections::HashMap, vec::Vec};
+use std::{collections::HashMap, path::Path, vec::Vec};
 
 use backend_frontend_rust::legacy::{
     ByteSpan, ModuleDeclaration, RustAnalysisControl, RustAuthority, RustAuthorityError,
     RustDeclaration, RustDefinition, RustFeatureControl, RustFieldAccess, RustProject,
-    SemanticKind, SourceByteLimit, SourceOrigin, ra_ap_hir, ra_ap_ide_db, ra_ap_syntax,
+    RustWorkspace, SemanticKind, SourceByteLimit, SourceOrigin, ra_ap_hir, ra_ap_ide_db,
+    ra_ap_syntax,
 };
 use backend_semantic::ir::{
     AtomListId, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ExternalEntityRef,
-    ExternalFragmentId, ForeignKey, ForeignOrigin, PackageLineage,
-    ListSpan, NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget, PrimitiveShape,
-    ProductChildRole, ReferenceKind, RelSpan, RustFacts, RustOwnership, SemanticProductConstructor,
+    ExternalFragmentId, ForeignKey, ForeignOrigin, ListSpan, NominalRef, Occurrence,
+    OccurrenceConfidence, OccurrenceTarget, PackageLineage, PrimitiveShape, ProductChildRole,
+    ReferenceKind, RelSpan, RustFacts, RustOwnership, SemanticProductConstructor,
     SemanticTypeRecord, SemanticTypeTag, TypeParameterListId, TypeReason, TypeWidth,
 };
 use ra_ap_syntax::{
@@ -95,8 +96,9 @@ use sha2::{Digest, Sha256};
 
 use crate::driver::{
     lower::{
-        EmissionExtension, FactSet, LEAF_PRODUCT, MAX_TYPE_CHILDREN, SemanticFact,
-        StagedSourceSpan, portable_admission, portable_count, push_fact,
+        EmissionExtension, FactSet, LEAF_PRODUCT, MAX_TYPE_CHILDREN, OwnedDocFragment,
+        OwnedDocLinkTarget, SemanticFact, StagedSourceSpan, portable_admission, portable_count,
+        push_fact,
     },
     types::{CompileControl, FactFault, LoweringUnsupported},
 };
@@ -169,42 +171,74 @@ pub(crate) fn collect<'source>(
                 deadline: control.deadline,
             },
             features,
-            |authority| {
-                if authority.source != source {
-                    return Err(RustAuthorityError::SourceBinding {
-                        expected: source.len(),
-                        observed: authority.source.len(),
-                    });
-                }
-                let mut emitter = Emitter::new(&authority, source, facts);
-                emitter.run()?;
-                // A source whose every written item stayed out of the lane
-                // (each behind an unmet `#[cfg]` gate, an unresolved facade
-                // re-export, or a `compile_error!` stub) proved by HIR that
-                // it has no active declaration: the collected-empty product
-                // is its honest parity output, exactly the Go `doc.go` and
-                // Clang cfg-gated analogues. Only a written surface with no
-                // top-level item at all carries no proof, and stays the
-                // lane's exact typed rejection.
-                if facts.len() == 0 {
-                    let written_items = authority
-                        .root
-                        .syntax()
-                        .children()
-                        .any(|child| ast::Item::can_cast(child.kind()));
-                    if !written_items {
-                        return Err(RustAuthorityError::Admission {
-                            cause: LoweringUnsupported::NoSupportedDeclaration,
-                        });
-                    }
-                }
-                Ok(())
-            },
+            |authority| collect_authority(authority, source, facts),
         )
-        .map_err(|cause| match cause {
-            RustAuthorityError::Admission { cause } => RustCollectError::Lowering(cause),
-            cause => RustCollectError::Authority(cause),
-        })
+        .map_err(map_collect_error)
+}
+
+/// Runs the same emitter for one file in the package's borrowed analyzer session.
+pub(crate) fn collect_workspace<'source>(
+    workspace: &RustWorkspace,
+    source_path: &Path,
+    maximum_source_bytes: SourceByteLimit,
+    control: CompileControl<'_>,
+    source: &'source [u8],
+    facts: &mut FactSet<'source>,
+) -> Result<(), RustCollectError> {
+    workspace
+        .analyze_source(
+            source_path,
+            source,
+            RustAnalysisControl {
+                cancelled: control.cancelled,
+                maximum_source_bytes,
+                deadline: control.deadline,
+            },
+            |authority| collect_authority(authority, source, facts),
+        )
+        .map_err(map_collect_error)
+}
+
+fn collect_authority<'analysis, 'source>(
+    authority: RustAuthority<'analysis>,
+    source: &'source [u8],
+    facts: &mut FactSet<'source>,
+) -> Result<(), RustAuthorityError> {
+    if authority.source != source {
+        return Err(RustAuthorityError::SourceBinding {
+            expected: source.len(),
+            observed: authority.source.len(),
+        });
+    }
+    let mut emitter = Emitter::new(&authority, source, facts);
+    emitter.run()?;
+    // A source whose every written item stayed out of the lane (each behind
+    // an unmet `#[cfg]` gate, an unresolved facade re-export, or a
+    // `compile_error!` stub) proved by HIR that it has no active declaration.
+    // The collected-empty product is its honest parity output, exactly the
+    // Go `doc.go` and Clang cfg-gated analogues. Only a written surface with
+    // no top-level item at all carries no proof, and stays the lane's exact
+    // typed rejection.
+    if facts.len() == 0 {
+        let written_items = authority
+            .root
+            .syntax()
+            .children()
+            .any(|child| ast::Item::can_cast(child.kind()));
+        if !written_items {
+            return Err(RustAuthorityError::Admission {
+                cause: LoweringUnsupported::NoSupportedDeclaration,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn map_collect_error(cause: RustAuthorityError) -> RustCollectError {
+    match cause {
+        RustAuthorityError::Admission { cause } => RustCollectError::Lowering(cause),
+        cause => RustCollectError::Authority(cause),
+    }
 }
 
 /// Admits one fact, retaining the exact typed rejection on failure while
@@ -273,6 +307,11 @@ struct Decl<'source> {
     name: &'source [u8],
     span: ByteSpan,
     expanded: bool,
+}
+
+enum RustDocLine<'source> {
+    Borrowed(&'source [u8]),
+    Owned(String),
 }
 
 /// The path an attribute's meta names (`deprecated` in `#[deprecated(…)]`).
@@ -541,7 +580,10 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
     /// expansion-made declaration has no written attributes here, and a row
     /// whose attribute text cannot be borrowed from the source stays
     /// unobserved rather than claiming it has none.
-    fn emit_attributes(&mut self, declarations: &[Decl<'source>]) -> Result<(), RustAuthorityError> {
+    fn emit_attributes(
+        &mut self,
+        declarations: &[Decl<'source>],
+    ) -> Result<(), RustAuthorityError> {
         for (index, declaration) in declarations.iter().enumerate() {
             let Some(Some(owner)) = self.ordinals.get(index).copied() else {
                 continue;
@@ -573,7 +615,10 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             for bytes in written {
                 atoms.push(self.facts.intern_atom(bytes).map_err(|_| admission())?);
             }
-            let list = self.facts.intern_atom_list(&atoms).map_err(|_| admission())?;
+            let list = self
+                .facts
+                .intern_atom_list(&atoms)
+                .map_err(|_| admission())?;
             self.facts
                 .attach_item_attributes(owner as usize, list)
                 .map_err(|_| admission())?;
@@ -1359,7 +1404,8 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             let lowered = self.lower_pending_type(&semantic, anchor.as_ref(), MAX_TYPE_DEPTH)?;
             let ownership = parameter_ownership(self.database, &semantic);
             let wildcard = name == b"_";
-            let ordinal = self.push_parameter(name, lowered, ownership, wildcard.then_some(position))?;
+            let ordinal =
+                self.push_parameter(name, lowered, ownership, wildcard.then_some(position))?;
             parameter_ordinals.push(ordinal);
             signature_children.push(ordinal);
         }
@@ -2139,7 +2185,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         match self.trait_bound_constraint(bound)? {
             TraitBoundTarget::Committed(ordinal) => {
                 return self.lower_trait_bound_application(bound, ordinal, MAX_TYPE_DEPTH - 1);
-            },
+            }
             TraitBoundTarget::Foreign => {
                 let spelling = self.bytes_of_node(bound.syntax())?;
                 let record = self.unresolved_record_with(Some(spelling));
@@ -2337,10 +2383,11 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             return Ok(());
         }
         // `scoped_names` keys use `SemanticKind`, not `EntityKind`.
-        if self
-            .scoped_names
-            .contains(&(None, SemanticKind::Module as u8, CRATE_FILE_OWNER_NAME.to_vec()))
-        {
+        if self.scoped_names.contains(&(
+            None,
+            SemanticKind::Module as u8,
+            CRATE_FILE_OWNER_NAME.to_vec(),
+        )) {
             return Ok(());
         }
         if !self.has_orphan_module_import() {
@@ -2371,11 +2418,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             .map_err(|_| admission())?;
         let slot = usize::try_from(ordinal).map_err(|_| admission())?;
         self.facts
-            .attach_extension_with_type_parameters(
-                slot,
-                EmissionExtension::Rust(extension),
-                range,
-            )
+            .attach_extension_with_type_parameters(slot, EmissionExtension::Rust(extension), range)
             .map_err(|_| admission())?;
         self.facts
             .set_free_predicate_range(slot, &EmissionExtension::Rust(extension), free_range)
@@ -2605,11 +2648,9 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                         .first()
                         .and_then(|bound| bound.ty());
                     let target = match bound_ty {
-                        Some(bound_ty) => self.lower_trait_bound_application(
-                            &bound_ty,
-                            ordinal,
-                            depth - 1,
-                        )?,
+                        Some(bound_ty) => {
+                            self.lower_trait_bound_application(&bound_ty, ordinal, depth - 1)?
+                        }
                         None => ordinal,
                     };
                     Ok(Lowered {
@@ -2818,7 +2859,8 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 children,
             });
         };
-        let argument_children = self.lower_written_application_arguments(arguments, anchor, depth)?;
+        let argument_children =
+            self.lower_written_application_arguments(arguments, anchor, depth)?;
         if argument_children.is_empty() {
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Nominal);
             record.nominal = Some(NominalRef::Local(EntityId::new(ordinal)));
@@ -2902,9 +2944,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                         Some(semantic) => self.lower_type(&semantic, Some(&ty), depth)?,
                         None => Lowered::leaf(unknown_record(TypeReason::OracleGap, None)),
                     }
-                } else if let Some(konst) = binding
-                    .const_arg()
-                    .and_then(|argument| argument.expr())
+                } else if let Some(konst) = binding.const_arg().and_then(|argument| argument.expr())
                 {
                     self.const_argument_lowered(self.bytes_of_node(konst.syntax()).ok())
                 } else {
@@ -2941,11 +2981,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
     }
 
     /// `Item = u8` is not `Item = String`, and neither is a bare `Iterator`.
-    fn assoc_binding_lowered(
-        &self,
-        name: Option<&'source [u8]>,
-        value: u32,
-    ) -> Lowered<'source> {
+    fn assoc_binding_lowered(&self, name: Option<&'source [u8]>, value: u32) -> Lowered<'source> {
         let Some(name) = name else {
             return Lowered::leaf(unknown_record(TypeReason::OracleGap, None));
         };
@@ -3054,7 +3090,6 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             record: SemanticTypeRecord::leaf(SemanticTypeTag::ImplTrait),
             children,
         })
-
     }
 
     /// Lowers one generic-parameter use: the implicit trait `Self` stays a
@@ -3144,7 +3179,9 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 canonical.push_str(name.as_str());
             }
         }
-        Some(ExternalFragmentId::from_canonical_bytes(canonical.as_bytes()))
+        Some(ExternalFragmentId::from_canonical_bytes(
+            canonical.as_bytes(),
+        ))
     }
 
     /// Borrows the written lifetime behind one reference anchor.
@@ -3254,8 +3291,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             if let Some(function) = call.target {
                 let definition = ra_ap_hir::ModuleDef::from(function);
                 if self.ordinal_of_definition(&definition).is_none()
-                    && let Some(package_path) =
-                        authority.cross_file_method_package_path(function)
+                    && let Some(package_path) = authority.cross_file_method_package_path(function)
                     && let Some(owner) = self.owner_of(span)
                 {
                     let owner_span = self
@@ -3379,7 +3415,8 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 }
             }
             let confidence = occurrence_confidence(target.is_some());
-            let target = target.map_or(ResolvedTarget::Definition(None), ResolvedTarget::NamedField);
+            let target =
+                target.map_or(ResolvedTarget::Definition(None), ResolvedTarget::NamedField);
             self.emit_one_occurrence(span, ReferenceKind::FieldAccess, target, confidence, None)?;
         }
         let paths: Vec<_> = authority.top_level_paths().collect();
@@ -3589,7 +3626,10 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 .descendants_with_tokens()
                 .filter_map(|element| element.into_token())
             {
-                for descended in authority.semantics.descend_into_macros_no_opaque(token, false) {
+                for descended in authority
+                    .semantics
+                    .descend_into_macros_no_opaque(token, false)
+                {
                     let Some(syntax) = descended
                         .value
                         .parent()
@@ -3681,9 +3721,8 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             .map_err(|_| admission())
     }
 
-    /// Streams every declaration's Rustdoc into borrowed fragments: prose
-    /// lines, fenced code, and intra-doc links whose target names a pushed
-    /// declaration link locally.
+    /// Streams every declaration's rust-analyzer Rustdoc into source-backed
+    /// fragments or owned macro-expanded text, preserving fenced code and links.
     fn emit_docs(&mut self, declarations: &[Decl<'source>]) -> Result<(), RustAuthorityError> {
         for index in 0..declarations.len() {
             let Some(Some(owner)) = self.ordinals.get(index).copied() else {
@@ -3695,21 +3734,25 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 .mark_documentation_captured(owner)
                 .map_err(|_| admission())?;
             let declaration = &declarations[index];
-            let mut lines: Vec<&'source [u8]> = Vec::new();
+            let mut lines: Vec<RustDocLine<'source>> = Vec::new();
             {
                 let authority = self.authority;
                 let emitter = &*self;
-                authority.visit_documentation(&declaration.syntax, |line| {
-                    // An empty line has no bytes to borrow, but it is the
-                    // paragraph break, so it is kept as one.
-                    if line.is_empty() {
-                        lines.push(&[]);
-                    } else if let Some(span) = emitter.span_of_text(line)
-                        && let Ok(bytes) = emitter.bytes_of(span)
-                    {
-                        lines.push(bytes);
-                    }
-                });
+                authority.visit_declaration_documentation(
+                    &declaration.definition,
+                    |line, span| {
+                        if line.is_empty() {
+                            // An empty line has no bytes to borrow, but it is
+                            // the paragraph break, so it stays in the stream.
+                            lines.push(RustDocLine::Borrowed(&[]));
+                        } else if let Some(span) = span {
+                            lines.push(RustDocLine::Borrowed(emitter.bytes_of(span)?));
+                        } else {
+                            lines.push(RustDocLine::Owned(line.to_owned()));
+                        }
+                        Ok(())
+                    },
+                )?;
             }
             self.push_doc_lines(owner, &lines)?;
         }
@@ -3727,40 +3770,67 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
     fn push_doc_lines(
         &mut self,
         owner: u32,
-        lines: &[&'source [u8]],
+        lines: &[RustDocLine<'source>],
     ) -> Result<(), RustAuthorityError> {
-        let mut fragments: Vec<DocFragmentInput<'source>> = Vec::new();
-        let mut inside_fence = false;
-        for (at, line) in lines.iter().enumerate() {
-            if at > 0 {
-                fragments.push(DocFragmentInput::SoftBreak);
-            }
-            if line.is_empty() {
-                continue;
-            }
-            if line.starts_with(b"```") {
-                inside_fence = !inside_fence;
-                continue;
-            }
-            if inside_fence {
-                fragments.push(DocFragmentInput::Code(line));
-                continue;
-            }
-            split_links(line, &mut fragments);
-        }
         let locals: Vec<(&'source [u8], u32)> = self
             .rows
             .iter()
             .map(|row| (row.name, row.ordinal))
             .collect();
-        for fragment in fragments
-            .iter()
-            .copied()
-            .map(|fragment| resolve_link(fragment, &locals))
-        {
-            self.facts
-                .push_doc(owner, fragment)
-                .map_err(|_| admission())?;
+        let mut inside_fence = false;
+        for (at, line) in lines.iter().enumerate() {
+            if at > 0 {
+                self.facts
+                    .push_doc(owner, DocFragmentInput::SoftBreak)
+                    .map_err(|_| admission())?;
+            }
+            let bytes = match line {
+                RustDocLine::Borrowed(bytes) => *bytes,
+                RustDocLine::Owned(text) => text.as_bytes(),
+            };
+            if bytes.is_empty() {
+                continue;
+            }
+            if bytes.starts_with(b"```") {
+                inside_fence = !inside_fence;
+                continue;
+            }
+            if inside_fence {
+                match line {
+                    RustDocLine::Borrowed(bytes) => self
+                        .facts
+                        .push_doc(owner, DocFragmentInput::Code(bytes))
+                        .map_err(|_| admission())?,
+                    RustDocLine::Owned(text) => self
+                        .facts
+                        .push_doc_owned(owner, OwnedDocFragment::Code(text.as_bytes().into()))
+                        .map_err(|_| admission())?,
+                }
+                continue;
+            }
+            match line {
+                RustDocLine::Borrowed(bytes) => {
+                    let mut fragments = Vec::new();
+                    split_links(bytes, &mut fragments);
+                    for fragment in fragments
+                        .into_iter()
+                        .map(|fragment| resolve_link(fragment, &locals))
+                    {
+                        self.facts
+                            .push_doc(owner, fragment)
+                            .map_err(|_| admission())?;
+                    }
+                }
+                RustDocLine::Owned(text) => {
+                    let mut fragments = Vec::new();
+                    split_links_owned(text.as_bytes(), &locals, &mut fragments);
+                    for fragment in fragments {
+                        self.facts
+                            .push_doc_owned(owner, fragment)
+                            .map_err(|_| admission())?;
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -3808,8 +3878,8 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
 
     /// Captures the written visibility prefix of one syntax item.
     fn visibility_of(&self, syntax: &ra_ap_syntax::SyntaxNode) -> backend_semantic::ir::Visibility {
-        let Some(visibility) = ast::AnyHasVisibility::cast(syntax.clone())
-            .and_then(|item| item.visibility())
+        let Some(visibility) =
+            ast::AnyHasVisibility::cast(syntax.clone()).and_then(|item| item.visibility())
         else {
             return backend_semantic::ir::Visibility::Private;
         };
@@ -3898,17 +3968,17 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             else {
                 continue;
             };
-            let mut lines: Vec<&'source [u8]> = Vec::new();
+            let mut lines: Vec<RustDocLine<'source>> = Vec::new();
             {
                 let authority = self.authority;
                 let emitter = &*self;
-                authority.visit_documentation(reexport.item.syntax(), |line| {
+                authority.visit_syntax_documentation(reexport.item.syntax(), |line| {
                     if line.is_empty() {
-                        lines.push(&[]);
+                        lines.push(RustDocLine::Borrowed(&[]));
                     } else if let Some(span) = emitter.span_of_text(line)
                         && let Ok(bytes) = emitter.bytes_of(span)
                     {
-                        lines.push(bytes);
+                        lines.push(RustDocLine::Borrowed(bytes));
                     }
                 });
             }
@@ -4402,6 +4472,43 @@ fn split_links<'source>(line: &'source [u8], fragments: &mut Vec<DocFragmentInpu
     }
 }
 
+/// Splits one owned RA-expanded line into owned prose and intra-doc link facts.
+fn split_links_owned(line: &[u8], rows: &[(&[u8], u32)], fragments: &mut Vec<OwnedDocFragment>) {
+    let mut cursor = 0usize;
+    while let Some(at) = find(line, b"[`", cursor) {
+        let Some(open) = at.checked_add(2) else {
+            break;
+        };
+        let Some(close) = find(line, b"`]", open).and_then(|close| close.checked_add(2)) else {
+            break;
+        };
+        if at > cursor
+            && let Some(prose) = line.get(cursor..at)
+        {
+            fragments.push(OwnedDocFragment::Text(prose.into()));
+        }
+        if let Some(name) = line.get(open..close - 2).filter(|name| !name.is_empty()) {
+            let target = match rows.iter().find(|(known, _)| *known == name) {
+                Some((_, ordinal)) => OwnedDocLinkTarget::Local(*ordinal),
+                None => OwnedDocLinkTarget::Foreign {
+                    ecosystem: CARGO_ECOSYSTEM.as_bytes().into(),
+                    path: name.into(),
+                },
+            };
+            fragments.push(OwnedDocFragment::Link {
+                label: name.into(),
+                target,
+            });
+        }
+        cursor = close;
+    }
+    if let Some(rest) = line.get(cursor..)
+        && !rest.is_empty()
+    {
+        fragments.push(OwnedDocFragment::Text(rest.into()));
+    }
+}
+
 /// Rewrites a doc link whose target names a pushed declaration to the exact
 /// local entity row; every other target keeps its written spelling.
 fn resolve_link<'source>(
@@ -4447,7 +4554,7 @@ fn find(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::driver::lower::{AdmissionFault, admit};
+    use crate::driver::lower::{AdmissionFault, ResourcePlan, admit};
     use backend_frontend_rust::legacy::{RustAuthorityError, RustProject, RustToolchain};
     use backend_semantic::ir::{
         DocFactFault, DocFragmentInput, DocLinkTarget, EntityKind, FragmentError, FragmentView,
@@ -4562,6 +4669,14 @@ mod tests {
     fn collected<'source>(
         source: &'source str,
     ) -> Result<(FactSet<'source>, SourceIdentity, CompileRecipeFact), TestError> {
+        collected_with_doc_include(source, None)
+    }
+
+    /// Stages one crate root and, when requested, a source-relative Rustdoc include.
+    fn collected_with_doc_include<'source>(
+        source: &'source str,
+        doc_include: Option<&str>,
+    ) -> Result<(FactSet<'source>, SourceIdentity, CompileRecipeFact), TestError> {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|error| TestError::Io {
@@ -4571,8 +4686,7 @@ mod tests {
             .as_nanos();
         let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let pid = std::process::id();
-        let root =
-            std::env::temp_dir().join(format!("nudox-rust-lane-{nonce}-{pid}-{sequence}"));
+        let root = std::env::temp_dir().join(format!("nudox-rust-lane-{nonce}-{pid}-{sequence}"));
         fs::create_dir_all(root.join("src")).map_err(|source| TestError::Io {
             operation: "create fixture",
             source,
@@ -4590,6 +4704,12 @@ mod tests {
             operation: "write crate root",
             source,
         })?;
+        if let Some(contents) = doc_include {
+            fs::write(root.join("src/docs.txt"), contents).map_err(|source| TestError::Io {
+                operation: "write Rustdoc include",
+                source,
+            })?;
+        }
         let toolchain = RustToolchain::discover(rustc_path()).map_err(RustAuthorityError::from)?;
         let project = RustProject::open(&root, &toolchain, RustEdition::Rust2024)
             .map_err(RustAuthorityError::from)?;
@@ -5102,9 +5222,7 @@ mod tests {
     /// pointer stays a function row with one child per argument.
     #[test]
     fn a_nine_argument_fn_pointer_keeps_every_argument() -> Result<(), TestError> {
-        let view = lower(
-            "pub fn probe(value: fn(u8, u8, u8, u8, u8, u8, u8, u8, u8)) {}\n",
-        )?;
+        let view = lower("pub fn probe(value: fn(u8, u8, u8, u8, u8, u8, u8, u8, u8)) {}\n")?;
         let parameter = fact_of(&view, b"value", EntityKind::Parameter)?;
         let row = row_for_entity(&view, parameter)?;
         let children = local_type_children(&view, row.record)?;
@@ -5166,6 +5284,47 @@ mod tests {
             return Err(TestError::Missing("local intra-doc link"));
         }
         Ok(())
+    }
+
+    /// An included README can produce far more fragments than the tiny source attribute predicts.
+    #[test]
+    fn rustdoc_large_include_grows_the_bounded_documentation_lane() -> Result<(), TestError> {
+        let source = "#[doc = include_str!(\"docs.txt\")]\npub fn short() {}\n";
+        let contents = (0..128)
+            .map(|index| format!("Included paragraph {index}.\n"))
+            .collect::<String>();
+        let (facts, identity, recipe) = collected_with_doc_include(source, Some(&contents))?;
+        let estimated_docs =
+            ResourcePlan::for_source(LanguageProfile::Rust(RustEdition::Rust2024), source.len())
+                .docs;
+        if facts.doc_len <= estimated_docs {
+            return Err(TestError::Missing(
+                "large included docs exceed source-sized reservation",
+            ));
+        }
+
+        let mut output = vec![0xa5_u8; 65_536];
+        let length = admit(&facts, identity, recipe, recipe.profile, &mut output)
+            .map_err(TestError::Admission)?
+            .len();
+        let view = FragmentView::validate(&output[..length])?;
+        let mut docs = view.docs().ok_or(TestError::Missing("docs"))?;
+        let mut found_final_paragraph = false;
+        while let Some(fact) = docs.next() {
+            let fact = fact.map_err(TestError::Doc)?;
+            if let DocFragmentInput::Text(bytes) = fact.fragment
+                && bytes
+                    .windows(b"Included paragraph 127.".len())
+                    .any(|window| window == b"Included paragraph 127.")
+            {
+                found_final_paragraph = true;
+            }
+        }
+        if found_final_paragraph {
+            Ok(())
+        } else {
+            Err(TestError::Missing("last paragraph from included docs"))
+        }
     }
 
     /// A source beyond the bounded declaration lane keeps the exact closed
@@ -5279,19 +5438,20 @@ mod tests {
                 "Iterator<Item = u8> and Iterator<Item = String> must differ",
             ));
         }
-        let parameter_application = |name: &[u8]| -> Result<Vec<backend_semantic::ir::TypeId>, TestError> {
-            let function = row_for_entity(&view, fact_of(&view, name, EntityKind::Function)?)?;
-            let parameter = local_type_children(&view, function.record)?
-                .first()
-                .and_then(|target| rows.get(target.index()))
-                .ok_or(TestError::Missing("parameter row"))?;
-            if parameter.record.tag != SemanticTypeTag::Apply
-                || parameter.record.children.length != 2
-            {
-                return Err(TestError::Missing("const generic application structure"));
-            }
-            local_type_children(&view, parameter.record)
-        };
+        let parameter_application =
+            |name: &[u8]| -> Result<Vec<backend_semantic::ir::TypeId>, TestError> {
+                let function = row_for_entity(&view, fact_of(&view, name, EntityKind::Function)?)?;
+                let parameter = local_type_children(&view, function.record)?
+                    .first()
+                    .and_then(|target| rows.get(target.index()))
+                    .ok_or(TestError::Missing("parameter row"))?;
+                if parameter.record.tag != SemanticTypeTag::Apply
+                    || parameter.record.children.length != 2
+                {
+                    return Err(TestError::Missing("const generic application structure"));
+                }
+                local_type_children(&view, parameter.record)
+            };
         if parameter_application(b"c")? == parameter_application(b"d")? {
             return Err(TestError::Missing("Foo<false> and Foo<true> must differ"));
         }
@@ -5342,7 +5502,9 @@ mod tests {
             .filter(|(_, occurrence)| occurrence.kind == ReferenceKind::FieldAccess)
             .collect::<Vec<_>>();
         if field_accesses.len() != 1 {
-            return Err(TestError::Missing("exactly one macro field access occurrence"));
+            return Err(TestError::Missing(
+                "exactly one macro field access occurrence",
+            ));
         }
         let access = field_accesses[0];
         if access.0 != read {
@@ -5472,7 +5634,9 @@ mod tests {
             .filter(|(_, occurrence)| occurrence.kind == ReferenceKind::MacroInvocation)
             .collect::<Vec<_>>();
         if macro_invocations.len() != 1 {
-            return Err(TestError::Missing("exactly one macro invocation occurrence"));
+            return Err(TestError::Missing(
+                "exactly one macro invocation occurrence",
+            ));
         }
         let invocation = macro_invocations[0];
         if invocation.0 != caller
@@ -5480,7 +5644,9 @@ mod tests {
                 != OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(my_macro))
             || invocation.1.confidence != OccurrenceConfidence::Oracle
         {
-            return Err(TestError::Missing("local my_macro target at oracle confidence"));
+            return Err(TestError::Missing(
+                "local my_macro target at oracle confidence",
+            ));
         }
         Ok(())
     }
@@ -5499,11 +5665,15 @@ mod tests {
             .filter(|(_, occurrence)| occurrence.kind == ReferenceKind::MacroInvocation)
             .collect::<Vec<_>>();
         if macro_invocations.len() != 1 {
-            return Err(TestError::Missing("exactly one unresolved macro invocation"));
+            return Err(TestError::Missing(
+                "exactly one unresolved macro invocation",
+            ));
         }
         let invocation = macro_invocations[0];
         if invocation.0 != caller || invocation.1.confidence != OccurrenceConfidence::Syntactic {
-            return Err(TestError::Missing("syntactic unresolved macro owned by caller"));
+            return Err(TestError::Missing(
+                "syntactic unresolved macro owned by caller",
+            ));
         }
         let backend_semantic::ir::OccurrenceTarget::Foreign(key) = invocation.1.target else {
             return Err(TestError::Missing("foreign target"));
@@ -5537,7 +5707,9 @@ mod tests {
         }
         let invocation = macro_invocations[0];
         if invocation.0 != caller || invocation.1.confidence != OccurrenceConfidence::Oracle {
-            return Err(TestError::Missing("oracle println invocation owned by caller"));
+            return Err(TestError::Missing(
+                "oracle println invocation owned by caller",
+            ));
         }
         let backend_semantic::ir::OccurrenceTarget::Foreign(key) = invocation.1.target else {
             return Err(TestError::Missing("foreign target"));

@@ -555,10 +555,7 @@ impl<'payload> ReopenedExtensionPools<'payload> {
     }
 
     /// Decodes one Rust free predicate from the row table.
-    pub fn free_predicate(
-        &self,
-        ordinal: u32,
-    ) -> Result<DecodedFreePredicate, ExtensionPoolFault> {
+    pub fn free_predicate(&self, ordinal: u32) -> Result<DecodedFreePredicate, ExtensionPoolFault> {
         let (start, count) = self.free_predicates;
         if ordinal >= count {
             return Err(ExtensionPoolFault::FreePredicateList {
@@ -976,15 +973,14 @@ pub(crate) fn validate_extension_pool_payload(
             let start = read_u32(payload, advance(cursor, 4)?)?;
             let length = read_u32(payload, advance(cursor, 8)?)?;
             cursor = advance(cursor, 12)?;
-            let end =
-                start
-                    .checked_add(length)
-                    .ok_or(ExtensionPoolFault::FreePredicateBounds {
-                        predicate,
-                        start,
-                        length,
-                        bound_count: bound_total,
-                    })?;
+            let end = start
+                .checked_add(length)
+                .ok_or(ExtensionPoolFault::FreePredicateBounds {
+                    predicate,
+                    start,
+                    length,
+                    bound_count: bound_total,
+                })?;
             if end > bound_total {
                 return Err(ExtensionPoolFault::FreePredicateBounds {
                     predicate,
@@ -999,14 +995,14 @@ pub(crate) fn validate_extension_pool_payload(
         for list in 0..list_count {
             let start = read_u32(payload, cursor)?;
             let length = read_u32(payload, advance(cursor, 4)?)?;
-            let end = start.checked_add(length).ok_or(
-                ExtensionPoolFault::FreePredicateList {
+            let end = start
+                .checked_add(length)
+                .ok_or(ExtensionPoolFault::FreePredicateList {
                     list,
                     start,
                     length,
                     predicate_count: count,
-                },
-            )?;
+                })?;
             if end > count {
                 return Err(ExtensionPoolFault::FreePredicateList {
                     list,

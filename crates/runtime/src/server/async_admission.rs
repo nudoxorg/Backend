@@ -204,7 +204,14 @@ pub(crate) fn register_future<
     admission: Admission<'_, Generation, Work, AccountingPolicy, StoragePolicy, Failure>,
     generation: Generation,
     work: Work,
-) -> crate::server::AdmissionWaitResult<'_, Generation, Work, AccountingPolicy, StoragePolicy, Failure>
+) -> crate::server::AdmissionWaitResult<
+    '_,
+    Generation,
+    Work,
+    AccountingPolicy,
+    StoragePolicy,
+    Failure,
+>
 where
     StoragePolicy::Payloads: RuntimePayloadTable<Generation, Work, Failure>,
 {

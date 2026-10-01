@@ -30,7 +30,7 @@ impl<E: LocalEngine> Client<E> {
     /// caller-owned intent before exposing it.
     pub fn call_intent(&mut self, intent: IntentId, request_id: u64, command: Command) -> ReplyDto {
         let expected = match &command {
-            Command::Add { package } => Some(Intent::request_package(*package).id()),
+            Command::Add { package, .. } => Some(Intent::request_package(*package).id()),
             Command::Remove { package } => Some(Intent::remove_package(*package).id()),
             _ => None,
         };

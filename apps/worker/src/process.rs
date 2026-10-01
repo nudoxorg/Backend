@@ -323,7 +323,20 @@ where
 /// Starts the selected compiled worker profile.
 #[must_use]
 pub fn main_entry() -> ExitCode {
-    match WorkerProcessConfig::parse(std::env::args().skip(1)) {
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args.first().is_some_and(|argument| argument == "cluster") {
+        return match crate::cluster_config::run_cluster_cli(&args[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("backend-worker cluster: {error}");
+                eprintln!(
+                    "run `backend-worker cluster --help` for local identity and trust commands"
+                );
+                ExitCode::from(EX_USAGE)
+            }
+        };
+    }
+    match WorkerProcessConfig::parse(args) {
         Err(WorkerProcessError::Help) => {
             print_help();
             ExitCode::SUCCESS
@@ -353,6 +366,10 @@ fn print_help() {
         "usage: backend-worker --endpoint PATH | --tcp-listen HOST:PORT [--external-protected-transport] [--profile builtin|builtin-echo] [--authority-secret-file PATH] [--max-frame BYTES] [--timeout-ms MS]"
     );
     println!("builtin is the checked production recipe; builtin-echo is a compatibility fixture");
+    println!("local cluster setup: backend-worker cluster identity show --config ABSOLUTE_PATH");
+    println!(
+        "local cluster trust: backend-worker cluster trust import|revoke --config ABSOLUTE_PATH ..."
+    );
 }
 
 #[cfg(test)]

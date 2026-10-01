@@ -1,0 +1,17 @@
+[package]
+name = "search-quality-tantivy-adapter"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+backend-local-service = { path = "../../../../crates/local-service", features = ["search-bench"] }
+serde_json = "=1.0.151"
+
+[workspace]
+
+# Mirror the workspace patches used by the Rust frontend. These same-version
+# vendored crates carry the admitted-toolchain environment API consumed by it.
+[patch.crates-io]
+ra_ap_project_model = { path = "../../../../vendor/ra_ap_project_model" }
+ra_ap_toolchain = { path = "../../../../vendor/ra_ap_toolchain" }

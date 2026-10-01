@@ -6,12 +6,12 @@ mod output;
 
 use core::mem::size_of;
 
+use crate::root::{ClosureError, ClosureScratch, Locality};
+use backend_version::object::{ObjectDescriptorWireRecord, ObjectRef};
+use backend_version::observe::Probe;
 use backend_version::{
     ContentHasher, DependencySetDomain, Domain, FixedCanonicalRecord, GenerationId, HASH_BYTES,
 };
-use backend_version::object::{ObjectDescriptorWireRecord, ObjectRef};
-use backend_version::observe::Probe;
-use crate::root::{ClosureError, ClosureScratch, Locality};
 use zerocopy::{
     Immutable, IntoBytes,
     byteorder::{BigEndian, U64},

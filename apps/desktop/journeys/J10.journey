@@ -1,0 +1,47 @@
+# J10 · settings apply and persist. A clean machine: ⌘, opens Settings over
+# the Library; each choice applies at once and is seen (Glacier turns the
+# ground light, ⌘+ sets the words larger); Esc closes Settings (GAPS.md D5);
+# a relaunch comes back with every choice, on the Library, not on Settings.
+size 1440x900
+start clean
+
+check library
+  route like "orbit"
+  ground dark in reader
+  size "Library" >= 14 in shelf
+
+key cmd-,
+check settings-open
+  text "Appearance" "Theme" "Contrast" "Density" "Motion" in reader
+
+click "Glacier" in reader
+check glacier
+  ground light in reader
+
+click "High" in reader
+click "Compact" in reader
+click "Reduced" in reader
+key cmd-=
+key cmd-=
+check larger
+  ground light in reader
+  size "Theme" >= 20 in reader
+
+key escape
+check closed
+  route like "orbit"
+  absent "Contrast" "Density" in reader
+  ground light in reader
+
+do relaunch
+
+check restored
+  route like "orbit"
+  absent "Contrast" "Density" in reader
+  ground light in reader
+  size "Library" >= 25 in shelf
+
+key cmd-,
+check restored-choices
+  text "Theme" in reader
+  size "Theme" >= 20 in reader

@@ -2,5 +2,10 @@
 //! show a project its own tree. The Library (your tree) comes first.
 
 pub mod library;
+pub mod acquire;
+pub mod action;
+pub mod find;
+pub mod compare;
+mod view;
 
 pub use library::{Alert, Library, TWICE_AT_REST, Model as LibraryModel, Role as LibraryRole, Row as LibraryRow, Tone as AlertTone, Twice, library};

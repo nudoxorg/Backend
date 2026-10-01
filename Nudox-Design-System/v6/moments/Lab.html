@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Symbol lab</title>
+<link rel="stylesheet" href="../../v5/page/page.css">
+<link rel="stylesheet" href="lab.css">
+</head>
+<body class="lab">
+<main id="lab"></main>
+<script type="module">
+import { lab } from "./lab.js";
+await lab(document.getElementById("lab"));
+document.body.dataset.ready = "1";
+</script>
+</body>
+</html>

@@ -1,6 +1,6 @@
 //! The tooltip: a chamfered `plate3` chip on the float layer
 //! ([`FloatKind::Tip`]), not a mechanism of its own. One tip per window, a
-//! 450 ms rest, a warm sweep between tipped things (the second tip swaps in
+//! 350 ms rest, a warm sweep between tipped things (the second tip swaps in
 //! at once and the chip glides over), a quick rise and fade.
 //!
 //! ```ignore
@@ -72,7 +72,12 @@ pub fn content(text: TipText) -> impl Fn(&Measure, &mut Window, &mut App) -> Any
             .flex_wrap()
             .items_center()
             .gap(px(8.0) * scale)
-            .child(
+            .child(crate::probe::text(
+                "tip-body",
+                text.body.clone(),
+                measure.role(TEXT),
+                1.0,
+                crate::probe::TextOverflow::Wrap,
                 div()
                     .set(TEXT, measure)
                     .text_color(if text.title.is_some() {
@@ -81,7 +86,7 @@ pub fn content(text: TipText) -> impl Fn(&Measure, &mut Window, &mut App) -> Any
                         palette.ink1.hsla()
                     })
                     .child(text.body.clone()),
-            );
+            ));
         if !text.chord.is_empty() {
             let chord: Vec<&str> = text.chord.iter().map(SharedString::as_ref).collect();
             line = line.child(keys(&chord, KbdVoice::Plain, measure));

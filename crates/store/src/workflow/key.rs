@@ -5,11 +5,11 @@
 
 use core::{borrow::Borrow, mem::size_of, ops::Deref};
 
+use backend_version::schema::OperationId;
 use backend_version::{
     ContentHasher, ContentId, Domain, FixedCanonicalRecord, GenerationId, ObjectDomain,
     StageKeyDomain, TAG_BYTES,
 };
-use backend_version::schema::OperationId;
 use zerocopy::{
     Immutable, IntoBytes,
     byteorder::{LittleEndian, U32},
