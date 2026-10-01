@@ -647,6 +647,7 @@ fn readme(dossier: &PackageDossier, place: &Route, ctx: &mut Ctx<'_>) -> Option<
         )
         .w_full();
         let rich = div()
+            .set(ty::PROSE, &measure)
             .w_full()
             .on_action::<FollowMarkdownLink>(move |action, window, app| {
                 activate_readme_link(
