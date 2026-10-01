@@ -165,8 +165,6 @@ mod tests {
                 .id("inert-test-button")
                 .w(px(100.))
                 .h(px(32.))
-                .track_focus(&self.focus)
-                .tab_stop(true)
                 .role(accesskit::Role::Button)
                 .aria_label("cached control")
                 .aria_active_descendant()
@@ -189,6 +187,14 @@ mod tests {
                     node.add_action(accesskit::Action::Click);
                     assert!(builder.push_child(synthetic_id, node));
                 });
+            let control = div()
+                .id("inert-test-control")
+                .w(px(100.))
+                .h(px(32.))
+                .track_focus(&self.focus)
+                .tab_stop(true)
+                .role(accesskit::Role::Group)
+                .child(button);
 
             let nested_clicks = self.events.clone();
             let nested = inert(
@@ -213,7 +219,7 @@ mod tests {
                 .size_full()
                 .flex()
                 .flex_col()
-                .child(button)
+                .child(control)
                 .child(nested)
                 .child(InputProbe {
                     focus: self.focus.clone(),
