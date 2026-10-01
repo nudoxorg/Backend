@@ -7,7 +7,7 @@
 use crate::browse::read_tree;
 use backend_advisory::{AdvisoryAuthority, AdvisorySource, AuthorityFeed, normalize_package};
 use backend_library::browse::{
-    LockedInactiveCoverage, LockfileGraphCoverage, LockfileWorkspaceMembership,
+    LockedInactiveCoverage, LockfileGraphCoverage, LockfileWorkspaceMembership, PackageOrigin,
     ProjectTree, RoleId, TreeSource, build_tree, lockfile_input, metadata_input,
 };
 
@@ -149,6 +149,7 @@ fn dependency_rows_retain_aligned_source_references_even_at_the_same_version() {
     let reading = read_tree(&source);
     let toml = reading.roles.iter().flat_map(|role| &role.rows).find(|row| row.name == "toml").expect("toml");
     assert_eq!(toml.versions.len(), toml.sources.len());
+    assert_eq!(toml.versions.len(), toml.origins.len());
     assert!(toml.sources.iter().all(|source| source.as_ref().is_some_and(|reference| reference.as_str().contains("cargo-authority="))));
     let gpui = reading.roles.iter().flat_map(|role| &role.rows).find(|row| row.name == "gpui-ce").expect("vendored direct dependency");
     assert!(gpui.sources.iter().any(Option::is_some));
@@ -165,11 +166,15 @@ fn dependency_rows_retain_aligned_source_references_even_at_the_same_version() {
     let mut references = direct.package_references.to_vec();
     references.insert(1, Some(distinct.clone()));
     direct.package_references = references.into_boxed_slice();
+    let mut origins = direct.package_origins.to_vec();
+    origins.insert(1, PackageOrigin::Registry { source: "sparse+https://example.test/alternate-index".to_owned() });
+    direct.package_origins = origins.into_boxed_slice();
     let reading = read_tree(&source);
     let toml = reading.roles.iter().flat_map(|role| &role.rows).find(|row| row.name == "toml").expect("toml");
     assert_eq!(toml.versions[0], toml.versions[1]);
     assert_eq!(toml.sources[0].as_ref(), Some(&original));
     assert_eq!(toml.sources[1].as_ref(), Some(&distinct));
+    assert!(matches!(&toml.origins[1], PackageOrigin::Registry { source } if source.starts_with("sparse+")));
 }
 
 #[test]
