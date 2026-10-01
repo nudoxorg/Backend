@@ -913,6 +913,7 @@ pub(crate) struct DeferredDraw {
     element_opacity: f32,
     group_opacity: f32,
     inert_subtree: bool,
+    inert_boundaries: SmallVec<[GlobalElementId; 2]>,
     prepaint_range: Range<PrepaintStateIndex>,
     paint_range: Range<PaintIndex>,
 }
@@ -934,6 +935,15 @@ pub(crate) struct Frame {
     pub(crate) dispatch_tree: DispatchTree,
     pub(crate) scene: Scene,
     pub(crate) hitboxes: Vec<Hitbox>,
+    /// Stable element paths parallel to `hitboxes`. `None` means this hitbox's
+    /// owning drawable has no stable element ID, so it cannot be matched to a
+    /// different frame without risking an unrelated capture.
+    hitbox_owners: Vec<Option<GlobalElementId>>,
+    /// Hitbox owners retained beneath inert boundaries. Paths are normalized by
+    /// removing the newly introduced inert wrapper IDs.
+    inert_hitbox_owners: Vec<GlobalElementId>,
+    /// Exact cached hitboxes whose prepaint range was reused under an inert boundary.
+    inert_hitbox_ids: Vec<HitboxId>,
     pub(crate) window_control_hitboxes: Vec<(WindowControlArea, Hitbox)>,
     pub(crate) deferred_draws: Vec<DeferredDraw>,
     pub(crate) input_handlers: Vec<Option<PlatformInputHandler>>,
@@ -957,6 +967,7 @@ pub(crate) struct PrepaintStateIndex {
     accessed_element_states_index: usize,
     focus_ids_index: usize,
     inert_focus_ids_index: usize,
+    hitbox_owners_index: usize,
     line_layout_index: LineLayoutIndex,
 }
 
@@ -971,14 +982,52 @@ pub(crate) struct PaintIndex {
     line_layout_index: LineLayoutIndex,
 }
 
-struct InertSubtreeScope(Rc<Cell<usize>>);
+struct InertSubtreeScope {
+    depth: Rc<Cell<usize>>,
+    boundary_stack: Rc<RefCell<Vec<GlobalElementId>>>,
+    previous_boundary_len: usize,
+}
 
 impl Drop for InertSubtreeScope {
     fn drop(&mut self) {
-        let depth = self.0.get();
+        let depth = self.depth.get();
         debug_assert!(depth > 0, "inert subtree scope depth underflow");
-        self.0.set(depth.saturating_sub(1));
+        self.depth.set(depth.saturating_sub(1));
+        self.boundary_stack
+            .borrow_mut()
+            .truncate(self.previous_boundary_len);
     }
+}
+
+struct HitboxOwnerScope {
+    stack: Rc<RefCell<Vec<Option<GlobalElementId>>>>,
+    previous_len: usize,
+}
+
+impl Drop for HitboxOwnerScope {
+    fn drop(&mut self) {
+        self.stack.borrow_mut().truncate(self.previous_len);
+    }
+}
+
+fn normalize_inert_owner(
+    owner: &GlobalElementId,
+    boundaries: &[GlobalElementId],
+) -> GlobalElementId {
+    let mut path = owner.0.to_vec();
+    for boundary in boundaries.iter().rev() {
+        let boundary_path = boundary.0.as_ref();
+        let Some(boundary_id) = boundary_path.last() else {
+            continue;
+        };
+        let boundary_index = boundary_path.len() - 1;
+        if path.get(..boundary_index) == Some(&boundary_path[..boundary_index])
+            && path.get(boundary_index) == Some(boundary_id)
+        {
+            path.remove(boundary_index);
+        }
+    }
+    GlobalElementId(Arc::from(path))
 }
 
 impl Frame {
@@ -995,6 +1044,9 @@ impl Frame {
             dispatch_tree,
             scene: Scene::default(),
             hitboxes: Vec::new(),
+            hitbox_owners: Vec::new(),
+            inert_hitbox_owners: Vec::new(),
+            inert_hitbox_ids: Vec::new(),
             window_control_hitboxes: Vec::new(),
             deferred_draws: Vec::new(),
             input_handlers: Vec::new(),
@@ -1023,6 +1075,9 @@ impl Frame {
         self.tooltip_requests.clear();
         self.cursor_styles.clear();
         self.hitboxes.clear();
+        self.hitbox_owners.clear();
+        self.inert_hitbox_owners.clear();
+        self.inert_hitbox_ids.clear();
         self.window_control_hitboxes.clear();
         self.deferred_draws.clear();
         self.tab_stops.clear();
@@ -1180,6 +1235,12 @@ pub struct Window {
     focus_enabled: bool,
     /// Nesting depth for the currently constructed inert subtree.
     inert_subtree_depth: Rc<Cell<usize>>,
+    /// The wrapper element paths currently defining inert boundaries. Stored
+    /// separately so deferred draws can restore the same ownership scope.
+    inert_boundary_stack: Rc<RefCell<Vec<GlobalElementId>>>,
+    /// Nearest element path while prepainting; hitboxes reuse its Arc rather
+    /// than allocating a copy of the full element path for each hitbox.
+    hitbox_owner_stack: Rc<RefCell<Vec<Option<GlobalElementId>>>>,
     /// Incremented every time focus moves. Used to invalidate a
     /// pending keyboard activation state when focus changes.
     pub(crate) focus_generation: u64,
@@ -1191,6 +1252,7 @@ pub struct Window {
     /// The hitbox that has captured the pointer, if any.
     /// While captured, mouse events route to this hitbox regardless of hit testing.
     captured_hitbox: Option<HitboxId>,
+    captured_hitbox_owner: Option<GlobalElementId>,
     #[cfg(any(feature = "inspector", debug_assertions))]
     inspector: Option<Entity<Inspector>>,
     pub(crate) a11y: A11y,
@@ -1932,6 +1994,8 @@ impl Window {
             focus: None,
             focus_enabled: true,
             inert_subtree_depth: Rc::new(Cell::new(0)),
+            inert_boundary_stack: Rc::new(RefCell::new(Vec::new())),
+            hitbox_owner_stack: Rc::new(RefCell::new(Vec::new())),
             focus_generation: 0,
             pending_input: None,
             pending_modifier: ModifierState::default(),
@@ -1940,6 +2004,7 @@ impl Window {
             client_inset: None,
             image_cache_stack: Vec::new(),
             captured_hitbox: None,
+            captured_hitbox_owner: None,
             #[cfg(any(feature = "inspector", debug_assertions))]
             inspector: None,
             a11y: A11y::new(
@@ -2867,12 +2932,32 @@ impl Window {
     pub fn capture_pointer(&mut self, hitbox_id: HitboxId) {
         if !self.is_inert_subtree() {
             self.captured_hitbox = Some(hitbox_id);
+            self.captured_hitbox_owner = self
+                .next_frame
+                .hitboxes
+                .iter()
+                .position(|hitbox| hitbox.id == hitbox_id)
+                .and_then(|index| self.next_frame.hitbox_owners.get(index).cloned().flatten())
+                .or_else(|| {
+                    self.rendered_frame
+                        .hitboxes
+                        .iter()
+                        .position(|hitbox| hitbox.id == hitbox_id)
+                        .and_then(|index| {
+                            self.rendered_frame
+                                .hitbox_owners
+                                .get(index)
+                                .cloned()
+                                .flatten()
+                        })
+                });
         }
     }
 
     /// Releases any active pointer capture.
     pub fn release_pointer(&mut self) {
         self.captured_hitbox = None;
+        self.captured_hitbox_owner = None;
     }
 
     /// Returns the hitbox that has captured the pointer, if any.
@@ -2961,6 +3046,7 @@ impl Window {
         self.layout_engine.as_mut().unwrap().clear();
         self.text_system().finish_frame();
         self.next_frame.finish(&mut self.rendered_frame);
+        self.revoke_pointer_capture_if_inert();
 
         self.invalidator.set_phase(DrawPhase::Focus);
         let previous_focus_path = self.rendered_frame.focus_path();
@@ -3043,6 +3129,40 @@ impl Window {
         );
         let mut entities_ref = cx.entities.accessed_entities.get_mut();
         mem::swap(&mut entities, entities_ref.deref_mut());
+    }
+
+    fn revoke_pointer_capture_if_inert(&mut self) {
+        let Some(captured_hitbox) = self.captured_hitbox else {
+            return;
+        };
+
+        // A hitbox may still be captured by a live sibling in the same frame.
+        // Prefer any live registration over a matching inert candidate so shared
+        // idless ancestors cannot revoke another subtree's capture.
+        let still_live = self
+            .next_frame
+            .hitboxes
+            .iter()
+            .any(|hitbox| hitbox.id == captured_hitbox)
+            || self
+                .captured_hitbox_owner
+                .as_ref()
+                .is_some_and(|captured_owner| {
+                    self.next_frame
+                        .hitbox_owners
+                        .iter()
+                        .flatten()
+                        .any(|owner| owner == captured_owner)
+                });
+        let became_inert = self.next_frame.inert_hitbox_ids.contains(&captured_hitbox)
+            || self
+                .next_frame
+                .inert_hitbox_owners
+                .iter()
+                .any(|owner| self.captured_hitbox_owner.as_ref() == Some(owner));
+        if !still_live && became_inert {
+            self.release_pointer();
+        }
     }
 
     fn invalidate_entities(&mut self) {
@@ -3305,6 +3425,7 @@ impl Window {
                     layer_transform,
                     opacities,
                     inert_subtree,
+                    inert_boundaries,
                 ) = {
                     let deferred_draw = &mut self.next_frame.deferred_draws[deferred_draw_ix];
                     self.element_id_stack
@@ -3321,6 +3442,7 @@ impl Window {
                         deferred_draw.layer_transform,
                         (deferred_draw.element_opacity, deferred_draw.group_opacity),
                         deferred_draw.inert_subtree,
+                        deferred_draw.inert_boundaries.clone(),
                     )
                 };
                 self.next_frame.dispatch_tree.set_active_node(parent_node);
@@ -3349,13 +3471,17 @@ impl Window {
                         });
                     };
                     if inert_subtree {
-                        self.with_inert_subtree(|window| prepaint(window, &mut element));
+                        self.with_inert_boundaries(&inert_boundaries, |window| {
+                            prepaint(window, &mut element)
+                        });
                     } else {
                         prepaint(self, &mut element);
                     }
                     self.next_frame.deferred_draws[deferred_draw_ix].element = Some(element);
                 } else if inert_subtree {
-                    self.with_inert_subtree(|window| window.reuse_prepaint(prepaint_range));
+                    self.with_inert_boundaries(&inert_boundaries, |window| {
+                        window.reuse_prepaint(prepaint_range)
+                    });
                 } else {
                     self.reuse_prepaint(prepaint_range);
                 }
@@ -3397,6 +3523,7 @@ impl Window {
             let paint_start = self.paint_index();
             let content_mask = deferred_draw.content_mask;
             let inert_subtree = deferred_draw.inert_subtree;
+            let inert_boundaries = deferred_draw.inert_boundaries.clone();
             if let Some(element) = deferred_draw.element.as_mut() {
                 let paint = |window: &mut Window| {
                     window.with_rendered_view(deferred_draw.current_view, |window| {
@@ -3426,12 +3553,12 @@ impl Window {
                     })
                 };
                 if inert_subtree {
-                    self.with_inert_subtree(paint);
+                    self.with_inert_boundaries(&inert_boundaries, paint);
                 } else {
                     paint(self);
                 }
             } else if inert_subtree {
-                self.with_inert_subtree(|window| {
+                self.with_inert_boundaries(&inert_boundaries, |window| {
                     window.reuse_paint(deferred_draw.paint_range.clone())
                 });
             } else {
@@ -3460,17 +3587,42 @@ impl Window {
             accessed_element_states_index: self.next_frame.accessed_element_states.len(),
             focus_ids_index: self.next_frame.focus_ids.len(),
             inert_focus_ids_index: self.next_frame.inert_focus_id_list.len(),
+            hitbox_owners_index: self.next_frame.hitbox_owners.len(),
             line_layout_index: self.text_system.layout_index(),
         }
     }
 
     pub(crate) fn reuse_prepaint(&mut self, range: Range<PrepaintStateIndex>) {
-        if !self.is_inert_subtree() {
+        let is_inert = self.is_inert_subtree();
+        let hitbox_owners = &self.rendered_frame.hitbox_owners
+            [range.start.hitbox_owners_index..range.end.hitbox_owners_index];
+        if is_inert {
+            if let Some(captured_hitbox) = self.captured_hitbox
+                && self.rendered_frame.hitboxes
+                    [range.start.hitboxes_index..range.end.hitboxes_index]
+                    .iter()
+                    .any(|hitbox| hitbox.id == captured_hitbox)
+            {
+                self.next_frame.inert_hitbox_ids.push(captured_hitbox);
+            }
+            if self.captured_hitbox_owner.is_some() {
+                let boundaries = self.inert_boundary_stack.borrow();
+                self.next_frame.inert_hitbox_owners.extend(
+                    hitbox_owners
+                        .iter()
+                        .flatten()
+                        .map(|owner| normalize_inert_owner(owner, &boundaries)),
+                );
+            }
+        } else {
             self.next_frame.hitboxes.extend(
                 self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
                     .iter()
                     .cloned(),
             );
+            self.next_frame
+                .hitbox_owners
+                .extend(hitbox_owners.iter().cloned());
             self.next_frame.tooltip_requests.extend(
                 self.rendered_frame.tooltip_requests
                     [range.start.tooltips_index..range.end.tooltips_index]
@@ -3484,10 +3636,25 @@ impl Window {
                 .iter()
                 .map(|(id, type_id)| (id.clone(), *type_id)),
         );
+        let focused_in_inert_range = if is_inert {
+            self.focus.filter(|focused_id| {
+                self.rendered_frame.focus_ids
+                    [range.start.focus_ids_index..range.end.focus_ids_index]
+                    .contains(focused_id)
+            })
+        } else {
+            None
+        };
+        if let Some(focused_id) = focused_in_inert_range {
+            if self.next_frame.focus == Some(focused_id) {
+                self.next_frame.focus = None;
+            }
+            self.blur();
+        }
         let focus_ids =
             &self.rendered_frame.focus_ids[range.start.focus_ids_index..range.end.focus_ids_index];
         self.next_frame.focus_ids.extend(focus_ids.iter().copied());
-        if self.is_inert_subtree() {
+        if is_inert {
             for focus_id in focus_ids {
                 self.next_frame.inert_focus_ids.insert(*focus_id);
                 self.next_frame.inert_focus_id_list.push(*focus_id);
@@ -3503,8 +3670,9 @@ impl Window {
         self.text_system
             .reuse_layouts(range.start.line_layout_index..range.end.line_layout_index);
 
-        if self.is_inert_subtree() {
+        if is_inert {
             let parent_node = self.next_frame.dispatch_tree.active_node_id().unwrap();
+            let active_boundaries = self.inert_boundary_stack.borrow().clone();
             self.next_frame.deferred_draws.extend(
                 self.rendered_frame.deferred_draws
                     [range.start.deferred_draws_index..range.end.deferred_draws_index]
@@ -3523,6 +3691,11 @@ impl Window {
                         element_opacity: deferred_draw.element_opacity,
                         group_opacity: deferred_draw.group_opacity,
                         inert_subtree: true,
+                        inert_boundaries: active_boundaries
+                            .iter()
+                            .chain(deferred_draw.inert_boundaries.iter())
+                            .cloned()
+                            .collect(),
                         prepaint_range: deferred_draw.prepaint_range.clone(),
                         paint_range: deferred_draw.paint_range.clone(),
                     }),
@@ -3556,6 +3729,7 @@ impl Window {
                         element_opacity: deferred_draw.element_opacity,
                         group_opacity: deferred_draw.group_opacity,
                         inert_subtree: deferred_draw.inert_subtree,
+                        inert_boundaries: deferred_draw.inert_boundaries.clone(),
                         prepaint_range: deferred_draw.prepaint_range.clone(),
                         paint_range: deferred_draw.paint_range.clone(),
                     }),
@@ -3629,9 +3803,53 @@ impl Window {
 
     /// Run element work with interaction registrations disabled.
     pub(crate) fn with_inert_subtree<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        self.with_inert_boundaries(&[], f)
+    }
+
+    pub(crate) fn with_inert_subtree_boundary<R>(
+        &mut self,
+        boundary: &GlobalElementId,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.with_inert_boundaries(std::slice::from_ref(boundary), f)
+    }
+
+    fn with_inert_boundaries<R>(
+        &mut self,
+        boundaries: &[GlobalElementId],
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
         self.inert_subtree_depth
             .set(self.inert_subtree_depth.get() + 1);
-        let _scope = InertSubtreeScope(self.inert_subtree_depth.clone());
+        let previous_boundary_len = {
+            let mut boundary_stack = self.inert_boundary_stack.borrow_mut();
+            let previous_len = boundary_stack.len();
+            boundary_stack.extend(boundaries.iter().cloned());
+            previous_len
+        };
+        let _scope = InertSubtreeScope {
+            depth: self.inert_subtree_depth.clone(),
+            boundary_stack: self.inert_boundary_stack.clone(),
+            previous_boundary_len,
+        };
+        f(self)
+    }
+
+    pub(crate) fn with_hitbox_owner<R>(
+        &mut self,
+        owner: Option<&GlobalElementId>,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let previous_len = {
+            let mut owner_stack = self.hitbox_owner_stack.borrow_mut();
+            let previous_len = owner_stack.len();
+            owner_stack.push(owner.cloned());
+            previous_len
+        };
+        let _scope = HitboxOwnerScope {
+            stack: self.hitbox_owner_stack.clone(),
+            previous_len,
+        };
         f(self)
     }
 
@@ -4280,6 +4498,7 @@ impl Window {
             element_opacity: self.element_opacity,
             group_opacity: self.group_opacity,
             inert_subtree: self.is_inert_subtree(),
+            inert_boundaries: self.inert_boundary_stack.borrow().iter().cloned().collect(),
             prepaint_range: PrepaintStateIndex::default()..PrepaintStateIndex::default(),
             paint_range: PaintIndex::default()..PaintIndex::default(),
         });
@@ -5287,8 +5506,24 @@ impl Window {
                 behavior
             },
         };
-        if !self.is_inert_subtree() {
+        let owner = self
+            .hitbox_owner_stack
+            .borrow()
+            .last()
+            .cloned()
+            .unwrap_or_else(|| Some(GlobalElementId(Arc::from(&*self.element_id_stack))));
+        if self.is_inert_subtree() {
+            if self.captured_hitbox_owner.is_some()
+                && let Some(owner) = owner.as_ref()
+            {
+                let boundaries = self.inert_boundary_stack.borrow();
+                self.next_frame
+                    .inert_hitbox_owners
+                    .push(normalize_inert_owner(owner, &boundaries));
+            }
+        } else {
             self.next_frame.hitboxes.push(hitbox.clone());
+            self.next_frame.hitbox_owners.push(owner);
         }
         hitbox
     }
@@ -5815,7 +6050,7 @@ impl Window {
 
         // Auto-release pointer capture on mouse up
         if event.is::<MouseUpEvent>() && self.captured_hitbox.is_some() {
-            self.captured_hitbox = None;
+            self.release_pointer();
         }
     }
 

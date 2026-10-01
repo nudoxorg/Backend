@@ -55,12 +55,16 @@ impl Element for Inert {
 
     fn request_layout(
         &mut self,
-        _id: Option<&GlobalElementId>,
+        id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let layout_id = window.with_inert_subtree(|window| self.child.request_layout(window, cx));
+        let layout_id = if let Some(id) = id {
+            window.with_inert_subtree_boundary(id, |window| self.child.request_layout(window, cx))
+        } else {
+            window.with_inert_subtree(|window| self.child.request_layout(window, cx))
+        };
         (layout_id, ())
     }
 
@@ -73,11 +77,13 @@ impl Element for Inert {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        // A capture from the previous interactive frame must not keep an inert child hovered or
-        // receive its drag stream. This is a window-local interaction and is safely reset before
-        // the committed inert frame replaces the old hit-test tree.
-        window.release_pointer();
-        window.with_inert_subtree(|window| self.child.prepaint_at(bounds.origin, window, cx));
+        if let Some(id) = id {
+            window.with_inert_subtree_boundary(id, |window| {
+                self.child.prepaint_at(bounds.origin, window, cx)
+            });
+        } else {
+            window.with_inert_subtree(|window| self.child.prepaint_at(bounds.origin, window, cx));
+        }
         // The wrapper node itself was created before the child scope began. Mark it after the
         // child has had its chance to append synthetic descendants or an active-descendant edge.
         if let Some(id) = id {
@@ -87,7 +93,7 @@ impl Element for Inert {
 
     fn paint(
         &mut self,
-        _id: Option<&GlobalElementId>,
+        id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         _bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
@@ -95,7 +101,11 @@ impl Element for Inert {
         window: &mut Window,
         cx: &mut App,
     ) {
-        window.with_inert_subtree(|window| self.child.paint(window, cx));
+        if let Some(id) = id {
+            window.with_inert_subtree_boundary(id, |window| self.child.paint(window, cx));
+        } else {
+            window.with_inert_subtree(|window| self.child.paint(window, cx));
+        }
     }
 
     fn a11y_role(&self) -> Option<accesskit::Role> {
@@ -117,9 +127,10 @@ mod tests {
     use super::inert;
     use crate::{
         self as gpui, AnyElement, App, AppContext as _, Bounds, Context, Element, ElementId,
-        FocusHandle, InputHandler, InteractiveElement, IntoElement, LayoutId, ParentElement,
-        Pixels, Point, Render, StatefulInteractiveElement, Style, StyleRefinement, TestAppContext,
-        UTF16Selection, Window, accesskit, actions, div, point, px, size,
+        Entity, FocusHandle, HitboxBehavior, HitboxId, InputHandler, InteractiveElement,
+        IntoElement, LayoutId, ParentElement, Pixels, Point, Render, StatefulInteractiveElement,
+        Style, StyleRefinement, TestAppContext, UTF16Selection, Window, accesskit, actions, div,
+        point, px, size,
     };
     use std::{cell::Cell, ops::Range, rc::Rc};
 
@@ -254,6 +265,118 @@ mod tests {
                                 .set(sibling_clicks.sibling_clicks.get() + 1)
                         }),
                 )
+        }
+    }
+
+    struct PointerCaptureTargetView {
+        hitbox: Rc<Cell<Option<HitboxId>>>,
+    }
+
+    impl Render for PointerCaptureTargetView {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            PointerCaptureProbe {
+                id: "captured-child",
+                hitbox: self.hitbox.clone(),
+            }
+        }
+    }
+
+    struct PointerCaptureRoot {
+        child: Entity<PointerCaptureTargetView>,
+        inert: Rc<Cell<bool>>,
+        sibling_hitbox: Rc<Cell<Option<HitboxId>>>,
+    }
+
+    impl Render for PointerCaptureRoot {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let cached = self
+                .child
+                .clone()
+                .cached(StyleRefinement::default().size(size(px(100.), px(60.))));
+            let child: AnyElement = if self.inert.get() {
+                inert(
+                    "captured-child-inert-boundary",
+                    "Captured child is unavailable",
+                    cached,
+                )
+                .into_any_element()
+            } else {
+                cached.into_any_element()
+            };
+
+            div()
+                .size(size(px(220.), px(70.)))
+                .flex()
+                .flex_row()
+                .child(child)
+                .child(PointerCaptureProbe {
+                    id: "captured-sibling",
+                    hitbox: self.sibling_hitbox.clone(),
+                })
+        }
+    }
+
+    struct PointerCaptureProbe {
+        id: &'static str,
+        hitbox: Rc<Cell<Option<HitboxId>>>,
+    }
+
+    impl IntoElement for PointerCaptureProbe {
+        type Element = Self;
+
+        fn into_element(self) -> Self::Element {
+            self
+        }
+    }
+
+    impl Element for PointerCaptureProbe {
+        type RequestLayoutState = ();
+        type PrepaintState = ();
+
+        fn id(&self) -> Option<ElementId> {
+            Some(self.id.into())
+        }
+
+        fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+            None
+        }
+
+        fn request_layout(
+            &mut self,
+            _: Option<&crate::GlobalElementId>,
+            _: Option<&crate::InspectorElementId>,
+            window: &mut Window,
+            cx: &mut App,
+        ) -> (LayoutId, Self::RequestLayoutState) {
+            (
+                window.request_layout(Style::default().size(size(px(100.), px(60.))), [], cx),
+                (),
+            )
+        }
+
+        fn prepaint(
+            &mut self,
+            _: Option<&crate::GlobalElementId>,
+            _: Option<&crate::InspectorElementId>,
+            bounds: Bounds<Pixels>,
+            _: &mut Self::RequestLayoutState,
+            window: &mut Window,
+            _: &mut App,
+        ) -> Self::PrepaintState {
+            let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+            self.hitbox.set(Some(hitbox.id));
+        }
+
+        fn paint(
+            &mut self,
+            _: Option<&crate::GlobalElementId>,
+            _: Option<&crate::InspectorElementId>,
+            _: Bounds<Pixels>,
+            _: &mut Self::RequestLayoutState,
+            _: &mut Self::PrepaintState,
+            _: &mut Window,
+            _: &mut App,
+        ) {
         }
     }
 
@@ -679,5 +802,69 @@ mod tests {
             );
         })
         .unwrap();
+    }
+
+    #[gpui::test]
+    fn inert_subtree_revokes_only_its_own_pointer_capture(cx: &mut TestAppContext) {
+        let inert_state = Rc::new(Cell::new(false));
+        let child_hitbox = Rc::new(Cell::new(None));
+        let sibling_hitbox = Rc::new(Cell::new(None));
+        let captured_sibling = Rc::new(Cell::new(None));
+        let (_root, cx) = cx.add_window_view({
+            let inert_state = inert_state.clone();
+            let child_hitbox = child_hitbox.clone();
+            let sibling_hitbox = sibling_hitbox.clone();
+            let captured_sibling = captured_sibling.clone();
+            move |_, cx| {
+                let child = cx.new(|_| PointerCaptureTargetView {
+                    hitbox: child_hitbox,
+                });
+                PointerCaptureRoot {
+                    child,
+                    inert: inert_state,
+                    sibling_hitbox,
+                }
+            }
+        });
+
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            let sibling = sibling_hitbox.get().expect("sibling hitbox was painted");
+            window.capture_pointer(sibling);
+            captured_sibling.set(Some(sibling));
+            assert_eq!(window.captured_hitbox(), Some(sibling));
+        });
+
+        // Redrawing an inert sibling must not cancel capture held by this active sibling.
+        inert_state.set(true);
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+            assert_eq!(
+                window.captured_hitbox(),
+                captured_sibling.get(),
+                "inert redraw revoked an unrelated live sibling's capture"
+            );
+        });
+
+        // The same capture is revoked when its own previously active cached child becomes inert.
+        inert_state.set(false);
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+            let child = child_hitbox.get().expect("child hitbox was painted");
+            window.capture_pointer(child);
+            assert_eq!(window.captured_hitbox(), Some(child));
+        });
+        inert_state.set(true);
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+            assert_eq!(
+                window.captured_hitbox(),
+                None,
+                "capture remained attached to a subtree after it became inert"
+            );
+        });
     }
 }
