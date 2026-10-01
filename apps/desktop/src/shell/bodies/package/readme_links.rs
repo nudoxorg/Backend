@@ -8,7 +8,7 @@ use crate::model::pages::{OutlineNode, OutlineTree, PackageRef, SymbolRef};
 use crate::navigation::{Route, View};
 use backend_library::DeclarationKind;
 use gpui::{Global, SharedString};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -99,6 +99,7 @@ pub(super) struct Plan {
     by_heading: HashMap<Arc<str>, ReadmeHeading>,
     shown_links: Cell<usize>,
     shown_headings: Cell<usize>,
+    restored_focus: RefCell<Option<SharedString>>,
 }
 
 impl Plan {
@@ -177,6 +178,7 @@ impl Plan {
             by_heading,
             shown_links: Cell::new(32),
             shown_headings: Cell::new(32),
+            restored_focus: RefCell::new(None),
         }
     }
 
@@ -244,6 +246,21 @@ impl Plan {
         let total = self.total_headings();
         self.shown_headings
             .set(self.shown_headings.get().saturating_add(32).min(total));
+    }
+
+    pub(super) fn mark_leaving_for(&self, outcome: &Outcome) {
+        if matches!(outcome, Outcome::Route(_)) {
+            *self.restored_focus.borrow_mut() = None;
+        }
+    }
+
+    pub(super) fn restore_focus_once(&self, id: &SharedString) -> bool {
+        let mut last = self.restored_focus.borrow_mut();
+        if last.as_ref() == Some(id) {
+            return false;
+        }
+        *last = Some(id.clone());
+        true
     }
 }
 
@@ -628,6 +645,23 @@ mod tests {
     }
 
     #[test]
+    fn absent_navigation_index_cannot_become_an_empty_complete_index() {
+        let package = crate::shell::tests::dossier().package;
+        let plan = Plan::build(
+            Arc::from("[link](https://example.test)"),
+            None,
+            None,
+            None,
+            package,
+        );
+        assert!(
+            matches!(plan.destination("https://example.test"), Outcome::Unavailable(message) if message == UNINDEXED)
+        );
+        assert_eq!(plan.total_links(), 0);
+        assert_eq!(plan.total_headings(), 0);
+    }
+
+    #[test]
     fn plan_identity_and_incremental_rows_remain_bounded() {
         let package = crate::shell::tests::dossier().package;
         let links: Arc<[ReadmeLink]> = (0..100)
@@ -659,5 +693,15 @@ mod tests {
             None,
             &package
         ));
+        let id: SharedString = "readme-link-99".into();
+        assert!(plan.restore_focus_once(&id));
+        assert!(!plan.restore_focus_once(&id));
+        plan.mark_leaving_for(&plan.row(99));
+        // External links do not enter route history and leave focus alone.
+        assert!(!plan.restore_focus_once(&id));
+        let routed =
+            Outcome::Route(crate::shell::kit::package_route(&package).expect("package route"));
+        plan.mark_leaving_for(&routed);
+        assert!(plan.restore_focus_once(&id));
     }
 }

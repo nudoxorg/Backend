@@ -650,8 +650,10 @@ fn readme(
             .set(ty::PROSE, &measure)
             .w_full()
             .on_action::<FollowMarkdownLink>(move |action, window, app| {
+                let outcome = action_plan.destination(&action.destination);
+                action_plan.mark_leaving_for(&outcome);
                 activate_readme_link(
-                    action_plan.destination(&action.destination),
+                    outcome,
                     Some(inline_origin(&action.destination, &action_plan)),
                     &action_shell_links,
                     &action_recall,
@@ -662,6 +664,20 @@ fn readme(
             })
             .child(rich);
         column = column.child(rich);
+        if readme_links.is_none() {
+            column = column.child(quiet(
+                "README link targets were not captured for this page.",
+                &measure,
+                palette,
+            ));
+        }
+        if headings.is_none() {
+            column = column.child(quiet(
+                "README heading targets were not captured for this page.",
+                &measure,
+                palette,
+            ));
+        }
         if let Some(headings) = &headings
             && !headings.is_empty()
         {
@@ -692,7 +708,7 @@ fn readme(
                     peek: None,
                     source: None,
                 });
-                if restore_target.as_ref() == Some(&id) {
+                if restore_target.as_ref() == Some(&id) && plan.restore_focus_once(&id) {
                     ctx.targets.focus(id.clone());
                 }
                 let row = div()
@@ -757,8 +773,10 @@ fn readme(
                 let action_recall = recall.clone();
                 let action_scroll = reader_scroll.clone();
                 let action = resolution.clone();
+                let action_plan = Rc::clone(&plan);
                 let origin = id.clone();
                 let act = Rc::new(move |window: &mut Window, app: &mut App| {
+                    action_plan.mark_leaving_for(&action);
                     activate_readme_link(
                         action.clone(),
                         Some(origin.clone()),
@@ -788,7 +806,7 @@ fn readme(
                     peek,
                     source,
                 });
-                if restore_target.as_ref() == Some(&id) {
+                if restore_target.as_ref() == Some(&id) && plan.restore_focus_once(&id) {
                     ctx.targets.focus(id.clone());
                 }
                 let ink = if result_note.is_some() {
