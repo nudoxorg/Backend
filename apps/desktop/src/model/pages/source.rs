@@ -124,6 +124,9 @@ impl SourceText {
         origin: SourceOrigin,
         complete: bool,
     ) -> Result<Self, SourceTextError> {
+        if first_line == 0 {
+            return Err(SourceTextError::FirstLineZero);
+        }
         u32::try_from(text.len()).map_err(|_| SourceTextError::ByteRangeOverflow)?;
         let line_index = SourceLineIndex::build(&text);
         checked_line_range(first_line, line_index.line_count)?;
