@@ -59,7 +59,13 @@ fn inventory_key(row: &backend_present::InventoryReading) -> String {
         }
         PackageOrigin::Unresolved { source } => {
             key_part(&mut key, "unresolved");
-            key_part(&mut key, source.as_deref().unwrap_or(""));
+            match source {
+                Some(source) => {
+                    key_part(&mut key, "some");
+                    key_part(&mut key, source);
+                }
+                None => key_part(&mut key, "none"),
+            }
         }
     }
     key
@@ -851,6 +857,12 @@ mod find_tests {
         });
         assert_ne!(inventory_key(&registry), inventory_key(&sparse));
         assert_ne!(inventory_key(&registry), inventory_key(&git));
+        assert_ne!(
+            inventory_key(&row(PackageOrigin::Unresolved { source: None })),
+            inventory_key(&row(PackageOrigin::Unresolved {
+                source: Some(String::new())
+            }))
+        );
 
         const LOCKFILE: &str = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
