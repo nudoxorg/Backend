@@ -1144,7 +1144,10 @@ mod tests {
         )
         .expect("frame-matched native tree");
         assert!(native_accessibility.has_label("Open settings"));
-        assert_eq!(native_accessibility.focused_label(), Some("Open settings"));
+        assert_eq!(
+            native_accessibility.focused_label(),
+            Some("Open settings".to_owned())
+        );
         let mut capture = CaptureSet {
             state: GuiState::new("edge", None, None),
             viewport,
