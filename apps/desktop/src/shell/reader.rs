@@ -457,6 +457,7 @@ pub(crate) struct Reader {
     package_outline_expanded: bool,
     /// Up to four explicit Find choices survive Compare and Back.
     find_held: Vec<facet::browse::find::HeldPackage>,
+    find_held_root: Option<crate::core::VersionedRoot>,
     find_workspace: Option<crate::core::LocalProjectId>,
 }
 
@@ -519,6 +520,7 @@ impl Reader {
             symbol_disclosures: Vec::new(),
             package_outline_expanded: false,
             find_held: Vec::new(),
+            find_held_root: None,
             find_workspace: snapshot.workspace().host.clone(),
         }
     }
@@ -653,6 +655,13 @@ impl Reader {
     }
 
     pub(crate) fn set_find_held(&mut self, held: Vec<facet::browse::find::HeldPackage>, cx: &mut Context<Self>) {
+        let root = self.links.snapshot(cx).key();
+        if self.find_held_root.is_some_and(|old| !old.same_authority(root)) {
+            self.find_held.clear();
+            self.find_held_root = None;
+            cx.notify();
+            return;
+        }
         let mut unique: Vec<facet::browse::find::HeldPackage> = Vec::with_capacity(4);
         for package in held {
             if !unique.iter().any(|item| item.key == package.key) { unique.push(package); }
@@ -660,8 +669,14 @@ impl Reader {
         }
         if self.find_held != unique {
             self.find_held = unique;
+            self.find_held_root = (!self.find_held.is_empty()).then_some(root);
             cx.notify();
         }
+    }
+
+    pub(crate) fn holds_find_packages_at(&self, keys: &[SharedString], root: crate::core::VersionedRoot) -> bool {
+        self.find_held_root.is_some_and(|held| held.same_authority(root))
+            && self.find_held.iter().map(|item| &item.key).eq(keys.iter())
     }
 
     /// Align a tracked section heading with the reading viewport. This uses
@@ -1921,9 +1936,11 @@ impl Render for Reader {
         self.laid_out = Some(laid_out);
         let palette = facet.palette();
         let snapshot = self.links.snapshot(cx);
-        if self.find_workspace.as_ref() != snapshot.workspace().host.as_ref() {
+        if self.find_workspace.as_ref() != snapshot.workspace().host.as_ref()
+            || self.find_held_root.is_some_and(|held| !held.same_authority(snapshot.key())) {
             self.find_workspace = snapshot.workspace().host.clone();
             self.find_held.clear();
+            self.find_held_root = None;
         }
         let Some(requested) = self.places.last().cloned() else { return div(); };
         let readiness = destination_state(self.links.store.read(cx), &place_keys(&requested.route, requested.overlay), snapshot.key());

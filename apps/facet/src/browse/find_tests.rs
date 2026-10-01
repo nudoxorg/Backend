@@ -221,7 +221,7 @@ fn the_selection_follows_a_release_the_library_just_added(cx: &mut TestAppContex
 // Native component fixture only: this does not establish a live-owner journey.
 #[gpui::test]
 fn departing_find_cancels_refinement_and_reactivation_owns_input_again(cx: &mut TestAppContext) {
-    cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); });
+    cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); crate::probe::enable(cx); });
     let reads = Rc::new(RefCell::new(vec![]));
     let opened = Rc::new(RefCell::new(vec![]));
     let actions = actions(&reads, &opened);
@@ -237,6 +237,8 @@ fn departing_find_cancels_refinement_and_reactivation_owns_input_again(cx: &mut 
     assert!(state.read_with(cx, |state, _| state.pending.is_some()));
     host.update(cx, |host, cx| { host.active = false; cx.notify(); });
     draw(cx);
+    let departing = cx.update(|_, cx| crate::probe::take(cx));
+    assert!(departing.texts.iter().any(|text| text.content == "FIND"), "the departing page keeps its visible body");
     assert!(!state.read_with(cx, |state, _| state.active));
     assert!(state.read_with(cx, |state, _| state.pending.is_none()));
     advance(cx, 200);
@@ -268,6 +270,27 @@ fn one_admission_rule_drives_blank_invalid_current_retained_and_failed_actions()
         assert!(!blocked.allows_actions());
         assert!(blocked.note().is_some(), "a blocked reading always explains why");
     }
+}
+
+#[gpui::test]
+fn retained_first_read_keeps_local_evidence_without_admitting_an_action(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let reads = Rc::new(RefCell::new(vec![]));
+    let opened = Rc::new(RefCell::new(vec![]));
+    let callbacks = actions(&reads, &opened);
+    let evidence = model("from_str", false);
+    let (host, cx) = cx.add_window_view(|window, cx| Host { state: cx.new(|cx| {
+        let mut state = State::new(evidence.query.clone(), callbacks.clone(), window, cx);
+        state.read_admission = ReadAdmission::Retained("producer changed".into());
+        state.accept(&evidence, &callbacks, window, cx);
+        state
+    }) });
+    let state = host.read_with(cx, |host, _| host.state.clone());
+    state.read_with(cx, |state, cx| {
+        assert!(Arc::ptr_eq(state.snapshot.as_ref().expect("retained evidence"), &evidence));
+        assert!(state.loaded_query.is_none());
+        assert!(matches!(state.result_admission(cx), Admission::Retained(_)));
+    });
 }
 
 // Native input-event fixture, independent of the required live-owner journey.
