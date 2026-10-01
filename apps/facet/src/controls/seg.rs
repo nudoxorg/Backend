@@ -342,13 +342,17 @@ fn density_art(density: Density, size: Pixels, ink: Hsla) -> AnyElement {
     rows.flex_none().into_any_element()
 }
 
+fn assert_unique_choice_names(id: &ElementId, choices: &[Choice]) {
+    let mut names = std::collections::HashSet::new();
+    for choice in choices {
+        assert!(names.insert(choice.name.clone()), "seg {id:?} has duplicate choice identity {:?}; choice names must be unique", choice.name);
+    }
+}
+
 impl RenderOnce for Seg {
     #[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let mut names = std::collections::HashSet::new();
-        for choice in &self.choices {
-            assert!(names.insert(choice.name.clone()), "seg {:?} has duplicate choice identity {:?}; choice names must be unique", self.id, choice.name);
-        }
+        assert_unique_choice_names(&self.id, &self.choices);
         let palette = cx.palette();
         let measure = self.measure;
         let active = !self.disabled;
@@ -681,5 +685,62 @@ impl RenderOnce for Seg {
             well.into_any_element()
         };
         hover_zone(well, &touch, f32::from(well_h) * 0.25, active)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Context, FocusHandle, Modifiers, Render, TestAppContext, point};
+    use crate::theme::{Facet, set_facet};
+
+    #[test]
+    #[should_panic(expected = "duplicate choice identity")]
+    fn duplicate_choice_names_fail_instead_of_aliasing_native_controls() {
+        let choices = [0, 1].map(|_| Choice { name: "Same".into(), face: Face_::Label("Same".into()), key: None });
+        assert_unique_choice_names(&"duplicate-radio".into(), &choices);
+    }
+
+    struct Fixture { selected: usize, disabled: bool, focus: Option<FocusHandle> }
+    impl Render for Fixture {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let id: ElementId = "fixture-radio".into();
+            let measure = Measure::new(px(300.0), &cx.facet());
+            self.focus = Some(Touch::read(&id, Look::LIVE, !self.disabled, window, cx).focus);
+            let owner = cx.entity().downgrade();
+            seg(id, &measure).aria_label("Fixture choice").label("One").label("Two")
+                .selected(self.selected).disabled(self.disabled)
+                .on_select(move |selected, _, cx| {
+                    let _ = owner.update(cx, |fixture, cx| { fixture.selected = selected; cx.notify(); });
+                })
+        }
+    }
+
+    // A native shell fixture; the live journey separately exercises AccessKit Click.
+    #[gpui::test]
+    fn pointer_radio_selection_and_arrow_reversal_keep_the_shared_focus(cx: &mut TestAppContext) {
+        cx.update(|cx| { set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); });
+        let (fixture, cx) = cx.add_window_view(|_, _| Fixture { selected: 0, disabled: false, focus: None });
+        cx.update(|window, cx| { window.draw(cx).clear(cx); });
+        let point_ = cx.update(|window, cx| {
+            let measure = Measure::new(px(300.0), &cx.facet());
+            let scale = f32::from(measure.control(Control::Small)) / 24.0;
+            let first = text::width(&"One".into(), STONE_LABEL, &measure, window) + px(26.0 * scale);
+            let second = text::width(&"Two".into(), STONE_LABEL, &measure, window) + px(26.0 * scale);
+            point(first + px(4.0 * scale) + second / 2.0, measure.control(Control::Medium) / 2.0)
+        });
+        cx.simulate_click(point_, Modifiers::default());
+        cx.update(|window, cx| { window.draw(cx).clear(cx); });
+        assert_eq!(fixture.read_with(cx, |fixture, _| fixture.selected), 1);
+        let focus = fixture.read_with(cx, |fixture, _| fixture.focus.clone().unwrap());
+        assert!(cx.update(|window, _| focus.is_focused(window)));
+        cx.simulate_keystrokes("left");
+        cx.update(|window, cx| { window.draw(cx).clear(cx); });
+        assert_eq!(fixture.read_with(cx, |fixture, _| fixture.selected), 0);
+        assert!(cx.update(|window, _| focus.is_focused(window)));
+        fixture.update(cx, |fixture, cx| { fixture.disabled = true; cx.notify(); });
+        cx.update(|window, cx| { window.draw(cx).clear(cx); });
+        cx.simulate_keystrokes("right");
+        assert_eq!(fixture.read_with(cx, |fixture, _| fixture.selected), 0);
     }
 }
