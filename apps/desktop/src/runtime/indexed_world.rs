@@ -15,7 +15,7 @@ use backend_library::{
     SemanticLinkKind, SurfaceCommand, SurfaceReply,
 };
 use facet::graph::{Edge, Kind, Module, Node, Package, Rel, World};
-use gpui::{Context, Global};
+use gpui::{App, Context, Global};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
@@ -924,6 +924,7 @@ fn module_path(file: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::core::VersionedRoot;
     use super::{
         Coverage, Key, MAX_PACKAGES, Origin, OwnerIdentity, PackageRef, RelationCompleteness, RelationKindCoverage,
         relation_gap, retain_package,
