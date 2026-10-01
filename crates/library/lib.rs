@@ -19,6 +19,7 @@ mod arrangement;
 pub mod browse;
 pub mod canonical;
 mod capability;
+mod cargo_profile;
 mod catalog;
 mod command;
 mod command_registry;
@@ -80,6 +81,15 @@ pub use capability::{
     EmbeddingNormalization, EmbeddingPooling, EmbeddingRecipeId, EmbeddingSource,
     LanguageOracleTask, MAX_CAPABILITY_INVENTORY, PackageAuthorityIdentity,
     compiler_authority_recipe, embedding_authority_recipe,
+};
+pub use cargo_profile::{
+    MAX_RUST_CARGO_DEPENDENCY_EDGES, MAX_RUST_CARGO_FEATURE_EDGES,
+    MAX_RUST_CARGO_METADATA_TEXT_BYTES, MAX_RUST_CARGO_PROFILE_FEATURES,
+    MAX_RUST_CARGO_RESOLVED_PACKAGES, MAX_RUST_CARGO_TARGETS, MAX_RUST_CARGO_WORKSPACE_PACKAGES,
+    RustCargoBuildProfileV1, RustCargoDependencyKindFactV1, RustCargoFactsAdmissionError,
+    RustCargoFeatureFactV1, RustCargoFeatureSelectionV1, RustCargoProfileRequestError,
+    RustCargoProfileSelectionV1, RustCargoResolvedDependencyFactV1, RustCargoResolvedPackageFactV1,
+    RustCargoTargetFactV1, RustCargoWorkspaceFactsV1, RustCargoWorkspacePackageFactV1,
 };
 pub use catalog::{Library, RankedSearchSnapshot};
 pub use command::ReferenceFact;
