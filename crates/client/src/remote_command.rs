@@ -453,6 +453,44 @@ mod tests {
     use std::net::UdpSocket;
     use std::sync::mpsc;
     use std::thread;
+    use std::time::Duration;
+    use tokio::sync::oneshot;
+
+    const TEST_IO_TIMEOUT: Duration = Duration::from_secs(10);
+    const TEST_SERVER_LIFETIME: Duration = Duration::from_secs(30);
+    const TEST_READY_TIMEOUT: Duration = Duration::from_secs(30);
+
+    struct ProductTestServer {
+        shutdown: Option<oneshot::Sender<()>>,
+        worker: Option<thread::JoinHandle<()>>,
+    }
+
+    impl ProductTestServer {
+        fn stop(&mut self) {
+            if let Some(shutdown) = self.shutdown.take() {
+                let _ = shutdown.send(());
+            }
+        }
+
+        fn finish(mut self) {
+            self.stop();
+            if let Some(worker) = self.worker.take() {
+                worker.join().expect("join bounded remote-index test server");
+            }
+        }
+    }
+
+    impl Drop for ProductTestServer {
+        fn drop(&mut self) {
+            self.stop();
+            if let Some(worker) = self.worker.take() {
+                let result = worker.join();
+                if !thread::panicking() {
+                    assert!(result.is_ok(), "remote-index test server panicked");
+                }
+            }
+        }
+    }
 
     fn observation(scope: ScopeRoot) -> UntrustedProducerObservation {
         UntrustedProducerObservation::new([1; 32], scope, [2; 32], b"owner-proof".to_vec())
@@ -805,18 +843,27 @@ mod tests {
         let error_client_secret = SecretKey::generate();
         let (owner_address, impostor_address) = unused_loopback_addresses();
         let (ready_sender, ready_receiver) = mpsc::channel();
+        let (shutdown_sender, mut shutdown_receiver) = oneshot::channel();
         let owner_thread = thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("owner runtime");
             runtime.block_on(async move {
-                let owner = bind_direct(owner_secret.clone(), owner_address)
-                    .await
-                    .expect("owner endpoint");
-                let impostor = bind_direct(SecretKey::generate(), impostor_address)
-                    .await
-                    .expect("impostor endpoint");
+                let owner = tokio::time::timeout(
+                    TEST_IO_TIMEOUT,
+                    bind_direct(owner_secret.clone(), owner_address),
+                )
+                .await
+                .expect("owner endpoint bind timed out")
+                .expect("owner endpoint");
+                let impostor = tokio::time::timeout(
+                    TEST_IO_TIMEOUT,
+                    bind_direct(SecretKey::generate(), impostor_address),
+                )
+                .await
+                .expect("impostor endpoint bind timed out")
+                .expect("impostor endpoint");
                 let impostor_accept = tokio::spawn(async move {
                     while let Some(incoming) = impostor.accept().await {
                         if let Ok(connecting) = incoming.accept() {
@@ -827,72 +874,115 @@ mod tests {
                 ready_sender
                     .send(owner.id())
                     .expect("send owner address");
-                for session_index in 0..3 {
-                    let incoming = owner.accept().await.expect("owner accepts connection");
-                    let connection = incoming
-                        .accept()
-                        .expect("accept remote product connection")
-                        .await
-                        .expect("complete owner connection");
-                    let mut session = accept_remote_index(connection, owner.id())
-                        .await
-                        .expect("admit signed product grant");
-                    let request_count = match session_index {
-                        0 => 3,
-                        1 => 2,
-                        _ => 1,
-                    };
-                    for _ in 0..request_count {
-                        let request = session.receive_request().await.expect("product request");
-                        let command = backend_library::decode_command_body(&request.body)
-                            .expect("decode command request");
-                        if session_index == 2 {
-                            assert!(matches!(command.command, Command::Revision));
-                            let body = serde_json::to_vec(&ReplyDto::error(
-                                request.request_id,
-                                "owner unavailable",
-                            ))
-                            .expect("encode identity-free owner error");
-                            session
-                                .send_response(&RemoteIndexResponse {
-                                    request_id: request.request_id,
-                                    outcome: RemoteIndexOutcome::Payload(body.into_boxed_slice()),
-                                })
-                                .await
-                                .expect("send identity-free owner error");
-                            continue;
-                        }
-                        let (reply, reply_context, reply_evidence) = match command.command {
-                            Command::Revision => (true, context, evidence.clone()),
-                            Command::Search(_) if request.request_id == 3 => {
-                                (false, [0x99; 32], evidence.clone())
+                let serve_sessions = async {
+                    for session_index in 0..3 {
+                        let incoming = tokio::select! {
+                            _ = &mut shutdown_receiver => return false,
+                            result = tokio::time::timeout(TEST_IO_TIMEOUT, owner.accept()) => {
+                                result.expect("owner accept timed out")
+                                    .expect("owner accepts connection")
                             }
-                            Command::Search(_) => (false, context, evidence.clone()),
-                            other => panic!("unexpected product command: {other:?}"),
                         };
-                        let body = view_reply(
-                            request.request_id,
-                            root.clone(),
-                            reply_context,
-                            reply_evidence,
-                            reply,
-                        );
-                        session
-                            .send_response(&RemoteIndexResponse {
-                                request_id: request.request_id,
-                                outcome: RemoteIndexOutcome::Payload(body.into_boxed_slice()),
-                            })
-                            .await
-                            .expect("send owner product reply");
+                        let connecting = incoming
+                            .accept()
+                            .expect("accept remote product connection");
+                        let connection = tokio::select! {
+                            _ = &mut shutdown_receiver => return false,
+                            result = tokio::time::timeout(TEST_IO_TIMEOUT, connecting) => {
+                                result.expect("owner handshake timed out")
+                                    .expect("complete owner connection")
+                            }
+                        };
+                        let mut session = tokio::select! {
+                            _ = &mut shutdown_receiver => return false,
+                            result = tokio::time::timeout(
+                                TEST_IO_TIMEOUT,
+                                accept_remote_index(connection, owner.id()),
+                            ) => {
+                                result.expect("remote-index admission timed out")
+                                    .expect("admit signed product grant")
+                            }
+                        };
+                        let request_count = match session_index {
+                            0 => 3,
+                            1 => 2,
+                            _ => 1,
+                        };
+                        for _ in 0..request_count {
+                            let request = tokio::select! {
+                                _ = &mut shutdown_receiver => return false,
+                                result = tokio::time::timeout(
+                                    TEST_IO_TIMEOUT,
+                                    session.receive_request(),
+                                ) => {
+                                    result.expect("product request timed out")
+                                        .expect("product request")
+                                }
+                            };
+                            let command = backend_library::decode_command_body(&request.body)
+                                .expect("decode command request");
+                            let body = if session_index == 2 {
+                                assert!(matches!(command.command, Command::Revision));
+                                serde_json::to_vec(&ReplyDto::error(
+                                    request.request_id,
+                                    "owner unavailable",
+                                ))
+                                .expect("encode identity-free owner error")
+                            } else {
+                                let (reply, reply_context, reply_evidence) =
+                                    match command.command {
+                                        Command::Revision => (true, context, evidence.clone()),
+                                        Command::Search(_) if request.request_id == 3 => {
+                                            (false, [0x99; 32], evidence.clone())
+                                        }
+                                        Command::Search(_) => {
+                                            (false, context, evidence.clone())
+                                        }
+                                        other => panic!(
+                                            "unexpected product command: {other:?}"
+                                        ),
+                                    };
+                                view_reply(
+                                    request.request_id,
+                                    root.clone(),
+                                    reply_context,
+                                    reply_evidence,
+                                    reply,
+                                )
+                            };
+                            tokio::select! {
+                                _ = &mut shutdown_receiver => return false,
+                                result = tokio::time::timeout(
+                                    TEST_IO_TIMEOUT,
+                                    session.send_response(&RemoteIndexResponse {
+                                        request_id: request.request_id,
+                                        outcome: RemoteIndexOutcome::Payload(body.into_boxed_slice()),
+                                    }),
+                                ) => {
+                                    result.expect("owner reply send timed out")
+                                        .expect("send owner product reply");
+                                }
+                            }
+                        }
                     }
-                }
+                    true
+                };
+                let completed = tokio::time::timeout(TEST_SERVER_LIFETIME, serve_sessions)
+                    .await
+                    .unwrap_or(false);
                 impostor_accept.abort();
+                let _ = impostor_accept.await;
+                assert!(completed, "remote-index test server stopped before all sessions");
             });
         });
+        let mut test_server = ProductTestServer {
+            shutdown: Some(shutdown_sender),
+            worker: Some(owner_thread),
+        };
 
         let owner_id = ready_receiver
-            .recv()
-            .expect("owner endpoint ready");
+            .recv_timeout(TEST_READY_TIMEOUT)
+            .expect("owner endpoint became ready before timeout");
         let capability = product_capability(&signing_secret, client_secret.public(), root_id);
         let mut transport = RemoteIndexCommandTransport::connect(
             client_secret.clone(),
@@ -996,7 +1086,7 @@ mod tests {
             CommandReply::Error(message) if message == "owner unavailable"
         ));
 
-        owner_thread.join().expect("owner session thread");
+        test_server.finish();
     }
 }
 
