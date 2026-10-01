@@ -656,14 +656,17 @@ fn apply_step(
             let next_viewport = Viewport::new(*width, *height, viewport.scale)?;
             let scale = f32::from(viewport.scale);
             let position = crate::position(0.0, 0.0);
+            let pointer = context
+                .update_window(window, |_, window, _| window.mouse_position())
+                .map_err(|error| CaptureError::Gpui(error.to_string()))?;
+            context
+                .simulate_resize(window, size(px(*width as f32), px(*height as f32)))
+                .map_err(|error| CaptureError::Gpui(error.to_string()))?;
             context
                 .update_window(window, |_, window, cx| {
-                    let pointer = window.mouse_position();
-                    window.resize(size(px(*width as f32), px(*height as f32)));
-                    // The test platform stores the size without calling
-                    // back: without this the layout never re-flows and the
-                    // "resized" frame is a crop of the old layout.
-                    window.bounds_changed(cx);
+                    // The test platform reports its native scale factor as
+                    // 2x. Reapply the capture's requested scale after the
+                    // resize callback has updated the window viewport.
                     window.set_scale_factor(scale);
                     if pointer != position {
                         window.dispatch_event(
@@ -1060,6 +1063,7 @@ mod tests {
                     width: 32,
                     height: 16,
                 },
+                InputStep::Scale { factor: 2 },
             ],
             &frames,
             GpuiCaptureOptions::default(),
@@ -1072,9 +1076,19 @@ mod tests {
         );
         assert_eq!(
             capture.frames[1].viewport,
-            Viewport::new(32, 16, 1).expect("viewport")
+            Viewport::new(32, 16, 2).expect("viewport")
         );
         assert_eq!(capture.frames[0].image.dimensions(), (64, 32));
-        assert_eq!(capture.frames[1].image.dimensions(), (32, 16));
+        assert_eq!(capture.frames[1].image.dimensions(), (64, 32));
+        let initial_marker = capture.frames[0].image.get_pixel(63, 31).0;
+        let resized_marker = capture.frames[1].image.get_pixel(63, 31).0;
+        assert!(
+            initial_marker[0] > 180 && initial_marker[1] < 120,
+            "initial right-edge landmark was not rendered: {initial_marker:?}"
+        );
+        assert!(
+            resized_marker[0] > 180 && resized_marker[1] < 120,
+            "the platform resize callback must reflow and render the right-edge landmark: {resized_marker:?}"
+        );
     }
 }
