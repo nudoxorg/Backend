@@ -8,9 +8,9 @@ use std::{
 };
 
 use backend_frontend_rust::legacy::{
-    RustAnalysisControl, RustFeatureControl, RustToolchain, RustWorkspace, RustWorkspaceFile,
-    RustWorkspaceReadFrontierObserver, RustWorkspaceSessionKey, RustWorkspaceSessionLane,
-    SourceByteLimit,
+    RustAnalysisControl, RustAuthorityError, RustFeatureControl, RustToolchain, RustWorkspace,
+    RustWorkspaceFile, RustWorkspaceReadFrontierObserver, RustWorkspaceSessionKey,
+    RustWorkspaceSessionLane, SourceByteLimit,
 };
 use backend_semantic::vocabulary::{RustEdition, Stage};
 use ra_ap_syntax::AstNode;
@@ -640,6 +640,13 @@ fn workspace_overlay_preserves_symlinked_module_vfs_identity()
             "alias::value",
             control,
         )?);
+        assert!(named_path_resolves(
+            lease.workspace(),
+            &root,
+            root_source,
+            "physical::physical_value",
+            control,
+        )?);
         assert!(lease.workspace().analyze_source(
             root.join("src/alias.rs"),
             editor_buffer.as_bytes(),
@@ -654,6 +661,77 @@ fn workspace_overlay_preserves_symlinked_module_vfs_identity()
         )?);
         lease.commit();
         assert_eq!(lane.stats().overlay_sources_removed, 0);
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })();
+
+    fs::remove_dir_all(&root)?;
+    outcome
+}
+
+#[test]
+fn workspace_session_rejects_selected_file_without_active_hir_owner()
+-> Result<(), Box<dyn std::error::Error>> {
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!(
+        "backend-rust-workspace-detached-{nonce}-{sequence}"
+    ));
+    fs::create_dir_all(root.join("src"))?;
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"detached_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )?;
+    let root_source = "pub fn value() -> u8 { 1 }\n";
+    let detached_source = "pub fn unowned() -> u8 { 2 }\n";
+    fs::write(root.join("src/lib.rs"), root_source)?;
+    fs::write(root.join("src/detached.rs"), detached_source)?;
+
+    let outcome = (|| {
+        let toolchain = RustToolchain::discover(rustc_path())?;
+        let source_paths = [
+            PathBuf::from("src/detached.rs"),
+            PathBuf::from("src/lib.rs"),
+        ];
+        let files = [
+            RustWorkspaceFile {
+                relative_path: Path::new("src/detached.rs"),
+                source: detached_source,
+            },
+            RustWorkspaceFile {
+                relative_path: Path::new("src/lib.rs"),
+                source: root_source,
+            },
+        ];
+        let key = RustWorkspaceSessionKey::new(
+            &root,
+            &toolchain,
+            RustEdition::Rust2024,
+            Stage::LowerIr,
+            RustFeatureControl::default(),
+            None,
+            None,
+            None,
+            [0x61; 32],
+            &source_paths,
+        )?;
+        let cancelled = AtomicBool::new(false);
+        let control = RustAnalysisControl {
+            cancelled: &cancelled,
+            maximum_source_bytes: SourceByteLimit::from(8_192),
+            deadline: Instant::now() + Duration::from_secs(180),
+        };
+        let mut lane = RustWorkspaceSessionLane::default();
+        let lease = lane.begin(key, &files, control)?;
+        let result = lease.workspace().analyze_source(
+            root.join("src/detached.rs"),
+            detached_source.as_bytes(),
+            control,
+            |_| Ok(()),
+        );
+        assert!(
+            matches!(result, Err(RustAuthorityError::DetachedSource { .. })),
+            "an exactly bound VFS buffer without active Cargo HIR ownership must remain rejected"
+        );
         Ok::<(), Box<dyn std::error::Error>>(())
     })();
 
