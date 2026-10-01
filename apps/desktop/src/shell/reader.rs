@@ -1369,9 +1369,9 @@ fn resource_state<T>(resource: &crate::core::Resource<T>, root: crate::core::Ver
     use crate::core::{Activity, ResourceTerminal};
     if matches!(resource.terminal(), ResourceTerminal::Fault(_) | ResourceTerminal::Unavailable(_)) {
         DestinationState::Terminal
-    } else if !checking && resource.is_loaded() && resource.value_root() == Some(root) {
+    } else if !checking && resource.is_loaded() && resource.value_root().is_some_and(|at| at.same_authority(root)) {
         DestinationState::Ready
-    } else if checking || resource.value_root().is_some_and(|at| at != root)
+    } else if checking || resource.value_root().is_some_and(|at| !at.same_authority(root))
         || matches!(resource.activity(), Activity::NotYet | Activity::Waiting | Activity::Working) {
         DestinationState::Pending
     } else {
@@ -1912,7 +1912,7 @@ impl Render for Reader {
         let waiting = readiness == DestinationState::Pending;
         let was_waiting = self.pending_place.is_some();
         self.pending_place = None;
-        if self.retained.as_ref().is_some_and(|page| page.root != snapshot.key()) {
+        if self.retained.as_ref().is_some_and(|page| !page.root.same_authority(snapshot.key())) {
             self.retained = None;
             self.arrival = None;
             self.transit = None;
@@ -1947,7 +1947,7 @@ impl Render for Reader {
                 self.transit = None;
             }
         }
-        if self.pending_page_focus.as_ref().is_some_and(|focus| focus.place != requested.key || focus.root != snapshot.key()) {
+        if self.pending_page_focus.as_ref().is_some_and(|focus| focus.place != requested.key || !focus.root.same_authority(snapshot.key())) {
             self.pending_page_focus = None;
         }
         let on_graph = bodies::graph::is_graph(&current.route) && current.overlay.is_none();
@@ -2134,7 +2134,7 @@ impl Render for Reader {
         }
         if !waiting && staged.is_none()
             && let Some(focus) = self.pending_page_focus.take()
-            && focus.place == current.key && focus.root == snapshot.key()
+            && focus.place == current.key && focus.root.same_authority(snapshot.key())
             && let Some(target) = focus.target
         {
             self.targets.focus(target);
@@ -3330,6 +3330,8 @@ mod retained_destination_tests {
         let same_hash_new_epoch = root("current", 2);
         let loaded = Resource::loaded_at(7_u32, at);
         assert_eq!(resource_state(&loaded, at, false), DestinationState::Ready);
+        assert_eq!(resource_state(&loaded, at.observed_at(99), false), DestinationState::Ready,
+            "diagnostic UI observations cannot hold a producer-current read pending");
         assert_eq!(resource_state(&loaded, same_hash_new_epoch, false), DestinationState::Pending);
         assert_eq!(resource_state(&loaded, at, true), DestinationState::Pending);
         assert_eq!(resource_state(&loaded.mark_error(FaultCode::Cancelled, "revoked"), at, true), DestinationState::Terminal);
