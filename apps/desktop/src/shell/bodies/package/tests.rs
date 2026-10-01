@@ -36,39 +36,132 @@ fn has(ledger: &Ledger, part: &str) -> bool {
 fn rustdoc_filename_resolves_only_a_complete_unique_kind_matched_outline() {
     let dossier = dossier();
     let outline = dossier.outline.known().expect("fixture outline");
-    assert!(super::rustdoc_symbol_route(
-        "outline/struct.Outline.html",
-        Some(outline),
-        &dossier.package,
-    )
-    .is_some());
-    assert!(super::rustdoc_symbol_route(
-        "docs/nonexistent-module/struct.Outline.html",
-        Some(outline),
-        &dossier.package,
-    )
-    .is_none());
-    assert!(super::rustdoc_symbol_route(
-        "missing/struct.Outline.html",
-        Some(outline),
-        &dossier.package,
-    )
-    .is_none());
-    assert!(super::rustdoc_symbol_route(
-        "struct.RelationLabel.html",
-        Some(outline),
-        &dossier.package,
-    )
-    .is_none());
+    assert!(
+        super::rustdoc_symbol_route(
+            "outline/struct.Outline.html",
+            Some(outline),
+            &dossier.package,
+        )
+        .is_some()
+    );
+    assert!(
+        super::rustdoc_symbol_route(
+            "docs/nonexistent-module/struct.Outline.html",
+            Some(outline),
+            &dossier.package,
+        )
+        .is_none()
+    );
+    assert!(
+        super::rustdoc_symbol_route(
+            "missing/struct.Outline.html",
+            Some(outline),
+            &dossier.package,
+        )
+        .is_none()
+    );
+    assert!(
+        super::rustdoc_symbol_route("struct.RelationLabel.html", Some(outline), &dossier.package,)
+            .is_none()
+    );
 
     let mut partial = outline.clone();
     partial.complete = false;
-    assert!(super::rustdoc_symbol_route(
-        "outline/struct.Outline.html",
-        Some(&partial),
-        &dossier.package,
-    )
-    .is_none());
+    assert!(
+        super::rustdoc_symbol_route(
+            "outline/struct.Outline.html",
+            Some(&partial),
+            &dossier.package,
+        )
+        .is_none()
+    );
+}
+
+struct ReadmeActions;
+
+impl crate::runtime::reads::PageReader for ReadmeActions {
+    fn read(
+        &mut self,
+        request: &crate::runtime::reads::ReadRequest,
+        context: &crate::runtime::reads::ReadContext<'_>,
+    ) -> Result<crate::model::pages::PageValue, crate::model::pages::ReadFailure> {
+        use crate::model::local_package::{ReadmeHeading, ReadmeLink};
+        use crate::model::pages::{Known, PageValue};
+        let crate::runtime::reads::ReadRequest::Package(package) = request else {
+            return crate::shell::tests::Fixture.read(request, context);
+        };
+        let mut about = dossier();
+        about.package = package.clone();
+        if *package == dossier().package {
+            let source: Arc<str> = Arc::from(
+                "# Present\n\n## Café\n\n[Open serde](pkg:cargo/serde@1.0.229)\n\n[Unavailable](javascript:alert(1))\n\n[Return to Café](#caf%C3%A9)\n",
+            );
+            let offset = source.find("## Café").expect("heading offset");
+            let link = |label: &str, destination: &str| ReadmeLink {
+                label: Arc::from(label),
+                destination: Arc::from(destination),
+                local_file: None,
+                line: None,
+            };
+            about.readme_markdown = Known::Known(source);
+            about.readme_links = Known::Known(Arc::from([
+                link("Open serde", "pkg:cargo/serde@1.0.229"),
+                link("Unavailable", "javascript:alert(1)"),
+                link("Return to Café", "#caf%C3%A9"),
+            ]));
+            about.readme_headings = Known::Known(Arc::from([ReadmeHeading {
+                slug: Arc::from("café"),
+                element_id: Arc::from(format!("readme-heading-{offset}")),
+                title: Arc::from("Café"),
+                level: 2,
+            }]));
+        }
+        Ok(PageValue::Package(about))
+    }
+}
+
+#[gpui::test]
+fn readme_link_keyboard_back_restores_exact_row_and_unavailable_row_stays_actionable(
+    cx: &mut TestAppContext,
+) {
+    let pool = crate::runtime::reads::ReadPool::start(1, |_| ReadmeActions).expect("pool");
+    let mut rig =
+        crate::shell::tests::rig_with_reads(cx, Some(package_route()), 320.0, 900.0, pool);
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    let ledger = painted(&mut rig);
+    assert!(
+        ledger
+            .targets
+            .iter()
+            .any(|target| target.key == "readme-link-0")
+    );
+    assert!(
+        ledger
+            .targets
+            .iter()
+            .any(|target| target.key == "readme-link-1")
+    );
+    walk_to(&mut rig, "readme-link-0", 200);
+    rig.keys("enter");
+    assert!(format!("{:?}", rig.route()).contains("serde@1.0.229"));
+    rig.keys("cmd-[");
+    assert_eq!(rig.route(), package_route());
+    assert_eq!(focused(&mut rig).as_deref(), Some("readme-link-0"));
+    walk_to(&mut rig, "readme-link-1", 200);
+    let before = rig.route();
+    rig.keys("enter");
+    assert_eq!(
+        rig.route(),
+        before,
+        "the unsupported scheme cannot navigate"
+    );
+    let ledger = painted(&mut rig);
+    assert!(
+        ledger
+            .texts
+            .iter()
+            .any(|text| text.content.contains("unsupported or invalid address"))
+    );
 }
 
 #[test]
