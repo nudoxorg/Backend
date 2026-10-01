@@ -9,7 +9,7 @@ use crate::navigation::{Route, View};
 use backend_library::DeclarationKind;
 use gpui::{Global, SharedString};
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -17,6 +17,8 @@ const UNINDEXED: &str = "This README link was not included in the available link
 const UNAVAILABLE: &str = "This link has no verified destination in this package.";
 const MAX_INDEXED_LINKS: usize = 512;
 const MAX_INDEXED_HEADINGS: usize = 512;
+const MAX_OUTLINE_SCAN_NODES: usize = 8_192;
+const MAX_OUTLINE_DEPTH: usize = 64;
 
 #[derive(Clone, Debug)]
 pub(super) enum Outcome {
@@ -55,6 +57,8 @@ enum Hit {
     Unique(SymbolRef),
     Ambiguous,
 }
+
+type HeadingHit = Option<ReadmeHeading>;
 
 impl Hit {
     fn observe(&mut self, symbol: &SymbolRef) {
@@ -96,7 +100,7 @@ pub(super) struct Plan {
     package: PackageRef,
     outcomes: Vec<Outcome>,
     by_destination: HashMap<Arc<str>, Outcome>,
-    by_heading: HashMap<Arc<str>, ReadmeHeading>,
+    by_heading: HashMap<Arc<str>, HeadingHit>,
     shown_links: Cell<usize>,
     shown_headings: Cell<usize>,
     restored_focus: RefCell<Option<SharedString>>,
@@ -129,11 +133,16 @@ impl Plan {
         outline: Option<OutlineTree>,
         package: PackageRef,
     ) -> Self {
-        let by_heading: HashMap<_, _> = headings
+        let mut by_heading: HashMap<Arc<str>, HeadingHit> = HashMap::new();
+        for heading in headings
             .iter()
             .flat_map(|headings| headings.iter().take(MAX_INDEXED_HEADINGS))
-            .map(|heading| (Arc::clone(&heading.slug), heading.clone()))
-            .collect();
+        {
+            by_heading
+                .entry(Arc::clone(&heading.slug))
+                .and_modify(|hit| *hit = None)
+                .or_insert_with(|| Some(heading.clone()));
+        }
         let candidates: Vec<_> = links
             .iter()
             .flat_map(|links| links.iter().take(MAX_INDEXED_LINKS))
@@ -153,8 +162,14 @@ impl Plan {
                     _ => {}
                 }
             }
-            if let Some(outline) = &outline {
-                observe_outline(&outline.roots, &mut Vec::new(), &mut files, &mut rustdocs);
+            if (!files.is_empty() || !rustdocs.is_empty())
+                && let Some(outline) = &outline
+                && !observe_outline(&outline.roots, &mut files, &mut rustdocs)
+            {
+                // Uniqueness requires the entire published outline. A scan
+                // budget stop cannot turn an early positive hit into proof.
+                files.values_mut().for_each(|hit| *hit = Hit::Unseen);
+                rustdocs.values_mut().for_each(|hit| *hit = Hit::Unseen);
             }
         }
         let outcomes: Vec<_> = candidates
@@ -197,10 +212,14 @@ impl Plan {
     }
 
     pub(super) fn heading(&self, slug: &str) -> Outcome {
-        self.by_heading.get(slug).cloned().map_or(
-            Outcome::Unavailable("This heading is not in the available README index."),
-            Outcome::Anchor,
-        )
+        self.by_heading
+            .get(slug)
+            .and_then(Option::as_ref)
+            .cloned()
+            .map_or(
+                Outcome::Unavailable("This heading is not in the available README index."),
+                Outcome::Anchor,
+            )
     }
 
     pub(super) fn first_row_id(&self, destination: &str) -> Option<SharedString> {
@@ -359,6 +378,9 @@ fn candidate(destination: &str, indexed: Option<&ReadmeLink>, package: &PackageR
             }
         }
         let line = indexed.and_then(|link| link.line).unwrap_or(1);
+        if line == 0 {
+            return Candidate::Unavailable("This file link has no valid one-based line.");
+        }
         let Ok(relative) = std::path::Path::new(path).strip_prefix(package.as_str()) else {
             return Candidate::Unavailable(UNAVAILABLE);
         };
@@ -460,56 +482,103 @@ fn valid_line_fragment(fragment: &str, line: u32) -> bool {
 
 fn observe_outline(
     nodes: &[OutlineNode],
-    modules: &mut Vec<String>,
     files: &mut HashMap<FileKey, Hit>,
     rustdocs: &mut HashMap<RustdocKey, Hit>,
-) {
-    for node in nodes {
-        if let (Some(path), Some(line)) = (node.decl.path.as_deref(), node.decl.line) {
-            if let Some(hit) = files.get_mut(&FileKey {
+) -> bool {
+    struct Frame<'a> {
+        nodes: &'a [OutlineNode],
+        next: usize,
+        pop_module: bool,
+    }
+    let mut frames = vec![Frame {
+        nodes,
+        next: 0,
+        pop_module: false,
+    }];
+    let file_paths: HashSet<String> = files.keys().map(|key| key.path.clone()).collect();
+    let rustdoc_modules: HashSet<Vec<String>> =
+        rustdocs.keys().map(|key| key.modules.clone()).collect();
+    let mut modules = Vec::<String>::new();
+    let mut seen = 0usize;
+    loop {
+        let Some(frame) = frames.last_mut() else {
+            break;
+        };
+        if frame.next == frame.nodes.len() {
+            let pop_module = frame.pop_module;
+            frames.pop();
+            if pop_module {
+                modules.pop();
+            }
+            continue;
+        }
+        if seen == MAX_OUTLINE_SCAN_NODES {
+            return false;
+        }
+        let nodes = frame.nodes;
+        let index = frame.next;
+        frame.next += 1;
+        let node = &nodes[index];
+        seen += 1;
+        if let (Some(path), Some(line)) = (node.decl.path.as_deref(), node.decl.line)
+            && file_paths.contains(path)
+            && let Some(hit) = files.get_mut(&FileKey {
                 path: path.to_owned(),
                 line,
-            }) {
-                hit.observe(&node.decl.coordinate);
+            })
+        {
+            hit.observe(&node.decl.coordinate);
+        }
+        if rustdoc_modules.contains(modules.as_slice()) {
+            for kind in [node.decl.kind, None] {
+                let key = RustdocKey {
+                    modules: modules.clone(),
+                    name: node.decl.name.to_string(),
+                    kind,
+                };
+                if let Some(hit) = rustdocs.get_mut(&key) {
+                    hit.observe(&node.decl.coordinate);
+                }
+                if kind.is_none() {
+                    break;
+                }
             }
         }
-        for kind in [node.decl.kind, None] {
-            let key = RustdocKey {
-                modules: modules.clone(),
-                name: node.decl.name.to_string(),
-                kind,
-            };
-            if let Some(hit) = rustdocs.get_mut(&key) {
-                hit.observe(&node.decl.coordinate);
+        if !node.children.is_empty() {
+            if frames.len() == MAX_OUTLINE_DEPTH {
+                return false;
             }
-            if kind.is_none() {
-                break;
+            let is_module = node.decl.kind == Some(DeclarationKind::Module);
+            if is_module {
+                modules.push(node.decl.name.to_string());
             }
-        }
-        let is_module = node.decl.kind == Some(DeclarationKind::Module);
-        if is_module {
-            modules.push(node.decl.name.to_string());
-        }
-        observe_outline(&node.children, modules, files, rustdocs);
-        if is_module {
-            modules.pop();
+            frames.push(Frame {
+                nodes: &node.children,
+                next: 0,
+                pop_module: is_module,
+            });
         }
     }
+    true
 }
 
 fn resolve(
     candidate: Candidate,
-    headings: &HashMap<Arc<str>, ReadmeHeading>,
+    headings: &HashMap<Arc<str>, HeadingHit>,
     files: &HashMap<FileKey, Hit>,
     rustdocs: &HashMap<RustdocKey, Hit>,
     package: &PackageRef,
 ) -> Outcome {
     match candidate {
         Candidate::External(url) => Outcome::External(url),
-        Candidate::Anchor(slug) => headings.get(slug.as_str()).cloned().map_or(
-            Outcome::Unavailable("This heading is not in the available README index."),
-            Outcome::Anchor,
-        ),
+        Candidate::Anchor(slug) => headings
+            .get(slug.as_str())
+            .and_then(Option::as_ref)
+            .cloned()
+            .map_or(
+                Outcome::Unavailable("This heading is not in the available README index."),
+                Outcome::Anchor,
+            ),
         Candidate::File { path, line, key } => files
             .get(&key)
             .and_then(Hit::unique)
@@ -603,10 +672,11 @@ mod tests {
                 link("src/lib.rs#L12-L14", Some(&path), Some(12)),
                 link("https://example.test/path", None, None),
                 link("#a%00b", None, None),
+                link("src/lib.rs", Some(&path), Some(0)),
             ],
             vec![],
         );
-        for index in [0, 1, 2, 3, 4, 5, 8] {
+        for index in [0, 1, 2, 3, 4, 5, 8, 9] {
             assert!(
                 matches!(plan.row(index), Outcome::Unavailable(_)),
                 "row {index}"
@@ -614,6 +684,21 @@ mod tests {
         }
         assert!(matches!(plan.row(6), Outcome::File { line: 12, .. }));
         assert!(matches!(plan.row(7), Outcome::External(_)));
+    }
+
+    #[test]
+    fn duplicate_heading_slug_cannot_select_one_arbitrarily() {
+        let heading = ReadmeHeading {
+            slug: Arc::from("same"),
+            element_id: Arc::from("readme-heading-4"),
+            title: Arc::from("Same"),
+            level: 2,
+        };
+        let mut duplicate = heading.clone();
+        duplicate.element_id = Arc::from("readme-heading-40");
+        let plan = plan(vec![link("#same", None, None)], vec![heading, duplicate]);
+        assert!(matches!(plan.row(0), Outcome::Unavailable(_)));
+        assert!(matches!(plan.heading("same"), Outcome::Unavailable(_)));
     }
 
     #[test]
@@ -649,6 +734,56 @@ mod tests {
             dossier.package,
         );
         assert!(matches!(partial.row(0), Outcome::Unavailable(_)));
+    }
+
+    #[test]
+    fn unfinished_bounded_outline_scan_cannot_prove_an_early_unique_hit() {
+        let dossier = crate::shell::tests::dossier();
+        let mut outline = dossier.outline.known().expect("fixture outline").clone();
+        let target = outline
+            .roots
+            .iter()
+            .find(|node| node.decl.name.as_ref() == "outline")
+            .expect("target")
+            .clone();
+        let filler = outline.roots[0].clone();
+        let mut roots = vec![target];
+        roots.extend(std::iter::repeat_n(filler, MAX_OUTLINE_SCAN_NODES));
+        outline.roots = roots.into();
+        let plan = Plan::build(
+            Arc::from("# index"),
+            Some(Arc::from([link("outline/struct.Outline.html", None, None)])),
+            Some(Arc::from([])),
+            Some(outline),
+            dossier.package,
+        );
+        assert!(matches!(plan.row(0), Outcome::Unavailable(_)));
+    }
+
+    #[test]
+    fn deep_outline_scan_stops_without_recursing() {
+        let dossier = crate::shell::tests::dossier();
+        let base = dossier.outline.known().expect("fixture outline").roots[0].clone();
+        let mut node = base.clone();
+        node.children = Arc::from([]);
+        for _ in 0..MAX_OUTLINE_DEPTH {
+            let mut parent = base.clone();
+            parent.children = Arc::from([node]);
+            node = parent;
+        }
+        let mut rustdocs = HashMap::from([(
+            RustdocKey {
+                modules: vec![],
+                name: "irrelevant".to_owned(),
+                kind: Some(DeclarationKind::Struct),
+            },
+            Hit::Unseen,
+        )]);
+        assert!(!observe_outline(
+            &[node],
+            &mut HashMap::new(),
+            &mut rustdocs
+        ));
     }
 
     #[test]
