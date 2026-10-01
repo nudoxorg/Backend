@@ -265,10 +265,11 @@ impl Shelf {
         let package = self.crumbs.package().cloned();
         let release_data =
             package.as_ref().and_then(|package| {
+                let (pin, compare_to) = release_address(route, package)?;
                 match crate::runtime::releases::get(
-                    package,
+                    &pin,
                     snapshot.key(),
-                    route.at().map(|at| at.as_str()),
+                    compare_to,
                     cx,
                 ) {
                     crate::runtime::releases::Read::Ready(data) => Some(data),
@@ -334,28 +335,20 @@ impl Shelf {
         let (Some(package), Some(krate)) = (package, diffs) else {
             return Rc::clone(&self.no_book);
         };
+        let Some((pinned, compare_to)) = release_address(route, package) else {
+            return Rc::clone(&self.no_book);
+        };
         let spelled = |version: &str| {
             crate::runtime::releases::spelled(krate, version)
                 .unwrap_or_else(|| version.to_owned().into())
         };
-        let pinned = match route {
-            Route::Package(route) => PackageRef::parse(route.package.as_str()).ok(),
-            Route::Symbol(route) => PackageRef::parse(route.package.as_str()).ok(),
-            Route::Orbit(_) | Route::World => None,
-        }
-        .filter(|routed| scope::book_of(routed) == scope::book_of(package))
-        .and_then(|package| package.version().map(str::to_owned));
-        let Some(pinned) = pinned else {
+        let Some(version) = pinned.release_version() else {
             return Rc::clone(&self.no_book);
         };
-        let to = route
-            .at()
-            .filter(|_| pinned_here(route, package))
-            .map(|at| spelled(at.as_str()));
         let key = BookKey {
             package: package.clone(),
-            from: spelled(&pinned),
-            to,
+            from: spelled(version),
+            to: compare_to.map(spelled),
         };
         if let Some((known, book)) = &self.book
             && *known == key
@@ -818,10 +811,21 @@ impl Shelf {
     }
 }
 
-/// Whether the reader is on the book `package` is (at any release of it).
-fn pinned_here(route: &Route, package: &PackageRef) -> bool {
-    crate::runtime::store::route_package(route)
-        .is_some_and(|reading| scope::book_of(&reading) == scope::book_of(package))
+/// The exact release whose comparison belongs to the shelf package. When the
+/// reader views another release, its route still names the pin. A hoisted
+/// unrelated package reads only its own release; a same-name package from a
+/// different registry never borrows the reader's pin or comparison.
+fn release_address<'a>(route: &'a Route, package: &PackageRef) -> Option<(PackageRef, Option<&'a str>)> {
+    if crate::runtime::store::route_package(route).as_ref() == Some(package) {
+        let pin = match route {
+            Route::Package(route) => PackageRef::parse(route.package.as_str()).ok()?,
+            Route::Symbol(route) => PackageRef::parse(route.package.as_str()).ok()?,
+            Route::Orbit(_) | Route::World => return None,
+        };
+        Some((pin, route.at().map(|at| at.as_str())))
+    } else {
+        Some((package.clone(), None))
+    }
 }
 
 impl Region for Shelf {
@@ -1000,4 +1004,41 @@ fn act(shelf: &gpui::WeakEntity<Shelf>, does: Do) -> Act {
     Rc::new(move |_: &mut Window, cx: &mut App| {
         let _ = shelf.update(cx, |shelf, cx| shelf.perform(&does, cx));
     })
+}
+
+#[cfg(test)]
+mod release_address_tests {
+    use super::release_address;
+    use crate::core::PackageId;
+    use crate::model::pages::PackageRef;
+    use crate::navigation::{PackageLane, PackageRoute, ReleaseId, Route};
+
+    #[test]
+    fn comparison_uses_only_the_exact_routes_pin_and_never_another_registry() {
+        let pin = "pkg:cargo/toml@0.8.23?repository_url=https%3A%2F%2Fone.example";
+        let route = Route::Package(PackageRoute {
+            project: None,
+            package: PackageId::new(pin).expect("qualified pin"),
+            lane: PackageLane::Overview,
+            selected: None,
+            at: Some(ReleaseId::new("1.1.6").expect("selected release")),
+        });
+        let viewed = crate::runtime::store::route_package(&route).expect("exact selected release");
+        let (source, compare_to) = release_address(&route, &viewed).expect("route source");
+        assert_eq!(source.as_str(), pin);
+        assert_eq!(compare_to, Some("1.1.6"));
+
+        let other = PackageRef::parse(
+            "pkg:cargo/toml@1.1.6?repository_url=https%3A%2F%2Ftwo.example",
+        )
+        .expect("different qualified source");
+        let (source, compare_to) = release_address(&route, &other).expect("independent book");
+        assert_eq!(source, other, "a same-name release cannot borrow this pin");
+        assert_eq!(compare_to, None, "no cross-source comparison is claimed");
+
+        let local = PackageRef::parse("/tmp/toml").expect("same-name local project");
+        let (source, compare_to) = release_address(&route, &local).expect("local book");
+        assert_eq!(source, local, "a local root cannot borrow registry evidence");
+        assert_eq!(compare_to, None);
+    }
 }
