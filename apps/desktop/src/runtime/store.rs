@@ -826,6 +826,7 @@ impl DataStore {
 
     /// The owner is starting (again): pages asked from now on are held.
     pub(crate) fn owner_starting(&mut self, cx: &mut Context<Self>) {
+        if self.owner.attachment_changed() { self.revoke_inflight(cx); }
         if self.owner.starting() {
             cx.notify();
         }

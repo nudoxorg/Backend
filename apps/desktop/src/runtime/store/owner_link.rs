@@ -88,14 +88,13 @@ impl OwnerLink {
         std::mem::take(&mut self.held)
     }
 
-    /// The owner is starting again: pages asked from now on are held. Whether
-    /// the phase moved (a serving owner is left alone).
+    /// The owner is starting again: pages asked from now on are held. A UI
+    /// watcher may observe this state without observing the preceding loss.
     pub(super) fn starting(&mut self) -> bool {
-        if self.is_serving() {
-            return false;
-        }
+        let moved = self.phase != OwnerPhase::Starting;
         self.phase = OwnerPhase::Starting;
-        true
+        self.served_epoch = None;
+        moved
     }
 
     /// "Try again" on a failed owner: asks it to start again (a starting one
@@ -128,5 +127,18 @@ mod tests {
         assert!(link.attachment_changed(), "the store must revoke old reads even when it only observes the final Ready");
         let _ = link.answered();
         assert!(!link.attachment_changed());
+    }
+
+    #[test]
+    fn a_starting_state_interrupts_serving_when_the_watcher_skips_the_failure() {
+        let gate = OwnerGate::ready(VersionedRoot::unserved(), ServiceMode::Attached);
+        let mut link = OwnerLink::behind(gate.clone());
+        assert!(link.is_serving());
+        gate.publish(OwnerState::Starting);
+        assert!(link.attachment_changed());
+        assert!(link.starting());
+        assert!(!link.is_serving());
+        link.hold(PageKey::Health);
+        assert_eq!(link.answered(), BTreeSet::from([PageKey::Health]));
     }
 }
