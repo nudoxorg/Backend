@@ -625,12 +625,14 @@ fn readme(
         let readme_links = dossier.readme_links.known().cloned();
         let headings = dossier.readme_headings.known().cloned();
         let outline = dossier.outline.known().cloned();
+        let exact = dossier.readme_exact_targets.known().cloned();
         let package = dossier.package.clone();
         let plan = cx.default_global::<readme_links::Cache>().get_or_build(
             Arc::clone(source),
             readme_links.clone(),
             headings.clone(),
             outline,
+            exact,
             package,
         );
         let restore_target = ctx.targets.left_by(place);
@@ -959,29 +961,6 @@ const fn hex(byte: u8) -> Option<u8> {
         b'A'..=b'F' => Some(byte - b'A' + 10),
         _ => None,
     }
-}
-
-fn rustdoc_item_name(stem: &str) -> (&str, Option<backend_library::DeclarationKind>) {
-    use backend_library::DeclarationKind as Kind;
-
-    [
-        ("struct.", Some(Kind::Struct)),
-        ("enum.", Some(Kind::Enum)),
-        ("trait.", Some(Kind::Trait)),
-        ("union.", Some(Kind::Union)),
-        ("type.", Some(Kind::Type)),
-        ("fn.", Some(Kind::Function)),
-        ("method.", Some(Kind::Method)),
-        ("associatedtype.", Some(Kind::Type)),
-        ("associatedconstant.", Some(Kind::Constant)),
-        ("macro.", Some(Kind::Macro)),
-        ("constant.", Some(Kind::Constant)),
-        ("static.", Some(Kind::Constant)),
-        ("mod.", Some(Kind::Module)),
-    ]
-    .into_iter()
-    .find_map(|(prefix, kind)| stem.strip_prefix(prefix).map(|name| (name, kind)))
-    .unwrap_or((stem, None))
 }
 
 fn route_page_key(route: &Route) -> Option<crate::model::pages::PageKey> {

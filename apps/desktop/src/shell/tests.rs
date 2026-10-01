@@ -179,6 +179,7 @@ pub(crate) fn dossier() -> PackageDossier {
         readme_markdown: Known::unknown(GapReason::NotCaptured, "fixture has no Markdown source"),
         readme_links: Known::unknown(GapReason::NotCaptured, "fixture has no link index"),
         readme_headings: Known::unknown(GapReason::NotCaptured, "fixture has no heading index"),
+        readme_exact_targets: Known::unknown(GapReason::NotCaptured, "fixture has no exact README targets"),
     }
 }
 

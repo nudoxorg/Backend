@@ -1,6 +1,6 @@
 //! The Package (Territory) board's read model: one package as a dossier.
 
-use super::common::{DeclRef, Known, PackageRef};
+use super::common::{DeclRef, Known, PackageRef, SymbolRef};
 use crate::model::local_package::{ReadmeBlock, ReadmeHeading, ReadmeLink};
 use std::sync::Arc;
 
@@ -36,6 +36,52 @@ pub struct PackageDossier {
     /// Heading identity index matching the Markdown block renderer.
     #[serde(default = "readme_headings_not_captured")]
     pub readme_headings: Known<Arc<[ReadmeHeading]>>,
+    /// Exact README declaration targets prepared on the page-read worker.
+    /// Runtime-only: a cold restored dossier has no current outline/readme
+    /// authority with which to claim these links still name that source.
+    #[serde(skip, default = "readme_exact_targets_not_captured")]
+    pub readme_exact_targets: Known<ReadmeExactTargets>,
+}
+
+/// Worker proof tying a bounded set of README actions to this exact loaded
+/// source, complete outline tree, and package authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReadmeExactTargets {
+    /// The package address used to prepare every target.
+    pub package: PackageRef,
+    /// The same immutable Markdown allocation carried by this dossier.
+    pub source: Arc<str>,
+    /// The same complete outline allocation carried by this dossier.
+    pub outline_roots: Arc<[OutlineNode]>,
+    /// Only uniquely resolved, worker-indexed semantic destinations.
+    pub links: Arc<[ReadmeExactTarget]>,
+}
+
+/// One exact declaration destination at a bounded README link position.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReadmeExactTarget {
+    /// Zero-based position in the worker's bounded Markdown link index.
+    pub link_index: u16,
+    /// Original destination, checked again when the page renders.
+    pub destination: Arc<str>,
+    /// Exact indexed declaration and its source intent.
+    pub kind: ReadmeExactKind,
+}
+
+/// An indexed Rustdoc declaration or exact source declaration at a line.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ReadmeExactKind {
+    /// Page route to the exact coordinate.
+    Rustdoc(SymbolRef),
+    /// Code route to the exact coordinate, tied to the verified local file.
+    Source {
+        /// Worker-verified editor hint from this link's local read.
+        path: Arc<str>,
+        /// One-based line observed in that link.
+        line: u32,
+        /// Exact coordinate at that path and line in the complete outline.
+        symbol: SymbolRef,
+    },
 }
 
 fn no_observed_dependents() -> Arc<[PackageRecord]> {
@@ -60,6 +106,13 @@ fn readme_headings_not_captured() -> Known<Arc<[ReadmeHeading]>> {
     Known::unknown(
         super::common::GapReason::NotCaptured,
         "README heading targets were not captured",
+    )
+}
+
+fn readme_exact_targets_not_captured() -> Known<ReadmeExactTargets> {
+    Known::unknown(
+        super::common::GapReason::NotCaptured,
+        "exact README declaration targets were not prepared for this live read",
     )
 }
 

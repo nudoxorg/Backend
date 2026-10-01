@@ -39,6 +39,69 @@ pub struct ReadmeHeading {
     pub level: u8,
 }
 
+/// Structural Rustdoc filename parsed without claiming a declaration.
+/// The page-read worker must prove it unique in a complete outline before
+/// the GUI may turn this into a route.
+pub(crate) struct RustdocLink<'a> {
+    pub modules: Vec<&'a str>,
+    pub name: &'a str,
+    pub kind: backend_library::DeclarationKind,
+}
+
+/// A typed Rustdoc item path; fragments, queries, bare index pages, and
+/// encoded or escaping paths have no exact declaration meaning here.
+pub(crate) fn rustdoc_link(destination: &str) -> Option<RustdocLink<'_>> {
+    if destination.is_empty()
+        || destination.len() > super::MAX_README_LINK_DESTINATION_BYTES
+        || destination.starts_with('/')
+        || destination.contains(['\\', '#', '?', '%'])
+        || destination
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+    {
+        return None;
+    }
+    let components: Vec<_> = destination.split('/').collect();
+    if components
+        .iter()
+        .any(|part| part.is_empty() || *part == "." || *part == ".." || part.contains(':'))
+    {
+        return None;
+    }
+    let stem = components.last()?.strip_suffix(".html")?;
+    let (name, kind) = rustdoc_item_name(stem)?;
+    Some(RustdocLink {
+        modules: components[..components.len() - 1].to_vec(),
+        name,
+        kind,
+    })
+}
+
+fn rustdoc_item_name(stem: &str) -> Option<(&str, backend_library::DeclarationKind)> {
+    use backend_library::DeclarationKind as Kind;
+    [
+        ("struct.", Kind::Struct),
+        ("enum.", Kind::Enum),
+        ("trait.", Kind::Trait),
+        ("union.", Kind::Union),
+        ("type.", Kind::Type),
+        ("fn.", Kind::Function),
+        ("method.", Kind::Method),
+        ("associatedtype.", Kind::Type),
+        ("associatedconstant.", Kind::Constant),
+        ("macro.", Kind::Macro),
+        ("constant.", Kind::Constant),
+        ("static.", Kind::Constant),
+        ("mod.", Kind::Module),
+    ]
+    .into_iter()
+    .find_map(|(prefix, kind)| {
+        stem.strip_prefix(prefix)
+            .filter(|name| !name.is_empty())
+            .map(|name| (name, kind))
+    })
+}
+
 const MAX_LINKS: usize = 512;
 const MAX_HEADINGS: usize = 512;
 const MAX_LINK_TEXT_BYTES: usize = 4 * 1024;

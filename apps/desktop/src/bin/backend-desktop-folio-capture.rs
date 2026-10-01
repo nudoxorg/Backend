@@ -250,6 +250,7 @@ fn dossier(package: &PackageRef) -> Option<PackageDossier> {
         readme_markdown: Known::Unknown(unknown(GapReason::NotCaptured)),
         readme_links: Known::Unknown(unknown(GapReason::NotCaptured)),
         readme_headings: Known::Unknown(unknown(GapReason::NotCaptured)),
+        readme_exact_targets: Known::Unknown(unknown(GapReason::NotCaptured)),
     })
 }
 

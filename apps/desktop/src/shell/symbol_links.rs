@@ -129,6 +129,7 @@ mod tests {
             readme_markdown: unknown(),
             readme_links: unknown(),
             readme_headings: unknown(),
+            readme_exact_targets: unknown(),
         }, root)
     }
 

@@ -6,14 +6,15 @@
 //! keeps the engine's availability distinctions: a reply that could not
 //! answer becomes a typed [`Gap`], never an empty list.
 
-use crate::model::local_package::{DependencyKind, LocalPackage, LocalPackageSource};
+use crate::model::local_package::{DependencyKind, LocalPackage, LocalPackageSource, ReadmeLink, rustdoc_link};
 use crate::model::pages::{
     AdvisorySummary, Arrival, ByteSpan, DeclFacts, DeclRef, Dependency, DependencyScope,
     Derivation, DocEntry, DocFragment, DocSection, DocSections, Downloads, Excerpt, FaultProgress, FileSpan, Gap, GapReason, HealthModel,
     IdentifierSpan, IndexedPackage, IngestModel, Known, LanguageProgress, LineSpan, MatchReason,
     Member, Members, MembersCoverage, MethodGroup, NameLinkCoverage, OrbitModel, OrbitProject,
     OutlineNode, OutlinePosition,
-    OutlineTree, PackageDossier, PackageRecord, PackageRef, Provenance, Readiness, Receiver,
+    OutlineTree, PackageDossier, PackageRecord, PackageRef, ReadmeExactKind, ReadmeExactTarget,
+    ReadmeExactTargets, Provenance, Readiness, Receiver,
     RecordSource, ReferenceScope, ReferenceSite, Relation, RelationKind, Rose, SearchContinuation,
     SearchPage, SearchRow, SignatureText, SignatureToken, SourceCoverage, SourceLocation,
     SourceOrigin,
@@ -29,7 +30,7 @@ use backend_library::{
     SymbolKey, ViewSnapshot,
 };
 use backend_present::{CoverageLine, Language, TokenKind};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
@@ -1980,6 +1981,32 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
         Ok(index) => Known::Known(index.tree()),
         Err(gap) => Known::Unknown(gap.clone()),
     };
+    let readme_exact_targets = match (inputs.local, inputs.outline.as_ref(), &outline) {
+        (Some(local), Ok(index), Known::Known(tree)) if index.is_complete() => {
+            local.readme_markdown.as_ref().map_or_else(
+                || {
+                    Known::unknown(
+                        GapReason::NotRecorded,
+                        "this package has no retained README source",
+                    )
+                },
+                |source| {
+                    Known::Known(prepare_readme_exact_targets(
+                        package,
+                        source,
+                        &local.readme_links,
+                        index,
+                        tree,
+                    ))
+                },
+            )
+        }
+        (Some(_), Ok(_), _) => {
+            Known::unknown(GapReason::Unknown, "the package outline is incomplete")
+        }
+        (Some(_), Err(gap), _) => Known::Unknown((*gap).clone()),
+        (None, _, _) => Known::Unknown(not_served("README exact declaration targets")),
+    };
     let readme = match inputs.local {
         Some(manifest) if !manifest.readme.is_empty() => Known::Known(Arc::clone(&manifest.readme)),
         Some(_) => Known::unknown(GapReason::NotRecorded, "the project has no README the manifest names"),
@@ -2009,7 +2036,118 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
             || Known::Unknown(not_served("README heading targets")),
             |manifest| Known::Known(Arc::clone(&manifest.readme_headings)),
         ),
+        readme_exact_targets,
     }
+}
+
+/// Resolves only worker-indexed, uniquely proved semantic destinations. The
+/// local source read and complete flat outline are already held by this read
+/// worker; no GUI paint or filesystem access participates in this lookup.
+fn prepare_readme_exact_targets(
+    package: &PackageRef,
+    source: &Arc<str>,
+    links: &[ReadmeLink],
+    index: &OutlineIndex,
+    tree: &OutlineTree,
+) -> ReadmeExactTargets {
+    const LIMIT: usize = 512;
+    let mut exact = Vec::new();
+    for (link_index, link) in links.iter().take(LIMIT).enumerate() {
+        let kind = if let Some(path) = link.local_file.as_deref() {
+            let line = link.line.unwrap_or(1);
+            let relative = std::path::Path::new(path)
+                .strip_prefix(package.as_str())
+                .ok()
+                .map(|relative| relative.to_string_lossy().replace('\\', "/"));
+            relative.and_then(|relative| {
+                let mut candidates = index.rows.iter().filter(|row| {
+                    row.source.captured().is_some_and(|site| {
+                        site.path() == relative.as_str() && site.start_line() == line
+                    })
+                });
+                let first = candidates.next()?;
+                if line == 0 || candidates.next().is_some() {
+                    return None;
+                }
+                let decl = DeclRef::from_row(first)?;
+                (decl.path.as_deref() == Some(relative.as_str())
+                    && decl.line == Some(line)
+                    && decl
+                        .coordinate
+                        .as_str()
+                        .strip_prefix(package.as_str())
+                        .is_some_and(|rest| rest.starts_with("::")))
+                .then_some(ReadmeExactKind::Source {
+                    path: Arc::from(path),
+                    line,
+                    symbol: decl.coordinate,
+                })
+            })
+        } else {
+            rustdoc_link(link.destination.as_ref()).and_then(|parsed| {
+                let rows = index.by_name.get(parsed.name)?;
+                let mut found = None;
+                for row_index in rows {
+                    let row = &index.rows[*row_index];
+                    if row.kind.is_some_and(|kind| kind != parsed.kind) {
+                        continue;
+                    }
+                    let modules = checked_readme_module_path(index, row)?;
+                    if modules
+                        .iter()
+                        .map(String::as_str)
+                        .eq(parsed.modules.iter().copied())
+                    {
+                        if found.is_some() || row.kind.is_none() {
+                            return None;
+                        }
+                        found = Some(row);
+                    }
+                }
+                let decl = DeclRef::from_row(found?)?;
+                let in_package = decl.coordinate
+                    .as_str()
+                    .strip_prefix(package.as_str())
+                    .is_some_and(|rest| rest.starts_with("::"));
+                in_package.then_some(ReadmeExactKind::Rustdoc(decl.coordinate))
+            })
+        };
+        if let Some(kind) = kind {
+            if let Ok(link_index) = u16::try_from(link_index) {
+                exact.push(ReadmeExactTarget {
+                    link_index,
+                    destination: Arc::clone(&link.destination),
+                    kind,
+                });
+            }
+        }
+    }
+    ReadmeExactTargets {
+        package: package.clone(),
+        source: Arc::clone(source),
+        outline_roots: Arc::clone(&tree.roots),
+        links: exact.into(),
+    }
+}
+
+/// The exact module ancestry of one flat owner row. A missing parent, cycle,
+/// or unreadable module makes an apparent Rustdoc match unprovable.
+fn checked_readme_module_path(index: &OutlineIndex, row: &Row) -> Option<Vec<String>> {
+    let mut modules = Vec::new();
+    let mut seen = HashSet::new();
+    let mut parent = row.parent;
+    while let Some(key) = parent {
+        if !seen.insert(key) || seen.len() > index.rows.len() {
+            return None;
+        }
+        let ancestor = index.row(key)?;
+        if ancestor.kind == Some(DeclarationKind::Module) {
+            modules.push(DeclRef::from_row(ancestor)?.name.to_string());
+        }
+        parent = ancestor.parent;
+    }
+    modules.reverse();
+    Some(modules)
 }
 
 // ---------------------------------------------------------------------------
@@ -2346,6 +2484,163 @@ mod tests {
             RowSpec { label: identity.clone(), kind: DeclarationKind::Struct, signature: Some("pub struct Identity"), parent: Some(&identity_module), doc: Some("One parsed row identity."), site: Some(("identity.rs", 339)) },
         ];
         specs.iter().map(row).collect()
+    }
+
+    #[test]
+    fn readme_worker_prepares_only_exact_complete_outline_destinations() {
+        let package = PackageRef::parse(PRESENT).expect("local package");
+        let module = present("src/lib.rs:1::api");
+        let widget = present("src/lib.rs:7::Widget");
+        let rows = vec![
+            row(&RowSpec {
+                label: module.clone(),
+                kind: DeclarationKind::Module,
+                signature: None,
+                parent: None,
+                doc: None,
+                site: Some(("src/lib.rs", 1)),
+            }),
+            row(&RowSpec {
+                label: widget.clone(),
+                kind: DeclarationKind::Struct,
+                signature: None,
+                parent: Some(&module),
+                doc: None,
+                site: Some(("src/lib.rs", 7)),
+            }),
+        ];
+        let index = OutlineIndex::new(rows.clone(), true);
+        let tree = index.tree();
+        let source: Arc<str> = Arc::from("[item](api/struct.Widget.html) [code](src/lib.rs#L7)");
+        let links = [
+            ReadmeLink {
+                label: Arc::from("item"),
+                destination: Arc::from("api/struct.Widget.html"),
+                local_file: None,
+                line: None,
+            },
+            ReadmeLink {
+                label: Arc::from("code"),
+                destination: Arc::from("src/lib.rs#L7"),
+                local_file: Some(Arc::from(format!("{PRESENT}/src/lib.rs"))),
+                line: Some(7),
+            },
+        ];
+        let exact = prepare_readme_exact_targets(&package, &source, &links, &index, &tree);
+        assert_eq!(exact.links.len(), 2);
+        assert!(
+            matches!(&exact.links[0].kind, ReadmeExactKind::Rustdoc(symbol) if symbol.as_str() == widget)
+        );
+        assert!(
+            matches!(&exact.links[1].kind, ReadmeExactKind::Source { path, line: 7, symbol } if path.as_ref() == format!("{PRESENT}/src/lib.rs") && symbol.as_str() == widget)
+        );
+
+        let mut ambiguous = rows;
+        ambiguous.push(row(&RowSpec {
+            label: present("src/other.rs:7::Widget"),
+            kind: DeclarationKind::Struct,
+            signature: None,
+            parent: Some(&module),
+            doc: None,
+            site: Some(("src/other.rs", 7)),
+        }));
+        let ambiguous = OutlineIndex::new(ambiguous, true);
+        let exact =
+            prepare_readme_exact_targets(&package, &source, &links, &ambiguous, &ambiguous.tree());
+        assert_eq!(
+            exact.links.len(),
+            1,
+            "same-named Rustdoc targets cannot pick one"
+        );
+        assert_eq!(
+            exact.links[0].link_index, 1,
+            "exact source path still resolves"
+        );
+
+        let unknown_kind = OutlineIndex::new(vec![
+            row(&RowSpec { label: module.clone(), kind: DeclarationKind::Module, signature: None, parent: None, doc: None, site: Some(("src/lib.rs", 1)) }),
+            row(&RowSpec { label: widget, kind: DeclarationKind::Struct, signature: None, parent: Some(&module), doc: None, site: Some(("src/lib.rs", 7)) }),
+            Row::new(RowId::Symbol(key(&present("src/unknown.rs:9::Widget"))), basis(), present("src/unknown.rs:9::Widget")).with_parent(key(&module)),
+        ], true);
+        let exact = prepare_readme_exact_targets(&package, &source, &links, &unknown_kind, &unknown_kind.tree());
+        assert_eq!(exact.links.len(), 1, "untyped same-name rows also block Rustdoc proof");
+    }
+
+    #[test]
+    fn readme_worker_finds_a_declaration_beyond_the_old_ui_outline_limit() {
+        let package = PackageRef::parse(PRESENT).expect("local package");
+        let module = present("src/lib.rs:1::api");
+        let mut rows = vec![row(&RowSpec {
+            label: module.clone(),
+            kind: DeclarationKind::Module,
+            signature: None,
+            parent: None,
+            doc: None,
+            site: Some(("src/lib.rs", 1)),
+        })];
+        for number in 0..8_200 {
+            rows.push(row(&RowSpec {
+                label: present(&format!("src/lib.rs:{}::Other{number}", number + 2)),
+                kind: DeclarationKind::Struct,
+                signature: None,
+                parent: Some(&module),
+                doc: None,
+                site: None,
+            }));
+        }
+        let widget = present("src/lib.rs:9000::Widget");
+        rows.push(row(&RowSpec {
+            label: widget.clone(),
+            kind: DeclarationKind::Struct,
+            signature: None,
+            parent: Some(&module),
+            doc: None,
+            site: Some(("src/lib.rs", 9_000)),
+        }));
+        let index = OutlineIndex::new(rows, true);
+        let source: Arc<str> = Arc::from("[item](api/struct.Widget.html)");
+        let links = [ReadmeLink {
+            label: Arc::from("item"),
+            destination: Arc::from("api/struct.Widget.html"),
+            local_file: None,
+            line: None,
+        }];
+        let exact = prepare_readme_exact_targets(&package, &source, &links, &index, &index.tree());
+        assert!(
+            matches!(&exact.links[0].kind, ReadmeExactKind::Rustdoc(symbol) if symbol.as_str() == widget)
+        );
+    }
+
+    #[test]
+    fn readme_exact_targets_require_live_complete_outline_and_drop_on_restore() {
+        let package = PackageRef::parse(PRESENT).expect("local package");
+        let module = present("src/lib.rs:1::api");
+        let rows = vec![
+            row(&RowSpec { label: module.clone(), kind: DeclarationKind::Module, signature: None, parent: None, doc: None, site: Some(("src/lib.rs", 1)) }),
+            row(&RowSpec { label: present("src/lib.rs:7::Widget"), kind: DeclarationKind::Struct, signature: None, parent: Some(&module), doc: None, site: Some(("src/lib.rs", 7)) }),
+        ];
+        let local = LocalPackage {
+            project: crate::core::LocalProjectId::new(PRESENT).expect("project"),
+            source: LocalPackageSource::Readme,
+            name: Arc::from("backend-present"), version: None, description: None,
+            license: None, rust_version: None, repository: None, homepage: None,
+            documentation: None, keywords: Arc::from([]), categories: Arc::from([]),
+            readme: Arc::from([]),
+            readme_markdown: Some(Arc::from("[item](api/struct.Widget.html)")),
+            readme_links: Arc::from([ReadmeLink { label: Arc::from("item"), destination: Arc::from("api/struct.Widget.html"), local_file: None, line: None }]),
+            readme_headings: Arc::from([]), dependencies: Arc::from([]), features: Arc::from([]), members: 0,
+        };
+        let failure = no_semantics();
+        let complete = OutlineIndex::new(rows.clone(), true);
+        let live = package_dossier(&PackageInputs { package: &package, records: Err(&failure), versions: Err(&failure), dependencies: Err(&failure), dependents: Err(&failure), outline: Ok(&complete), local: Some(&local) });
+        assert_eq!(live.readme_exact_targets.known().map(|proof| proof.links.len()), Some(1));
+        let wire = serde_json::to_string(&live).expect("save dossier");
+        let restored: PackageDossier = serde_json::from_str(&wire).expect("restore dossier");
+        assert_eq!(restored.readme_exact_targets.gap().map(|gap| gap.reason), Some(GapReason::NotCaptured));
+
+        let partial = OutlineIndex::new(rows, false);
+        let live = package_dossier(&PackageInputs { package: &package, records: Err(&failure), versions: Err(&failure), dependencies: Err(&failure), dependents: Err(&failure), outline: Ok(&partial), local: Some(&local) });
+        assert!(live.readme_exact_targets.known().is_none(), "partial outline cannot prove name uniqueness");
     }
 
     #[test]

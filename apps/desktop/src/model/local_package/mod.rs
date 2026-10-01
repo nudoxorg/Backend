@@ -30,6 +30,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub use readme::{ReadmeBlock, ReadmeHeading, ReadmeLink};
+pub(crate) use readme::rustdoc_link;
 
 /// Normalizes a Markdown heading fragment using the README index's spelling.
 pub(crate) fn readme_fragment_slug(value: &str) -> String {

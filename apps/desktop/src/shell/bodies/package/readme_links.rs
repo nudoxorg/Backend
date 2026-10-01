@@ -2,14 +2,13 @@
 //! The Markdown component owns parsing and hit testing. This plan only turns
 //! worker-indexed destinations into actions, once per loaded page identity.
 
-use super::{decode_fragment, hex, rustdoc_item_name};
-use crate::model::local_package::{ReadmeHeading, ReadmeLink, readme_fragment_slug};
-use crate::model::pages::{OutlineNode, OutlineTree, PackageRef, SymbolRef};
+use super::{decode_fragment, hex};
+use crate::model::local_package::{ReadmeHeading, ReadmeLink, readme_fragment_slug, rustdoc_link};
+use crate::model::pages::{OutlineTree, PackageRef, ReadmeExactKind, ReadmeExactTargets};
 use crate::navigation::{Route, View};
-use backend_library::DeclarationKind;
 use gpui::{Global, SharedString};
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -17,8 +16,6 @@ const UNINDEXED: &str = "This README link was not included in the available link
 const UNAVAILABLE: &str = "This link has no verified destination in this package.";
 const MAX_INDEXED_LINKS: usize = 512;
 const MAX_INDEXED_HEADINGS: usize = 512;
-const MAX_OUTLINE_SCAN_NODES: usize = 8_192;
-const MAX_OUTLINE_DEPTH: usize = 64;
 
 #[derive(Clone, Debug)]
 pub(super) enum Outcome {
@@ -38,54 +35,14 @@ impl Outcome {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct FileKey {
-    path: String,
-    line: u32,
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct RustdocKey {
-    modules: Vec<String>,
-    name: String,
-    kind: Option<DeclarationKind>,
-}
-
-#[derive(Clone, Debug)]
-enum Hit {
-    Unseen,
-    Unique(SymbolRef),
-    Ambiguous,
-}
-
 type HeadingHit = Option<ReadmeHeading>;
-
-impl Hit {
-    fn observe(&mut self, symbol: &SymbolRef) {
-        *self = match self {
-            Self::Unseen => Self::Unique(symbol.clone()),
-            _ => Self::Ambiguous,
-        };
-    }
-
-    fn unique(&self) -> Option<&SymbolRef> {
-        match self {
-            Self::Unique(symbol) => Some(symbol),
-            Self::Unseen | Self::Ambiguous => None,
-        }
-    }
-}
 
 #[derive(Clone, Debug)]
 enum Candidate {
     External(Arc<str>),
     Anchor(String),
-    File {
-        path: Arc<str>,
-        line: u32,
-        key: FileKey,
-    },
-    Rustdoc(RustdocKey),
+    File { path: Arc<str>, line: u32 },
+    Rustdoc,
     Route(Route),
     Unavailable(&'static str),
 }
@@ -97,6 +54,7 @@ pub(super) struct Plan {
     links: Option<Arc<[ReadmeLink]>>,
     headings: Option<Arc<[ReadmeHeading]>>,
     outline: Option<OutlineTree>,
+    exact: Option<ReadmeExactTargets>,
     package: PackageRef,
     outcomes: Vec<Outcome>,
     by_destination: HashMap<Arc<str>, Outcome>,
@@ -113,6 +71,7 @@ impl Plan {
         links: Option<&Arc<[ReadmeLink]>>,
         headings: Option<&Arc<[ReadmeHeading]>>,
         outline: Option<&OutlineTree>,
+        exact: Option<&ReadmeExactTargets>,
         package: &PackageRef,
     ) -> bool {
         Arc::ptr_eq(&self.source, source)
@@ -120,6 +79,11 @@ impl Plan {
             && option_arc_eq(self.headings.as_ref(), headings)
             && match (&self.outline, outline) {
                 (Some(a), Some(b)) => a.complete == b.complete && Arc::ptr_eq(&a.roots, &b.roots),
+                (None, None) => true,
+                _ => false,
+            }
+            && match (&self.exact, exact) {
+                (Some(a), Some(b)) => Arc::ptr_eq(&a.links, &b.links),
                 (None, None) => true,
                 _ => false,
             }
@@ -131,6 +95,7 @@ impl Plan {
         links: Option<Arc<[ReadmeLink]>>,
         headings: Option<Arc<[ReadmeHeading]>>,
         outline: Option<OutlineTree>,
+        exact: Option<ReadmeExactTargets>,
         package: PackageRef,
     ) -> Self {
         let mut by_heading: HashMap<Arc<str>, HeadingHit> = HashMap::new();
@@ -148,33 +113,48 @@ impl Plan {
             .flat_map(|links| links.iter().take(MAX_INDEXED_LINKS))
             .map(|link| candidate(link.destination.as_ref(), Some(link), &package))
             .collect();
-        let mut files = HashMap::new();
-        let mut rustdocs = HashMap::new();
-        if outline.as_ref().is_some_and(|outline| outline.complete) {
-            for candidate in &candidates {
-                match candidate {
-                    Candidate::File { key, .. } => {
-                        files.entry(key.clone()).or_insert(Hit::Unseen);
+        let mut exact_by_index: HashMap<usize, Option<ReadmeExactKind>> = HashMap::new();
+        if let Some(proof) = exact.as_ref().filter(|proof| {
+            proof.package == package
+                && Arc::ptr_eq(&proof.source, &source)
+                && outline.as_ref().is_some_and(|outline| {
+                    outline.complete && Arc::ptr_eq(&proof.outline_roots, &outline.roots)
+                })
+        }) {
+            for entry in proof.links.iter().take(MAX_INDEXED_LINKS) {
+                let index = usize::from(entry.link_index);
+                let Some(link) = links.as_ref().and_then(|links| links.get(index)) else {
+                    continue;
+                };
+                if link.destination != entry.destination
+                    || !match &entry.kind {
+                        ReadmeExactKind::Source { path, line, .. } => {
+                            *line > 0
+                                && link.local_file.as_ref() == Some(path)
+                                && link.line.unwrap_or(1) == *line
+                        }
+                        ReadmeExactKind::Rustdoc(_) => link.local_file.is_none(),
                     }
-                    Candidate::Rustdoc(key) => {
-                        rustdocs.entry(key.clone()).or_insert(Hit::Unseen);
-                    }
-                    _ => {}
+                {
+                    continue;
                 }
-            }
-            if (!files.is_empty() || !rustdocs.is_empty())
-                && let Some(outline) = &outline
-                && !observe_outline(&outline.roots, &mut files, &mut rustdocs)
-            {
-                // Uniqueness requires the entire published outline. A scan
-                // budget stop cannot turn an early positive hit into proof.
-                files.values_mut().for_each(|hit| *hit = Hit::Unseen);
-                rustdocs.values_mut().for_each(|hit| *hit = Hit::Unseen);
+                exact_by_index
+                    .entry(index)
+                    .and_modify(|hit| *hit = None)
+                    .or_insert_with(|| Some(entry.kind.clone()));
             }
         }
         let outcomes: Vec<_> = candidates
             .into_iter()
-            .map(|candidate| resolve(candidate, &by_heading, &files, &rustdocs, &package))
+            .enumerate()
+            .map(|(index, candidate)| {
+                resolve(
+                    candidate,
+                    &by_heading,
+                    exact_by_index.get(&index).and_then(Option::as_ref),
+                    &package,
+                )
+            })
             .collect();
         let by_destination = links
             .iter()
@@ -187,6 +167,7 @@ impl Plan {
             links,
             headings,
             outline,
+            exact,
             package,
             outcomes,
             by_destination,
@@ -305,6 +286,7 @@ impl Cache {
         links: Option<Arc<[ReadmeLink]>>,
         headings: Option<Arc<[ReadmeHeading]>>,
         outline: Option<OutlineTree>,
+        exact: Option<ReadmeExactTargets>,
         package: PackageRef,
     ) -> Rc<Plan> {
         if let Some(plan) = &self.0
@@ -313,12 +295,15 @@ impl Cache {
                 links.as_ref(),
                 headings.as_ref(),
                 outline.as_ref(),
+                exact.as_ref(),
                 &package,
             )
         {
             return Rc::clone(plan);
         }
-        let plan = Rc::new(Plan::build(source, links, headings, outline, package));
+        let plan = Rc::new(Plan::build(
+            source, links, headings, outline, exact, package,
+        ));
         self.0 = Some(Rc::clone(&plan));
         plan
     }
@@ -381,16 +366,15 @@ fn candidate(destination: &str, indexed: Option<&ReadmeLink>, package: &PackageR
         if line == 0 {
             return Candidate::Unavailable("This file link has no valid one-based line.");
         }
-        let Ok(relative) = std::path::Path::new(path).strip_prefix(package.as_str()) else {
+        if std::path::Path::new(path)
+            .strip_prefix(package.as_str())
+            .is_err()
+        {
             return Candidate::Unavailable(UNAVAILABLE);
-        };
+        }
         return Candidate::File {
             path: Arc::from(path),
             line,
-            key: FileKey {
-                path: relative.to_string_lossy().replace('\\', "/"),
-                line,
-            },
         };
     }
     if destination.contains(['#', '?']) {
@@ -398,35 +382,10 @@ fn candidate(destination: &str, indexed: Option<&ReadmeLink>, package: &PackageR
             "This Rustdoc fragment or query is not an exact indexed declaration.",
         );
     }
-    let path = destination;
-    if path.starts_with('/')
-        || path.contains('\\')
-        || path.contains('%')
-        || path
-            .split('/')
-            .any(|part| part.is_empty() || part == "." || part == "..")
-    {
-        return Candidate::Unavailable(UNAVAILABLE);
-    }
-    let components: Vec<_> = path.split('/').collect();
-    let Some(stem) = components
-        .last()
-        .and_then(|leaf| leaf.strip_suffix(".html"))
-    else {
-        return Candidate::Unavailable(UNAVAILABLE);
-    };
-    let (name, kind) = rustdoc_item_name(stem);
-    if kind.is_none() || name.is_empty() {
+    if rustdoc_link(destination).is_none() {
         return Candidate::Unavailable("This Rustdoc page is not an exact declaration link.");
     }
-    Candidate::Rustdoc(RustdocKey {
-        modules: components[..components.len() - 1]
-            .iter()
-            .map(|part| (*part).to_owned())
-            .collect(),
-        name: name.to_owned(),
-        kind,
-    })
+    Candidate::Rustdoc
 }
 
 fn valid_external(destination: &str, lower: &str) -> bool {
@@ -480,93 +439,10 @@ fn valid_line_fragment(fragment: &str, line: u32) -> bool {
         })
 }
 
-fn observe_outline(
-    nodes: &[OutlineNode],
-    files: &mut HashMap<FileKey, Hit>,
-    rustdocs: &mut HashMap<RustdocKey, Hit>,
-) -> bool {
-    struct Frame<'a> {
-        nodes: &'a [OutlineNode],
-        next: usize,
-        pop_module: bool,
-    }
-    let mut frames = vec![Frame {
-        nodes,
-        next: 0,
-        pop_module: false,
-    }];
-    let file_paths: HashSet<String> = files.keys().map(|key| key.path.clone()).collect();
-    let rustdoc_modules: HashSet<Vec<String>> =
-        rustdocs.keys().map(|key| key.modules.clone()).collect();
-    let mut modules = Vec::<String>::new();
-    let mut seen = 0usize;
-    loop {
-        let Some(frame) = frames.last_mut() else {
-            break;
-        };
-        if frame.next == frame.nodes.len() {
-            let pop_module = frame.pop_module;
-            frames.pop();
-            if pop_module {
-                modules.pop();
-            }
-            continue;
-        }
-        if seen == MAX_OUTLINE_SCAN_NODES {
-            return false;
-        }
-        let nodes = frame.nodes;
-        let index = frame.next;
-        frame.next += 1;
-        let node = &nodes[index];
-        seen += 1;
-        if let (Some(path), Some(line)) = (node.decl.path.as_deref(), node.decl.line)
-            && file_paths.contains(path)
-            && let Some(hit) = files.get_mut(&FileKey {
-                path: path.to_owned(),
-                line,
-            })
-        {
-            hit.observe(&node.decl.coordinate);
-        }
-        if rustdoc_modules.contains(modules.as_slice()) {
-            for kind in [node.decl.kind, None] {
-                let key = RustdocKey {
-                    modules: modules.clone(),
-                    name: node.decl.name.to_string(),
-                    kind,
-                };
-                if let Some(hit) = rustdocs.get_mut(&key) {
-                    hit.observe(&node.decl.coordinate);
-                }
-                if kind.is_none() {
-                    break;
-                }
-            }
-        }
-        if !node.children.is_empty() {
-            if frames.len() == MAX_OUTLINE_DEPTH {
-                return false;
-            }
-            let is_module = node.decl.kind == Some(DeclarationKind::Module);
-            if is_module {
-                modules.push(node.decl.name.to_string());
-            }
-            frames.push(Frame {
-                nodes: &node.children,
-                next: 0,
-                pop_module: is_module,
-            });
-        }
-    }
-    true
-}
-
 fn resolve(
     candidate: Candidate,
     headings: &HashMap<Arc<str>, HeadingHit>,
-    files: &HashMap<FileKey, Hit>,
-    rustdocs: &HashMap<RustdocKey, Hit>,
+    exact: Option<&ReadmeExactKind>,
     package: &PackageRef,
 ) -> Outcome {
     match candidate {
@@ -579,28 +455,27 @@ fn resolve(
                 Outcome::Unavailable("This heading is not in the available README index."),
                 Outcome::Anchor,
             ),
-        Candidate::File { path, line, key } => files
-            .get(&key)
-            .and_then(Hit::unique)
-            .and_then(|symbol| {
-                crate::shell::kit::symbol_view_route(
-                    package.as_str(),
-                    symbol,
-                    View::Code,
-                    Some(line),
-                )
-            })
+        Candidate::File { path, line } => match exact {
+            Some(ReadmeExactKind::Source { symbol, .. }) => crate::shell::kit::symbol_view_route(
+                package.as_str(),
+                symbol,
+                View::Code,
+                Some(line),
+            )
             .map_or(Outcome::File { path, line }, Outcome::Route),
-        Candidate::Rustdoc(key) => rustdocs
-            .get(&key)
-            .and_then(Hit::unique)
-            .and_then(|symbol| crate::shell::kit::symbol_route(package.as_str(), symbol))
-            .map_or(
-                Outcome::Unavailable(
-                    "This Rustdoc declaration is not uniquely present in the complete outline.",
-                ),
-                Outcome::Route,
+            _ => Outcome::File { path, line },
+        },
+        Candidate::Rustdoc => match exact {
+            Some(ReadmeExactKind::Rustdoc(symbol)) => {
+                crate::shell::kit::symbol_route(package.as_str(), symbol).map_or(
+                    Outcome::Unavailable("This Rustdoc declaration cannot be routed."),
+                    Outcome::Route,
+                )
+            }
+            _ => Outcome::Unavailable(
+                "This Rustdoc declaration is not uniquely proved by the current complete outline.",
             ),
+        },
         Candidate::Route(route) => Outcome::Route(route),
         Candidate::Unavailable(reason) => Outcome::Unavailable(reason),
     }
@@ -625,6 +500,7 @@ mod tests {
             Arc::from("# indexed"),
             Some(links.into()),
             Some(headings.into()),
+            None,
             None,
             package,
         )
@@ -702,88 +578,58 @@ mod tests {
     }
 
     #[test]
-    fn exact_rustdoc_route_requires_complete_unique_outline() {
+    fn exact_rustdoc_route_requires_matching_worker_proof() {
         let dossier = crate::shell::tests::dossier();
-        let links: Arc<[ReadmeLink]> = vec![
-            link("outline/struct.Outline.html", None, None),
-            link("outline/struct.Outline.html#method", None, None),
-            link("missing/struct.Outline.html", None, None),
-            link("outline/index.html", None, None),
-            link("struct.RelationLabel.html", None, None),
-        ]
-        .into();
+        let package = dossier.package;
+        let outline = dossier.outline.known().expect("fixture outline").clone();
+        let symbol = outline
+            .walk()
+            .find(|node| node.decl.name.as_ref() == "Outline")
+            .expect("exact fixture declaration")
+            .decl
+            .coordinate
+            .clone();
+        let source: Arc<str> = Arc::from("# index");
+        let links: Arc<[ReadmeLink]> = Arc::from([link("outline/struct.Outline.html", None, None)]);
+        let exact = ReadmeExactTargets {
+            package: package.clone(),
+            source: Arc::clone(&source),
+            outline_roots: Arc::clone(&outline.roots),
+            links: Arc::from([crate::model::pages::ReadmeExactTarget {
+                link_index: 0,
+                destination: Arc::from("outline/struct.Outline.html"),
+                kind: ReadmeExactKind::Rustdoc(symbol),
+            }]),
+        };
         let complete = Plan::build(
+            Arc::clone(&source),
+            Some(Arc::clone(&links)),
+            Some(Arc::from([])),
+            Some(outline.clone()),
+            Some(exact.clone()),
+            package.clone(),
+        );
+        assert!(matches!(complete.row(0), Outcome::Route(Route::Symbol(_))));
+        let stale = Plan::build(
             Arc::from("# index"),
             Some(Arc::clone(&links)),
             Some(Arc::from([])),
-            dossier.outline.known().cloned(),
-            dossier.package.clone(),
+            Some(outline.clone()),
+            Some(exact.clone()),
+            package.clone(),
         );
-        assert!(matches!(complete.row(0), Outcome::Route(Route::Symbol(_))));
-        assert!(matches!(complete.row(1), Outcome::Unavailable(_)));
-        assert!(matches!(complete.row(2), Outcome::Unavailable(_)));
-        assert!(matches!(complete.row(3), Outcome::Unavailable(_)));
-        assert!(matches!(complete.row(4), Outcome::Unavailable(_)));
-        let mut partial = dossier.outline.known().expect("fixture outline").clone();
+        assert!(matches!(stale.row(0), Outcome::Unavailable(_)));
+        let mut partial = outline;
         partial.complete = false;
         let partial = Plan::build(
-            Arc::from("# index"),
+            source,
             Some(links),
             Some(Arc::from([])),
             Some(partial),
-            dossier.package,
+            Some(exact),
+            package,
         );
         assert!(matches!(partial.row(0), Outcome::Unavailable(_)));
-    }
-
-    #[test]
-    fn unfinished_bounded_outline_scan_cannot_prove_an_early_unique_hit() {
-        let dossier = crate::shell::tests::dossier();
-        let mut outline = dossier.outline.known().expect("fixture outline").clone();
-        let target = outline
-            .roots
-            .iter()
-            .find(|node| node.decl.name.as_ref() == "outline")
-            .expect("target")
-            .clone();
-        let filler = outline.roots[0].clone();
-        let mut roots = vec![target];
-        roots.extend(std::iter::repeat_n(filler, MAX_OUTLINE_SCAN_NODES));
-        outline.roots = roots.into();
-        let plan = Plan::build(
-            Arc::from("# index"),
-            Some(Arc::from([link("outline/struct.Outline.html", None, None)])),
-            Some(Arc::from([])),
-            Some(outline),
-            dossier.package,
-        );
-        assert!(matches!(plan.row(0), Outcome::Unavailable(_)));
-    }
-
-    #[test]
-    fn deep_outline_scan_stops_without_recursing() {
-        let dossier = crate::shell::tests::dossier();
-        let base = dossier.outline.known().expect("fixture outline").roots[0].clone();
-        let mut node = base.clone();
-        node.children = Arc::from([]);
-        for _ in 0..MAX_OUTLINE_DEPTH {
-            let mut parent = base.clone();
-            parent.children = Arc::from([node]);
-            node = parent;
-        }
-        let mut rustdocs = HashMap::from([(
-            RustdocKey {
-                modules: vec![],
-                name: "irrelevant".to_owned(),
-                kind: Some(DeclarationKind::Struct),
-            },
-            Hit::Unseen,
-        )]);
-        assert!(!observe_outline(
-            &[node],
-            &mut HashMap::new(),
-            &mut rustdocs
-        ));
     }
 
     #[test]
@@ -791,6 +637,7 @@ mod tests {
         let package = crate::shell::tests::dossier().package;
         let plan = Plan::build(
             Arc::from("[link](https://example.test)"),
+            None,
             None,
             None,
             None,
@@ -817,9 +664,10 @@ mod tests {
             Some(Arc::clone(&links)),
             Some(Arc::clone(&headings)),
             None,
+            None,
             package.clone(),
         );
-        assert!(plan.matches(&source, Some(&links), Some(&headings), None, &package));
+        assert!(plan.matches(&source, Some(&links), Some(&headings), None, None, &package));
         assert_eq!(plan.shown_links(), 32);
         plan.show_more_links();
         assert_eq!(plan.shown_links(), 64);
@@ -832,6 +680,7 @@ mod tests {
             &Arc::from("# index"),
             Some(&links),
             Some(&headings),
+            None,
             None,
             &package
         ));
