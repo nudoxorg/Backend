@@ -96,7 +96,7 @@ pub(crate) fn install_test_fixtures(crates: &[Crate], cx: &mut App) {
             })),
         );
     }
-    cx.set_global(TestReleaseReads(fixtures));
+    cx.set_global(fixtures);
 }
 
 /// Forces one exact pinned-package/viewed-release request to exercise the
