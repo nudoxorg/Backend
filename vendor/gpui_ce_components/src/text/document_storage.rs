@@ -280,7 +280,7 @@ impl BlockSequence {
         };
     }
     pub(crate) fn iter(&self) -> impl Iterator<Item = &BlockNode> {
-        (0..self.len()).map(|index| &self[index])
+        (0..self.len()).map(move |index| &self[index])
     }
     pub(crate) fn into_vec(self) -> Vec<BlockNode> {
         self.iter().cloned().collect()
