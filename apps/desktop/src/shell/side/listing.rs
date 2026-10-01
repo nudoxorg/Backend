@@ -339,7 +339,7 @@ fn library(inputs: &Inputs<'_>) -> Listing {
     // row already opens it. The title reports the full indexed package count,
     // as Orbit's arrival sentence does; Contents still counts mounted rows.
     let packages = indexed.map(<[_]>::len);
-    let all_packages = inputs.orbit.and_then(|model| model.indexed.known().map(<[_]>::len));
+    let all_packages = inputs.orbit.and_then(|model| model.indexed.known().map(|list| list.len()));
     let projects = workspace.projects.len();
     let detail = match all_packages {
         Some(packages) => format!(
