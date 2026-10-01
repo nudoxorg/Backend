@@ -828,7 +828,10 @@ mod tests {
             assert!(!focus.is_focused(window));
         });
         let sibling_bounds = cx.debug_bounds("active-sibling").unwrap();
-        assert!(sibling_bounds.contains(&point(px(150.), px(20.))));
+        assert!(
+            sibling_bounds.contains(&point(px(150.), px(20.))),
+            "outside sibling bounds were {sibling_bounds:?}"
+        );
         cx.simulate_click(point(px(150.), px(20.)), Default::default());
         assert_eq!(events.sibling_clicks.get(), 1);
 
