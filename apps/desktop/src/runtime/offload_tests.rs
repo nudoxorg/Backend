@@ -331,9 +331,10 @@ fn unique_route_keys_wait_for_capacity_without_untracked_flights(cx: &mut TestAp
         work_started.fetch_add(1, Ordering::SeqCst);
         let now = work_active.fetch_add(1, Ordering::SeqCst) + 1;
         work_peak.fetch_max(now, Ordering::SeqCst);
-        while !work_release.load(Ordering::SeqCst) {
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
+        assert!(
+            work_release.load(Ordering::SeqCst),
+            "the queued worker starts after the test releases it"
+        );
         work_active.fetch_sub(1, Ordering::SeqCst);
         format!("value {key}")
     });
@@ -360,7 +361,10 @@ fn unique_route_keys_wait_for_capacity_without_untracked_flights(cx: &mut TestAp
     assert!(peak.load(Ordering::SeqCst) <= capacity.get());
 
     let mut retry = window(cx, &memo, Some(10_000));
-    assert_eq!(retry.draw(), "waiting for read capacity");
+    // The deterministic executor polls background work on this test thread.
+    // Inspect the first painted frame before pumping it, rather than blocking
+    // a worker on a release that this same thread still needs to publish.
+    assert_eq!(retry.words.borrow().as_str(), "waiting for read capacity");
     release.store(true, Ordering::SeqCst);
     settle(&mut [&mut retry]);
     assert_eq!(
@@ -387,10 +391,18 @@ fn a_forgotten_inflight_key_cannot_resurrect_or_strand_a_waiter(cx: &mut TestApp
     let cancelled = Arc::new(AtomicBool::new(false));
     let work_cancelled = Arc::clone(&cancelled);
     let memo = Memo::new_cancellable(slots(1), move |key, cancellation| {
-        while !cancellation.is_cancelled() {
-            std::thread::sleep(std::time::Duration::from_millis(1));
+        if *key == 1 {
+            assert!(
+                cancellation.is_cancelled(),
+                "the forgotten queued flight receives cancellation"
+            );
+            work_cancelled.store(true, Ordering::SeqCst);
+        } else {
+            assert!(
+                !cancellation.is_cancelled(),
+                "the waiting route is still wanted"
+            );
         }
-        work_cancelled.store(true, Ordering::SeqCst);
         format!("value {key}")
     });
     assert!(matches!(
@@ -398,7 +410,7 @@ fn a_forgotten_inflight_key_cannot_resurrect_or_strand_a_waiter(cx: &mut TestApp
         Answer::Reading
     ));
     let mut retry = window(cx, &memo, Some(2));
-    assert_eq!(retry.draw(), "waiting for read capacity");
+    assert_eq!(retry.words.borrow().as_str(), "waiting for read capacity");
     memo.forget(&1);
     assert_eq!(
         memo.len(),

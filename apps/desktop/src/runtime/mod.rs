@@ -9,7 +9,7 @@ pub mod coordinator;
 pub mod debug_page;
 #[cfg(test)]
 pub(crate) mod fixture_releases;
-#[cfg(any(test, feature = "visual-harness"))]
+#[cfg(test)]
 pub(crate) mod fixture_world;
 pub(crate) mod hand;
 pub(crate) mod indexed_world;
