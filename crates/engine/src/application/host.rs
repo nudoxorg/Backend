@@ -23,6 +23,7 @@ use arrayvec::ArrayVec;
 use authority::NativeExecutables;
 use backend_compile::EmbeddingExecutable;
 use backend_frontend_rust::legacy::RustCargoMetadataPolicy;
+use backend_platform::DirectoryCapability;
 use backend_semantic::vocabulary::NativeTool;
 use backend_store::journal::PublicationLimits;
 use paths::create_directory;
@@ -165,6 +166,7 @@ pub struct LocalCompilerHost<Environment> {
     pub discovery: LocalHostDiscovery,
     /// Cargo registry policy used while resolving Rust package metadata.
     pub rust_cargo_metadata_policy: RustCargoMetadataPolicy,
+    embedding_cache_directory: Option<DirectoryCapability>,
 }
 
 impl<Environment> LocalCompilerHost<Environment> {
@@ -175,7 +177,15 @@ impl<Environment> LocalCompilerHost<Environment> {
             environment,
             discovery,
             rust_cargo_metadata_policy: RustCargoMetadataPolicy::Offline,
+            embedding_cache_directory: None,
         }
+    }
+
+    /// Binds the held directory capability minted by the active workspace owner.
+    #[must_use]
+    pub fn with_embedding_cache_directory(mut self, directory: DirectoryCapability) -> Self {
+        self.embedding_cache_directory = Some(directory);
+        self
     }
 
     /// Sets the explicit Cargo metadata acquisition policy for Rust authority.
@@ -372,16 +382,25 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             LocalCompilerScratch::with_fragment_capacity(nonzero(FRAGMENT_SCRATCH_BYTES))?,
         )?
         .with_embedding_requirement(embedding_requirement);
-        let configuration = match embedding_runtime {
-            Some(runtime) => configuration.with_embedding_runtime(runtime, embedding_requirement),
+        let configuration = match embedding_runtime.as_ref() {
+            Some(runtime) => {
+                configuration.with_embedding_runtime(Arc::clone(runtime), embedding_requirement)
+            }
             None => configuration,
         };
-        let configuration = match embedding_provisioning_failure {
+        let mut configuration = match embedding_provisioning_failure {
             Some(cause) => {
                 configuration.with_embedding_provisioning_failure(cause, embedding_requirement)
             }
             None => configuration,
         };
+        if let (Some(runtime), Some(directory)) = (
+            embedding_runtime.as_ref(),
+            self.embedding_cache_directory.as_ref(),
+        ) && let Some(session) = runtime.open_durable_cache_session(directory.clone())
+        {
+            configuration = configuration.with_embedding_cache_session(session);
+        }
         Ok(configuration)
     }
 

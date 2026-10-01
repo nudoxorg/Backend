@@ -1,7 +1,8 @@
 //! Content identities, bounded digest caching, and executable leases.
 
 use super::SupervisedCommand;
-use crate::{ProcessError, ToolchainId, typed_of};
+use crate::{CancellationObserver, ProcessError, ToolchainId, typed_of};
+use backend_version::Schema;
 #[cfg(unix)]
 #[path = "identity_cache.rs"]
 mod identity_cache;
@@ -152,6 +153,87 @@ impl ExecutableIdentity {
             Err(ProcessError::ExecutableDrift)
         }
     }
+
+    pub(crate) fn verify_path_until<C: CancellationObserver + ?Sized>(
+        &self,
+        path: &Path,
+        cancellation: &C,
+        deadline: std::time::Instant,
+    ) -> Result<(), ProcessError> {
+        process_checkpoint(cancellation, deadline)?;
+        let mut file = File::open(path).map_err(|_| ProcessError::ExecutableUnavailable)?;
+        let before = file
+            .metadata()
+            .map_err(|_| ProcessError::ExecutableUnavailable)?;
+        if !before.is_file() {
+            return Err(ProcessError::ExecutableUnavailable);
+        }
+        if before.len() > MAX_EXECUTABLE_BYTES {
+            return Err(ProcessError::ExecutableLimit);
+        }
+        let before_stamp = FileStamp::from_metadata(&before);
+        #[cfg(unix)]
+        if let Some(cached) = executable_cache_lookup(path, before_stamp) {
+            let sample_matches =
+                sample_file(&mut file, before.len()).is_ok_and(|sample| sample == cached.sample);
+            process_checkpoint(cancellation, deadline)?;
+            let after = file
+                .metadata()
+                .map_err(|_| ProcessError::ExecutableUnavailable)?;
+            if before_stamp != FileStamp::from_metadata(&after) {
+                return Err(ProcessError::ExecutableDrift);
+            }
+            if sample_matches {
+                return if cached.identity == *self {
+                    Ok(())
+                } else {
+                    Err(ProcessError::ExecutableDrift)
+                };
+            }
+        }
+        file.seek(SeekFrom::Start(0))
+            .map_err(|_| ProcessError::Io)?;
+        let mut hasher = backend_version::ObjectVersionHasher::new(
+            backend_version::SchemaIdentity::new(
+                crate::ToolchainSchema::DOMAIN,
+                crate::ToolchainSchema::TYPE,
+                crate::ToolchainSchema::VERSION,
+            ),
+            usize::try_from(before.len()).map_err(|_| ProcessError::ExecutableLimit)?,
+        )
+        .map_err(|_| ProcessError::ExecutableLimit)?;
+        let mut scratch = [0_u8; 64 * 1024];
+        let mut remaining = before.len();
+        while remaining > 0 {
+            process_checkpoint(cancellation, deadline)?;
+            let limit = usize::try_from(remaining.min(scratch.len() as u64))
+                .map_err(|_| ProcessError::ExecutableLimit)?;
+            let read = file
+                .read(&mut scratch[..limit])
+                .map_err(|_| ProcessError::Io)?;
+            if read == 0 {
+                return Err(ProcessError::ExecutableDrift);
+            }
+            hasher
+                .update(&scratch[..read])
+                .map_err(|_| ProcessError::ExecutableDrift)?;
+            remaining -= read as u64;
+        }
+        process_checkpoint(cancellation, deadline)?;
+        let after = file
+            .metadata()
+            .map_err(|_| ProcessError::ExecutableUnavailable)?;
+        if before_stamp != FileStamp::from_metadata(&after) {
+            return Err(ProcessError::ExecutableDrift);
+        }
+        let digest = hasher
+            .finish_version::<crate::ToolchainSchema>()
+            .map_err(|_| ProcessError::ExecutableDrift)?;
+        if digest != self.digest {
+            return Err(ProcessError::ExecutableDrift);
+        }
+        Ok(())
+    }
 }
 
 /// A toolchain executable plus its declared SDK/dependency closure.
@@ -255,6 +337,28 @@ impl ToolchainArtifact {
     pub fn verify_path(&self, path: &Path) -> Result<(), ProcessError> {
         self.executable.verify_path(path)
     }
+
+    pub(crate) fn verify_path_until<C: CancellationObserver + ?Sized>(
+        &self,
+        path: &Path,
+        cancellation: &C,
+        deadline: std::time::Instant,
+    ) -> Result<(), ProcessError> {
+        self.executable
+            .verify_path_until(path, cancellation, deadline)
+    }
+}
+
+fn process_checkpoint<C: CancellationObserver + ?Sized>(
+    cancellation: &C,
+    deadline: std::time::Instant,
+) -> Result<(), ProcessError> {
+    cancellation.checkpoint().map_err(ProcessError::from)?;
+    if std::time::Instant::now() >= deadline {
+        Err(ProcessError::Deadline)
+    } else {
+        Ok(())
+    }
 }
 
 /// Owns the exact executable bytes that a child process will run.
@@ -282,6 +386,172 @@ impl ExecutableLease {
         }
         #[cfg(not(target_os = "macos"))]
         Self::prepare_copy(command)
+    }
+
+    pub(crate) fn prepare_until<C: CancellationObserver + ?Sized>(
+        command: &SupervisedCommand,
+        cancellation: &C,
+        deadline: std::time::Instant,
+    ) -> Result<Self, ProcessError> {
+        process_checkpoint(cancellation, deadline)?;
+        #[cfg(target_os = "macos")]
+        {
+            Self::prepare_macos_until(command, cancellation, deadline)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Self::prepare_copy_until(command, cancellation, deadline)
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn prepare_macos_until<C: CancellationObserver + ?Sized>(
+        command: &SupervisedCommand,
+        cancellation: &C,
+        deadline: std::time::Instant,
+    ) -> Result<Self, ProcessError> {
+        if command.toolchain().is_none() {
+            process_checkpoint(cancellation, deadline)?;
+            return Ok(Self {
+                path: command.program().to_owned(),
+                remove_on_drop: false,
+                temporary_directory: None,
+            });
+        }
+        let expected = command
+            .executable_identity()
+            .ok_or(ProcessError::ExecutableUnavailable)?;
+        let mut source =
+            File::open(command.program()).map_err(|_| ProcessError::ExecutableUnavailable)?;
+        let before = source
+            .metadata()
+            .map_err(|_| ProcessError::ExecutableUnavailable)?;
+        if !before.is_file() {
+            return Err(ProcessError::ExecutableUnavailable);
+        }
+        let before_stamp = FileStamp::from_metadata(&before);
+        let bytes =
+            read_bounded_executable_until(&mut source, before.len(), cancellation, deadline)?;
+        let after = source
+            .metadata()
+            .map_err(|_| ProcessError::ExecutableUnavailable)?;
+        if before_stamp != FileStamp::from_metadata(&after)
+            || toolchain_digest_until(&bytes, cancellation, deadline)? != expected.digest()
+        {
+            return Err(ProcessError::ExecutableDrift);
+        }
+        process_checkpoint(cancellation, deadline)?;
+        if !is_macho(&bytes) {
+            return Self::from_bytes_until(&bytes, &before, cancellation, deadline);
+        }
+        let source_path = std::fs::canonicalize(command.program())
+            .map_err(|_| ProcessError::ExecutableUnavailable)?;
+        let file_is_writable = OpenOptions::new().write(true).open(&source_path).is_ok();
+        process_checkpoint(cancellation, deadline)?;
+        if file_is_writable || directory_is_writable(source_path.as_path()) {
+            return Self::from_bytes_until(&bytes, &before, cancellation, deadline);
+        }
+        process_checkpoint(cancellation, deadline)?;
+        Ok(Self {
+            path: command.program().to_owned(),
+            remove_on_drop: false,
+            temporary_directory: None,
+        })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn prepare_copy_until<C: CancellationObserver + ?Sized>(
+        command: &SupervisedCommand,
+        cancellation: &C,
+        deadline: std::time::Instant,
+    ) -> Result<Self, ProcessError> {
+        if command.toolchain().is_none() {
+            process_checkpoint(cancellation, deadline)?;
+            return Ok(Self {
+                path: command.program().to_owned(),
+                remove_on_drop: false,
+                temporary_directory: None,
+            });
+        }
+        let expected = command
+            .executable_identity()
+            .ok_or(ProcessError::ExecutableUnavailable)?;
+        let mut source =
+            File::open(command.program()).map_err(|_| ProcessError::ExecutableUnavailable)?;
+        let before = source
+            .metadata()
+            .map_err(|_| ProcessError::ExecutableUnavailable)?;
+        if !before.is_file() {
+            return Err(ProcessError::ExecutableUnavailable);
+        }
+        let before_stamp = FileStamp::from_metadata(&before);
+        let bytes =
+            read_bounded_executable_until(&mut source, before.len(), cancellation, deadline)?;
+        let after = source
+            .metadata()
+            .map_err(|_| ProcessError::ExecutableUnavailable)?;
+        if before_stamp != FileStamp::from_metadata(&after)
+            || toolchain_digest_until(&bytes, cancellation, deadline)? != expected.digest()
+        {
+            return Err(ProcessError::ExecutableDrift);
+        }
+        Self::from_bytes_until(&bytes, &before, cancellation, deadline)
+    }
+
+    fn from_bytes_until<C: CancellationObserver + ?Sized>(
+        bytes: &[u8],
+        source: &Metadata,
+        cancellation: &C,
+        deadline: std::time::Instant,
+    ) -> Result<Self, ProcessError> {
+        let directory = private_temp_directory("exec")?;
+        let path = directory.join("exec.out");
+        let result = (|| {
+            process_checkpoint(cancellation, deadline)?;
+            let mut file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .read(true)
+                .open(&path)
+                .map_err(|_| ProcessError::TemporaryFile)?;
+            for chunk in bytes.chunks(64 * 1024) {
+                process_checkpoint(cancellation, deadline)?;
+                file.write_all(chunk).map_err(|_| ProcessError::Io)?;
+            }
+            file.sync_all().map_err(|_| ProcessError::Io)?;
+            let mut permissions = source.permissions();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                permissions.set_mode(0o500);
+            }
+            #[cfg(not(unix))]
+            permissions.set_readonly(true);
+            file.set_permissions(permissions)
+                .map_err(|_| ProcessError::Io)?;
+            file.seek(SeekFrom::Start(0))
+                .map_err(|_| ProcessError::Io)?;
+            let mut observed = [0_u8; 64 * 1024];
+            for chunk in bytes.chunks(64 * 1024) {
+                process_checkpoint(cancellation, deadline)?;
+                file.read_exact(&mut observed[..chunk.len()])
+                    .map_err(|_| ProcessError::Io)?;
+                if observed[..chunk.len()] != chunk[..] {
+                    return Err(ProcessError::ExecutableDrift);
+                }
+            }
+            process_checkpoint(cancellation, deadline)
+        })();
+        if let Err(error) = result {
+            let _ = remove_file(&path);
+            let _ = remove_dir(&directory);
+            return Err(error);
+        }
+        Ok(Self {
+            path,
+            remove_on_drop: true,
+            temporary_directory: Some(directory),
+        })
     }
 
     #[cfg(target_os = "macos")]
@@ -446,6 +716,71 @@ fn read_bounded_executable(file: &mut File, declared: u64) -> Result<Vec<u8>, Pr
         return Err(ProcessError::ExecutableLimit);
     }
     Ok(bytes)
+}
+
+fn read_bounded_executable_until<C: CancellationObserver + ?Sized>(
+    file: &mut File,
+    declared: u64,
+    cancellation: &C,
+    deadline: std::time::Instant,
+) -> Result<Vec<u8>, ProcessError> {
+    if declared > MAX_EXECUTABLE_BYTES {
+        return Err(ProcessError::ExecutableLimit);
+    }
+    file.seek(SeekFrom::Start(0))
+        .map_err(|_| ProcessError::Io)?;
+    let capacity = usize::try_from(declared).map_err(|_| ProcessError::ExecutableLimit)?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(capacity)
+        .map_err(|_| ProcessError::ExecutableLimit)?;
+    let mut remaining = declared;
+    let mut scratch = [0_u8; 64 * 1024];
+    while remaining > 0 {
+        process_checkpoint(cancellation, deadline)?;
+        let limit = usize::try_from(remaining.min(scratch.len() as u64))
+            .map_err(|_| ProcessError::ExecutableLimit)?;
+        let read = file
+            .read(&mut scratch[..limit])
+            .map_err(|_| ProcessError::Io)?;
+        if read == 0 {
+            return Err(ProcessError::ExecutableDrift);
+        }
+        bytes.extend_from_slice(&scratch[..read]);
+        remaining -= read as u64;
+    }
+    process_checkpoint(cancellation, deadline)?;
+    let mut extra = [0_u8; 1];
+    if file.read(&mut extra).map_err(|_| ProcessError::Io)? != 0 {
+        return Err(ProcessError::ExecutableDrift);
+    }
+    Ok(bytes)
+}
+
+fn toolchain_digest_until<C: CancellationObserver + ?Sized>(
+    bytes: &[u8],
+    cancellation: &C,
+    deadline: std::time::Instant,
+) -> Result<ToolchainId, ProcessError> {
+    let mut hasher = backend_version::ObjectVersionHasher::new(
+        backend_version::SchemaIdentity::new(
+            crate::ToolchainSchema::DOMAIN,
+            crate::ToolchainSchema::TYPE,
+            crate::ToolchainSchema::VERSION,
+        ),
+        bytes.len(),
+    )
+    .map_err(|_| ProcessError::ExecutableLimit)?;
+    for chunk in bytes.chunks(64 * 1024) {
+        process_checkpoint(cancellation, deadline)?;
+        hasher
+            .update(chunk)
+            .map_err(|_| ProcessError::ExecutableDrift)?;
+    }
+    process_checkpoint(cancellation, deadline)?;
+    hasher
+        .finish_version::<crate::ToolchainSchema>()
+        .map_err(|_| ProcessError::ExecutableDrift)
 }
 
 fn private_temp_directory(label: &str) -> Result<PathBuf, ProcessError> {

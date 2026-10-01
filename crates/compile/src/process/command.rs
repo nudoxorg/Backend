@@ -4,12 +4,13 @@ use super::{
     ExecutableIdentity, ProcessEnvironment, ProcessLimits, ProcessReceipt, ToolchainArtifact,
 };
 use crate::{
-    Cancellation, CommandId, CommandSchema, ProcessError, ProtocolDescriptor, SessionKey,
-    ToolchainId, typed_of,
+    Cancellation, CancellationObserver, CommandId, CommandSchema, ProcessError, ProtocolDescriptor,
+    SessionKey, ToolchainId, typed_of,
 };
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
+    sync::atomic::AtomicBool,
     time::Duration,
 };
 
@@ -115,6 +116,19 @@ impl SupervisedCommand {
         environment: ProcessEnvironment,
         limits: ProcessLimits,
     ) -> Result<Self, ProcessError> {
+        let mut command =
+            Self::new_without_executable_probe(program, args, cwd, environment, limits)?;
+        command.executable_identity = ExecutableIdentity::from_path(&command.program).ok();
+        Ok(command)
+    }
+
+    fn new_without_executable_probe(
+        program: PathBuf,
+        args: Vec<String>,
+        cwd: PathBuf,
+        environment: ProcessEnvironment,
+        limits: ProcessLimits,
+    ) -> Result<Self, ProcessError> {
         if !program.is_absolute() || !cwd.is_absolute() {
             return Err(ProcessError::RelativePath);
         }
@@ -132,7 +146,6 @@ impl SupervisedCommand {
         if args.iter().any(|arg| arg.as_bytes().contains(&0)) {
             return Err(ProcessError::Protocol);
         }
-        let executable_identity = ExecutableIdentity::from_path(&program).ok();
         Ok(Self {
             program,
             args,
@@ -140,7 +153,7 @@ impl SupervisedCommand {
             environment,
             stdin: ProcessStdin::Null,
             toolchain: None,
-            executable_identity,
+            executable_identity: None,
             toolchain_artifact: None,
             session_key: None,
             protocol: ProtocolDescriptor::cold(),
@@ -207,6 +220,36 @@ impl SupervisedCommand {
     ) -> Result<Self, ProcessError> {
         let mut command = Self::new(program, args, workspace, environment, limits)?;
         artifact.verify_path(command.program())?;
+        command.stdin = stdin;
+        command.toolchain = Some(artifact.identity());
+        command.executable_identity = Some(artifact.executable().clone());
+        command.toolchain_artifact = Some(artifact);
+        command.session_key = session_key;
+        command.protocol = protocol;
+        command.validate_request_bytes()?;
+        Ok(command)
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the native command boundary keeps every authority input explicit"
+    )]
+    pub(crate) fn for_authority_with_artifact_until(
+        program: PathBuf,
+        args: Vec<String>,
+        environment: ProcessEnvironment,
+        workspace: PathBuf,
+        stdin: ProcessStdin,
+        artifact: ToolchainArtifact,
+        session_key: Option<SessionKey>,
+        protocol: ProtocolDescriptor,
+        limits: ProcessLimits,
+        cancellation: &AtomicBool,
+        deadline: std::time::Instant,
+    ) -> Result<Self, ProcessError> {
+        let mut command =
+            Self::new_without_executable_probe(program, args, workspace, environment, limits)?;
+        artifact.verify_path_until(command.program(), cancellation, deadline)?;
         command.stdin = stdin;
         command.toolchain = Some(artifact.identity());
         command.executable_identity = Some(artifact.executable().clone());
@@ -354,6 +397,29 @@ impl SupervisedCommand {
             Some(artifact.executable().clone())
         } else if let Some(identity) = &self.executable_identity {
             identity.verify_path(&self.program)?;
+            Some(identity.clone())
+        } else if self.toolchain.is_some() {
+            return Err(ProcessError::ExecutableUnavailable);
+        } else {
+            None
+        };
+        Ok(super::VerifiedExecutable::new(&self.program, identity))
+    }
+
+    pub(crate) fn verify_executable_until<C: CancellationObserver + ?Sized>(
+        &self,
+        cancellation: &C,
+        deadline: std::time::Instant,
+    ) -> Result<super::VerifiedExecutable, ProcessError> {
+        cancellation.checkpoint().map_err(ProcessError::from)?;
+        if std::time::Instant::now() >= deadline {
+            return Err(ProcessError::Deadline);
+        }
+        let identity = if let Some(artifact) = &self.toolchain_artifact {
+            artifact.verify_path_until(&self.program, cancellation, deadline)?;
+            Some(artifact.executable().clone())
+        } else if let Some(identity) = &self.executable_identity {
+            identity.verify_path_until(&self.program, cancellation, deadline)?;
             Some(identity.clone())
         } else if self.toolchain.is_some() {
             return Err(ProcessError::ExecutableUnavailable);

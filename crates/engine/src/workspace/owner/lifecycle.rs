@@ -7,9 +7,33 @@ use super::{
     WorkspaceSnapshot, open_diagnostic_journal, recover_store_head,
 };
 use crate::workspace::catalog::state_from_durable_manifest;
+use backend_platform::DirectoryCapability;
 use backend_store::ClosureManifest;
+use std::io;
 
 impl<M: WorkspaceModel> WorkspaceOwner<M> {
+    /// Opens the owner's private embedding-cache directory as a held no-follow capability.
+    ///
+    /// A cache broker takes a separate kernel lock over this pinned directory. The returned
+    /// capability remains bound to the exact directory object even if its pathname changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if this owner has been fenced or any workspace path component is unsafe.
+    pub fn open_embedding_cache_directory(&self) -> io::Result<DirectoryCapability> {
+        self.lease
+            .assert_current()
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        let root = DirectoryCapability::open(&self.directory)?;
+        root.validate_private()?;
+        let cache = open_or_create_private_child(&root, "cache")?;
+        let embedding = open_or_create_private_child(&cache, "embedding")?;
+        self.lease
+            .assert_current()
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        Ok(embedding)
+    }
+
     /// Opens a workspace, acquiring its owner lease and recovering the store
     /// selected head through the model's checked admission seam.
     /// # Errors
@@ -231,6 +255,25 @@ fn seed_unselected_genesis(
     Ok(())
 }
 
+fn open_or_create_private_child(
+    parent: &DirectoryCapability,
+    name: &str,
+) -> io::Result<DirectoryCapability> {
+    match parent.open_private_dir(name) {
+        Ok(directory) => Ok(directory),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            match parent.create_private_dir(name) {
+                Ok(directory) => Ok(directory),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    parent.open_private_dir(name)
+                }
+                Err(error) => Err(error),
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,5 +402,44 @@ mod tests {
 
         drop(reopened);
         std::fs::remove_dir_all(directory).expect("remove owner fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn embedding_cache_owner_capability_rejects_an_intermediate_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let (genesis, registry) = product_genesis();
+        let directory = std::env::temp_dir().join(format!(
+            "backend-engine-owner-cache-link-{}-{}",
+            std::process::id(),
+            genesis.root().to_bytes()[..8]
+                .iter()
+                .fold(0_u64, |value, byte| value * 256 + u64::from(*byte)),
+        ));
+        let external = directory.with_extension("outside");
+        let _ = std::fs::remove_dir_all(&directory);
+        let _ = std::fs::remove_dir_all(&external);
+        std::fs::create_dir(&directory).expect("workspace directory");
+        std::fs::set_permissions(
+            &directory,
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .expect("private workspace directory");
+        std::fs::create_dir(&external).expect("outside directory");
+        std::fs::write(external.join("retain.txt"), b"untouched").expect("outside marker");
+        symlink(&external, directory.join("cache")).expect("cache symlink");
+
+        let owner =
+            WorkspaceOwner::open_with_registry(&directory, ColdStartModel, genesis, registry)
+                .expect("open workspace owner");
+        assert!(owner.open_embedding_cache_directory().is_err());
+        assert_eq!(
+            std::fs::read(external.join("retain.txt")).expect("outside marker remains"),
+            b"untouched"
+        );
+        drop(owner);
+        std::fs::remove_dir_all(&directory).expect("remove workspace");
+        std::fs::remove_dir_all(external).expect("remove outside fixture");
     }
 }

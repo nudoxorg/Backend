@@ -21,8 +21,8 @@ use crate::publication::{
     publish_semantic_bytes, semantic_generation_requirements,
 };
 use backend_compile::{
-    EmbeddingCoordinates, EmbeddingExecutable, EmbeddingExecutionIdentity, EmbeddingNormalization,
-    EmbeddingPurpose,
+    EmbeddingCacheSession, EmbeddingCoordinates, EmbeddingExecutable, EmbeddingExecutionIdentity,
+    EmbeddingNormalization, EmbeddingPurpose,
 };
 use backend_frontend_go::legacy::oracle::GoPackageAuthorityWitness;
 use backend_frontend_rust::legacy::{
@@ -1622,6 +1622,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         execution_identity: Option<LocalCompilerExecutionIdentity>,
         plane_execution_seed: Option<LocalCompilerPlaneExecutionSeed>,
         embedding_runtime: Option<&EmbeddingExecutable>,
+        embedding_cache_session: Option<&EmbeddingCacheSession>,
         embedding_requirement: EmbeddingRequirement,
         scratch: &mut LocalCompilerScratch,
         cancelled: &AtomicBool,
@@ -2155,11 +2156,20 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 embedding_unavailable = Some(cause);
             } else {
                 texts.extend(embedding_sources.iter().map(|(_, source)| *source));
-                match runtime.infer_batch_with_cancellation_flag(
-                    EmbeddingPurpose::Document,
-                    &texts,
-                    cancelled,
-                ) {
+                let inference = match embedding_cache_session {
+                    Some(cache_session) => runtime.infer_batch_with_cache_session(
+                        EmbeddingPurpose::Document,
+                        &texts,
+                        cancelled,
+                        cache_session,
+                    ),
+                    None => runtime.infer_batch_with_cancellation_flag(
+                        EmbeddingPurpose::Document,
+                        &texts,
+                        cancelled,
+                    ),
+                };
+                match inference {
                     Ok(coordinates) if coordinates.len() == embedding_sources.len() => {
                         for ((relative_path, _), coordinates) in
                             embedding_sources.iter().zip(&coordinates)
@@ -2911,6 +2921,7 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
             None,
             None,
             None,
+            None,
             EmbeddingRequirement::Optional,
             self.scratch,
             cancelled,
@@ -2943,6 +2954,7 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         let cancelled = self.config.control.cancelled;
         let staged = execution.stage_package_sources(
             package,
+            None,
             None,
             None,
             None,

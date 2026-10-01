@@ -151,25 +151,46 @@ impl ProcessSupervisor {
         deadline: Option<Instant>,
     ) -> Result<RunningProcess, ProcessError> {
         cancellation.checkpoint().map_err(ProcessError::from)?;
-        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        let command_deadline = Instant::now()
+            .checked_add(self.command.limits().wall_time())
+            .unwrap_or_else(Instant::now);
+        let start_deadline =
+            deadline.map_or(command_deadline, |deadline| deadline.min(command_deadline));
+        if Instant::now() >= start_deadline {
             return Err(ProcessError::Deadline);
         }
         self.command.limits().validate_supported()?;
         let workspace_baseline = match self.command.limits().workspace_limit() {
-            Some(_) => workspace_size(self.command.workspace())?,
+            Some(_) => {
+                workspace_size_until(self.command.workspace(), cancellation, start_deadline)?
+            }
             None => 0,
         };
-        let stdin = TempInput::create(self.command.stdin())?;
-        let stdout = TempOutput::create("stdout")?;
-        let stderr = TempOutput::create("stderr")?;
-        self.command.verify_executable()?;
-        let executable = ExecutableLease::prepare(&self.command)?;
         cancellation.checkpoint().map_err(ProcessError::from)?;
-        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        check_deadline(start_deadline)?;
+        let stdin = TempInput::create_until(self.command.stdin(), cancellation, start_deadline)?;
+        cancellation.checkpoint().map_err(ProcessError::from)?;
+        check_deadline(start_deadline)?;
+        let stdout = TempOutput::create("stdout")?;
+        cancellation.checkpoint().map_err(ProcessError::from)?;
+        check_deadline(start_deadline)?;
+        let stderr = TempOutput::create("stderr")?;
+        cancellation.checkpoint().map_err(ProcessError::from)?;
+        check_deadline(start_deadline)?;
+        self.command
+            .verify_executable_until(cancellation, start_deadline)?;
+        if Instant::now() >= start_deadline {
+            return Err(ProcessError::Deadline);
+        }
+        let executable =
+            ExecutableLease::prepare_until(&self.command, cancellation, start_deadline)?;
+        cancellation.checkpoint().map_err(ProcessError::from)?;
+        if Instant::now() >= start_deadline {
             return Err(ProcessError::Deadline);
         }
         let reaper_permit = reserve_child_reaper()?;
-        let child = OwnedChild::new(
+        check_observer_deadline(cancellation, start_deadline)?;
+        let mut child = OwnedChild::new(
             spawn(
                 &self.command,
                 executable.path(),
@@ -179,9 +200,15 @@ impl ProcessSupervisor {
             )?,
             reaper_permit,
         );
+        let child_pid = child.id()?;
+        let group_retirement = ProcessGroupRetirement::new(child_pid);
+        if let Err(error) = check_observer_deadline(cancellation, start_deadline) {
+            let _ = terminate_child_with_group(&mut child, &group_retirement);
+            return Err(error);
+        }
         Ok(RunningProcess {
             command: self.command.clone(),
-            group_retirement: ProcessGroupRetirement::new(child.id()?),
+            group_retirement,
             child,
             _stdin: stdin,
             _executable: executable,
@@ -216,8 +243,13 @@ impl ProcessSupervisor {
             target_os = "wasi"
         ))
     )))]
-    pub(crate) fn start_byte_session(&self) -> Result<RunningByteSession, ProcessError> {
+    pub(crate) fn start_byte_session(
+        &self,
+        cancelled: &AtomicBool,
+        deadline: Instant,
+    ) -> Result<RunningByteSession, ProcessError> {
         let _ = self;
+        check_cancelled(cancelled, deadline)?;
         Err(ProcessError::UnsupportedLimit(
             crate::UnsupportedLimit::ProcessGroup,
         ))
@@ -234,7 +266,16 @@ impl ProcessSupervisor {
             target_os = "wasi"
         ))
     ))]
-    pub(crate) fn start_byte_session(&self) -> Result<RunningByteSession, ProcessError> {
+    pub(crate) fn start_byte_session(
+        &self,
+        cancelled: &AtomicBool,
+        deadline: Instant,
+    ) -> Result<RunningByteSession, ProcessError> {
+        let command_deadline = Instant::now()
+            .checked_add(self.command.limits().wall_time())
+            .unwrap_or_else(Instant::now);
+        let deadline = deadline.min(command_deadline);
+        check_cancelled(cancelled, deadline)?;
         if !self.command.protocol().supports_persistent()
             || self.command.stdin().as_bytes().is_some()
         {
@@ -242,12 +283,16 @@ impl ProcessSupervisor {
         }
         self.command.limits().validate_supported()?;
         let workspace_baseline = match self.command.limits().workspace_limit() {
-            Some(_) => workspace_size(self.command.workspace())?,
+            Some(_) => workspace_size_until(self.command.workspace(), cancelled, deadline)?,
             None => 0,
         };
-        self.command.verify_executable()?;
-        let executable = ExecutableLease::prepare(&self.command)?;
+        check_cancelled(cancelled, deadline)?;
+        self.command.verify_executable_until(cancelled, deadline)?;
+        check_cancelled(cancelled, deadline)?;
+        let executable = ExecutableLease::prepare_until(&self.command, cancelled, deadline)?;
+        check_cancelled(cancelled, deadline)?;
         let reaper_permit = reserve_child_reaper()?;
+        check_cancelled(cancelled, deadline)?;
         let mut process = authority_command(&self.command, executable.path());
         let child = process
             .stdin(Stdio::piped())
@@ -256,6 +301,12 @@ impl ProcessSupervisor {
             .spawn()
             .map_err(|_| ProcessError::SpawnFailure)?;
         let mut child = OwnedChild::new(child, reaper_permit);
+        if let Err(error) = check_cancelled(cancelled, deadline) {
+            let pid = child.id()?;
+            let retirement = ProcessGroupRetirement::new(pid);
+            let _ = terminate_child_with_group(&mut child, &retirement);
+            return Err(error);
+        }
         let child_pid = child.id()?;
         let stop_workers = Arc::new(AtomicBool::new(false));
         let group_retirement =
@@ -346,7 +397,7 @@ impl ProcessSupervisor {
                     return Err(error);
                 }
             };
-        Ok(RunningByteSession {
+        let mut session = RunningByteSession {
             command: self.command.clone(),
             child,
             group_retirement,
@@ -371,7 +422,12 @@ impl ProcessSupervisor {
             request_bytes: 0,
             stderr_reader: Some(stderr_reader),
             group_retired: false,
-        })
+        };
+        if let Err(error) = check_cancelled(cancelled, deadline) {
+            let _ = session.terminate();
+            return Err(error);
+        }
+        Ok(session)
     }
 
     /// Runs the command with a fresh cancellation token.
@@ -561,6 +617,30 @@ fn supervised_child_pid(child: &OwnedChild) -> Result<u32, ProcessError> {
 struct SessionWriteCommand {
     bytes: Vec<u8>,
     completed: SyncSender<Result<(), ProcessError>>,
+}
+
+fn check_deadline(deadline: Instant) -> Result<(), ProcessError> {
+    if Instant::now() >= deadline {
+        Err(ProcessError::Deadline)
+    } else {
+        Ok(())
+    }
+}
+
+fn check_cancelled(cancelled: &AtomicBool, deadline: Instant) -> Result<(), ProcessError> {
+    if cancelled.load(Ordering::Acquire) {
+        Err(ProcessError::Cancelled)
+    } else {
+        check_deadline(deadline)
+    }
+}
+
+fn check_observer_deadline<C: CancellationObserver + ?Sized>(
+    cancellation: &C,
+    deadline: Instant,
+) -> Result<(), ProcessError> {
+    cancellation.checkpoint().map_err(ProcessError::from)?;
+    check_deadline(deadline)
 }
 
 #[derive(Clone)]
@@ -969,6 +1049,48 @@ struct SessionStdoutCredit {
 struct TestStdoutReaderGate {
     paused: bool,
     parked: bool,
+    hold_probe: bool,
+    probe_waiting: bool,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct TestStdoutProbeControl {
+    gate: Arc<(Mutex<TestStdoutReaderGate>, Condvar)>,
+}
+
+#[cfg(test)]
+impl TestStdoutProbeControl {
+    pub(crate) fn wait_until_probe(&self, deadline: Instant) -> bool {
+        let (state, changed) = &*self.gate;
+        let mut state = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while !state.probe_waiting {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            let (next, timeout) = changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state = next;
+            if timeout.timed_out() && !state.probe_waiting {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub(crate) fn release(&self) {
+        let (state, changed) = &*self.gate;
+        let mut state = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.hold_probe = false;
+        state.paused = false;
+        changed.notify_all();
+    }
 }
 
 impl RunningByteSession {
@@ -978,13 +1100,15 @@ impl RunningByteSession {
     ///
     /// Returns [`ProcessError`] on cancellation, a limit, malformed command state, or any
     /// process/pipe failure. Every error retires and reaps this session.
-    pub(crate) fn exchange_with_cancellation_flag(
+    pub(crate) fn exchange_with_cancellation_flag_until(
         &mut self,
         request: Vec<u8>,
         response_bytes: usize,
         cancelled: &AtomicBool,
+        deadline: Instant,
     ) -> Result<Vec<u8>, ProcessError> {
         let limits = self.command.limits();
+        check_deadline(deadline)?;
         if request.is_empty()
             || request.len() > limits.input_bytes().saturating_sub(self.request_bytes)
         {
@@ -1013,9 +1137,6 @@ impl RunningByteSession {
         {
             return self.fail(ProcessError::OutputLimit);
         }
-        let deadline = Instant::now()
-            .checked_add(limits.wall_time())
-            .ok_or(ProcessError::Deadline)?;
         let request_len = request.len();
         if let Some(error) = self.session_health_error() {
             return self.fail(error);
@@ -1064,7 +1185,7 @@ impl RunningByteSession {
                 return self.fail(error);
             }
             if let Some(limit) = limits.workspace_limit() {
-                match workspace_size(self.command.workspace()) {
+                match workspace_size_until(self.command.workspace(), cancelled, deadline) {
                     Ok(current)
                         if current > self.workspace_baseline
                             && current - self.workspace_baseline > limit =>
@@ -1121,7 +1242,7 @@ impl RunningByteSession {
             credit.active = false;
             credit.remaining = 0;
         }
-        if let Err(error) = self.probe_stdout_idle_gate(deadline) {
+        if let Err(error) = self.probe_stdout_idle_gate(cancelled, deadline) {
             return self.fail(error);
         }
         if let Some(error) = self.session_health_error() {
@@ -1174,7 +1295,12 @@ impl RunningByteSession {
     }
 
     /// Checks whether the persistent child is still available for a new exchange.
-    pub(crate) fn is_alive(&mut self) -> Result<bool, ProcessError> {
+    pub(crate) fn is_alive_until(
+        &mut self,
+        cancelled: &AtomicBool,
+        deadline: Instant,
+    ) -> Result<bool, ProcessError> {
+        check_cancelled(cancelled, deadline)?;
         if self.group_retired {
             return Ok(false);
         }
@@ -1182,12 +1308,10 @@ impl RunningByteSession {
             self.terminate()?;
             return Err(error);
         }
-        let probe_deadline = Instant::now()
-            .checked_add(Duration::from_millis(50))
-            .ok_or(ProcessError::Deadline)?;
-        if let Err(error) = self.probe_stdout_idle_gate(probe_deadline) {
+        if let Err(error) = self.probe_stdout_idle_gate(cancelled, deadline) {
             return self.fail(error);
         }
+        check_cancelled(cancelled, deadline)?;
         if let Some(error) = self.session_health_error() {
             return self.fail(error);
         }
@@ -1226,6 +1350,19 @@ impl RunningByteSession {
             }
         }
         true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hold_stdout_probe_for_test(&self) -> TestStdoutProbeControl {
+        let (state, changed) = &*self.stdout_reader_gate;
+        state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .hold_probe = true;
+        changed.notify_all();
+        TestStdoutProbeControl {
+            gate: Arc::clone(&self.stdout_reader_gate),
+        }
     }
 
     /// Terminates and reaps the child and drops the private executable lease.
@@ -1305,7 +1442,12 @@ impl RunningByteSession {
     /// armed. This makes cache-only health checks account for bytes already queued at the gate.
     /// A helper can still write after the acknowledgement; the protocol boundary is the instant
     /// the pump reports `WouldBlock`, not a promise about future asynchronous writes.
-    fn probe_stdout_idle_gate(&mut self, deadline: Instant) -> Result<(), ProcessError> {
+    fn probe_stdout_idle_gate(
+        &mut self,
+        cancelled: &AtomicBool,
+        deadline: Instant,
+    ) -> Result<(), ProcessError> {
+        check_cancelled(cancelled, deadline)?;
         let requested = {
             let mut credit = self
                 .stdout_credit
@@ -1321,24 +1463,23 @@ impl RunningByteSession {
             credit.probe_requested
         };
         #[cfg(test)]
-        release_test_stdout_reader(&self.stdout_reader_gate);
+        await_test_stdout_probe(&self.stdout_reader_gate, cancelled, deadline)?;
         let mut credit = self
             .stdout_credit
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         while credit.probe_completed < requested {
-            let now = Instant::now();
-            if now >= deadline {
-                return Err(ProcessError::Deadline);
-            }
-            let wait = deadline.saturating_duration_since(now);
+            check_cancelled(cancelled, deadline)?;
+            let wait = deadline
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(5));
             let (next, timeout) = self
                 .stdout_credit_changed
                 .wait_timeout(credit, wait)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             credit = next;
             if timeout.timed_out() && credit.probe_completed < requested {
-                return Err(ProcessError::Deadline);
+                check_cancelled(cancelled, deadline)?;
             }
         }
         drop(credit);
@@ -1637,6 +1778,42 @@ fn release_test_stdout_reader(gate: &(Mutex<TestStdoutReaderGate>, Condvar)) {
     changed.notify_all();
 }
 
+#[cfg(test)]
+fn await_test_stdout_probe(
+    gate: &(Mutex<TestStdoutReaderGate>, Condvar),
+    cancelled: &AtomicBool,
+    deadline: Instant,
+) -> Result<(), ProcessError> {
+    let (state, changed) = gate;
+    let mut state = state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !state.hold_probe {
+        drop(state);
+        release_test_stdout_reader(gate);
+        return Ok(());
+    }
+    state.probe_waiting = true;
+    changed.notify_all();
+    while state.hold_probe {
+        check_cancelled(cancelled, deadline)?;
+        let remaining = deadline
+            .saturating_duration_since(Instant::now())
+            .min(Duration::from_millis(5));
+        let (next, timeout) = changed
+            .wait_timeout(state, remaining)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state = next;
+        if timeout.timed_out() && state.hold_probe {
+            check_cancelled(cancelled, deadline)?;
+        }
+    }
+    state.probe_waiting = false;
+    state.paused = false;
+    changed.notify_all();
+    Ok(())
+}
+
 fn account_session_bytes(
     stream_observed: &AtomicUsize,
     output_observed: &AtomicUsize,
@@ -1796,6 +1973,10 @@ impl RunningProcess {
                 self.terminate()?;
                 return Err(ProcessError::Cancelled);
             }
+            if Instant::now() >= deadline {
+                let _ = self.terminate();
+                return Err(ProcessError::Deadline);
+            }
 
             let stdout_size = output_size(&self.stdout.file)?;
             let stderr_size = output_size(&self.stderr.file)?;
@@ -1813,9 +1994,13 @@ impl RunningProcess {
                 return Err(ProcessError::OutputLimit);
             }
 
-            if self.workspace_grew_beyond_limit()? {
+            if self.workspace_grew_beyond_limit_until(cancellation, deadline)? {
                 self.terminate()?;
                 return Err(ProcessError::WorkspaceLimit);
+            }
+            if Instant::now() >= deadline {
+                let _ = self.terminate();
+                return Err(ProcessError::Deadline);
             }
 
             #[cfg(all(
@@ -1829,6 +2014,10 @@ impl RunningProcess {
                 ))
             ))]
             if child_exited_without_reaping(supervised_child_pid(&self.child)?)? {
+                if Instant::now() >= deadline {
+                    let _ = self.terminate();
+                    return Err(ProcessError::Deadline);
+                }
                 break self.retire_completed_child()?;
             }
             #[cfg(not(all(
@@ -1842,6 +2031,10 @@ impl RunningProcess {
                 ))
             )))]
             if let Some(status) = self.child.try_wait()? {
+                if Instant::now() >= deadline {
+                    let _ = self.terminate();
+                    return Err(ProcessError::Deadline);
+                }
                 break status;
             }
 
@@ -1852,11 +2045,21 @@ impl RunningProcess {
             thread::sleep(Duration::from_millis(2));
         };
 
-        if self.workspace_grew_beyond_limit()? {
+        if self.workspace_grew_beyond_limit_until(cancellation, deadline)? {
             return Err(ProcessError::WorkspaceLimit);
         }
-        let out = read_bounded(&self.stdout.file, self.command.limits().stdout())?;
-        let err = read_bounded(&self.stderr.file, self.command.limits().stderr())?;
+        let out = read_bounded_until(
+            &self.stdout.file,
+            self.command.limits().stdout(),
+            cancellation,
+            deadline,
+        )?;
+        let err = read_bounded_until(
+            &self.stderr.file,
+            self.command.limits().stderr(),
+            cancellation,
+            deadline,
+        )?;
         if output_exceeds_limit(out.len(), err.len(), self.command.limits().output_bytes()) {
             return Err(ProcessError::OutputLimit);
         }
@@ -1872,11 +2075,15 @@ impl RunningProcess {
         ))
     }
 
-    fn workspace_grew_beyond_limit(&self) -> Result<bool, ProcessError> {
+    fn workspace_grew_beyond_limit_until<C: CancellationObserver + ?Sized>(
+        &self,
+        cancellation: &C,
+        deadline: Instant,
+    ) -> Result<bool, ProcessError> {
         let Some(limit) = self.command.limits().workspace_limit() else {
             return Ok(false);
         };
-        let current = workspace_size(self.command.workspace())?;
+        let current = workspace_size_until(self.command.workspace(), cancellation, deadline)?;
         Ok(current > self.workspace_baseline && current - self.workspace_baseline > limit)
     }
 
@@ -2118,13 +2325,23 @@ fn output_size(file: &File) -> Result<usize, ProcessError> {
     usize::try_from(length).map_err(|_| ProcessError::OutputLimit)
 }
 
-fn read_bounded(file: &File, limit: usize) -> Result<Vec<u8>, ProcessError> {
+fn read_bounded_until<C: CancellationObserver + ?Sized>(
+    file: &File,
+    limit: usize,
+    cancellation: &C,
+    deadline: Instant,
+) -> Result<Vec<u8>, ProcessError> {
+    check_observer_deadline(cancellation, deadline)?;
     let mut file = file.try_clone().map_err(|_| ProcessError::Io)?;
     file.seek(io::SeekFrom::Start(0))
         .map_err(|_| ProcessError::Io)?;
     let mut output = Vec::new();
+    output
+        .try_reserve_exact(output_size(&file)?.min(limit))
+        .map_err(|_| ProcessError::OutputLimit)?;
     let mut chunk = [0_u8; 8192];
     loop {
+        check_observer_deadline(cancellation, deadline)?;
         let read = file.read(&mut chunk).map_err(|_| ProcessError::Io)?;
         if read == 0 {
             break;
@@ -2134,6 +2351,7 @@ fn read_bounded(file: &File, limit: usize) -> Result<Vec<u8>, ProcessError> {
         }
         output.extend_from_slice(&chunk[..read]);
     }
+    check_observer_deadline(cancellation, deadline)?;
     Ok(output)
 }
 
@@ -2280,6 +2498,22 @@ fn terminate_process_group(pid: u32) -> Result<(), ProcessError> {
 }
 
 pub(crate) fn workspace_size(root: &Path) -> Result<usize, ProcessError> {
+    workspace_size_with_checkpoint(root, || Ok(()))
+}
+
+fn workspace_size_until<C: CancellationObserver + ?Sized>(
+    root: &Path,
+    cancellation: &C,
+    deadline: Instant,
+) -> Result<usize, ProcessError> {
+    workspace_size_with_checkpoint(root, || check_observer_deadline(cancellation, deadline))
+}
+
+fn workspace_size_with_checkpoint(
+    root: &Path,
+    mut checkpoint: impl FnMut() -> Result<(), ProcessError>,
+) -> Result<usize, ProcessError> {
+    checkpoint()?;
     let metadata = symlink_metadata(root).map_err(|_| ProcessError::Io)?;
     if metadata.is_file() {
         return usize::try_from(metadata.len()).map_err(|_| ProcessError::WorkspaceLimit);
@@ -2291,6 +2525,7 @@ pub(crate) fn workspace_size(root: &Path) -> Result<usize, ProcessError> {
     let mut pending = vec![root.to_owned()];
     while let Some(directory) = pending.pop() {
         for entry in std::fs::read_dir(directory).map_err(|_| ProcessError::Io)? {
+            checkpoint()?;
             let entry = entry.map_err(|_| ProcessError::Io)?;
             let metadata = symlink_metadata(entry.path()).map_err(|_| ProcessError::Io)?;
             if metadata.is_dir() {
@@ -2305,6 +2540,7 @@ pub(crate) fn workspace_size(root: &Path) -> Result<usize, ProcessError> {
             }
         }
     }
+    checkpoint()?;
     Ok(total)
 }
 
@@ -2319,13 +2555,23 @@ struct TempInput {
 }
 
 impl TempInput {
-    fn create(stdin: &ProcessStdin) -> Result<Option<Self>, ProcessError> {
+    fn create_until<C: CancellationObserver + ?Sized>(
+        stdin: &ProcessStdin,
+        cancellation: &C,
+        deadline: Instant,
+    ) -> Result<Option<Self>, ProcessError> {
         let Some(bytes) = stdin.as_bytes() else {
             return Ok(None);
         };
+        check_observer_deadline(cancellation, deadline)?;
         let mut output = TempOutput::create("stdin")?;
-        output.file.write_all(bytes).map_err(|_| ProcessError::Io)?;
+        for chunk in bytes.chunks(64 * 1024) {
+            check_observer_deadline(cancellation, deadline)?;
+            output.file.write_all(chunk).map_err(|_| ProcessError::Io)?;
+        }
+        check_observer_deadline(cancellation, deadline)?;
         output.file.flush().map_err(|_| ProcessError::Io)?;
+        check_observer_deadline(cancellation, deadline)?;
         let path = output.keep_path();
         Ok(Some(Self { path }))
     }

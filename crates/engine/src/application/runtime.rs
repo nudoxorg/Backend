@@ -22,7 +22,7 @@ use std::{
 use crate::driver::{ResolvedToolchain, ToolchainResolutionError, ToolchainSelection};
 use crate::publication::{binding::CompilationBindingFacts, manifest::CompilationManifestFacts};
 use arrayvec::ArrayVec;
-use backend_compile::EmbeddingExecutable;
+use backend_compile::{EmbeddingCacheSession, EmbeddingExecutable};
 use backend_frontend_csharp::legacy::{CSharpAuthorityConfiguration, CSharpOracle};
 use backend_frontend_go::legacy::oracle::GoPackageAuthorityWitness;
 use backend_frontend_go::legacy::{ConfiguredGoOracle, GoOracleInvocationModeV1};
@@ -1632,6 +1632,7 @@ pub struct LocalCompilerRuntimeConfiguration {
     package_roots: Box<[LocalRuntimePackageRoot]>,
     package_authority: LocalRuntimePackageAuthority,
     embedding_runtime: Option<Arc<EmbeddingExecutable>>,
+    embedding_cache_session: Option<EmbeddingCacheSession>,
     embedding_requirement: EmbeddingRequirement,
     embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
     timeout: LocalCompilerTimeout,
@@ -1662,6 +1663,7 @@ impl LocalCompilerRuntimeConfiguration {
             package_roots,
             package_authority,
             embedding_runtime: None,
+            embedding_cache_session: None,
             embedding_requirement: EmbeddingRequirement::Optional,
             embedding_provisioning_failure: None,
             timeout,
@@ -1678,8 +1680,16 @@ impl LocalCompilerRuntimeConfiguration {
         requirement: EmbeddingRequirement,
     ) -> Self {
         self.embedding_runtime = Some(runtime);
+        self.embedding_cache_session = None;
         self.embedding_requirement = requirement;
         self.embedding_provisioning_failure = None;
+        self
+    }
+
+    /// Binds one workspace-owned durable-cache session to this compiler client.
+    #[must_use]
+    pub fn with_embedding_cache_session(mut self, session: EmbeddingCacheSession) -> Self {
+        self.embedding_cache_session = Some(session);
         self
     }
 
@@ -1694,6 +1704,7 @@ impl LocalCompilerRuntimeConfiguration {
         requirement: EmbeddingRequirement,
     ) -> Self {
         self.embedding_runtime = None;
+        self.embedding_cache_session = None;
         self.embedding_requirement = requirement;
         self.embedding_provisioning_failure = Some(cause);
         self
@@ -2933,6 +2944,7 @@ fn run_worker_generation(
     let native_work_root = configuration.paths.native_work_directory.to_path_buf();
     let image_cap = maximum_image_bytes(configuration);
     let embedding_runtime = configuration.embedding_runtime.clone();
+    let embedding_cache_session = configuration.embedding_cache_session;
     let embedding_requirement = configuration.embedding_requirement;
     let embedding_provisioning_failure = configuration.embedding_provisioning_failure;
     let embedding_payload_max = embedding_runtime
@@ -2968,6 +2980,7 @@ fn run_worker_generation(
         capabilities,
         lane_scratches,
         embedding_runtime,
+        embedding_cache_session,
         embedding_requirement,
         embedding_provisioning_failure,
         embedding_payload_max,
@@ -2988,6 +3001,7 @@ fn run_worker_lanes(
     capabilities: LocalCompilerCapabilities,
     lane_scratches: Vec<LocalCompilerScratch>,
     embedding_runtime: Option<Arc<EmbeddingExecutable>>,
+    embedding_cache_session: Option<EmbeddingCacheSession>,
     embedding_requirement: EmbeddingRequirement,
     embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
     embedding_payload_max: usize,
@@ -3015,6 +3029,7 @@ fn run_worker_lanes(
                 .with_native_work_directory(native_root.join(format!("lane-{lane}")));
             let completions = completion_tx.clone();
             let lane_embedding_runtime = embedding_runtime.clone();
+            let lane_cache_session = embedding_cache_session.as_ref();
             let lane_embedding_provisioning_failure = embedding_provisioning_failure;
             let name = format!("nudox-compiler-lane-{lane}");
             if let Err(source) = thread::Builder::new()
@@ -3026,6 +3041,7 @@ fn run_worker_lanes(
                         receiver,
                         completions,
                         lane_embedding_runtime,
+                        lane_cache_session,
                         embedding_requirement,
                         lane_embedding_provisioning_failure,
                     )
@@ -3533,6 +3549,7 @@ fn run_lane(
     jobs: Receiver<LaneJob>,
     completions: SyncSender<LaneCompletion>,
     embedding_runtime: Option<Arc<EmbeddingExecutable>>,
+    embedding_cache_session: Option<&EmbeddingCacheSession>,
     embedding_requirement: EmbeddingRequirement,
     embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
 ) {
@@ -3655,6 +3672,7 @@ fn run_lane(
                                 execution_identity,
                                 plane_execution_seed,
                                 embedding_runtime.as_deref(),
+                                embedding_cache_session,
                                 embedding_requirement,
                                 &mut scratch,
                                 &cancelled,

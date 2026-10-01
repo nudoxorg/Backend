@@ -4,10 +4,10 @@
 //! inference is supervised under explicit input, output, deadline, process, memory, and workspace
 //! limits. A runtime becomes active only after the executable answers a real self-test request.
 
-use crate::embedding_cache::EmbeddingCacheFile;
+use crate::embedding_cache::EmbeddingCacheSession;
 use crate::supervisor::RunningByteSession;
 use crate::{
-    Cancellation, ProcessEnvironment, ProcessError, ProcessLimits, ProcessStdin, ProcessSupervisor,
+    ProcessEnvironment, ProcessError, ProcessLimits, ProcessStdin, ProcessSupervisor,
     ProcessTerminal, ProtocolDescriptor, SupervisedCommand, ToolchainArtifact,
 };
 #[cfg(unix)]
@@ -19,7 +19,7 @@ use std::{
     num::{NonZeroU16, NonZeroU32},
     path::{Path, PathBuf},
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Condvar, Mutex, MutexGuard, TryLockError,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -69,46 +69,39 @@ static ARTIFACT_WORKSPACE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 struct InferenceAdmissionGate {
     occupied: Mutex<bool>,
     available: Condvar,
-    wait_budget: Duration,
 }
 
 impl InferenceAdmissionGate {
-    fn new(wait_budget: Duration) -> Self {
+    fn new() -> Self {
         Self {
             occupied: Mutex::new(false),
             available: Condvar::new(),
-            wait_budget,
         }
     }
 
     fn acquire(
         &self,
         cancelled: Option<&AtomicBool>,
+        deadline: Instant,
     ) -> Result<InferenceAdmissionPermit<'_>, EmbeddingExecutableError> {
-        check_cancelled(cancelled)?;
-        let deadline = Instant::now()
-            .checked_add(self.wait_budget)
-            .ok_or(EmbeddingExecutableError::InferenceAdmissionTimeout)?;
-        let mut occupied = self
-            .occupied
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        check_request_deadline(cancelled, deadline)?;
+        let mut occupied = lock_mutex_until(&self.occupied, cancelled, deadline)?;
         while *occupied {
-            check_cancelled(cancelled)?;
+            check_request_deadline(cancelled, deadline)?;
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-                return Err(EmbeddingExecutableError::InferenceAdmissionTimeout);
+                return Err(EmbeddingExecutableError::Process(ProcessError::Deadline));
             };
             if remaining.is_zero() {
-                return Err(EmbeddingExecutableError::InferenceAdmissionTimeout);
+                return Err(EmbeddingExecutableError::Process(ProcessError::Deadline));
             }
             let (next, timeout) = self
                 .available
                 .wait_timeout(occupied, remaining.min(Duration::from_millis(10)))
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             occupied = next;
-            check_cancelled(cancelled)?;
+            check_request_deadline(cancelled, deadline)?;
             if timeout.timed_out() && Instant::now() >= deadline {
-                return Err(EmbeddingExecutableError::InferenceAdmissionTimeout);
+                return Err(EmbeddingExecutableError::Process(ProcessError::Deadline));
             }
         }
         *occupied = true;
@@ -507,6 +500,55 @@ impl EmbeddingInputIdentity {
         Self::for_configuration(*configuration.finalize().as_bytes(), invocation)
     }
 
+    fn new_until(
+        execution: EmbeddingExecutionIdentity,
+        invocation: EmbeddingInvocation<'_>,
+        cancelled: Option<&AtomicBool>,
+        deadline: Instant,
+    ) -> Result<Self, EmbeddingExecutableError> {
+        let mut configuration =
+            blake3::Hasher::new_derive_key("backend.compile.embedding-configuration.v1");
+        configuration.update(&execution.model);
+        configuration.update(&execution.model_version);
+        configuration.update(&execution.tokenizer);
+        configuration.update(&execution.executable);
+        configuration.update(&execution.recipe);
+        configuration.update(&execution.dimension.to_be_bytes());
+        configuration.update(&execution.maximum_text_bytes.to_be_bytes());
+        configuration.update(&execution.options_digest);
+        configuration.update(&execution.launch_configuration);
+        configuration.update(&[match execution.normalization {
+            EmbeddingNormalization::None => 0,
+            EmbeddingNormalization::L2 => 1,
+        }]);
+        Self::for_configuration_until(
+            *configuration.finalize().as_bytes(),
+            invocation,
+            cancelled,
+            deadline,
+        )
+    }
+
+    fn for_configuration_until(
+        configuration: [u8; 32],
+        invocation: EmbeddingInvocation<'_>,
+        cancelled: Option<&AtomicBool>,
+        deadline: Instant,
+    ) -> Result<Self, EmbeddingExecutableError> {
+        let mut hasher = blake3::Hasher::new_derive_key("backend.compile.embedding-input.v1");
+        hasher.update(&configuration);
+        hasher.update(&[match invocation.purpose {
+            EmbeddingPurpose::Query => 1,
+            EmbeddingPurpose::Document => 2,
+        }]);
+        for chunk in invocation.text.as_bytes().chunks(64 * 1024) {
+            check_request_deadline(cancelled, deadline)?;
+            hasher.update(chunk);
+        }
+        check_request_deadline(cancelled, deadline)?;
+        Ok(Self(*hasher.finalize().as_bytes()))
+    }
+
     /// Derives identity for another owner that has already committed its exact producer recipe.
     #[must_use]
     pub fn for_configuration(configuration: [u8; 32], invocation: EmbeddingInvocation<'_>) -> Self {
@@ -547,6 +589,29 @@ pub struct EmbeddingCoordinates {
     purpose: EmbeddingPurpose,
     normalization: EmbeddingNormalization,
     values: Arc<[f32]>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ValidatedProducerVector {
+    identity: EmbeddingInputIdentity,
+    values: Arc<[f32]>,
+}
+
+impl ValidatedProducerVector {
+    fn from_decoded(identity: EmbeddingInputIdentity, coordinates: &EmbeddingCoordinates) -> Self {
+        Self {
+            identity,
+            values: Arc::clone(&coordinates.values),
+        }
+    }
+
+    pub(crate) const fn identity(&self) -> EmbeddingInputIdentity {
+        self.identity
+    }
+
+    pub(crate) fn values(&self) -> &[f32] {
+        &self.values
+    }
 }
 
 /// Identity of one activated embedding invocation recipe and its exact launch policy.
@@ -745,13 +810,28 @@ impl EmbeddingArtifactWorkspace {
         Ok(())
     }
 
-    fn verify(
+    fn verify_until(
         &self,
         model: EmbeddingArtifactId,
         tokenizer: EmbeddingArtifactId,
+        cancelled: Option<&AtomicBool>,
+        deadline: Instant,
     ) -> Result<(), EmbeddingExecutableError> {
-        self.verify_artifact(MODEL_FILE_NAME, model, self.model_length)?;
-        self.verify_artifact(TOKENIZER_FILE_NAME, tokenizer, self.tokenizer_length)
+        check_request_deadline(cancelled, deadline)?;
+        self.verify_artifact(
+            MODEL_FILE_NAME,
+            model,
+            self.model_length,
+            cancelled,
+            deadline,
+        )?;
+        self.verify_artifact(
+            TOKENIZER_FILE_NAME,
+            tokenizer,
+            self.tokenizer_length,
+            cancelled,
+            deadline,
+        )
     }
 
     fn verify_artifact(
@@ -759,7 +839,10 @@ impl EmbeddingArtifactWorkspace {
         name: &str,
         expected: EmbeddingArtifactId,
         expected_length: usize,
+        cancelled: Option<&AtomicBool>,
+        deadline: Instant,
     ) -> Result<(), EmbeddingExecutableError> {
+        check_request_deadline(cancelled, deadline)?;
         let path = self.directory.join(name);
         let mut file = backend_platform::durable::open_private_read(&path)
             .map_err(EmbeddingExecutableError::ArtifactWorkspace)?;
@@ -781,6 +864,7 @@ impl EmbeddingArtifactWorkspace {
         let mut scratch = [0; 64 * 1024];
         let mut remaining = expected_length;
         while remaining > 0 {
+            check_request_deadline(cancelled, deadline)?;
             let limit = remaining.min(scratch.len());
             let observed = file
                 .read(&mut scratch[..limit])
@@ -825,6 +909,7 @@ impl EmbeddingArtifactWorkspace {
                 },
             });
         }
+        check_request_deadline(cancelled, deadline)?;
         Ok(())
     }
 
@@ -1074,7 +1159,6 @@ pub struct EmbeddingExecutable {
     launch_configuration: [u8; 32],
     inference_gate: InferenceAdmissionGate,
     inference_cache: Mutex<EmbeddingInferenceCache>,
-    durable_cache: Mutex<Option<Arc<Mutex<EmbeddingCacheFile>>>>,
     persistent_session: Mutex<Option<RunningByteSession>>,
     batch_protocol: EmbeddingBatchProtocol,
     active: bool,
@@ -1157,111 +1241,20 @@ impl EmbeddingExecutable {
         }
     }
 
-    /// Attaches one workspace-owned durable cache for exact input identities.
+    /// Opens a bounded durable-cache session for a held workspace directory capability.
     ///
-    /// The caller must hold the workspace's exclusive owner lease for the
-    /// lifetime of this runtime. The cache is an optimization only: artifact
-    /// and executable verification still precede every cache lookup.
-    ///
-    /// Returns whether the cache was attached. `false` means the path was
-    /// invalid or the runtime does not use unit-L2 normalization supported by
-    /// the durable vector format.
-    pub fn attach_durable_cache(&self, workspace_root: &Path) -> bool {
-        if self.normalization != EmbeddingNormalization::L2 {
-            return false;
-        }
-        let mut slot = self
-            .durable_cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(cache) = slot.as_ref() {
-            return cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .is_open_for_workspace(workspace_root);
+    /// The returned non-cloneable session owns its pinned directory and separate kernel lock. It
+    /// is passed by the workspace compiler to each inference and is never attached to this shared
+    /// runtime. Persistence is available only for unit-L2 output and remains an optimization.
+    pub fn open_durable_cache_session(
+        &self,
+        directory: backend_platform::DirectoryCapability,
+    ) -> Option<EmbeddingCacheSession> {
+        if !self.active || self.normalization != EmbeddingNormalization::L2 {
+            return None;
         }
         let identity = self.execution_identity();
-        let Some(cache) =
-            EmbeddingCacheFile::open(workspace_root, identity.recipe(), identity.dimension())
-        else {
-            return false;
-        };
-        *slot = Some(Arc::new(Mutex::new(cache)));
-        true
-    }
-
-    /// Clones the shared workspace cache handle for another producer owned
-    /// by the same locked workspace process.
-    #[must_use]
-    pub fn durable_cache_handle(&self) -> Option<Arc<Mutex<EmbeddingCacheFile>>> {
-        self.durable_cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .map(Arc::clone)
-    }
-
-    /// Clones this runtime's cache only when it belongs to the requested
-    /// exclusive workspace owner.
-    #[must_use]
-    pub fn durable_cache_handle_for_workspace(
-        &self,
-        workspace_root: &Path,
-    ) -> Option<Arc<Mutex<EmbeddingCacheFile>>> {
-        let slot = self
-            .durable_cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let cache = slot.as_ref()?;
-        let matches = cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_open_for_workspace(workspace_root);
-        matches.then(|| Arc::clone(cache))
-    }
-
-    fn load_durable_coordinates(
-        &self,
-        identity: EmbeddingInputIdentity,
-        purpose: EmbeddingPurpose,
-    ) -> Option<EmbeddingCoordinates> {
-        let cache = self.durable_cache_handle()?;
-        let values = cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .load(identity)?;
-        let coordinates = EmbeddingCoordinates {
-            recipe: self.recipe,
-            model: self.model.identity,
-            tokenizer: self.tokenizer.identity,
-            purpose,
-            normalization: self.normalization,
-            values,
-        };
-        self.inference_cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(identity, &coordinates);
-        Some(coordinates)
-    }
-
-    fn store_durable_coordinates(
-        &self,
-        values: &[(EmbeddingInputIdentity, &EmbeddingCoordinates)],
-    ) {
-        if values.is_empty() {
-            return;
-        }
-        if let Some(cache) = self.durable_cache_handle() {
-            let entries = values
-                .iter()
-                .map(|(identity, coordinates)| (*identity, coordinates.values()))
-                .collect::<Vec<_>>();
-            let _ = cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .store_batch(&entries);
-        }
+        EmbeddingCacheSession::open(directory, identity.recipe(), identity.dimension())
     }
 
     /// Upper bound for one vector's canonical output bytes.
@@ -1478,9 +1471,8 @@ impl EmbeddingExecutable {
             tokenizer,
             artifact_workspace,
             launch_configuration,
-            inference_gate: InferenceAdmissionGate::new(process_limits.wall_time()),
+            inference_gate: InferenceAdmissionGate::new(),
             inference_cache: Mutex::new(EmbeddingInferenceCache::default()),
-            durable_cache: Mutex::new(None),
             persistent_session: Mutex::new(None),
             batch_protocol: EmbeddingBatchProtocol::SingleV1,
             active: true,
@@ -1562,17 +1554,18 @@ impl EmbeddingExecutable {
         &self,
         invocation: EmbeddingInvocation<'_>,
     ) -> Result<EmbeddingCoordinates, EmbeddingExecutableError> {
+        let deadline = self.request_deadline()?;
         if matches!(
             self.batch_protocol,
             EmbeddingBatchProtocol::BatchV2 | EmbeddingBatchProtocol::PersistentBatchV2
         ) {
             return self
-                .infer_batch(invocation.purpose, &[invocation.text])?
+                .infer_batch_inner(invocation.purpose, &[invocation.text], None, deadline, None)?
                 .into_iter()
                 .next()
                 .ok_or(EmbeddingExecutableError::Protocol);
         }
-        self.infer_inner(invocation, true)
+        self.infer_inner_with_deadline(invocation, true, None, deadline)
     }
 
     /// Embeds many exact inputs, deduplicating by model recipe, task, and payload.
@@ -1590,7 +1583,8 @@ impl EmbeddingExecutable {
         purpose: EmbeddingPurpose,
         texts: &[&str],
     ) -> Result<Vec<EmbeddingCoordinates>, EmbeddingExecutableError> {
-        self.infer_batch_inner(purpose, texts, None)
+        let deadline = self.request_deadline()?;
+        self.infer_batch_inner(purpose, texts, None, deadline, None)
     }
 
     /// Cancellation-aware form of [`Self::infer_batch`].
@@ -1603,7 +1597,48 @@ impl EmbeddingExecutable {
         texts: &[&str],
         cancelled: &AtomicBool,
     ) -> Result<Vec<EmbeddingCoordinates>, EmbeddingExecutableError> {
-        self.infer_batch_inner(purpose, texts, Some(cancelled))
+        let deadline = self.request_deadline()?;
+        self.infer_batch_inner(purpose, texts, Some(cancelled), deadline, None)
+    }
+
+    /// Embeds a batch using the workspace cache session borrowed for this owner operation.
+    ///
+    /// The session belongs to the caller's workspace compiler, not this shareable runtime. A
+    /// cache failure behaves as a miss; cancellation and the one absolute call deadline still
+    /// apply to lookup, inference, and publication.
+    pub fn infer_batch_with_cache_session(
+        &self,
+        purpose: EmbeddingPurpose,
+        texts: &[&str],
+        cancelled: &AtomicBool,
+        cache_session: &EmbeddingCacheSession,
+    ) -> Result<Vec<EmbeddingCoordinates>, EmbeddingExecutableError> {
+        let deadline = self.request_deadline()?;
+        self.infer_batch_inner(
+            purpose,
+            texts,
+            Some(cancelled),
+            deadline,
+            Some(cache_session),
+        )
+    }
+
+    fn request_deadline(&self) -> Result<Instant, EmbeddingExecutableError> {
+        Instant::now()
+            .checked_add(self.process_limits.wall_time())
+            .ok_or(EmbeddingExecutableError::Process(ProcessError::Deadline))
+    }
+
+    fn verify_executable_until(
+        &self,
+        cancelled: Option<&AtomicBool>,
+        deadline: Instant,
+    ) -> Result<(), EmbeddingExecutableError> {
+        let uncancelled = AtomicBool::new(false);
+        let cancellation = cancelled.unwrap_or(&uncancelled);
+        self.executable
+            .verify_path_until(&self.program, cancellation, deadline)
+            .map_err(EmbeddingExecutableError::Process)
     }
 
     fn infer_batch_inner(
@@ -1611,7 +1646,10 @@ impl EmbeddingExecutable {
         purpose: EmbeddingPurpose,
         texts: &[&str],
         cancelled: Option<&AtomicBool>,
+        deadline: Instant,
+        cache_session: Option<&EmbeddingCacheSession>,
     ) -> Result<Vec<EmbeddingCoordinates>, EmbeddingExecutableError> {
+        check_request_deadline(cancelled, deadline)?;
         if !self.active {
             return Err(EmbeddingExecutableError::Revoked);
         }
@@ -1629,16 +1667,20 @@ impl EmbeddingExecutable {
             self.maximum_text_bytes,
             MAX_EMBEDDING_BATCH_INPUT_BYTES,
             cancelled,
+            deadline,
         )?;
 
         // Cache hits are accepted only after every mutable artifact path has been checked against
         // the activated manifest. Cache residency never becomes executable/model authority.
-        self.artifact_workspace
-            .verify(self.model.identity, self.tokenizer.identity)?;
-        self.executable
-            .verify_path(&self.program)
-            .map_err(EmbeddingExecutableError::Process)?;
-        self.check_persistent_session_health()?;
+        self.artifact_workspace.verify_until(
+            self.model.identity,
+            self.tokenizer.identity,
+            cancelled,
+            deadline,
+        )?;
+        self.verify_executable_until(cancelled, deadline)?;
+        check_request_deadline(cancelled, deadline)?;
+        self.check_persistent_session_health(cancelled, deadline)?;
 
         let mut unique_inputs = Vec::<(EmbeddingInputIdentity, &str)>::new();
         let mut unique_by_identity = HashMap::<EmbeddingInputIdentity, usize>::new();
@@ -1653,9 +1695,14 @@ impl EmbeddingExecutable {
             .try_reserve_exact(texts.len())
             .map_err(|_| EmbeddingExecutableError::BatchRequestExtent)?;
         for text in texts {
-            check_cancelled(cancelled)?;
+            check_request_deadline(cancelled, deadline)?;
             let invocation = EmbeddingInvocation { purpose, text };
-            let identity = EmbeddingInputIdentity::new(self.execution_identity(), invocation);
+            let identity = EmbeddingInputIdentity::new_until(
+                self.execution_identity(),
+                invocation,
+                cancelled,
+                deadline,
+            )?;
             let index = if let Some(index) = unique_by_identity.get(&identity) {
                 *index
             } else {
@@ -1673,10 +1720,7 @@ impl EmbeddingExecutable {
             .try_reserve_exact(unique_inputs.len())
             .map_err(|_| EmbeddingExecutableError::BatchRequestExtent)?;
         {
-            let cache = self
-                .inference_cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let cache = lock_mutex_until(&self.inference_cache, cancelled, deadline)?;
             for (index, (identity, _)) in unique_inputs.iter().enumerate() {
                 if let Some(coordinates) = cache.get(*identity) {
                     unique_results[index] = Some(coordinates);
@@ -1685,21 +1729,15 @@ impl EmbeddingExecutable {
                 }
             }
         }
-        if !misses.is_empty() {
-            let mut still_missing = Vec::new();
-            still_missing
-                .try_reserve_exact(misses.len())
-                .map_err(|_| EmbeddingExecutableError::BatchRequestExtent)?;
-            for index in misses.drain(..) {
-                let (identity, _) = unique_inputs[index];
-                if let Some(coordinates) = self.load_durable_coordinates(identity, purpose) {
-                    unique_results[index] = Some(coordinates);
-                } else {
-                    still_missing.push(index);
-                }
-            }
-            misses = still_missing;
-        }
+        self.load_cache_session_results(
+            cache_session,
+            purpose,
+            &unique_inputs,
+            &mut misses,
+            &mut unique_results,
+            cancelled,
+            deadline,
+        )?;
 
         // Admit a whole API batch as one owner. Besides bounding external model processes, this
         // lets concurrent callers recheck exact identities after the prior owner's transactional
@@ -1707,25 +1745,26 @@ impl EmbeddingExecutable {
         let _permit = if misses.is_empty() {
             None
         } else {
-            Some(self.inference_gate.acquire(cancelled)?)
+            Some(self.inference_gate.acquire(cancelled, deadline)?)
         };
         if _permit.is_some() {
-            check_cancelled(cancelled)?;
-            self.artifact_workspace
-                .verify(self.model.identity, self.tokenizer.identity)?;
-            self.executable
-                .verify_path(&self.program)
-                .map_err(EmbeddingExecutableError::Process)?;
+            check_request_deadline(cancelled, deadline)?;
+            self.artifact_workspace.verify_until(
+                self.model.identity,
+                self.tokenizer.identity,
+                cancelled,
+                deadline,
+            )?;
+            self.verify_executable_until(cancelled, deadline)?;
+            check_request_deadline(cancelled, deadline)?;
 
             let mut still_missing = Vec::new();
             still_missing
                 .try_reserve_exact(misses.len())
                 .map_err(|_| EmbeddingExecutableError::BatchRequestExtent)?;
-            let cache = self
-                .inference_cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let cache = lock_mutex_until(&self.inference_cache, cancelled, deadline)?;
             for index in misses.drain(..) {
+                check_request_deadline(cancelled, deadline)?;
                 let (identity, _) = unique_inputs[index];
                 if let Some(coordinates) = cache.get(identity) {
                     unique_results[index] = Some(coordinates);
@@ -1734,28 +1773,38 @@ impl EmbeddingExecutable {
                 }
             }
             misses = still_missing;
+            self.load_cache_session_results(
+                cache_session,
+                purpose,
+                &unique_inputs,
+                &mut misses,
+                &mut unique_results,
+                cancelled,
+                deadline,
+            )?;
         }
         check_batch_result_limit(misses.len(), self.dimensions.get())?;
         let inferred_indices = misses.clone();
 
         if self.batch_protocol == EmbeddingBatchProtocol::SingleV1 {
             for index in misses {
-                check_cancelled(cancelled)?;
+                check_request_deadline(cancelled, deadline)?;
                 let (_, text) = unique_inputs[index];
                 unique_results[index] = Some(self.infer_inner_admitted(
                     EmbeddingInvocation { purpose, text },
                     false,
                     cancelled,
+                    deadline,
                 )?);
             }
         } else {
             let mut cursor = 0;
             while cursor < misses.len() {
-                check_cancelled(cancelled)?;
+                check_request_deadline(cancelled, deadline)?;
                 let mut end = cursor;
                 let mut request_bytes = REQUEST_HEADER_BYTES;
                 while end < misses.len() && end - cursor < MAX_EMBEDDING_BATCH_ITEMS {
-                    check_cancelled(cancelled)?;
+                    check_request_deadline(cancelled, deadline)?;
                     let (_, text) = unique_inputs[misses[end]];
                     let Some(candidate_bytes) = self.next_batch_request_extent(request_bytes, text)
                     else {
@@ -1775,8 +1824,9 @@ impl EmbeddingExecutable {
                     .iter()
                     .map(|index| unique_inputs[*index])
                     .collect::<Vec<_>>();
-                let coordinates = self.run_batch_v2_admitted(&batch, purpose, cancelled)?;
-                check_cancelled(cancelled)?;
+                let coordinates =
+                    self.run_batch_v2_admitted(&batch, purpose, cancelled, deadline)?;
+                check_request_deadline(cancelled, deadline)?;
                 if coordinates.len() != batch.len() {
                     return Err(EmbeddingExecutableError::BatchResponseCount {
                         expected: batch.len(),
@@ -1802,36 +1852,92 @@ impl EmbeddingExecutable {
                     .ok_or(EmbeddingExecutableError::Protocol)?,
             );
         }
-        check_cancelled(cancelled)?;
-        if inferred_indices.is_empty() {
-            // Every unique input was already warm in the in-memory or durable
-            // cache. No new state needs transactional publication or disk IO.
-            return Ok(output);
+        check_request_deadline(cancelled, deadline)?;
+        // Cache writes are queued only after all misses decode successfully. This keeps one
+        // failed later microbatch from publishing a prefix of producer output.
+        if !inferred_indices.is_empty()
+            && let Some(cache_session) = cache_session
+        {
+            let mut values = Vec::new();
+            values
+                .try_reserve_exact(inferred_indices.len())
+                .map_err(|_| EmbeddingExecutableError::BatchRequestExtent)?;
+            for &index in &inferred_indices {
+                check_request_deadline(cancelled, deadline)?;
+                if let Some(coordinates) = unique_results[index].as_ref() {
+                    values.push(ValidatedProducerVector::from_decoded(
+                        unique_inputs[index].0,
+                        coordinates,
+                    ));
+                }
+            }
+            cache_session
+                .store_validated(values, cancelled, deadline)
+                .map_err(EmbeddingExecutableError::Process)?;
         }
-        // Treat the whole API call transactionally. If a later microbatch fails, no earlier
-        // result from this call becomes a warm-cache hit on retry.
-        let mut cache = self
-            .inference_cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for &index in &inferred_indices {
+        check_request_deadline(cancelled, deadline)?;
+        let mut cache = lock_mutex_until(&self.inference_cache, cancelled, deadline)?;
+        for (index, (identity, _)) in unique_inputs.iter().enumerate() {
+            check_request_deadline(cancelled, deadline)?;
             if let Some(coordinates) = unique_results[index].as_ref() {
-                let identity = unique_inputs[index].0;
-                cache.insert(identity, coordinates);
+                cache.insert(*identity, coordinates);
             }
         }
         drop(cache);
-        let durable_values = inferred_indices
-            .iter()
-            .filter_map(|index| {
-                let identity = unique_inputs[*index].0;
-                unique_results[*index]
-                    .as_ref()
-                    .map(|value| (identity, value))
-            })
-            .collect::<Vec<_>>();
-        self.store_durable_coordinates(&durable_values);
+        check_request_deadline(cancelled, deadline)?;
         Ok(output)
+    }
+
+    fn load_cache_session_results(
+        &self,
+        cache_session: Option<&EmbeddingCacheSession>,
+        purpose: EmbeddingPurpose,
+        unique_inputs: &[(EmbeddingInputIdentity, &str)],
+        misses: &mut Vec<usize>,
+        unique_results: &mut [Option<EmbeddingCoordinates>],
+        cancelled: Option<&AtomicBool>,
+        deadline: Instant,
+    ) -> Result<(), EmbeddingExecutableError> {
+        let Some(cache_session) = cache_session else {
+            return Ok(());
+        };
+        if misses.is_empty() {
+            return Ok(());
+        }
+        check_request_deadline(cancelled, deadline)?;
+        let mut identities = Vec::new();
+        if identities.try_reserve_exact(misses.len()).is_err() {
+            return Ok(());
+        }
+        identities.extend(misses.iter().map(|index| unique_inputs[*index].0));
+        let cached = match cache_session.lookup_batch(&identities, cancelled, deadline) {
+            Ok(Some(cached)) if cached.len() == misses.len() => cached,
+            Ok(_) | Err(ProcessError::OutputLimit | ProcessError::UnsupportedLimit(_)) => {
+                return Ok(());
+            }
+            Err(error) => return Err(EmbeddingExecutableError::Process(error)),
+        };
+        let mut still_missing = Vec::new();
+        if still_missing.try_reserve_exact(misses.len()).is_err() {
+            return Ok(());
+        }
+        for (&index, values) in misses.iter().zip(cached) {
+            check_request_deadline(cancelled, deadline)?;
+            if let Some(values) = values {
+                unique_results[index] = Some(EmbeddingCoordinates {
+                    recipe: self.recipe,
+                    model: self.model.identity,
+                    tokenizer: self.tokenizer.identity,
+                    purpose,
+                    normalization: self.normalization,
+                    values,
+                });
+            } else {
+                still_missing.push(index);
+            }
+        }
+        *misses = still_missing;
+        Ok(())
     }
 
     fn infer_inner(
@@ -1839,7 +1945,8 @@ impl EmbeddingExecutable {
         invocation: EmbeddingInvocation<'_>,
         use_cache: bool,
     ) -> Result<EmbeddingCoordinates, EmbeddingExecutableError> {
-        self.infer_inner_with_cancellation_flag(invocation, use_cache, None)
+        let deadline = self.request_deadline()?;
+        self.infer_inner_with_deadline(invocation, use_cache, None, deadline)
     }
 
     fn infer_inner_with_cancellation_flag(
@@ -1848,12 +1955,23 @@ impl EmbeddingExecutable {
         use_cache: bool,
         cancelled: Option<&AtomicBool>,
     ) -> Result<EmbeddingCoordinates, EmbeddingExecutableError> {
+        let deadline = self.request_deadline()?;
+        self.infer_inner_with_deadline(invocation, use_cache, cancelled, deadline)
+    }
+
+    fn infer_inner_with_deadline(
+        &self,
+        invocation: EmbeddingInvocation<'_>,
+        use_cache: bool,
+        cancelled: Option<&AtomicBool>,
+        deadline: Instant,
+    ) -> Result<EmbeddingCoordinates, EmbeddingExecutableError> {
         if !self.active {
             return Err(EmbeddingExecutableError::Revoked);
         }
-        check_cancelled(cancelled)?;
-        let _permit = self.inference_gate.acquire(cancelled)?;
-        self.infer_inner_admitted(invocation, use_cache, cancelled)
+        check_request_deadline(cancelled, deadline)?;
+        let _permit = self.inference_gate.acquire(cancelled, deadline)?;
+        self.infer_inner_admitted(invocation, use_cache, cancelled, deadline)
     }
 
     fn infer_inner_admitted(
@@ -1861,40 +1979,41 @@ impl EmbeddingExecutable {
         invocation: EmbeddingInvocation<'_>,
         use_cache: bool,
         cancelled: Option<&AtomicBool>,
+        deadline: Instant,
     ) -> Result<EmbeddingCoordinates, EmbeddingExecutableError> {
         if !self.active {
             return Err(EmbeddingExecutableError::Revoked);
         }
-        check_cancelled(cancelled)?;
-        self.artifact_workspace
-            .verify(self.model.identity, self.tokenizer.identity)?;
-        self.executable
-            .verify_path(&self.program)
-            .map_err(EmbeddingExecutableError::Process)?;
+        check_request_deadline(cancelled, deadline)?;
+        self.artifact_workspace.verify_until(
+            self.model.identity,
+            self.tokenizer.identity,
+            cancelled,
+            deadline,
+        )?;
+        self.verify_executable_until(cancelled, deadline)?;
         if invocation.text.len() > self.maximum_text_bytes {
             return Err(EmbeddingExecutableError::TextLimit {
                 observed: invocation.text.len(),
                 maximum: self.maximum_text_bytes,
             });
         }
-        let input_identity = EmbeddingInputIdentity::new(self.execution_identity(), invocation);
-        if use_cache
-            && let Some(coordinates) = self
-                .inference_cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(input_identity)
-        {
-            return Ok(coordinates);
+        let input_identity = EmbeddingInputIdentity::new_until(
+            self.execution_identity(),
+            invocation,
+            cancelled,
+            deadline,
+        )?;
+        if use_cache {
+            let cache = lock_mutex_until(&self.inference_cache, cancelled, deadline)?;
+            if let Some(coordinates) = cache.get(input_identity) {
+                return Ok(coordinates);
+            }
         }
-        if use_cache
-            && let Some(coordinates) =
-                self.load_durable_coordinates(input_identity, invocation.purpose)
-        {
-            return Ok(coordinates);
-        }
-        let request = self.encode_request(invocation)?;
-        let command = SupervisedCommand::for_authority_with_artifact(
+        let request = self.encode_request_until(invocation, cancelled, deadline)?;
+        let uncancelled = AtomicBool::new(false);
+        let cancellation = cancelled.unwrap_or(&uncancelled);
+        let command = SupervisedCommand::for_authority_with_artifact_until(
             self.program.clone(),
             self.arguments.clone(),
             self.environment.clone(),
@@ -1904,20 +2023,20 @@ impl EmbeddingExecutable {
             None,
             ProtocolDescriptor::cold(),
             self.process_limits,
+            cancellation,
+            deadline,
         )
         .map_err(EmbeddingExecutableError::Process)?;
-        let receipt = run_supervised_command(command, cancelled)?;
-        check_cancelled(cancelled)?;
+        let receipt = run_supervised_command(command, cancelled, deadline)?;
+        check_request_deadline(cancelled, deadline)?;
         if receipt.terminal() != ProcessTerminal::Success || !receipt.reaped() {
             return Err(EmbeddingExecutableError::Terminal(receipt.terminal()));
         }
-        let coordinates = self.decode_response(invocation.purpose, receipt.stdout())?;
+        let coordinates =
+            self.decode_response(invocation.purpose, receipt.stdout(), cancelled, deadline)?;
         if use_cache {
-            self.inference_cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+            lock_mutex_until(&self.inference_cache, cancelled, deadline)?
                 .insert(input_identity, &coordinates);
-            self.store_durable_coordinates(&[(input_identity, &coordinates)]);
         }
         Ok(coordinates)
     }
@@ -1932,10 +2051,13 @@ impl EmbeddingExecutable {
         *session = None;
     }
 
-    fn encode_request(
+    fn encode_request_until(
         &self,
         invocation: EmbeddingInvocation<'_>,
+        cancelled: Option<&AtomicBool>,
+        deadline: Instant,
     ) -> Result<Vec<u8>, EmbeddingExecutableError> {
+        check_request_deadline(cancelled, deadline)?;
         let text_len = u32::try_from(invocation.text.len())
             .map_err(|_| EmbeddingExecutableError::RequestExtent)?;
         let request_extent = REQUEST_HEADER_BYTES
@@ -1960,8 +2082,33 @@ impl EmbeddingExecutable {
         output.extend_from_slice(&self.model.identity.as_bytes());
         output.extend_from_slice(&self.tokenizer.identity.as_bytes());
         output.extend_from_slice(&text_len.to_be_bytes());
-        output.extend_from_slice(invocation.text.as_bytes());
+        for chunk in invocation.text.as_bytes().chunks(64 * 1024) {
+            check_request_deadline(cancelled, deadline)?;
+            output.extend_from_slice(chunk);
+        }
+        check_request_deadline(cancelled, deadline)?;
         Ok(output)
+    }
+
+    fn batch_request_fits_until(
+        &self,
+        batch: &[(EmbeddingInputIdentity, &str)],
+        cancelled: Option<&AtomicBool>,
+        deadline: Instant,
+    ) -> Result<bool, EmbeddingExecutableError> {
+        if batch.is_empty() || batch.len() > MAX_EMBEDDING_BATCH_ITEMS {
+            return Ok(false);
+        }
+        let mut request_bytes = REQUEST_HEADER_BYTES;
+        for (_, text) in batch {
+            check_request_deadline(cancelled, deadline)?;
+            let Some(next) = self.next_batch_request_extent(request_bytes, text) else {
+                return Ok(false);
+            };
+            request_bytes = next;
+        }
+        Ok(request_bytes <= self.process_limits.input_bytes()
+            && self.batch_response_fits(batch.len()))
     }
 
     fn batch_request_fits(&self, batch: &[(EmbeddingInputIdentity, &str)]) -> bool {
@@ -2013,18 +2160,21 @@ impl EmbeddingExecutable {
         &self,
         batch: &[(EmbeddingInputIdentity, &str)],
         purpose: EmbeddingPurpose,
+        cancelled: Option<&AtomicBool>,
+        deadline: Instant,
     ) -> Result<Vec<u8>, EmbeddingExecutableError> {
-        if !self.batch_request_fits(batch) {
+        check_request_deadline(cancelled, deadline)?;
+        if !self.batch_request_fits_until(batch, cancelled, deadline)? {
             return Err(EmbeddingExecutableError::BatchRequestExtent);
         }
-        let request_bytes = batch
-            .iter()
-            .try_fold(REQUEST_HEADER_BYTES, |total, (_, text)| {
-                total
-                    .checked_add(BATCH_ITEM_HEADER_BYTES)
-                    .and_then(|bytes| bytes.checked_add(text.len()))
-            })
-            .ok_or(EmbeddingExecutableError::BatchRequestExtent)?;
+        let mut request_bytes = REQUEST_HEADER_BYTES;
+        for (_, text) in batch {
+            check_request_deadline(cancelled, deadline)?;
+            request_bytes = request_bytes
+                .checked_add(BATCH_ITEM_HEADER_BYTES)
+                .and_then(|bytes| bytes.checked_add(text.len()))
+                .ok_or(EmbeddingExecutableError::BatchRequestExtent)?;
+        }
         let count =
             u32::try_from(batch.len()).map_err(|_| EmbeddingExecutableError::BatchRequestExtent)?;
         let mut output = Vec::new();
@@ -2046,12 +2196,17 @@ impl EmbeddingExecutable {
         output.extend_from_slice(&self.tokenizer.identity.as_bytes());
         output.extend_from_slice(&count.to_be_bytes());
         for (identity, text) in batch {
+            check_request_deadline(cancelled, deadline)?;
             let text_len = u32::try_from(text.len())
                 .map_err(|_| EmbeddingExecutableError::BatchRequestExtent)?;
             output.extend_from_slice(&identity.as_bytes());
             output.extend_from_slice(&text_len.to_be_bytes());
-            output.extend_from_slice(text.as_bytes());
+            for chunk in text.as_bytes().chunks(64 * 1024) {
+                check_request_deadline(cancelled, deadline)?;
+                output.extend_from_slice(chunk);
+            }
         }
+        check_request_deadline(cancelled, deadline)?;
         Ok(output)
     }
 
@@ -2064,9 +2219,10 @@ impl EmbeddingExecutable {
         if !self.active {
             return Err(EmbeddingExecutableError::Revoked);
         }
-        check_cancelled(cancelled)?;
-        let _permit = self.inference_gate.acquire(cancelled)?;
-        self.run_batch_v2_admitted(batch, purpose, cancelled)
+        let deadline = self.request_deadline()?;
+        check_request_deadline(cancelled, deadline)?;
+        let _permit = self.inference_gate.acquire(cancelled, deadline)?;
+        self.run_batch_v2_admitted(batch, purpose, cancelled, deadline)
     }
 
     fn run_batch_v2_admitted(
@@ -2074,21 +2230,27 @@ impl EmbeddingExecutable {
         batch: &[(EmbeddingInputIdentity, &str)],
         purpose: EmbeddingPurpose,
         cancelled: Option<&AtomicBool>,
+        deadline: Instant,
     ) -> Result<Vec<EmbeddingCoordinates>, EmbeddingExecutableError> {
         if self.batch_protocol == EmbeddingBatchProtocol::PersistentBatchV2 {
-            return self.run_persistent_batch_v2_admitted(batch, purpose, cancelled);
+            return self.run_persistent_batch_v2_admitted(batch, purpose, cancelled, deadline);
         }
         if !self.active {
             return Err(EmbeddingExecutableError::Revoked);
         }
-        check_cancelled(cancelled)?;
-        self.artifact_workspace
-            .verify(self.model.identity, self.tokenizer.identity)?;
-        self.executable
-            .verify_path(&self.program)
-            .map_err(EmbeddingExecutableError::Process)?;
-        let request = self.encode_batch_request(batch, purpose)?;
-        let command = SupervisedCommand::for_authority_with_artifact(
+        check_request_deadline(cancelled, deadline)?;
+        self.artifact_workspace.verify_until(
+            self.model.identity,
+            self.tokenizer.identity,
+            cancelled,
+            deadline,
+        )?;
+        self.verify_executable_until(cancelled, deadline)?;
+        check_request_deadline(cancelled, deadline)?;
+        let request = self.encode_batch_request(batch, purpose, cancelled, deadline)?;
+        let uncancelled = AtomicBool::new(false);
+        let cancellation = cancelled.unwrap_or(&uncancelled);
+        let command = SupervisedCommand::for_authority_with_artifact_until(
             self.program.clone(),
             self.arguments.clone(),
             self.environment.clone(),
@@ -2098,14 +2260,16 @@ impl EmbeddingExecutable {
             None,
             ProtocolDescriptor::cold(),
             self.process_limits,
+            cancellation,
+            deadline,
         )
         .map_err(EmbeddingExecutableError::Process)?;
-        let receipt = run_supervised_command(command, cancelled)?;
-        check_cancelled(cancelled)?;
+        let receipt = run_supervised_command(command, cancelled, deadline)?;
+        check_request_deadline(cancelled, deadline)?;
         if receipt.terminal() != ProcessTerminal::Success || !receipt.reaped() {
             return Err(EmbeddingExecutableError::Terminal(receipt.terminal()));
         }
-        self.decode_batch_response(batch, purpose, receipt.stdout())
+        self.decode_batch_response(batch, purpose, receipt.stdout(), cancelled, deadline)
     }
 
     fn persistent_requested(&self) -> bool {
@@ -2114,18 +2278,20 @@ impl EmbeddingExecutable {
             .any(|argument| argument == "--persistent-bem2-v1")
     }
 
-    fn check_persistent_session_health(&self) -> Result<(), EmbeddingExecutableError> {
+    fn check_persistent_session_health(
+        &self,
+        cancelled: Option<&AtomicBool>,
+        deadline: Instant,
+    ) -> Result<(), EmbeddingExecutableError> {
         if self.batch_protocol != EmbeddingBatchProtocol::PersistentBatchV2 {
             return Ok(());
         }
-        let mut session = self
-            .persistent_session
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut session = lock_mutex_until(&self.persistent_session, cancelled, deadline)?;
         let Some(current) = session.as_mut() else {
             return Ok(());
         };
-        match current.is_alive() {
+        let uncancelled = AtomicBool::new(false);
+        match current.is_alive_until(cancelled.unwrap_or(&uncancelled), deadline) {
             Ok(true) => Ok(()),
             Ok(false) => {
                 *session = None;
@@ -2147,6 +2313,24 @@ impl EmbeddingExecutable {
             .is_some_and(RunningByteSession::pause_stdout_reader_for_test)
     }
 
+    #[cfg(test)]
+    fn hold_persistent_probe_for_test(&self) -> Option<crate::supervisor::TestStdoutProbeControl> {
+        self.persistent_session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(RunningByteSession::hold_stdout_probe_for_test)
+    }
+
+    #[cfg(test)]
+    fn clear_inference_cache_for_test(&self) {
+        *self
+            .inference_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            EmbeddingInferenceCache::default();
+    }
+
     fn run_persistent_batch_v2(
         &self,
         batch: &[(EmbeddingInputIdentity, &str)],
@@ -2156,9 +2340,10 @@ impl EmbeddingExecutable {
         if !self.active {
             return Err(EmbeddingExecutableError::Revoked);
         }
-        check_cancelled(cancelled)?;
-        let _permit = self.inference_gate.acquire(cancelled)?;
-        self.run_persistent_batch_v2_admitted(batch, purpose, cancelled)
+        let deadline = self.request_deadline()?;
+        check_request_deadline(cancelled, deadline)?;
+        let _permit = self.inference_gate.acquire(cancelled, deadline)?;
+        self.run_persistent_batch_v2_admitted(batch, purpose, cancelled, deadline)
     }
 
     fn run_persistent_batch_v2_admitted(
@@ -2166,20 +2351,24 @@ impl EmbeddingExecutable {
         batch: &[(EmbeddingInputIdentity, &str)],
         purpose: EmbeddingPurpose,
         cancelled: Option<&AtomicBool>,
+        deadline: Instant,
     ) -> Result<Vec<EmbeddingCoordinates>, EmbeddingExecutableError> {
         if !self.active {
             return Err(EmbeddingExecutableError::Revoked);
         }
-        check_cancelled(cancelled)?;
-        if !self.batch_request_fits(batch) {
+        check_request_deadline(cancelled, deadline)?;
+        if !self.batch_request_fits_until(batch, cancelled, deadline)? {
             return Err(EmbeddingExecutableError::BatchRequestExtent);
         }
-        self.artifact_workspace
-            .verify(self.model.identity, self.tokenizer.identity)?;
-        self.executable
-            .verify_path(&self.program)
-            .map_err(EmbeddingExecutableError::Process)?;
-        let request = self.encode_batch_request(batch, purpose)?;
+        self.artifact_workspace.verify_until(
+            self.model.identity,
+            self.tokenizer.identity,
+            cancelled,
+            deadline,
+        )?;
+        self.verify_executable_until(cancelled, deadline)?;
+        check_request_deadline(cancelled, deadline)?;
+        let request = self.encode_batch_request(batch, purpose, cancelled, deadline)?;
         let vector_bytes = usize::from(self.dimensions.get())
             .checked_mul(size_of::<f32>())
             .and_then(|extent| extent.checked_add(BATCH_RESPONSE_ITEM_HEADER_BYTES))
@@ -2189,12 +2378,11 @@ impl EmbeddingExecutable {
             .checked_mul(vector_bytes)
             .and_then(|extent| extent.checked_add(BATCH_RESPONSE_HEADER_BYTES))
             .ok_or(EmbeddingExecutableError::ResponseExtent)?;
-        let mut session = self
-            .persistent_session
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let uncancelled = AtomicBool::new(false);
+        let cancellation_flag = cancelled.unwrap_or(&uncancelled);
+        let mut session = lock_mutex_until(&self.persistent_session, cancelled, deadline)?;
         if let Some(current) = session.as_mut() {
-            let alive = match current.is_alive() {
+            let alive = match current.is_alive_until(cancellation_flag, deadline) {
                 Ok(alive) => alive,
                 Err(error) => {
                     *session = None;
@@ -2211,7 +2399,7 @@ impl EmbeddingExecutable {
             }
         }
         if session.is_none() {
-            let command = SupervisedCommand::for_authority_with_artifact(
+            let command = SupervisedCommand::for_authority_with_artifact_until(
                 self.program.clone(),
                 self.arguments.clone(),
                 self.environment.clone(),
@@ -2221,28 +2409,33 @@ impl EmbeddingExecutable {
                 None,
                 ProtocolDescriptor::persistent(),
                 self.process_limits,
+                cancellation_flag,
+                deadline,
             )
             .map_err(EmbeddingExecutableError::Process)?;
             *session = Some(
                 ProcessSupervisor::new(command)
-                    .start_byte_session()
+                    .start_byte_session(cancellation_flag, deadline)
                     .map_err(EmbeddingExecutableError::Process)?,
             );
         }
-        let cancellation_flag = AtomicBool::new(false);
-        let cancellation_flag = cancelled.unwrap_or(&cancellation_flag);
         let response = match session
             .as_mut()
             .ok_or(EmbeddingExecutableError::Protocol)?
-            .exchange_with_cancellation_flag(request, response_bytes, cancellation_flag)
-        {
+            .exchange_with_cancellation_flag_until(
+                request,
+                response_bytes,
+                cancellation_flag,
+                deadline,
+            ) {
             Ok(response) => response,
             Err(error) => {
                 *session = None;
                 return Err(EmbeddingExecutableError::Process(error));
             }
         };
-        let coordinates = self.decode_batch_response(batch, purpose, &response);
+        let coordinates =
+            self.decode_batch_response(batch, purpose, &response, cancelled, deadline);
         if coordinates.is_err() {
             *session = None;
         }
@@ -2254,7 +2447,10 @@ impl EmbeddingExecutable {
         batch: &[(EmbeddingInputIdentity, &str)],
         purpose: EmbeddingPurpose,
         bytes: &[u8],
+        cancelled: Option<&AtomicBool>,
+        deadline: Instant,
     ) -> Result<Vec<EmbeddingCoordinates>, EmbeddingExecutableError> {
+        check_request_deadline(cancelled, deadline)?;
         let Some(header) = bytes.get(..BATCH_RESPONSE_HEADER_BYTES) else {
             return Err(EmbeddingExecutableError::Protocol);
         };
@@ -2295,6 +2491,9 @@ impl EmbeddingExecutable {
             .map_err(|_| EmbeddingExecutableError::BatchRequestExtent)?;
         let mut offset = BATCH_RESPONSE_HEADER_BYTES;
         for (index, (identity, _)) in batch.iter().enumerate() {
+            if index % 16 == 0 {
+                check_request_deadline(cancelled, deadline)?;
+            }
             let item_header = &bytes[offset..offset + BATCH_RESPONSE_ITEM_HEADER_BYTES];
             if item_header != identity.as_bytes() {
                 return Err(EmbeddingExecutableError::BatchResponseIdentity { index });
@@ -2307,7 +2506,13 @@ impl EmbeddingExecutable {
             values
                 .try_reserve_exact(usize::from(dimensions))
                 .map_err(|_| EmbeddingExecutableError::BatchRequestExtent)?;
-            for encoded in bytes[offset..values_end].chunks_exact(size_of::<f32>()) {
+            for (coordinate_index, encoded) in bytes[offset..values_end]
+                .chunks_exact(size_of::<f32>())
+                .enumerate()
+            {
+                if coordinate_index % 1024 == 0 {
+                    check_request_deadline(cancelled, deadline)?;
+                }
                 let value = f32::from_le_bytes([encoded[0], encoded[1], encoded[2], encoded[3]]);
                 if !value.is_finite() {
                     return Err(EmbeddingExecutableError::NonFinite);
@@ -2330,6 +2535,7 @@ impl EmbeddingExecutable {
             });
             offset = values_end;
         }
+        check_request_deadline(cancelled, deadline)?;
         Ok(coordinates)
     }
 
@@ -2337,7 +2543,10 @@ impl EmbeddingExecutable {
         &self,
         purpose: EmbeddingPurpose,
         bytes: &[u8],
+        cancelled: Option<&AtomicBool>,
+        deadline: Instant,
     ) -> Result<EmbeddingCoordinates, EmbeddingExecutableError> {
+        check_request_deadline(cancelled, deadline)?;
         let Some(header) = bytes.get(..RESPONSE_HEADER_BYTES) else {
             return Err(EmbeddingExecutableError::Protocol);
         };
@@ -2359,7 +2568,13 @@ impl EmbeddingExecutable {
             return Err(EmbeddingExecutableError::Protocol);
         }
         let mut values = Vec::with_capacity(usize::from(dimensions));
-        for encoded in bytes[RESPONSE_HEADER_BYTES..].chunks_exact(size_of::<f32>()) {
+        for (index, encoded) in bytes[RESPONSE_HEADER_BYTES..]
+            .chunks_exact(size_of::<f32>())
+            .enumerate()
+        {
+            if index % 1024 == 0 {
+                check_request_deadline(cancelled, deadline)?;
+            }
             let value = f32::from_le_bytes([encoded[0], encoded[1], encoded[2], encoded[3]]);
             if !value.is_finite() {
                 return Err(EmbeddingExecutableError::NonFinite);
@@ -2372,6 +2587,7 @@ impl EmbeddingExecutable {
                 return Err(EmbeddingExecutableError::Normalization { norm_squared });
             }
         }
+        check_request_deadline(cancelled, deadline)?;
         Ok(EmbeddingCoordinates {
             recipe: self.recipe,
             model: self.model.identity,
@@ -2499,16 +2715,49 @@ fn check_cancelled(cancelled: Option<&AtomicBool>) -> Result<(), EmbeddingExecut
     Ok(())
 }
 
+fn check_request_deadline(
+    cancelled: Option<&AtomicBool>,
+    deadline: Instant,
+) -> Result<(), EmbeddingExecutableError> {
+    check_cancelled(cancelled)?;
+    if Instant::now() >= deadline {
+        return Err(EmbeddingExecutableError::Process(ProcessError::Deadline));
+    }
+    Ok(())
+}
+
+fn lock_mutex_until<'a, T>(
+    mutex: &'a Mutex<T>,
+    cancelled: Option<&AtomicBool>,
+    deadline: Instant,
+) -> Result<MutexGuard<'a, T>, EmbeddingExecutableError> {
+    loop {
+        check_request_deadline(cancelled, deadline)?;
+        match mutex.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(TryLockError::Poisoned(poisoned)) => return Ok(poisoned.into_inner()),
+            Err(TryLockError::WouldBlock) => {
+                std::thread::sleep(
+                    deadline
+                        .saturating_duration_since(Instant::now())
+                        .min(Duration::from_millis(1)),
+                );
+            }
+        }
+    }
+}
+
 fn validate_batch_input_bytes(
     texts: &[&str],
     maximum_text_bytes: usize,
     maximum_batch_bytes: usize,
     cancelled: Option<&AtomicBool>,
+    deadline: Instant,
 ) -> Result<(), EmbeddingExecutableError> {
     let mut total = 0_usize;
     for (index, text) in texts.iter().enumerate() {
         if index % 256 == 0 {
-            check_cancelled(cancelled)?;
+            check_request_deadline(cancelled, deadline)?;
         }
         if text.len() > maximum_text_bytes {
             return Err(EmbeddingExecutableError::TextLimit {
@@ -2524,6 +2773,7 @@ fn validate_batch_input_bytes(
             maximum: maximum_batch_bytes,
         });
     }
+    check_request_deadline(cancelled, deadline)?;
     Ok(())
 }
 
@@ -2557,33 +2807,13 @@ fn batch_single_request_fits(maximum_text_bytes: usize, input_bytes: usize) -> b
 fn run_supervised_command(
     command: SupervisedCommand,
     cancelled: Option<&AtomicBool>,
+    deadline: Instant,
 ) -> Result<crate::ProcessReceipt, EmbeddingExecutableError> {
-    let Some(cancelled) = cancelled else {
-        return ProcessSupervisor::new(command)
-            .run()
-            .map_err(EmbeddingExecutableError::Process);
-    };
-    check_cancelled(Some(cancelled))?;
-    let (cancellation, handle) = Cancellation::new();
-    let finished = AtomicBool::new(false);
-    std::thread::scope(|scope| {
-        let monitor = scope.spawn(|| {
-            while !finished.load(Ordering::Acquire) {
-                if cancelled.load(Ordering::Acquire) {
-                    handle.cancel();
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(1));
-            }
-        });
-        let result = ProcessSupervisor::new(command).run_with_cancellation(&cancellation);
-        finished.store(true, Ordering::Release);
-        if monitor.join().is_err() && result.is_ok() {
-            return Err(ProcessError::Io);
-        }
-        result
-    })
-    .map_err(EmbeddingExecutableError::Process)
+    let uncancelled = AtomicBool::new(false);
+    let cancellation = cancelled.unwrap_or(&uncancelled);
+    ProcessSupervisor::new(command)
+        .run_with_observer_until(cancellation, deadline)
+        .map_err(EmbeddingExecutableError::Process)
 }
 
 #[cfg(all(test, unix))]
@@ -2821,8 +3051,11 @@ while True:
     if call_counter:
         with open(call_counter, "a") as output:
             output.write("%d %d %d\n" % (os.getpid(), start_id, count))
-    if delay_file and os.path.exists(delay_file) and open(delay_file).read().strip() == "slow":
+    delay_mode = open(delay_file).read().strip() if delay_file and os.path.exists(delay_file) else "fast"
+    if delay_mode == "slow":
         time.sleep(1)
+    elif delay_mode == "multi-batch":
+        time.sleep(1.25)
     fault = open(fault_file).read().strip() if fault_file and os.path.exists(fault_file) else ""
     if fault == "partial" and items:
         items = items[:-1]
@@ -2868,8 +3101,15 @@ while True:
         if descendant == 0:
             os.setsid()
             if escaped_pid_file:
-                with open(escaped_pid_file, "w") as marker:
-                    marker.write(str(os.getpid()))
+                # Publish the PID only after the complete marker is durable; the
+                # parent must never mistake open/truncate's empty window for a
+                # ready helper.
+                temporary_pid_file = escaped_pid_file + ".tmp"
+                with open(temporary_pid_file, "x") as marker:
+                    marker.write(str(os.getpid()) + "\n")
+                    marker.flush()
+                    os.fsync(marker.fileno())
+                os.replace(temporary_pid_file, escaped_pid_file)
             time.sleep(30)
             os._exit(0)
         time.sleep(0.15)
@@ -3313,6 +3553,63 @@ while True:
     }
 
     #[test]
+    fn persistent_microbatches_share_one_absolute_request_deadline_and_publish_atomically()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (root, program) = persistent_fixture()?;
+        let calls = root.join("persistent-calls.txt");
+        let delay = root.join("persistent-delay.txt");
+        fs::write(&delay, "fast")?;
+        let environment = ProcessEnvironment::new(vec![
+            (
+                "BACKEND_EMBEDDING_CALL_COUNTER".into(),
+                calls.to_string_lossy().into_owned(),
+            ),
+            (
+                "BACKEND_EMBEDDING_DELAY_FILE".into(),
+                delay.to_string_lossy().into_owned(),
+            ),
+            ("PATH".into(), "/usr/bin:/bin".into()),
+        ])?;
+        let (root, _, runtime) = activate_fixture(
+            root,
+            program,
+            vec!["--persistent-bem2-v1".into()],
+            environment,
+        )?;
+        // With a 2,048-byte request cap, eleven 128-byte inputs fit and twelve do not;
+        // the model therefore needs exactly two API microbatches.
+        let owned_texts = (0..12)
+            .map(|index| format!("{index:03} {}", "a".repeat(124)))
+            .collect::<Vec<_>>();
+        assert!(owned_texts.iter().all(|text| text.len() == 128));
+        let texts = owned_texts.iter().map(String::as_str).collect::<Vec<_>>();
+        fs::write(&calls, "")?;
+        fs::write(&delay, "multi-batch")?;
+        let failed = runtime.infer_batch(EmbeddingPurpose::Document, &texts);
+        assert!(matches!(
+            failed,
+            Err(EmbeddingExecutableError::Process(ProcessError::Deadline))
+        ));
+        assert!(
+            runtime
+                .inference_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .coordinates
+                .is_empty()
+        );
+        assert_eq!(fs::read_to_string(&calls)?.lines().count(), 2);
+
+        fs::write(&delay, "fast")?;
+        let recovered = runtime.infer_batch(EmbeddingPurpose::Document, &texts)?;
+        assert_eq!(recovered.len(), texts.len());
+        assert_eq!(fs::read_to_string(&calls)?.lines().count(), 4);
+        drop(runtime);
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
     fn persistent_worker_corrupt_reply_is_not_cached_and_restarts_after_protocol_failure()
     -> Result<(), Box<dyn std::error::Error>> {
         let (root, program) = persistent_fixture()?;
@@ -3466,6 +3763,64 @@ while True:
             runtime.infer(invocation),
             Err(EmbeddingExecutableError::Process(ProcessError::Protocol))
         ));
+        drop(runtime);
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn persistent_health_probe_uses_request_deadline_instead_of_a_short_reader_window()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (root, program) = persistent_fixture()?;
+        let fault = root.join("persistent-fault.txt");
+        fs::write(&fault, "none")?;
+        let environment = ProcessEnvironment::new(vec![
+            (
+                "BACKEND_EMBEDDING_FAULT_FILE".into(),
+                fault.to_string_lossy().into_owned(),
+            ),
+            ("PATH".into(), "/usr/bin:/bin".into()),
+        ])?;
+        let (_, _, runtime) = activate_fixture(
+            root.clone(),
+            program,
+            vec!["--persistent-bem2-v1".into()],
+            environment,
+        )?;
+        let runtime = Arc::new(runtime);
+        let invocation = EmbeddingInvocation {
+            purpose: EmbeddingPurpose::Document,
+            text: "warm cache remains usable when the reader is merely delayed",
+        };
+        assert!(runtime.infer(invocation).is_ok());
+        assert!(runtime.pause_persistent_stdout_reader_for_test());
+        let probe = runtime
+            .hold_persistent_probe_for_test()
+            .ok_or("persistent session was missing")?;
+        let (finished, result) = std::sync::mpsc::sync_channel(1);
+        let caller_runtime = Arc::clone(&runtime);
+        let caller = std::thread::spawn(move || {
+            let _ = finished.send(caller_runtime.infer(invocation));
+        });
+
+        assert!(probe.wait_until_probe(Instant::now() + Duration::from_secs(1)));
+        assert!(matches!(
+            result.recv_timeout(Duration::from_millis(100)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        probe.release();
+        let coordinates = result.recv_timeout(Duration::from_secs(2))??;
+        assert_eq!(coordinates.purpose(), EmbeddingPurpose::Document);
+        caller
+            .join()
+            .map_err(|_| io::Error::other("cache-only caller panicked"))?;
+        assert!(
+            runtime
+                .persistent_session
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_some()
+        );
         drop(runtime);
         fs::remove_dir_all(root)?;
         Ok(())
@@ -3705,13 +4060,20 @@ while True:
             ProtocolDescriptor::persistent(),
             limits,
         )?;
-        let mut session = ProcessSupervisor::new(command).start_byte_session()?;
+        let cancelled = AtomicBool::new(false);
+        let mut session = ProcessSupervisor::new(command)
+            .start_byte_session(&cancelled, Instant::now() + Duration::from_secs(2))?;
         let request = vec![0x5a; 1024 * 1024];
         let started = Instant::now();
-        let result = session.exchange_with_cancellation_flag(request, 10, &AtomicBool::new(false));
+        let result = session.exchange_with_cancellation_flag_until(
+            request,
+            10,
+            &AtomicBool::new(false),
+            started + Duration::from_millis(100),
+        );
         assert_eq!(result, Err(ProcessError::Deadline));
         assert!(started.elapsed() < Duration::from_secs(2));
-        assert!(!session.is_alive()?);
+        assert!(!session.is_alive_until(&cancelled, Instant::now() + Duration::from_secs(1))?);
         drop(session);
         fs::remove_dir_all(root)?;
         Ok(())
@@ -4009,43 +4371,135 @@ while True:
             ])
         };
 
+        let cache_directory = root.join("cache").join("embedding");
+        fs::create_dir_all(&cache_directory)?;
+        let directory =
+            backend_platform::DirectoryCapability::open_or_create_private(&cache_directory)?;
         let (root, _, runtime) =
             activate_fixture(root.clone(), program.clone(), Vec::new(), environment()?)?;
-        assert!(runtime.attach_durable_cache(&root));
-        assert!(runtime.durable_cache_handle_for_workspace(&root).is_some());
-        let other_workspace = root.join("another-workspace");
-        assert!(!runtime.attach_durable_cache(&other_workspace));
-        assert!(
-            runtime
-                .durable_cache_handle_for_workspace(&other_workspace)
-                .is_none()
-        );
+        let session = runtime
+            .open_durable_cache_session(directory)
+            .ok_or("cache actor admission failed")?;
         let invocation = EmbeddingInvocation {
             purpose: EmbeddingPurpose::Document,
             text: "unchanged document",
         };
-        let cold = runtime.infer(invocation)?;
+        let cold = runtime.infer_batch_with_cache_session(
+            invocation.purpose,
+            &[invocation.text],
+            &AtomicBool::new(false),
+            &session,
+        )?[0]
+            .clone();
         assert_eq!(fs::read_to_string(&calls)?.lines().count(), 2);
+        drop(session);
         drop(runtime);
 
+        let directory =
+            backend_platform::DirectoryCapability::open_or_create_private(&cache_directory)?;
         let (root, _, reopened) =
             activate_fixture(root.clone(), program, Vec::new(), environment()?)?;
-        assert!(reopened.attach_durable_cache(&root));
-        let warm = reopened.infer(invocation)?;
+        let session = reopened
+            .open_durable_cache_session(directory)
+            .ok_or("cache actor reopen failed")?;
+        let warm = reopened.infer_batch_with_cache_session(
+            invocation.purpose,
+            &[invocation.text],
+            &AtomicBool::new(false),
+            &session,
+        )?[0]
+            .clone();
         assert_eq!(cold.values(), warm.values());
         assert_eq!(fs::read_to_string(&calls)?.lines().count(), 3);
-
-        reopened.infer(EmbeddingInvocation {
-            purpose: EmbeddingPurpose::Document,
-            text: "changed document",
-        })?;
-        reopened.infer(EmbeddingInvocation {
-            purpose: EmbeddingPurpose::Query,
-            text: "unchanged document",
-        })?;
+        reopened.infer_batch_with_cache_session(
+            EmbeddingPurpose::Document,
+            &["changed document"],
+            &AtomicBool::new(false),
+            &session,
+        )?;
+        reopened.infer_batch_with_cache_session(
+            EmbeddingPurpose::Query,
+            &["unchanged document"],
+            &AtomicBool::new(false),
+            &session,
+        )?;
         assert_eq!(fs::read_to_string(&calls)?.lines().count(), 5);
+        drop(session);
         drop(reopened);
         fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn cache_sessions_are_scoped_to_the_borrowed_workspace_on_a_shared_runtime()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let counter_root = std::env::temp_dir().join(format!(
+            "backend-embedding-session-scope-{}-{stamp}",
+            std::process::id()
+        ));
+        fs::create_dir(&counter_root)?;
+        fs::set_permissions(&counter_root, fs::Permissions::from_mode(0o700))?;
+        let counter = counter_root.join("calls.txt");
+        let (root, _, runtime) = runtime_with_call_counter(&counter)?;
+        let first_directory = root.join("workspace-a-cache");
+        let second_directory = root.join("workspace-b-cache");
+        fs::create_dir(&first_directory)?;
+        fs::create_dir(&second_directory)?;
+        let first = runtime
+            .open_durable_cache_session(backend_platform::DirectoryCapability::open(
+                &first_directory,
+            )?)
+            .ok_or("first cache actor admission failed")?;
+        let second = runtime
+            .open_durable_cache_session(backend_platform::DirectoryCapability::open(
+                &second_directory,
+            )?)
+            .ok_or("second cache actor admission failed")?;
+        let cancelled = AtomicBool::new(false);
+        let text = "shared runtime, separate workspace cache";
+        let identity = EmbeddingInputIdentity::new(
+            runtime.execution_identity(),
+            EmbeddingInvocation {
+                purpose: EmbeddingPurpose::Document,
+                text,
+            },
+        );
+        let wait_for_entry = |directory: &Path| {
+            let path = directory.join(format!("{}.vec", hex(identity.as_bytes())));
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !path.exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert!(path.exists(), "cache broker did not commit {path:?}");
+        };
+        let invoke = |session: &EmbeddingCacheSession| {
+            runtime.infer_batch_with_cache_session(
+                EmbeddingPurpose::Document,
+                &[text],
+                &cancelled,
+                session,
+            )
+        };
+
+        let first_cold = invoke(&first)?;
+        assert_eq!(fs::read_to_string(&counter)?.lines().count(), 2);
+        wait_for_entry(&first_directory);
+        runtime.clear_inference_cache_for_test();
+        let second_cold = invoke(&second)?;
+        assert_eq!(fs::read_to_string(&counter)?.lines().count(), 3);
+        assert_eq!(first_cold, second_cold);
+        wait_for_entry(&second_directory);
+        runtime.clear_inference_cache_for_test();
+        assert_eq!(invoke(&first)?, first_cold);
+        assert_eq!(fs::read_to_string(&counter)?.lines().count(), 3);
+        runtime.clear_inference_cache_for_test();
+        assert_eq!(invoke(&second)?, second_cold);
+        assert_eq!(fs::read_to_string(&counter)?.lines().count(), 3);
+
+        drop((first, second, runtime));
+        fs::remove_dir_all(root)?;
+        fs::remove_dir_all(counter_root)?;
         Ok(())
     }
 
@@ -4484,22 +4938,25 @@ while True:
     #[test]
     fn inference_gate_has_a_typed_finite_wait_and_releases_its_permit()
     -> Result<(), Box<dyn std::error::Error>> {
-        let gate = InferenceAdmissionGate::new(Duration::from_millis(10));
-        let permit = gate.acquire(None)?;
+        let gate = InferenceAdmissionGate::new();
+        let permit = gate.acquire(None, Instant::now() + Duration::from_secs(1))?;
         assert!(matches!(
-            gate.acquire(None),
-            Err(EmbeddingExecutableError::InferenceAdmissionTimeout)
+            gate.acquire(None, Instant::now() + Duration::from_millis(10)),
+            Err(EmbeddingExecutableError::Process(ProcessError::Deadline))
         ));
         drop(permit);
-        assert!(gate.acquire(None).is_ok());
+        assert!(
+            gate.acquire(None, Instant::now() + Duration::from_secs(1))
+                .is_ok()
+        );
         Ok(())
     }
 
     #[test]
     fn cancelled_batch_waiter_exits_the_gate_without_waiting_for_its_deadline()
     -> Result<(), Box<dyn std::error::Error>> {
-        let gate = Arc::new(InferenceAdmissionGate::new(Duration::from_secs(3)));
-        let permit = gate.acquire(None)?;
+        let gate = Arc::new(InferenceAdmissionGate::new());
+        let permit = gate.acquire(None, Instant::now() + Duration::from_secs(3))?;
         let cancelled = Arc::new(AtomicBool::new(false));
         let (entered_sender, entered_receiver) = std::sync::mpsc::sync_channel(1);
         let (finished_sender, finished_receiver) = std::sync::mpsc::sync_channel(1);
@@ -4508,7 +4965,12 @@ while True:
         let waiter = std::thread::spawn(move || {
             entered_sender.send(()).expect("notify test thread entered");
             let started = Instant::now();
-            let result = waiter_gate.acquire(Some(&waiter_cancelled)).map(drop);
+            let result = waiter_gate
+                .acquire(
+                    Some(&waiter_cancelled),
+                    Instant::now() + Duration::from_secs(3),
+                )
+                .map(drop);
             finished_sender
                 .send((result, started.elapsed()))
                 .expect("send cancellation result");
@@ -4526,7 +4988,10 @@ while True:
             .join()
             .map_err(|_| io::Error::other("cancelled gate waiter panicked"))?;
         drop(permit);
-        assert!(gate.acquire(None).is_ok());
+        assert!(
+            gate.acquire(None, Instant::now() + Duration::from_secs(1))
+                .is_ok()
+        );
         Ok(())
     }
 }

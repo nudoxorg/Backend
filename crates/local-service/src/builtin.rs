@@ -1390,7 +1390,7 @@ pub(crate) fn compose_owner(
             backend_frontend_rust::legacy::RustCargoMetadataPolicy::Offline
         }
     };
-    let compiler_host = backend_engine::application::LocalCompilerHost::new(
+    let mut compiler_host = backend_engine::application::LocalCompilerHost::new(
         embedded_host::EmbeddedCompilerEnvironment {
             data_root: compiler_root,
             supplied: config.compiler_environment.clone(),
@@ -1398,6 +1398,14 @@ pub(crate) fn compose_owner(
         backend_engine::application::LocalHostDiscovery::ExplicitOnly,
     )
     .with_rust_cargo_metadata_policy(cargo_metadata_policy);
+    if let Ok(cache_directory) = daemon
+        .engine()
+        .daemon()
+        .owner()
+        .open_embedding_cache_directory()
+    {
+        compiler_host = compiler_host.with_embedding_cache_directory(cache_directory);
+    }
     let compiler =
         match embedding.provisioning_failure() {
             Some(cause) => compiler_host
@@ -1596,9 +1604,8 @@ pub(crate) fn compose_owner(
                 ProcessError::Profile(format!("start pending compiler ACK retry: {error}"))
             })?;
     }
-    let search_snapshots = query::SearchSnapshotOwner::with_durable_root(
-        config.workspace.join("search-index-v2"),
-    );
+    let search_snapshots =
+        query::SearchSnapshotOwner::with_durable_root(config.workspace.join("search-index-v2"));
     let worker_secret = match profile.kind {
         BuiltinProfile::Product => product_secret.ok_or_else(|| {
             ProcessError::Profile("product authority credential disappeared".to_owned())
