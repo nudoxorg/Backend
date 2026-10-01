@@ -15,6 +15,8 @@ cleanup() {
     kill "$socket_pid" 2>/dev/null || true
     wait "$socket_pid" 2>/dev/null || true
   fi
+  if [ -n "${protocol_socket_a:-}" ]; then rm -f "$protocol_socket_a"; fi
+  if [ -n "${protocol_socket_b:-}" ]; then rm -f "$protocol_socket_b"; fi
   rm -rf "$test_root"
 }
 trap cleanup EXIT
@@ -63,6 +65,7 @@ chmod +x "$test_root/bin/git"
 printf '%s\n' '#!/bin/sh' \
 'if [ "${1:-}" = --version ]; then printf "cargo 1.97.1-test\\n"; exit 0; fi' \
 'if [ -n "${NUDOX_TEST_TOOLCHAIN_LOG:-}" ]; then printf "%s|%s\\n" "$RUSTC" "$RUSTDOC" >> "$NUDOX_TEST_TOOLCHAIN_LOG"; fi' \
+'if [ -n "${NUDOX_TEST_CACHE_ENDPOINT_LOG:-}" ]; then printf "%s|%s\\n" "$SCCACHE_SERVER_UDS" "$SCCACHE_DIR" >> "$NUDOX_TEST_CACHE_ENDPOINT_LOG"; fi' \
 'if [ -n "${CARGO_BUILD_BUILD_DIR:-}" ]; then mkdir -p "$CARGO_BUILD_BUILD_DIR"; fi' \
 'if [ -n "${CARGO_BUILD_BUILD_DIR:-}" ]; then' \
   '  if [ -n "${NUDOX_TEST_REQUIRE_BUILD_MARKER:-}" ]; then' \
@@ -121,16 +124,33 @@ chmod +x "$test_root/rustc-cache-wrapper"
 } > "$test_root/wrapper"
 chmod +x "$test_root/wrapper"
 
+# Distinct immutable provider paths model a Nix upgrade from an incompatible
+# daemon protocol. Both providers may continue sharing the content cache.
+cp "$test_root/bin/sccache" "$test_root/bin/sccache-v2"
+sed "s|$test_root/bin/sccache|$test_root/bin/sccache-v2|g" \
+  "$test_root/wrapper" > "$test_root/wrapper-v2"
+chmod +x "$test_root/wrapper-v2"
+protocol_cache="$test_root/protocol-cache"
+mkdir -p "$protocol_cache"
+protocol_runtime="/tmp/nudox-sccache-$(id -u)"
+if [ ! -e "$protocol_runtime" ]; then mkdir -m 700 "$protocol_runtime"; fi
+protocol_socket_a="$protocol_runtime/$(python3 -c 'import hashlib, os, sys; print(hashlib.sha256(os.fsencode(sys.argv[1]) + b"\0" + os.fsencode(sys.argv[2])).hexdigest()[:24])' "$test_root/bin/sccache" "$protocol_cache/sccache").sock"
+protocol_socket_b="$protocol_runtime/$(python3 -c 'import hashlib, os, sys; print(hashlib.sha256(os.fsencode(sys.argv[1]) + b"\0" + os.fsencode(sys.argv[2])).hexdigest()[:24])' "$test_root/bin/sccache-v2" "$protocol_cache/sccache").sock"
+
 # Make a real Unix socket so the fake compiler cache daemon is considered
 # ready. The wrapper never connects to it in these tests.
-python3 - "$test_root/sccache.sock" <<'PY' &
+python3 - "$test_root/sccache.sock" "$protocol_cache/sccache.sock" \
+  "$protocol_socket_a" "$protocol_socket_b" <<'PY' &
 import socket
 import sys
 import time
 
-server = socket.socket(socket.AF_UNIX)
-server.bind(sys.argv[1])
-server.listen(1)
+servers = []
+for path in sys.argv[1:]:
+    server = socket.socket(socket.AF_UNIX)
+    server.bind(path)
+    server.listen(1)
+    servers.append(server)
 time.sleep(120)
 PY
 socket_pid="$!"
@@ -1035,4 +1055,26 @@ if ! find "$finalize_build_root" -name '.nudox-provenance-start-*.json' -print |
   fail "provenance start record was not retained after finalization failure"
 fi
 
-echo "cargo-shared-cache: PASS (affinity, role-graph leases, isolation, hard ceiling, stamps, provenance, exit propagation, stale recovery)"
+# Leave the obsolete daemon socket alive. Each pinned client must select its
+# own protocol endpoint, not adopt that socket or retire another build's daemon.
+endpoint_log="$test_root/cache-endpoints.log"
+for provider in a b; do
+  case "$provider" in
+    a) protocol_wrapper="$test_root/wrapper" ;;
+    b) protocol_wrapper="$test_root/wrapper-v2" ;;
+  esac
+  NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$test_root/protocol-cargo.log" \
+    NUDOX_TEST_CACHE_ENDPOINT_LOG="$endpoint_log" \
+    NUDOX_BUILD_CACHE_ROOT="$protocol_cache" NUDOX_CARGO_BUILD_SLOTS=1 \
+    CARGO_TARGET_DIR="$test_root/protocol-target-$provider" \
+    CARGO_BUILD_BUILD_DIR="$test_root/protocol-build-$provider" \
+    SCCACHE_SERVER_UDS="" SCCACHE_DIR="" \
+    "$protocol_wrapper" build --locked
+done
+assert_file_lines "$endpoint_log" 2
+assert_eq "$protocol_socket_a|$protocol_cache/sccache" "$(sed -n '1p' "$endpoint_log")"
+assert_eq "$protocol_socket_b|$protocol_cache/sccache" "$(sed -n '2p' "$endpoint_log")"
+[ "$protocol_socket_a" != "$protocol_socket_b" ] || fail "distinct providers share a daemon protocol socket"
+[ -S "$protocol_cache/sccache.sock" ] || fail "the legacy daemon socket was changed"
+
+echo "cargo-shared-cache: PASS (affinity, role-graph leases, isolation, hard ceiling, stamps, provenance, daemon protocol isolation, exit propagation, stale recovery)"

@@ -149,7 +149,38 @@ export RUSTC_WRAPPER="${RUSTC_WRAPPER:-@rustc_cache_wrapper@}"
 export SCCACHE_DIR="${SCCACHE_DIR:-$cache_root/sccache}"
 export SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE:-8G}"
 export SCCACHE_CLIENT_SIDE="${SCCACHE_CLIENT_SIDE:-1}"
-export SCCACHE_SERVER_UDS="${SCCACHE_SERVER_UDS:-$cache_root/sccache.sock}"
+# The substituted provider is an immutable Nix-store executable. Its exact
+# path partitions daemon protocols, while the content cache remains shared.
+# An old daemon at the unversioned socket must not intercept a new client.
+if [ -z "${SCCACHE_SERVER_UDS:-}" ]; then
+  # Darwin limits Unix socket paths to 104 bytes. A short private runtime
+  # directory also works when a worktree/cache root or TMPDIR is very long.
+  SCCACHE_SERVER_UDS="$(@python3@ - '@sccache@' "$SCCACHE_DIR" <<'PY'
+import hashlib
+import os
+import pathlib
+import stat
+import sys
+
+root = pathlib.Path('/tmp') / f'nudox-sccache-{os.getuid()}'
+try:
+    root.mkdir(mode=0o700)
+except FileExistsError:
+    pass
+descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+try:
+    metadata = os.fstat(descriptor)
+    if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o700:
+        raise PermissionError('compiler-cache runtime directory must be private and owned by this user')
+finally:
+    os.close(descriptor)
+identity = hashlib.sha256(os.fsencode(sys.argv[1]) + b'\0' + os.fsencode(sys.argv[2])).hexdigest()[:24]
+print(root / f'{identity}.sock')
+PY
+)" || exit 75
+fi
+export SCCACHE_SERVER_UDS
+sccache_endpoint_key="$(@python3@ -c 'import hashlib, sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:24])' "$SCCACHE_SERVER_UDS")"
 worktree_lines="$(@git@ -C "$workspace_root" worktree list --porcelain 2>/dev/null || true)"
 worktree_bases="$(printf '%s\n' "$worktree_lines" | sed -n 's/^worktree //p' | paste -sd: -)"
 export SCCACHE_BASEDIRS="${SCCACHE_BASEDIRS:-${worktree_bases:-$workspace_root}}"
@@ -183,7 +214,7 @@ lock_owner_is_stale() {
 # same Unix socket. Elect exactly one starter; peers wait only for the socket,
 # never for compilation or a Cargo build lock.
 if [ ! -S "$SCCACHE_SERVER_UDS" ]; then
-  server_lock="$cache_root/locks/sccache-server.lock"
+  server_lock="$cache_root/locks/sccache-server-$sccache_endpoint_key.lock"
   attempts=0
   while [ ! -S "$SCCACHE_SERVER_UDS" ] && [ "$attempts" -lt 100 ]; do
     if mkdir "$server_lock" 2>/dev/null; then
