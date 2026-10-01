@@ -11,8 +11,8 @@ use crate::navigation::{BrowseRoute, CompareSet, Coordinate, Overlay, PackageLan
 use backend_platform::durable;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
-use std::fs::{self, File};
-use std::io::{self, Read};
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -198,7 +198,7 @@ fn symbol_route(
                 project,
                 package,
                 id,
-                at: at.and_then(|at| ReleaseId::new(at).ok()),
+                at: at.map(ReleaseId::from_persisted),
                 view,
                 line,
                 selected: None,
@@ -462,13 +462,13 @@ fn persist_route(route: &Route) -> PersistedRoute {
             project: route.project.as_ref().map(|project| project.get().get()),
             package: route.package.as_str().to_owned(),
             lane: route.lane.into(),
-            at: route.at.as_ref().map(|at| at.as_str().to_owned()),
+            at: route.at.as_ref().map(|at| at.persisted_wire().to_owned()),
         },
         Route::Symbol(route) => PersistedRoute::Symbol {
             project: route.project.as_ref().map(|project| project.get().get()),
             package: route.package.as_str().to_owned(),
             id: route.id.as_str().to_owned(),
-            at: route.at.as_ref().map(|at| at.as_str().to_owned()),
+            at: route.at.as_ref().map(|at| at.persisted_wire().to_owned()),
             view: route.view.as_str().to_owned(),
             line: route.line,
         },
@@ -905,7 +905,7 @@ impl PersistentState {
                             package,
                             lane: (*lane).into(),
                             selected: None,
-                            at: at.as_deref().and_then(|at| ReleaseId::new(at).ok()),
+                            at: at.as_deref().map(ReleaseId::from_persisted),
                         })
                     })
                     .unwrap_or_else(|| Route::Orbit(crate::navigation::OrbitRoute::Home))
@@ -1197,24 +1197,7 @@ impl PersistentState {
 }
 
 fn read_bounded(path: &Path) -> io::Result<Vec<u8>> {
-    let file = File::open(path)?;
-    let bytes = file.metadata()?.len();
-    if bytes > MAX_STATE_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("desktop state is {bytes} bytes; limit is {MAX_STATE_BYTES}"),
-        ));
-    }
-    let mut payload = Vec::with_capacity(bytes as usize);
-    file.take(MAX_STATE_BYTES.saturating_add(1))
-        .read_to_end(&mut payload)?;
-    if payload.len() as u64 > MAX_STATE_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("desktop state exceeded {MAX_STATE_BYTES} bytes while it was being read"),
-        ));
-    }
-    Ok(payload)
+    durable::read_regular_bounded(path, MAX_STATE_BYTES as usize)
 }
 
 fn recovery_path(path: &Path, reason: &PersistenceRecoveryReason) -> PathBuf {
@@ -1432,6 +1415,41 @@ mod tests {
         let restored = PersistentState::at("unused").cold_reload(&value);
         assert_eq!(restored.route, snapshot.route().clone(), "view, release and line survive");
         assert_eq!(restored.overlay, None);
+    }
+
+    #[test]
+    fn invalid_saved_release_remains_an_unread_address_after_cold_reload() {
+        let mut state = PersistedDesktopState {
+            route: PersistedRoute::Symbol {
+                project: None,
+                package: "pkg:cargo/serde@1.0.0".to_owned(),
+                id: "pkg:cargo/serde@1.0.0::src/lib.rs:1::Item".to_owned(),
+                at: Some("../other".to_owned()),
+                view: "page".to_owned(),
+                line: None,
+            },
+            ..PersistedDesktopState::default()
+        };
+        let store = PersistentState::at("unused");
+        for route in [state.route.clone(), PersistedRoute::Package {
+            project: None,
+            package: "pkg:cargo/serde@1.0.0".to_owned(),
+            lane: PersistedPackageLane::Overview,
+            at: Some("../other".to_owned()),
+        }] {
+            state.route = route;
+            let reopened = store.cold_reload(&state);
+            let at = reopened.route.at().expect("saved alternate release remains present");
+            assert!(!at.is_valid());
+            assert!(crate::runtime::store::route_package(&reopened.route).is_none());
+            if matches!(reopened.route, Route::Symbol(_)) {
+                assert!(matches!(crate::runtime::store::route_declaration(&reopened.route), Err(crate::runtime::store::Unread::ReleaseNotHere(_))));
+            }
+            match persist_route(&reopened.route) {
+                PersistedRoute::Symbol { at, .. } | PersistedRoute::Package { at, .. } => assert_eq!(at.as_deref(), Some("../other")),
+                other => panic!("unexpected restored route: {other:?}"),
+            }
+        }
     }
 
     #[test]

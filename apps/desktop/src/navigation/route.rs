@@ -40,6 +40,8 @@ pub enum CoordinateError {
     Empty,
     /// The coordinate cannot cross the persistence or accessibility boundary.
     ControlCharacter,
+    /// A release did not use an exact registry version spelling.
+    InvalidRelease,
 }
 
 impl fmt::Display for CoordinateError {
@@ -47,6 +49,7 @@ impl fmt::Display for CoordinateError {
         match self {
             Self::Empty => f.write_str("coordinate must not be empty"),
             Self::ControlCharacter => f.write_str("coordinate contains a control character"),
+            Self::InvalidRelease => f.write_str("release must be an exact registry version"),
         }
     }
 }
@@ -80,7 +83,10 @@ pub enum OrbitRoute {
 
 /// One immutable release of a package: the registry's version spelling.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct ReleaseId(Arc<str>);
+pub struct ReleaseId {
+    spelling: Arc<str>,
+    valid: bool,
+}
 
 impl ReleaseId {
     /// Admits one version spelling.
@@ -92,13 +98,28 @@ impl ReleaseId {
         if value.chars().any(char::is_control) {
             return Err(CoordinateError::ControlCharacter);
         }
-        Ok(Self(Arc::from(value)))
+        crate::model::release::Version::new(value).map_err(|_| CoordinateError::InvalidRelease)?;
+        Ok(Self { spelling: Arc::from(value), valid: true })
     }
+
+    /// Retains an invalid saved address as unread instead of treating it as the working copy.
+    #[must_use]
+    pub(crate) fn from_persisted(value: &str) -> Self {
+        Self::new(value).unwrap_or_else(|_| Self { spelling: Arc::from(value), valid: false })
+    }
+
+    /// Whether this release can be used as an index address.
+    #[must_use]
+    pub const fn is_valid(&self) -> bool { self.valid }
+
+    /// Exact saved spelling, including an invalid one for recovery.
+    #[must_use]
+    pub(crate) fn persisted_wire(&self) -> &str { &self.spelling }
 
     /// Returns the version spelling.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        &self.0
+        if self.valid { &self.spelling } else { "invalid saved release" }
     }
 }
 

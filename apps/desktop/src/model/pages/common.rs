@@ -69,6 +69,7 @@ impl SymbolRef {
     #[must_use]
     pub fn rebased(&self, from: &PackageRef, to: &PackageRef) -> Option<Self> {
         let rest = self.as_str().strip_prefix(from.as_str())?;
+        if !rest.starts_with("::") { return None; }
         Self::new(&format!("{}{rest}", to.as_str())).ok()
     }
 
