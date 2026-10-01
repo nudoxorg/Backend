@@ -760,7 +760,7 @@ impl Drop for A11ySuppression {
 }
 
 fn make_node_inert(node: &mut accesskit::Node) {
-    node.set_disabled(true);
+    node.set_disabled();
     node.clear_actions();
     node.clear_child_actions();
     node.clear_custom_actions();

@@ -3449,7 +3449,7 @@ impl Window {
 
                 let prepaint_start = self.prepaint_index();
                 if let Some(mut element) = element {
-                    let prepaint = |window: &mut Window, element: &mut AnyElement| {
+                    let mut prepaint = |window: &mut Window, element: &mut AnyElement| {
                         window.with_rendered_view(current_view, |window| {
                             window.with_rem_size(Some(rem_size), |window| {
                                 window.with_absolute_element_offset(absolute_offset, |window| {
@@ -3525,7 +3525,7 @@ impl Window {
             let inert_subtree = deferred_draw.inert_subtree;
             let inert_boundaries = deferred_draw.inert_boundaries.clone();
             if let Some(element) = deferred_draw.element.as_mut() {
-                let paint = |window: &mut Window| {
+                let mut paint = |window: &mut Window| {
                     window.with_rendered_view(deferred_draw.current_view, |window| {
                         window.with_layer_transform(deferred_draw.layer_transform, |window| {
                             window.with_element_opacity(

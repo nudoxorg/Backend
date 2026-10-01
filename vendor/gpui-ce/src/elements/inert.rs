@@ -114,7 +114,7 @@ impl Element for Inert {
 
     fn write_a11y_info(&self, node: &mut accesskit::Node) {
         node.set_description(self.accessible_description.to_string());
-        node.set_disabled(true);
+        node.set_disabled();
         node.clear_actions();
         node.clear_child_actions();
         node.clear_custom_actions();
@@ -128,9 +128,9 @@ mod tests {
     use crate::{
         self as gpui, AnyElement, App, AppContext as _, Bounds, Context, Element, ElementId,
         Entity, FocusHandle, HitboxBehavior, HitboxId, InputHandler, InteractiveElement,
-        IntoElement, LayoutId, ParentElement, Pixels, Point, Render, StatefulInteractiveElement,
-        Style, StyleRefinement, TestAppContext, UTF16Selection, Window, accesskit, actions, div,
-        point, px, size,
+        IntoElement, LayoutId, MouseButton, ParentElement, Pixels, Point, Render,
+        StatefulInteractiveElement, Style, StyleRefinement, TestAppContext, UTF16Selection, Window,
+        accesskit, div, point, px, size, styled::Styled,
     };
     use std::{cell::Cell, ops::Range, rc::Rc};
 
@@ -163,13 +163,16 @@ mod tests {
             let synthetic_id = accesskit::NodeId(0x1e47);
             let button = div()
                 .id("inert-test-button")
-                .size(size(px(100.), px(32.)))
+                .w(px(100.))
+                .h(px(32.))
                 .track_focus(&self.focus)
                 .tab_stop(true)
                 .role(accesskit::Role::Button)
                 .aria_label("cached control")
                 .aria_active_descendant()
-                .on_mouse_down(move |_, _, _| clicks.clicks.set(clicks.clicks.get() + 1))
+                .on_mouse_down(MouseButton::Left, move |_, _, _| {
+                    clicks.clicks.set(clicks.clicks.get() + 1)
+                })
                 .on_key_down(move |_, _, _| keys.keys.set(keys.keys.get() + 1))
                 .on_action(move |_: &InertTestAction, _, _| {
                     actions.actions.set(actions.actions.get() + 1)
@@ -193,12 +196,13 @@ mod tests {
                 "Nested content is unavailable",
                 div()
                     .id("nested-inert-button")
-                    .size(size(px(100.), px(20.)))
+                    .w(px(100.))
+                    .h(px(20.))
                     .track_focus(&self.nested_focus)
                     .tab_stop(true)
                     .role(accesskit::Role::Button)
                     .aria_label("nested control")
-                    .on_mouse_down(move |_, _, _| {
+                    .on_mouse_down(MouseButton::Left, move |_, _, _| {
                         nested_clicks
                             .nested_clicks
                             .set(nested_clicks.nested_clicks.get() + 1)
@@ -233,7 +237,7 @@ mod tests {
             let cached = self
                 .child
                 .clone()
-                .cached(StyleRefinement::default().size(size(px(100.), px(60.))));
+                .cached(StyleRefinement::default().w(px(100.)).h(px(60.)));
             let child: AnyElement = if self.inert.get() {
                 inert(
                     "reader-loading",
@@ -247,19 +251,21 @@ mod tests {
 
             let sibling_clicks = self.events.clone();
             div()
-                .size(size(px(240.), px(80.)))
+                .w(px(240.))
+                .h(px(80.))
                 .flex()
                 .flex_row()
                 .child(child)
                 .child(
                     div()
                         .id("active-sibling")
-                        .size(size(px(100.), px(60.)))
+                        .w(px(100.))
+                        .h(px(60.))
                         .track_focus(&self.sibling_focus)
                         .tab_stop(true)
                         .role(accesskit::Role::Button)
                         .aria_label("active sibling")
-                        .on_mouse_down(move |_, _, _| {
+                        .on_mouse_down(MouseButton::Left, move |_, _, _| {
                             sibling_clicks
                                 .sibling_clicks
                                 .set(sibling_clicks.sibling_clicks.get() + 1)
@@ -292,7 +298,7 @@ mod tests {
             let cached = self
                 .child
                 .clone()
-                .cached(StyleRefinement::default().size(size(px(100.), px(60.))));
+                .cached(StyleRefinement::default().w(px(100.)).h(px(60.)));
             let child: AnyElement = if self.inert.get() {
                 inert(
                     "captured-child-inert-boundary",
@@ -305,7 +311,8 @@ mod tests {
             };
 
             div()
-                .size(size(px(220.), px(70.)))
+                .w(px(220.))
+                .h(px(70.))
                 .flex()
                 .flex_row()
                 .child(child)
@@ -349,7 +356,14 @@ mod tests {
             cx: &mut App,
         ) -> (LayoutId, Self::RequestLayoutState) {
             (
-                window.request_layout(Style::default().size(size(px(100.), px(60.))), [], cx),
+                window.request_layout(
+                    Style {
+                        size: size(px(100.).into(), px(60.).into()),
+                        ..Style::default()
+                    },
+                    [],
+                    cx,
+                ),
                 (),
             )
         }
@@ -413,7 +427,14 @@ mod tests {
             cx: &mut App,
         ) -> (LayoutId, Self::RequestLayoutState) {
             (
-                window.request_layout(Style::default().size(size(px(0.), px(0.))), [], cx),
+                window.request_layout(
+                    Style {
+                        size: size(px(0.).into(), px(0.).into()),
+                        ..Style::default()
+                    },
+                    [],
+                    cx,
+                ),
                 (),
             )
         }
@@ -481,7 +502,14 @@ mod tests {
             cx: &mut App,
         ) -> (LayoutId, Self::RequestLayoutState) {
             (
-                window.request_layout(Style::default().size(size(px(0.), px(0.))), [], cx),
+                window.request_layout(
+                    Style {
+                        size: size(px(0.).into(), px(0.).into()),
+                        ..Style::default()
+                    },
+                    [],
+                    cx,
+                ),
                 (),
             )
         }
@@ -814,7 +842,6 @@ mod tests {
             let inert_state = inert_state.clone();
             let child_hitbox = child_hitbox.clone();
             let sibling_hitbox = sibling_hitbox.clone();
-            let captured_sibling = captured_sibling.clone();
             move |_, cx| {
                 let child = cx.new(|_| PointerCaptureTargetView {
                     hitbox: child_hitbox,

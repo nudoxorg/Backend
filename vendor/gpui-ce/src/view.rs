@@ -289,11 +289,14 @@ struct ViewElementState {
     accessed_entities: FxHashSet<EntityId>,
 }
 
-struct ViewElementRequestLayoutState {
+/// Internal per-frame layout state for a retained view element.
+#[doc(hidden)]
+pub struct ViewElementRequestLayoutState {
     element: Option<AnyElement>,
     accessed_entities: FxHashSet<EntityId>,
 }
 
+#[derive(Clone)]
 struct ViewElementCacheKey {
     bounds: Bounds<Pixels>,
     content_mask: ContentMask<Pixels>,
