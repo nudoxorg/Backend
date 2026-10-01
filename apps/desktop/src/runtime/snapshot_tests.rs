@@ -108,9 +108,15 @@ fn every_saved_page_reads_back_equal_field_for_field() {
     let saved = pages("RelationLabel");
     let file = write(&dir, root, &saved);
     let seed = file.read(&keys(&saved)).expect("the snapshot reads back");
-    assert!(
+    assert_eq!(
+        seed.root,
+        SnapRoot::of(root),
+        "the saved authority is preserved"
+    );
+    assert_eq!(
         seed.root.serves(root),
-        "the root it was read at is the root it names"
+        Writer::this_build().executable.is_some(),
+        "confirmation also requires an admitted executable fingerprint"
     );
     assert!(
         !seed.root.serves(served("equal", 4)),
@@ -370,10 +376,18 @@ fn pages_read_by_another_build_are_not_current_at_the_root_they_name() {
     Writer::prepare_this_build();
     let root = served("writer", 2);
     let mut snapshot = SnapRoot::of(root);
-    assert!(
+    assert_eq!(
         snapshot.serves(root),
-        "this build reads what this build wrote"
+        Writer::this_build().executable.is_some(),
+        "an unknown running image never confirms cached pages"
     );
+    let same_writer = Writer {
+        executable: Some(Digest::of(b"known executable")),
+    };
+    let admitted = SnapRoot::with_writer(root, same_writer);
+    assert!(admitted.serves_with_writer(root, same_writer));
+    assert!(!admitted.serves_with_writer(served("writer", 3), same_writer));
+    assert!(!admitted.serves_with_writer(root, Writer::default()));
     snapshot.writer.executable = Some(Digest::of(b"different executable"));
     assert!(
         !snapshot.serves(root),

@@ -17,9 +17,11 @@
 //! ```
 //!
 //! Its values land at the unserved root. When the owner answers, a
-//! snapshot read at the root the owner serves (by the same build) is
-//! current as it is; otherwise each value is revalidated quietly and only a
-//! different one redraws (`PageStore::seed`, `Landing::Unchanged`).
+//! snapshot read at the root the owner serves (by the same build) can confirm
+//! index-only pages. Source observations and alternate-release claims always
+//! need a worker read; other values are revalidated when their root or build
+//! differs. Only a different value redraws (`PageStore::seed`,
+//! `Landing::Unchanged`).
 //!
 //! A page is one [`SeedEntry`]: its key and its value are one value, so a
 //! search cannot be decoded as Orbit and a symbol cannot be saved under a
