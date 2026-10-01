@@ -1,9 +1,9 @@
 //! The shelf's release comb drives the route's `at=` through the real shell.
 
-use super::tests::{Fixture, Rig, dossier, rig_with_reads};
+use super::tests::{Fixture, Rig, registry_dossier, rig_with_reads};
 use crate::core::PackageId;
-use crate::model::pages::{Known, PackageRef, PageValue, ReadFailure, Standing, VersionEntry};
-use crate::navigation::{Coordinate, PackageLane, PackageRoute, Route, SymbolRoute, View};
+use crate::model::pages::{DeclRef, GapReason, Known, PackageRef, PageValue, ReadFailure, Standing, VersionEntry};
+use crate::navigation::{Coordinate, Intent, PackageLane, PackageRoute, Route, SymbolRoute, View};
 use crate::runtime::reads::{PageReader, ReadContext, ReadPool, ReadRequest};
 use gpui::{Modifiers, TestAppContext, point, px};
 use std::sync::Arc;
@@ -16,20 +16,42 @@ struct Registry;
 
 impl PageReader for Registry {
     fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
-        let ReadRequest::Package(package) = request else {
-            return Fixture.read(request, context);
-        };
-        let mut about = dossier();
-        about.package = package.clone();
-        let name = package.display_name().to_owned();
-        let release = |version: &str| VersionEntry {
-            package: PackageRef::parse(&format!("pkg:cargo/{name}@{version}")).expect("release"),
-            version: Arc::from(version),
-            standing: Standing::Available,
-            current: package.version() == Some(version),
-        };
-        about.versions = Known::Known(Arc::from([release("1.1.6"), release("1.0.0"), release("0.8.23")]));
-        Ok(PageValue::Package(about))
+        match request {
+            ReadRequest::Package(package) => {
+                let mut about = registry_dossier(package);
+                let release = |version: &str| VersionEntry {
+                    package: package.at(version).expect("exact sibling release"),
+                    version: Arc::from(version),
+                    standing: Standing::Available,
+                    current: package.version() == Some(version),
+                };
+                about.versions = Known::Known(Arc::from([release("1.1.6"), release("1.0.0"), release("0.8.23")]));
+                Ok(PageValue::Package(about))
+            }
+            ReadRequest::Symbol(symbol) => {
+                let mut page = super::tests::page(symbol.identity().name());
+                page.identity = DeclRef::from_label(
+                    symbol.as_str(),
+                    None,
+                    Some(backend_library::DeclarationKind::Function),
+                    None,
+                )
+                .expect("exact fixture declaration");
+                page.package = Known::Known(symbol.package().expect("exact owning release"));
+                page.signature = Known::unknown(GapReason::NotServed, "fixture has no indexed signature");
+                page.docs = Arc::from([]);
+                page.site.location = Known::unknown(GapReason::NotServed, "fixture has no source location");
+                page.site.excerpt = Known::unknown(GapReason::NotServed, "fixture has no source excerpt");
+                page.members = Known::unknown(GapReason::NotServed, "fixture has no indexed members");
+                page.rose.up = Known::unknown(GapReason::NotServed, "fixture has no indexed relations");
+                page.rose.down = Known::unknown(GapReason::NotServed, "fixture has no indexed relations");
+                page.rose.left = Known::unknown(GapReason::NotServed, "fixture has no indexed relations");
+                page.rose.right = Known::unknown(GapReason::NotServed, "fixture has no indexed relations");
+                page.rose.implemented_by = Known::unknown(GapReason::NotServed, "fixture has no indexed relations");
+                Ok(PageValue::Symbol(page))
+            }
+            _ => Fixture.read(request, context),
+        }
     }
 }
 
@@ -58,12 +80,12 @@ fn from_str() -> Route {
 
 fn open_at(cx: &mut TestAppContext, route: Route) -> Rig {
     let pool = ReadPool::start(1, |_| Registry).expect("pool");
-    let mut rig = rig_with_reads(cx, Some(route), 1440.0, 900.0, pool);
+    let mut rig = rig_with_reads(cx, None, 1440.0, 900.0, pool);
     rig.cx.update(|_, cx| {
         crate::runtime::fixture_releases::install(cx);
         facet::probe::enable(cx);
     });
-    rig.repaint();
+    rig.go(Intent::Navigate(route));
     rig
 }
 

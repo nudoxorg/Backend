@@ -2,7 +2,7 @@
 //! on · Used by list what the page already read, change the list and never
 //! the page, and follow their rows to the right place.
 
-use super::tests::{Fixture, Rig, dossier, rig_with_reads};
+use super::tests::{Fixture, Rig, dossier, registry_dossier, rig_with_reads};
 use crate::core::PackageId;
 use crate::model::pages::{
     Dependency, DependencyScope, Known, PackageRecord, PackageRef, PageValue, ReadFailure, RecordSource, Standing,
@@ -24,11 +24,9 @@ impl PageReader for Registry {
         let ReadRequest::Package(package) = request else {
             return Fixture.read(request, context);
         };
-        let mut about = dossier();
-        about.package = package.clone();
-        let name = package.display_name().to_owned();
+        let mut about = registry_dossier(package);
         let release = |version: &str, standing: Standing| VersionEntry {
-            package: PackageRef::parse(&format!("pkg:cargo/{name}@{version}")).expect("release"),
+            package: package.at(version).expect("exact sibling release"),
             version: Arc::from(version),
             standing,
             current: package.version() == Some(version),
@@ -445,12 +443,12 @@ impl PageReader for TomlApi {
 
 fn open_toml_api(cx: &mut TestAppContext, route: Route) -> Rig {
     let pool = ReadPool::start(1, |_| TomlApi).expect("pool");
-    let mut rig = rig_with_reads(cx, Some(route), 1440.0, 900.0, pool);
+    let mut rig = rig_with_reads(cx, None, 1440.0, 900.0, pool);
     rig.cx.update(|_, cx| {
         crate::runtime::fixture_releases::install(cx);
         facet::probe::enable(cx);
     });
-    rig.repaint();
+    rig.go(Intent::Navigate(route));
     rig
 }
 

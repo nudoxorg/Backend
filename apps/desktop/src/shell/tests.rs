@@ -16,7 +16,7 @@ use crate::model::pages::{
     OutlineTree, PackageDossier, PackageRecord, PackageRef, PageValue, Provenance, Readiness,
     ReadFailure, Receiver, RecordSource, Relation, RelationKind, Rose, SearchPage, SearchRow, SearchContinuation,
     MatchReason, SignatureText, SourceLocation, SourceOrigin, SourceSite, SourceText, SourceView,
-    SymbolPage, SymbolRef,
+    Standing, SymbolPage, SymbolRef,
 };
 use crate::model::{AppSnapshot, DensityPreference, SessionState};
 use crate::navigation::{Coordinate, Intent, Route, SymbolRoute, View};
@@ -181,6 +181,48 @@ pub(crate) fn dossier() -> PackageDossier {
         readme_headings: Known::unknown(GapReason::NotCaptured, "fixture has no heading index"),
         readme_exact_targets: Known::unknown(GapReason::NotCaptured, "fixture has no exact README targets"),
     }
+}
+
+/// The small shell fixture rebased under the exact registry release a test
+/// requested. A dossier for `/fixture/present` cannot prove facts or provide
+/// navigation targets for a different package merely because a label matches.
+pub(crate) fn registry_dossier(package: &PackageRef) -> PackageDossier {
+    fn rebase(mut node: OutlineNode, from: &PackageRef, to: &PackageRef) -> OutlineNode {
+        node.decl.coordinate = node
+            .decl
+            .coordinate
+            .rebased(from, to)
+            .expect("fixture declaration belongs to its original package");
+        node.children = node
+            .children
+            .iter()
+            .cloned()
+            .map(|child| rebase(child, from, to))
+            .collect::<Vec<_>>()
+            .into();
+        node
+    }
+
+    let mut about = dossier();
+    let original = about.package.clone();
+    let mut record = about.record.known().cloned().expect("fixture record");
+    record.package = package.clone();
+    record.source = RecordSource::Registry;
+    record.name = Arc::from(package.display_name());
+    record.version = Known::Known(Arc::from(package.version().expect("registry fixture is pinned")));
+    record.standing = Known::Known(Standing::Available);
+    about.record = Known::Known(record);
+    let mut outline = about.outline.known().cloned().expect("fixture outline");
+    outline.roots = outline
+        .roots
+        .iter()
+        .cloned()
+        .map(|node| rebase(node, &original, package))
+        .collect::<Vec<_>>()
+        .into();
+    about.outline = Known::Known(outline);
+    about.package = package.clone();
+    about
 }
 
 fn health() -> HealthModel {
