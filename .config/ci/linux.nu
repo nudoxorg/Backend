@@ -39,6 +39,21 @@ def print-captured-failures []: nothing -> nothing {
                 print '--'
             }
         }
+        # A `cargo build`/`check` failure (exit 101, no nextest FAIL/panic
+        # lines) prints its rustc errors long before the tail too, often
+        # buried under hundreds of trailing warnings from unrelated crates
+        # that still compiled: pull every error the same way, or the tail
+        # alone can show nothing but warnings for a build that never passed.
+        let compile_errors = ($output | enumerate | where {|row|
+            ($row.item | str starts-with 'error[') or ($row.item | str starts-with 'error: ') or ($row.item | str contains 'could not compile')
+        } | get index)
+        if not ($compile_errors | is-empty) {
+            print $"== ($compile_errors | length) compile errors \(first 30, 40 lines each\) =="
+            for start in ($compile_errors | first 30) {
+                $output | skip ([($start - 2) 0] | math max) | first 40 | str join (char nl) | print
+                print '--'
+            }
+        }
         $output | last 300 | str join (char nl) | print
     }
 }
