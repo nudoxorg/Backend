@@ -49,6 +49,35 @@ fn words(value: &Value, key: &str) -> Vec<String> {
         .collect()
 }
 
+/// Retain Cargo's source spelling so a later reader never guesses a registry
+/// from a display name. An unfamiliar source stays explicitly unresolved.
+fn source_origin(source: &str) -> PackageOrigin {
+    if let Some(url) = source.strip_prefix("git+") {
+        PackageOrigin::Git {
+            url: url.split(['?', '#']).next().unwrap_or(url).to_owned(),
+        }
+    } else if source.starts_with("registry+") || source.starts_with("sparse+") {
+        PackageOrigin::Registry { source: source.to_owned() }
+    } else {
+        PackageOrigin::Unresolved { source: Some(source.to_owned()) }
+    }
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::*;
+
+    #[test]
+    fn alternative_and_unrecognized_sources_keep_their_observed_authority() {
+        let first = source_origin("registry+https://one.example.test/index");
+        let second = source_origin("registry+https://two.example.test/index");
+        assert_ne!(first, second);
+        assert!(!first.is_crates_io_registry());
+        assert_eq!(first, PackageOrigin::Registry { source: "registry+https://one.example.test/index".to_owned() });
+        assert_eq!(source_origin("other+opaque"), PackageOrigin::Unresolved { source: Some("other+opaque".to_owned()) });
+    }
+}
+
 /// Reads `cargo metadata --format-version 1 --filter-platform <host>`.
 ///
 /// `lockfile` (the project's `Cargo.lock`) only counts the packages that
@@ -81,15 +110,7 @@ pub fn metadata_input(
             None
         } else {
             Some(match source {
-                Some(source) if source.starts_with("git+") => PackageOrigin::Git {
-                    url: source
-                        .trim_start_matches("git+")
-                        .split(['?', '#'])
-                        .next()
-                        .unwrap_or(source)
-                        .to_owned(),
-                },
-                Some(_) => PackageOrigin::Registry,
+                Some(source) => source_origin(source),
                 None => PackageOrigin::Vendored {
                     path: text(package, "manifest_path")
                         .and_then(|manifest| {
@@ -289,15 +310,7 @@ pub fn lockfile_input(
                     None
                 } else {
                     Some(match package.source.as_deref() {
-                        Some(source) if source.starts_with("git+") => PackageOrigin::Git {
-                            url: source
-                                .trim_start_matches("git+")
-                                .split(['?', '#'])
-                                .next()
-                                .unwrap_or(source)
-                                .to_owned(),
-                        },
-                        Some(_) => PackageOrigin::Registry,
+                        Some(source) => source_origin(source),
                         None => PackageOrigin::Vendored {
                             path: String::new(),
                         },

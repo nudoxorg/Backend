@@ -216,14 +216,25 @@ fn ordered(tree: &ProjectTree, source: &dyn RegistrySource) -> Vec<Dependency> {
         .into_iter()
         .filter_map(|package| {
             let release = Release::new(&package.name, &package.version).ok()?;
-            let origin = match &package.origin {
-                PackageOrigin::Registry => Origin::Registry(source.availability(&release)),
-                PackageOrigin::Git { url } => Origin::Elsewhere(Arc::from(format!("from git ({url}): only registry releases are added"))),
-                PackageOrigin::Vendored { path } => Origin::Elsewhere(Arc::from(format!("vendored at {path}: only registry releases are added"))),
-            };
+            let origin = dependency_origin(&package.origin, &release, source);
             Some(Dependency { release, direct: package.role == PackageRole::Direct, origin })
         })
         .collect()
+}
+
+pub(crate) fn dependency_origin(origin: &PackageOrigin, release: &Release, source: &dyn RegistrySource) -> Origin {
+    match origin {
+        PackageOrigin::Registry { .. } if origin.is_crates_io_registry() => Origin::Registry(source.availability(release)),
+        PackageOrigin::Registry { source } => Origin::Elsewhere(Arc::from(format!(
+            "from registry {source}: the configured source only offers crates.io releases"
+        ))),
+        PackageOrigin::Git { url } => Origin::Elsewhere(Arc::from(format!("from git ({url}): only registry releases are added"))),
+        PackageOrigin::Vendored { path } => Origin::Elsewhere(Arc::from(format!("vendored at {path}: only registry releases are added"))),
+        PackageOrigin::Unresolved { source } => Origin::Elsewhere(Arc::from(format!(
+            "source {} is unresolved: no release is offered",
+            source.as_deref().unwrap_or("not recorded")
+        ))),
+    }
 }
 
 /// Each of `found`'s registry packages the owner already lists (in any state,

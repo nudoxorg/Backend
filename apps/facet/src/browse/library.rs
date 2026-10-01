@@ -400,7 +400,7 @@ fn row_view(id: &ElementId, row: &Row, actions: &Actions, measure: &Measure, pal
                 .ghost().on_click(move |window, cx| open(target.clone(), window, cx)));
         } else if let Some(reason) = &release.unavailable {
             detail = detail.child(words(child(id, format!("unavailable-{at}")),
-                format!("{} · {reason}", release.version), ty::CAPTION, palette.ink3, measure, TextOverflow::Wrap));
+                format!("{} · {reason}", release.version).into(), ty::CAPTION, palette.ink3, measure, TextOverflow::Wrap));
         }
     }
     div().flex().flex_col().child(trigger).child(detail).into_any_element()

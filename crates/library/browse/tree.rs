@@ -10,7 +10,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// Wire schema of [`ProjectTree`].
-pub const PROJECT_TREE_SCHEMA: u16 = 1;
+pub const PROJECT_TREE_SCHEMA: u16 = 2;
 
 /// The most packages one tree reply admits.
 pub const MAX_TREE_PACKAGES: usize = 20_000;
@@ -36,8 +36,11 @@ pub enum TreeSource {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "from", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum PackageOrigin {
-    /// A registry release.
-    Registry,
+    /// A registry release, with Cargo's observed source authority intact.
+    Registry {
+        /// Exact `registry+` or `sparse+` source from metadata or Cargo.lock.
+        source: String,
+    },
     /// A git checkout.
     Git {
         /// The repository.
@@ -48,6 +51,23 @@ pub enum PackageOrigin {
         /// The directory, relative to the project root when inside it.
         path: String,
     },
+    /// The reader could not establish a supported source authority.
+    Unresolved {
+        /// Cargo's source spelling, if it supplied one.
+        source: Option<String>,
+    },
+}
+
+impl PackageOrigin {
+    /// Whether Cargo named a crates.io index authority we know exactly.
+    /// Other registries must not be handed to a crates.io-only source.
+    #[must_use]
+    pub fn is_crates_io_registry(&self) -> bool {
+        matches!(self, Self::Registry { source } if matches!(source.as_str(),
+            "registry+https://github.com/rust-lang/crates.io-index"
+            | "registry+https://index.crates.io/"
+            | "sparse+https://index.crates.io/"))
+    }
 }
 
 /// One step of a path from your code to a package.
@@ -558,7 +578,7 @@ pub fn build_tree(input: &TreeInput, advisories: &dyn AdvisoryObserver) -> Proje
             TreePackage {
                 name: package.name.clone(),
                 version: package.version.clone(),
-                origin: package.origin.clone().unwrap_or(PackageOrigin::Registry),
+                origin: package.origin.clone().unwrap_or(PackageOrigin::Unresolved { source: None }),
                 license: package.license.clone(),
                 why: why(at),
                 role: if direct_set.contains(&at) {
@@ -646,6 +666,14 @@ pub fn build_tree(input: &TreeInput, advisories: &dyn AdvisoryObserver) -> Proje
     let mut affecting = Vec::new();
     for &at in &externals {
         let package = &input.packages[at];
+        // The observer takes only name and version, without source authority.
+        // Another registry (or a vendored/git source) can carry the same
+        // spelling without carrying the crates.io release's advisories.
+        if !package.origin.as_ref().is_some_and(PackageOrigin::is_crates_io_registry) {
+            coverage = weaker_coverage(coverage, AdvisoryCoverage::Unknown);
+            freshness = weaker_freshness(freshness, FreshnessState::Unknown);
+            continue;
+        }
         let observation = advisories.observe(&package.name, &package.version);
         if observation.coverage == AdvisoryCoverage::Complete {
             checked = checked.saturating_add(1);

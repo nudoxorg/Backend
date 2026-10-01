@@ -45,7 +45,7 @@ fn two_project_tiles_offer_exact_tree_routes_and_back_returns_to_library(cx: &mu
     assert_eq!(targets.len(), 2, "both real folders have a tree route: {targets:#?}");
     let wanted = format!("orbit-tree-{}", chosen.as_str());
     let target = targets.iter().find(|target| target.key == wanted).unwrap();
-    let at = target.bounds;
+    let at = target.bounds.clone();
     rig.cx.simulate_click(point(px(at.x + at.width / 2.0), px(at.y + at.height / 2.0)), Modifiers::default());
     rig.settle();
     assert_eq!(rig.route(), Route::Orbit(OrbitRoute::Browse(BrowseRoute::Tree(chosen))));

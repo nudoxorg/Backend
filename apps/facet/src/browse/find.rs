@@ -325,7 +325,12 @@ impl RenderOnce for Find {
                     })));
             }
             page = page.child(examples);
-            if !self.model.query.is_empty() || self.model.loading || self.model.candidates.is_empty() { return page; }
+            if !self.model.query.is_empty() || self.model.loading || self.model.candidates.is_empty() {
+                for (at, coverage) in self.model.coverage.iter().enumerate() {
+                    page = page.child(words(child(&self.id, format!("coverage-{at}")), coverage.clone(), ty::CAPTION, p.ink2, &m));
+                }
+                return page;
+            }
             page = page.child(words(child(&self.id, "home-packages"), "Packages known here", ty::HEAD, p.ink1, &m));
         }
         if updating {

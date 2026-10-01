@@ -2870,9 +2870,12 @@ impl CatalogLookupIndex {
                 {
                     let ecosystem = coordinate.package_type().registry();
                     positions.extend(indexes.iter().copied().filter(|index| {
-                        catalog
-                            .get(*index)
-                            .is_some_and(|record| ecosystem == Some(record.ecosystem))
+                        catalog.get(*index).is_some_and(|record| {
+                            ecosystem == Some(record.ecosystem)
+                                && matches!(&record.coordinate, PackageReference::Purl(candidate)
+                                    if candidate.qualifiers() == coordinate.qualifiers()
+                                        && candidate.subpath() == coordinate.subpath())
+                        })
                     }));
                 }
             }
@@ -3138,6 +3141,9 @@ fn version_matches(package: &PackageReference, row: &RegistryPackageRecord) -> b
         PackageReference::Purl(query) => {
             query.package_type().registry() == Some(row.ecosystem)
                 && row.name.as_str() == query.lineage_name()
+                && matches!(&row.coordinate, PackageReference::Purl(candidate)
+                    if candidate.qualifiers() == query.qualifiers()
+                        && candidate.subpath() == query.subpath())
         }
         PackageReference::Local(_) => false,
     }
@@ -3939,6 +3945,50 @@ mod tests {
             .records_named(&catalog[..1], "serde")
             .expect_err("stale catalog");
         assert!(error.contains("does not match the catalog"));
+    }
+
+    #[test]
+    fn catalog_lineage_keeps_registry_qualifiers_across_versions() {
+        let catalog = [
+            registry_row("pkg:cargo/serde@1.0.0", "serde"),
+            registry_row("pkg:cargo/serde@1.0.0?repository_url=https%3A%2F%2Ffirst.example", "serde"),
+            registry_row("pkg:cargo/serde@2.0.0?repository_url=https%3A%2F%2Ffirst.example", "serde"),
+            registry_row("pkg:cargo/serde@1.0.0?repository_url=https%3A%2F%2Fsecond.example", "serde"),
+        ];
+        let index = CatalogLookupIndex::from_catalog(&catalog);
+        let first = PackageReference::parse("pkg:cargo/serde@1.0.0?repository_url=https%3A%2F%2Ffirst.example").expect("first authority");
+        let rows = index.records_for(&catalog, &first, true).expect("first lineage");
+        assert_eq!(rows.iter().map(|row| row.coordinate.as_str()).collect::<Vec<_>>(), [
+            "pkg:cargo/serde@1.0.0?repository_url=https%3A%2F%2Ffirst.example",
+            "pkg:cargo/serde@2.0.0?repository_url=https%3A%2F%2Ffirst.example",
+        ]);
+        assert_eq!(index.records_for(&catalog, &first, false).expect("exact").len(), 1);
+        let crates_io = PackageReference::parse("pkg:cargo/serde@1.0.0").expect("crates.io");
+        assert_eq!(index.records_for(&catalog, &crates_io, true).expect("crates.io lineage").len(), 1);
+        assert!(version_matches(&first, rows[0]));
+        assert!(!version_matches(&first, &catalog[3]));
+    }
+
+    #[test]
+    fn acquired_search_keeps_same_named_registry_lineages_apart() {
+        let catalog = [
+            registry_row("pkg:cargo/serde@1.0.0", "serde"),
+            registry_row("pkg:cargo/serde@1.0.0?repository_url=https%3A%2F%2Ffirst.example", "serde"),
+            registry_row("pkg:cargo/serde@2.0.0?repository_url=https%3A%2F%2Ffirst.example", "serde"),
+            registry_row("pkg:cargo/serde@1.0.0?repository_url=https%3A%2F%2Fsecond.example", "serde"),
+        ];
+        let index = catalog_search::CatalogSearchIndex::build(&catalog).expect("search projection");
+        let page = index.lineage_page_after(&catalog, "serde", 10, None).expect("lineages");
+        assert_eq!(page.hits.len(), 3, "crates.io and each alternate registry are distinct search results");
+        let mut releases = page.hits.iter().map(|hit| {
+            let (rows, _, _, _) = index.matching_lineage_releases(&catalog, &hit.key, "serde").expect("releases");
+            rows.into_iter().map(|row| row.coordinate.as_str().to_owned()).collect::<Vec<_>>()
+        }).collect::<Vec<_>>();
+        releases.sort();
+        assert_eq!(releases.iter().map(Vec::len).sum::<usize>(), 4);
+        assert!(releases.iter().any(|rows| rows.len() == 2 && rows.iter().all(|coordinate| coordinate.contains("first.example"))));
+        assert!(releases.iter().any(|rows| rows.len() == 1 && rows[0] == "pkg:cargo/serde@1.0.0"));
+        assert!(releases.iter().any(|rows| rows.len() == 1 && rows[0].contains("second.example")));
     }
 
     #[test]

@@ -139,6 +139,11 @@ fn counts_are_what_builds_on_this_machine() {
             path: "vendor/gpui-ce".to_owned()
         }
     );
+    let registry = tree.package("toml", "0.8.23").expect("toml");
+    assert_eq!(registry.origin, PackageOrigin::Registry {
+        source: "registry+https://github.com/rust-lang/crates.io-index".to_owned(),
+    });
+    assert!(registry.origin.is_crates_io_registry());
 }
 
 #[test]
@@ -268,11 +273,26 @@ fn bincode_is_unmaintained_and_the_path_says_how_it_got_here() {
     );
     assert_eq!(
         tree.health.coverage,
-        AdvisoryCoverage::Partial,
-        "one advisory is not a full check"
+        AdvisoryCoverage::Unknown,
+        "vendored sources have no proven crates.io advisory coverage"
     );
     assert_eq!(tree.health.checked, 0);
     assert_eq!(tree.health.of, 884);
+}
+
+#[test]
+fn an_alternative_registry_does_not_inherit_crates_io_advisories() {
+    let mut input = metadata_input(METADATA, "aarch64-apple-darwin", None).expect("metadata");
+    let package = input.packages.iter_mut().find(|package| package.name == "bincode" && package.version == "1.3.3").expect("bincode");
+    package.origin = Some(PackageOrigin::Registry { source: "registry+https://packages.example.test/index".to_owned() });
+    let authority = rustsec();
+    let observe = |name: &str, version: &str| {
+        let package = normalize_package("cargo", name).expect("identity");
+        authority.observe(&package, version, false, false, 1, false)
+    };
+    let tree = build_tree(&input, &observe);
+    assert!(!tree.health.affecting.iter().any(|advisory| advisory.package == "bincode"));
+    assert_eq!(tree.health.coverage, AdvisoryCoverage::Unknown);
 }
 
 #[test]
@@ -312,6 +332,9 @@ fn the_lockfile_alone_still_explains_the_tree() {
     assert_eq!(tree.members.len(), 44);
     assert_eq!(tree.packages.len(), 1193, "every platform counts");
     let toml = tree.package("toml", "0.8.23").expect("toml");
+    assert_eq!(toml.origin, PackageOrigin::Registry {
+        source: "registry+https://github.com/rust-lang/crates.io-index".to_owned(),
+    });
     assert_eq!(toml.why.len(), 2, "{}", path(&toml.why));
     assert!(
         tree.direct

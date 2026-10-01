@@ -107,7 +107,7 @@ fn dependency_rows_retain_exact_source_origin_and_refuse_ambiguous_releases() {
     let reading = read_tree(&source);
     let toml = reading.roles.iter().flat_map(|role| &role.rows).find(|row| row.name == "toml").expect("toml");
     assert_eq!(toml.versions.len(), toml.sources.len());
-    assert!(toml.sources.iter().all(|source| matches!(source, Some(PackageOrigin::Registry))));
+    assert!(toml.sources.iter().all(|source| source.as_ref().is_some_and(PackageOrigin::is_crates_io_registry)));
     let gpui = reading.roles.iter().flat_map(|role| &role.rows).find(|row| row.name == "gpui-ce").expect("vendored direct dependency");
     assert!(gpui.sources.iter().any(|source| matches!(source, Some(PackageOrigin::Vendored { path }) if path == "vendor/gpui-ce")));
 

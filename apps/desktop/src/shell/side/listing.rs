@@ -340,6 +340,7 @@ fn library(inputs: &Inputs<'_>) -> Listing {
             if projects == 1 { "" } else { "s" },
             if packages == 1 { "" } else { "s" }
         ),
+        None if inputs.orbit.is_none() => format!("{projects} project{} · packages reading", if projects == 1 { "" } else { "s" }),
         None => format!("{projects} project{} · packages unavailable", if projects == 1 { "" } else { "s" }),
     };
     // The count is what the list shows: your projects and the packages beside them.

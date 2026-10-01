@@ -15,6 +15,16 @@ use gpui::{TestAppContext, WeakEntity};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[test]
+fn project_acquisition_never_offers_an_alternative_registry_from_the_crates_io_source() {
+    use backend_library::browse::PackageOrigin;
+    let release = release("toml", "1.1.6");
+    let other = PackageOrigin::Registry { source: "registry+https://packages.example.test/index".to_owned() };
+    let crates_io = PackageOrigin::Registry { source: "registry+https://github.com/rust-lang/crates.io-index".to_owned() };
+    assert!(matches!(super::acquire::dependency_origin(&other, &release, &Shelf), Origin::Elsewhere(_)));
+    assert!(matches!(super::acquire::dependency_origin(&crates_io, &release, &Shelf), Origin::Registry(_)));
+}
+
 /// A source with two crates: `anyhow` (unpacked, not indexed) and `toml`
 /// (unpacked at `/cache/toml-0.8.23`, which the owner indexed).
 struct Shelf;

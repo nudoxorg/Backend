@@ -75,7 +75,12 @@ pub(super) fn body(
         let tree_id: SharedString = format!("orbit-tree-{}", project.id.as_str()).into();
         let tree_links = ctx.links.clone();
         let tree_project = project.id.clone();
+        let tree_recall = ctx.targets.recall();
+        let tree_leave_id = tree_id.clone();
         let tree_act: Act = Rc::new(move |_, cx| {
+            let leaving = tree_links.snapshot(cx).route().clone();
+            tree_recall.focus(tree_leave_id.clone());
+            tree_recall.remember_leave(leaving, tree_leave_id.clone());
             tree_links.dispatch(Intent::ActivateProject(tree_project.clone()), cx);
             tree_links.dispatch(Intent::Navigate(tree_route.clone()), cx);
         });
