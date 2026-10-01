@@ -39,7 +39,7 @@ use super::region::{Links, Region, RegionCore};
 use super::jump::{route_package, route_symbol};
 use crate::model::AppSnapshot;
 use crate::model::pages::PageKey;
-use crate::navigation::{Overlay, Route, View};
+use crate::navigation::{BrowseRoute, OrbitRoute, Overlay, Route, View};
 use crate::runtime::store::{Branch, DataStore, StoreEvent};
 use facet::anatomy::symbol::key::FoldKey;
 use facet::motion::{Carry, Edge, Presence, band, masked, offset, print};
@@ -395,6 +395,8 @@ pub(crate) struct Reader {
     source_paging: SourcePagingMemory,
     /// Shared empty handle for non-code bodies; they never write paging state.
     empty_source_paging: Rc<RefCell<Option<bodies::PagingState>>>,
+    /// Bounded Library disclosure and virtual-list scroll state for exact trees.
+    library_state: LibraryStateMemory,
     /// Applied only after the destination content can paint.
     pending_scroll_restore: Option<(u64, Point<Pixels>)>,
     /// Bring the focused target into view in the next frame's prepaint (a
@@ -461,6 +463,7 @@ impl Reader {
             scroll_memory: Vec::new(),
             source_paging: SourcePagingMemory::default(),
             empty_source_paging: Rc::new(RefCell::new(None)),
+            library_state: LibraryStateMemory::default(),
             pending_scroll_restore: None,
             reveal: Rc::new(Cell::new(false)),
             source_focus_applied: Rc::new(Cell::new(None)),
@@ -1356,6 +1359,85 @@ struct Place {
 
 const MAX_ROUTE_SCROLL_MEMORY: usize = 64;
 const MAX_SOURCE_PAGING_MEMORY: usize = 32;
+const MAX_LIBRARY_STATE_MEMORY: usize = 8;
+
+#[derive(Default)]
+struct LibraryStateMemory {
+    entries: Vec<LibraryStateEntry>,
+}
+
+struct LibraryStateEntry {
+    route: Route,
+    revision: Option<crate::core::VersionedRoot>,
+    state: Rc<RefCell<facet::browse::library::State>>,
+}
+
+impl LibraryStateMemory {
+    fn for_route(
+        &mut self,
+        route: &Route,
+        revision: Option<crate::core::VersionedRoot>,
+        active: bool,
+    ) -> Rc<RefCell<facet::browse::library::State>> {
+        if let Some(index) = self.entries.iter().position(|entry| entry.route == *route && entry.revision == revision) {
+            if active {
+                let entry = self.entries.remove(index);
+                let state = Rc::clone(&entry.state);
+                self.entries.push(entry);
+                return state;
+            }
+            return Rc::clone(&self.entries[index].state);
+        }
+        let state = Rc::new(RefCell::new(facet::browse::library::State::default()));
+        if active {
+            self.entries.push(LibraryStateEntry { route: route.clone(), revision, state: Rc::clone(&state) });
+            if self.entries.len() > MAX_LIBRARY_STATE_MEMORY { self.entries.remove(0); }
+        }
+        state
+    }
+}
+
+#[cfg(test)]
+mod library_state_memory_tests {
+    use super::{LibraryStateMemory, MAX_LIBRARY_STATE_MEMORY};
+    use crate::core::{LocalProjectId, VersionedRoot};
+    use crate::navigation::{BrowseRoute, OrbitRoute, Route};
+    use std::path::Path;
+    use std::rc::Rc;
+
+    fn tree(name: &str) -> Route {
+        let project = LocalProjectId::from_path(Path::new(name)).expect("tree identity");
+        Route::Orbit(OrbitRoute::Browse(BrowseRoute::Tree(project)))
+    }
+
+    #[test]
+    fn library_state_survives_back_only_for_the_exact_tree_revision() {
+        let mut memory = LibraryStateMemory::default();
+        let route = tree("/tmp/library-memory-one");
+        let root = VersionedRoot::unserved();
+        let changed = VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("library".to_owned(), "changed".to_owned())]), 7,
+        );
+        let first = memory.for_route(&route, Some(root), true);
+        assert!(Rc::ptr_eq(&first, &memory.for_route(&route, Some(root), true)));
+        assert!(!Rc::ptr_eq(&first, &memory.for_route(&route, Some(changed), true)));
+        assert!(!Rc::ptr_eq(&first, &memory.for_route(&tree("/tmp/library-memory-two"), Some(root), true)));
+    }
+
+    #[test]
+    fn leaving_tree_does_not_admit_state_and_old_trees_are_evicted() {
+        let mut memory = LibraryStateMemory::default();
+        let first_route = tree("/tmp/library-memory-first");
+        let transient = memory.for_route(&first_route, None, false);
+        let first = memory.for_route(&first_route, None, true);
+        assert!(!Rc::ptr_eq(&transient, &first));
+        for at in 0..MAX_LIBRARY_STATE_MEMORY {
+            memory.for_route(&tree(&format!("/tmp/library-memory-{at}")), None, true);
+        }
+        assert_eq!(memory.entries.len(), MAX_LIBRARY_STATE_MEMORY);
+        assert!(!Rc::ptr_eq(&first, &memory.for_route(&first_route, None, true)));
+    }
+}
 
 #[derive(Default)]
 struct SourcePagingMemory {
@@ -1555,6 +1637,13 @@ impl Reader {
         } else {
             Rc::clone(&self.empty_source_paging)
         };
+        let library_state = match &place.route {
+            Route::Orbit(OrbitRoute::Browse(BrowseRoute::Tree(project))) => {
+                let revision = pages.browse(&crate::model::browse::BrowseKey::Tree(project.clone())).value_root();
+                self.library_state.for_route(&place.route, revision, current)
+            }
+            _ => Rc::new(RefCell::new(facet::browse::library::State::default())),
+        };
         let leaves = {
             let symbol_disclosure = route_symbol(&place.route).map(|symbol| self.symbol_disclosure(&symbol)).unwrap_or_default();
             let mut ctx = Ctx {
@@ -1575,6 +1664,7 @@ impl Reader {
                 place_key: place.key,
                 source_generation,
                 source_paging,
+                library_state,
                 lens: if current { self.lens } else { place.lens },
                 said: &mut said,
                 hero: &mut hero,

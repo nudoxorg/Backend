@@ -22,9 +22,12 @@ use crate::theme::ActiveFacet;
 use crate::tokens::fluid::ROLES;
 use crate::tokens::{Palette, TypeRole, ty};
 use gpui::{
-    AnyElement, App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce,
-    SharedString, StatefulInteractiveElement, Styled, Window, div,
+    AnyElement, App, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement, ListAlignment, ListOffset, ListState,
+    ParentElement, Pixels, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window,
+    div, list, px,
 };
+use std::cell::RefCell;
+use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -114,6 +117,8 @@ pub struct Row {
 pub struct Role {
     /// Stable role identity; never its current ordinal.
     pub key: SharedString,
+    /// Icon chosen from the producer's typed dependency purpose.
+    pub icon: Icon,
     /// "speaks formats".
     pub label: SharedString,
     /// "for engine, store and advisory".
@@ -162,9 +167,383 @@ pub struct Model {
 
 /// How many duplicates show before "and N more".
 pub const TWICE_AT_REST: usize = 8;
-/// A single reveal adds a bounded run; large workspaces never mount every
-/// dependency row because one disclosure was opened.
-const REVEAL_BATCH: usize = 24;
+/// Maximum release controls mounted inside one expanded package row.
+const RELEASE_WINDOW: usize = 12;
+
+/// Bounded interaction state for one exact project tree and owner revision.
+/// The Reader retains this through Back/Forward; the component borrows it.
+#[derive(Default)]
+pub struct State {
+    lists: BTreeMap<SharedString, ListCache>,
+    open: VecDeque<SharedString>,
+    all_alerts: bool,
+    focuses: VecDeque<(ReleaseHandle, FocusHandle)>,
+    release_pages: VecDeque<(SharedString, usize)>,
+    return_focus: Option<(ReleaseHandle, u64)>,
+}
+
+struct ListCache {
+    state: ListState,
+    width: Pixels,
+    scale: f32,
+}
+
+impl State {
+    /// Remembers the exact release that opened the next page. Its button is
+    /// focused only if this same tree is painted at a later Reader place.
+    pub fn remember_open(&mut self, release: ReleaseHandle, place_key: u64) {
+        self.return_focus = Some((release, place_key));
+    }
+
+    fn return_target(&self, place_key: u64, active: bool) -> Option<ReleaseHandle> {
+        self.return_focus
+            .filter(|(_, from)| active && *from != place_key)
+            .map(|(release, _)| release)
+    }
+
+    fn take_return(&mut self, release: ReleaseHandle, place_key: u64, active: bool) -> bool {
+        if self.return_target(place_key, active) != Some(release) { return false; }
+        self.return_focus = None;
+        true
+    }
+
+    fn focus_for(&mut self, release: ReleaseHandle, cx: &mut App) -> FocusHandle {
+        if let Some(at) = self.focuses.iter().position(|(key, _)| *key == release)
+            && let Some((key, focus)) = self.focuses.remove(at)
+        {
+            self.focuses.push_back((key, focus.clone()));
+            return focus;
+        }
+        let focus = cx.focus_handle().tab_stop(true);
+        if self.focuses.len() == 64 {
+            if self.focuses.front().is_some_and(|(key, _)| self.return_focus.is_some_and(|(returning, _)| *key == returning)) {
+                self.focuses.rotate_left(1);
+            }
+            self.focuses.pop_front();
+        }
+        self.focuses.push_back((release, focus.clone()));
+        focus
+    }
+
+    fn release_start(&self, key: &SharedString, count: usize) -> usize {
+        let last = count.saturating_sub(1) / RELEASE_WINDOW * RELEASE_WINDOW;
+        self.release_pages.iter().find(|(saved, _)| saved == key)
+            .map_or(0, |(_, start)| (*start).min(last))
+    }
+
+    fn set_release_start(&mut self, key: SharedString, start: usize, count: usize) {
+        let last = count.saturating_sub(1) / RELEASE_WINDOW * RELEASE_WINDOW;
+        if let Some(at) = self.release_pages.iter().position(|(saved, _)| saved == &key) {
+            self.release_pages.remove(at);
+        }
+        if self.release_pages.len() == 64 { self.release_pages.pop_front(); }
+        self.release_pages.push_back((key, start.min(last) / RELEASE_WINDOW * RELEASE_WINDOW));
+    }
+
+    fn ensure_open(&mut self, key: SharedString) {
+        if !self.is_open(&key) {
+            self.toggle(key);
+        }
+    }
+
+    fn list(&mut self, key: SharedString, count: usize, measure: &Measure) -> ListState {
+        let cache = self.lists.entry(key).or_insert_with(|| ListCache {
+            state: ListState::new(count, ListAlignment::Top, px(80.))
+                .with_uniform_item_height(measure.row()),
+            width: measure.width(),
+            scale: measure.scale(),
+        });
+        if cache.state.item_count() != count {
+            cache.state.reset_with_uniform_height(count, measure.row());
+        } else if cache.width != measure.width() || cache.scale != measure.scale() {
+            cache.state.remeasure();
+        }
+        cache.width = measure.width();
+        cache.scale = measure.scale();
+        cache.state.clone()
+    }
+
+    fn is_open(&self, key: &SharedString) -> bool {
+        self.open.contains(key)
+    }
+
+    fn toggle(&mut self, key: SharedString) {
+        if let Some(at) = self.open.iter().position(|open| open == &key) {
+            self.open.remove(at);
+        } else {
+            self.open.push_back(key);
+            if self.open.len() > 64 {
+                self.open.pop_front();
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::{ReleaseHandle, State};
+
+    #[test]
+    fn disclosure_follows_exact_row_identity_and_stays_bounded() {
+        let mut state = State::default();
+        state.toggle("role:source-a@1".into());
+        assert!(state.is_open(&"role:source-a@1".into()));
+        assert!(!state.is_open(&"role:source-b@1".into()));
+        state.toggle("role:source-a@1".into());
+        assert!(!state.is_open(&"role:source-a@1".into()));
+        for at in 0..128 {
+            state.toggle(format!("row-{at}").into());
+        }
+        assert_eq!(state.open.len(), 64);
+        assert!(!state.is_open(&"row-0".into()));
+        assert!(state.is_open(&"row-127".into()));
+    }
+
+    #[test]
+    fn return_focus_waits_for_a_new_active_place_and_is_one_shot() {
+        let mut state = State::default();
+        let release = ReleaseHandle::new(2, 97, 1);
+        state.remember_open(release, 8);
+        assert_eq!(state.return_target(8, true), None);
+        assert_eq!(state.return_target(9, false), None);
+        assert_eq!(state.return_target(9, true), Some(release));
+        assert!(!state.take_return(ReleaseHandle::new(2, 97, 0), 9, true));
+        assert!(state.take_return(release, 9, true));
+        assert_eq!(state.return_target(9, true), None);
+    }
+}
+
+#[cfg(test)]
+mod mounted_tests {
+    use super::*;
+    use crate::theme::{Facet, set_facet};
+    use gpui::{AppContext as _, Context, Modifiers, Render, TestAppContext, VisualTestContext, point};
+
+    struct Mounted {
+        model: Arc<Model>,
+        state: Rc<RefCell<State>>,
+        opened: Rc<RefCell<Vec<ReleaseHandle>>>,
+        width: Pixels,
+        place_key: u64,
+        visible: bool,
+    }
+
+    impl Render for Mounted {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            probe::draw_started(cx);
+            if !self.visible {
+                return div().w(self.width).h(px(900.0));
+            }
+            let measure = Measure::new(self.width, &cx.facet());
+            let state = Rc::clone(&self.state);
+            let opened = Rc::clone(&self.opened);
+            let place_key = self.place_key;
+            let actions = Actions { open_package: Rc::new(move |release, _, _| {
+                state.borrow_mut().remember_open(release, place_key);
+                opened.borrow_mut().push(release);
+            }) };
+            div().w(self.width).h(px(900.0)).child(library(
+                "mounted-library", Arc::clone(&self.model), actions, &measure, Rc::clone(&self.state),
+                self.place_key, true,
+            ))
+        }
+    }
+
+    fn draw(cx: &mut VisualTestContext) -> crate::probe::Ledger {
+        cx.run_until_parked();
+        cx.update(|window, cx| { window.simulate_next_frame(cx); window.draw(cx).clear(cx); });
+        cx.update(|_, cx| probe::take(cx))
+    }
+
+    fn click(cx: &mut VisualTestContext, ledger: &crate::probe::Ledger, part: &str) {
+        let target = ledger.targets.iter().find(|target| target.key.contains(part))
+            .unwrap_or_else(|| panic!("no {part} target in native Library frame"));
+        let at = point(px(target.bounds.x + target.bounds.width / 2.0),
+            px(target.bounds.y + target.bounds.height / 2.0));
+        cx.simulate_mouse_move(at, None, Modifiers::none());
+        draw(cx);
+        cx.simulate_click(at, Modifiers::none());
+    }
+
+    #[gpui::test]
+    fn back_focuses_the_exact_opened_release_after_its_button_was_unmounted(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            set_facet(Facet { text_scale: 2.0, reduced_motion: true, ..Facet::default() }, cx);
+            probe::enable(cx);
+        });
+        let release = ReleaseHandle::new(0, 499, 0);
+        let rows = (0..500).map(|at| Row {
+            key: if at == 499 { "exact-package".into() } else { format!("other-{at:03}").into() },
+            name: if at == 499 { "exact-package".into() } else { format!("other-{at:03}").into() },
+            at_rest: None, why: "an admitted release".into(), about: None,
+            releases: if at == 499 { vec![ReleaseLink { key: "release-1".into(), version: "1".into(),
+                target: Some(release), unavailable: None }] } else { vec![] },
+        }).collect();
+        let model = Arc::new(Model {
+            name: "project".into(), lede: "Its dependencies".into(), lede_tip: None,
+            note: None, alerts: vec![], facts: vec![],
+            roles: vec![Role { key: "formats".into(), icon: Icon::Split, label: "speaks formats".into(),
+                serving: None, brings: None, rows }],
+            twice_heading: None, twice: vec![],
+        });
+        let state = Rc::new(RefCell::new(State::default()));
+        let opened = Rc::new(RefCell::new(Vec::new()));
+        let (host, cx) = cx.add_window_view(|_, _| Mounted {
+            model, state: Rc::clone(&state), opened: Rc::clone(&opened),
+            width: px(260.0), place_key: 1, visible: true,
+        });
+        draw(cx);
+        let list_state = state.borrow().lists.get("role-list-formats").expect("virtual role").state.clone();
+        list_state.scroll_to(ListOffset { item_ix: 499, offset_in_item: px(0.) });
+        let first = draw(cx);
+        click(cx, &first, "exact-package");
+        draw(cx);
+        list_state.scroll_to(ListOffset { item_ix: 499, offset_in_item: px(160.) });
+        let revealed = draw(cx);
+        click(cx, &revealed, "release-1");
+        assert_eq!(opened.borrow().as_slice(), &[release]);
+        host.update(cx, |host, cx| { host.visible = false; cx.notify(); });
+        draw(cx);
+        list_state.scroll_to(ListOffset { item_ix: 0, offset_in_item: px(0.) });
+        host.update(cx, |host, cx| { host.visible = true; host.place_key = 2; cx.notify(); });
+        draw(cx);
+        cx.simulate_keystrokes("left");
+        let returned = draw(cx);
+        assert!(returned.targets.iter().any(|target| target.key.contains("release-1") && target.state.focused),
+            "Back must restore native focus to the exact clicked release");
+        assert!(list_state.logical_scroll_top().item_ix >= 490, "Back must reveal a virtual release after its row was unmounted");
+        assert!(state.borrow().return_focus.is_none(), "focus restoration is one shot");
+        host.update(cx, |host, cx| { host.width = px(320.0); cx.notify(); });
+        let resized = draw(cx);
+        assert!(resized.targets.iter().any(|target| target.key.contains("release-1") && target.state.focused),
+            "the same release keeps focus through 260→320 reflow at 200% text");
+    }
+
+    #[gpui::test]
+    fn an_expanded_row_mounts_a_bounded_release_window_with_a_reachable_tail(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            set_facet(Facet { text_scale: 2.0, reduced_motion: true, ..Facet::default() }, cx);
+            probe::enable(cx);
+        });
+        let releases = (0..1_000).map(|at| ReleaseLink {
+            key: format!("release-{at}").into(), version: at.to_string().into(),
+            target: Some(ReleaseHandle::new(0, 0, at)), unavailable: None,
+        }).collect();
+        let model = Arc::new(Model {
+            name: "project".into(), lede: "Its dependencies".into(), lede_tip: None,
+            note: None, alerts: vec![], facts: vec![],
+            roles: vec![Role { key: "formats".into(), icon: Icon::Split, label: "speaks formats".into(),
+                serving: None, brings: None, rows: vec![Row { key: "exact-package".into(),
+                    name: "exact-package".into(), at_rest: None, why: "an admitted release".into(),
+                    about: None, releases }] }],
+            twice_heading: None, twice: vec![],
+        });
+        let state = Rc::new(RefCell::new(State::default()));
+        let opened = Rc::new(RefCell::new(Vec::new()));
+        let (host, cx) = cx.add_window_view(|_, _| Mounted {
+            model, state: Rc::clone(&state), opened: Rc::clone(&opened),
+            width: px(260.0), place_key: 1, visible: true,
+        });
+        let first = draw(cx);
+        click(cx, &first, "exact-package");
+        let expanded = draw(cx);
+        let release_buttons = |ledger: &crate::probe::Ledger| ledger.targets.iter()
+            .filter(|target| target.key.contains("release-") && !target.key.contains("releases"))
+            .count();
+        assert!(release_buttons(&expanded) <= RELEASE_WINDOW);
+        click(cx, &expanded, "last-releases");
+        let tail = draw(cx);
+        assert!(release_buttons(&tail) <= RELEASE_WINDOW);
+        assert!(tail.targets.iter().any(|target| target.key.contains("release-996")),
+            "Last releases must reach the final bounded window");
+        click(cx, &tail, "release-996");
+        assert_eq!(opened.borrow().as_slice(), &[ReleaseHandle::new(0, 0, 996)]);
+        host.update(cx, |host, cx| { host.visible = false; cx.notify(); });
+        draw(cx);
+        host.update(cx, |host, cx| { host.visible = true; host.place_key = 2; cx.notify(); });
+        draw(cx);
+        cx.simulate_keystrokes("left");
+        let returned = draw(cx);
+        assert!(returned.targets.iter().any(|target| target.key.contains("release-996") && target.state.focused),
+            "Back restores the selected tail release instead of the first page");
+    }
+
+    #[gpui::test]
+    fn a_500_package_tree_mounts_only_visible_rows_at_200_percent_and_reflows_scroll(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            set_facet(Facet { text_scale: 2.0, reduced_motion: true, ..Facet::default() }, cx);
+            probe::enable(cx);
+        });
+        let rows = (0..500).map(|at| Row {
+            key: format!("pkg-{at:03}@1").into(),
+            name: format!("pkg-{at:03}").into(),
+            at_rest: None,
+            why: "In this exact project".into(),
+            about: None,
+            releases: vec![],
+        }).collect();
+        let model = Arc::new(Model {
+            name: "large project".into(), lede: "Its packages are ready to browse.".into(),
+            lede_tip: None, note: None, alerts: vec![], facts: vec![],
+            roles: vec![Role { key: "formats".into(), icon: Icon::Split, label: "speaks formats".into(),
+                serving: None, rows, brings: None }],
+            twice_heading: None, twice: vec![],
+        });
+        let state = Rc::new(RefCell::new(State::default()));
+        let opened = Rc::new(RefCell::new(Vec::new()));
+        let (host, cx) = cx.add_window_view(|_, _| Mounted {
+            model, state: Rc::clone(&state), opened, width: px(260.0), place_key: 1, visible: true,
+        });
+        let first = draw(cx);
+        let painted = |ledger: &crate::probe::Ledger| ledger.texts.iter().filter(|text| text.content.starts_with("pkg-")).count();
+        assert!((1..40).contains(&painted(&first)), "virtual list mounted too many rows: {}", painted(&first));
+        assert!(first.texts.iter().any(|text| text.content == "pkg-000"));
+        assert!(!first.texts.iter().any(|text| text.content == "pkg-499"));
+
+        let list_state = state.borrow().lists.get("role-list-formats").expect("role list").state.clone();
+        let viewport = list_state.viewport_bounds();
+        let middle = point(viewport.left() + viewport.size.width / 2.0, viewport.top() + viewport.size.height / 2.0);
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: middle,
+            delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-500.0))),
+            ..Default::default()
+        });
+        let scrolled = draw(cx);
+        assert!(list_state.logical_scroll_top().item_ix > 0, "native wheel did not reach the Library rows");
+        assert!((1..40).contains(&painted(&scrolled)), "scroll mounted too many rows: {}", painted(&scrolled));
+        host.update(cx, |host, cx| { host.width = px(320.0); cx.notify(); });
+        let reflowed = draw(cx);
+        assert!(list_state.logical_scroll_top().item_ix > 0, "resize lost the virtual list's reading position");
+        assert!((1..40).contains(&painted(&reflowed)), "resize mounted too many rows: {}", painted(&reflowed));
+
+        let last = reflowed.targets.iter().find(|target| target.key.contains("last-packages"))
+            .expect("Last rows is a native focusable action");
+        let last_at = point(px(last.bounds.x + last.bounds.width / 2.0),
+            px(last.bounds.y + last.bounds.height / 2.0));
+        cx.simulate_mouse_move(last_at, None, Modifiers::none());
+        draw(cx);
+        cx.simulate_click(last_at, Modifiers::none());
+        let last_page = draw(cx);
+        assert!(list_state.logical_scroll_top().item_ix >= 490, "Last rows did not reveal the tail");
+        assert!(last_page.texts.iter().any(|text| text.content == "pkg-499"));
+        assert!((1..40).contains(&painted(&last_page)), "tail mounted too many rows: {}", painted(&last_page));
+
+        cx.simulate_keystrokes("tab");
+        let mut focused = last_page.targets.iter().any(|target| target.key.contains("previous-packages") && target.state.focused);
+        for _ in 0..20 {
+            if focused { break; }
+            cx.update(|window, cx| window.focus_next(cx));
+            focused = draw(cx).targets.iter().any(|target| target.key.contains("previous-packages") && target.state.focused);
+        }
+        assert!(focused, "Previous rows must be reachable from the native keyboard focus order at the tail");
+        cx.simulate_keystrokes("pageup");
+        draw(cx);
+        assert!(list_state.logical_scroll_top().item_ix < 490, "focused navigation did not handle PageUp");
+    }
+}
 
 /// The Library page for `model`, `measure` wide.
 #[must_use]
@@ -173,12 +552,18 @@ pub fn library(
     model: Arc<Model>,
     actions: Actions,
     measure: &Measure,
+    state: Rc<RefCell<State>>,
+    place_key: u64,
+    active: bool,
 ) -> Library {
     Library {
         id: id.into(),
         model,
         actions,
         measure: *measure,
+        state,
+        place_key,
+        active,
     }
 }
 
@@ -189,6 +574,9 @@ pub struct Library {
     model: Arc<Model>,
     actions: Actions,
     measure: Measure,
+    state: Rc<RefCell<State>>,
+    place_key: u64,
+    active: bool,
 }
 
 /// A package mark at the size its row's text is set at (a 100 % mark beside
@@ -242,7 +630,28 @@ impl RenderOnce for Library {
             .flex_col()
             .w(measure.width())
             .gap(measure.space(Space::Wide))
-            .child(hero(&id, &model, &measure, palette));
+            .child(hero(&id, &model, &measure, palette, &self.state));
+        if self.state.borrow().all_alerts && model.alerts.len() > 8 {
+            let list_state =
+                self.state
+                    .borrow_mut()
+                    .list("all-alerts".into(), model.alerts.len() - 8, &measure);
+            let alerts_model = Arc::clone(&model);
+            let alert_id = child(&id, "all-alerts");
+            page = page.child(
+                list(list_state, move |at, _window, _cx| {
+                    let alert = &alerts_model.alerts[at + 8];
+                    alert_view(
+                        &child(&alert_id, format!("{}:{}", alert.advisory, alert.path)),
+                        alert,
+                        &measure,
+                        palette,
+                    )
+                })
+                .w(measure.width())
+                .h(measure.row() * 6.0),
+            );
+        }
         if let Some(note) = &model.note {
             page = page.child(words(
                 child(&id, "note"),
@@ -259,6 +668,9 @@ impl RenderOnce for Library {
             &self.actions,
             &measure,
             palette,
+            &self.state,
+            self.place_key,
+            self.active,
             window,
             cx,
         ));
@@ -266,7 +678,13 @@ impl RenderOnce for Library {
     }
 }
 
-fn hero(id: &ElementId, model: &Model, measure: &Measure, palette: &Palette) -> AnyElement {
+fn hero(
+    id: &ElementId,
+    model: &Model,
+    measure: &Measure,
+    palette: &Palette,
+    state: &Rc<RefCell<State>>,
+) -> AnyElement {
     let gem = measure.fluid(34.0, 44.0);
     let mut lede = div().id(child(id, "lede")).child(words(
         child(id, "lede-words"),
@@ -287,31 +705,34 @@ fn hero(id: &ElementId, model: &Model, measure: &Measure, palette: &Palette) -> 
         .items_baseline()
         .gap_x(measure.space(Space::Gutter))
         .gap_y(measure.space(Space::Tight));
-    for (index, alert) in model.alerts.iter().enumerate() {
-        let tone = match alert.tone {
-            Tone::Warn => palette.amber.base,
-            Tone::Fault => palette.coral.base,
-        };
-        let title = SharedString::from(format!("{} ›", alert.title));
-        let trigger = div()
-            .id(child(id, format!("alert-{index}")))
-            .cursor_default()
-            .child(words(
-                child(id, format!("alert-words-{index}")),
-                title,
-                ty::SMALL,
-                tone,
-                measure,
-                TextOverflow::Wrap,
-            ));
-        facts = facts.child(card_on_rest(
-            child(id, format!("alert-card-{index}")),
-            vec![
-                (alert.advisory.clone(), ty::SMALL, Ink::Strong),
-                (alert.path.clone(), ty::MONO_SMALL, Ink::Quiet),
-            ],
-            trigger,
+    for alert in model.alerts.iter().take(8) {
+        facts = facts.child(alert_view(
+            &child(id, format!("{}:{}", alert.advisory, alert.path)),
+            alert,
+            measure,
+            palette,
         ));
+    }
+    if model.alerts.len() > 8 {
+        let state = Rc::clone(state);
+        let all_alerts = state.borrow().all_alerts;
+        facts = facts.child(
+            button(
+                child(id, "all-alerts-toggle"),
+                if all_alerts {
+                    "Hide alert list"
+                } else {
+                    "Browse all alerts"
+                },
+                measure,
+            )
+            .ghost()
+            .size(Control::Small)
+            .on_click(move |_, cx| {
+                state.borrow_mut().all_alerts = !all_alerts;
+                cx.refresh_windows();
+            }),
+        );
     }
     for (index, fact) in model.facts.iter().enumerate() {
         let color = if index == 0 && model.alerts.is_empty() {
@@ -353,13 +774,39 @@ fn hero(id: &ElementId, model: &Model, measure: &Measure, palette: &Palette) -> 
         .into_any_element()
 }
 
+fn alert_view(id: &ElementId, alert: &Alert, measure: &Measure, palette: &Palette) -> AnyElement {
+    let tone = match alert.tone {
+        Tone::Warn => palette.amber.base,
+        Tone::Fault => palette.coral.base,
+    };
+    let trigger = div().id(id.clone()).cursor_default().child(words(
+        child(id, "words"),
+        format!("{} ›", alert.title).into(),
+        ty::SMALL,
+        tone,
+        measure,
+        TextOverflow::Wrap,
+    ));
+    card_on_rest(
+        child(id, "card"),
+        vec![
+            (alert.advisory.clone(), ty::SMALL, Ink::Strong),
+            (alert.path.clone(), ty::MONO_SMALL, Ink::Quiet),
+        ],
+        trigger,
+    )
+}
+
 /// Roles in one or two columns, balanced by height, then "Here twice".
 fn roles(
     id: &ElementId,
-    model: &Model,
+    model: &Arc<Model>,
     actions: &Actions,
     measure: &Measure,
     palette: &Palette,
+    state: &Rc<RefCell<State>>,
+    place_key: u64,
+    active: bool,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -375,8 +822,21 @@ fn roles(
         .roles
         .iter()
         .enumerate()
-        .map(|(_index, role)| {
-            let block = role_block(id, role, actions, &column, palette, window, cx);
+        .map(|(index, role)| {
+            let block = role_block(
+                id,
+                index,
+                Arc::clone(model),
+                role,
+                actions,
+                &column,
+                palette,
+                state,
+                place_key,
+                active,
+                window,
+                cx,
+            );
             (
                 role.rows.len().min(6) + 2,
                 flow.item(child(id, format!("role-flow-{}", role.key)), block)
@@ -385,7 +845,7 @@ fn roles(
         })
         .collect();
     if !model.twice.is_empty() {
-        let block = twice_block(id, model, &column, palette, window, cx);
+        let block = twice_block(id, Arc::clone(model), &column, palette, state, window, cx);
         blocks.push((
             TWICE_AT_REST + 2,
             flow.item(child(id, "twice-flow"), block).into_any_element(),
@@ -425,30 +885,20 @@ fn roles(
 
 fn role_block(
     id: &ElementId,
+    role_index: usize,
+    model: Arc<Model>,
     role: &Role,
     actions: &Actions,
     measure: &Measure,
     palette: &Palette,
+    state: &Rc<RefCell<State>>,
+    place_key: u64,
+    active: bool,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
     let block_id = child(id, format!("role-{}", role.key));
-    let shown_count = window.use_keyed_state(child(&block_id, "shown"), cx, |_, _| 6usize);
-    let icon = match role.label.as_ref() {
-        "checks our work" => Icon::ShieldCheck,
-        "draws the window" => Icon::Mosaic,
-        "reads languages" => Icon::Book,
-        "speaks formats" => Icon::Split,
-        "keeps and finds" => Icon::Search,
-        "runs things at once" => Icon::Zap,
-        "talks to the network" => Icon::Globe,
-        "fingerprints and packs" => Icon::Seal,
-        "names what went wrong" => Icon::Alert,
-        "watches itself run" => Icon::Eye,
-        "shapes memory" => Icon::Diamond,
-        "talks to the system" => Icon::Settings,
-        _ => Icon::Layers,
-    };
+    let icon = role.icon;
     let mut head = div()
         .flex()
         .flex_wrap()
@@ -478,33 +928,81 @@ fn role_block(
         .flex_col()
         .gap(measure.space(Space::Tight))
         .child(head);
-    let shown = role.rows.len().min(*shown_count.read(cx));
-    for row in role.rows.iter().take(shown) {
-        block = block.child(row_view(
-            &child(&block_id, row.key.clone()),
-            row,
-            actions,
-            measure,
-            palette,
-            window,
-            cx,
-        ));
+    let returning = state.borrow().return_target(place_key, active)
+        .filter(|target| target.role == role_index && target.row < role.rows.len());
+    if let Some(target) = returning {
+        let row = &role.rows[target.row];
+        state.borrow_mut().ensure_open(format!("{}:{}", role.key, row.key).into());
     }
-    if role.rows.len() > shown {
-        block = block.child(
-            button(
-                child(&block_id, "more"),
-                format!("Show more · {} remain", role.rows.len() - shown),
+    let mut keyboard = None;
+    if role.rows.len() <= 8 {
+        for (row_index, row) in role.rows.iter().enumerate() {
+            let state_key: SharedString = format!("{}:{}", role.key, row.key).into();
+            block = block.child(row_view(
+                &child(&block_id, row.key.clone()),
+                row,
+                actions,
                 measure,
-            )
-            .ghost()
-            .on_click(move |_, cx| {
-                shown_count.update(cx, |shown, cx| {
-                    *shown = shown.saturating_add(REVEAL_BATCH);
-                    cx.notify();
-                })
-            }),
+                palette,
+                state,
+                state_key,
+                None,
+                ReleaseHandle::new(role_index, row_index, 0),
+                place_key,
+                active,
+                window,
+                cx,
+            ));
+        }
+    } else {
+        let list_key: SharedString = format!("role-list-{}", role.key).into();
+        let list_state = state.borrow_mut().list(list_key, role.rows.len(), measure);
+        if let Some(target) = returning {
+            list_state.remeasure_items(target.row..target.row + 1);
+            list_state.scroll_to(ListOffset { item_ix: target.row, offset_in_item: px(0.) });
+        }
+        let rows_model = Arc::clone(&model);
+        let actions = actions.clone();
+        let item_parent = block_id.clone();
+        let state = Rc::clone(state);
+        let measure = *measure;
+        let palette = *palette;
+        let rendered_list = list_state.clone();
+        let navigation_list = list_state.clone();
+        keyboard = Some((list_state.clone(), role.rows.len()));
+        block = block.child(list_navigation(&block_id, &navigation_list, role.rows.len(), &measure));
+        block = block.child(
+            list(list_state, move |at, window, cx| {
+                let row = &rows_model.roles[role_index].rows[at];
+                let state_key: SharedString =
+                    format!("{}:{}", rows_model.roles[role_index].key, row.key).into();
+                row_view(
+                    &child(&item_parent, row.key.clone()),
+                    row,
+                    &actions,
+                    &measure,
+                    &palette,
+                    &state,
+                    state_key,
+                    Some((rendered_list.clone(), at)),
+                    ReleaseHandle::new(role_index, at, 0),
+                    place_key,
+                    active,
+                    window,
+                    cx,
+                )
+            })
+            .w(measure.width())
+            .h(measure.row() * 8.0),
         );
+        block = block.child(words(
+            child(&block_id, "scroll-note"),
+            format!("Scroll through {} packages", role.rows.len()).into(),
+            ty::CAPTION,
+            palette.ink3,
+            &measure,
+            TextOverflow::Wrap,
+        ));
     }
     if let Some(brings) = &role.brings {
         block = block.child(div().pt(measure.space(Space::Tight)).child(words(
@@ -516,6 +1014,21 @@ fn role_block(
             TextOverflow::Wrap,
         )));
     }
+    if let Some((list, count)) = keyboard {
+        block = block.on_key_down(move |event, _, cx| {
+            let top = list.logical_scroll_top().item_ix;
+            let target = match event.keystroke.key.as_str() {
+                "pagedown" => top.saturating_add(8).min(count - 1),
+                "pageup" => top.saturating_sub(8),
+                "home" => 0,
+                "end" => count - 1,
+                _ => return,
+            };
+            list.scroll_to(ListOffset { item_ix: target, offset_in_item: px(0.) });
+            cx.refresh_windows();
+            cx.stop_propagation();
+        });
+    }
     block.into_any_element()
 }
 
@@ -525,12 +1038,19 @@ fn row_view(
     actions: &Actions,
     measure: &Measure,
     palette: &Palette,
+    state: &Rc<RefCell<State>>,
+    state_key: SharedString,
+    list_row: Option<(ListState, usize)>,
+    row_address: ReleaseHandle,
+    place_key: u64,
+    active: bool,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    let expanded = window.use_keyed_state(child(id, "expanded"), cx, |_, _| false);
-    let is_expanded = *expanded.read(cx);
-    let toggle = expanded.clone();
+    let returning = state.borrow().return_target(place_key, active)
+        .is_some_and(|target| target.role == row_address.role && target.row == row_address.row);
+    let is_expanded = state.borrow().is_open(&state_key);
+    let toggle = Rc::clone(state);
     let mut line = div()
         .id(id.clone())
         .flex()
@@ -559,6 +1079,8 @@ fn row_view(
             TextOverflow::Wrap,
         )));
     }
+    let toggle_key = state_key.clone();
+    let toggle_list_row = list_row.clone();
     line = line.child(
         button(
             child(id, "details"),
@@ -572,10 +1094,11 @@ fn row_view(
         .ghost()
         .size(Control::Small)
         .on_click(move |_, cx| {
-            toggle.update(cx, |expanded, cx| {
-                *expanded = !*expanded;
-                cx.notify();
-            })
+            toggle.borrow_mut().toggle(toggle_key.clone());
+            if let Some((list, at)) = &toggle_list_row {
+                list.remeasure_items(*at..*at + 1);
+            }
+            cx.refresh_windows();
         }),
     );
     let mut lines = vec![(row.why.clone(), ty::SMALL, Ink::Strong)];
@@ -610,16 +1133,48 @@ fn row_view(
             TextOverflow::Wrap,
         ));
     }
-    for release in &row.releases {
+    let release_count = row.releases.len();
+    let return_release = state.borrow().return_target(place_key, active)
+        .filter(|target| target.role == row_address.role && target.row == row_address.row);
+    if let Some(target) = return_release {
+        state.borrow_mut().set_release_start(state_key.clone(), target.release, release_count);
+    }
+    let release_start = state.borrow().release_start(&state_key, release_count);
+    let release_end = release_start.saturating_add(RELEASE_WINDOW).min(release_count);
+    if release_count > RELEASE_WINDOW {
+        let page_label = format!("Releases {}–{} of {release_count}", release_start + 1, release_end);
+        let page_button = |suffix: &'static str, label: &'static str, to: usize, disabled: bool| {
+            let state = Rc::clone(state);
+            let state_key = state_key.clone();
+            let list_row = list_row.clone();
+            button(child(id, suffix), label, measure).ghost().size(Control::Small).disabled(disabled)
+                .on_click(move |_, cx| set_release_page(&state, state_key.clone(), to, release_count, &list_row, cx))
+        };
+        detail = detail.child(words(child(id, "release-position"), page_label.into(), ty::CAPTION,
+            palette.ink3, measure, TextOverflow::Wrap))
+            .child(div().flex().flex_wrap().gap(measure.space(Space::Tight))
+                .child(page_button("first-releases", "First releases", 0, release_start == 0))
+                .child(page_button("previous-releases", "Previous releases", release_start.saturating_sub(RELEASE_WINDOW), release_start == 0))
+                .child(page_button("next-releases", "Next releases", release_end, release_end == release_count))
+                .child(page_button("last-releases", "Last releases", release_count.saturating_sub(1), release_end == release_count)));
+    }
+    for release in row.releases.iter().skip(release_start).take(RELEASE_WINDOW) {
         if let Some(target) = &release.target {
             let target = *target;
             let open = Rc::clone(&actions.open_package);
+            let button_id = child(id, release.key.clone());
+            let focus = state.borrow_mut().focus_for(target, cx);
+            if returning && state.borrow_mut().take_return(target, place_key, active) {
+                let returning_focus = focus.clone();
+                window.defer(cx, move |window, cx| window.focus(&returning_focus, cx));
+            }
             detail = detail.child(
                 button(
-                    child(id, release.key.clone()),
+                    button_id,
                     format!("Open {} ›", release.version),
                     measure,
                 )
+                .focus_handle(focus)
                 .ghost()
                 .on_click(move |window, cx| open(target.clone(), window, cx)),
             );
@@ -639,6 +1194,51 @@ fn row_view(
         .flex_col()
         .child(trigger)
         .child(detail)
+        .into_any_element()
+}
+
+fn set_release_page(
+    state: &Rc<RefCell<State>>,
+    key: SharedString,
+    start: usize,
+    count: usize,
+    list_row: &Option<(ListState, usize)>,
+    cx: &mut App,
+) {
+    state.borrow_mut().set_release_start(key, start, count);
+    if let Some((list, row)) = list_row {
+        list.remeasure_items(*row..*row + 1);
+    }
+    cx.refresh_windows();
+}
+
+/// Native buttons provide a keyboard route into every virtual row, including
+/// one not yet mounted by the wheel viewport. The list keeps the scroll
+/// position; these controls remain present as its visible items change.
+fn list_navigation(id: &ElementId, list: &ListState, count: usize, measure: &Measure) -> AnyElement {
+    let top = list.logical_scroll_top().item_ix;
+    let previous = list.clone();
+    let next = list.clone();
+    let last = list.clone();
+    div().flex().flex_wrap().items_center().gap(measure.space(Space::Tight))
+        .child(button(child(id, "previous-packages"), "Previous rows", measure)
+            .ghost().size(Control::Small).disabled(top == 0)
+            .on_click(move |_, cx| {
+                previous.scroll_to(ListOffset { item_ix: top.saturating_sub(8), offset_in_item: px(0.) });
+                cx.refresh_windows();
+            }))
+        .child(button(child(id, "next-packages"), "Next rows", measure)
+            .ghost().size(Control::Small).disabled(top.saturating_add(8) >= count)
+            .on_click(move |_, cx| {
+                next.scroll_to(ListOffset { item_ix: top.saturating_add(8).min(count - 1), offset_in_item: px(0.) });
+                cx.refresh_windows();
+            }))
+        .child(button(child(id, "last-packages"), "Last rows", measure)
+            .ghost().size(Control::Small).disabled(top >= count.saturating_sub(8))
+            .on_click(move |_, cx| {
+                last.scroll_to(ListOffset { item_ix: count - 1, offset_in_item: px(0.) });
+                cx.refresh_windows();
+            }))
         .into_any_element()
 }
 
@@ -701,14 +1301,14 @@ fn card_on_rest(
 
 fn twice_block(
     id: &ElementId,
-    model: &Model,
+    model: Arc<Model>,
     measure: &Measure,
     palette: &Palette,
+    state: &Rc<RefCell<State>>,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
     let block_id = child(id, "twice");
-    let shown_count = window.use_keyed_state(child(&block_id, "shown"), cx, |_, _| TWICE_AT_REST);
     let mut head = div()
         .flex()
         .flex_wrap()
@@ -738,34 +1338,77 @@ fn twice_block(
         .flex_col()
         .gap(measure.space(Space::Tight))
         .child(head);
-    let shown = model.twice.len().min(*shown_count.read(cx));
-    for (at, twice) in model.twice.iter().take(shown).enumerate() {
-        block = block.child(twice_row(
-            &child(&block_id, format!("row-{at}")),
-            twice,
-            measure,
-            palette,
-            window,
-            cx,
+    let mut keyboard = None;
+    if model.twice.len() <= TWICE_AT_REST {
+        for twice in &model.twice {
+            let key = twice.name.clone();
+            block = block.child(twice_row(
+                &child(&block_id, key.clone()),
+                twice,
+                measure,
+                palette,
+                state,
+                key,
+                None,
+                window,
+                cx,
+            ));
+        }
+    } else {
+        let list_state = state
+            .borrow_mut()
+            .list("twice-list".into(), model.twice.len(), measure);
+        let rendered_list = list_state.clone();
+        let navigation_list = list_state.clone();
+        keyboard = Some((list_state.clone(), model.twice.len()));
+        block = block.child(list_navigation(&block_id, &navigation_list, model.twice.len(), &measure));
+        let twice_model = Arc::clone(&model);
+        let item_parent = block_id.clone();
+        let state = Rc::clone(state);
+        let measure = *measure;
+        let palette = *palette;
+        block = block.child(
+            list(list_state, move |at, window, cx| {
+                let twice = &twice_model.twice[at];
+                let key = twice.name.clone();
+                twice_row(
+                    &child(&item_parent, key.clone()),
+                    twice,
+                    &measure,
+                    &palette,
+                    &state,
+                    key,
+                    Some((rendered_list.clone(), at)),
+                    window,
+                    cx,
+                )
+            })
+            .w(measure.width())
+            .h(measure.row() * 8.0),
+        );
+        block = block.child(words(
+            child(&block_id, "scroll-note"),
+            format!("Scroll through {} duplicates", model.twice.len()).into(),
+            ty::CAPTION,
+            palette.ink3,
+            &measure,
+            TextOverflow::Wrap,
         ));
     }
-    let hidden = model.twice.len().saturating_sub(shown);
-    if hidden > 0 {
-        block = block.child(
-            button(
-                child(&block_id, "more"),
-                format!("Show {hidden} more duplicates"),
-                measure,
-            )
-            .ghost()
-            .size(Control::Small)
-            .on_click(move |_, cx| {
-                shown_count.update(cx, |shown, cx| {
-                    *shown = shown.saturating_add(REVEAL_BATCH);
-                    cx.notify();
-                })
-            }),
-        );
+    if let Some((list, count)) = keyboard {
+        block = block.on_key_down(move |event, _, cx| {
+            let top = list.logical_scroll_top().item_ix;
+            let target = match event.keystroke.key.as_str() {
+                "pagedown" => top.saturating_add(8).min(count - 1),
+                "pageup" => top.saturating_sub(8),
+                "home" => 0,
+                "end" => count - 1,
+                _ => return,
+            };
+            list.scroll_to(ListOffset { item_ix: target, offset_in_item: px(0.) });
+            cx.refresh_windows();
+            cx.stop_propagation();
+        });
     }
     block.into_any_element()
 }
@@ -775,11 +1418,14 @@ fn twice_row(
     twice: &Twice,
     measure: &Measure,
     palette: &Palette,
+    state: &Rc<RefCell<State>>,
+    state_key: SharedString,
+    list_row: Option<(ListState, usize)>,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    let open = window.use_keyed_state(child(id, "open"), cx, |_, _| false);
-    let is_open = *open.read(cx);
+    let is_open = state.borrow().is_open(&state_key);
+    let toggle = Rc::clone(state);
     let mut versions = div()
         .flex()
         .flex_wrap()
@@ -839,10 +1485,11 @@ fn twice_row(
             .ghost()
             .size(Control::Small)
             .on_click(move |_, cx| {
-                open.update(cx, |open, cx| {
-                    *open = !*open;
-                    cx.notify();
-                })
+                toggle.borrow_mut().toggle(state_key.clone());
+                if let Some((list, at)) = &list_row {
+                    list.remeasure_items(*at..*at + 1);
+                }
+                cx.refresh_windows();
             }),
         );
     let mut block = div().flex().flex_col().child(line);

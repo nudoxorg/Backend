@@ -239,10 +239,22 @@ impl Touch {
         window: &mut Window,
         cx: &mut App,
     ) -> Self {
+        Self::read_with_focus(id, look, active, None, window, cx)
+    }
+
+    /// Uses a route-owned focus identity when a virtual control can unmount.
+    pub(crate) fn read_with_focus(
+        id: &ElementId,
+        look: Look,
+        active: bool,
+        external_focus: Option<FocusHandle>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self {
         let entity = interact(id, window, cx);
         let motion = Motion::scoped(ElementId::View(entity.entity_id()), cx);
         let state = entity.read(cx);
-        let focus = state.focus.clone();
+        let focus = external_focus.unwrap_or_else(|| state.focus.clone());
         let live_hover = state.hovered;
         let focused = active && (look.focus || focus_visible(&focus, window));
         let hovered = active && (look.hover || state.hovered);

@@ -31,7 +31,7 @@ use crate::motion::EASE;
 use crate::tokens::motion::EMPH;
 use crate::tokens::{Face, Palette, TypeRole};
 use gpui::{
-    App, ClickEvent, ColorExt, ElementId, Hsla, InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent,
+    App, ClickEvent, ColorExt, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent,
     MouseButton, ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, Styled,
     Window, div, layer, px,
 };
@@ -71,6 +71,7 @@ pub struct Button {
     look: Look,
     measure: Measure,
     on_click: Option<Handler>,
+    focus_handle: Option<FocusHandle>,
 }
 
 /// A default-intent, medium button reading `label`, sized for `measure`.
@@ -90,10 +91,17 @@ pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, measure:
         look: Look::LIVE,
         measure: *measure,
         on_click: None,
+        focus_handle: None,
     }
 }
 
 impl Button {
+    /// Keeps keyboard focus stable when a virtual row is unmounted and rebuilt.
+    #[must_use]
+    pub fn focus_handle(mut self, focus: FocusHandle) -> Self {
+        self.focus_handle = Some(focus);
+        self
+    }
     /// The intent.
     #[must_use]
     pub const fn intent(mut self, intent: Intent) -> Self {
@@ -373,7 +381,7 @@ impl RenderOnce for Button {
         let palette = cx.palette();
         let measure = self.measure;
         let active = !self.disabled && !self.busy;
-        let touch = Touch::read(&self.id, self.look, active, window, cx);
+        let touch = Touch::read_with_focus(&self.id, self.look, active, self.focus_handle.clone(), window, cx);
         let motion = touch.motion.clone();
         let id = self.id.clone();
 

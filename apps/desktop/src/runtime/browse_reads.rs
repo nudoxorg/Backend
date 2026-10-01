@@ -7,10 +7,11 @@ use crate::model::browse::{
     TreeRowLinks,
 };
 use crate::model::pages::{PackageRef, PageValue, ReadFailure};
-use backend_library::{ProductText, SurfaceCommand, SurfaceReply};
+use backend_library::{ProductText, SurfaceCommand, SurfaceReply, browse::RoleId};
 use backend_present::Engine;
 use facet::browse::{Alert, AlertTone, LibraryModel, LibraryReleaseLink, LibraryRole, LibraryRow, Twice};
 use facet::browse::library::ReleaseHandle;
+use facet::icons::Icon;
 use gpui::SharedString;
 use std::sync::Arc;
 
@@ -86,6 +87,21 @@ fn prepared_library_model(reading: &backend_present::TreeReading, links: &[TreeR
         .enumerate()
         .map(|(role_at, role)| LibraryRole {
             key: role.id.as_str().into(),
+            icon: match role.id {
+                RoleId::Tests => Icon::ShieldCheck,
+                RoleId::Window => Icon::Mosaic,
+                RoleId::Languages => Icon::Book,
+                RoleId::Formats => Icon::Split,
+                RoleId::Store => Icon::Search,
+                RoleId::Concurrency => Icon::Zap,
+                RoleId::Network => Icon::Globe,
+                RoleId::Hashing => Icon::Seal,
+                RoleId::Errors => Icon::Alert,
+                RoleId::Observe => Icon::Eye,
+                RoleId::Memory => Icon::Diamond,
+                RoleId::Os => Icon::Settings,
+                RoleId::Other => Icon::Layers,
+            },
             label: say(role.label),
             serving: role.serving.as_deref().map(&mut say),
             rows: role

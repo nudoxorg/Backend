@@ -45,7 +45,7 @@ pub(super) fn body(route: &BrowseRoute, store: &Pages, ctx: &mut Ctx<'_>, cx: &m
     match shown(&resource) {
         Shown::Ready(BrowseValue::Tree(tree)) => {
             let model = library_model(tree, ctx);
-            vec![Leaf::new(library("library", model, LibraryActions { open_package: open_library_package_action(Arc::clone(tree), ctx) }, &ctx.measure))]
+            vec![Leaf::new(library("library", model, LibraryActions { open_package: open_library_package_action(Arc::clone(tree), ctx) }, &ctx.measure, Rc::clone(&ctx.library_state), ctx.place_key, ctx.active))]
         }
         Shown::Ready(BrowseValue::Compare(compare)) => {
             let model = Arc::clone(&compare.prepared);
@@ -78,9 +78,12 @@ fn open_package_action(ctx: &Ctx<'_>) -> Rc<dyn Fn(SharedString, &mut gpui::Wind
 
 fn open_library_package_action(tree: Arc<TreeModel>, ctx: &Ctx<'_>) -> Rc<dyn Fn(ReleaseHandle, &mut gpui::Window, &mut gpui::App)> {
     let links = ctx.links.clone();
+    let state = Rc::clone(&ctx.library_state);
+    let place_key = ctx.place_key;
     Rc::new(move |handle, _, cx| {
         let Some(package) = typed_library_release(&tree.links, handle) else { return; };
         if let Some(route) = package_route(package) {
+            state.borrow_mut().remember_open(handle, place_key);
             links.dispatch(Intent::Navigate(route), cx);
         }
     })
