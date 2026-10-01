@@ -283,7 +283,16 @@ impl RenderOnce for HeadsUp {
         let palette = cx.palette();
         let measure = self.measure;
         let scale = measure.scale();
-        let touch = Touch::read(&self.id, crate::controls::Look::LIVE, true, window, cx);
+        let mut touch = Touch::read(&self.id, crate::controls::Look::LIVE, true, window, cx);
+        // The card stays open while its control owns keyboard focus, even if
+        // a resize causes the platform to reconcile the parked pointer and
+        // switches the :focus-visible modality back to mouse. The open
+        // disclosure is the focus affordance here; tying it to the transient
+        // modality would close the card while focus never moved.
+        touch.focused = touch.focus.is_focused(window);
+        if let Some((_, target)) = touch.claim.as_mut() {
+            target.focused = touch.focused;
+        }
         let disclosure = DisclosureFlow::read(&self.id, &touch, self.held, window, cx);
         let open = disclosure.progress;
         let findings = self.findings.clone();
