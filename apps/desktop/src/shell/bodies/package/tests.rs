@@ -780,6 +780,7 @@ fn the_past_says_so_and_offers_the_way_back_with_or_without_a_ticker(cx: &mut Te
         facet::probe::enable(cx);
         crate::runtime::releases::install_test_unavailable(
             &pinned,
+            "0.3.0",
             "this case deliberately has no release history",
             cx,
         );
@@ -789,8 +790,19 @@ fn the_past_says_so_and_offers_the_way_back_with_or_without_a_ticker(cx: &mut Te
     )));
     let ledger = painted(&mut rig);
     assert!(
-        !has(&ledger, "-ticker-"),
-        "the fixture package has no releases to draw"
+        years(&ledger).is_empty(),
+        "the unavailable-history note is not a release ticker: {:?}",
+        ledger.texts.iter().map(|t| &t.key).collect::<Vec<_>>()
+    );
+    assert!(
+        !ledger.targets.iter().any(|target| target.key.starts_with("pkg-release-")),
+        "there is no release door without exact release history: {:?}",
+        ledger.targets.iter().map(|target| &target.key).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        said(&ledger, "ticker-note").first().map(String::as_str),
+        Some("Release history unavailable: this case deliberately has no release history"),
+        "the exact pinned-package/viewed-release request received its unavailable fixture"
     );
     assert_eq!(
         said(&ledger, "-reading").first().map(String::as_str),

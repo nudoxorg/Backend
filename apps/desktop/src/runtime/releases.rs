@@ -59,7 +59,22 @@ impl Global for ReleaseReads {}
 /// builds and keeps old display fixtures out of the owner-backed path.
 #[cfg(test)]
 #[derive(Clone, Default)]
-struct TestReleaseReads(HashMap<PackageRef, Result<Arc<ReleaseData>, Arc<str>>>);
+struct TestReleaseReads {
+    /// Stable fixture history belongs to the full pinned package URL; it can
+    /// serve any viewed release of that exact package.
+    packages: HashMap<PackageRef, Result<Arc<ReleaseData>, Arc<str>>>,
+    /// A one-off test response can be scoped to the exact package and viewed
+    /// release that the page asked for. This keeps an unavailable-history
+    /// case from masking a different release request for the same package.
+    requests: HashMap<TestReleaseRequest, Result<Arc<ReleaseData>, Arc<str>>>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct TestReleaseRequest {
+    package: PackageRef,
+    compare_to: Option<String>,
+}
 
 #[cfg(test)]
 impl Global for TestReleaseReads {}
@@ -68,12 +83,12 @@ impl Global for TestReleaseReads {}
 /// pinned package URL the test page reads.
 #[cfg(test)]
 pub(crate) fn install_test_fixtures(crates: &[Crate], cx: &mut App) {
-    let mut fixtures = HashMap::new();
+    let mut fixtures = TestReleaseReads::default();
     for krate in crates {
         let Ok(package) = PackageRef::parse(&format!("pkg:cargo/{}@{}", krate.name, krate.pinned)) else {
             continue;
         };
-        fixtures.insert(
+        fixtures.packages.insert(
             package,
             Ok(Arc::new(ReleaseData {
                 krate: Arc::new(krate.clone()),
@@ -84,20 +99,27 @@ pub(crate) fn install_test_fixtures(crates: &[Crate], cx: &mut App) {
     cx.set_global(TestReleaseReads(fixtures));
 }
 
-/// Forces one exact test page to exercise the no-history state, even when a
-/// separate test has installed or composed release data in the shared app.
+/// Forces one exact pinned-package/viewed-release request to exercise the
+/// no-history state, even when other test release data is available.
 #[cfg(test)]
 pub(crate) fn install_test_unavailable(
     package: &PackageRef,
+    compare_to: &str,
     reason: impl Into<Arc<str>>,
     cx: &mut App,
 ) {
     let mut fixtures = cx
         .try_global::<TestReleaseReads>()
-        .map(|reads| reads.0.clone())
+        .cloned()
         .unwrap_or_default();
-    fixtures.insert(package.clone(), Err(reason.into()));
-    cx.set_global(TestReleaseReads(fixtures));
+    fixtures.requests.insert(
+        TestReleaseRequest {
+            package: package.clone(),
+            compare_to: Some(compare_to.to_owned()),
+        },
+        Err(reason.into()),
+    );
+    cx.set_global(fixtures);
 }
 
 impl ReleaseReads {
@@ -131,7 +153,15 @@ pub(crate) fn get<T: 'static>(
     #[cfg(test)]
     if let Some(response) = cx
         .try_global::<TestReleaseReads>()
-        .and_then(|fixtures| fixtures.0.get(package))
+        .and_then(|fixtures| {
+            fixtures
+                .requests
+                .get(&TestReleaseRequest {
+                    package: package.clone(),
+                    compare_to: compare_to.map(str::to_owned),
+                })
+                .or_else(|| fixtures.packages.get(package))
+        })
     {
         return match response {
             Ok(data) => Read::Ready(Arc::clone(data)),
