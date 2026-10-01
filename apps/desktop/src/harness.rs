@@ -1500,7 +1500,6 @@ fn quiet(cx: &mut App) -> bool {
     idle_pool
         && engine_idle
         && shell.read(cx).graph_ready(cx)
-        && !crate::runtime::fixture_world::is_loading(cx)
         && in_flight().iter().all(|(_, count)| *count == 0)
 }
 

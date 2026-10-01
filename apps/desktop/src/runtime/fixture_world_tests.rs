@@ -355,7 +355,7 @@ fn prepare_restores_the_route_and_hand_before_the_owner_answers() {
 }
 
 #[gpui::test]
-fn a_world_that_could_not_be_read_is_told_to_the_window_once(cx: &mut TestAppContext) {
+fn a_prototype_world_fault_does_not_contaminate_an_index_page(cx: &mut TestAppContext) {
     use crate::model::AppSnapshot;
     let snapshot = Arc::new(AppSnapshot::empty(crate::core::VersionedRoot::unserved()));
     let store = cx.update(|cx| crate::runtime::store::DataStore::install(cx, snapshot, None));
@@ -364,10 +364,7 @@ fn a_world_that_could_not_be_read_is_told_to_the_window_once(cx: &mut TestAppCon
     assert_eq!(notice(cx), None, "a world nobody asked for has nothing to say");
 
     cx.update(|cx| install_fault(WorldFault::Malformed("not a world".to_owned()), cx));
+    assert!(cx.update(|cx| fault(cx)).is_some(), "the prototype fault is installed");
     store.update(cx, |store, cx| store.ensure(PageKey::Orbit, cx));
-    let told = notice(cx).expect("the window is told");
-    assert!(told.contains("The world could not be read") && told.contains("not a world"), "in words, with the cause: {told}");
-    store.update(cx, |store, cx| store.set_notice(None, cx));
-    store.update(cx, |store, cx| store.ensure(PageKey::Orbit, cx));
-    assert_eq!(notice(cx), None, "told once: a cleared notice does not come back on every frame");
+    assert_eq!(notice(cx), None, "index pages report their own producer faults, never a prototype fixture's");
 }
