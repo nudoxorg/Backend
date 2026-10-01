@@ -92,17 +92,41 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
             next = next.with_settings(settings);
             effects.push(Effect::Persist);
         }
+        Intent::SetPrivacy(privacy) => {
+            if next.settings().privacy != *privacy {
+                let mut settings = next.settings().clone();
+                settings.privacy = *privacy;
+                next = next.with_settings(settings);
+                effects.push(Effect::Persist);
+            }
+        }
         Intent::ToggleAdvisories => {
             let mut settings = next.settings().clone();
             settings.advisories = !settings.advisories;
             next = next.with_settings(settings);
             effects.push(Effect::Persist);
         }
+        Intent::SetAdvisoriesEnabled(enabled) => {
+            if next.settings().advisories != *enabled {
+                let mut settings = next.settings().clone();
+                settings.advisories = *enabled;
+                next = next.with_settings(settings);
+                effects.push(Effect::Persist);
+            }
+        }
         Intent::ToggleCache => {
             let mut settings = next.settings().clone();
             settings.cache_enabled = !settings.cache_enabled;
             next = next.with_settings(settings);
             effects.push(Effect::Persist);
+        }
+        Intent::SetCacheEnabled(enabled) => {
+            if next.settings().cache_enabled != *enabled {
+                let mut settings = next.settings().clone();
+                settings.cache_enabled = *enabled;
+                next = next.with_settings(settings);
+                effects.push(Effect::Persist);
+            }
         }
         Intent::SetCacheDays { up } => {
             let mut settings = next.settings().clone();
@@ -511,6 +535,36 @@ mod tests {
             backend_library::view_state_root(&[("root".to_owned(), "one".to_owned())]),
             1,
         ))
+    }
+
+    #[test]
+    fn registry_privacy_preferences_are_exact_and_persisted_without_false_toggle_changes() {
+        let changed = reduce(
+            &snapshot(),
+            &Intent::SetPrivacy(PrivacyPreference::RegistryMetadata),
+        )
+        .expect("workspace");
+        assert_eq!(changed.snapshot.settings().privacy, PrivacyPreference::RegistryMetadata);
+        assert_eq!(changed.effects, [Effect::Persist]);
+        let same = reduce(
+            &changed.snapshot,
+            &Intent::SetPrivacy(PrivacyPreference::RegistryMetadata),
+        )
+        .expect("unchanged workspace");
+        assert!(same.effects.is_empty(), "selecting the current segment does not toggle it back");
+
+        let advisory = reduce(&same.snapshot, &Intent::SetAdvisoriesEnabled(false))
+            .expect("advisory preference");
+        assert!(!advisory.snapshot.settings().advisories);
+        assert_eq!(advisory.effects, [Effect::Persist]);
+        let cache = reduce(&advisory.snapshot, &Intent::SetCacheEnabled(false))
+            .expect("cache preference");
+        assert!(!cache.snapshot.settings().cache_enabled);
+        assert_eq!(cache.effects, [Effect::Persist]);
+        let age = reduce(&cache.snapshot, &Intent::SetCacheDays { up: true })
+            .expect("cache age preference");
+        assert_eq!(age.snapshot.settings().cache_days, 30);
+        assert_eq!(age.effects, [Effect::Persist]);
     }
 
     #[test]

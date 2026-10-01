@@ -742,9 +742,19 @@ impl RegistryOwner {
     /// product receipt be published and recovered against the new facts root.
     #[must_use]
     pub fn policy_epoch(&self) -> u64 {
+        self.policy_epoch_for_network_mode(!self.is_offline())
+    }
+
+    /// Returns the policy epoch for the same advisory decision policy with a
+    /// selected network mode. Acquisition cache validation uses the opposite
+    /// mode only to recover a durable source-observation timestamp; it still
+    /// rechecks the package against this owner's current gate and never turns
+    /// an offline owner into a network-capable one.
+    #[must_use]
+    pub fn policy_epoch_for_network_mode(&self, online: bool) -> u64 {
         let mut hasher = Hasher::new();
         hasher.update(b"nudox.registry.policy-frontier.v1\0");
-        hasher.update(&[u8::from(matches!(self.policy, AcquisitionPolicy::Online))]);
+        hasher.update(&[u8::from(online)]);
         hasher.update(&[match self.advisory_gate.map(|gate| gate.offline) {
             None => 0,
             Some(backend_advisory::OfflinePolicy::AllowCached) => 1,

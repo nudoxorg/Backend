@@ -446,25 +446,38 @@ impl RegistryGateway {
     pub(super) fn refresh_advisories(
         &mut self,
     ) -> Result<Vec<backend_library::browse::AdvisorySourceState>, String> {
+        if !self.advisory_config.refresh_enabled {
+            return Err("advisory feed refresh is disabled by the saved desktop policy".to_owned());
+        }
         let mut authority = (*self.advisory).clone();
         let mut states = Vec::new();
+        let mut changed = false;
         let osv_snapshot_root =
             backend_engine::advisory::AdvisoryAuthority::osv_snapshot_root(&self.advisory_path);
         for source in &self.advisory_config.sources {
-            let error = match refresh_authority_source(
-                &authority,
-                source,
-                self.advisory_config.osv_scope,
-                self.advisory_config.max_feed_bytes,
-                &osv_snapshot_root,
-            ) {
-                Ok(feed) => authority
-                    .apply(feed)
-                    .err()
-                    .map(|error| bounded_advisory_error(error.to_string())),
-                Err(error) => Some(bounded_advisory_error(error)),
+            let policy_blocked =
+                self.advisory_config.offline && advisory_location_is_remote(&source.location);
+            let error = if policy_blocked {
+                Some("network refresh is disabled by the local service policy".to_owned())
+            } else {
+                match refresh_authority_source(
+                    &authority,
+                    source,
+                    self.advisory_config.osv_scope,
+                    self.advisory_config.max_feed_bytes,
+                    &osv_snapshot_root,
+                ) {
+                    Ok(feed) => {
+                        changed = true;
+                        authority
+                            .apply(feed)
+                            .err()
+                            .map(|error| bounded_advisory_error(error.to_string()))
+                    }
+                    Err(error) => Some(bounded_advisory_error(error)),
+                }
             };
-            if error.is_some() {
+            if error.is_some() && !policy_blocked {
                 authority.mark_unavailable(source.source, advisory_now());
             }
             let frontier = authority.frontier(source.source);
@@ -484,6 +497,9 @@ impl RegistryGateway {
                 expires_at: frontier.and_then(|frontier| frontier.expires_at),
                 error,
             });
+        }
+        if !changed {
+            return Ok(states);
         }
         if let Err(error) = authority.persist(&self.advisory_path) {
             if error.publication_committed() {
@@ -962,15 +978,23 @@ impl RegistryGateway {
         coordinate: &PackageCoordinate,
     ) -> Result<CandidateOutcome, RegistryAddError> {
         let source_id = self.service_for(source)?.source_id();
-        let request =
-            AcquisitionRequest::for_coordinate(source_id, coordinate.to_string(), 1, 0)
-                .map_err(|_| RegistryAddError::Acquisition(AcquisitionError::InvalidCoordinate))?;
+        let max_age_millis = self.config.cache_max_age_millis.unwrap_or(0);
+        let request = AcquisitionRequest::for_coordinate(source_id, coordinate.to_string(), 1, 0)
+            .map_err(|_| RegistryAddError::Acquisition(AcquisitionError::InvalidCoordinate))?
+            .with_fact_freshness(backend_engine::acquisition::FactFreshness::max_age_millis(
+                max_age_millis,
+            ));
         let live_observation = !matches!(source.policy(), AcquisitionPolicy::Offline);
         let outcome = if !live_observation {
             // An explicitly offline add is a cache read. Rehydrate it from
-            // the durable catalog while preserving its historical freshness.
+            // the durable catalog. A desktop's explicit horizon requires a
+            // recent authenticated receipt; standalone locald keeps its
+            // original unbounded offline-cache behavior.
             let service = self.service_for(source)?;
-            service.ensure(&request)
+            match self.config.cache_max_age_millis {
+                Some(max_age_millis) => service.ensure_with_max_age(&request, max_age_millis),
+                None => service.ensure(&request),
+            }
         } else {
             let mut transport = self.transport(source, coordinate)?;
             let service = self.service_for(source)?;
@@ -1634,6 +1658,14 @@ fn advisory_location_is_osv_zip(source: &AdvisorySourceConfig) -> bool {
         .extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
+}
+
+fn advisory_location_is_remote(location: &str) -> bool {
+    location
+        .parse::<ureq::http::Uri>()
+        .ok()
+        .and_then(|uri| uri.scheme_str().map(str::to_ascii_lowercase))
+        .is_some_and(|scheme| scheme == "http" || scheme == "https")
 }
 
 /// Keeps diagnostics useful while preventing an endpoint's userinfo or query
@@ -3439,6 +3471,7 @@ mod tests {
             osv_scope: Some(backend_engine::advisory::OsvFeedScope::All),
             max_age_secs: 60 * 60,
             offline: false,
+            refresh_enabled: true,
             gate,
             max_feed_bytes: 1024 * 1024,
         }
@@ -3464,6 +3497,7 @@ mod tests {
             advisory_gate: backend_engine::advisory::AcquisitionGate {
                 offline: backend_engine::advisory::OfflinePolicy::Warn,
             },
+            cache_max_age_millis: None,
         }
     }
 
@@ -3500,6 +3534,66 @@ mod tests {
                     .expect("write registry response body");
             }
         })
+    }
+
+    #[test]
+    fn bounded_offline_cache_reuse_survives_a_cold_gateway_reopen() {
+        let root = scratch();
+        fs::create_dir_all(&root).expect("workspace root");
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("local registry listener");
+        let endpoint = format!(
+            "http://{}",
+            listener.local_addr().expect("listener address")
+        );
+        let online = registry_config(endpoint);
+        let archive = b"cold restart cache proof".to_vec();
+        let digest =
+            *backend_engine::capability::CapabilityArtifactId::from_value(&archive).as_bytes();
+        let feed = format!(
+            r#"{{"schema":1,"next":"{}","items":[{{"name":"demo","version":"1.0.0","blake3":"{}","provenance":"{}","archive":"/archive"}}]}}"#,
+            "07".repeat(32),
+            digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+            "09".repeat(32),
+        )
+        .into_bytes();
+        let server = local_registry_server(listener, feed, archive.clone());
+        let coordinate = PackageCoordinate::parse("pkg:cargo/demo@1.0.0").expect("coordinate");
+        let mut first = RegistryGateway::open(&online, &root, &advisory_config(None))
+            .expect("compose online gateway")
+            .expect("configured gateway");
+        assert_eq!(
+            first.acquire(&coordinate).expect("initial acquisition"),
+            archive
+        );
+        server.join().expect("initial registry requests");
+        drop(first);
+
+        let mut offline = online;
+        offline.policy = AcquisitionPolicy::Offline;
+        offline.sources = offline.sources.clone().offline();
+        offline.cache_max_age_millis = Some(14 * 86_400_000);
+        let mut reopened = RegistryGateway::open(&offline, &root, &advisory_config(None))
+            .expect("compose cold offline gateway")
+            .expect("configured gateway");
+        assert_eq!(
+            reopened
+                .acquire(&coordinate)
+                .expect("fresh bounded cache hit"),
+            archive,
+            "a cold owner uses the original authenticated receipt timestamp, not a new observation"
+        );
+        drop(reopened);
+
+        offline.cache_max_age_millis = Some(0);
+        let mut expired = RegistryGateway::open(&offline, &root, &advisory_config(None))
+            .expect("compose expired offline gateway")
+            .expect("configured gateway");
+        assert!(
+            expired.acquire(&coordinate).is_err(),
+            "an offline owner refuses an entry outside a zero-age cache window"
+        );
+        drop(expired);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

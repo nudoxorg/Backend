@@ -595,13 +595,6 @@ impl AcquisitionService {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     let offline = owner_guard.is_offline();
-                    let observed_at = observed_facts_at(
-                        &fact_observations
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner),
-                        request.coordinate.as_ref(),
-                        policy_epoch,
-                    );
                     let present_coordinate = PackageCoordinate::parse(requested).ok();
                     let present = present_coordinate
                         .as_ref()
@@ -614,20 +607,72 @@ impl AcquisitionService {
                     }) {
                         return AcquisitionOutcome::Corrupt(CorruptReason::Integrity);
                     }
+                    let current_epoch = owner_guard.policy_epoch();
+                    let recovered_record = if present.is_some() {
+                        match self.product_receipts.recover(
+                            &request,
+                            owner_guard.cursor().token(),
+                            owner_guard.facts_frontier(),
+                            current_epoch,
+                        ) {
+                            Ok(record) => record,
+                            Err(_) => return AcquisitionOutcome::Corrupt(CorruptReason::Journal),
+                        }
+                    } else {
+                        None
+                    };
+                    let opposite_network_epoch =
+                        owner_guard.policy_epoch_for_network_mode(!offline);
+                    let alternate_policy_record = if present.is_some()
+                        && recovered_record.is_none()
+                        && opposite_network_epoch != current_epoch
+                    {
+                        let alternate_request =
+                            request.clone().with_policy_epoch(opposite_network_epoch);
+                        match self.product_receipts.recover(
+                            &alternate_request,
+                            owner_guard.cursor().token(),
+                            owner_guard.facts_frontier(),
+                            opposite_network_epoch,
+                        ) {
+                            Ok(record) => record,
+                            Err(_) => return AcquisitionOutcome::Corrupt(CorruptReason::Journal),
+                        }
+                    } else {
+                        None
+                    };
+                    let durable_observed_at = recovered_record
+                        .as_ref()
+                        .filter(|record| record.terminal == AcquisitionProductTerminal::Published)
+                        .map(|record| record.observed_at_millis)
+                        .or_else(|| {
+                            alternate_policy_record
+                                .as_ref()
+                                .filter(|record| {
+                                    record.terminal == AcquisitionProductTerminal::Published
+                                })
+                                .map(|record| record.observed_at_millis)
+                        });
+                    let observed_at = observed_facts_at(
+                        &fact_observations
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner),
+                        request.coordinate.as_ref(),
+                        policy_epoch,
+                    )
+                    .or(durable_observed_at);
                     let up_to_date = present.is_some()
-                        && (offline
-                            || request.facts.max_age_millis == u64::MAX
+                        && (request.facts.max_age_millis == u64::MAX
                             || !request.facts.due(observed_at, now_millis()));
                     if up_to_date {
                         let package = present.expect("up-to-date acquisition has a package");
                         breaker.success();
-                        let current_epoch = owner_guard.policy_epoch();
                         remember_fact_observation(
                             &mut fact_observations
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner),
                             requested,
-                            now_millis(),
+                            observed_at.unwrap_or_else(now_millis),
                             current_epoch,
                         );
                         if matches!(
@@ -659,27 +704,18 @@ impl AcquisitionService {
                             };
                             return AcquisitionOutcome::NegativeFact(fact);
                         }
-                        match self.product_receipts.recover(
-                            &request,
-                            owner_guard.cursor().token(),
-                            owner_guard.facts_frontier(),
-                            current_epoch,
-                        ) {
-                            Ok(Some(record)) => {
-                                match registry_result_from_record(
-                                    &owner_guard,
-                                    &record,
-                                    &package,
-                                    &request,
-                                ) {
-                                    Ok(result) => {
-                                        return AcquisitionOutcome::Hit(Arc::new(result));
-                                    }
-                                    Err(outcome) => return outcome,
+                        if let Some(record) = recovered_record {
+                            match registry_result_from_record(
+                                &owner_guard,
+                                &record,
+                                &package,
+                                &request,
+                            ) {
+                                Ok(result) => {
+                                    return AcquisitionOutcome::Hit(Arc::new(result));
                                 }
+                                Err(outcome) => return outcome,
                             }
-                            Ok(None) => {}
-                            Err(_) => return AcquisitionOutcome::Corrupt(CorruptReason::Journal),
                         }
                         let base = match registry_catalog_snapshot(
                             &owner_guard,
@@ -1279,9 +1315,20 @@ impl AcquisitionService {
         &self,
         request: &AcquisitionRequest,
     ) -> AcquisitionOutcome<Arc<RegistryAcquisitionResult>> {
+        self.ensure_with_max_age(request, u64::MAX)
+    }
+
+    /// Coordinates a no-network cache read with an explicit freshness age.
+    /// Unlike [`Self::ensure`], a cold-start cache hit requires a durable
+    /// acquisition receipt whose observation time is within `max_age_millis`.
+    pub fn ensure_with_max_age(
+        &self,
+        request: &AcquisitionRequest,
+        max_age_millis: u64,
+    ) -> AcquisitionOutcome<Arc<RegistryAcquisitionResult>> {
         let request = request
             .clone()
-            .with_fact_freshness(FactFreshness::max_age_millis(u64::MAX));
+            .with_fact_freshness(FactFreshness::max_age_millis(max_age_millis));
         self.acquire(&request, &mut ExistingRegistryTransport)
     }
 }

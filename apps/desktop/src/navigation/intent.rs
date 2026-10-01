@@ -155,10 +155,16 @@ pub enum Intent {
     OpenInbox,
     /// Toggle local-only versus registry metadata policy.
     TogglePrivacy,
+    /// Set the exact registry metadata policy selected in Settings.
+    SetPrivacy(crate::model::PrivacyPreference),
     /// Toggle registry advisory fetching.
     ToggleAdvisories,
+    /// Set whether explicit advisory-feed refreshes are enabled.
+    SetAdvisoriesEnabled(bool),
     /// Toggle immutable registry cache usage.
     ToggleCache,
+    /// Set whether recent immutable registry results may be reused.
+    SetCacheEnabled(bool),
     /// Move the immutable registry cache retention through its supported days.
     SetCacheDays {
         /// Move toward a longer or shorter retention window.

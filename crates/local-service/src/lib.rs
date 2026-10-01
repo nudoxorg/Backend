@@ -46,8 +46,8 @@ pub use process::{
     REGISTRY_DISCOVERY_MAX_PAGES_ENV, REGISTRY_DISCOVERY_OFFLINE_ENV,
     REGISTRY_DISCOVERY_SOURCES_ENV, REGISTRY_ECOSYSTEM_ENV, REGISTRY_ENDPOINT_ENV,
     REGISTRY_NATIVE_ENV, REGISTRY_OFFLINE_ENV, REGISTRY_SOURCES_ENV, RegistryConfig,
-    RegistryDiscoveryConfig, WORKER_ENDPOINT_ENV, WORKSPACE_ENV, main_entry, run_process,
-    run_with_owner,
+    RegistryDiscoveryConfig, RegistryUserPolicy, WORKER_ENDPOINT_ENV, WORKSPACE_ENV, main_entry,
+    run_process, run_with_owner,
 };
 pub use protocol::{
     CompletionClaim, EngineRequest, EngineStatus, FrameLimits, LIFECYCLE_BYTES, LIFECYCLE_MAGIC,

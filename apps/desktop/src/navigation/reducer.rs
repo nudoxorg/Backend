@@ -231,8 +231,11 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
         | Intent::SetMotion(_)
         | Intent::OpenInbox
         | Intent::TogglePrivacy
+        | Intent::SetPrivacy(_)
         | Intent::ToggleAdvisories
+        | Intent::SetAdvisoriesEnabled(_)
         | Intent::ToggleCache
+        | Intent::SetCacheEnabled(_)
         | Intent::SetCacheDays { .. }
         | Intent::OpenAddProject
         | Intent::OpenFolderPicker

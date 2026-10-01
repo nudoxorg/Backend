@@ -501,6 +501,10 @@ pub struct AdvisoryConfig {
     pub max_age_secs: u64,
     /// Whether refresh network effects are disabled.
     pub offline: bool,
+    /// Whether an explicit advisory refresh command may update local feeds.
+    /// When false, cached advisory facts remain available to reads and policy
+    /// checks; the setting only suppresses refresh work.
+    pub refresh_enabled: bool,
     /// Policy applied before archive staging.
     pub gate: AcquisitionGate,
     /// Maximum one authority body admitted into memory.
@@ -530,6 +534,40 @@ pub struct RegistryConfig {
     pub limits: AcquisitionLimits,
     /// Explicit fail-closed advisory decision policy used before staging archives.
     pub advisory_gate: AcquisitionGate,
+    /// Maximum age in milliseconds for a prior source observation to satisfy
+    /// a request. `None` preserves standalone locald's existing behavior:
+    /// live adds revalidate, while explicit offline adds may use the durable
+    /// cache. A desktop sets `Some(0)` to disable reuse or a positive horizon
+    /// to apply its persisted cache preference.
+    pub cache_max_age_millis: Option<u64>,
+}
+
+/// User-selected policy for registry-backed metadata handled by a desktop
+/// embedded owner. Attached owners do not receive this policy: their operator
+/// remains authoritative.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegistryUserPolicy {
+    /// Whether registry and registry-discovery network requests are allowed.
+    pub allow_remote_metadata: bool,
+    /// Whether explicit advisory-feed refresh requests may run.
+    pub refresh_advisories: bool,
+    /// Whether recent admitted registry results may be reused.
+    pub cache_enabled: bool,
+    /// Maximum age allowed for a reusable registry result.
+    pub cache_max_age_days: u16,
+}
+
+impl RegistryUserPolicy {
+    const MAX_CACHE_AGE_DAYS: u16 = 90;
+    const MILLIS_PER_DAY: u64 = 86_400_000;
+
+    fn cache_max_age_millis(self) -> u64 {
+        if !self.cache_enabled {
+            return 0;
+        }
+        u64::from(self.cache_max_age_days.clamp(1, Self::MAX_CACHE_AGE_DAYS))
+            .saturating_mul(Self::MILLIS_PER_DAY)
+    }
 }
 
 impl RegistryConfig {
@@ -672,6 +710,10 @@ impl RegistryConfig {
             native,
             limits,
             advisory_gate,
+            // Standalone locald retains its prior always-revalidate behavior.
+            // A desktop applies its explicit persisted cache preference before
+            // composing an embedded owner.
+            cache_max_age_millis: None,
         })
     }
 }
@@ -763,6 +805,7 @@ impl AdvisoryConfig {
             osv_scope,
             max_age_secs,
             offline: offline || env_flag(ADVISORY_OFFLINE_ENV),
+            refresh_enabled: true,
             gate: advisory_gate_from_env()?,
             max_feed_bytes: ADVISORY_MAX_FEED_BYTES,
         })
@@ -840,6 +883,25 @@ fn registry_max_archive_bytes() -> usize {
 }
 
 impl ProcessConfig {
+    /// Applies preferences read by a desktop before it starts its embedded
+    /// service. Existing operator-level offline settings remain restrictive;
+    /// user preferences can narrow service behavior but cannot enable a
+    /// network path that the process configuration disabled.
+    pub fn apply_registry_user_policy(&mut self, policy: RegistryUserPolicy) {
+        if !policy.allow_remote_metadata {
+            self.registry.policy = AcquisitionPolicy::Offline;
+            self.registry.sources = self.registry.sources.clone().offline();
+            self.advisory.offline = true;
+        } else if matches!(self.registry.policy, AcquisitionPolicy::Offline) {
+            self.registry.sources = self.registry.sources.clone().offline();
+        }
+        if matches!(self.registry.policy, AcquisitionPolicy::Offline) {
+            self.discovery.offline = true;
+        }
+        self.advisory.refresh_enabled = policy.refresh_advisories;
+        self.registry.cache_max_age_millis = Some(policy.cache_max_age_millis());
+    }
+
     /// Parses bounded process arguments and environment fallbacks.
     ///
     /// # Errors
@@ -1408,6 +1470,7 @@ mod tests {
         let Ok(result) = result else { return };
         assert_eq!(result.registry.sources.len(), 7);
         assert!(result.registry.endpoint.is_none());
+        assert_eq!(result.registry.cache_max_age_millis, None);
         assert_eq!(result.discovery.sources.len(), 7);
         assert!(!result.discovery.offline);
         assert_eq!(result.discovery.max_pages, 64);
@@ -1420,6 +1483,66 @@ mod tests {
         );
         assert_eq!(result.forge.policy, ForgeAcquisitionPolicy::Online);
         assert_eq!(result.forge.limits, ForgeAcquisitionLimits::default());
+    }
+
+    #[test]
+    fn saved_local_policy_closes_registry_and_advisory_network_paths_and_cache_reuse() {
+        let mut config = ProcessConfig::parse([
+            "--endpoint".to_owned(),
+            "/tmp/backend-locald-policy.sock".to_owned(),
+            "--workspace".to_owned(),
+            "/tmp/backend-locald-policy".to_owned(),
+        ])
+        .expect("desktop owner configuration");
+        config.apply_registry_user_policy(RegistryUserPolicy {
+            allow_remote_metadata: false,
+            refresh_advisories: false,
+            cache_enabled: false,
+            cache_max_age_days: 0,
+        });
+
+        assert_eq!(config.registry.policy, AcquisitionPolicy::Offline);
+        assert!(
+            config
+                .registry
+                .sources
+                .sources()
+                .all(|source| { source.policy() == AcquisitionPolicy::Offline })
+        );
+        assert!(config.discovery.offline);
+        assert!(config.advisory.offline);
+        assert!(!config.advisory.refresh_enabled);
+        assert_eq!(config.registry.cache_max_age_millis, Some(0));
+    }
+
+    #[test]
+    fn saved_preferences_cannot_reenable_an_operator_offline_registry() {
+        let mut config = ProcessConfig::parse([
+            "--endpoint".to_owned(),
+            "/tmp/backend-locald-policy-offline.sock".to_owned(),
+            "--workspace".to_owned(),
+            "/tmp/backend-locald-policy-offline".to_owned(),
+            "--registry-offline".to_owned(),
+        ])
+        .expect("offline owner configuration");
+        config.apply_registry_user_policy(RegistryUserPolicy {
+            allow_remote_metadata: true,
+            refresh_advisories: true,
+            cache_enabled: true,
+            cache_max_age_days: 365,
+        });
+
+        assert_eq!(config.registry.policy, AcquisitionPolicy::Offline);
+        assert!(config.discovery.offline);
+        assert!(
+            config
+                .registry
+                .sources
+                .sources()
+                .all(|source| { source.policy() == AcquisitionPolicy::Offline })
+        );
+        assert!(config.advisory.refresh_enabled);
+        assert_eq!(config.registry.cache_max_age_millis, Some(90 * 86_400_000));
     }
 
     #[test]

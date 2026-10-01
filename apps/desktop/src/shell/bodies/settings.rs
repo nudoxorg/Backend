@@ -7,7 +7,7 @@ use super::{Ctx, Leaf};
 use crate::core::{Activity, Resource, ResourceTerminal, UnavailableReason};
 use crate::model::{
     AppSnapshot, AppearancePreference, ConnectionStatus, ContrastPreference, DensityPreference,
-    MotionPreference, ZoomPreference,
+    MotionPreference, PrivacyPreference, ZoomPreference,
 };
 use crate::navigation::{Intent, SettingsPage};
 use crate::shell::kit::{quiet, text};
@@ -29,13 +29,13 @@ pub(super) fn body(
 ) -> Vec<Leaf> {
     match page {
         SettingsPage::Index => index(store, ctx),
-        SettingsPage::Registry => registry(ctx),
+        SettingsPage::Registry => registry(snapshot, ctx),
         SettingsPage::Help => keys(ctx),
         SettingsPage::Legend => legend(ctx),
         SettingsPage::Diagnostics => diagnostics(snapshot, ctx),
         SettingsPage::Connections => connections(snapshot, ctx),
         SettingsPage::Agents => agents(snapshot, ctx),
-        SettingsPage::Privacy => privacy(ctx),
+        SettingsPage::Privacy => privacy(snapshot, ctx),
         SettingsPage::Editor => editor(ctx),
         SettingsPage::Appearance => appearance(snapshot, ctx, window, cx),
     }
@@ -325,7 +325,7 @@ fn unavailable_health_words(reason: &UnavailableReason) -> &'static str {
     }
 }
 
-fn registry(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
+fn registry(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     let mut leaves = vec![title("Registry sources", ctx)];
     let measure = ctx.measure;
     let palette = ctx.palette;
@@ -363,8 +363,16 @@ fn registry(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     ));
     let detail = ctx.say("If the same release appears under conflicting cached indexes, set NUDOX_CARGO_ROOT to the intended registry source root and restart the desktop. The exact index path is shown in the release notice. Local archives are unpacked only when their checksum is known for the selected source.");
     leaves.push(Leaf::new(quiet(detail, &measure, palette)));
-    let offline = ctx.say("Explicit Add actions use the connected local service’s RegistryGateway. The desktop does not know its configured online/offline policy; start backend-locald with --registry-offline to disable network acquisition.");
-    leaves.push(Leaf::new(quiet(offline, &measure, palette)));
+    let policy = if snapshot.settings().service_mode == crate::model::ServiceMode::Embedded {
+        match snapshot.settings().privacy {
+            PrivacyPreference::LocalOnly => "This desktop's embedded service is configured to keep registry and discovery requests local. Change that choice in Privacy & local data, then restart the desktop.",
+            PrivacyPreference::RegistryMetadata => "This desktop's embedded service may request registry and discovery metadata. Change that choice in Privacy & local data, then restart the desktop.",
+        }
+    } else {
+        "This desktop is attached to a running service. Its owner controls registry network policy; this desktop's saved choice applies only if it later starts an embedded service."
+    };
+    let policy = ctx.say(policy);
+    leaves.push(Leaf::new(quiet(policy, &measure, palette)));
     if source_root.is_none() {
         let example =
             "NUDOX_CARGO_ROOT=/path/to/CARGO_HOME/registry/src/index.crates.io-…".to_owned();
@@ -745,35 +753,80 @@ fn editor(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     leaves
 }
 
-fn privacy(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
+fn privacy(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     let mut leaves = vec![title("Privacy & local data", ctx)];
     let measure = ctx.measure;
     let palette = ctx.palette;
-    let detail = ctx.say("Project source and the local index stay on this machine. Registry metadata can be fetched by the local service unless it was started with --registry-offline.");
-    leaves.push(Leaf::new(quiet(detail, &measure, palette)));
-    for (label, message) in [
-        (
-            "Network policy",
-            "This desktop build cannot change the local service’s network policy here. See Registry sources for the service-level offline option.",
-        ),
-        (
-            "Advisories",
-            "The saved desktop advisory toggle is not connected to the local service; it has no effect in this build.",
-        ),
-        (
-            "Metadata cache",
-            "Cache enablement and retention are not controlled by this desktop build.",
-        ),
+    let settings = snapshot.settings();
+    let mode_note = match settings.service_mode {
+        crate::model::ServiceMode::Embedded => "These choices are saved for this desktop's embedded local service. Restart the desktop to apply changes to a service that is already running.",
+        crate::model::ServiceMode::Attached => "This desktop is attached to a service owned elsewhere. These choices are saved for a future embedded service; the connected service keeps its owner's policy.",
+    };
+    let mode_note = ctx.say(mode_note);
+    leaves.push(Leaf::new(quiet(mode_note, &measure, palette)));
+
+    let links = ctx.links.clone();
+    let network = facet::controls::seg("set-privacy", &measure)
+        .label("Local only")
+        .label("Registry metadata")
+        .selected(usize::from(settings.privacy == PrivacyPreference::RegistryMetadata))
+        .on_select(move |index, _, cx| {
+            links.dispatch(
+                Intent::SetPrivacy(if index == 1 {
+                    PrivacyPreference::RegistryMetadata
+                } else {
+                    PrivacyPreference::LocalOnly
+                }),
+                cx,
+            );
+        });
+    leaves.push(setting("Network policy", network.into_any_element(), ctx));
+
+    let links = ctx.links.clone();
+    let advisories = facet::controls::seg("set-advisories", &measure)
+        .label("Refresh feeds")
+        .label("Pause feeds")
+        .selected(usize::from(!settings.advisories))
+        .on_select(move |index, _, cx| {
+            links.dispatch(Intent::SetAdvisoriesEnabled(index == 0), cx);
+        });
+    leaves.push(setting("Advisory refresh", advisories.into_any_element(), ctx));
+
+    let links = ctx.links.clone();
+    let cache = facet::controls::seg("set-registry-cache", &measure)
+        .label("Reuse results")
+        .label("Always refresh")
+        .selected(usize::from(!settings.cache_enabled))
+        .on_select(move |index, _, cx| {
+            links.dispatch(Intent::SetCacheEnabled(index == 0), cx);
+        });
+    leaves.push(setting("Registry result cache", cache.into_any_element(), ctx));
+
+    let links = ctx.links.clone();
+    let decrement = facet::controls::button("cache-age-down", "−", &measure)
+        .ghost()
+        .on_click(move |_, cx| links.dispatch(Intent::SetCacheDays { up: false }, cx));
+    let links = ctx.links.clone();
+    let increment = facet::controls::button("cache-age-up", "+", &measure)
+        .ghost()
+        .on_click(move |_, cx| links.dispatch(Intent::SetCacheDays { up: true }, cx));
+    let age = ctx.say(format!("{} days", settings.cache_days));
+    let age_control = div()
+        .flex()
+        .items_center()
+        .gap(measure.space(Space::Base))
+        .child(decrement)
+        .child(text(ty::MONO_ROW, &measure, palette.ink1).child(age))
+        .child(increment);
+    leaves.push(setting("Maximum reusable age", age_control.into_any_element(), ctx));
+
+    for note in [
+        "Local only blocks registry, registry-discovery, and remote advisory-feed requests. Project files and the local index remain on this machine.",
+        "Pausing advisory refresh keeps already admitted findings available; it suppresses explicit feed refreshes.",
+        "Disabling result reuse does not delete downloaded package data. When reuse is enabled, a result needs a current authenticated receipt within the selected age; offline adds stop when that receipt is expired.",
     ] {
-        let message = ctx.say(message);
-        leaves.push(setting(
-            label,
-            text(ty::SMALL, &measure, palette.ink3)
-                .min_w(px(0.0))
-                .child(message)
-                .into_any_element(),
-            ctx,
-        ));
+        let words = ctx.say(note);
+        leaves.push(Leaf::new(quiet(words, &measure, palette)));
     }
     leaves
 }

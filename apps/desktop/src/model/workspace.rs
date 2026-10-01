@@ -345,13 +345,15 @@ pub enum ContrastPreference {
     High,
 }
 
-/// Remote data policy. Local source and indexes remain the default.
+/// Registry metadata policy applied when this desktop starts its embedded
+/// local service. An attached service keeps the policy chosen by its owner.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum PrivacyPreference {
-    /// Keep source, index, and registry requests on this machine.
+    /// Keep registry and registry-discovery requests on this machine.
     #[default]
     LocalOnly,
-    /// Permit remote registry metadata while keeping source local.
+    /// Permit registry and registry-discovery metadata requests while keeping
+    /// project source and indexes local.
     RegistryMetadata,
 }
 
@@ -410,15 +412,16 @@ pub struct SettingsState {
     pub contrast: ContrastPreference,
     /// Motion preference; `reduced_motion` mirrors `Reduced`.
     pub motion: MotionPreference,
-    /// Whether remote registry metadata may be requested.
+    /// Registry network policy for this desktop's next embedded service start.
     pub privacy: PrivacyPreference,
     /// How the local daemon is hosted.
     pub service_mode: ServiceMode,
-    /// Whether advisory data is included in registry refreshes.
+    /// Whether explicit advisory-feed refreshes are enabled. Cached advisory
+    /// findings remain available when refresh is paused.
     pub advisories: bool,
-    /// Whether immutable registry responses may be reused locally.
+    /// Whether recently admitted registry results may satisfy later requests.
     pub cache_enabled: bool,
-    /// Maximum age for cached registry responses.
+    /// Maximum age for a cached registry result's authenticated receipt.
     pub cache_days: u16,
     /// Current connection probe status.
     pub connection: ConnectionStatus,

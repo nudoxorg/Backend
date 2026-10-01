@@ -289,19 +289,19 @@ pub struct PersistedDesktopState {
     /// alone decides.
     #[serde(default)]
     pub motion: Option<PersistedMotion>,
-    /// Local/remote registry policy.
+    /// Registry network policy used by this desktop's next embedded service start.
     #[serde(default)]
     pub privacy: PersistedPrivacy,
     /// Embedded or attached daemon.
     #[serde(default)]
     pub service_mode: PersistedServiceMode,
-    /// Whether advisory data is enabled.
+    /// Whether explicit advisory-feed refreshes are enabled.
     #[serde(default = "default_true")]
     pub advisories: bool,
-    /// Whether immutable responses may be cached.
+    /// Whether recently admitted registry results may be reused.
     #[serde(default = "default_true")]
     pub cache_enabled: bool,
-    /// Cache retention in days.
+    /// Maximum reusable registry-result age in days.
     #[serde(default = "default_cache_days")]
     pub cache_days: u16,
     /// What you hold (at most five).
