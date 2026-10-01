@@ -18,6 +18,9 @@ pub const SEMANTIC_SCHEMA: u32 = 1;
 /// Schema for native GPUI/AccessKit evidence paired with an exact PNG frame.
 pub const NATIVE_ACCESSIBILITY_SCHEMA: u32 = 1;
 
+const NATIVE_NAME_MAX_DEPTH: usize = 512;
+const NATIVE_NAME_MAX_BYTES: usize = 64 * 1024;
+
 /// Roles that may appear in a rendered accessibility snapshot.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -505,7 +508,7 @@ impl NativeAccessibilityFrame {
                     let direct_match = aria
                         .and_then(|aria| aria.get("label"))
                         .and_then(serde_json::Value::as_str)
-                        .is_some_and(|value| value.trim() == label)
+                        .is_some_and(|value| normalize_accessible_name(value) == label)
                         || aria
                             .and_then(|aria| aria.get("role"))
                             .and_then(serde_json::Value::as_str)
@@ -513,7 +516,7 @@ impl NativeAccessibilityFrame {
                             && aria
                                 .and_then(|aria| aria.get("value"))
                                 .and_then(serde_json::Value::as_str)
-                                .is_some_and(|value| value.trim() == label);
+                                .is_some_and(|value| normalize_accessible_name(value) == label);
                     direct_match
                         || aria
                             .and_then(|aria| aria.get("role"))
@@ -525,10 +528,11 @@ impl NativeAccessibilityFrame {
                                 &children,
                                 &mut cache,
                                 &mut BTreeSet::new(),
-            )
-            .ok()
-            .flatten()
-                            .is_some_and(|value| value == label)
+                                0,
+                            )
+                            .ok()
+                            .flatten()
+                            .is_some_and(|value| normalize_accessible_name(&value) == label)
                 })
             })
     }
@@ -545,9 +549,12 @@ impl NativeAccessibilityFrame {
             &child_map,
             &mut BTreeMap::new(),
             &mut BTreeSet::new(),
+            0,
         )
         .ok()
         .flatten()
+        .map(|name| normalize_accessible_name(&name))
+        .filter(|name| !name.is_empty())
     }
 
     /// Checks identity and pixel hash against the screenshot record that
@@ -581,6 +588,12 @@ fn optional_tree_node<'a>(
     let Some(value) = tree.get(field) else {
         return Ok(None);
     };
+    // GPUI's A11y debug producer serializes absent optional focus owners as
+    // explicit JSON nulls. Treat those the same as an omitted optional field,
+    // while preserving strict validation for malformed non-null values.
+    if value.is_null() {
+        return Ok(None);
+    }
     let id = value
         .as_str()
         .ok_or_else(|| format!("native accessibility {field} is not a node id"))?;
@@ -756,8 +769,12 @@ fn validate_native_tree(
                 &children_by_node,
                 &mut accessible_names,
                 &mut BTreeSet::new(),
+                0,
             )?;
-            if name.as_deref().map_or(true, str::is_empty) {
+            if !name
+                .as_deref()
+                .is_some_and(|name| !normalize_accessible_name(name).is_empty())
+            {
                 return Err(format!(
                     "interactive native accessibility node {id:?} ({role}) has no accessible name"
                 ));
@@ -830,7 +847,13 @@ fn native_accessible_name(
     children_by_node: &BTreeMap<String, Vec<String>>,
     cache: &mut BTreeMap<String, Option<String>>,
     visiting: &mut BTreeSet<String>,
+    depth: usize,
 ) -> Result<Option<String>, String> {
+    if depth > NATIVE_NAME_MAX_DEPTH {
+        return Err(format!(
+            "native accessibility name exceeds the {NATIVE_NAME_MAX_DEPTH}-level depth limit"
+        ));
+    }
     if let Some(name) = cache.get(id) {
         return Ok(name.clone());
     }
@@ -863,52 +886,85 @@ fn native_accessible_name(
     let name = if let Some(label) = explicit_label {
         Some(label)
     } else if !labelled_by.is_empty() {
-        let mut parts = Vec::new();
+        let mut output_name = String::new();
         for target in labelled_by {
-            if let Some(name) = native_accessible_name(
+            if let Some(target_name) = native_accessible_name(
                 target,
                 nodes,
                 children_by_node,
                 cache,
                 visiting,
+                depth + 1,
             )? {
-                if !name.trim().is_empty() {
-                    parts.push(name.trim().to_owned());
-                }
+                append_accessible_name(&mut output_name, &target_name, true, id)?;
             }
         }
-        (!parts.is_empty()).then(|| parts.join(" "))
+        (!output_name.trim().is_empty()).then_some(output_name)
     } else if is_text_accesskit_role(role) {
         aria.and_then(|aria| aria.get("value"))
             .and_then(serde_json::Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
             .map(str::to_owned)
     } else if is_interactive_accesskit_role(role)
         && !is_name_from_contents_role(role)
     {
         None
     } else {
-        let mut parts = Vec::new();
+        let mut name = String::new();
         for child in children_by_node.get(id).into_iter().flatten() {
-            if let Some(name) = native_accessible_name(
+            if let Some(child_name) = native_accessible_name(
                 child,
                 nodes,
                 children_by_node,
                 cache,
                 visiting,
+                depth + 1,
             )? {
-                if !name.trim().is_empty() {
-                    parts.push(name.trim().to_owned());
-                }
+                append_accessible_name(&mut name, &child_name, false, id)?;
             }
         }
-        (!parts.is_empty()).then(|| parts.join(" "))
+        (!name.trim().is_empty()).then_some(name)
     };
+
+    if name
+        .as_ref()
+        .is_some_and(|name| name.len() > NATIVE_NAME_MAX_BYTES)
+    {
+        return Err(format!(
+            "native accessibility name for {id:?} exceeds {NATIVE_NAME_MAX_BYTES} bytes"
+        ));
+    }
 
     visiting.remove(id);
     cache.insert(id.to_owned(), name.clone());
     Ok(name)
+}
+
+fn append_accessible_name(
+    output: &mut String,
+    part: &str,
+    separate: bool,
+    node_id: &str,
+) -> Result<(), String> {
+    let separator = usize::from(separate && !output.is_empty() && !part.is_empty());
+    let required = output
+        .len()
+        .checked_add(separator)
+        .and_then(|length| length.checked_add(part.len()))
+        .ok_or_else(|| format!("native accessibility name for {node_id:?} is too large"))?;
+    if required > NATIVE_NAME_MAX_BYTES {
+        return Err(format!(
+            "native accessibility name for {node_id:?} exceeds {NATIVE_NAME_MAX_BYTES} bytes"
+        ));
+    }
+    if separator != 0 {
+        output.push(' ');
+    }
+    output.push_str(part);
+    Ok(())
+}
+
+fn normalize_accessible_name(name: &str) -> String {
+    name.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn is_name_from_contents_role(role: &str) -> bool {
@@ -1506,6 +1562,63 @@ mod tests {
             .expect("complete native tree with focus outside the viewport");
         assert_eq!(evidence.focused_label(), Some("Open settings".to_owned()));
         assert!(evidence.has_label("Open settings"));
+
+        let mut content_named = valid_native_tree();
+        content_named["nodes"]["button"]
+            .as_object_mut()
+            .unwrap()
+            .remove("labelled_by");
+        let evidence = validate_native(&content_named)
+            .expect("content name combines every styled text run");
+        assert_eq!(evidence.focused_label(), Some("Open settings".to_owned()));
+    }
+
+    #[test]
+    fn native_frame_constructor_accepts_gpui_producers_explicit_null_focus() {
+        let mut tree = valid_native_tree();
+        tree["gpui_focus"] = serde_json::Value::Null;
+        tree["active_descendant_focus"] = serde_json::Value::Null;
+        tree["accesskit_focus"] = serde_json::json!("root");
+
+        let evidence = validate_native(&tree)
+            .expect("GPUI serializes absent optional focus owners as JSON null");
+        assert_eq!(evidence.focused_label(), None);
+    }
+
+    #[test]
+    fn native_tree_integrity_still_rejects_malformed_or_unknown_optional_focus() {
+        let mut malformed = valid_native_tree();
+        malformed["gpui_focus"] = serde_json::json!(3);
+        assert!(
+            validate_native(&malformed)
+                .expect_err("non-null focus values must remain node ids")
+                .contains("gpui_focus is not a node id")
+        );
+
+        let mut unknown = valid_native_tree();
+        unknown["active_descendant_focus"] = serde_json::json!("not-a-node");
+        assert!(
+            validate_native(&unknown)
+                .expect_err("unknown optional focus ids must remain rejected")
+                .contains("active_descendant_focus is absent from the node map")
+        );
+    }
+
+    #[test]
+    fn native_tree_integrity_allows_anonymous_noninteractive_groups() {
+        let mut tree = valid_native_tree();
+        tree["nodes"]["root"]["children"] = serde_json::json!(["button", "group"]);
+        tree["nodes"]["group"] = serde_json::json!({
+            "accesskit_id": "5",
+            "children": ["group-text"],
+            "aria": {"role": "GenericContainer"}
+        });
+        tree["nodes"]["group-text"] = serde_json::json!({
+            "accesskit_id": "6",
+            "aria": {"role": "TextRun", "value": "Additional information"}
+        });
+        tree["frame"]["node_count"] = serde_json::json!(6);
+        validate_native(&tree).expect("noninteractive grouping nodes need no label or action");
     }
 
     #[test]
