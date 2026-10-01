@@ -2,31 +2,143 @@
 //! lines numbered (the declaration's numbers lit mint), and the
 //! declaration's one sentence and callers in the margin.
 
+pub(crate) mod paging;
+
+#[cfg(test)]
+use paging::{MAX_SOURCE_BYTES, MAX_SOURCE_LINE_BYTES, MAX_SOURCE_LINES, previous_cursor};
+use paging::{PagingState, SourceCursor, SourcePage, initial_cursor, verified_link};
+
 use super::state::{Shown, not_ready, shown};
 use super::{Ctx, Leaf};
-use crate::model::pages::{DocFragment, PageKey, SourceCoverage, SourceOrigin, SourceView, SymbolRef};
+#[cfg(test)]
+use crate::model::pages::ByteSpan;
+use crate::model::pages::{
+    DocFragment, PageKey, SourceCoverage, SourceOrigin, SourceText, SourceView, SymbolRef,
+};
 use crate::navigation::{Intent, Route, SymbolRoute};
-use crate::shell::focus::Target;
+use crate::shell::focus::{Recall, Target};
 use crate::shell::kit::{gap_words, quiet, symbol_route, text};
 use crate::shell::reader::Reader;
 use facet::tokens::ty;
-use facet::{Set as _, Space};
+use facet::{Control, Set as _, Space};
 use gpui::{
-    App, AppContext as _, ClickEvent, Context, ElementId, InteractiveElement, InteractiveText,
-    IntoElement, ParentElement, SharedString, StatefulInteractiveElement, Styled, StyledText,
-    Window, div, px,
+    App, AppContext as _, ClickEvent, Context, ElementId, Entity, InteractiveElement,
+    InteractiveText, IntoElement, ParentElement, SharedString, StatefulInteractiveElement, Styled,
+    StyledText, Subscription, Window, div, px,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use gpui_component::input::{InputEvent, InputState};
+use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-/// Lines shown before and after the declaration.
 const CONTEXT_BEFORE: u32 = 24;
-const CONTEXT_AFTER: u32 = 240;
-const ROUTE_LINE_CONTEXT: u32 = 72;
-const MAX_SOURCE_LINES: usize = 256;
-const MAX_SOURCE_BYTES: usize = 256 * 1024;
-const MAX_SOURCE_LINE_BYTES: usize = 8 * 1024;
+const MAX_PAGE_REFERENCES: usize = 32;
+
+struct Pager {
+    state: Rc<RefCell<Option<PagingState>>>,
+    first: u32,
+    last: u32,
+    input: Entity<InputState>,
+    error: Option<SharedString>,
+    recall: Recall,
+    reveal: Rc<Cell<bool>>,
+    _subscription: Subscription,
+}
+
+impl Pager {
+    fn new(
+        state: Rc<RefCell<Option<PagingState>>>,
+        first: u32,
+        last: u32,
+        recall: Recall,
+        reveal: Rc<Cell<bool>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Line number"));
+        let subscription = cx.subscribe_in(
+            &input,
+            window,
+            |pager, input, event: &InputEvent, _window, cx| {
+                if matches!(event, InputEvent::PressEnter { .. }) {
+                    pager.jump(&input.read(cx).value().to_string(), cx);
+                }
+            },
+        );
+        Self {
+            state,
+            first,
+            last,
+            input,
+            error: None,
+            recall,
+            reveal,
+            _subscription: subscription,
+        }
+    }
+
+    fn focus_line(&mut self, line: u32, cx: &mut Context<Self>) {
+        self.error = None;
+        self.recall
+            .focus(crate::shell::reader::source_line_shared_id(line));
+        self.reveal.set(true);
+        cx.notify();
+    }
+
+    fn next(&mut self, fallback: SourceCursor, cx: &mut Context<Self>) {
+        let line = self
+            .state
+            .borrow_mut()
+            .as_mut()
+            .map(|state| state.next(fallback).line);
+        if let Some(line) = line {
+            self.focus_line(line, cx);
+        }
+    }
+
+    fn previous(&mut self, fallback: SourceCursor, cx: &mut Context<Self>) {
+        let line = self
+            .state
+            .borrow_mut()
+            .as_mut()
+            .map(|state| state.previous(fallback).line);
+        if let Some(line) = line {
+            self.focus_line(line, cx);
+        }
+    }
+
+    fn jump(&mut self, text: &str, cx: &mut Context<Self>) {
+        match text.trim().parse::<u32>() {
+            Ok(line) if (self.first..=self.last).contains(&line) => {
+                let changed = self.state.borrow_mut().as_mut().is_some_and(|state| {
+                    state.jump(line);
+                    true
+                });
+                if changed {
+                    self.focus_line(line, cx);
+                }
+            }
+            _ => {
+                self.error =
+                    Some(format!("Enter a line from {} to {}", self.first, self.last).into());
+                cx.notify();
+            }
+        }
+    }
+
+    fn show_references(&mut self, page: usize, cx: &mut Context<Self>) {
+        if let Some(state) = self.state.borrow_mut().as_mut() {
+            state.reference_page = page;
+        }
+        self.recall.focus(format!(
+            "source-reference-{}",
+            page.saturating_mul(MAX_PAGE_REFERENCES)
+        ));
+        self.reveal.set(true);
+        cx.notify();
+    }
+}
 
 pub(super) fn body(
     place: &Route,
@@ -108,7 +220,7 @@ pub(super) fn body(
 
 fn code(
     view: &SourceView,
-    source: &crate::model::pages::SourceText,
+    source: &SourceText,
     route: &SymbolRoute,
     ctx: &mut Ctx<'_>,
     window: &mut Window,
@@ -123,63 +235,84 @@ fn code(
     let requested_line = route
         .line
         .filter(|line| *line >= first_line && *line <= last_line);
-    let (from, to) = requested_line.map_or_else(
-        || {
-            declaration.map_or(
-                (
-                    first_line,
-                    last_line.min(first_line.saturating_add(CONTEXT_AFTER)),
-                ),
-                |span| {
-                    (
-                        span.first.saturating_sub(CONTEXT_BEFORE).max(first_line),
-                        span.last.saturating_add(CONTEXT_AFTER).min(last_line),
-                    )
-                },
-            )
-        },
-        |line| {
-            (
-                line.saturating_sub(ROUTE_LINE_CONTEXT).max(first_line),
-                line.saturating_add(ROUTE_LINE_CONTEXT).min(last_line),
-            )
-        },
-    );
+    let initial = requested_line
+        .or_else(|| declaration.map(|span| span.first))
+        .filter(|line| *line >= first_line && *line <= last_line)
+        .map_or(
+            SourceCursor {
+                line: first_line,
+                byte: 0,
+            },
+            |line| {
+                initial_cursor(
+                    source,
+                    line,
+                    if requested_line.is_some() {
+                        0
+                    } else {
+                        CONTEXT_BEFORE
+                    },
+                )
+            },
+        );
+    let pager_key: ElementId = format!(
+        "source-pager-{}-{}-{}-{:?}-{:?}",
+        ctx.place_key, first_line, total, route.line, ctx.source_generation
+    )
+    .into();
+    let leaving = Route::Symbol(route.clone());
+    let restore_target = ctx.targets.left_by(&leaving);
+    let restored_reference_page = restore_target
+        .as_ref()
+        .and_then(|id| id.strip_prefix("source-reference-"))
+        .and_then(|index| index.parse::<usize>().ok())
+        .map_or(0, |index| index / MAX_PAGE_REFERENCES);
+    let paging = Rc::clone(&ctx.source_paging);
+    {
+        let mut saved = paging.borrow_mut();
+        let state = saved.get_or_insert_with(|| PagingState::new(initial));
+        if restore_target.is_some() && state.restored_focus_place != Some(ctx.place_key) {
+            state.reference_page = restored_reference_page;
+        }
+    }
+    let recall = ctx.targets.recall();
+    let reveal = Rc::clone(&ctx.reader_reveal);
+    let pager_memory = Rc::clone(&paging);
+    let pager = window.use_keyed_state(pager_key, cx, move |window, cx| {
+        Pager::new(
+            pager_memory,
+            first_line,
+            last_line,
+            recall,
+            reveal,
+            window,
+            cx,
+        )
+    });
+    let cursor = paging
+        .borrow()
+        .as_ref()
+        .map_or(initial, |state| state.cursor);
+    let page = SourcePage::at(source, cursor);
+    let from = cursor.line;
     let mut shown = String::new();
     let mut numbers = Vec::new();
     let mut raw_lines = Vec::new();
     let mut source_starts = Vec::new();
-    let mut clipped = BTreeSet::new();
-    let first_index = usize::try_from(from.saturating_sub(first_line)).unwrap_or(usize::MAX);
-    let wanted_lines = usize::try_from(to.saturating_sub(from).saturating_add(1))
-        .unwrap_or(MAX_SOURCE_LINES)
-        .min(MAX_SOURCE_LINES);
-    let line_spans = source.line_spans_in(first_index, wanted_lines);
-    for (source_index, span) in line_spans.iter().copied().enumerate() {
-        if numbers.len() >= MAX_SOURCE_LINES {
-            break;
-        }
-        let number = from.saturating_add(u32::try_from(source_index).unwrap_or(u32::MAX));
-        let line = source.text().get(span.range()).unwrap_or_default();
-        let visible = utf8_prefix(line, MAX_SOURCE_LINE_BYTES);
-        if shown.len().saturating_add(visible.len()).saturating_add(1) > MAX_SOURCE_BYTES {
-            break;
-        }
-        if visible.len() < line.len() {
-            clipped.insert(numbers.len());
-        }
-        source_starts.push(usize::try_from(span.start).unwrap_or_default());
-        numbers.push(number);
-        // Line copy follows the bounded visible excerpt, so a single enormous
-        // source line cannot be retained again by a keyboard target.
-        raw_lines.push(visible.to_owned());
+    for line in &page.lines {
+        let visible = source.text().get(line.span.range()).unwrap_or_default();
+        source_starts.push(line.span.start as usize);
+        numbers.push(line.number);
+        raw_lines.push(visible);
         shown.push_str(visible);
         shown.push('\n');
     }
-    let shown = shown.trim_end_matches('\n').to_owned();
+    if !shown.is_empty() {
+        shown.pop();
+    }
+    let shown: SharedString = shown.into();
     ctx.say(shown.clone());
     let language = code_language(view);
-    let shown: SharedString = shown.into();
     let highlights = language
         .and_then(|language| facet::code::highlight(language, shown.clone(), window, cx))
         .map(|highlighted| highlighted.styles(&palette));
@@ -200,13 +333,23 @@ fn code(
     let rendered_to = numbers.last().copied().unwrap_or(from);
     let below = last_line.saturating_sub(rendered_to);
     let mut column = div().flex().flex_col().gap(measure.space(Space::Base));
-    if above > 0 {
-        column = column.child(quiet(format!("{above} lines above"), &measure, palette));
+    column = column.child(pager_controls(
+        "top", &pager, cursor, &page, source, ctx, cx,
+    ));
+    if above > 0 || cursor.byte > 0 {
+        let label = if cursor.byte > 0 {
+            format!(
+                "{above} earlier lines · line {from} continues from byte {}",
+                cursor.byte
+            )
+        } else {
+            format!("{above} earlier lines")
+        };
+        column = column.child(quiet(label, &measure, palette));
     }
     let mut rows = div().flex().flex_col();
     let mut visible_references = Vec::<(SymbolRef, Route)>::new();
-    let leaving = Route::Symbol(route.clone());
-    let restore_target = ctx.targets.left_by(&leaving);
+    let mut reference_indices = BTreeMap::<SymbolRef, usize>::new();
     // The producer emits identifier spans in byte order. Select the visible
     // spans once for each source row, then use a binary interval search per
     // wrapped visual row. This avoids rescanning the entire file's identifier
@@ -253,14 +396,23 @@ fn code(
             ctx.reader_reveal.set(true);
             ctx.source_focus_applied.set(Some(focus_key));
         }
-        let raw_line: Arc<str> = Arc::from(raw_lines[source_index].clone());
-        let copy_line_text = Arc::clone(&raw_line);
+        let copy_source = source.clone();
+        let copy_span = page.lines[source_index].span;
         let copy_line: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
-            app.write_to_clipboard(gpui::ClipboardItem::new_string(copy_line_text.to_string()));
+            let words = copy_source
+                .text()
+                .get(copy_span.range())
+                .unwrap_or_default();
+            app.write_to_clipboard(gpui::ClipboardItem::new_string(words.to_owned()));
         });
         ctx.targets.push(Target {
             id: id.clone(),
-            label: format!("Copy source line {number}").into(),
+            label: if page.lines[source_index].continued || page.lines[source_index].more_in_line {
+                format!("Copy visible part of source line {number}")
+            } else {
+                format!("Copy source line {number}")
+            }
+            .into(),
             act: copy_line.clone(),
             peek: None,
             source: None,
@@ -286,9 +438,11 @@ fn code(
                 for identifier in &rest[..count] {
                     let start = usize::try_from(identifier.span.start).unwrap_or(usize::MAX);
                     let end = usize::try_from(identifier.span.end).unwrap_or(usize::MAX);
-                    if clipped.contains(&source_index)
-                        && end > line_start.saturating_add(raw_lines[source_index].len())
-                    {
+                    if !verified_link(
+                        source.coverage(),
+                        identifier.span,
+                        page.lines[source_index].span,
+                    ) {
                         continue;
                     }
                     let source_from = start.max(piece_start).saturating_sub(line_start);
@@ -309,12 +463,11 @@ fn code(
                     let Some(target_route) = symbol_route(route.package.as_str(), &target) else {
                         continue;
                     };
-                    let target_index = visible_references
-                        .iter()
-                        .position(|(seen, _)| seen == &target)
-                        .unwrap_or_else(|| {
+                    let target_index =
+                        *reference_indices.entry(target.clone()).or_insert_with(|| {
+                            let index = visible_references.len();
                             visible_references.push((target.clone(), target_route.clone()));
-                            visible_references.len() - 1
+                            index
                         });
                     link_ranges.push(text_from..text_to);
                     link_routes.push(target_route.clone());
@@ -324,7 +477,11 @@ fn code(
                 }
             }
             let label = if piece_index == 0 {
-                number.to_string()
+                if page.lines[source_index].continued {
+                    format!("{number}+")
+                } else {
+                    number.to_string()
+                }
             } else {
                 String::new()
             };
@@ -333,7 +490,7 @@ fn code(
             let requested = requested_line == Some(number);
             let copy_gutter = copy_line.clone();
             let line_number = div()
-                .id(format!("source-copy-line-{number}"))
+                .id(format!("source-copy-line-{number}-{piece_index}"))
                 .flex_none()
                 .w(number_width)
                 .flex()
@@ -410,9 +567,9 @@ fn code(
             .child(visual_lines);
         let shared_row = facet::motion::shared::shared(ElementId::Name(id.clone()), source_row);
         rows = rows.child(ctx.targets.track(id, shared_row));
-        if clipped.contains(&source_index) {
+        if page.lines[source_index].more_in_line {
             rows = rows.child(quiet(
-                format!("Line {number} clipped after {MAX_SOURCE_LINE_BYTES} bytes"),
+                format!("Line {number} continues on the next source page"),
                 &measure,
                 palette,
             ));
@@ -429,15 +586,16 @@ fn code(
             palette,
         ));
     }
-    if rendered_to < to {
-        column = column.child(quiet(
-            format!("Source display is bounded at line {rendered_to}"),
-            &measure,
-            palette,
+    if page.next.is_some() {
+        let continuation = if page.next.is_some_and(|next| next.line == rendered_to) {
+            format!("Line {rendered_to} continues")
+        } else {
+            format!("{below} later lines")
+        };
+        column = column.child(quiet(continuation, &measure, palette));
+        column = column.child(pager_controls(
+            "bottom", &pager, cursor, &page, source, ctx, cx,
         ));
-    }
-    if below > 0 {
-        column = column.child(quiet(format!("{below} lines below"), &measure, palette));
     }
     if let Some(editor_path) = view.editor_path.known() {
         let path: Arc<str> = Arc::clone(editor_path);
@@ -472,10 +630,65 @@ fn code(
         column = column.child(ctx.targets.track(id, button));
     }
     if !visible_references.is_empty() {
-        column = column.child(
-            text(ty::MONO_SMALL, &measure, palette.ink3).child("References in this excerpt"),
-        );
-        for (index, (symbol, target_route)) in visible_references.into_iter().take(32).enumerate() {
+        let reference_count = visible_references.len();
+        let last_reference_page = (reference_count - 1) / MAX_PAGE_REFERENCES;
+        let reference_page = paging
+            .borrow()
+            .as_ref()
+            .map_or(0, |state| state.reference_page)
+            .min(last_reference_page);
+        let reference_start = reference_page * MAX_PAGE_REFERENCES;
+        column = column.child(text(ty::MONO_SMALL, &measure, palette.ink3).child(ctx.say(
+            format!(
+                "References on these lines · {}–{} of {reference_count}",
+                reference_start + 1,
+                (reference_start + MAX_PAGE_REFERENCES).min(reference_count)
+            ),
+        )));
+        let mut reference_controls = div().flex().flex_wrap().gap(measure.space(Space::Base));
+        for (direction, destination, label) in [
+            (
+                "previous",
+                reference_page.checked_sub(1),
+                "Previous references",
+            ),
+            (
+                "next",
+                (reference_page < last_reference_page).then_some(reference_page + 1),
+                "Next references",
+            ),
+        ] {
+            if let Some(destination) = destination {
+                let id: SharedString = format!("source-references-{direction}").into();
+                let state = pager.clone();
+                let act: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
+                    state.update(app, |pager, cx| pager.show_references(destination, cx));
+                });
+                ctx.targets.push(Target {
+                    id: id.clone(),
+                    label: label.into(),
+                    act: act.clone(),
+                    peek: None,
+                    source: None,
+                });
+                reference_controls = reference_controls.child(
+                    ctx.targets.track(
+                        id.clone(),
+                        facet::controls::button(id, label, &measure)
+                            .ghost()
+                            .size(Control::Small)
+                            .on_click(move |window, app| act(window, app)),
+                    ),
+                );
+            }
+        }
+        column = column.child(reference_controls);
+        for (index, (symbol, target_route)) in visible_references
+            .into_iter()
+            .enumerate()
+            .skip(reference_start)
+            .take(MAX_PAGE_REFERENCES)
+        {
             let id: SharedString = format!("source-reference-{index}").into();
             let label: SharedString = symbol.identity().name().to_owned().into();
             let links = ctx.links.clone();
@@ -495,7 +708,16 @@ fn code(
                 source: Some(symbol),
             };
             if restore_target.as_ref() == Some(&id) {
-                ctx.targets.focus(id.clone());
+                let apply = paging.borrow_mut().as_mut().is_some_and(|state| {
+                    if state.restored_focus_place == Some(ctx.place_key) {
+                        return false;
+                    }
+                    state.restored_focus_place = Some(ctx.place_key);
+                    true
+                });
+                if apply {
+                    ctx.targets.focus(id.clone());
+                }
             }
             let act = target.act.clone();
             ctx.targets.push(target);
@@ -515,7 +737,7 @@ fn code(
     });
     ctx.targets.push(Target {
         id: copy_id.clone(),
-        label: "Copy visible source excerpt".into(),
+        label: "Copy visible source page".into(),
         act: copy.clone(),
         peek: None,
         source: None,
@@ -524,18 +746,157 @@ fn code(
         .id(copy_id.clone())
         .cursor_pointer()
         .text_color(palette.peri.base.hsla())
-        .child(text(ty::SMALL, &measure, palette.peri.base).child("Copy excerpt"))
+        .child(text(ty::SMALL, &measure, palette.peri.base).child("Copy visible page"))
         .on_click(move |_: &ClickEvent, window, app| copy(window, app));
     column = column.child(ctx.targets.track(copy_id, copy_button));
     column.into_any_element()
 }
 
-fn utf8_prefix(text: &str, max_bytes: usize) -> &str {
-    let mut end = text.len().min(max_bytes);
-    while !text.is_char_boundary(end) {
-        end = end.saturating_sub(1);
+fn pager_controls(
+    position: &str,
+    pager: &Entity<Pager>,
+    cursor: SourceCursor,
+    page: &SourcePage,
+    source: &SourceText,
+    ctx: &mut Ctx<'_>,
+    cx: &mut Context<Reader>,
+) -> gpui::AnyElement {
+    let measure = ctx.measure;
+    let palette = ctx.palette;
+    let first = page.lines.first().map_or(cursor.line, |line| line.number);
+    let last = page.lines.last().map_or(cursor.line, |line| line.number);
+    let total_last = source
+        .first_line
+        .saturating_add(source.line_count().saturating_sub(1) as u32);
+    let range = if source.line_count() == 0 {
+        "No source lines were recorded".to_owned()
+    } else if first == last
+        && page
+            .lines
+            .first()
+            .is_some_and(|line| line.continued || line.more_in_line)
+    {
+        format!("Line {first} in parts · last line {total_last}")
+    } else {
+        format!("Lines {first}–{last} of {total_last}")
+    };
+    let mut controls = div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(measure.space(Space::Base))
+        .min_w_0()
+        .child(quiet(ctx.say(range), &measure, palette));
+
+    let memory = Rc::clone(&pager.read(cx).state);
+    let previous = memory
+        .borrow()
+        .as_ref()
+        .and_then(|state| state.previous_target(source));
+    if let Some(previous) = previous {
+        let id: SharedString = format!("source-page-{position}-previous").into();
+        let state = pager.clone();
+        let act: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
+            state.update(app, |pager, cx| pager.previous(previous, cx));
+        });
+        ctx.targets.push(Target {
+            id: id.clone(),
+            label: "Previous source lines".into(),
+            act: act.clone(),
+            peek: None,
+            source: None,
+        });
+        controls = controls.child(
+            ctx.targets.track(
+                id.clone(),
+                facet::controls::button(id, "Previous lines", &measure)
+                    .ghost()
+                    .size(Control::Small)
+                    .on_click(move |window, app| act(window, app)),
+            ),
+        );
     }
-    &text[..end]
+    let next = memory
+        .borrow()
+        .as_ref()
+        .and_then(|state| state.next_target(page));
+    if let Some(next) = next {
+        let id: SharedString = format!("source-page-{position}-next").into();
+        let state = pager.clone();
+        let act: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
+            state.update(app, |pager, cx| pager.next(next, cx));
+        });
+        ctx.targets.push(Target {
+            id: id.clone(),
+            label: "Next source lines".into(),
+            act: act.clone(),
+            peek: None,
+            source: None,
+        });
+        controls = controls.child(
+            ctx.targets.track(
+                id.clone(),
+                facet::controls::button(id, "Next lines", &measure)
+                    .ghost()
+                    .size(Control::Small)
+                    .on_click(move |window, app| act(window, app)),
+            ),
+        );
+    }
+    if position == "top" && source.line_count() > 0 {
+        let input = pager.read(cx).input.clone();
+        let error = pager.read(cx).error.clone();
+        let field_id: SharedString = "source-jump-field".into();
+        let focus_input = input.clone();
+        let focus: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |window, app| {
+            focus_input.update(app, |input, cx| input.focus(window, cx));
+        });
+        ctx.targets.push(Target {
+            id: field_id.clone(),
+            label: "Enter a source line number".into(),
+            act: focus.clone(),
+            peek: None,
+            source: None,
+        });
+        let mut field = facet::controls::field(field_id.clone(), &input, &measure).quiet();
+        if let Some(error) = error {
+            field = field.fault(error);
+        }
+        controls = controls.child(
+            ctx.targets.track(
+                field_id.clone(),
+                div()
+                    .id(field_id)
+                    .w(px(112.0 * measure.scale()))
+                    .min_w_0()
+                    .on_click(move |_: &ClickEvent, window, app| focus(window, app))
+                    .child(field),
+            ),
+        );
+        let id: SharedString = "source-jump-go".into();
+        let state = pager.clone();
+        let act: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
+            let typed = input.read(app).value().to_string();
+            state.update(app, |pager, cx| pager.jump(&typed, cx));
+        });
+        ctx.targets.push(Target {
+            id: id.clone(),
+            label: "Go to source line".into(),
+            act: act.clone(),
+            peek: None,
+            source: None,
+        });
+        controls = controls.child(
+            ctx.targets.track(
+                id.clone(),
+                facet::controls::button(id, "Go to line", &measure)
+                    .ghost()
+                    .size(Control::Small)
+                    .on_click(move |window, app| act(window, app)),
+            ),
+        );
+    }
+    controls.into_any_element()
 }
 
 /// The producer's language is authoritative. JavaScript is the TypeScript
@@ -621,4 +982,317 @@ fn margin(
         }
     }
     Some(column.into_any_element())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used, clippy::panic)]
+
+    use super::*;
+    use crate::model::pages::{
+        IdentifierSpan, Known, LineSpan, PageValue, Provenance, ReadFailure, SymbolLink,
+    };
+    use crate::navigation::View;
+    use crate::runtime::reads::{PageReader, ReadContext, ReadPool, ReadRequest};
+    use gpui::TestAppContext;
+
+    fn text(words: String) -> SourceText {
+        SourceText::new(words.into(), 1, SourceOrigin::LocalFile, true)
+    }
+
+    #[test]
+    fn every_line_is_reachable_without_growing_a_page() {
+        let source = text((1..=600).map(|line| format!("line {line}\n")).collect());
+        let mut cursor = SourceCursor { line: 1, byte: 0 };
+        let mut visited = Vec::new();
+        loop {
+            let page = SourcePage::at(&source, cursor);
+            assert!(!page.lines.is_empty());
+            assert!(page.lines.len() <= MAX_SOURCE_LINES);
+            assert!(
+                page.lines
+                    .iter()
+                    .map(|line| line.span.end - line.span.start)
+                    .sum::<u32>()
+                    <= MAX_SOURCE_BYTES as u32
+            );
+            visited.extend(page.lines.iter().map(|line| line.number));
+            let Some(next) = page.next else { break };
+            assert!(next.line > cursor.line || next.line == cursor.line && next.byte > cursor.byte);
+            cursor = next;
+        }
+        assert_eq!(visited, (1..=600).collect::<Vec<_>>());
+        assert_eq!(cursor.line, 577);
+        let mut backward = cursor;
+        let mut steps = 0;
+        while let Some(previous) = previous_cursor(&source, backward) {
+            assert!(
+                previous.line < backward.line
+                    || previous.line == backward.line && previous.byte < backward.byte
+            );
+            backward = previous;
+            steps += 1;
+            assert!(steps < 600);
+        }
+        assert_eq!(backward, SourceCursor { line: 1, byte: 0 });
+    }
+
+    #[test]
+    fn a_long_utf8_line_is_paged_without_omitting_a_character() {
+        let original = format!("{}\ntail", "é".repeat(80_000));
+        let source = text(original);
+        let mut cursor = SourceCursor { line: 1, byte: 0 };
+        let mut reconstructed = String::new();
+        let mut pages = 0;
+        loop {
+            let page = SourcePage::at(&source, cursor);
+            assert!(!page.lines.is_empty());
+            for line in &page.lines {
+                assert!(
+                    usize::try_from(line.span.end - line.span.start).unwrap()
+                        <= MAX_SOURCE_LINE_BYTES
+                );
+                reconstructed.push_str(source.text().get(line.span.range()).unwrap());
+                if !line.more_in_line && line.number == 1 {
+                    reconstructed.push('\n');
+                }
+            }
+            pages += 1;
+            assert!(pages < 100);
+            let Some(next) = page.next else { break };
+            assert!(next.line > cursor.line || next.line == cursor.line && next.byte > cursor.byte);
+            cursor = next;
+        }
+        assert_eq!(reconstructed, source.text());
+    }
+
+    #[test]
+    fn an_exact_deep_route_survives_an_oversized_predecessor() {
+        let source = text(format!(
+            "{}\n{}",
+            "x".repeat(100_000),
+            (2..=500)
+                .map(|line| format!("line {line}\n"))
+                .collect::<String>()
+        ));
+        let cursor = initial_cursor(&source, 450, 0);
+        assert_eq!(cursor, SourceCursor { line: 450, byte: 0 });
+        assert_eq!(
+            SourcePage::at(&source, cursor)
+                .lines
+                .first()
+                .map(|line| line.number),
+            Some(450)
+        );
+    }
+
+    #[test]
+    fn only_verified_excerpt_bytes_admit_links() {
+        let span = ByteSpan { start: 10, end: 15 };
+        let visible = ByteSpan { start: 0, end: 20 };
+        assert!(!verified_link(SourceCoverage::Unverified, span, visible));
+        assert!(verified_link(
+            SourceCoverage::CapturedExcerpt,
+            span,
+            visible
+        ));
+        assert!(!verified_link(
+            SourceCoverage::CapturedExcerpt,
+            span,
+            ByteSpan { start: 12, end: 20 }
+        ));
+        assert!(verified_link(
+            SourceCoverage::LiveFileExcerptVerified {
+                bytes: ByteSpan { start: 8, end: 17 }
+            },
+            span,
+            visible
+        ));
+        assert!(!verified_link(
+            SourceCoverage::LiveFileExcerptVerified {
+                bytes: ByteSpan { start: 11, end: 17 }
+            },
+            span,
+            visible
+        ));
+    }
+
+    struct LongSource;
+
+    impl PageReader for LongSource {
+        fn read(
+            &mut self,
+            request: &ReadRequest,
+            context: &ReadContext<'_>,
+        ) -> Result<PageValue, ReadFailure> {
+            let mut fixture = crate::shell::tests::Fixture;
+            let mut value = fixture.read(request, context)?;
+            if let PageValue::Source(view) = &mut value {
+                let words: String = (1..=600)
+                    .map(|line| {
+                        if line == 565 {
+                            "RelationDirection\n".to_owned()
+                        } else {
+                            format!("line {line}\n")
+                        }
+                    })
+                    .collect();
+                let source = text(words);
+                let span = source.line_span(565).expect("verified reference line");
+                view.text = Known::Known(source.with_verified_local_excerpt(span));
+                view.declaration = Known::Known(LineSpan {
+                    first: 565,
+                    last: 565,
+                });
+                view.identifiers = Known::Known(Arc::from([IdentifierSpan {
+                    span,
+                    link: SymbolLink {
+                        target: crate::shell::tests::symbol("RelationDirection"),
+                        provenance: Provenance::ByName,
+                    },
+                }]));
+            }
+            Ok(value)
+        }
+    }
+
+    fn activate_reader_target(rig: &mut crate::shell::tests::Rig, id: &str) {
+        let target = rig.shell.read_with(rig.cx, |shell, cx| {
+            let targets = shell.reader_targets(cx);
+            targets.focus(id);
+            targets.current().expect("visible source target")
+        });
+        rig.cx.update(|window, cx| (target.act)(window, cx));
+        rig.settle();
+    }
+
+    #[gpui::test]
+    fn narrow_native_reader_opens_an_exact_deep_line(cx: &mut TestAppContext) {
+        let Route::Symbol(mut route) = crate::shell::tests::view_route("RelationLabel", View::Code)
+        else {
+            unreachable!()
+        };
+        route.line = Some(500);
+        let pool = ReadPool::start(2, |_| LongSource).expect("source read pool");
+        let mut rig =
+            crate::shell::tests::rig_with_reads(cx, Some(Route::Symbol(route)), 260.0, 700.0, pool);
+        let words = rig.said();
+        assert!(
+            words.iter().any(|word| word.contains("line 500")),
+            "deep route not visible: {words:#?}"
+        );
+        assert!(
+            words.iter().any(|word| word.contains("Lines 500")),
+            "pager not visible: {words:#?}"
+        );
+        let (zone, focus) = rig
+            .shell
+            .read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+        assert_eq!(zone, crate::shell::focus::Zone::Reader);
+        assert_eq!(focus.as_deref(), Some("source-line-500"));
+        rig.keys("j");
+        let (_, walked) = rig
+            .shell
+            .read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+        assert_eq!(walked.as_deref(), Some("source-line-501"));
+    }
+
+    #[gpui::test]
+    fn native_jump_next_link_and_back_restore_the_same_page(cx: &mut TestAppContext) {
+        let route = crate::shell::tests::view_route("RelationLabel", View::Code);
+        let pool = ReadPool::start(2, |_| LongSource).expect("source read pool");
+        let mut rig =
+            crate::shell::tests::rig_with_reads(cx, Some(route.clone()), 320.0, 700.0, pool);
+
+        activate_reader_target(&mut rig, "source-jump-field");
+        rig.keys("5 0 0 enter");
+        assert!(
+            rig.said().iter().any(|word| word.contains("Lines 500")),
+            "Enter must jump to the exact line"
+        );
+        activate_reader_target(&mut rig, "source-page-top-next");
+        let later = rig.said();
+        assert!(
+            later.iter().any(|word| word.contains("Lines 564")),
+            "later page missing: {later:#?}"
+        );
+        assert!(
+            later.iter().any(|word| word.contains("RelationDirection")),
+            "verified link line missing: {later:#?}"
+        );
+
+        rig.shell.update(rig.cx, |shell, cx| {
+            shell.set_source_reader_scroll_offset(gpui::point(px(0.0), px(-96.0)), cx)
+        });
+        rig.repaint();
+        let before = rig
+            .shell
+            .read_with(rig.cx, |shell, cx| shell.source_reader_scroll_offset(cx));
+        activate_reader_target(&mut rig, "source-reference-0");
+        assert_ne!(rig.route(), route, "the verified link must navigate");
+        rig.keys("cmd-[");
+        assert_eq!(rig.route(), route);
+        assert!(
+            rig.said().iter().any(|word| word.contains("Lines 564")),
+            "Back reset the source page"
+        );
+        let (_, focus) = rig
+            .shell
+            .read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+        assert_eq!(
+            focus.as_deref(),
+            Some("source-reference-0"),
+            "Back lost the exact link focus"
+        );
+        let restored = rig
+            .shell
+            .read_with(rig.cx, |shell, cx| shell.source_reader_scroll_offset(cx));
+        assert_eq!(
+            restored, before,
+            "Back lost the source page's scroll offset"
+        );
+    }
+
+    struct LongWrappedLine;
+
+    impl PageReader for LongWrappedLine {
+        fn read(
+            &mut self,
+            request: &ReadRequest,
+            context: &ReadContext<'_>,
+        ) -> Result<PageValue, ReadFailure> {
+            let mut fixture = crate::shell::tests::Fixture;
+            let mut value = fixture.read(request, context)?;
+            if let PageValue::Source(view) = &mut value {
+                view.text = Known::Known(text(format!(
+                    "{}{}{}\ntail",
+                    "α".repeat(1_024),
+                    "β".repeat(1_024),
+                    "γ".repeat(1_024)
+                )));
+                view.declaration = Known::Known(LineSpan { first: 1, last: 1 });
+            }
+            Ok(value)
+        }
+    }
+
+    #[gpui::test]
+    fn native_wrapped_line_continues_without_duplicate_row_ids(cx: &mut TestAppContext) {
+        let route = crate::shell::tests::view_route("RelationLabel", View::Code);
+        let pool = ReadPool::start(2, |_| LongWrappedLine).expect("wrapped source pool");
+        let mut rig = crate::shell::tests::rig_with_reads(cx, Some(route), 260.0, 700.0, pool);
+        assert!(
+            rig.said()
+                .iter()
+                .any(|word| word.contains("Line 1 in parts"))
+        );
+        let before = rig.said();
+        activate_reader_target(&mut rig, "source-page-top-next");
+        let after = rig.said();
+        assert_ne!(
+            before, after,
+            "the next page must advance within the same long line"
+        );
+        assert!(after.iter().any(|word| word.contains("Line 1 in parts")));
+    }
 }

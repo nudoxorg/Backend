@@ -330,6 +330,15 @@ pub enum EngineFault {
         /// Project whose attempt reached its terminal cancellation boundary.
         project: LocalProjectId,
     },
+    /// The request may have reached the owner, but its terminal reply was
+    /// interrupted; only a fresh owner observation can settle its outcome.
+    IndexUnconfirmed {
+        /// Project whose index outcome needs an owner refresh.
+        project: LocalProjectId,
+    },
+    /// A mutating surface command may have reached the owner, but its reply
+    /// was interrupted. It is never replayed automatically.
+    MutationUnconfirmed,
 }
 
 /// Worker event consumed by the UI coordinator.
@@ -379,6 +388,8 @@ pub struct EngineActor {
     /// The synchronous producer request currently owned by the worker.
     /// Shutdown revokes it before joining, including when it awaits startup.
     active: Arc<Mutex<ActiveRequest>>,
+    /// The local Cargo read currently held by the second worker lane.
+    local_active: Arc<Mutex<ActiveRequest>>,
     /// Wakes the UI after every delivered event; closed on shutdown.
     wake: WakeSender,
     /// The UI half, taken once by the entity that drains events.
@@ -471,6 +482,8 @@ impl EngineActor {
         let worker_wake = wake.clone();
         let active = Arc::new(Mutex::new(ActiveRequest::default()));
         let worker_active = Arc::clone(&active);
+        let local_active = Arc::new(Mutex::new(ActiveRequest::default()));
+        let worker_local_active = Arc::clone(&local_active);
         let join = thread::Builder::new()
             .name("nudox-engine-actor".to_owned())
             .spawn(move || {
@@ -482,7 +495,7 @@ impl EngineActor {
         let local_wake = wake.clone();
         let local_join = thread::Builder::new()
             .name("nudox-local-reads".to_owned())
-            .spawn(move || run_local_reads(&loader, &local_mailbox, &local_events, &local_wake));
+            .spawn(move || run_local_reads(&loader, &local_mailbox, &local_events, &local_wake, &worker_local_active));
         let mut actor = Self {
             mailbox,
             local,
@@ -490,6 +503,7 @@ impl EngineActor {
             join: Some(join),
             local_join: None,
             active,
+            local_active,
             wake,
             wake_receiver: Some(wake_receiver),
         };
@@ -568,12 +582,14 @@ impl EngineActor {
     }
 
     fn close_and_join(&mut self) {
-        let cancel = {
-            let mut active = self.active.lock().unwrap_or_else(PoisonError::into_inner);
-            active.closed = true;
-            active.cancel.clone()
-        };
-        if let Some(cancel) = cancel { cancel.cancel(); }
+        for state in [&self.active, &self.local_active] {
+            let cancel = {
+                let mut active = state.lock().unwrap_or_else(PoisonError::into_inner);
+                active.closed = true;
+                active.cancel.clone()
+            };
+            if let Some(cancel) = cancel { cancel.cancel(); }
+        }
         self.mailbox.close();
         self.local.close();
         self.events.close();
@@ -654,6 +670,7 @@ fn run_actor(
             // commit after it has returned. Admit that committed result; a
             // producer error after cancellation is terminal cancellation.
             Ok(dto) => Ok(dto),
+            Err(error @ (EngineFault::IndexUnconfirmed { .. } | EngineFault::MutationUnconfirmed)) => Err(error),
             Err(_error) if request.cancelled() => Err(cancelled_fault(&request)),
             Err(error) => Err(error),
         }};
@@ -681,21 +698,26 @@ fn run_local_reads(
     mailbox: &CoalescingMailbox<LocalRead>,
     events: &CoalescingMailbox<EngineEvent>,
     wake: &WakeSender,
+    active: &Mutex<ActiveRequest>,
 ) {
     while let Some(read) = mailbox.recv() {
+        {
+            let mut active = active.lock().unwrap_or_else(PoisonError::into_inner);
+            if active.closed { read.cancel.cancel(); }
+            active.cancel = Some(read.cancel.clone());
+        }
         let lane = read.coalesce_key();
         let result = if read.cancel.is_cancelled() {
             Err(EngineFault::Cancelled)
         } else {
-            let package = loader.load(&read.project);
-            if read.cancel.is_cancelled() {
-                Err(EngineFault::Cancelled)
-            } else {
-                Ok(EngineDto::LocalPackage {
+            let package = loader.load_with_cancel(&read.project, &|| read.cancel.is_cancelled());
+            match package {
+                Some(package) if !read.cancel.is_cancelled() => Ok(EngineDto::LocalPackage {
                     request: read.request,
                     basis: read.basis,
                     package: Arc::new(package),
-                })
+                }),
+                Some(_) | None => Err(EngineFault::Cancelled),
             }
         };
         let event = EngineEvent {
@@ -704,6 +726,7 @@ fn run_local_reads(
             lane,
             result,
         };
+        active.lock().unwrap_or_else(PoisonError::into_inner).cancel = None;
         if !events.push_wait(event, lane) {
             break;
         }
@@ -722,12 +745,15 @@ fn cancelled_fault(request: &EngineRequest) -> EngineFault {
 
 #[cfg(test)]
 mod tests {
-    use super::{ActorStartError, CancellationToken, EngineActor, EngineRequest};
+    use super::{ActorStartError, CancellationToken, EngineActor, EngineClient, EngineDto, EngineFault, EngineRequest, LocalRead};
     use crate::core::{LocalProjectId, VersionedRoot};
+    use crate::model::local_package::LocalPackageLoader;
     use crate::navigation::RequestId;
     use crate::runtime::client::LocalEngineClient;
     use crate::runtime::owner::OwnerGate;
     use std::sync::mpsc;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     #[test]
@@ -759,5 +785,147 @@ mod tests {
         std::thread::spawn(move || sent.send(drop(actor)).expect("actor closed"));
         received.recv_timeout(Duration::from_secs(1)).expect("actor shutdown did not wait for the owner's 60-second patience");
         assert_eq!(gate.state(), crate::runtime::owner::OwnerState::Starting);
+    }
+
+    #[test]
+    fn closing_the_actor_never_executes_a_queued_index_mutation() {
+        struct Stalled {
+            gate: OwnerGate,
+            started: mpsc::Sender<()>,
+            mutations: Arc<AtomicUsize>,
+        }
+
+        impl EngineClient for Stalled {
+            fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
+                match request {
+                    EngineRequest::Root { cancel, .. } => {
+                        self.started.send(()).expect("root entered its owner wait");
+                        let _ = self.gate.wait_cancelled(cancel);
+                        Err(EngineFault::Cancelled)
+                    }
+                    EngineRequest::IndexProject { .. } => {
+                        self.mutations.fetch_add(1, Ordering::SeqCst);
+                        Err(EngineFault::Cancelled)
+                    }
+                    _ => Err(EngineFault::Cancelled),
+                }
+            }
+        }
+
+        let gate = OwnerGate::starting();
+        let mutations = Arc::new(AtomicUsize::new(0));
+        let (started, entered) = mpsc::channel();
+        let actor = EngineActor::start(Stalled {
+            gate,
+            started,
+            mutations: Arc::clone(&mutations),
+        }, 4).expect("actor");
+        assert!(matches!(actor.try_submit(EngineRequest::Root {
+            request: RequestId::new(1),
+            basis: VersionedRoot::unserved(),
+            cancel: CancellationToken::new(),
+        }), super::PushResult::Enqueued));
+        entered.recv_timeout(Duration::from_secs(1)).expect("root entered");
+
+        let project = LocalProjectId::from_path(std::path::Path::new("/tmp"))
+            .expect("project identity");
+        assert!(matches!(actor.try_submit(EngineRequest::IndexProject {
+            request: RequestId::new(2),
+            project,
+            basis: VersionedRoot::unserved(),
+            cancel: CancellationToken::new(),
+        }), super::PushResult::Enqueued));
+
+        let (closed, finished) = mpsc::channel();
+        std::thread::spawn(move || closed.send(drop(actor)).expect("actor closed"));
+        finished.recv_timeout(Duration::from_secs(1)).expect("closing the actor released its root wait");
+        assert_eq!(mutations.load(Ordering::SeqCst), 0, "a queued mutation cannot reach the client after close");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn closing_the_actor_retires_an_active_local_cargo_process() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        struct Idle;
+        impl EngineClient for Idle {
+            fn execute(&mut self, _: &EngineRequest) -> Result<EngineDto, EngineFault> {
+                Err(EngineFault::Cancelled)
+            }
+        }
+
+        let folder = std::env::temp_dir().join(format!(
+            "nudox-cancel-local-cargo-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_nanos(),
+        ));
+        std::fs::create_dir_all(&folder).expect("fixture directory");
+        std::fs::write(folder.join("Cargo.toml"), "[package]\nname='cancel-fixture'\nversion='0.1.0'\n")
+            .expect("fixture manifest");
+        let entered = folder.join("cargo-entered");
+        let escaped = folder.join("descendant-escaped");
+        let script = folder.join("fake-cargo");
+        std::fs::write(&script, format!(
+            "#!/bin/sh\nprintf entered > '{}'\n(sleep 1; printf escaped > '{}') &\nexec sleep 30\n",
+            entered.display(), escaped.display(),
+        )).expect("fake cargo");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("make executable");
+        let project = LocalProjectId::from_path(&folder).expect("project identity");
+        let actor = EngineActor::start_with_loader(
+            Idle, 4, LocalPackageLoader::default().with_cargo(script).with_timeout(Duration::from_secs(30)),
+        ).expect("actor");
+        assert!(matches!(actor.try_submit_local(LocalRead {
+            request: RequestId::new(1),
+            project,
+            basis: VersionedRoot::unserved(),
+            cancel: CancellationToken::new(),
+        }), super::PushResult::Enqueued));
+        crate::runtime::wait::until("local Cargo child entered", || entered.exists());
+        let (closed, finished) = mpsc::channel();
+        std::thread::spawn(move || closed.send(drop(actor)).expect("actor closed"));
+        finished.recv_timeout(Duration::from_secs(2)).expect("local Cargo held actor shutdown");
+        std::thread::sleep(Duration::from_millis(1_200));
+        assert!(!escaped.exists(), "local child descendant escaped process-group retirement");
+        std::fs::remove_dir_all(folder).expect("remove fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn closing_the_actor_interrupts_an_active_authenticated_socket_read() {
+        use std::io::Read as _;
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::os::unix::net::UnixListener;
+
+        let path = std::path::PathBuf::from(format!(
+            "/tmp/nudox-actor-interrupt-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_nanos(),
+        ));
+        let listener = UnixListener::bind(&path).expect("private socket");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("private endpoint");
+        let (entered, received) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accepted client");
+            let mut frame_length = [0_u8; 4];
+            socket.read_exact(&mut frame_length).expect("client sent request");
+            entered.send(()).expect("request reached server");
+            let _ = released.recv_timeout(Duration::from_secs(3));
+        });
+        let project = LocalProjectId::from_path(std::path::Path::new("/tmp")).expect("project identity");
+        let actor = EngineActor::start(LocalEngineClient::new(&path, project), 4).expect("actor");
+        assert!(matches!(actor.try_submit(EngineRequest::Surface {
+            request: RequestId::new(1),
+            command: backend_library::SurfaceCommand::Explore { query: None, limit: 1 },
+            basis: VersionedRoot::unserved(),
+            cancel: CancellationToken::new(),
+        }), super::PushResult::Enqueued));
+        received.recv_timeout(Duration::from_secs(2)).expect("read request entered socket");
+        let (closed, finished) = mpsc::channel();
+        std::thread::spawn(move || closed.send(drop(actor)).expect("actor closed"));
+        finished.recv_timeout(Duration::from_secs(1)).expect("active socket read held actor shutdown");
+        release.send(()).expect("release server");
+        server.join().expect("server stopped");
+        std::fs::remove_file(path).expect("remove endpoint");
     }
 }

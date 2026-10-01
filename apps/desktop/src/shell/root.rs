@@ -301,6 +301,18 @@ impl Shell {
         self.reader.read(cx).targets.clone()
     }
 
+    /// Native reader viewport position for Back/Forward restoration tests.
+    #[cfg(test)]
+    pub(crate) fn source_reader_scroll_offset(&self, cx: &App) -> gpui::Point<gpui::Pixels> {
+        self.reader.read(cx).scroll_offset()
+    }
+
+    /// Seeds an exact native viewport offset before navigating away in a restoration test.
+    #[cfg(test)]
+    pub(crate) fn set_source_reader_scroll_offset(&self, offset: gpui::Point<gpui::Pixels>, cx: &App) {
+        self.reader.read(cx).set_scroll_offset(offset);
+    }
+
     /// Render counters of the root and every region.
     #[must_use]
     pub fn render_counts(&self, cx: &App) -> RenderCounts {

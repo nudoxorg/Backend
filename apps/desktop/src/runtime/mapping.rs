@@ -60,6 +60,14 @@ pub fn map_event(current: &AppSnapshot, event: EngineEvent) -> Result<AppSnapsho
         Err(EngineFault::IndexCancelled { project }) => {
             return Ok(mark_index_cancelled(current, event_request, &project));
         }
+        Err(EngineFault::IndexUnconfirmed { project }) => {
+            return Ok(mark_index_failed(
+                current,
+                event_request,
+                &project,
+                "The index reply was interrupted. Its outcome is unconfirmed; refresh the index before retrying.",
+            ));
+        }
         Err(error) => return Err(MappingError::Engine(error)),
     };
     match dto {

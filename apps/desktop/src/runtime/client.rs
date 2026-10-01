@@ -5,15 +5,18 @@
 //! adapter on its worker thread; the GPUI thread receives only versioned DTOs
 //! and never touches a socket, a reply codec, or a registry record.
 
-use super::actor::{CancellationToken, EngineClient, EngineDto, EngineFault, EngineRequest, ProjectDto};
+use super::actor::{CancellationToken, CancellationWake, EngineClient, EngineDto, EngineFault, EngineRequest, ProjectDto};
 use super::liveness::{report_if_dead, transport_break};
 use super::owner::OwnerFault;
 use crate::core::{FaultCode, LocalProjectId, VersionedRoot};
 use crate::model::{ObjectId, PackageSummary};
-use backend_client::{ClientError, LocalSubscriptionTransport, Session};
+use backend_client::{ClientError, LocalSubscriptionTransport, Session, TransportInterrupt};
 use backend_library::{RegistryDownloadCount, RowId, SurfaceCommand, SurfaceReply};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
+
+const DESKTOP_CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// A worker-owned local service session with typed read replay.
 pub struct LocalEngineClient {
@@ -29,6 +32,12 @@ pub struct LocalEngineClient {
 }
 
 impl LocalEngineClient {
+    fn current_cancel(&self) -> Result<CancellationToken, EngineFault> {
+        self.active_cancel.clone().ok_or_else(|| EngineFault::Failed(
+            crate::core::ErrorValue::new(FaultCode::Protocol, "the local request has no cancellation scope"),
+        ))
+    }
+
     /// Creates a client without opening a socket on the caller's thread.
     #[must_use]
     pub fn new(endpoint: impl AsRef<Path>, project: LocalProjectId) -> Self {
@@ -59,7 +68,8 @@ impl LocalEngineClient {
 
     fn session(&mut self) -> Result<&mut Session, EngineFault> {
         if self.session.is_none() {
-            self.session = Some(Session::connect(&self.endpoint).map_err(|error| self.client_fault(error))?);
+            self.session = Some(Session::connect_with_timeouts(&self.endpoint, DESKTOP_CONNECT_TIMEOUT, Duration::from_secs(30))
+                .map_err(|error| self.client_fault(error))?);
         }
         Ok(self.session.as_mut().expect("session installed"))
     }
@@ -67,7 +77,8 @@ impl LocalEngineClient {
     fn subscription(&mut self) -> Result<&mut LocalSubscriptionTransport, EngineFault> {
         if self.subscription.is_none() {
             self.subscription =
-                Some(LocalSubscriptionTransport::connect(&self.endpoint).map_err(|error| self.client_fault(error))?);
+                Some(LocalSubscriptionTransport::connect_timeout(&self.endpoint, DESKTOP_CONNECT_TIMEOUT)
+                    .map_err(|error| self.client_fault(error))?);
         }
         Ok(self.subscription.as_mut().expect("subscription installed"))
     }
@@ -82,14 +93,34 @@ impl LocalEngineClient {
     fn bootstrap_root(
         &mut self,
     ) -> Result<(backend_library::ViewRoot, backend_library::Cursor), EngineFault> {
-        match self.subscription()?.bootstrap_root() {
+        let cancel = self.current_cancel()?;
+        let result = {
+            let subscription = self.subscription()?;
+            let _wake = cancel_wake(&cancel, subscription.interrupt_handle())?;
+            if cancel.is_cancelled() { return Err(EngineFault::Cancelled); }
+            subscription.bootstrap_root()
+        };
+        if cancel.is_cancelled() {
+            self.subscription = None;
+            return Err(EngineFault::Cancelled);
+        }
+        match result {
             Ok(root) => Ok(root),
             Err(error) if transport_break(&error) => {
                 self.subscription = None;
                 if self.active_cancel.as_ref().is_some_and(CancellationToken::is_cancelled) {
                     return Err(EngineFault::Cancelled);
                 }
-                let retry = self.subscription()?.bootstrap_root();
+                let retry = {
+                    let subscription = self.subscription()?;
+                    let _wake = cancel_wake(&cancel, subscription.interrupt_handle())?;
+                    if cancel.is_cancelled() { return Err(EngineFault::Cancelled); }
+                    subscription.bootstrap_root()
+                };
+                if cancel.is_cancelled() {
+                    self.subscription = None;
+                    return Err(EngineFault::Cancelled);
+                }
                 retry.map_err(|error| self.client_fault(error))
             }
             Err(error) => Err(self.client_fault(error)),
@@ -203,9 +234,10 @@ impl LocalEngineClient {
         else {
             unreachable!("index adapter called with a non-index request")
         };
-        let mut session = Session::connect(&self.endpoint)
+        let mut session = Session::connect_with_timeouts(&self.endpoint, DESKTOP_CONNECT_TIMEOUT, Duration::from_secs(30))
             .map_err(|error| self.client_fault(error))
             .map_err(|error| index_fault(project.clone(), error))?;
+        let cancel = self.current_cancel()?;
         let coordinate =
             project
                 .service_coordinate()
@@ -213,14 +245,22 @@ impl LocalEngineClient {
                     project: project.clone(),
                     error: crate::core::ErrorValue::new(FaultCode::Protocol, error.to_string()),
                 })?;
-        session
-            .index(coordinate)
-            .map_err(|error| self.client_fault(error))
-            .map_err(|error| index_fault(project.clone(), error))?;
+        let index_result = {
+            let _wake = cancel_wake(&cancel, session.interrupt_handle())
+                .map_err(|error| index_fault(project.clone(), error))?;
+            if cancel.is_cancelled() { return Err(EngineFault::IndexCancelled { project: project.clone() }); }
+            session.index(coordinate)
+        };
+        if let Err(error) = index_result {
+            if cancel.is_cancelled() || transport_break(&error) {
+                return Err(EngineFault::IndexUnconfirmed { project: project.clone() });
+            }
+            return Err(index_fault(project.clone(), self.client_fault(error)));
+        }
         self.session = Some(session);
         let (view, revision) = self
             .bootstrap_root()
-            .map_err(|error| index_fault(project.clone(), error))?;
+            .map_err(|_error| EngineFault::IndexUnconfirmed { project: project.clone() })?;
         if revision.root() != view.root() {
             return Err(EngineFault::IndexFailed {
                 project: project.clone(),
@@ -234,11 +274,13 @@ impl LocalEngineClient {
         // post-index revision. Switch subsequent root/read projections to
         // this local workspace only at that authoritative boundary; a failed
         // or cancelled attempt leaves the last served workspace untouched.
-        self.project = project.clone();
         let key =
             VersionedRoot::from_revision(basis.producer_epoch(), revision, basis.observation());
         let project_state = Some(project_dto(project.clone(), project_label(project), &view));
-        let catalog = Some(self.catalog()?);
+        let catalog = Some(self.catalog().map_err(|_error| EngineFault::IndexUnconfirmed {
+            project: project.clone(),
+        })?);
+        self.project = project.clone();
         Ok(EngineDto::Index {
             request: *request_id,
             basis: *basis,
@@ -261,17 +303,27 @@ impl LocalEngineClient {
         mut operation: impl FnMut(&mut Session) -> Result<T, ClientError>,
     ) -> Result<T, EngineFault> {
         for attempt in 0..2 {
-            if self.active_cancel.as_ref().is_some_and(CancellationToken::is_cancelled) {
+            let cancel = self.current_cancel()?;
+            if cancel.is_cancelled() {
                 return Err(EngineFault::Cancelled);
             }
-            let result = operation(self.session()?);
+            let result = {
+                let session = self.session()?;
+                let _wake = cancel_wake(&cancel, session.interrupt_handle())?;
+                if cancel.is_cancelled() { return Err(EngineFault::Cancelled); }
+                operation(session)
+            };
+            if cancel.is_cancelled() {
+                self.session = None;
+                return Err(EngineFault::Cancelled);
+            }
             match result {
                 Ok(value) => return Ok(value),
                 Err(error) if attempt == 0 && transport_break(&error) => {
                     self.session = None;
                     let _ = self.client_fault(error);
                     if let Some(gate) = &self.gate {
-                        gate.wait_cancelled(self.active_cancel.as_ref().expect("read has a cancellation token"))
+                        gate.wait_cancelled(&cancel)
                             .map_err(owner_fault)?;
                         if gate.attached_ready_epoch() != self.attached_epoch {
                             return Err(EngineFault::Superseded);
@@ -294,16 +346,43 @@ impl LocalEngineClient {
         &mut self,
         operation: impl FnOnce(&mut Session) -> Result<T, ClientError>,
     ) -> Result<T, EngineFault> {
-        let result = operation(self.session()?);
+        let cancel = self.current_cancel()?;
+        let result = {
+            let session = self.session()?;
+            let _wake = cancel_wake(&cancel, session.interrupt_handle())?;
+            if cancel.is_cancelled() { return Err(EngineFault::Cancelled); }
+            operation(session)
+        };
+        if cancel.is_cancelled() {
+            self.session = None;
+            return match result {
+                Ok(value) => Ok(value),
+                Err(_) => Err(EngineFault::MutationUnconfirmed),
+            };
+        }
         match result {
             Ok(value) => Ok(value),
             Err(error) if transport_break(&error) => {
                 self.session = None;
-                Err(self.client_fault(error))
+                let _ = self.client_fault(error);
+                Err(EngineFault::MutationUnconfirmed)
             }
             Err(error) => Err(self.client_fault(error)),
         }
     }
+}
+
+fn cancel_wake(
+    cancel: &CancellationToken,
+    interrupt: Option<TransportInterrupt>,
+) -> Result<CancellationWake, EngineFault> {
+    let Some(interrupt) = interrupt else {
+        return Err(EngineFault::Failed(crate::core::ErrorValue::new(
+            FaultCode::Transport,
+            "the local connection cannot be interrupted safely",
+        )));
+    };
+    Ok(cancel.on_cancel(move || interrupt.interrupt()))
 }
 
 impl EngineClient for LocalEngineClient {

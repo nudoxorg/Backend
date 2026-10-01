@@ -50,7 +50,7 @@ use gpui::{
     AppContext as _, Bounds, Context, ElementId, Entity, InteractiveElement, IntoElement, ParentElement, Pixels, Point,
     Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Window, div, point, px, size,
 };
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
@@ -391,6 +391,10 @@ pub(crate) struct Reader {
     scroll: ScrollHandle,
     /// Recent viewport offsets keyed by exact route and overlay.
     scroll_memory: Vec<RouteScroll>,
+    /// Bounded source cursor/history memory keyed by exact code route and owner revision.
+    source_paging: SourcePagingMemory,
+    /// Shared empty handle for non-code bodies; they never write paging state.
+    empty_source_paging: Rc<RefCell<Option<bodies::PagingState>>>,
     /// Applied only after the destination content can paint.
     pending_scroll_restore: Option<(u64, Point<Pixels>)>,
     /// Bring the focused target into view in the next frame's prepaint (a
@@ -455,6 +459,8 @@ impl Reader {
             hover: HoverIntent::default(),
             scroll: ScrollHandle::new(),
             scroll_memory: Vec::new(),
+            source_paging: SourcePagingMemory::default(),
+            empty_source_paging: Rc::new(RefCell::new(None)),
             pending_scroll_restore: None,
             reveal: Rc::new(Cell::new(false)),
             source_focus_applied: Rc::new(Cell::new(None)),
@@ -646,6 +652,16 @@ impl Reader {
     /// frame that draws the walk, from that frame's layout).
     pub(crate) fn reveal_focused(&self) {
         self.reveal.set(true);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn scroll_offset(&self) -> Point<Pixels> {
+        self.scroll.offset()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_scroll_offset(&self, offset: Point<Pixels>) {
+        self.scroll.set_offset(offset);
     }
 
     fn arrive(&mut self, next: &Route, overlay: Option<Overlay>) {
@@ -1339,6 +1355,100 @@ struct Place {
 }
 
 const MAX_ROUTE_SCROLL_MEMORY: usize = 64;
+const MAX_SOURCE_PAGING_MEMORY: usize = 32;
+
+#[derive(Default)]
+struct SourcePagingMemory {
+    entries: Vec<SourcePagingEntry>,
+}
+
+impl SourcePagingMemory {
+    fn for_route(
+        &mut self,
+        route: &Route,
+        revision: Option<crate::core::VersionedRoot>,
+        active: bool,
+    ) -> Rc<RefCell<Option<bodies::PagingState>>> {
+        if let Some(index) = self.entries.iter().position(|entry| {
+            entry.route == *route && entry.revision == revision
+        }) {
+            // The leaving page can still paint, but cannot reorder the current page's recency.
+            if active {
+                let entry = self.entries.remove(index);
+                let state = Rc::clone(&entry.state);
+                self.entries.push(entry);
+                return state;
+            }
+            return Rc::clone(&self.entries[index].state);
+        }
+        let state = Rc::new(RefCell::new(None));
+        if active {
+            self.entries.push(SourcePagingEntry {
+                route: route.clone(),
+                revision,
+                state: Rc::clone(&state),
+            });
+            if self.entries.len() > MAX_SOURCE_PAGING_MEMORY {
+                self.entries.remove(0);
+            }
+        }
+        state
+    }
+}
+
+struct SourcePagingEntry {
+    route: Route,
+    revision: Option<crate::core::VersionedRoot>,
+    state: Rc<RefCell<Option<bodies::PagingState>>>,
+}
+
+#[cfg(test)]
+mod source_paging_memory_tests {
+    use super::{SourcePagingMemory, MAX_SOURCE_PAGING_MEMORY};
+    use crate::core::VersionedRoot;
+    use crate::navigation::{Route, View};
+    use crate::shell::tests::view_route;
+    use std::rc::Rc;
+
+    #[test]
+    fn exact_source_route_and_owner_revision_retain_only_their_own_page_state() {
+        let mut memory = SourcePagingMemory::default();
+        let route = view_route("RelationLabel", View::Code);
+        let first_root = VersionedRoot::unserved();
+        let changed_root = VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("paging".to_owned(), "replacement".to_owned())]),
+            5,
+        );
+        let saved = memory.for_route(&route, Some(first_root), true);
+        let revisit = memory.for_route(&route, Some(first_root), true);
+        assert!(Rc::ptr_eq(&saved, &revisit));
+        assert!(!Rc::ptr_eq(&saved, &memory.for_route(&route, Some(changed_root), true)));
+
+        let Route::Symbol(mut different_line) = route.clone() else { unreachable!() };
+        different_line.line = Some(42);
+        assert!(!Rc::ptr_eq(
+            &saved,
+            &memory.for_route(&Route::Symbol(different_line), Some(first_root), true),
+        ));
+    }
+
+    #[test]
+    fn leaving_pages_do_not_admit_entries_and_long_sessions_evict_old_pages() {
+        let mut memory = SourcePagingMemory::default();
+        let route = view_route("RelationLabel", View::Code);
+        let transient = memory.for_route(&route, None, false);
+        assert_eq!(memory.entries.len(), 0);
+        let saved = memory.for_route(&route, None, true);
+        assert!(!Rc::ptr_eq(&transient, &saved));
+        for line in 1..=MAX_SOURCE_PAGING_MEMORY as u32 {
+            let Route::Symbol(mut different_line) = route.clone() else { unreachable!() };
+            different_line.line = Some(line);
+            memory.for_route(&Route::Symbol(different_line), None, true);
+        }
+        assert_eq!(memory.entries.len(), MAX_SOURCE_PAGING_MEMORY);
+        assert!(!Rc::ptr_eq(&saved, &memory.for_route(&route, None, true)));
+    }
+}
 
 #[derive(Clone)]
 struct RouteScroll {
@@ -1440,6 +1550,11 @@ impl Reader {
         let mut hover = if current { std::mem::take(&mut self.hover) } else { HoverIntent::default() };
         let source_generation = route_symbol(&place.route)
             .and_then(|symbol| pages.source(&symbol).value_root());
+        let source_paging = if matches!(&place.route, Route::Symbol(symbol) if symbol.view == View::Code) {
+            self.source_paging.for_route(&place.route, source_generation, current)
+        } else {
+            Rc::clone(&self.empty_source_paging)
+        };
         let leaves = {
             let symbol_disclosure = route_symbol(&place.route).map(|symbol| self.symbol_disclosure(&symbol)).unwrap_or_default();
             let mut ctx = Ctx {
@@ -1459,6 +1574,7 @@ impl Reader {
                 source_focus_applied: Rc::clone(&self.source_focus_applied),
                 place_key: place.key,
                 source_generation,
+                source_paging,
                 lens: if current { self.lens } else { place.lens },
                 said: &mut said,
                 hero: &mut hero,

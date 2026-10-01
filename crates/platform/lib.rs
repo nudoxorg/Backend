@@ -16,6 +16,7 @@
 #![cfg_attr(test, allow(clippy::expect_used))]
 
 pub mod directory;
+pub mod child_output;
 pub mod durability;
 pub mod durable;
 #[cfg_attr(target_os = "macos", allow(unsafe_code))]

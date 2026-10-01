@@ -58,6 +58,12 @@ impl<S> LocalControlClient<S> {
     pub fn into_inner(self) -> S {
         self.stream
     }
+
+    /// Borrows the exact stream currently carrying control frames.
+    #[must_use]
+    pub const fn stream(&self) -> &S {
+        &self.stream
+    }
 }
 
 impl<S: Read + Write> LocalControlClient<S> {

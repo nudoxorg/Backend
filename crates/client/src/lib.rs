@@ -46,7 +46,91 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{Read, Write};
 use std::path::Path;
+#[cfg(any(unix, windows))]
+use std::sync::{Arc, Mutex, PoisonError, atomic::{AtomicBool, Ordering}};
 use std::time::Duration;
+
+/// A bounded cancellation handle for one local transport connection.
+///
+/// The handle contains only a cloned socket. It never sends or replays a
+/// command; an owner may already have accepted a mutation when a caller
+/// interrupts its reply wait.
+#[cfg(any(unix, windows))]
+#[derive(Clone)]
+pub struct TransportInterrupt(Arc<InterruptState>);
+
+#[cfg(any(unix, windows))]
+struct InterruptState {
+    stream: Mutex<backend_replication::LocalStream>,
+    interrupted: AtomicBool,
+}
+
+#[cfg(all(test, unix))]
+mod transport_interrupt_tests {
+    use super::TransportInterrupt;
+    use std::io::Read as _;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn interrupt_releases_a_blocked_local_read() {
+        let (mut reader, _owner) = std::os::unix::net::UnixStream::pair().expect("socket pair");
+        reader.set_read_timeout(Some(Duration::from_secs(2))).expect("read deadline");
+        let interrupt = TransportInterrupt::new(&reader).expect("clone exact socket");
+        let waiting = std::thread::spawn(move || {
+            let mut byte = [0_u8; 1];
+            reader.read(&mut byte)
+        });
+        let started = Instant::now();
+        interrupt.interrupt();
+        let result = waiting.join().expect("join released read");
+        assert!(matches!(result, Ok(0) | Err(_)));
+        assert!(started.elapsed() < Duration::from_secs(1), "socket cancellation waited for its read deadline");
+    }
+
+    #[test]
+    fn interrupted_handle_closes_a_replacement_socket_too() {
+        let (old, _old_owner) = std::os::unix::net::UnixStream::pair().expect("old socket pair");
+        let (mut replacement, _new_owner) = std::os::unix::net::UnixStream::pair().expect("new socket pair");
+        replacement.set_read_timeout(Some(Duration::from_secs(2))).expect("read deadline");
+        let interrupt = TransportInterrupt::new(&old).expect("clone old socket");
+        interrupt.interrupt();
+        interrupt.replace(&replacement).expect("replace cancelled socket");
+        let mut byte = [0_u8; 1];
+        let started = Instant::now();
+        let result = replacement.read(&mut byte);
+        assert!(matches!(result, Ok(0) | Err(_)));
+        assert!(started.elapsed() < Duration::from_secs(1), "replacement survived cancellation");
+    }
+}
+
+#[cfg(any(unix, windows))]
+impl TransportInterrupt {
+    fn new(stream: &backend_replication::LocalStream) -> Result<Self, ClientError> {
+        stream.try_clone()
+            .map(|stream| Self(Arc::new(InterruptState {
+                stream: Mutex::new(stream),
+                interrupted: AtomicBool::new(false),
+            })))
+            .map_err(|error| ClientError::Io(error.to_string()))
+    }
+
+    fn replace(&self, stream: &backend_replication::LocalStream) -> Result<(), ClientError> {
+        let replacement = stream.try_clone().map_err(|error| ClientError::Io(error.to_string()))?;
+        let mut current = self.0.stream.lock().unwrap_or_else(PoisonError::into_inner);
+        *current = replacement;
+        if self.0.interrupted.load(Ordering::Acquire) {
+            let _ = current.shutdown(std::net::Shutdown::Both);
+        }
+        Ok(())
+    }
+
+    /// Interrupts a blocking read or write on the current connection.
+    pub fn interrupt(&self) {
+        self.0.interrupted.store(true, Ordering::Release);
+        let stream = self.0.stream.lock().unwrap_or_else(PoisonError::into_inner);
+        let _ = stream.shutdown(std::net::Shutdown::Both);
+    }
+}
 
 /// Maximum admitted local command/reply body.
 pub const MAX_FRAME: usize = backend_replication::LOCAL_CONTROL_MAX_FRAME;
@@ -164,6 +248,13 @@ pub trait CommandTransport {
     /// Returns a transport, protocol, correlation, or freshness error.
     fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError>;
 
+    /// Returns a handle that can interrupt this transport's exact socket.
+    /// Connectionless transports return `None`.
+    #[cfg(any(unix, windows))]
+    fn interrupt_handle(&self) -> Option<TransportInterrupt> {
+        None
+    }
+
     /// Replaces the underlying connection while retaining this transport's endpoint and grant.
     ///
     /// Connectionless transports may keep their existing state. Implementations that own a
@@ -226,6 +317,7 @@ impl<E: LocalEngine + ?Sized> CertifiedCommandTransport for InProcessTransport<'
 #[cfg(any(unix, windows))]
 pub struct UnixCommandTransport {
     stream: backend_replication::LocalStream,
+    interrupt: Option<TransportInterrupt>,
     peer: Option<backend_replication::AuthenticatedLocalPeer>,
     endpoint: Option<std::path::PathBuf>,
     connect_timeout: Duration,
@@ -269,8 +361,10 @@ impl UnixCommandTransport {
         configure_timeout(&stream, io_timeout)?;
         let peer = backend_replication::AuthenticatedLocalPeer::authenticate(&stream, path)
             .map_err(map_peer_authentication_error)?;
+        let interrupt = Some(TransportInterrupt::new(&stream)?);
         Ok(Self {
             stream,
+            interrupt,
             peer: Some(peer),
             endpoint: Some(path.to_path_buf()),
             connect_timeout,
@@ -282,8 +376,10 @@ impl UnixCommandTransport {
     #[must_use]
     pub fn from_stream(stream: backend_replication::LocalStream) -> Self {
         let _ = configure(&stream);
+        let interrupt = TransportInterrupt::new(&stream).ok();
         Self {
             stream,
+            interrupt,
             peer: None,
             endpoint: None,
             connect_timeout: LOCAL_CONNECT_TIMEOUT,
@@ -325,6 +421,10 @@ impl UnixCommandTransport {
 
 #[cfg(any(unix, windows))]
 impl CommandTransport for UnixCommandTransport {
+    fn interrupt_handle(&self) -> Option<TransportInterrupt> {
+        self.interrupt.clone()
+    }
+
     fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
         configure_request_with_timeouts(
             &self.stream,
@@ -347,7 +447,13 @@ impl CommandTransport for UnixCommandTransport {
         })?;
         let connect_timeout = self.connect_timeout;
         let io_timeout = self.io_timeout;
-        *self = Self::connect_with_timeouts(endpoint, connect_timeout, io_timeout)?;
+        let replacement = Self::connect_with_timeouts(endpoint, connect_timeout, io_timeout)?;
+        if let Some(interrupt) = &self.interrupt {
+            interrupt.replace(&replacement.stream)?;
+        }
+        self.stream = replacement.stream;
+        self.peer = replacement.peer;
+        self.endpoint = replacement.endpoint;
         Ok(())
     }
 }
@@ -439,9 +545,22 @@ impl Session {
     /// # Errors
     /// Returns an error when the local endpoint is unavailable or cannot authenticate.
     pub fn connect(path: impl AsRef<Path>) -> Result<Self, ClientError> {
+        Self::connect_with_timeouts(path, LOCAL_CONNECT_TIMEOUT, CLIENT_REQUEST_TIMEOUT)
+    }
+
+    /// Connects one revision-aware session with independent dial and I/O
+    /// limits. A cancelled caller can interrupt subsequent socket I/O.
+    ///
+    /// # Errors
+    /// Returns an error when the endpoint cannot be admitted within its bound.
+    pub fn connect_with_timeouts(
+        path: impl AsRef<Path>,
+        connect_timeout: Duration,
+        io_timeout: Duration,
+    ) -> Result<Self, ClientError> {
         let endpoint = path.as_ref().to_path_buf();
         Ok(Self {
-            transport: Box::new(UnixCommandTransport::connect(&endpoint)?),
+            transport: Box::new(UnixCommandTransport::connect_with_timeouts(&endpoint, connect_timeout, io_timeout)?),
             endpoint,
             next_request_id: 1,
             continuations: BTreeMap::new(),
@@ -465,6 +584,13 @@ impl Session {
     #[must_use]
     pub fn endpoint(&self) -> &Path {
         &self.endpoint
+    }
+
+    /// Returns a connection interrupt for a caller's request lifetime.
+    /// In-process or remote transports may not expose one.
+    #[must_use]
+    pub fn interrupt_handle(&self) -> Option<TransportInterrupt> {
+        self.transport.interrupt_handle()
     }
 
     /// Encodes an owner-issued query continuation for this authenticated MCP
