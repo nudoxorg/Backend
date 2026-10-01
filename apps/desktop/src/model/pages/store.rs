@@ -18,7 +18,7 @@ use super::package::PackageDossier;
 use super::search::SearchPage;
 use super::source::SourceView;
 use super::symbol::SymbolPage;
-use crate::core::{Activity, ErrorValue, Resource, UnavailableReason, VersionedRoot};
+use crate::core::{Activity, ErrorValue, Resource, ResourceTerminal, UnavailableReason, VersionedRoot};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -389,6 +389,15 @@ impl<K: Ord + Clone, T> Slots<K, T> {
             }
         }
         let previous = std::mem::replace(&mut slot.resource, Resource::not_yet());
+        // An interim page is useful while work continues, but a failed
+        // primary read cannot present it as a last-good complete page.
+        let previous = if matches!(previous.terminal(), ResourceTerminal::Partial)
+            && matches!(&result, Err(ReadFailure::Fault(_) | ReadFailure::Unavailable(_, _)))
+        {
+            Resource::not_yet()
+        } else {
+            previous
+        };
         slot.resource = match (result, root) {
             (Ok(value), Some(root)) => {
                 let value = merge(previous.loaded_value(), value);
@@ -422,11 +431,11 @@ impl<K: Ord + Clone, T> Slots<K, T> {
         let Some(slot) = self.map.get_mut(key) else { return Landing::Superseded };
         let Fetch::Running { generation: running, manner } = slot.fetch else { return Landing::Superseded };
         if running != generation { return Landing::Superseded; }
-        if manner == Manner::Quiet || slot.resource.loaded_value() == Some(&value) {
+        if manner == Manner::Quiet || slot.resource.is_loaded() || slot.resource.loaded_value() == Some(&value) {
             return Landing::Unchanged;
         }
         let Some(root) = slot.asked_at else { return Landing::Superseded };
-        slot.resource = Resource::loaded_at(value, root);
+        slot.resource = Resource::partial_at(value, root);
         slot.revision = slot.revision.next();
         Landing::Applied
     }

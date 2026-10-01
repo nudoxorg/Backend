@@ -43,14 +43,31 @@ fn a_partial_page_is_visible_while_its_generation_reads_and_stale_stages_are_dro
     let first = store.begin(&key, root()).expect("first read");
     assert_eq!(store.stage(&key, first, PageValue::Symbol(page.clone())), Landing::Applied);
     assert_eq!(store.symbol(&symbol("RelationLabel")).loaded_value(), Some(&page));
+    assert_eq!(store.symbol(&symbol("RelationLabel")).terminal(), &ResourceTerminal::Partial);
+    assert!(!store.symbol(&symbol("RelationLabel")).is_loaded(), "a staged value is not a complete snapshot page");
     assert_eq!(store.inflight(&key), Some(first), "the worker still owns the read");
     assert_eq!(store.stage(&key, first, PageValue::Symbol(page.clone())), Landing::Unchanged);
     assert_eq!(store.cancel(&key), Some(first));
+    assert_eq!(store.symbol(&symbol("RelationLabel")).terminal(), &ResourceTerminal::Partial, "cancellation must retain partial provenance");
+    assert!(!store.symbol(&symbol("RelationLabel")).is_loaded());
     let second = store.begin(&key, root()).expect("return to page");
     assert_ne!(first, second);
     assert_eq!(store.stage(&key, first, PageValue::Symbol(page.clone())), Landing::Superseded);
     assert_eq!(store.land(&key, second, Ok(PageValue::Symbol(page))), Landing::Applied);
     assert!(store.symbol(&symbol("RelationLabel")).is_loaded());
+}
+
+#[test]
+fn a_failed_read_drops_an_intermediate_page_and_says_why_it_stopped() {
+    let mut store = PageStore::default();
+    let key = PageKey::Symbol(symbol("RelationLabel"));
+    let PageValue::Symbol(page) = read(&ReadRequest::for_key(&key)) else { panic!("symbol page") };
+    let generation = store.begin(&key, root()).expect("read");
+    assert_eq!(store.stage(&key, generation, PageValue::Symbol(page)), Landing::Applied);
+    assert_eq!(store.land(&key, generation, Err(ReadFailure::Fault(ErrorValue::new(FaultCode::Transport, "owner disconnected")))), Landing::Applied);
+    let resource = store.symbol(&symbol("RelationLabel"));
+    assert!(resource.loaded_value().is_none(), "an incomplete value is not a last good page");
+    assert!(matches!(resource.terminal(), ResourceTerminal::Fault(error) if error.message() == "owner disconnected"));
 }
 
 #[test]

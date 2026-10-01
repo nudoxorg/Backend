@@ -38,6 +38,7 @@ fn status<T>(resource: &Resource<T>) -> String {
     };
     let terminal = match resource.terminal() {
         ResourceTerminal::Complete => "complete".to_owned(),
+        ResourceTerminal::Partial => "partial".to_owned(),
         ResourceTerminal::Unavailable(reason) => format!("unavailable({reason:?})"),
         ResourceTerminal::Fault(error) => format!("fault({:?}: {})", error.code(), error.message()),
     };

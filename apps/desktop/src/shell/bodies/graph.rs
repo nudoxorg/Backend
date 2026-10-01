@@ -973,6 +973,7 @@ pub(crate) fn open_value<T>(
         ResourceTerminal::Complete => {
             Err("The index did not return this graph symbol at the current root.".into())
         }
+        ResourceTerminal::Partial => Ok(None),
     }
 }
 

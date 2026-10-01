@@ -142,3 +142,33 @@ impl SnapshotKeeper {
         }));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::pages::{Known, OrbitModel, PageValue};
+
+    #[test]
+    fn a_cancelled_stage_is_never_saved_as_a_complete_launch_page() {
+        let root = VersionedRoot::synthetic(backend_library::view_state_root(&[("keeper".into(), "stage".into())]), 1);
+        let snapshot = AppSnapshot::empty(root);
+        let keeper = SnapshotKeeper { file: Some(SnapshotFile::in_data(std::path::Path::new("/tmp"))), ..SnapshotKeeper::default() };
+        let model = OrbitModel {
+            indexed: Known::Known(Arc::from([])),
+            projects: Known::Known(Arc::from([])),
+            explore: Known::Known(Arc::from([])),
+            tree: Known::Known(Arc::from([])),
+        };
+        let mut pages = PageStore::default();
+        let key = PageKey::Orbit;
+        let first = pages.begin(&key, root).expect("first read");
+        assert_eq!(pages.stage(&key, first, PageValue::Orbit(model.clone())), crate::model::pages::Landing::Applied);
+        assert!(keeper.to_save(&pages, &snapshot).is_none(), "an in-flight stage is not complete");
+        assert_eq!(pages.cancel(&key), Some(first));
+        assert!(keeper.to_save(&pages, &snapshot).is_none(), "cancellation must not erase partial provenance");
+        let second = pages.begin(&key, root).expect("second read");
+        assert_eq!(pages.land(&key, second, Ok(PageValue::Orbit(model))), crate::model::pages::Landing::Applied);
+        let saved = keeper.to_save(&pages, &snapshot).expect("the completed page is savable");
+        assert!(matches!(saved.pages.as_slice(), [SeedEntry::Orbit(_)]));
+    }
+}
