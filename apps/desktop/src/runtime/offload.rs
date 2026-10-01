@@ -419,8 +419,7 @@ where
 
 /// Polls an async work future while translating a panic from any poll into
 /// the same typed failure used for synchronous Memo work.
-async fn catch_future<F: Future>(future: F) -> Result<F::Output, Fault> {
-    let mut future = Box::pin(future);
+async fn catch_future<F: Future + ?Sized>(mut future: Pin<Box<F>>) -> Result<F::Output, Fault> {
     std::future::poll_fn(move |cx| {
         match std::panic::catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(cx))) {
             Ok(Poll::Pending) => Poll::Pending,

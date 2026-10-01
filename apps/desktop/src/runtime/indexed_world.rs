@@ -272,10 +272,11 @@ impl Default for TestProjectionGate {
 #[cfg(test)]
 impl TestProjectionGate {
     pub(crate) async fn wait_for_read(&self) -> Result<(), Arc<str>> {
-        let mut state = self.state.lock().expect("projection gate");
-        state.0 = true;
-        let already_released = state.1;
-        drop(state);
+        let already_released = {
+            let mut state = self.state.lock().expect("projection gate");
+            state.0 = true;
+            state.1
+        };
         if !already_released {
             self.release_receiver
                 .recv()
