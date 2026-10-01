@@ -103,6 +103,8 @@ pub enum CargoFailure {
     Disabled,
     /// Bounded child capture is not yet available on this platform.
     UnsupportedCapture,
+    /// The requesting worker withdrew while Cargo was running.
+    Cancelled,
     /// The Cargo program could not be started.
     Spawn,
     /// Cargo did not finish within the loader's time bound.
@@ -293,23 +295,38 @@ impl LocalPackageLoader {
     /// canonical package record use [`Self::readme`] instead.
     #[must_use]
     pub fn load(&self, project: &LocalProjectId) -> LocalPackage {
+        self.load_with_cancel(project, &|| false).unwrap_or_else(|| {
+            // The closure above never cancels; keep the ordinary loader's
+            // return type total if the cancellation implementation changes.
+            manifest::project(project.clone(), &project.path(), CargoFailure::Cancelled)
+        })
+    }
+
+    /// Loads on a worker and stops its subprocess when that worker closes.
+    /// `None` is a withdrawn read and must never be published as package data.
+    pub(crate) fn load_with_cancel(
+        &self,
+        project: &LocalProjectId,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Option<LocalPackage> {
+        if cancelled() { return None; }
         let root = project.path();
         let manifest = root.join("Cargo.toml");
         // Without a root manifest Cargo would search parent directories and
         // could describe an unrelated enclosing workspace.
         if !manifest.is_file() {
-            return manifest::project(project.clone(), &root, CargoFailure::Status);
+            return (!cancelled()).then(|| manifest::project(project.clone(), &root, CargoFailure::Status));
         }
         let failure = match self.cargo.as_deref() {
             None => CargoFailure::Disabled,
             Some(program) => {
-                match cargo::metadata(program, &manifest, self.timeout, self.max_output) {
-                    Ok(metadata) => return cargo::project(project.clone(), &root, metadata),
+                match cargo::metadata(program, &manifest, self.timeout, self.max_output, cancelled) {
+                    Ok(metadata) => return (!cancelled()).then(|| cargo::project(project.clone(), &root, metadata)),
                     Err(failure) => failure,
                 }
             }
         };
-        manifest::project(project.clone(), &root, failure)
+        (!cancelled()).then(|| manifest::project(project.clone(), &root, failure))
     }
 }
 

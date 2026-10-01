@@ -82,6 +82,7 @@ pub(super) fn metadata(
     manifest: &Path,
     timeout: Duration,
     max_output: usize,
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<CargoMetadata, CargoFailure> {
     let mut command = Command::new(program);
     if let Some(directory) = manifest.parent() {
@@ -101,16 +102,26 @@ pub(super) fn metadata(
         .env("CARGO_TERM_COLOR", "never")
         // A `rust-toolchain.toml` must not make rustup download a toolchain.
         .env("RUSTUP_AUTO_INSTALL", "0");
-    let bytes = bounded_output(command, timeout, max_output)?;
+    let bytes = bounded_output_cancelled(command, timeout, max_output, cancelled)?;
     serde_json::from_slice(&bytes).map_err(|_| CargoFailure::Decode)
 }
 
 /// Runs `command` to completion, returning stdout within both bounds.
 pub(super) fn bounded_output(
-    mut command: Command,
+    command: Command,
     timeout: Duration,
     max_output: usize,
 ) -> Result<Vec<u8>, CargoFailure> {
+    bounded_output_cancelled(command, timeout, max_output, &|| false)
+}
+
+pub(super) fn bounded_output_cancelled(
+    mut command: Command,
+    timeout: Duration,
+    max_output: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<u8>, CargoFailure> {
+    if cancelled() { return Err(CargoFailure::Cancelled); }
     #[cfg(windows)]
     return Err(CargoFailure::UnsupportedCapture);
     #[cfg(target_os = "macos")]
@@ -140,6 +151,10 @@ pub(super) fn bounded_output(
     let mut scratch = [0_u8; 8 * 1024];
     let mut eof = false;
     loop {
+        if cancelled() {
+            child_output::stop(&mut child);
+            return Err(CargoFailure::Cancelled);
+        }
         let mut progressed = false;
         if !eof {
             // One byte beyond the admitted output budget proves overflow.

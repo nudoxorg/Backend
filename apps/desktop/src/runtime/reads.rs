@@ -645,7 +645,7 @@ impl SessionEngine {
                         .map_err(|message| ClientError::Io(format!("the index could not start: {message}")))?;
                     ready_epoch = gate.attached_ready_epoch();
                 }
-                match Session::connect(&self.endpoint) {
+                match Session::connect_with_timeouts(&self.endpoint, Duration::from_secs(1), Duration::from_secs(30)) {
                     Ok(session) => {
                         self.session = Some(session);
                         self.session_epoch = ready_epoch;
@@ -662,7 +662,24 @@ impl SessionEngine {
             let Some(session) = self.session.as_mut() else {
                 continue;
             };
-            match operation(session) {
+            let cancel = self.cancel.clone();
+            let interrupt = session.interrupt_handle().ok_or_else(|| {
+                ClientError::Io("the local read connection cannot be interrupted safely".to_owned())
+            })?;
+            let _wake = cancel.as_ref().map(|cancel| cancel.on_cancel(move || interrupt.interrupt()));
+            if cancel.as_ref().is_some_and(CancellationToken::is_cancelled) {
+                self.session = None;
+                self.session_epoch = None;
+                return Err(ClientError::Io("read was cancelled before sending".to_owned()));
+            }
+            let result = operation(session);
+            drop(_wake);
+            if cancel.as_ref().is_some_and(CancellationToken::is_cancelled) {
+                self.session = None;
+                self.session_epoch = None;
+                return Err(ClientError::Io("read was cancelled during transport".to_owned()));
+            }
+            match result {
                 Err(error) if attempt == 0 && transport_break(&error) => {
                     // Reads are idempotent; one reconnect-and-retry is safe.
                     self.session = None;
@@ -1472,6 +1489,48 @@ mod tests {
         std::thread::spawn(move || sent.send(drop(pool)).expect("read pool closed"));
         received.recv_timeout(Duration::from_secs(1)).expect("pool shutdown did not wait for the owner's 60-second patience");
         assert_eq!(gate.state(), super::super::owner::OwnerState::Starting);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn closing_the_read_pool_interrupts_an_active_authenticated_socket_read() {
+        use std::io::Read as _;
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::os::unix::net::UnixListener;
+
+        let path = std::path::PathBuf::from(format!(
+            "/tmp/nudox-page-interrupt-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_nanos(),
+        ));
+        let listener = UnixListener::bind(&path).expect("private socket");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("private endpoint");
+        let (entered, received) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accepted client");
+            let mut frame_length = [0_u8; 4];
+            socket.read_exact(&mut frame_length).expect("client sent request");
+            entered.send(()).expect("request reached server");
+            let _ = released.recv_timeout(Duration::from_secs(3));
+        });
+        let worker_path = path.clone();
+        let pool = ReadPool::start(1, move |_| SessionReader::connect(&worker_path)).expect("read pool");
+        assert!(pool.submit(ReadJob {
+            key: PageKey::Health,
+            request: ReadRequest::Health,
+            generation: Generation::new(1),
+            priority: Priority::Normal,
+            cancel: CancellationToken::new(),
+            affinity: None,
+        }));
+        received.recv_timeout(Duration::from_secs(2)).expect("page read entered socket");
+        let (closed, finished) = mpsc::channel();
+        std::thread::spawn(move || closed.send(drop(pool)).expect("pool closed"));
+        finished.recv_timeout(Duration::from_secs(1)).expect("active socket read held pool shutdown");
+        release.send(()).expect("release server");
+        server.join().expect("server stopped");
+        std::fs::remove_file(path).expect("remove endpoint");
     }
 
     #[test]
