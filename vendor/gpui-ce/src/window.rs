@@ -1067,11 +1067,11 @@ impl std::fmt::Debug for ElementOwnerPath {
 #[cfg(test)]
 mod element_owner_path_tests {
     use super::{
-        ElementOwnerPath, ElementOwnerPathArena, ElementOwnerPathWork, ElementOwnerTracking,
+        ElementOwnerPath, ElementOwnerPathArena, ElementOwnerPathOperations, ElementOwnerTracking,
         FrameCallbackOwner, HitboxOwner, MAX_ELEMENT_OWNER_PATH_DEPTH,
         frame_callback_owner_from_tracking, pointer_capture_owner, unique_hitbox_for_owner,
     };
-    use std::{cell::RefCell, rc::Rc};
+    use std::rc::Rc;
 
     fn child(
         arena: &ElementOwnerPathArena,
