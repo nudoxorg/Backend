@@ -5014,6 +5014,7 @@ dependencies = [
  "gpui_ce_components_macros",
  "gpui_ce_macros",
  "html5ever",
+ "indoc",
  "instant",
  "itertools 0.13.0",
  "log",
