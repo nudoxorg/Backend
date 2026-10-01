@@ -324,20 +324,30 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
         }
         Intent::LibraryRebuilding { kept_at } => {
             // The index every ready project stood on is gone from the owner's
-            // side (set aside), so "ready" on the shelf is no longer true: each
-            // project that still has a folder is indexed again, from nothing.
+            // side (set aside). A completed ready row can be indexed under the
+            // new owner, but an in-flight attempt still needs exact operation
+            // reconciliation; replacing it would risk a second mutation.
             let mut workspace = next.workspace().clone();
             workspace.projects = workspace
                 .projects
                 .iter()
                 .cloned()
                 .map(|mut project| {
-                    if !matches!(project.phase, ProjectPhase::Missing | ProjectPhase::Unconfirmed) {
-                        project.phase = ProjectPhase::Indexing;
-                        project.progress = None;
-                        project.files_indexed = None;
-                        project.request = None;
-                        project.error = None;
+                    match project.phase {
+                        ProjectPhase::Ready => {
+                            project.phase = ProjectPhase::Indexing;
+                            project.progress = None;
+                            project.files_indexed = None;
+                            project.request = None;
+                            project.error = None;
+                        }
+                        ProjectPhase::Indexing | ProjectPhase::Cancelling => {
+                            project.phase = ProjectPhase::Unconfirmed;
+                            project.progress = None;
+                            project.request = None;
+                            project.error = Some(Arc::from("Check this project's exact owner operation before another index starts."));
+                        }
+                        ProjectPhase::Cancelled | ProjectPhase::Failed | ProjectPhase::Unconfirmed | ProjectPhase::Missing => {}
                     }
                     project
                 })
@@ -739,6 +749,17 @@ mod tests {
         )
         .expect("workspace");
         assert!(dismissed.snapshot.workspace().notes.is_empty(), "and let go when dismissed");
+    }
+
+    #[test]
+    fn library_rebuild_keeps_in_flight_owner_attempts_unconfirmed() {
+        let (snapshot, first, second) = two_ready_projects();
+        let indexing = set_project_phase(&snapshot, &first, ProjectPhase::Indexing, None, None);
+        let cancelling = set_project_phase(&indexing, &second, ProjectPhase::Cancelling, None, None);
+        let rebuilt = reduce(&cancelling, &Intent::LibraryRebuilding { kept_at: Arc::from("/data/old-owner") }).expect("workspace");
+        assert!(rebuilt.snapshot.workspace().projects.iter().all(|project| {
+            project.phase == ProjectPhase::Unconfirmed && project.request.is_none()
+        }));
     }
 
     #[test]
