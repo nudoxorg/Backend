@@ -402,16 +402,29 @@ fn rig_with_engine_gate(
     engine: impl EngineClient,
     gate: Option<OwnerGate>,
 ) -> Rig {
+    rig_with_engine_gate_at_root(cx, route, width, height, pool, engine, gate, VersionedRoot::synthetic(
+        backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]),
+        4,
+    ))
+}
+
+fn rig_with_engine_gate_at_root(
+    cx: &mut TestAppContext,
+    route: Option<Route>,
+    width: f32,
+    height: f32,
+    pool: ReadPool,
+    engine: impl EngineClient,
+    gate: Option<OwnerGate>,
+    initial_root: VersionedRoot,
+) -> Rig {
     let waiting_for_owner = gate.as_ref().is_some_and(|gate| !matches!(gate.state(), OwnerState::Ready { .. }));
     cx.executor().allow_parking();
     cx.update(|cx| {
         gpui_component::init(cx);
         let _ = facet::fonts::install(cx);
     });
-    let mut snapshot = AppSnapshot::empty(VersionedRoot::synthetic(
-        backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]),
-        4,
-    ));
+    let mut snapshot = AppSnapshot::empty(initial_root);
     let folder = std::env::temp_dir().join(format!("nudox-shell-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&folder);
     let mut workspace = snapshot.workspace().clone();
@@ -968,10 +981,10 @@ fn retained_native_callback_cannot_cross_a_same_root_owner_replacement(cx: &mut 
 }
 
 #[gpui::test]
-fn starting_library_keeps_add_folder_mounted_and_actionable(cx: &mut TestAppContext) {
+fn unserved_starting_library_keeps_add_folder_mounted_and_actionable(cx: &mut TestAppContext) {
     let gate = OwnerGate::starting();
-    let mut rig = rig_with_engine_gate(
-        cx, None, 1440.0, 900.0, ReadPool::start(2, |_| Fixture).expect("pool"), RootOnly, Some(gate),
+    let mut rig = rig_with_engine_gate_at_root(
+        cx, None, 1440.0, 900.0, ReadPool::start(2, |_| Fixture).expect("pool"), RootOnly, Some(gate), VersionedRoot::unserved(),
     );
     let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
     assert!(targets.native_keys().iter().any(|id| id == "add-folder"));
@@ -997,10 +1010,29 @@ fn local_library_control_cannot_act_after_its_visit_is_replaced(cx: &mut TestApp
 }
 
 #[gpui::test]
-fn failed_library_keeps_add_and_native_retry_available(cx: &mut TestAppContext) {
+fn unserved_library_control_cannot_act_after_an_overlay_takes_input(cx: &mut TestAppContext) {
+    let mut rig = rig_with_engine_gate_at_root(
+        cx, None, 1440.0, 900.0, ReadPool::start(2, |_| Fixture).expect("pool"),
+        RootOnly, Some(OwnerGate::starting()), VersionedRoot::unserved(),
+    );
+    let add = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
+        .placed().into_iter().find(|(target, _)| target.id == "add-folder")
+        .expect("Library Add is mounted on first launch").0.act;
+    rig.graph.root.update(rig.cx, |root, cx| root.queue(
+        Intent::OpenSettings(crate::navigation::SettingsPage::Appearance), cx,
+    ));
+    rig.draw();
+    assert!(matches!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+        Some(crate::navigation::Overlay::Settings(_))));
+    rig.cx.update(|window, cx| add(window, cx));
+    assert!(!rig.cx.did_prompt_for_paths(), "an old local control cannot act through an overlay");
+}
+
+#[gpui::test]
+fn unserved_failed_library_keeps_add_and_native_retry_available(cx: &mut TestAppContext) {
     let gate = OwnerGate::starting();
-    let mut rig = rig_with_engine_gate(
-        cx, None, 1440.0, 900.0, ReadPool::start(2, |_| Fixture).expect("pool"), RootOnly, Some(gate.clone()),
+    let mut rig = rig_with_engine_gate_at_root(
+        cx, None, 1440.0, 900.0, ReadPool::start(2, |_| Fixture).expect("pool"), RootOnly, Some(gate.clone()), VersionedRoot::unserved(),
     );
     gate.publish(OwnerState::Failed(OwnerFault::Host(Arc::from("owner could not start"))));
     rig.draw();
