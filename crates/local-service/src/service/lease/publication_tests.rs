@@ -627,7 +627,7 @@ fn an_owner_that_cannot_grant_the_requested_term_refuses_it_and_retains_nothing(
     let clock = ManualClock::new();
     let wire = Wire::start(
         &clock,
-        SubscriptionLeaseLimits::new(8, Duration::from_secs(5), 64, Duration::from_secs(60))
+        SubscriptionLeaseLimits::new(8, Duration::from_secs(5), 64, Duration::from_mins(1))
             .expect("limits"),
         |source| {
             source.replies.push_back(Ok(SubscriptionReply::Accepted {
@@ -655,7 +655,7 @@ fn an_owner_whose_page_budget_is_smaller_than_the_reset_needs_stops_it_and_the_o
     let target = certified_root(192, 1);
     let wire = Wire::start(
         &clock,
-        SubscriptionLeaseLimits::new(8, Duration::from_secs(60), 2, Duration::from_secs(60))
+        SubscriptionLeaseLimits::new(8, Duration::from_mins(1), 2, Duration::from_mins(1))
             .expect("limits"),
         |source| source.replies.push_back(Ok(reset_to(&target, 1))),
     );
@@ -709,4 +709,42 @@ fn renewing_at_the_cadence_the_owner_granted_keeps_a_quiet_lease_alive_and_skipp
         backend_client::ClientError::Protocol(message) if message.contains("unknown subscription lease")
     ));
     assert_eq!(wire.ledger().released.count(ReleaseReason::Expired), 1);
+}
+
+#[test]
+fn a_resume_abandoned_mid_reset_leaves_the_admitted_root_untouched_and_the_owner_reclaims() {
+    let clock = ManualClock::new();
+    let base = certified_root(0, 0);
+    let cursor = Cursor::for_view_root_at(&base, 0);
+    let target = certified_root(256, 1);
+    let wire = Wire::start(&clock, SubscriptionLeaseLimits::default(), |source| {
+        source.set_owner_cursor(cursor);
+        source.replies.push_back(Ok(SubscriptionReply::Accepted {
+            credit: PUBLICATION_CREDIT,
+        }));
+        // The resume is answered with a four-page reset.
+        source.replies.push_back(Ok(reset_to(&target, 1)));
+    });
+    let mut client = wire.client();
+    let mut state = client
+        .acquire_publications(Arc::clone(&base), cursor, &|| false)
+        .expect("a quiet lease");
+    // Withdrawn after the second page: the owner has served two of four.
+    let polls = AtomicUsize::new(0);
+    let error = client
+        .resume_publications(&mut state, &|| polls.fetch_add(1, Ordering::SeqCst) >= 3)
+        .err()
+        .expect("withdrawn mid-reset");
+    assert_eq!(error, protocol_error("publication observation withdrawn"));
+    assert_eq!(state.cursor(), cursor, "no partial reset moved the cursor");
+    assert!(
+        Arc::ptr_eq(&state.root(), &base),
+        "no partial reset replaced the complete root"
+    );
+    wire.wait_until("the owner to hold the half-served reset", |ledger| {
+        ledger.active == 1
+    });
+    clock.advance(PUBLICATION_LEASE.duration());
+    let reclaimed = wire.wait_until("the owner to reclaim it", |ledger| ledger.active == 0);
+    assert_eq!(reclaimed.released.count(ReleaseReason::Expired), 1);
 }

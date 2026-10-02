@@ -893,7 +893,7 @@ fn a_term_is_granted_exactly_up_to_the_cap_and_refused_beyond_it() {
 
 #[test]
 fn the_hard_ceiling_term_does_not_overflow_the_deadline() {
-    let mut harness = Harness::with_limits(1, Duration::from_secs(3600), 1, SECOND);
+    let mut harness = Harness::with_limits(1, Duration::from_hours(1), 1, SECOND);
     let hour = 3_600_000;
     let response = harness
         .open_with(SubscriptionReply::Accepted { credit: 1 }, 1, hour)
@@ -901,9 +901,7 @@ fn the_hard_ceiling_term_does_not_overflow_the_deadline() {
     assert!(
         matches!(response, LocalSubscriptionResponse::Opened { lease_ms, .. } if lease_ms == hour)
     );
-    harness
-        .clock
-        .advance(Duration::from_secs(3600) - NANOSECOND);
+    harness.clock.advance(Duration::from_hours(1) - NANOSECOND);
     assert_eq!(harness.table.reclaim_due(harness.clock.now()), 0);
     harness.clock.advance(NANOSECOND);
     assert_eq!(harness.table.reclaim_due(harness.clock.now()), 1);
@@ -1008,7 +1006,7 @@ fn a_forged_lease_identity_is_unknown_to_every_operation() {
 
 #[test]
 fn the_owner_never_retains_more_leases_than_its_limit_and_spends_no_daemon_trip_refusing() {
-    let mut harness = Harness::with_limits(3, Duration::from_secs(60), 8, Duration::from_secs(60));
+    let mut harness = Harness::with_limits(3, Duration::from_mins(1), 8, Duration::from_mins(1));
     for _ in 0..3 {
         harness.open_quiet();
     }
@@ -1031,8 +1029,7 @@ fn the_owner_never_retains_more_leases_than_its_limit_and_spends_no_daemon_trip_
 
 #[test]
 fn a_lease_table_at_the_hard_cap_fills_refuses_and_drains_in_one_sweep() {
-    let mut harness =
-        Harness::with_limits(1024, Duration::from_secs(60), 8, Duration::from_secs(60));
+    let mut harness = Harness::with_limits(1024, Duration::from_mins(1), 8, Duration::from_mins(1));
     let mut leases = BTreeSet::new();
     for _ in 0..1024 {
         leases.insert(harness.open_quiet().0);
@@ -1055,7 +1052,7 @@ fn a_lease_table_at_the_hard_cap_fills_refuses_and_drains_in_one_sweep() {
 
 #[test]
 fn the_table_itself_refuses_an_install_past_its_limit_whatever_its_callers_do() {
-    let mut harness = Harness::with_limits(1, Duration::from_secs(60), 8, Duration::from_secs(60));
+    let mut harness = Harness::with_limits(1, Duration::from_mins(1), 8, Duration::from_mins(1));
     let now = harness.table.now();
     let lease = |harness: &Harness| {
         Lease::grant(
@@ -1279,8 +1276,7 @@ fn cancelling_a_hydrating_lease_frees_its_root_exactly_once() {
 fn a_slow_drip_of_valid_pages_is_ended_by_the_absolute_reset_window() {
     // Term 10 s, window 30 s. A page every 8 s keeps renewing the term, but
     // the window never moves.
-    let mut harness =
-        Harness::with_limits(4, Duration::from_secs(60), 100, Duration::from_secs(30));
+    let mut harness = Harness::with_limits(4, Duration::from_mins(1), 100, Duration::from_secs(30));
     let labels: Vec<String> = (0..10).map(|n| format!("row-{n}")).collect();
     let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
     let (lease, token) = harness.open_reset(&labels).expect("reset");
@@ -1306,7 +1302,7 @@ fn a_slow_drip_of_valid_pages_is_ended_by_the_absolute_reset_window() {
 fn the_reset_window_elapsing_during_a_page_encode_withholds_that_page() {
     // A 5 s window inside a 10 s term, so only the window is due when the
     // encode returns at 7 s.
-    let mut harness = Harness::with_limits(4, Duration::from_secs(60), 100, Duration::from_secs(5));
+    let mut harness = Harness::with_limits(4, Duration::from_mins(1), 100, Duration::from_secs(5));
     let (lease, token) = harness.open_reset(&["a", "b", "c"]).expect("reset");
     let root = harness.weak_root(lease);
     harness.script_pages([PageScript::ServeAfter(6 * SECOND)]);
@@ -1321,7 +1317,7 @@ fn the_reset_window_elapsing_during_a_page_encode_withholds_that_page() {
 
 #[test]
 fn a_reset_that_needs_more_pages_than_its_budget_is_refused_at_open() {
-    let mut harness = Harness::with_limits(4, Duration::from_secs(60), 1, Duration::from_secs(60));
+    let mut harness = Harness::with_limits(4, Duration::from_mins(1), 1, Duration::from_mins(1));
     assert_eq!(
         harness
             .open_reset(&["a", "b"])
@@ -1339,7 +1335,7 @@ fn a_reset_that_needs_more_pages_than_its_budget_is_refused_at_open() {
 
 #[test]
 fn a_reset_that_would_outrun_its_page_budget_stops_the_moment_it_cannot_finish() {
-    let mut harness = Harness::with_limits(4, Duration::from_secs(60), 3, Duration::from_secs(60));
+    let mut harness = Harness::with_limits(4, Duration::from_mins(1), 3, Duration::from_mins(1));
     let (lease, token) = harness
         .open_reset(&["a", "b", "c", "d", "e"])
         .expect("reset");
@@ -1365,7 +1361,7 @@ fn a_reset_that_would_outrun_its_page_budget_stops_the_moment_it_cannot_finish()
 
 #[test]
 fn a_reset_of_exactly_the_budgeted_pages_completes() {
-    let mut harness = Harness::with_limits(4, Duration::from_secs(60), 3, Duration::from_secs(60));
+    let mut harness = Harness::with_limits(4, Duration::from_mins(1), 3, Duration::from_mins(1));
     let (lease, token) = harness.open_reset(&["a", "b", "c"]).expect("reset");
     let second = harness.next_page(lease, &token.expect("p2")).expect("p3");
     assert!(harness.next_page(lease, &second).is_none());
@@ -1670,7 +1666,7 @@ fn the_terms_the_observer_requests_fit_the_owner_defaults() {
 fn the_idle_poll_frees_a_reset_root_at_its_window_even_while_the_lease_term_runs() {
     // A 5 s window inside a 10 s term: when the window ends nothing a holder
     // does is pending, and the root must go without waiting for the term.
-    let mut harness = Harness::with_limits(4, Duration::from_secs(60), 100, Duration::from_secs(5));
+    let mut harness = Harness::with_limits(4, Duration::from_mins(1), 100, Duration::from_secs(5));
     let (lease, token) = harness.open_reset(&["a", "b", "c"]).expect("reset");
     token.expect("hydrating");
     let root = harness.weak_root(lease);
@@ -1711,7 +1707,7 @@ fn a_lease_that_expires_while_its_page_fails_to_encode_is_released_exactly_once(
 
 #[test]
 fn a_resume_whose_reset_needs_more_pages_than_the_budget_releases_the_lease() {
-    let mut harness = Harness::with_limits(4, Duration::from_secs(60), 1, Duration::from_secs(60));
+    let mut harness = Harness::with_limits(4, Duration::from_mins(1), 1, Duration::from_mins(1));
     let (lease, cursor) = harness.open_quiet();
     harness.script(reset_reply(&["a", "b"]));
     assert_eq!(

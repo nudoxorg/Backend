@@ -197,7 +197,7 @@ fn open_reset(
 fn run(seed: u64, steps: usize) -> (Reached, [u64; 6]) {
     let limits = SubscriptionLeaseLimits::new(
         MAX_ACTIVE,
-        Duration::from_secs(60),
+        Duration::from_mins(1),
         usize::from(MAX_PAGES),
         WINDOW,
     )

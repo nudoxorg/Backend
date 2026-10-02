@@ -68,7 +68,7 @@ impl fmt::Debug for LeaseTable {
                 &self.identity.boot_nonce.is_some(),
             )
             .field("next_lease_nonce", &self.identity.next_nonce)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

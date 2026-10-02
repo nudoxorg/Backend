@@ -330,8 +330,7 @@ impl<'a, S: LeaseSource> LeaseHost<'a, S> {
                 let limits = self.table.limits().reset();
                 let next = first.next.as_ref().map(|next| next.token.clone());
                 self.commit(attachment, target.clone(), credit, term, |granted_at| {
-                    Hydration::begin(granted_at, limits, root, target_cursor, reason, &first)
-                        .map(|hydration| hydration.map_or(LeasePhase::Live, LeasePhase::Hydrating))
+                    Hydration::begin_phase(granted_at, limits, root, target_cursor, reason, &first)
                         .map_err(Failure::reset)
                 })?;
                 Ok(LocalSubscriptionResponse::SnapshotPage {

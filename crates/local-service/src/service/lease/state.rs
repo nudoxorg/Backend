@@ -355,9 +355,22 @@ pub(crate) struct Hydration {
 }
 
 impl Hydration {
+    /// Starts hydrating after the first page, and returns the phase the lease
+    /// is in afterwards: live when that page was the whole reset.
+    pub(crate) fn begin_phase(
+        granted_at: Instant,
+        limits: ResetLimits,
+        root: Arc<ViewRoot>,
+        target: Cursor,
+        reason: CursorResetReason,
+        first: &ResetPage,
+    ) -> Result<LeasePhase, ResetFault> {
+        Self::begin(granted_at, limits, root, target, reason, first).map(LeasePhase::after_reset)
+    }
+
     /// Starts hydrating after the first page, or returns `None` when that
     /// page was the whole reset.
-    pub(crate) fn begin(
+    fn begin(
         granted_at: Instant,
         limits: ResetLimits,
         root: Arc<ViewRoot>,
@@ -432,8 +445,16 @@ pub(crate) enum LeasePhase {
     /// No reset pending.
     Live,
     /// A reset root is retained until the last page, a failure, cancel or
-    /// expiry.
-    Hydrating(Hydration),
+    /// expiry. Boxed: a live lease, the common case, should not pay for it.
+    Hydrating(Box<Hydration>),
+}
+
+impl LeasePhase {
+    /// The phase after a reset page: live when it was the last, otherwise
+    /// still hydrating.
+    fn after_reset(hydration: Option<Hydration>) -> Self {
+        hydration.map_or(Self::Live, |hydration| Self::Hydrating(Box::new(hydration)))
+    }
 }
 
 /// One retained subscription lease.
@@ -506,7 +527,7 @@ impl Lease {
     pub(crate) fn remaining_term(&self, at: Instant) -> LeaseMs {
         let remaining = self.expires.remaining(at);
         let whole = remaining.as_millis();
-        let rounded = if remaining.subsec_nanos() % 1_000_000 == 0 {
+        let rounded = if remaining.subsec_nanos().is_multiple_of(1_000_000) {
             whole
         } else {
             whole.saturating_add(1)
@@ -609,10 +630,11 @@ impl Lease {
         let LeasePhase::Hydrating(hydration) = &self.phase else {
             return Err(LeaseRefusal::NoPendingReset.into());
         };
-        let phase = hydration
-            .after_page(committed_at, page)
-            .map_err(Failure::reset)?
-            .map_or(LeasePhase::Live, LeasePhase::Hydrating);
+        let phase = LeasePhase::after_reset(
+            hydration
+                .after_page(committed_at, page)
+                .map_err(Failure::reset)?,
+        );
         Self::grant(
             committed_at,
             self.term,

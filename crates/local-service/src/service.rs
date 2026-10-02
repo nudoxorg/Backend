@@ -111,7 +111,7 @@ where
             .field("replication", &self.replication)
             .field("semantic_ranges", &self.semantic_ranges)
             .field("leases", &self.leases)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

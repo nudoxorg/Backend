@@ -74,20 +74,20 @@ impl From<LeaseLimitError> for ProtocolError {
 /// window. The defaults admit every request `backend-client` makes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SubscriptionLeaseLimits {
-    max_active: usize,
-    max_term: LeaseMs,
-    max_reset_pages: ResetPages,
-    max_reset_window: LeaseMs,
+    active: usize,
+    term: LeaseMs,
+    reset_pages: ResetPages,
+    reset_window: LeaseMs,
 }
 
 impl Default for SubscriptionLeaseLimits {
     fn default() -> Self {
         Self {
-            max_active: DEFAULT_ACTIVE,
-            max_term: DEFAULT_TERM,
+            active: DEFAULT_ACTIVE,
+            term: DEFAULT_TERM,
             // The observer's own cap: the same constant bounds both ends.
-            max_reset_pages: ResetPages::LIMIT,
-            max_reset_window: DEFAULT_RESET_WINDOW,
+            reset_pages: ResetPages::LIMIT,
+            reset_window: DEFAULT_RESET_WINDOW,
         }
     }
 }
@@ -117,47 +117,47 @@ impl SubscriptionLeaseLimits {
         let max_reset_window = whole_millis(max_reset_window, HARD_MAX_RESET_WINDOW)
             .ok_or(LeaseLimitError::ResetWindow)?;
         Ok(Self {
-            max_active,
-            max_term,
-            max_reset_pages,
-            max_reset_window,
+            active: max_active,
+            term: max_term,
+            reset_pages: max_reset_pages,
+            reset_window: max_reset_window,
         })
     }
 
     /// Returns the most leases the owner retains at once.
     #[must_use]
     pub const fn max_active(self) -> usize {
-        self.max_active
+        self.active
     }
 
     /// Returns the longest term the owner grants.
     #[must_use]
     pub const fn max_term(self) -> Duration {
-        self.max_term.duration()
+        self.term.duration()
     }
 
     /// Returns the most pages one reset may hydrate, counting the first.
     #[must_use]
     pub const fn max_reset_pages(self) -> u16 {
-        self.max_reset_pages.get()
+        self.reset_pages.get()
     }
 
     /// Returns the absolute window a reset may stay retained.
     #[must_use]
     pub const fn max_reset_window(self) -> Duration {
-        self.max_reset_window.duration()
+        self.reset_window.duration()
     }
 
     /// Grants the requested term, or refuses it: the owner never silently
     /// shortens a term, because not every response says what was granted.
     pub(crate) fn grant_term(self, requested_ms: u64) -> Option<LeaseMs> {
-        LeaseMs::new(requested_ms).filter(|term| *term <= self.max_term)
+        LeaseMs::new(requested_ms).filter(|term| *term <= self.term)
     }
 
     pub(crate) const fn reset(self) -> ResetLimits {
         ResetLimits {
-            pages: self.max_reset_pages,
-            window: self.max_reset_window,
+            pages: self.reset_pages,
+            window: self.reset_window,
         }
     }
 }
@@ -170,7 +170,7 @@ pub(crate) struct ResetLimits {
 }
 
 fn whole_millis(duration: Duration, ceiling: LeaseMs) -> Option<LeaseMs> {
-    if duration.subsec_nanos() % 1_000_000 != 0 {
+    if !duration.subsec_nanos().is_multiple_of(1_000_000) {
         return None;
     }
     u64::try_from(duration.as_millis())
@@ -189,9 +189,9 @@ mod tests {
     fn the_defaults_are_the_documented_policy_and_admit_the_observer() {
         let limits = SubscriptionLeaseLimits::default();
         assert_eq!(limits.max_active(), 256);
-        assert_eq!(limits.max_term(), Duration::from_secs(5 * 60));
+        assert_eq!(limits.max_term(), Duration::from_mins(5));
         assert_eq!(limits.max_reset_pages(), 2048);
-        assert_eq!(limits.max_reset_window(), Duration::from_secs(90 * 60));
+        assert_eq!(limits.max_reset_window(), Duration::from_mins(90));
         assert_eq!(
             limits.grant_term(PUBLICATION_LEASE.get()),
             Some(PUBLICATION_LEASE)
@@ -224,9 +224,9 @@ mod tests {
     fn every_ceiling_is_inclusive_and_one_past_it_is_refused() {
         let at_ceiling = SubscriptionLeaseLimits::new(
             1024,
-            Duration::from_secs(60 * 60),
+            Duration::from_hours(1),
             4096,
-            Duration::from_secs(4 * 60 * 60),
+            Duration::from_hours(4),
         )
         .expect("ceilings are admitted");
         assert_eq!(at_ceiling.max_active(), 1024);
