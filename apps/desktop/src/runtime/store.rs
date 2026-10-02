@@ -721,6 +721,15 @@ impl DataStore {
         }
     }
 
+    /// Stop a query Ask no longer displays, unless the current page still
+    /// owns that same read (for example, Ask opened over Find).
+    pub fn cancel_unfocused_search(&mut self, query: &SearchQuery, cx: &mut Context<Self>) {
+        let key = PageKey::Search(query.clone());
+        if !self.focused.contains(&key) {
+            self.cancel_key(&key, cx);
+        }
+    }
+
     fn cancel_key(&mut self, key: &PageKey, cx: &mut Context<Self>) {
         if self.pages.inflight(key).is_none() {
             return;
