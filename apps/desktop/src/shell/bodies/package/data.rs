@@ -585,7 +585,7 @@ pub(super) fn advisories(record: Option<&PackageRecord>) -> Advisories {
                 },
                 AdvisoryCoverage::Unknown | AdvisoryCoverage::Unavailable => unknown(
                     Silence::NoFeed,
-                    "RustSec, OSV and GHSA can be read; none configured.",
+                    "No advisory feed coverage is established for this release.",
                 ),
             }
         }
@@ -606,7 +606,7 @@ fn gap_state(gap: &Gap) -> Advisories {
         GapReason::Unconfigured | GapReason::NotRecorded | GapReason::NoSemanticPublication => {
             unknown(
                 Silence::NoFeed,
-                "RustSec, OSV and GHSA can be read; none configured.".to_owned(),
+                "No advisory feed coverage is established for this release.".to_owned(),
             )
         }
         _ => unknown(

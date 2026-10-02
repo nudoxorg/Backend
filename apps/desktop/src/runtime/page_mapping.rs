@@ -25,7 +25,7 @@ use crate::model::pages::VerifiedRegistryRelease;
 use backend_client::ClientError;
 use backend_library::{
     DeclarationKind, Document, Fragment, GraphEdgeKind, GraphNodeId, GraphRelation, HealthReport,
-    RegistryDownloadCount, RegistryFactAvailability, RegistryPackageRecord,
+    RegistryDownloadCount, RegistryEcosystem, RegistryFactAvailability, RegistryPackageRecord,
     RegistryReleaseStanding, Row, RowId, SemanticConfidence, SemanticLinkKind,
     SemanticLinkTarget, SourceAvailability, SourceExcerpt, SourceExcerptExtent, SurfaceReply,
     SymbolKey, ViewSnapshot,
@@ -1702,7 +1702,7 @@ pub fn registry_record(record: &RegistryPackageRecord) -> PackageRecord {
         source: RecordSource::Registry,
         name: Arc::from(record.name.as_str()),
         version: Known::Known(Arc::from(record.version.as_str())),
-        ecosystem: Known::Known(Arc::from(record.ecosystem.as_str())),
+        ecosystem: Known::Known(record.ecosystem),
         standing: Known::Known(standing(record.standing)),
         downloads: match &record.downloads {
             RegistryDownloadCount::Exact(count) => Known::Known(Downloads::Exact(*count)),
@@ -1735,9 +1735,15 @@ pub fn registry_record(record: &RegistryPackageRecord) -> PackageRecord {
 /// the engine's own local-manifest fallback alike — see `not_served`
 /// above). For a package this session has also read locally (`compose_package`'s
 /// `local`, whether through `LocalPackageLoader::readme` or `::load`), the
-/// manifest already states them; without this merge, that local read is
-/// computed and then discarded; this was the toml/present package-page bug.
+/// Cargo manifest already states them; without this merge, that local read
+/// is computed and then discarded; this was the toml/present package-page bug.
+/// Other ecosystems never borrow fields from this Cargo-only projection.
 fn with_local_facts(mut record: PackageRecord, local: Option<&LocalPackage>) -> PackageRecord {
+    // This projection reads Cargo.toml only. A NuGet/npm/etc. record must not
+    // inherit an incidental Cargo manifest's description or licence.
+    if record.ecosystem.known() != Some(&RegistryEcosystem::Cargo) {
+        return record;
+    }
     let Some(local) = local else { return record };
     if record.description.known().is_none()
         && let Some(description) = &local.description
@@ -1764,7 +1770,7 @@ fn local_manifest_record(
     local: Option<&LocalPackage>,
     is_local: bool,
 ) -> Known<PackageRecord> {
-    if let Some(manifest) = local.filter(|manifest| local_manifest_facts(manifest)) {
+    if let Some(manifest) = local.filter(|manifest| is_local && local_manifest_facts(manifest)) {
         return Known::Known(local_record(package, manifest));
     }
     Known::Unknown(if is_local {
@@ -1786,7 +1792,7 @@ fn local_record(package: &PackageRef, local: &LocalPackage) -> PackageRecord {
             || Known::unknown(GapReason::NotRecorded, "the manifest states no version"),
             Known::Known,
         ),
-        ecosystem: Known::Known(Arc::from("cargo")),
+        ecosystem: Known::Known(RegistryEcosystem::Cargo),
         standing: Known::Unknown(local_gap("release standing")),
         downloads: Known::Unknown(local_gap("download count")),
         bytes: Known::Unknown(local_gap("archive size")),
@@ -1799,6 +1805,36 @@ fn local_record(package: &PackageRef, local: &LocalPackage) -> PackageRecord {
             || Known::unknown(GapReason::NotRecorded, "the manifest states no license"),
             Known::Known,
         ),
+    }
+}
+
+/// Selects a record for the requested route. A registry route is pinned by
+/// its exact PURL. A local path has no PURL identity, but the owner serves a
+/// single record read from that path's manifest. In either case its typed
+/// ecosystem must agree with the coordinate's package type.
+fn package_record_for<'a>(
+    records: &'a [RegistryPackageRecord],
+    package: &PackageRef,
+) -> Option<&'a RegistryPackageRecord> {
+    let admitted = |record: &RegistryPackageRecord| {
+        matches!(&record.coordinate,
+            backend_library::PackageReference::Purl(coordinate)
+                if coordinate.package_type() == record.ecosystem.package_type())
+    };
+    match package.reference() {
+        backend_library::PackageReference::Purl(_) => {
+            let mut exact = records
+                .iter()
+                .filter(|record| admitted(record) && record.coordinate == *package.reference());
+            match (exact.next(), exact.next()) {
+                (Some(only), None) => Some(only),
+                _ => None,
+            }
+        }
+        backend_library::PackageReference::Local(_) => match records {
+            [only] if admitted(only) => Some(only),
+            _ => None,
+        },
     }
 }
 
@@ -1852,15 +1888,12 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
         other => Err(surface_gap(other, "package")),
     };
     let record = match &registry_records {
-        Ok(records) => records
-            .iter()
-            .find(|record| record.coordinate == *package.reference())
-            .or_else(|| records.first())
+        Ok(records) => package_record_for(records, package)
             .map_or_else(
                 || local_manifest_record(package, inputs.local, local),
                 |record| Known::Known(with_local_facts(registry_record(record), inputs.local)),
             ),
-        Err(gap) => inputs.local.map_or_else(
+        Err(gap) => inputs.local.filter(|_| local).map_or_else(
             || Known::Unknown(gap.clone()),
             |manifest| {
                 if local_manifest_facts(manifest) {
@@ -3151,7 +3184,7 @@ mod tests {
         let head = dossier.record.known().expect("record");
         assert_eq!(head.name.as_ref(), "beta");
         assert_eq!(head.version.known().map(AsRef::as_ref), Some("1.0.0"));
-        assert_eq!(head.ecosystem.known().map(AsRef::as_ref), Some("cargo"));
+        assert_eq!(head.ecosystem.known(), Some(&RegistryEcosystem::Cargo));
         assert_eq!(head.standing.known(), Some(&Standing::Available));
         assert_eq!(head.downloads.known(), Some(&Downloads::Exact(42)));
         assert_eq!(head.bytes.known(), Some(&1_024));
@@ -3174,6 +3207,79 @@ mod tests {
         assert_eq!(dependents.detail.as_ref(), "the configured feed does not record dependency metadata");
         assert_eq!(dossier.readme.gap().map(|gap| gap.reason), Some(GapReason::NotServed));
         assert_eq!(dossier.outline.gap().map(|gap| gap.detail.as_ref()), Some("outline refused"));
+    }
+
+    #[test]
+    fn package_record_selection_keeps_all_seven_typed_ecosystems_on_their_exact_routes() {
+        use facet::marks::Eco;
+
+        let cases = [
+            (RegistryEcosystem::Cargo, "pkg:cargo/widget@1.0.0", "crates.io"),
+            (RegistryEcosystem::Npm, "pkg:npm/widget@1.0.0", "npm"),
+            (RegistryEcosystem::Pypi, "pkg:pypi/widget@1.0.0", "PyPI"),
+            (RegistryEcosystem::Maven, "pkg:maven/org.example/widget@1.0.0", "Maven"),
+            (RegistryEcosystem::Nuget, "pkg:nuget/widget@1.0.0", "NuGet"),
+            (RegistryEcosystem::Golang, "pkg:golang/example.com/widget@v1.0.0", "Go"),
+            (RegistryEcosystem::Cpp, "pkg:generic/widget@1.0.0", "source"),
+        ];
+        for (ecosystem, purl, mark) in cases {
+            let package = PackageRef::parse(purl).expect("canonical package route");
+            let mut row = crate::runtime::tests::registry_record("widget", "1.0.0");
+            row.coordinate = package.reference().clone();
+            row.ecosystem = ecosystem;
+            let native = backend_library::RegistryNativeMetadata::unavailable(ecosystem, "fixture");
+            row.native_metadata_version = native.identity().expect("native fact identity");
+            row.native_metadata = native;
+            let unrelated = crate::runtime::tests::registry_record("other", "1.0.0");
+            let rows = [unrelated, row];
+            let selected = package_record_for(&rows, &package).expect("exact record");
+            assert_eq!(selected.coordinate, *package.reference());
+            let mapped = registry_record(selected);
+            assert_eq!(mapped.ecosystem.known(), Some(&ecosystem));
+            assert_eq!(
+                mapped.ecosystem.known().and_then(|value| Eco::of(value.as_str())).map(Eco::word),
+                Some(mark),
+            );
+        }
+        assert!(serde_json::from_str::<RegistryEcosystem>("\"rust\"").is_err());
+    }
+
+    #[test]
+    fn a_purl_dossier_never_borrows_another_packages_ecosystem() {
+        let package = PackageRef::parse("pkg:nuget/Widget@1.0.0").expect("NuGet package");
+        let cargo = crate::runtime::tests::registry_record("widget", "1.0.0");
+        let records = SurfaceReply::Package(Box::new([cargo]));
+        let unavailable = no_semantics();
+        let dossier = package_dossier(&PackageInputs {
+            package: &package,
+            records: Ok(&records),
+            versions: Err(&unavailable),
+            dependencies: Err(&unavailable),
+            dependents: Err(&unavailable),
+            outline: Err(Gap::new(GapReason::ReadFailed, "not needed")),
+            local: None,
+        });
+        assert_eq!(dossier.record.gap().map(|gap| gap.reason), Some(GapReason::NotRecorded));
+        assert!(dossier.record.known().is_none());
+
+        let mut mismatched = crate::runtime::tests::registry_record("widget", "1.0.0");
+        mismatched.coordinate = package.reference().clone();
+        assert!(package_record_for(&[mismatched], &package).is_none(),
+            "the exact route cannot turn a Cargo record into NuGet");
+    }
+
+    #[test]
+    fn a_local_route_accepts_only_one_manifest_record_with_matching_ecosystem() {
+        let local = PackageRef::parse(PRESENT).expect("local package");
+        let mut nuget = crate::runtime::tests::registry_record("Widget", "1.0.0");
+        nuget.coordinate = PackageRef::parse("pkg:nuget/Widget@1.0.0")
+            .expect("manifest coordinate")
+            .reference()
+            .clone();
+        nuget.ecosystem = RegistryEcosystem::Nuget;
+        assert_eq!(package_record_for(&[nuget.clone()], &local).map(|record| record.ecosystem),
+            Some(RegistryEcosystem::Nuget));
+        assert!(package_record_for(&[nuget.clone(), nuget], &local).is_none());
     }
 
     #[test]
@@ -3268,6 +3374,18 @@ mod tests {
             Some("A native Rust encoder and decoder.")
         );
         assert_eq!(head.license.known().map(AsRef::as_ref), Some("MIT OR Apache-2.0"));
+
+        // A mixed root can also have another ecosystem's manifest. Cargo
+        // description and licence do not become that package's facts.
+        let mut nuget = crate::runtime::tests::registry_record("beta", "1.0.0");
+        nuget.coordinate = PackageRef::parse("pkg:nuget/beta@1.0.0")
+            .expect("NuGet package")
+            .reference()
+            .clone();
+        nuget.ecosystem = RegistryEcosystem::Nuget;
+        let mapped = with_local_facts(registry_record(&nuget), Some(&local));
+        assert_eq!(mapped.description.gap().map(|gap| gap.reason), Some(GapReason::NotServed));
+        assert_eq!(mapped.license.gap().map(|gap| gap.reason), Some(GapReason::NotServed));
     }
 
     #[test]
@@ -3300,6 +3418,9 @@ mod tests {
             members: 1,
         };
         let records = SurfaceReply::Package(Box::new([]));
+        let other = PackageRef::parse("pkg:nuget/Widget@1.0.0").expect("registry route");
+        assert!(local_manifest_record(&other, Some(&local), false).known().is_none(),
+            "a registry route cannot borrow this local Cargo manifest");
         let versions = SurfaceReply::PackageVersions(Box::new([]));
         let dependencies = SurfaceReply::Dependencies(backend_library::DependencyFacts::Unavailable(
             backend_library::ProductText::new("dependency facts are unavailable because the package is not recorded")

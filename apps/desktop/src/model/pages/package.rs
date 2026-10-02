@@ -2,6 +2,7 @@
 
 use super::common::{DeclRef, Known, PackageRef, SymbolRef};
 use crate::model::local_package::{ReadmeBlock, ReadmeHeading, ReadmeLink};
+use backend_library::RegistryEcosystem;
 use std::sync::Arc;
 
 /// Everything the Package board renders about one package.
@@ -192,8 +193,8 @@ pub struct PackageRecord {
     pub name: Arc<str>,
     /// Immutable version.
     pub version: Known<Arc<str>>,
-    /// Ecosystem spelling.
-    pub ecosystem: Known<Arc<str>>,
+    /// Canonical package ecosystem, independent of each declaration's language.
+    pub ecosystem: Known<RegistryEcosystem>,
     /// Release standing.
     pub standing: Known<Standing>,
     /// Downloads.

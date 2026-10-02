@@ -233,7 +233,7 @@ fn dossier(package: &PackageRef) -> Option<PackageDossier> {
             source: if local { RecordSource::LocalManifest } else { RecordSource::Registry },
             name: Arc::from(manifest.name.as_str()),
             version: Known::Known(Arc::from(manifest.version.as_str())),
-            ecosystem: Known::Known(Arc::from("cargo")),
+            ecosystem: Known::Known(backend_library::RegistryEcosystem::Cargo),
             standing: if local { Known::Unknown(unknown(GapReason::LocalProject)) } else { Known::Known(Standing::Available) },
             downloads: Known::Unknown(unknown(GapReason::NotRecorded)),
             bytes: Known::Unknown(unknown(GapReason::NotRecorded)),

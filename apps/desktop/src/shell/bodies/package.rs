@@ -159,8 +159,18 @@ pub(super) fn body(
         })
         .unwrap_or_default();
     let project_path = workspace_active.map(|project| project.path());
-    let source =
-        crate::model::source_facts::reading(&dossier.package, &hints, project_path.as_deref(), cx);
+    // SourceFacts currently reads Cargo.toml and Rust modules. Keep that
+    // evidence off a non-Cargo page even if a mixed-language root also has
+    // an incidental Cargo manifest or a previous read is cached.
+    let source = if record.and_then(|record| record.ecosystem.known())
+        == Some(&backend_library::RegistryEcosystem::Cargo)
+    {
+        crate::model::source_facts::reading(&dossier.package, &hints, project_path.as_deref(), cx)
+    } else {
+        crate::model::source_facts::Reading::Absent(
+            "Source analysis is unavailable for this package ecosystem.".into(),
+        )
+    };
     let ready = match &source {
         crate::model::source_facts::Reading::Ready(facts) => Some(facts.clone()),
         _ => None,
@@ -410,7 +420,7 @@ fn hero(
         if let Some(eco) = record
             .ecosystem
             .known()
-            .and_then(|ecosystem| Eco::of(ecosystem))
+            .and_then(|ecosystem| Eco::of(ecosystem.as_str()))
         {
             let version = record.version.known().map(|version| version.as_ref());
             let install = eco.install(record.name.as_ref(), version);
