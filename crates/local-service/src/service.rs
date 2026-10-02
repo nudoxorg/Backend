@@ -46,6 +46,11 @@ where
     /// Finishes whatever deferred work is ready, on the owner loop, and
     /// returns the reply bodies by ticket.
     fn poll(&mut self, daemon: &mut crate::Locald<M, V, A>) -> Vec<(u64, Result<Vec<u8>, String>)>;
+
+    /// Cancels and joins any process-local deferred work before the owner
+    /// releases its daemon state. Implementations without workers need not
+    /// override this hook.
+    fn close(&mut self) {}
 }
 #[path = "service/subscription.rs"]
 mod subscription;
@@ -849,7 +854,6 @@ where
         &self.daemon
     }
 
-
     /// Returns the embedded daemon mutably.
     #[must_use]
     pub const fn daemon_mut(&mut self) -> &mut crate::Locald<M, V, A> {
@@ -990,6 +994,9 @@ where
     }
 
     fn close(&mut self) {
+        if let Some(deferred) = self.deferred.as_mut() {
+            deferred.close();
+        }
         self.leases.clear();
         self.daemon.close();
     }

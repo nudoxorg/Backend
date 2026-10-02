@@ -31,17 +31,18 @@ use backend_library::{
     PackageReference,
 };
 use backend_platform::directory::{DirectoryCapability, EntryKind};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// Largest `cargo metadata` document admitted.
 const MAX_METADATA_BYTES: usize = 64 * 1024 * 1024;
-/// Largest `Cargo.lock` admitted.
-/// How long Cargo may take to answer.
+/// Maximum time for one Cargo run and one deferred browse observation.
 const CARGO_DEADLINE: Duration = Duration::from_secs(90);
 const MAX_CARGO_OBSERVATION_PATHS: usize = 21_024;
 const MAX_CARGO_OBSERVATION_FILE_BYTES: usize = 16 * 1024 * 1024;
@@ -59,6 +60,102 @@ const MAX_BROWSE_REQUEST_BINDINGS_PER_WORKSPACE: usize = 16;
 /// bucket allocations. These maps retain their high-water buckets after row
 /// removal, so account for their maximum size once for the cache's lifetime.
 const BROWSE_CACHE_INDEX_RETAINED_BYTES: usize = 256 * 1024;
+
+/// One absolute budget for a deferred browse request, including queue wait,
+/// every Cargo pass, source witness, and source-file revalidation. A worker
+/// owns this state until its terminal completion or joined shutdown.
+pub(super) struct ObservationControl {
+    cancelled: AtomicBool,
+    deadline: Instant,
+}
+
+impl ObservationControl {
+    pub(super) fn new() -> Self {
+        Self {
+            cancelled: AtomicBool::new(false),
+            deadline: Instant::now() + CARGO_DEADLINE,
+        }
+    }
+
+    pub(super) fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    pub(super) fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    pub(super) fn is_expired(&self) -> bool {
+        Instant::now() >= self.deadline
+    }
+}
+
+thread_local! {
+    static ACTIVE_OBSERVATION: RefCell<Option<Arc<ObservationControl>>> = const { RefCell::new(None) };
+}
+
+/// Installs the worker-owned budget only for one synchronous observation.
+/// The guard also restores it if a worker unwinds in a test.
+pub(super) fn with_observation_control<T>(
+    control: Arc<ObservationControl>,
+    operation: impl FnOnce() -> T,
+) -> T {
+    struct Restore(Option<Arc<ObservationControl>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ACTIVE_OBSERVATION.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+    let previous = ACTIVE_OBSERVATION.with(|slot| slot.replace(Some(control)));
+    let restore = Restore(previous);
+    let value = operation();
+    drop(restore);
+    value
+}
+
+fn observation_budget() -> Result<(), String> {
+    ACTIVE_OBSERVATION.with(|slot| {
+        let active = slot.borrow();
+        let Some(control) = active.as_ref() else {
+            return Ok(());
+        };
+        if control.is_cancelled() {
+            Err("Cargo source observation was cancelled".to_owned())
+        } else if control.is_expired() {
+            Err("Cargo source observation exceeded its deadline".to_owned())
+        } else {
+            Ok(())
+        }
+    })
+}
+
+fn observation_deadline() -> Option<Instant> {
+    ACTIVE_OBSERVATION.with(|slot| slot.borrow().as_ref().map(|control| control.deadline))
+}
+
+/// Reads a bounded regular file in chunks so cancellation and the absolute
+/// deadline are checked during large witness/README/source reads.
+fn read_bounded_file(reader: &mut impl Read, maximum: usize) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    let mut chunk = [0_u8; 64 * 1024];
+    loop {
+        observation_budget().map_err(std::io::Error::other)?;
+        let remaining = maximum.saturating_add(1).saturating_sub(bytes.len());
+        if remaining == 0 {
+            break;
+        }
+        let capacity = chunk.len();
+        let count = reader.read(&mut chunk[..remaining.min(capacity)])?;
+        if count == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk[..count]);
+    }
+    observation_budget().map_err(std::io::Error::other)?;
+    Ok(bytes)
+}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct RequestBindingKey {
@@ -1370,6 +1467,7 @@ struct SourceInventoryScan {
 fn source_inventory_under(
     package_root: &Path,
 ) -> Result<SourceInventoryScan, CargoPackageSourceInventoryFailureV1> {
+    observation_budget().map_err(|_| CargoPackageSourceInventoryFailureV1::DirectoryUnavailable)?;
     let root = DirectoryCapability::open_read_only_source(package_root)
         .map_err(|_| CargoPackageSourceInventoryFailureV1::DirectoryUnavailable)?;
     let mut scan = SourceInventoryScan {
@@ -1378,6 +1476,7 @@ fn source_inventory_under(
     };
     let mut visited = 0_usize;
     walk_source_inventory(&root, "", 0, &mut visited, &mut scan);
+    observation_budget().map_err(|_| CargoPackageSourceInventoryFailureV1::DirectoryUnavailable)?;
     scan.paths.sort();
     scan.paths.dedup();
     Ok(scan)
@@ -1390,6 +1489,12 @@ fn walk_source_inventory(
     visited: &mut usize,
     scan: &mut SourceInventoryScan,
 ) {
+    if observation_budget().is_err() {
+        scan.coverage = CargoPackageSourceInventoryCoverageV1::Partial {
+            reason: CargoPackageSourceInventoryGapV1::DirectoryUnavailable,
+        };
+        return;
+    }
     if !matches!(
         scan.coverage,
         CargoPackageSourceInventoryCoverageV1::Complete
@@ -1418,6 +1523,12 @@ fn walk_source_inventory(
         }
     };
     for entry in entries {
+        if observation_budget().is_err() {
+            scan.coverage = CargoPackageSourceInventoryCoverageV1::Partial {
+                reason: CargoPackageSourceInventoryGapV1::DirectoryUnavailable,
+            };
+            return;
+        }
         if *visited >= MAX_CARGO_PACKAGE_SOURCE_INVENTORY_SCAN_ENTRIES {
             scan.coverage = CargoPackageSourceInventoryCoverageV1::Partial {
                 reason: CargoPackageSourceInventoryGapV1::ScanEntryLimit,
@@ -1806,6 +1917,7 @@ fn read_source_file_under_limit(
     path: &CargoPackageSourcePathV1,
     maximum: usize,
 ) -> Result<Option<Vec<u8>>, CargoPackageSourceReadFailureV1> {
+    observation_budget().map_err(|_| CargoPackageSourceReadFailureV1::FileUnavailable)?;
     let mut segments = path.as_str().split('/').peekable();
     let mut directory = DirectoryCapability::open_read_only_source(package_root)
         .map_err(|_| CargoPackageSourceReadFailureV1::FileUnavailable)?;
@@ -1826,10 +1938,7 @@ fn read_source_file_under_limit(
             if metadata.len() > maximum as u64 {
                 return Err(CargoPackageSourceReadFailureV1::FileTooLarge);
             }
-            let mut bytes = Vec::new();
-            file.by_ref()
-                .take(maximum as u64 + 1)
-                .read_to_end(&mut bytes)
+            let bytes = read_bounded_file(&mut file, maximum)
                 .map_err(|_| CargoPackageSourceReadFailureV1::FileUnavailable)?;
             if bytes.len() > maximum {
                 return Err(CargoPackageSourceReadFailureV1::FileTooLarge);
@@ -1948,6 +2057,7 @@ fn observation_witness_with_context(
     environment: [u8; 32],
     tool: [u8; 32],
 ) -> Result<InputObservation, String> {
+    observation_budget()?;
     if files.len() > MAX_CARGO_OBSERVATION_PATHS {
         return Err("Cargo source observation has too many input paths".to_owned());
     }
@@ -1964,6 +2074,7 @@ fn observation_witness_with_context(
     let mut lockfile = None;
     let mut manifest = None;
     for file in ordered {
+        observation_budget()?;
         if !file.is_absolute() {
             return Err("Cargo source observation contains a non-absolute path".to_owned());
         }
@@ -2008,6 +2119,7 @@ fn observation_witness_with_context(
 /// symlink. Missing files are recorded as absent; other failures make the
 /// observation unavailable.
 fn read_observation_file(path: &Path, maximum: usize) -> Result<Option<Vec<u8>>, String> {
+    observation_budget()?;
     let Some(parent) = path.parent() else {
         return Err("Cargo observation path has no parent".to_owned());
     };
@@ -2034,10 +2146,7 @@ fn read_observation_file(path: &Path, maximum: usize) -> Result<Option<Vec<u8>>,
     if !metadata.is_file() {
         return Err("Cargo observation input is not a regular file".to_owned());
     }
-    let mut bytes = Vec::new();
-    file.by_ref()
-        .take(u64::try_from(maximum).unwrap_or(u64::MAX).saturating_add(1))
-        .read_to_end(&mut bytes)
+    let bytes = read_bounded_file(&mut file, maximum)
         .map_err(|error| format!("cannot read Cargo input: {error}"))?;
     if bytes.len() > maximum {
         return Err("Cargo observation file exceeds its byte limit".to_owned());
@@ -2289,6 +2398,7 @@ fn tool_executable_witness(
         })
     });
     let mut prefix = [0_u8; 4];
+    observation_budget()?;
     file.read_exact(&mut prefix)
         .map_err(|_| "tool executable is shorter than its format header".to_owned())?;
     if !is_supported_executable_header(prefix) {
@@ -2306,6 +2416,7 @@ fn tool_executable_witness(
         let mut total = prefix.len() as u64;
         let mut buffer = [0_u8; 64 * 1024];
         loop {
+            observation_budget()?;
             let read = file
                 .read(&mut buffer)
                 .map_err(|_| "tool executable bytes could not be read".to_owned())?;
@@ -2601,10 +2712,7 @@ fn tool_script_witness(path: &Path) -> Result<(CargoToolFileWitness, Vec<u8>), S
             return Err("Cargo wrapper script is not executable".to_owned());
         }
     }
-    let mut bytes = Vec::with_capacity(before.len() as usize);
-    file.by_ref()
-        .take(MAX_WRAPPER_SCRIPT_BYTES.saturating_add(1))
-        .read_to_end(&mut bytes)
+    let bytes = read_bounded_file(&mut file, MAX_WRAPPER_SCRIPT_BYTES as usize)
         .map_err(|_| "Cargo wrapper bytes cannot be read".to_owned())?;
     let after = file
         .metadata()
@@ -3171,13 +3279,17 @@ fn coherent_metadata_with(
     mut run_metadata: impl FnMut(&Path) -> Result<(Vec<u8>, String, [u8; 32]), String>,
     mut observe: impl FnMut(&Path, &[PathBuf]) -> Result<InputObservation, String>,
 ) -> Result<CoherentMetadata, String> {
+    observation_budget()?;
     let (discovery_metadata, discovery_host, discovery_tool) = run_metadata(workspace)?;
+    observation_budget()?;
     let discovery_paths = metadata_observation_paths(workspace, &discovery_metadata)?;
     let required_manifests = metadata_required_manifests(&discovery_metadata)?;
     let before = observe(workspace, &discovery_paths)?;
+    observation_budget()?;
     require_required_manifests_present(&before, &required_manifests)?;
 
     let (metadata, host, tool_witness) = run_metadata(workspace)?;
+    observation_budget()?;
     if metadata != discovery_metadata || host != discovery_host || tool_witness != discovery_tool {
         return Err("Cargo metadata inputs or tool changed between observation passes".to_owned());
     }
@@ -3186,6 +3298,7 @@ fn coherent_metadata_with(
         return Err("Cargo metadata input set changed during observation".to_owned());
     }
     let after = observe(workspace, &watched)?;
+    observation_budget()?;
     require_required_manifests_present(&after, &required_manifests)?;
     if before.digest != after.digest {
         return Err(
@@ -3348,6 +3461,7 @@ fn cargo_config_paths(workspace: &Path) -> Result<Vec<PathBuf>, String> {
 
     let mut paths = BTreeSet::new();
     while let Some((path, depth)) = pending.pop() {
+        observation_budget()?;
         if !paths.insert(path.clone()) {
             continue;
         }
@@ -3591,6 +3705,7 @@ fn patched_names_bytes(manifest: &[u8]) -> BTreeSet<String> {
 fn workspace_root(root: &Path) -> Result<Option<PathBuf>, String> {
     let mut nearest = None;
     for directory in root.ancestors() {
+        observation_budget()?;
         let manifest = directory.join("Cargo.toml");
         let Some(bytes) = read_observation_file(&manifest, MAX_CARGO_CONFIG_BYTES)? else {
             continue;
@@ -3735,7 +3850,15 @@ fn run_with_default_rustc(
     maximum: usize,
     default_rustc: Option<&Path>,
 ) -> Result<Vec<u8>, String> {
+    observation_budget()?;
     let mut command = Command::new(program);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // A cancellation must stop Cargo's descendants as well as its
+        // immediate process, so their inherited output pipes can close.
+        command.process_group(0);
+    }
     if let Some(rustc) = default_rustc {
         // Cargo's selected compiler has already been resolved and witnessed;
         // provide it only when no environment or Cargo config selected one.
@@ -3749,14 +3872,14 @@ fn run_with_default_rustc(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| format!("cargo could not start: {error}"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "cargo has no stdout".to_owned())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "cargo has no stderr".to_owned())?;
+    let Some(stdout) = child.stdout.take() else {
+        terminate_cargo_child(&mut child);
+        return Err("cargo has no stdout".to_owned());
+    };
+    let Some(stderr) = child.stderr.take() else {
+        terminate_cargo_child(&mut child);
+        return Err("cargo has no stderr".to_owned());
+    };
     let limit = u64::try_from(maximum).unwrap_or(u64::MAX).saturating_add(1);
     let reader = std::thread::spawn(move || {
         let mut bytes = Vec::new();
@@ -3768,27 +3891,43 @@ fn run_with_default_rustc(
         bytes
     });
     let started = Instant::now();
+    let deadline = observation_deadline().map_or(started + CARGO_DEADLINE, |deadline| {
+        deadline.min(started + CARGO_DEADLINE)
+    });
     let status = loop {
+        if let Err(reason) = observation_budget() {
+            break Err(reason);
+        }
         match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() > CARGO_DEADLINE => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!(
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) if Instant::now() >= deadline => {
+                break Err(format!(
                     "cargo {} took longer than {}s",
                     arguments[0],
                     CARGO_DEADLINE.as_secs()
                 ));
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-            Err(error) => return Err(format!("cargo {} failed: {error}", arguments[0])),
+            Err(error) => break Err(format!("cargo {} failed: {error}", arguments[0])),
         }
     };
-    let bytes = reader
-        .join()
+    if status.is_err() {
+        terminate_cargo_child(&mut child);
+    } else {
+        // Cargo should have reaped its own descendants. Close a surviving
+        // process group before joining pipes if a wrapper left one behind.
+        #[cfg(unix)]
+        kill_cargo_process_group(&child);
+    }
+    // Join both readers on every path. A cancelled Cargo process may have
+    // already produced bytes, but no detached reader or child is retained.
+    let bytes = reader.join();
+    let errors = errors.join();
+    let status = status?;
+    let bytes = bytes
         .map_err(|_| "cargo's output reader panicked".to_owned())?
         .map_err(|error| format!("reading cargo's output: {error}"))?;
-    let errors = errors.join().unwrap_or_default();
+    let errors = errors.unwrap_or_default();
     if bytes.len() > maximum {
         return Err(format!(
             "cargo {} wrote more than {maximum} bytes",
@@ -3805,9 +3944,61 @@ fn run_with_default_rustc(
     Ok(bytes)
 }
 
+fn terminate_cargo_child(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    kill_cargo_process_group(child);
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[cfg(unix)]
+fn kill_cargo_process_group(child: &std::process::Child) {
+    // The child was started as its own group. A direct kill alone can leave
+    // a compiler descendant holding stdout/stderr open forever.
+    let group = format!("-{}", child.id());
+    let _ = Command::new("/bin/kill")
+        .args(["-KILL", "--", group.as_str()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn cancelled_cargo_command_kills_its_process_group_and_joins_output_readers() {
+        let control = Arc::new(ObservationControl::new());
+        let cancelling = Arc::clone(&control);
+        let trigger = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            cancelling.cancel();
+        });
+        let started = Instant::now();
+        // This shell stands in for a Cargo invocation that left a compiler
+        // descendant holding both inherited pipes open. The production run
+        // path and its process-group cleanup are exercised unchanged.
+        let outcome = with_observation_control(control, || {
+            run(
+                Path::new("/bin/sh"),
+                Path::new("/tmp"),
+                &["-c", "sleep 10 & wait"],
+                1024,
+            )
+        });
+        trigger.join().expect("cancellation trigger");
+        assert!(
+            outcome.is_err_and(|error| error.contains("cancelled")),
+            "the child must return a cancellation terminal"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "the descendant must not pin the output readers"
+        );
+    }
 
     struct Scratch(PathBuf);
 

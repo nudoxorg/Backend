@@ -7,6 +7,7 @@ use super::super::{
     RegistryGateway, WireCertificate, WireClaim, WorkspaceModel, activate_semantic_publication,
     ingest, projection, publish_builtin_view,
 };
+use super::browse_lane::{BrowseLane, Terminal as BrowseTerminal};
 use super::diff::execute_semantic_diff;
 use super::graph::{execute_certified_graph_query, execute_search};
 use super::index::{
@@ -127,6 +128,7 @@ pub(in crate::builtin) struct CommandAdapter {
     pending_stored_acks: Option<Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
     dependencies: Option<ResidentDependencies>,
     browse: super::super::browse::BrowseCache,
+    browse_lane: BrowseLane,
     /// The index job whose compile runs off the owner loop, if one does.
     indexing: Option<IndexJob>,
     /// Recently completed owner-issued index tickets, for late await/cancel requests.
@@ -285,8 +287,9 @@ impl CommandAdapter {
         pending_stored_acks: Option<
             Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>,
         >,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, BuiltinModelError> {
+        let browse_lane = BrowseLane::start().map_err(BuiltinModelError)?;
+        Ok(Self {
             sql_projection,
             registry,
             forge,
@@ -306,6 +309,7 @@ impl CommandAdapter {
             pending_stored_acks,
             dependencies: None,
             browse: super::super::browse::BrowseCache::default(),
+            browse_lane,
             indexing: None,
             index_terminals: std::collections::VecDeque::new(),
             index_progress: std::collections::VecDeque::new(),
@@ -313,7 +317,7 @@ impl CommandAdapter {
             next_index_ticket: 1,
             index_owner_epoch: new_index_owner_epoch(),
             waiting: std::collections::VecDeque::new(),
-        }
+        })
     }
 
     /// [`Self::execute`], except that indexing a local folder hands its
@@ -397,7 +401,36 @@ impl CommandAdapter {
             }
             return Ok(Executed::Deferred);
         }
+        if let Command::Surface(surface) = &request.command
+            && BrowseLane::accepts(surface)
+        {
+            return match self.browse_lane.submit(
+                transport_ticket,
+                request.request_id,
+                owner,
+                surface.clone(),
+                self.registry.as_ref(),
+            ) {
+                Ok(()) => Ok(Executed::Deferred),
+                Err(reason) => Self::encode(
+                    daemon,
+                    request.request_id,
+                    (
+                        CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
+                            reason.to_owned(),
+                        )),
+                        None,
+                    ),
+                    None,
+                )
+                .map(Executed::Reply),
+            };
+        }
         self.execute(daemon, body).map(Executed::Reply)
+    }
+
+    pub(in crate::builtin) fn close(&mut self) {
+        self.browse_lane.close();
     }
 
     fn start_owner_index_job(
@@ -867,7 +900,7 @@ impl CommandAdapter {
                     Err(std::sync::mpsc::TryRecvError::Empty) => {
                         indexing.work = IndexJobWork::Acquiring(acquired);
                         self.indexing = Some(indexing);
-                        return ready;
+                        return self.with_browse_completions(daemon, ready);
                     }
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                         terminal = Some(backend_library::IndexJobOutcome::Failed(
@@ -883,7 +916,7 @@ impl CommandAdapter {
                         );
                         indexing.work = IndexJobWork::Acquiring(acquired);
                         self.indexing = Some(indexing);
-                        return ready;
+                        return self.with_browse_completions(daemon, ready);
                     }
                     Ok(RegistryAcquisitionMessage::Complete { gateway, result }) => {
                         if let Some(gateway) = gateway {
@@ -909,7 +942,7 @@ impl CommandAdapter {
                                     ) {
                                         Ok(()) => {
                                             self.indexing = Some(indexing);
-                                            return ready;
+                                            return self.with_browse_completions(daemon, ready);
                                         }
                                         Err(refusal) => {
                                             terminal =
@@ -927,7 +960,7 @@ impl CommandAdapter {
                     Err(std::sync::mpsc::TryRecvError::Empty) => {
                         indexing.work = IndexJobWork::Scanning(scanned);
                         self.indexing = Some(indexing);
-                        return ready;
+                        return self.with_browse_completions(daemon, ready);
                     }
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                         terminal = Some(backend_library::IndexJobOutcome::Failed(
@@ -969,7 +1002,7 @@ impl CommandAdapter {
                                 match self.spawn_next_index_profile(&mut indexing, job) {
                                     Ok(()) => {
                                         self.indexing = Some(indexing);
-                                        return ready;
+                                        return self.with_browse_completions(daemon, ready);
                                     }
                                     Err(error) => {
                                         terminal = Some(backend_library::IndexJobOutcome::Failed(
@@ -1013,7 +1046,7 @@ impl CommandAdapter {
                             compiled,
                         };
                         self.indexing = Some(indexing);
-                        return ready;
+                        return self.with_browse_completions(daemon, ready);
                     }
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                         let mut attempts = vec![profile.candidate_attempt().clone()];
@@ -1067,7 +1100,7 @@ impl CommandAdapter {
                                     match self.spawn_next_index_profile(&mut indexing, job) {
                                         Ok(()) => {
                                             self.indexing = Some(indexing);
-                                            return ready;
+                                            return self.with_browse_completions(daemon, ready);
                                         }
                                         Err(error) => {
                                             terminal =
@@ -1145,6 +1178,51 @@ impl CommandAdapter {
                 Err(error) => ready.push((ticket, Err(error))),
             }
         }
+        self.with_browse_completions(daemon, ready)
+    }
+
+    /// Checks the current owner after index publication and queued writers,
+    /// immediately before serializing a finished Cargo browse reply.
+    fn with_browse_completions(
+        &mut self,
+        daemon: &ProductDaemon,
+        mut ready: Vec<(u64, Result<Vec<u8>, BuiltinModelError>)>,
+    ) -> Vec<(u64, Result<Vec<u8>, BuiltinModelError>)> {
+        let current_owner = daemon.engine().daemon().library().cursor();
+        ready.extend(self.browse_lane.drain().into_iter().map(
+            |(ticket, request_id, admitted_owner, advisory, terminal)| {
+                let reply = if admitted_owner != current_owner
+                    || !advisory.still_selected(self.registry.as_ref())
+                {
+                    CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
+                        "owner view changed during Cargo browse observation; retry".to_owned(),
+                    ))
+                } else {
+                    match terminal {
+                        BrowseTerminal::Reply(reply) => reply,
+                        BrowseTerminal::Cancelled => {
+                            CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
+                                "Cargo browse request was cancelled".to_owned(),
+                            ))
+                        }
+                        BrowseTerminal::Deadline => {
+                            CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
+                                "Cargo browse request exceeded its deadline".to_owned(),
+                            ))
+                        }
+                        BrowseTerminal::Failed => {
+                            CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
+                                "Cargo browse worker could not complete the observation".to_owned(),
+                            ))
+                        }
+                    }
+                };
+                (
+                    ticket,
+                    Self::encode(daemon, request_id, (reply, None), None),
+                )
+            },
+        ));
         ready
     }
 

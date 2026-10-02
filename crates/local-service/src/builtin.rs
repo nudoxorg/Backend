@@ -1682,7 +1682,8 @@ pub(crate) fn compose_owner(
         semantic_authority,
         owner_cluster,
         pending_stored_acks,
-    );
+    )
+    .map_err(|error| ProcessError::Profile(format!("start command read lane: {error}")))?;
     let commands = Arc::new(Mutex::new(commands));
     let command_commands = Arc::clone(&commands);
     let command = move |daemon: &mut crate::Locald<
@@ -1750,6 +1751,13 @@ impl crate::DeferredCommands<BuiltinModel, BuiltinValidator, BuiltinAuthorityVer
             .into_iter()
             .map(|(ticket, reply)| (ticket, reply.map_err(|error| error.to_string())))
             .collect()
+    }
+
+    fn close(&mut self) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .close();
     }
 }
 
