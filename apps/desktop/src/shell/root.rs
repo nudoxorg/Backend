@@ -1026,9 +1026,22 @@ impl Shell {
         cx.notify();
     }
 
-    fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if event.keystroke.key == "tab" {
+    /// The keyboard or pointer moved on from the Find visit that Ask
+    /// interrupted, so Ask's exit must not hand focus back to the query.
+    /// Interaction inside the open modal (its editor, its result stops) is
+    /// part of the detour Escape returns from, not a departure; once Ask is
+    /// closed, including while its exit still paints, it is a departure.
+    fn input_left_find_visit(&mut self, cx: &mut Context<Self>) {
+        if !self.ask_open {
             self.reader.update(cx, |reader, _| reader.cancel_find_focus_return());
+        }
+    }
+
+    fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // Only reached when no bound action consumed the Tab (GPUI runs key
+        // listeners after action dispatch); `ask_tab` covers Ask's own Tab.
+        if event.keystroke.key == "tab" {
+            self.input_left_find_visit(cx);
         }
         if self.ask_presentation.blocks_background_input(self.ask_open) {
             // The exit's painted plate still covers the page. The shell's
@@ -1101,9 +1114,13 @@ impl Shell {
         if self.ask_open && self.ask_results_mounted
             && self.links.snapshot(cx).overlay() == Some(Overlay::CommandPalette) {
             self.ask.update(cx, |ask, cx| ask.focus_next(backwards, window, cx));
-        } else if self.ask_open || self.ask_presentation.blocks_background_input(self.ask_open) {
-            // The opening editor remains focused; a leaving plate keeps Tab
-            // from handing focus to a still-covered background control.
+        } else if self.ask_open {
+            // The opening editor remains focused until results are exposed.
+        } else if self.ask_presentation.blocks_background_input(false) {
+            // A leaving plate keeps Tab from handing focus to a still-covered
+            // background control, but the Tab is still the person moving on:
+            // the Find query must not take focus back when the exit ends.
+            self.input_left_find_visit(cx);
         } else {
             cx.propagate();
         }
@@ -1668,9 +1685,7 @@ impl Render for Shell {
             .capture_key_down(cx.listener(|shell, event: &KeyDownEvent, window, cx| {
                 shell.key_down(event, window, cx);
             }))
-            .capture_any_mouse_down(cx.listener(|shell, _, _, cx| {
-                shell.reader.update(cx, |reader, _| reader.cancel_find_focus_return());
-            }))
+            .capture_any_mouse_down(cx.listener(|shell, _, _, cx| shell.input_left_find_visit(cx)))
             .child(ground())
             .child(
                 div()
