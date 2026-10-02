@@ -194,7 +194,9 @@ fn take_json(
     for scalar in scalars {
         let text = if matches!(
             spec.kind(),
-            ArgumentKind::IndexJobTicket | ArgumentKind::CargoPackageReadmeOrigin
+            ArgumentKind::IndexJobTicket
+                | ArgumentKind::CargoPackageReadmeOrigin
+                | ArgumentKind::CargoPackageSourceRequest
         ) && scalar.is_object()
         {
             serde_json::to_string(&scalar).ok()
@@ -626,7 +628,15 @@ fn surface(invocation: &Invocation, id: CommandId) -> Result<SurfaceCommand, Fau
             SurfaceCommand::PackageGraphPage { request }
         }
         CommandId::CargoPackageSourceFile => SurfaceCommand::CargoPackageSourceFile {
-            package: package(invocation, 0)?,
+            request: serde_json::from_str::<backend_library::CargoPackageSourceRequestV1>(
+                invocation.require(0)?,
+            )
+            .map_err(|error| {
+                Fault::usage(
+                    "request",
+                    format!("use the exact package and ProjectTree binding object: {error}"),
+                )
+            })?,
             path: backend_library::CargoPackageSourcePathV1::new(invocation.require(1)?.to_owned())
                 .map_err(|_| {
                     Fault::usage(
@@ -636,7 +646,15 @@ fn surface(invocation: &Invocation, id: CommandId) -> Result<SurfaceCommand, Fau
                 })?,
         },
         CommandId::CargoPackageSourceInventory => SurfaceCommand::CargoPackageSourceInventory {
-            package: package(invocation, 0)?,
+            request: serde_json::from_str::<backend_library::CargoPackageSourceRequestV1>(
+                invocation.require(0)?,
+            )
+            .map_err(|error| {
+                Fault::usage(
+                    "request",
+                    format!("use the exact package and ProjectTree binding object: {error}"),
+                )
+            })?,
         },
         CommandId::CargoPackageReadme => {
             return Err(Fault::usage(

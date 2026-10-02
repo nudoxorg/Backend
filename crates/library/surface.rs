@@ -64,6 +64,10 @@ impl ProductText {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    pub(crate) fn retained_capacity(&self) -> usize {
+        self.0.capacity()
+    }
 }
 
 impl TryFrom<String> for ProductText {
@@ -999,10 +1003,10 @@ pub enum SurfaceCommand {
         root: ProductText,
     },
     /// Read one bounded UTF-8 file under a currently revalidated Cargo
-    /// package source root. The request carries no filesystem path.
+    /// package source root, bound to its exact ProjectTree request.
     CargoPackageSourceFile {
-        /// Exact source-qualified package reference from a current tree row.
-        package: PackageReference,
+        /// Exact source-qualified package and ProjectTree binding.
+        request: crate::CargoPackageSourceRequestV1,
         /// Canonical package-relative path.
         path: crate::CargoPackageSourcePathV1,
     },
@@ -1010,8 +1014,8 @@ pub enum SurfaceCommand {
     /// currently observed Cargo source receipt. Every listed path needs its
     /// own `CargoPackageSourceFile` read before displaying bytes.
     CargoPackageSourceInventory {
-        /// Exact source-qualified package reference from a current tree row.
-        package: PackageReference,
+        /// Exact source-qualified package and ProjectTree binding.
+        request: crate::CargoPackageSourceRequestV1,
     },
     /// Read the bounded README selected by the exact Cargo package manifest
     /// and source authority. The request cannot supply a path or project root.
@@ -1126,17 +1130,12 @@ impl SurfaceCommand {
             Self::PackageGraphPage { request } => request
                 .admit()
                 .map_err(|_| ProductAdmissionError::PackageGraphPage),
-            Self::CargoPackageSourceFile { package, path }
-                if crate::CargoPackageSourceAuthorityV1::digest_from_package_reference(package)
-                    .is_none()
-                    || !path.has_admissible_shape() =>
+            Self::CargoPackageSourceFile { request, path }
+                if !request.has_admissible_shape() || !path.has_admissible_shape() =>
             {
                 Err(ProductAdmissionError::CargoSourceShape)
             }
-            Self::CargoPackageSourceInventory { package }
-                if crate::CargoPackageSourceAuthorityV1::digest_from_package_reference(package)
-                    .is_none() =>
-            {
+            Self::CargoPackageSourceInventory { request } if !request.has_admissible_shape() => {
                 Err(ProductAdmissionError::CargoSourceShape)
             }
             Self::CargoPackageReadme { request } if !request.has_admissible_shape() => {

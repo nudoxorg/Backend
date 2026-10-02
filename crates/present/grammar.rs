@@ -61,6 +61,8 @@ pub enum ArgumentKind {
     IndexJobTicket,
     /// The exact JSON origin returned by a Cargo package README read.
     CargoPackageReadmeOrigin,
+    /// The exact JSON package and tree binding returned by a ProjectTree.
+    CargoPackageSourceRequest,
     /// A non-negative progress event sequence.
     Sequence,
 }
@@ -85,6 +87,7 @@ impl ArgumentKind {
             Self::ExecutionIntent => "INTENT",
             Self::IndexJobTicket => "TICKET",
             Self::CargoPackageReadmeOrigin => "ORIGIN_JSON",
+            Self::CargoPackageSourceRequest => "SOURCE_REQUEST_JSON",
             Self::Sequence => "SEQUENCE",
             Self::Generation => "GENERATION",
             Self::GraphDirection => "DIRECTION",
@@ -100,7 +103,9 @@ impl ArgumentKind {
         match self {
             Self::NodeId | Self::Limit | Self::Sequence => "integer",
             Self::Flag => "boolean",
-            Self::IndexJobTicket | Self::CargoPackageReadmeOrigin => "object",
+            Self::IndexJobTicket
+            | Self::CargoPackageReadmeOrigin
+            | Self::CargoPackageSourceRequest => "object",
             _ => "string",
         }
     }
@@ -475,7 +480,7 @@ const CURSOR: ArgumentSpec = ArgumentSpec::optional(
 );
 
 /// The calling convention of every registry row, in registry order.
-pub const GRAMMARS: [CommandGrammar; 48] = [
+pub const GRAMMARS: [CommandGrammar; 51] = [
     CommandGrammar {
         name: "advisory",
         tool: "backend.advisory",
@@ -1079,9 +1084,9 @@ pub const GRAMMARS: [CommandGrammar; 48] = [
         aliases: &[],
         positional: &[
             ArgumentSpec::required(
-                "package",
-                ArgumentKind::PackageReference,
-                "Source-qualified package reference copied from a current ProjectTree row.",
+                "request",
+                ArgumentKind::CargoPackageSourceRequest,
+                "Exact package and requested/effective root binding copied from one ProjectTree reply.",
             ),
             ArgumentSpec::required(
                 "path",
@@ -1090,16 +1095,16 @@ pub const GRAMMARS: [CommandGrammar; 48] = [
             ),
         ],
         options: &[],
-        when: "Use for a bounded source or documentation file when the owner can revalidate its exact Cargo source receipt.",
+        when: "Use for a bounded source or documentation file when the owner can revalidate both the Cargo source receipt and the exact ProjectTree request.",
     },
     CommandGrammar {
         name: "cargo-source-inventory",
         tool: "backend.cargo_source_inventory",
         aliases: &[],
         positional: &[ArgumentSpec::required(
-            "package",
-            ArgumentKind::PackageReference,
-            "Source-qualified package reference copied from a current ProjectTree row.",
+            "request",
+            ArgumentKind::CargoPackageSourceRequest,
+            "Exact package and requested/effective root binding copied from one ProjectTree reply.",
         )],
         options: &[],
         when: "Use to list a bounded set of owner-observed source and documentation paths. Each address must be read separately; the inventory is not proof that a file is indexed.",

@@ -31,10 +31,11 @@ use backend_library::{
     PackageReference,
 };
 use backend_platform::directory::{DirectoryCapability, EntryKind};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Largest `cargo metadata` document admitted.
@@ -51,22 +52,77 @@ const MAX_CARGO_CONFIG_INPUTS: usize = 256;
 const MAX_CARGO_CONFIG_DEPTH: usize = 16;
 const MAX_SOURCE_DIRECTORY_ENTRIES: usize = 2_048;
 const MAX_SOURCE_DIRECTORY_DEPTH: usize = 32;
+const MAX_BROWSE_CACHED_WORKSPACES: usize = 2;
+const MAX_BROWSE_CACHE_BYTES: usize = 128 * 1024 * 1024;
+const MAX_BROWSE_REQUEST_BINDINGS_PER_WORKSPACE: usize = 16;
+/// Conservative reserve for the bounded workspace and request-binding index
+/// bucket allocations. These maps retain their high-water buckets after row
+/// removal, so account for their maximum size once for the cache's lifetime.
+const BROWSE_CACHE_INDEX_RETAINED_BYTES: usize = 256 * 1024;
 
-/// The last tree input read from Cargo, and the file bytes it was read from.
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct RequestBindingKey {
+    requested_root_digest: [u8; 32],
+    effective_workspace_root_digest: [u8; 32],
+}
+
+/// Bounded, shared immutable Cargo observations for currently admitted trees.
 pub(super) struct BrowseCache {
-    entry: Option<CacheEntry>,
+    entries: HashMap<PathBuf, CacheEntry>,
+    bindings: HashMap<RequestBindingKey, PathBuf>,
+    requested_bindings: HashMap<[u8; 32], RequestBindingKey>,
+    cached_bytes: usize,
+    use_clock: u64,
+    #[cfg(test)]
+    counters: BrowseCacheCounters,
+}
+
+impl Default for BrowseCache {
+    fn default() -> Self {
+        Self {
+            entries: HashMap::new(),
+            bindings: HashMap::new(),
+            requested_bindings: HashMap::new(),
+            // HashMap buckets do not shrink on ordinary removal. Reserve the
+            // bounded maximum index allocation once instead of reallocating
+            // the indexes whenever a source witness changes.
+            cached_bytes: BROWSE_CACHE_INDEX_RETAINED_BYTES,
+            use_clock: 0,
+            #[cfg(test)]
+            counters: BrowseCacheCounters::default(),
+        }
+    }
 }
 
 struct CacheEntry {
-    /// The project directory Cargo resolves from (see [`workspace_root`]).
-    workspace: PathBuf,
     witness: [u8; 32],
     watched: Vec<PathBuf>,
-    input: TreeInput,
-    /// Exact request roots that admitted the last returned tree.
-    request_binding: Option<backend_library::browse::ProjectTreeRequestBindingV1>,
+    input: Arc<TreeInput>,
+    /// Estimated retained bytes, including this entry's indexes.
+    retained_bytes: usize,
+    /// Exact source authority digest to package-row index; `None` means an
+    /// impossible duplicate digest was observed and is never selected.
+    package_rows: HashMap<[u8; 32], Option<usize>>,
+    /// Bounded exact request roots that admitted this immutable observation.
+    request_bindings: HashMap<RequestBindingKey, CachedRequestBinding>,
     tool_witness_reuse: Option<CargoToolWitnessReuse>,
+    last_used: u64,
+}
+
+#[derive(Clone, Copy)]
+struct CachedRequestBinding {
+    binding: backend_library::browse::ProjectTreeRequestBindingV1,
+    last_used: u64,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct BrowseCacheCounters {
+    tree_input_allocations: usize,
+    cache_hits: usize,
+    retained_bytes_reused: usize,
+    evictions: usize,
+    request_binding_evictions: usize,
 }
 
 impl BrowseCache {
@@ -94,15 +150,13 @@ impl BrowseCache {
                 });
             authority.observe(&package, version, false, false, now, false)
         };
-        let mut tree = build_tree(&input, &observe);
+        let mut tree = build_tree(input.as_ref(), &observe);
         let binding =
             backend_library::browse::ProjectTreeRequestBindingV1::for_paths(root, &tree.root)
                 .ok_or_else(|| {
                     "Cargo project tree could not bind its requested and resolved roots".to_owned()
                 })?;
-        if let Some(entry) = self.entry.as_mut() {
-            entry.request_binding = Some(binding);
-        }
+        self.admit_request_binding(Path::new(&input.root), binding);
         tree.request_binding = Some(binding);
         Ok(tree)
     }
@@ -112,26 +166,43 @@ impl BrowseCache {
     /// path; the owner recovers it from the admitted metadata row.
     pub(super) fn source_file(
         &mut self,
-        package: PackageReference,
+        request: backend_library::CargoPackageSourceRequestV1,
         path: CargoPackageSourcePathV1,
     ) -> CargoPackageSourceFileResultV1 {
-        if !path.has_admissible_shape()
-            || CargoPackageSourceAuthorityV1::digest_from_package_reference(&package).is_none()
-        {
+        let valid_request = request.has_admissible_shape();
+        let package = request.package;
+        let request_binding = request.request_binding;
+        if !valid_request {
+            return unavailable_source_file(
+                None,
+                None,
+                CargoPackageSourceReadFailureV1::InvalidPackageReference,
+            );
+        }
+        if !path.has_admissible_shape() {
             return unavailable_source_file(
                 Some(package),
-                CargoPackageSourceReadFailureV1::InvalidPackageReference,
+                Some(request_binding),
+                CargoPackageSourceReadFailureV1::InvalidRelativePath,
             );
         }
         if !supported_source_path(path.as_str()) {
             return unavailable_source_file(
                 Some(package),
+                Some(request_binding),
                 CargoPackageSourceReadFailureV1::UnsupportedFileKind,
             );
         }
-        let Some(workspace) = self.entry.as_ref().map(|entry| entry.workspace.clone()) else {
+        let Some(workspace) = self.workspace_for_binding(request_binding) else {
+            if self.has_cached_authority(&package) {
+                return CargoPackageSourceFileResultV1::Stale {
+                    package,
+                    request_binding,
+                };
+            }
             return unavailable_source_file(
                 Some(package),
+                Some(request_binding),
                 CargoPackageSourceReadFailureV1::AuthorityUnavailable,
             );
         };
@@ -140,48 +211,69 @@ impl BrowseCache {
             Err(_) => {
                 return unavailable_source_file(
                     Some(package),
+                    Some(request_binding),
                     CargoPackageSourceReadFailureV1::SourceObservationUnavailable,
                 );
             }
         };
-        let Some(package_row) = input.packages.iter().find(|row| {
-            matches!(
-                &row.source_authority,
-                CargoPackageSourceAuthorityStateV1::Admitted(authority)
-                    if authority.matches_package_reference(&package)
-            )
-        }) else {
-            return CargoPackageSourceFileResultV1::Stale { package };
+        if !self.has_current_binding(&workspace, request_binding) {
+            return CargoPackageSourceFileResultV1::Stale {
+                package,
+                request_binding,
+            };
+        }
+        let Some(package_row_index) = self.package_row_index(&workspace, &package) else {
+            return CargoPackageSourceFileResultV1::Stale {
+                package,
+                request_binding,
+            };
+        };
+        let Some(package_row) = input.packages.get(package_row_index) else {
+            return unavailable_source_file(
+                Some(package),
+                Some(request_binding),
+                CargoPackageSourceReadFailureV1::AuthorityUnavailable,
+            );
         };
         let CargoPackageSourceAuthorityStateV1::Admitted(authority) = &package_row.source_authority
         else {
-            unreachable!("the predicate admitted only source authority rows")
+            return CargoPackageSourceFileResultV1::Stale {
+                package,
+                request_binding,
+            };
         };
-        let Some(package_root) = package_row.source_root.as_deref() else {
+        let Some(package_root) = package_row.source_root.clone() else {
             return unavailable_source_file(
                 Some(package),
+                Some(request_binding),
                 CargoPackageSourceReadFailureV1::PackageRootUnavailable,
             );
         };
         if !authority.has_admissible_shape()
-            || !authority.matches_package_root_path(package_root)
+            || !authority.matches_package_reference(&package)
+            || !authority.matches_package_root_path(&package_root)
             || !authority.matches_workspace_root_path(Path::new(&input.root))
+            || !request_binding.matches_workspace_root_identity(authority.roots().workspace_root)
         {
             return unavailable_source_file(
                 Some(package),
+                Some(request_binding),
                 CargoPackageSourceReadFailureV1::AuthorityUnavailable,
             );
         }
         let authority = authority.clone();
-        let contents = match read_source_file_under(package_root, &path) {
+        let contents = match read_source_file_under(&package_root, &path) {
             Ok(contents) => contents,
-            Err(reason) => return unavailable_source_file(Some(package), reason),
+            Err(reason) => {
+                return unavailable_source_file(Some(package), Some(request_binding), reason);
+            }
         };
         let contents = match String::from_utf8(contents) {
             Ok(contents) if !contents.as_bytes().contains(&0) => contents,
             _ => {
                 return unavailable_source_file(
                     Some(package),
+                    Some(request_binding),
                     CargoPackageSourceReadFailureV1::NotUtf8Text,
                 );
             }
@@ -195,25 +287,50 @@ impl BrowseCache {
             Err(_) => {
                 return unavailable_source_file(
                     Some(package),
+                    Some(request_binding),
                     CargoPackageSourceReadFailureV1::SourceObservationUnavailable,
                 );
             }
         };
-        let still_current = current.packages.iter().any(|row| {
-            matches!(
-                &row.source_authority,
-                CargoPackageSourceAuthorityStateV1::Admitted(current)
-                    if current.authority_digest() == authority.authority_digest()
-            )
-        });
+        let still_current = self.has_current_binding(&workspace, request_binding)
+            && self
+                .package_row_index(&workspace, &package)
+                .and_then(|index| current.packages.get(index))
+                .is_some_and(|row| {
+                    matches!(
+                        &row.source_authority,
+                        CargoPackageSourceAuthorityStateV1::Admitted(current)
+                            if current.authority_digest() == authority.authority_digest()
+                                && current.matches_package_reference(&package)
+                    )
+                });
         if !still_current {
-            return CargoPackageSourceFileResultV1::Stale { package };
+            return CargoPackageSourceFileResultV1::Stale {
+                package,
+                request_binding,
+            };
+        }
+        let second = match read_source_file_under(&package_root, &path) {
+            Ok(contents) => contents,
+            Err(_) => {
+                return CargoPackageSourceFileResultV1::Stale {
+                    package,
+                    request_binding,
+                };
+            }
+        };
+        if second.as_slice() != contents.as_bytes() {
+            return CargoPackageSourceFileResultV1::Stale {
+                package,
+                request_binding,
+            };
         }
         let contents = contents.into_boxed_str();
         let content_digest = *blake3::hash(contents.as_bytes()).as_bytes();
         CargoPackageSourceFileResultV1::Read {
             package,
             authority,
+            request_binding,
             path,
             content_digest,
             contents,
@@ -227,18 +344,19 @@ impl BrowseCache {
         &mut self,
         request: CargoPackageReadmeRequestV1,
     ) -> CargoPackageReadmeResultV1 {
-        if !request.has_admissible_shape() {
+        let valid_request = request.has_admissible_shape();
+        let requested_root_digest = request.requested_root_digest;
+        let expected_workspace_root_digest = request.expected_workspace_root_digest;
+        let package = request.package;
+        if !valid_request {
             return unavailable_package_readme(
-                Some(request.package),
+                Some(package),
                 None,
                 CargoPackageReadmeFailureV1::InvalidPackageReference,
             );
         }
-        let package = request.package;
-        let Some((workspace, request_binding)) = self
-            .entry
-            .as_ref()
-            .and_then(|entry| Some((entry.workspace.clone(), entry.request_binding?)))
+        let Some((workspace, request_binding)) =
+            self.binding_for_request(requested_root_digest, None)
         else {
             return unavailable_package_readme(
                 Some(package),
@@ -246,10 +364,8 @@ impl BrowseCache {
                 CargoPackageReadmeFailureV1::AuthorityUnavailable,
             );
         };
-        if request.requested_root_digest != request_binding.requested_root_digest
-            || request
-                .expected_workspace_root_digest
-                .is_some_and(|expected| expected != request_binding.effective_workspace_root_digest)
+        if expected_workspace_root_digest
+            .is_some_and(|expected| expected != request_binding.effective_workspace_root_digest)
         {
             return CargoPackageReadmeResultV1::Stale {
                 package,
@@ -266,7 +382,7 @@ impl BrowseCache {
                 );
             }
         };
-        if self.entry.as_ref().and_then(|entry| entry.request_binding) != Some(request_binding)
+        if !self.has_current_binding(&workspace, request_binding)
             || !request_binding.matches_effective_workspace_root(&input.root)
         {
             return CargoPackageReadmeResultV1::Stale {
@@ -274,23 +390,27 @@ impl BrowseCache {
                 request_binding: Some(request_binding),
             };
         }
-        let Some(package_row) = input.packages.iter().find(|row| {
-            matches!(
-                &row.source_authority,
-                CargoPackageSourceAuthorityStateV1::Admitted(authority)
-                    if authority.matches_package_reference(&package)
-            )
-        }) else {
+        let Some(package_row_index) = self.package_row_index(&workspace, &package) else {
             return CargoPackageReadmeResultV1::Stale {
                 package,
                 request_binding: Some(request_binding),
             };
         };
+        let Some(package_row) = input.packages.get(package_row_index) else {
+            return unavailable_package_readme(
+                Some(package),
+                Some(request_binding),
+                CargoPackageReadmeFailureV1::AuthorityUnavailable,
+            );
+        };
         let CargoPackageSourceAuthorityStateV1::Admitted(authority) = &package_row.source_authority
         else {
-            unreachable!("the predicate admitted only source authority rows")
+            return CargoPackageReadmeResultV1::Stale {
+                package,
+                request_binding: Some(request_binding),
+            };
         };
-        let Some(package_root) = package_row.source_root.as_deref() else {
+        let Some(package_root) = package_row.source_root.clone() else {
             return unavailable_package_readme(
                 Some(package),
                 Some(request_binding),
@@ -298,7 +418,8 @@ impl BrowseCache {
             );
         };
         if !authority.has_admissible_shape()
-            || !authority.matches_package_root_path(package_root)
+            || !authority.matches_package_reference(&package)
+            || !authority.matches_package_root_path(&package_root)
             || !authority.matches_workspace_root_path(Path::new(&input.root))
             || !request_binding.matches_workspace_root_identity(authority.roots().workspace_root)
         {
@@ -309,14 +430,14 @@ impl BrowseCache {
             );
         }
         let authority = authority.clone();
-        let declaration = match package_readme_manifest(package_root) {
+        let declaration = match package_readme_manifest(&package_root) {
             Ok(declaration) => declaration,
             Err(reason) => {
                 return unavailable_package_readme(Some(package), Some(request_binding), reason);
             }
         };
         let selected = match select_and_read_package_readme(
-            package_root,
+            &package_root,
             Path::new(&input.root),
             &declaration,
         ) {
@@ -337,13 +458,13 @@ impl BrowseCache {
                 );
             }
         };
-        if self.entry.as_ref().and_then(|entry| entry.request_binding) != Some(request_binding) {
+        if !self.has_current_binding(&workspace, request_binding) {
             return CargoPackageReadmeResultV1::Stale {
                 package,
                 request_binding: Some(request_binding),
             };
         }
-        let current_declaration = match package_readme_manifest(package_root) {
+        let current_declaration = match package_readme_manifest(&package_root) {
             Ok(declaration) => declaration,
             Err(_) => {
                 return CargoPackageReadmeResultV1::Stale {
@@ -353,7 +474,7 @@ impl BrowseCache {
             }
         };
         let current_selected = match select_and_read_package_readme(
-            package_root,
+            &package_root,
             Path::new(&current.root),
             &current_declaration,
         ) {
@@ -371,13 +492,17 @@ impl BrowseCache {
                 request_binding: Some(request_binding),
             };
         }
-        let still_current = current.packages.iter().any(|row| {
-            matches!(
-                &row.source_authority,
-                CargoPackageSourceAuthorityStateV1::Admitted(current)
-                    if current.authority_digest() == authority.authority_digest()
-            )
-        });
+        let still_current = self
+            .package_row_index(&workspace, &package)
+            .and_then(|index| current.packages.get(index))
+            .is_some_and(|row| {
+                matches!(
+                    &row.source_authority,
+                    CargoPackageSourceAuthorityStateV1::Admitted(current)
+                        if current.authority_digest() == authority.authority_digest()
+                            && current.matches_package_reference(&package)
+                )
+            });
         if !still_current {
             return CargoPackageReadmeResultV1::Stale {
                 package,
@@ -442,7 +567,7 @@ impl BrowseCache {
         }
         let origin = request.origin;
         let href = request.href;
-        let Some(workspace) = self.entry.as_ref().map(|entry| entry.workspace.clone()) else {
+        let Some(workspace) = self.workspace_for_binding(origin.request_binding) else {
             return unavailable_package_readme_link(
                 Some(origin),
                 CargoPackageReadmeLinkFailureV1::ObservationUnavailable,
@@ -507,37 +632,37 @@ impl BrowseCache {
                 );
             }
         };
-        if self.entry.as_ref().and_then(|entry| entry.request_binding)
-            != Some(origin.request_binding)
+        if !self.has_current_binding(&workspace, origin.request_binding)
             || !origin
                 .request_binding
                 .matches_effective_workspace_root(&input.root)
         {
             return CargoPackageReadmeLinkResultV1::Stale { origin };
         }
-        let Some(package_row) = input.packages.iter().find(|row| {
-            matches!(
-                &row.source_authority,
-                CargoPackageSourceAuthorityStateV1::Admitted(current)
-                    if current.matches_package_reference(&origin.package)
-                        && current.authority_digest() == authority.authority_digest()
-            )
-        }) else {
+        let Some(package_row_index) = self.package_row_index(&workspace, &origin.package) else {
+            return CargoPackageReadmeLinkResultV1::Stale { origin };
+        };
+        let Some(package_row) = input.packages.get(package_row_index) else {
             return CargoPackageReadmeLinkResultV1::Stale { origin };
         };
         let CargoPackageSourceAuthorityStateV1::Admitted(current_authority) =
             &package_row.source_authority
         else {
-            unreachable!("the predicate admitted only source authority rows")
+            return CargoPackageReadmeLinkResultV1::Stale { origin };
         };
-        let Some(package_root) = package_row.source_root.as_deref() else {
+        if !current_authority.matches_package_reference(&origin.package)
+            || current_authority.authority_digest() != authority.authority_digest()
+        {
+            return CargoPackageReadmeLinkResultV1::Stale { origin };
+        }
+        let Some(package_root) = package_row.source_root.clone() else {
             return unavailable_package_readme_link(
                 Some(origin),
                 CargoPackageReadmeLinkFailureV1::ObservationUnavailable,
             );
         };
         if !current_authority.has_admissible_shape()
-            || !current_authority.matches_package_root_path(package_root)
+            || !current_authority.matches_package_root_path(&package_root)
             || !current_authority.matches_workspace_root_path(Path::new(&input.root))
         {
             return unavailable_package_readme_link(
@@ -546,19 +671,19 @@ impl BrowseCache {
             );
         }
         let target_root = match origin.root_scope {
-            CargoPackageReadmeRootScopeV1::Package => package_root,
+            CargoPackageReadmeRootScopeV1::Package => package_root.clone(),
             CargoPackageReadmeRootScopeV1::EffectiveWorkspace
                 if origin.selection == CargoPackageReadmeSelectionV1::WorkspaceInherited
-                    && Path::new(package_root).starts_with(Path::new(&input.root)) =>
+                    && Path::new(&package_root).starts_with(Path::new(&input.root)) =>
             {
-                input.root.as_str()
+                PathBuf::from(&input.root)
             }
             CargoPackageReadmeRootScopeV1::EffectiveWorkspace => {
                 return CargoPackageReadmeLinkResultV1::Stale { origin };
             }
         };
         let first = match read_source_file_under_limit(
-            Path::new(target_root),
+            &target_root,
             &path,
             backend_library::MAX_CARGO_PACKAGE_SOURCE_FILE_BYTES,
         ) {
@@ -582,7 +707,7 @@ impl BrowseCache {
                 );
             }
         };
-        let contents = match String::from_utf8(first.clone()) {
+        let contents = match String::from_utf8(first) {
             Ok(contents) if !contents.as_bytes().contains(&0) => contents,
             _ => {
                 return unavailable_package_readme_link(
@@ -614,16 +739,15 @@ impl BrowseCache {
             _ => return CargoPackageReadmeLinkResultV1::Stale { origin },
         }
         let second = match read_source_file_under_limit(
-            Path::new(target_root),
+            &target_root,
             &path,
             backend_library::MAX_CARGO_PACKAGE_SOURCE_FILE_BYTES,
         ) {
             Ok(Some(contents)) => contents,
             _ => return CargoPackageReadmeLinkResultV1::Stale { origin },
         };
-        if first != second
-            || self.entry.as_ref().and_then(|entry| entry.request_binding)
-                != Some(origin.request_binding)
+        if contents.as_bytes() != second.as_slice()
+            || !self.has_current_binding(&workspace, origin.request_binding)
         {
             return CargoPackageReadmeLinkResultV1::Stale { origin };
         }
@@ -644,17 +768,28 @@ impl BrowseCache {
     /// separately through [`Self::source_file`].
     pub(super) fn source_inventory(
         &mut self,
-        package: PackageReference,
+        request: backend_library::CargoPackageSourceRequestV1,
     ) -> CargoPackageSourceInventoryResultV1 {
-        if CargoPackageSourceAuthorityV1::digest_from_package_reference(&package).is_none() {
+        let valid_request = request.has_admissible_shape();
+        let package = request.package;
+        let request_binding = request.request_binding;
+        if !valid_request {
             return unavailable_source_inventory(
-                Some(package),
+                None,
+                None,
                 CargoPackageSourceInventoryFailureV1::AuthorityUnavailable,
             );
         }
-        let Some(workspace) = self.entry.as_ref().map(|entry| entry.workspace.clone()) else {
+        let Some(workspace) = self.workspace_for_binding(request_binding) else {
+            if self.has_cached_authority(&package) {
+                return CargoPackageSourceInventoryResultV1::Stale {
+                    package,
+                    request_binding,
+                };
+            }
             return unavailable_source_inventory(
                 Some(package),
+                Some(request_binding),
                 CargoPackageSourceInventoryFailureV1::AuthorityUnavailable,
             );
         };
@@ -663,55 +798,76 @@ impl BrowseCache {
             Err(_) => {
                 return unavailable_source_inventory(
                     Some(package),
+                    Some(request_binding),
                     CargoPackageSourceInventoryFailureV1::AuthorityUnavailable,
                 );
             }
         };
-        let Some(package_row) = input.packages.iter().find(|row| {
-            matches!(
-                &row.source_authority,
-                CargoPackageSourceAuthorityStateV1::Admitted(authority)
-                    if authority.matches_package_reference(&package)
-            )
-        }) else {
-            return CargoPackageSourceInventoryResultV1::Stale { package };
+        if !self.has_current_binding(&workspace, request_binding) {
+            return CargoPackageSourceInventoryResultV1::Stale {
+                package,
+                request_binding,
+            };
+        }
+        let Some(package_row_index) = self.package_row_index(&workspace, &package) else {
+            return CargoPackageSourceInventoryResultV1::Stale {
+                package,
+                request_binding,
+            };
+        };
+        let Some(package_row) = input.packages.get(package_row_index) else {
+            return unavailable_source_inventory(
+                Some(package),
+                Some(request_binding),
+                CargoPackageSourceInventoryFailureV1::AuthorityUnavailable,
+            );
         };
         let CargoPackageSourceAuthorityStateV1::Admitted(authority) = &package_row.source_authority
         else {
-            unreachable!("the predicate admitted only source authority rows")
+            return CargoPackageSourceInventoryResultV1::Stale {
+                package,
+                request_binding,
+            };
         };
-        let Some(package_root) = package_row.source_root.as_deref() else {
+        let Some(package_root) = package_row.source_root.clone() else {
             return unavailable_source_inventory(
                 Some(package),
+                Some(request_binding),
                 CargoPackageSourceInventoryFailureV1::PackageRootUnavailable,
             );
         };
         if !authority.has_admissible_shape()
-            || !authority.matches_package_root_path(package_root)
+            || !authority.matches_package_reference(&package)
+            || !authority.matches_package_root_path(&package_root)
             || !authority.matches_workspace_root_path(Path::new(&input.root))
+            || !request_binding.matches_workspace_root_identity(authority.roots().workspace_root)
         {
             return unavailable_source_inventory(
                 Some(package),
+                Some(request_binding),
                 CargoPackageSourceInventoryFailureV1::AuthorityUnavailable,
             );
         }
         let authority = authority.clone();
-        let first = match source_inventory_under(package_root) {
+        let first = match source_inventory_under(&package_root) {
             Ok(inventory) => inventory,
             Err(reason) => {
-                return unavailable_source_inventory(Some(package), reason);
+                return unavailable_source_inventory(Some(package), Some(request_binding), reason);
             }
         };
         // Directory names can change independently of Cargo metadata. Require
         // two identical no-follow enumerations before returning address hints.
-        let second = match source_inventory_under(package_root) {
+        let second = match source_inventory_under(&package_root) {
             Ok(inventory) => inventory,
             Err(reason) => {
-                return unavailable_source_inventory(Some(package), reason);
+                return unavailable_source_inventory(Some(package), Some(request_binding), reason);
             }
         };
         if first != second {
-            return CargoPackageSourceInventoryResultV1::Stale { package };
+            return CargoPackageSourceInventoryResultV1::Stale {
+                package,
+                request_binding,
+            };
         }
 
         // Recheck the Cargo metadata, config, and tool-selection witness after
@@ -722,29 +878,39 @@ impl BrowseCache {
             Err(_) => {
                 return unavailable_source_inventory(
                     Some(package),
+                    Some(request_binding),
                     CargoPackageSourceInventoryFailureV1::AuthorityUnavailable,
                 );
             }
         };
-        let still_current = current.packages.iter().any(|row| {
-            matches!(
-                &row.source_authority,
-                CargoPackageSourceAuthorityStateV1::Admitted(current)
-                    if current.authority_digest() == authority.authority_digest()
-            )
-        });
+        let still_current = self.has_current_binding(&workspace, request_binding)
+            && self
+                .package_row_index(&workspace, &package)
+                .and_then(|index| current.packages.get(index))
+                .is_some_and(|row| {
+                    matches!(
+                        &row.source_authority,
+                        CargoPackageSourceAuthorityStateV1::Admitted(current)
+                            if current.authority_digest() == authority.authority_digest()
+                                && current.matches_package_reference(&package)
+                    )
+                });
         if !still_current {
-            return CargoPackageSourceInventoryResultV1::Stale { package };
+            return CargoPackageSourceInventoryResultV1::Stale {
+                package,
+                request_binding,
+            };
         }
         CargoPackageSourceInventoryResultV1::Listed(CargoPackageSourceInventoryV1 {
             package,
             authority,
+            request_binding,
             paths: first.paths.into_boxed_slice(),
             coverage: first.coverage,
         })
     }
 
-    fn input(&mut self, root: &Path) -> Result<TreeInput, String> {
+    fn input(&mut self, root: &Path) -> Result<Arc<TreeInput>, String> {
         let workspace = workspace_root(root)?
             .ok_or_else(|| {
                 format!(
@@ -759,37 +925,302 @@ impl BrowseCache {
         // The same project, and none of the files it was read from moved.
         // (A nested workspace is another project: compare the resolved
         // directory, never a path prefix.)
-        let cached_tool = self
-            .entry
-            .as_ref()
-            .filter(|entry| entry.workspace == workspace)
-            .and_then(|entry| entry.tool_witness_reuse.clone());
-        if let Some(entry) = &self.entry
-            && entry.workspace == workspace
-            && observation_witness(&workspace, &entry.watched, cached_tool.as_ref())
-                .is_ok_and(|observed| observed.digest == entry.witness)
-        {
-            return Ok(entry.input.clone());
+        let cache_hit = self.entries.get(&workspace).is_some_and(|entry| {
+            observation_witness(
+                &workspace,
+                &entry.watched,
+                entry.tool_witness_reuse.as_ref(),
+            )
+            .is_ok_and(|observed| observed.digest == entry.witness)
+        });
+        if cache_hit {
+            self.touch_entry(&workspace);
+            let entry = self
+                .entries
+                .get(&workspace)
+                .expect("cache entry remained present while touching it");
+            #[cfg(test)]
+            {
+                self.counters.cache_hits = self.counters.cache_hits.saturating_add(1);
+                self.counters.retained_bytes_reused = self
+                    .counters
+                    .retained_bytes_reused
+                    .saturating_add(entry.retained_bytes);
+            }
+            return Ok(Arc::clone(&entry.input));
         }
+        let cached_tool = self
+            .entries
+            .get(&workspace)
+            .and_then(|entry| entry.tool_witness_reuse.clone());
+        // A failed freshness check revokes every request binding before any
+        // replacement observation can be admitted.
+        self.remove_workspace(&workspace);
         let (input, watched, witness, tool_witness_reuse) =
             read_project(&workspace, cached_tool.as_ref())?;
-        self.entry = Some(CacheEntry {
-            workspace,
-            witness,
-            watched,
-            input: input.clone(),
-            request_binding: None,
-            tool_witness_reuse,
-        });
+        let input = Arc::new(input);
+        let package_rows = source_package_row_index(&input);
+        let retained_bytes = browse_entry_retained_bytes(
+            &workspace,
+            &watched,
+            watched.capacity(),
+            &input,
+            &package_rows,
+            tool_witness_reuse.as_ref(),
+        );
+        #[cfg(test)]
+        {
+            self.counters.tree_input_allocations =
+                self.counters.tree_input_allocations.saturating_add(1);
+        }
+        if retained_bytes <= MAX_BROWSE_CACHE_BYTES {
+            while self.entries.len() >= MAX_BROWSE_CACHED_WORKSPACES
+                || self.cached_bytes.saturating_add(retained_bytes) > MAX_BROWSE_CACHE_BYTES
+            {
+                let Some(oldest) = self
+                    .entries
+                    .iter()
+                    .min_by_key(|(_, entry)| entry.last_used)
+                    .map(|(workspace, _)| workspace.clone())
+                else {
+                    break;
+                };
+                self.remove_workspace(&oldest);
+                #[cfg(test)]
+                {
+                    self.counters.evictions = self.counters.evictions.saturating_add(1);
+                }
+            }
+            if self.entries.len() < MAX_BROWSE_CACHED_WORKSPACES
+                && self.cached_bytes.saturating_add(retained_bytes) <= MAX_BROWSE_CACHE_BYTES
+            {
+                let last_used = self.next_use();
+                self.cached_bytes = self.cached_bytes.saturating_add(retained_bytes);
+                self.entries.insert(
+                    workspace.clone(),
+                    CacheEntry {
+                        witness,
+                        watched,
+                        input: Arc::clone(&input),
+                        retained_bytes,
+                        package_rows,
+                        request_bindings: HashMap::new(),
+                        tool_witness_reuse,
+                        last_used,
+                    },
+                );
+            }
+        }
         Ok(input)
+    }
+
+    fn next_use(&mut self) -> u64 {
+        self.use_clock = self.use_clock.wrapping_add(1).max(1);
+        self.use_clock
+    }
+
+    fn touch_entry(&mut self, workspace: &Path) {
+        let last_used = self.next_use();
+        if let Some(entry) = self.entries.get_mut(workspace) {
+            entry.last_used = last_used;
+        }
+    }
+
+    fn remove_workspace(&mut self, workspace: &Path) {
+        let Some(entry) = self.entries.remove(workspace) else {
+            return;
+        };
+        self.cached_bytes = self.cached_bytes.saturating_sub(entry.retained_bytes);
+        for (key, _) in entry.request_bindings {
+            if self
+                .bindings
+                .get(&key)
+                .is_some_and(|cached| cached.as_path() == workspace)
+            {
+                self.bindings.remove(&key);
+            }
+            if self.requested_bindings.get(&key.requested_root_digest) == Some(&key) {
+                self.requested_bindings.remove(&key.requested_root_digest);
+            }
+        }
+    }
+
+    fn admit_request_binding(
+        &mut self,
+        workspace: &Path,
+        binding: backend_library::browse::ProjectTreeRequestBindingV1,
+    ) {
+        let workspace = workspace.to_path_buf();
+        if !self.entries.contains_key(&workspace) {
+            return;
+        }
+        let key = request_binding_key(binding);
+        if let Some(previous) = self
+            .requested_bindings
+            .get(&binding.requested_root_digest)
+            .copied()
+            && previous != key
+        {
+            self.remove_binding(previous);
+        }
+        if self
+            .bindings
+            .get(&key)
+            .is_some_and(|cached_workspace| cached_workspace != &workspace)
+        {
+            self.remove_binding(key);
+        }
+        let binding_exists = self
+            .entries
+            .get(&workspace)
+            .is_some_and(|entry| entry.request_bindings.contains_key(&key));
+        if !binding_exists
+            && self.entries.get(&workspace).is_some_and(|entry| {
+                entry.request_bindings.len() >= MAX_BROWSE_REQUEST_BINDINGS_PER_WORKSPACE
+            })
+        {
+            let oldest = self.entries.get(&workspace).and_then(|entry| {
+                entry
+                    .request_bindings
+                    .iter()
+                    .min_by_key(|(_, binding)| binding.last_used)
+                    .map(|(key, _)| *key)
+            });
+            if let Some(oldest) = oldest {
+                self.remove_binding(oldest);
+                #[cfg(test)]
+                {
+                    self.counters.request_binding_evictions =
+                        self.counters.request_binding_evictions.saturating_add(1);
+                }
+            }
+        }
+        let last_used = self.next_use();
+        let Some(entry) = self.entries.get_mut(&workspace) else {
+            return;
+        };
+        entry
+            .request_bindings
+            .insert(key, CachedRequestBinding { binding, last_used });
+        self.bindings.insert(key, workspace);
+        self.requested_bindings
+            .insert(binding.requested_root_digest, key);
+    }
+
+    fn remove_binding(&mut self, key: RequestBindingKey) {
+        if let Some(workspace) = self.bindings.remove(&key)
+            && let Some(entry) = self.entries.get_mut(&workspace)
+        {
+            entry.request_bindings.remove(&key);
+        }
+        if self.requested_bindings.get(&key.requested_root_digest) == Some(&key) {
+            self.requested_bindings.remove(&key.requested_root_digest);
+        }
+    }
+
+    fn workspace_for_binding(
+        &mut self,
+        binding: backend_library::browse::ProjectTreeRequestBindingV1,
+    ) -> Option<PathBuf> {
+        let key = request_binding_key(binding);
+        let workspace = self.bindings.get(&key)?.clone();
+        if !self.has_current_binding(&workspace, binding) {
+            return None;
+        }
+        self.touch_binding(&workspace, key);
+        Some(workspace)
+    }
+
+    fn binding_for_request(
+        &mut self,
+        requested_root_digest: [u8; 32],
+        expected_workspace_root_digest: Option<[u8; 32]>,
+    ) -> Option<(
+        PathBuf,
+        backend_library::browse::ProjectTreeRequestBindingV1,
+    )> {
+        let key = if let Some(effective) = expected_workspace_root_digest {
+            RequestBindingKey {
+                requested_root_digest,
+                effective_workspace_root_digest: effective,
+            }
+        } else {
+            *self.requested_bindings.get(&requested_root_digest)?
+        };
+        let workspace = self.bindings.get(&key)?.clone();
+        let binding = self
+            .entries
+            .get(&workspace)?
+            .request_bindings
+            .get(&key)?
+            .binding;
+        if request_binding_key(binding) != key {
+            return None;
+        }
+        self.touch_binding(&workspace, key);
+        Some((workspace, binding))
+    }
+
+    fn has_current_binding(
+        &self,
+        workspace: &Path,
+        binding: backend_library::browse::ProjectTreeRequestBindingV1,
+    ) -> bool {
+        self.entries
+            .get(workspace)
+            .and_then(|entry| entry.request_bindings.get(&request_binding_key(binding)))
+            .is_some_and(|cached| cached.binding == binding)
+            && self
+                .bindings
+                .get(&request_binding_key(binding))
+                .is_some_and(|cached_workspace| cached_workspace.as_path() == workspace)
+    }
+
+    fn touch_binding(&mut self, workspace: &Path, key: RequestBindingKey) {
+        let last_used = self.next_use();
+        if let Some(binding) = self
+            .entries
+            .get_mut(workspace)
+            .and_then(|entry| entry.request_bindings.get_mut(&key))
+        {
+            binding.last_used = last_used;
+        }
+    }
+
+    fn has_cached_authority(&self, package: &PackageReference) -> bool {
+        let Some(digest) = CargoPackageSourceAuthorityV1::digest_from_package_reference(package)
+        else {
+            return false;
+        };
+        // At most two workspaces are retained, so this is a constant-bounded
+        // lookup through each workspace's direct authority index rather than
+        // a second process-global map with independent retention accounting.
+        self.entries
+            .values()
+            .any(|entry| entry.package_rows.contains_key(&digest))
+    }
+
+    fn package_row_index(&self, workspace: &Path, package: &PackageReference) -> Option<usize> {
+        let digest = CargoPackageSourceAuthorityV1::digest_from_package_reference(package)?;
+        self.entries
+            .get(workspace)?
+            .package_rows
+            .get(&digest)
+            .copied()
+            .flatten()
     }
 }
 
 fn unavailable_source_file(
     package: Option<PackageReference>,
+    request_binding: Option<backend_library::browse::ProjectTreeRequestBindingV1>,
     reason: CargoPackageSourceReadFailureV1,
 ) -> CargoPackageSourceFileResultV1 {
-    CargoPackageSourceFileResultV1::Unavailable { package, reason }
+    CargoPackageSourceFileResultV1::Unavailable {
+        package,
+        request_binding,
+        reason,
+    }
 }
 
 fn unavailable_package_readme(
@@ -813,9 +1244,121 @@ fn unavailable_package_readme_link(
 
 fn unavailable_source_inventory(
     package: Option<PackageReference>,
+    request_binding: Option<backend_library::browse::ProjectTreeRequestBindingV1>,
     reason: CargoPackageSourceInventoryFailureV1,
 ) -> CargoPackageSourceInventoryResultV1 {
-    CargoPackageSourceInventoryResultV1::Unavailable { package, reason }
+    CargoPackageSourceInventoryResultV1::Unavailable {
+        package,
+        request_binding,
+        reason,
+    }
+}
+
+fn request_binding_key(
+    binding: backend_library::browse::ProjectTreeRequestBindingV1,
+) -> RequestBindingKey {
+    RequestBindingKey {
+        requested_root_digest: binding.requested_root_digest,
+        effective_workspace_root_digest: binding.effective_workspace_root_digest,
+    }
+}
+
+fn source_package_row_index(input: &TreeInput) -> HashMap<[u8; 32], Option<usize>> {
+    let mut rows: HashMap<[u8; 32], Option<usize>> = HashMap::new();
+    for (index, package) in input.packages.iter().enumerate() {
+        let CargoPackageSourceAuthorityStateV1::Admitted(authority) = &package.source_authority
+        else {
+            continue;
+        };
+        rows.entry(authority.authority_digest())
+            .and_modify(|row| *row = None)
+            .or_insert(Some(index));
+    }
+    rows
+}
+
+fn browse_entry_retained_bytes(
+    workspace: &PathBuf,
+    watched: &[PathBuf],
+    watched_capacity: usize,
+    input: &TreeInput,
+    package_rows: &HashMap<[u8; 32], Option<usize>>,
+    tool_reuse: Option<&CargoToolWitnessReuse>,
+) -> usize {
+    // Each admitted request binding retains a workspace path clone in the
+    // direct binding index. The cache-wide reserve accounts for all bounded
+    // hash-map bucket allocations, including high-water capacity after eviction.
+    let binding_path_budget =
+        MAX_BROWSE_REQUEST_BINDINGS_PER_WORKSPACE.saturating_mul(workspace.capacity());
+    let mut bytes = std::mem::size_of::<CacheEntry>()
+        .saturating_add(workspace.capacity())
+        .saturating_add(1_024)
+        .saturating_add(binding_path_budget)
+        .saturating_add(std::mem::size_of::<Arc<TreeInput>>())
+        .saturating_add(std::mem::size_of::<TreeInput>())
+        .saturating_add(input.root.capacity())
+        .saturating_add(input.packages.capacity() * std::mem::size_of::<TreeInputPackage>())
+        .saturating_add(
+            input.edges.capacity() * std::mem::size_of::<backend_library::browse::TreeEdge>(),
+        )
+        .saturating_add(package_rows.capacity().saturating_mul(256))
+        .saturating_add(watched_capacity.saturating_mul(std::mem::size_of::<PathBuf>()));
+    match &input.source {
+        TreeSource::Cargo { host } => bytes = bytes.saturating_add(host.capacity()),
+        TreeSource::Lockfile { reason, .. } => bytes = bytes.saturating_add(reason.capacity()),
+    }
+    for path in watched {
+        bytes = bytes.saturating_add(path.capacity());
+    }
+    if let Some(tool_reuse) = tool_reuse {
+        // `files` is a boxed slice, so its length is its exact element count
+        // with no spare vector capacity.
+        bytes = bytes
+            .saturating_add(tool_reuse.files.len() * std::mem::size_of::<CargoToolFileReuse>());
+        for file in &tool_reuse.files {
+            bytes = bytes.saturating_add(file.canonical_path.capacity());
+        }
+    }
+    for package in &input.packages {
+        bytes = bytes
+            .saturating_add(package.id.capacity())
+            .saturating_add(package.name.capacity())
+            .saturating_add(package.version.capacity())
+            .saturating_add(package.license.as_ref().map_or(0, String::capacity))
+            .saturating_add(package.description.as_ref().map_or(0, String::capacity))
+            .saturating_add(package.categories.capacity() * std::mem::size_of::<String>())
+            .saturating_add(package.keywords.capacity() * std::mem::size_of::<String>());
+        if let Some(root) = &package.source_root {
+            bytes = bytes.saturating_add(root.capacity());
+        }
+        if let Some(origin) = &package.origin {
+            bytes = bytes.saturating_add(match origin {
+                backend_library::browse::PackageOrigin::Registry { source }
+                | backend_library::browse::PackageOrigin::Git { source } => source.capacity(),
+                backend_library::browse::PackageOrigin::Vendored { path } => path.capacity(),
+                backend_library::browse::PackageOrigin::Unresolved { source } => {
+                    source.as_ref().map_or(0, String::capacity)
+                }
+            });
+        }
+        for value in package.categories.iter().chain(package.keywords.iter()) {
+            bytes = bytes.saturating_add(value.capacity());
+        }
+        if let CargoPackageSourceAuthorityStateV1::Admitted(authority) = &package.source_authority {
+            // The authority owns bounded text through the library's receipt
+            // type; charge its actual string capacities rather than each
+            // field's maximum possible payload.
+            bytes = bytes
+                .saturating_add(std::mem::size_of_val(authority))
+                .saturating_add(authority.retained_text_capacity_bytes());
+        }
+    }
+    for edge in &input.edges {
+        bytes = bytes
+            .saturating_add(edge.from.capacity())
+            .saturating_add(edge.to.capacity());
+    }
+    bytes
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -3635,6 +4178,322 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn two_real_workspaces_keep_exact_source_authority_with_bounded_lru_and_shared_inputs() {
+        fn make_workspace(root: &Path, name: &str, helper_body: &str) {
+            let member = root.join("member");
+            std::fs::create_dir_all(member.join("src")).expect("workspace member source directory");
+            let helper = root
+                .parent()
+                .expect("fixture workspace parent")
+                .join(format!("{name}-helper"));
+            std::fs::create_dir_all(helper.join("src")).expect("local helper source directory");
+            std::fs::write(
+                root.join("Cargo.toml"),
+                "[workspace]\nmembers = [\"member\"]\nresolver = \"2\"\n",
+            )
+            .expect("workspace manifest");
+            std::fs::write(
+                root.join("Cargo.lock"),
+                format!(
+                    "version = 4\n\n[[package]]\nname = \"{name}\"\nversion = \"0.1.0\"\ndependencies = [\n \"cache-shared\",\n]\n\n[[package]]\nname = \"cache-shared\"\nversion = \"0.1.0\"\n"
+                ),
+            )
+            .expect("project lockfile");
+            std::fs::write(
+                member.join("Cargo.toml"),
+                format!(
+                    "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ncache-shared = {{ path = \"../../{name}-helper\" }}\n"
+                ),
+            )
+            .expect("workspace member manifest");
+            std::fs::write(member.join("src/lib.rs"), "pub fn project_member() {}\n")
+                .expect("workspace member source");
+            std::fs::write(
+                helper.join("Cargo.toml"),
+                "[package]\nname = \"cache-shared\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            )
+            .expect("local helper manifest");
+            std::fs::write(helper.join("src/lib.rs"), helper_body).expect("local helper source");
+            std::fs::write(
+                helper.join("README.md"),
+                format!("# shared\n\n{helper_body}"),
+            )
+            .expect("local helper README");
+        }
+
+        fn request_for(
+            cache: &BrowseCache,
+            root: &Path,
+            name: &str,
+            binding: backend_library::browse::ProjectTreeRequestBindingV1,
+        ) -> backend_library::CargoPackageSourceRequestV1 {
+            let entry = cache.entries.get(root).expect("cached workspace");
+            let authority = entry
+                .input
+                .packages
+                .iter()
+                .find_map(|row| match &row.source_authority {
+                    CargoPackageSourceAuthorityStateV1::Admitted(authority)
+                        if authority.name() == name =>
+                    {
+                        Some(authority)
+                    }
+                    _ => None,
+                })
+                .expect("Cargo metadata source receipt");
+            backend_library::CargoPackageSourceRequestV1::from_tree(
+                authority
+                    .package_reference()
+                    .expect("canonical exact source route"),
+                binding,
+            )
+        }
+
+        let scratch = scratch("backend-browse-two-workspace-cache");
+        let a = scratch.0.join("a");
+        let b = scratch.0.join("b");
+        let c = scratch.0.join("c");
+        make_workspace(&a, "cache-a", "pub fn source_a() {}\n");
+        make_workspace(&b, "cache-b", "pub fn source_b() {}\n");
+        make_workspace(&c, "cache-c", "pub fn source_c() {}\n");
+        let a = a.canonicalize().expect("canonical A root");
+        let b = b.canonicalize().expect("canonical B root");
+        let c = c.canonicalize().expect("canonical C root");
+
+        let mut owner = BrowseCache::default();
+        let tree_a = owner
+            .project_tree(&a, None)
+            .expect("real Cargo observation for workspace A");
+        let binding_a = tree_a.request_binding.expect("A request binding");
+        let request_a = request_for(&owner, &a, "cache-shared", binding_a);
+        let shared_a_input = Arc::clone(&owner.entries.get(&a).expect("A cache entry").input);
+
+        let member_root_a = a.join("member");
+        let tree_a_member = owner
+            .project_tree(&member_root_a, None)
+            .expect("member request shares workspace A's real Cargo observation");
+        let binding_a_member = tree_a_member
+            .request_binding
+            .expect("A member request binding");
+        let request_a_member = request_for(&owner, &a, "cache-shared", binding_a_member);
+        assert_ne!(
+            binding_a.requested_root_digest, binding_a_member.requested_root_digest,
+            "the workspace and member requests remain distinct"
+        );
+        assert_eq!(
+            binding_a.effective_workspace_root_digest,
+            binding_a_member.effective_workspace_root_digest,
+            "both requests resolve to the same exact Cargo workspace"
+        );
+        assert_eq!(request_a.package, request_a_member.package);
+
+        let tree_b = owner
+            .project_tree(&b, None)
+            .expect("real Cargo observation for workspace B");
+        let binding_b = tree_b.request_binding.expect("B request binding");
+        let request_b = request_for(&owner, &b, "cache-shared", binding_b);
+        assert_ne!(
+            request_a.package, request_b.package,
+            "same-name/version local packages still have distinct exact source routes"
+        );
+        assert_eq!(owner.entries.len(), 2);
+        assert_eq!(
+            owner.bindings.len(),
+            3,
+            "A root/member and B root are indexed directly"
+        );
+        assert_eq!(owner.requested_bindings.len(), owner.bindings.len());
+        assert!(
+            owner.bindings.len()
+                <= MAX_BROWSE_CACHED_WORKSPACES * MAX_BROWSE_REQUEST_BINDINGS_PER_WORKSPACE
+        );
+        assert!(owner.cached_bytes <= MAX_BROWSE_CACHE_BYTES);
+        assert!(Arc::ptr_eq(
+            &shared_a_input,
+            &owner.entries.get(&a).expect("A retained cache entry").input
+        ));
+
+        let source_path = CargoPackageSourcePathV1::new("src/lib.rs").expect("source path");
+        let source_a = owner.source_file(request_a.clone(), source_path.clone());
+        assert!(source_a.has_admissible_shape(), "A receipt: {source_a:?}");
+        assert!(matches!(
+            &source_a,
+            CargoPackageSourceFileResultV1::Read {
+                request_binding,
+                contents,
+                ..
+            } if *request_binding == binding_a && contents.as_ref() == "pub fn source_a() {}\n"
+        ));
+        let readme_a = owner.package_readme(CargoPackageReadmeRequestV1::from_tree(
+            request_a.package.clone(),
+            binding_a,
+        ));
+        assert!(
+            readme_a.has_admissible_shape(),
+            "A README receipt: {readme_a:?}"
+        );
+        assert!(matches!(
+            readme_a,
+            CargoPackageReadmeResultV1::Read { request_binding, .. }
+                if request_binding == binding_a
+        ));
+        let readme_a_member = owner.package_readme(CargoPackageReadmeRequestV1::from_tree(
+            request_a_member.package.clone(),
+            binding_a_member,
+        ));
+        assert!(
+            readme_a_member.has_admissible_shape(),
+            "A member README receipt: {readme_a_member:?}"
+        );
+        assert!(matches!(
+            readme_a_member,
+            CargoPackageReadmeResultV1::Read { request_binding, .. }
+                if request_binding == binding_a_member
+        ));
+        let source_a_member = owner.source_file(request_a_member.clone(), source_path.clone());
+        assert!(matches!(
+            &source_a_member,
+            CargoPackageSourceFileResultV1::Read {
+                request_binding,
+                contents,
+                ..
+            } if *request_binding == binding_a_member
+                && contents.as_ref() == "pub fn source_a() {}\n"
+        ));
+        let inventory_a = owner.source_inventory(request_a.clone());
+        assert!(
+            inventory_a.has_admissible_shape(),
+            "A inventory: {inventory_a:?}"
+        );
+        assert!(matches!(
+            inventory_a,
+            CargoPackageSourceInventoryResultV1::Listed(inventory)
+                if inventory.request_binding == binding_a
+        ));
+
+        let wrong_binding = backend_library::browse::ProjectTreeRequestBindingV1::for_paths(
+            &a.join("never-admitted"),
+            &tree_a.root,
+        )
+        .expect("well-shaped but different requested root");
+        assert!(matches!(
+            owner.source_file(
+                backend_library::CargoPackageSourceRequestV1::from_tree(
+                    request_a.package.clone(),
+                    wrong_binding,
+                ),
+                source_path.clone(),
+            ),
+            CargoPackageSourceFileResultV1::Stale {
+                request_binding,
+                ..
+            } if request_binding == wrong_binding
+        ));
+
+        // Adding C evicts the least-recently-used workspace B, while A stays
+        // alive because its exact source read touched A after B was admitted.
+        owner
+            .project_tree(&c, None)
+            .expect("real Cargo observation for workspace C");
+        assert_eq!(owner.entries.len(), MAX_BROWSE_CACHED_WORKSPACES);
+        assert!(matches!(
+            owner.source_file(request_b, source_path.clone()),
+            CargoPackageSourceFileResultV1::Unavailable {
+                reason: CargoPackageSourceReadFailureV1::AuthorityUnavailable,
+                ..
+            }
+        ));
+        let source_a_after_c = owner.source_file(request_a.clone(), source_path.clone());
+        assert!(
+            matches!(
+                source_a_after_c,
+                CargoPackageSourceFileResultV1::Read { .. }
+            ),
+            "A must retain its exact unchanged source authority after B and C: {source_a_after_c:?}"
+        );
+        assert!(matches!(
+            owner.source_file(request_a_member.clone(), source_path.clone()),
+            CargoPackageSourceFileResultV1::Read {
+                request_binding,
+                ..
+            } if request_binding == binding_a_member
+        ));
+
+        // A bounded set preserves multiple real ProjectTree requests for one
+        // workspace, then revokes its least-recently-used exact roots once
+        // the explicit request-binding limit is reached.
+        let mut newest_binding = None;
+        for index in 0..MAX_BROWSE_REQUEST_BINDINGS_PER_WORKSPACE {
+            let requested = member_root_a
+                .join("src")
+                .join(format!("request-{index:02}"));
+            std::fs::create_dir_all(&requested).expect("additional requested root directory");
+            let tree = owner
+                .project_tree(&requested, None)
+                .expect("real observed request in workspace A");
+            let binding = tree.request_binding.expect("additional request binding");
+            assert_eq!(
+                binding.effective_workspace_root_digest,
+                binding_a.effective_workspace_root_digest
+            );
+            newest_binding = Some(binding);
+        }
+        assert_eq!(
+            owner
+                .entries
+                .get(&a)
+                .expect("workspace A remains cached")
+                .request_bindings
+                .len(),
+            MAX_BROWSE_REQUEST_BINDINGS_PER_WORKSPACE
+        );
+        assert!(
+            owner.bindings.len()
+                <= MAX_BROWSE_CACHED_WORKSPACES * MAX_BROWSE_REQUEST_BINDINGS_PER_WORKSPACE
+        );
+        assert_eq!(owner.requested_bindings.len(), owner.bindings.len());
+        assert!(matches!(
+            owner.source_file(request_a.clone(), source_path.clone()),
+            CargoPackageSourceFileResultV1::Stale { .. }
+        ));
+        assert!(matches!(
+            owner.source_file(request_a_member, source_path.clone()),
+            CargoPackageSourceFileResultV1::Stale { .. }
+        ));
+        let newest_request = request_for(
+            &owner,
+            &a,
+            "cache-shared",
+            newest_binding.expect("at least one bounded request binding"),
+        );
+        assert!(matches!(
+            owner.source_file(newest_request.clone(), source_path.clone()),
+            CargoPackageSourceFileResultV1::Read { .. }
+        ));
+
+        std::fs::write(
+            a.parent()
+                .expect("fixture parent")
+                .join("cache-a-helper/Cargo.toml"),
+            "[package]\nname = \"cache-shared\"\nversion = \"0.2.0\"\nedition = \"2021\"\n",
+        )
+        .expect("mutate A's local path dependency authority");
+        assert!(
+            matches!(
+                owner.source_file(newest_request, source_path),
+                CargoPackageSourceFileResultV1::Stale { .. }
+            ),
+            "an old source selector must be stale after its local dependency changes"
+        );
+        assert_eq!(owner.counters.tree_input_allocations, 4);
+        assert!(owner.counters.cache_hits >= 6);
+        assert!(owner.counters.retained_bytes_reused > 0);
+        assert_eq!(owner.counters.evictions, 1);
+        assert_eq!(owner.counters.request_binding_evictions, 2);
+        assert!(owner.cached_bytes <= MAX_BROWSE_CACHE_BYTES);
+    }
+
     #[cfg(unix)]
     #[test]
     fn cargo_source_file_reader_uses_nofollow_regular_files_and_hides_internal_roots() {
@@ -3805,7 +4664,7 @@ mod tests {
         // again. This is the half of the seam a mutation that always
         // recomputes (never caches) cannot pass.
         let watched = vec![root.join("Cargo.lock"), root.join("Cargo.toml")];
-        let sentinel = TreeInput {
+        let sentinel = Arc::new(TreeInput {
             source: TreeSource::Lockfile {
                 reason: "planted by the test, never a real read".to_owned(),
                 coverage: LockfileGraphCoverage::Complete,
@@ -3816,16 +4675,35 @@ mod tests {
             edges: Vec::new(),
             locked_inactive: 0,
             locked_inactive_coverage: LockedInactiveCoverage::Unavailable,
-        };
-        let mut cache = BrowseCache::default();
-        cache.entry = Some(CacheEntry {
-            workspace: root.clone(),
-            witness: witness(&watched),
-            watched: watched.clone(),
-            input: sentinel.clone(),
-            request_binding: None,
-            tool_witness_reuse: None,
         });
+        let mut cache = BrowseCache::default();
+        let mut plant_sentinel = |cache: &mut BrowseCache, watched: Vec<PathBuf>| {
+            cache.remove_workspace(&root);
+            let package_rows = source_package_row_index(&sentinel);
+            let retained_bytes = browse_entry_retained_bytes(
+                &root,
+                &watched,
+                watched.capacity(),
+                &sentinel,
+                &package_rows,
+                None,
+            );
+            cache.cached_bytes = cache.cached_bytes.saturating_add(retained_bytes);
+            cache.entries.insert(
+                root.clone(),
+                CacheEntry {
+                    witness: witness(&watched),
+                    watched,
+                    input: Arc::clone(&sentinel),
+                    retained_bytes,
+                    package_rows,
+                    request_bindings: HashMap::new(),
+                    tool_witness_reuse: None,
+                    last_used: 1,
+                },
+            );
+        };
+        plant_sentinel(&mut cache, watched.clone());
 
         let untouched = cache.project_tree(&root, None).expect("untouched read");
         assert_eq!(
@@ -3836,6 +4714,11 @@ mod tests {
             "planted by the test, never a real read",
             "an untouched workspace must be served from the cache, not recomputed: {untouched:?}"
         );
+        assert_eq!(cache.counters.cache_hits, 1);
+        assert!(cache.counters.retained_bytes_reused > 0);
+        let shared_first = cache.input(&root).expect("first shared input handle");
+        let shared_second = cache.input(&root).expect("second shared input handle");
+        assert!(Arc::ptr_eq(&shared_first, &shared_second));
 
         // A lockfile-only edit invalidates the cached Cargo resolution. Its
         // manifest stays byte-for-byte identical, so watching only manifests
@@ -3858,14 +4741,7 @@ mod tests {
 
         // Replant the sentinel against the new lockfile, then change only
         // Cargo.toml. Both inputs to Cargo's answer have independent guards.
-        cache.entry = Some(CacheEntry {
-            workspace: root.clone(),
-            witness: witness(&watched),
-            watched,
-            input: sentinel,
-            request_binding: None,
-            tool_witness_reuse: None,
-        });
+        plant_sentinel(&mut cache, watched);
         std::fs::write(
             &manifest,
             "[package]\nname = \"gapfix\"\nversion = \"0.2.0\"\nedition = \"2021\"\n",
