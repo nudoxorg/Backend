@@ -352,6 +352,17 @@ pub fn route_keys(route: &Route) -> Vec<PageKey> {
 }
 
 impl DataStore {
+    /// Installs a completed Browse reply for shell event-boundary fixtures.
+    #[cfg(test)]
+    #[allow(clippy::expect_used, clippy::panic)]
+    pub(crate) fn test_land_browse(&mut self, key: crate::model::browse::BrowseKey, value: crate::model::browse::BrowseValue, cx: &mut Context<Self>) {
+        let key = PageKey::Browse(key);
+        let before = self.pages.stamp(&key);
+        let generation = self.pages.begin_forced(&key, self.snapshot.key()).expect("forced fixture reading");
+        assert_eq!(self.pages.land(&key, generation, Ok(crate::model::pages::PageValue::Browse(value))), Landing::Applied);
+        self.emit_moved(key, before, cx);
+    }
+
     /// Creates a store around the current snapshot. `pool` is the read lane;
     /// without one, every page is reported unavailable instead of spinning.
     #[must_use]

@@ -11,14 +11,17 @@
 
 #![allow(clippy::expect_used, clippy::panic)]
 
-use crate::core::LocalProjectId;
-use crate::navigation::{BrowseRoute, OrbitRoute, Route};
+use crate::core::{LocalProjectId, VersionedRoot};
+use crate::model::browse::{BrowseKey, BrowseValue, FindModel};
+use crate::model::pages::{DeclRef, Gap, GapReason, Known, MatchReason, SearchPage, SearchQuery, SearchRow, SignatureText};
+use crate::navigation::{BrowseRoute, OrbitRoute, Overlay, Route, SettingsPage};
 use crate::runtime::reads::{ReadPool, SessionReader};
-use crate::shell::tests::rig_with_reads;
+use crate::shell::tests::{rig, rig_with_reads};
 use backend_client::Session;
-use backend_library::{SurfaceCommand, SurfaceReply};
-use gpui::TestAppContext;
+use backend_library::{DeclarationKind, SurfaceCommand, SurfaceReply};
+use gpui::{SharedString, TestAppContext};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[test]
@@ -199,4 +202,106 @@ fn find_invalid_input_is_distinct_from_blank_and_missing_package_is_unavailable(
     let unresolved = super::symbol_routability(&"unqualified::Thing".into());
     assert!(matches!(unresolved, Routability::Unavailable(reason) if reason.contains("no addressable package")));
     assert_eq!(super::symbol_routability(&"/fixture/app::app.rs:1::main".into()), Routability::Available);
+}
+
+fn find_fixture(query: &str, includes_answer: bool) -> BrowseValue {
+    let coordinate = "/fixture/present::glyph.rs:138::RelationLabel";
+    let rows = if includes_answer {
+        vec![SearchRow {
+            rank: 0,
+            decl: DeclRef::from_label(coordinate, None, Some(DeclarationKind::Struct), Some(("glyph.rs", 138))).expect("fixture declaration"),
+            package: Some(Arc::from("/fixture/present")),
+            score: Known::Unknown(Gap::new(GapReason::NotRecorded, "")),
+            signature: Known::Known(SignatureText {
+                text: Arc::from("pub struct RelationLabel"), tokens: Arc::from([]),
+                name_link_coverage: crate::model::pages::NameLinkCoverage::Unavailable,
+            }),
+            snippet: None,
+            reason: MatchReason::ExactName,
+        }]
+    } else { vec![] };
+    let answers = Known::Known(SearchPage {
+        query: Arc::from(query), rows: rows.into(),
+        coverage: backend_present::CoverageLine::new(&[], Some(u64::from(includes_answer))),
+        next: None,
+    });
+    let package_coverage = Known::Known(());
+    let prepared = Arc::new(crate::runtime::browse_views::prepare_find(query, &answers, &[], &package_coverage));
+    BrowseValue::Find(Arc::new(FindModel { answers, packages: Arc::from([]), package_coverage, prepared }))
+}
+
+fn find_callback(rig: &mut crate::shell::tests::Rig, route: &BrowseRoute) -> super::FindActionSource {
+    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    super::FindActionSource {
+        links: crate::shell::region::Links {
+            root: rig.graph.root.downgrade(), store: rig.graph.store.clone(), shell: rig.shell.downgrade(),
+        },
+        route: route.clone(), key: BrowseKey::from(route), root,
+    }
+}
+
+fn land_find(rig: &mut crate::shell::tests::Rig, route: &BrowseRoute, query: &str, includes_answer: bool) {
+    rig.graph.store.update(rig.cx, |store, cx| store.test_land_browse(BrowseKey::from(route), find_fixture(query, includes_answer), cx));
+}
+
+#[gpui::test]
+fn find_source_callback_opens_a_member_of_the_unchanged_live_reading(cx: &mut TestAppContext) {
+    let query = SearchQuery::new("RelationLabel", SearchQuery::DEFAULT_LIMIT).expect("query");
+    let browse = BrowseRoute::Find(query);
+    let current = Route::Orbit(OrbitRoute::Browse(browse.clone()));
+    let mut rig = rig(cx, Some(current), 1200.0, 800.0);
+    land_find(&mut rig, &browse, "RelationLabel", true);
+    let source = find_callback(&mut rig, &browse);
+    let open = super::find_symbol_action(source, false);
+    rig.cx.update(|window, cx| open(SharedString::from("/fixture/present::glyph.rs:138::RelationLabel"), window, cx));
+    rig.settle();
+    assert!(matches!(rig.route(), Route::Symbol(route) if route.id.as_str() == "/fixture/present::glyph.rs:138::RelationLabel"));
+}
+
+#[gpui::test]
+fn find_source_callback_rechecks_membership_query_overlay_owner_and_root(cx: &mut TestAppContext) {
+    let query = SearchQuery::new("RelationLabel", SearchQuery::DEFAULT_LIMIT).expect("query");
+    let browse = BrowseRoute::Find(query);
+    let current = Route::Orbit(OrbitRoute::Browse(browse.clone()));
+    let mut rig = rig(cx, Some(current.clone()), 1200.0, 800.0);
+    land_find(&mut rig, &browse, "RelationLabel", true);
+    let source = find_callback(&mut rig, &browse);
+    let open = super::find_symbol_action(source.clone(), false);
+    let open_package = super::find_package_action(source);
+    let key = SharedString::from("/fixture/present::glyph.rs:138::RelationLabel");
+    let invoke = |rig: &mut crate::shell::tests::Rig, expected: &Route| {
+        rig.cx.update(|window, cx| open(key.clone(), window, cx));
+        rig.cx.update(|window, cx| open_package(SharedString::from("/fixture/present"), window, cx));
+        rig.cx.run_until_parked();
+        assert_eq!(&rig.route(), expected, "an obsolete callback must leave the route alone");
+    };
+
+    land_find(&mut rig, &browse, "RelationLabel", false);
+    invoke(&mut rig, &current);
+    land_find(&mut rig, &browse, "different query", true);
+    invoke(&mut rig, &current);
+    land_find(&mut rig, &browse, "RelationLabel", true);
+
+    let original = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let mut covered = original.session().clone();
+    covered.overlay = Some(Overlay::Settings(SettingsPage::Appearance));
+    rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::new(original.with_session(covered)), cx));
+    invoke(&mut rig, &current);
+    rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::clone(&original), cx));
+
+    let mut elsewhere = original.session().clone();
+    elsewhere.route = Route::Orbit(OrbitRoute::Home);
+    rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::new(original.with_session(elsewhere.clone())), cx));
+    invoke(&mut rig, &elsewhere.route);
+    rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::clone(&original), cx));
+    rig.cx.run_until_parked();
+    land_find(&mut rig, &browse, "RelationLabel", true);
+
+    rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
+    invoke(&mut rig, &current);
+    rig.graph.store.update(rig.cx, |store, cx| store.owner_ready(cx));
+
+    let newer = VersionedRoot::synthetic(backend_library::view_state_root(&[("find".into(), "new root".into())]), 9);
+    rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::new(original.with_key(newer, None)), cx));
+    invoke(&mut rig, &current);
 }
