@@ -526,6 +526,35 @@ fn same_find_visit_returns_query_focus_once_after_ask_exit(cx: &mut TestAppConte
 }
 
 #[gpui::test]
+fn ask_modal_tab_and_editor_click_preserve_find_query_return(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(find_route()), 1440.0, 900.0);
+    rig.settle();
+    assert_eq!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
+    let route = rig.route();
+    rig.keys("cmd-k");
+    rig.keys("r e l a t i o n");
+    let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+    let editor = ask.read_with(rig.cx, |ask, _| ask.input().clone());
+    let editor_focused = |rig: &mut Rig| rig.cx.update(|window, cx| editor.read(cx).focus_handle(cx).is_focused(window));
+    assert!(editor_focused(&mut rig), "Ask did not own its editor before Tab");
+    rig.cx.simulate_keystrokes("tab");
+    rig.frame(0);
+    assert!(!editor_focused(&mut rig), "Tab did not cycle to a mounted Ask result");
+    assert_eq!(rig.route(), route, "modal Tab navigated the background Find route");
+    let field = rig.cx.debug_bounds("ask-typing").expect("mounted Ask editor bounds");
+    click(&mut rig, f32::from(field.origin.x + field.size.width / 2.0),
+        f32::from(field.origin.y + field.size.height / 2.0));
+    assert!(editor_focused(&mut rig), "pointer did not return focus to the Ask editor");
+    rig.cx.simulate_keystrokes("escape");
+    rig.frame(0);
+    assert_eq!(ask_phase(&painted(&mut rig)), Some(StackPhase::Leaving));
+    rig.settle();
+    assert_eq!(rig.route(), route);
+    assert_eq!(native_focus_label(&mut rig).as_deref(), Some("Find query"),
+        "normal interaction within the open modal erased Find's pre-modal query focus");
+}
+
+#[gpui::test]
 fn pointer_during_ask_exit_cancels_find_query_return(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(find_route()), 1440.0, 900.0);
     rig.settle();

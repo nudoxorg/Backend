@@ -1027,7 +1027,7 @@ impl Shell {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if event.keystroke.key == "tab" {
+        if event.keystroke.key == "tab" && !self.ask_open {
             self.reader.update(cx, |reader, _| reader.cancel_find_focus_return());
         }
         if self.ask_presentation.blocks_background_input(self.ask_open) {
@@ -1668,7 +1668,9 @@ impl Render for Shell {
                 shell.key_down(event, window, cx);
             }))
             .capture_any_mouse_down(cx.listener(|shell, _, _, cx| {
-                shell.reader.update(cx, |reader, _| reader.cancel_find_focus_return());
+                if !shell.ask_open {
+                    shell.reader.update(cx, |reader, _| reader.cancel_find_focus_return());
+                }
             }))
             .child(ground())
             .child(
