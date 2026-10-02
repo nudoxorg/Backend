@@ -400,16 +400,16 @@ impl Element for Inline {
         // stack only holds an entry during prepaint when that view set
         // `max_lines`, so this is a no-op otherwise.
         if let Some(text_view_state) = UiGlobalState::global(cx).text_view_state().cloned() {
-            let state = text_view_state.read(cx);
-            if state.max_lines.is_some()
-                && let Ok(mut line_spans) = state.line_spans.lock()
-            {
-                line_spans.push(LineSpan {
-                    top: bounds.top(),
-                    bottom: bounds.bottom(),
-                    line_height: window.line_height(),
-                });
-            }
+            let span = LineSpan {
+                top: bounds.top(),
+                bottom: bounds.bottom(),
+                line_height: window.line_height(),
+            };
+            text_view_state.update(cx, |state, _| {
+                if state.max_lines.is_some() {
+                    state.line_spans.push(span);
+                }
+            });
         }
 
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);

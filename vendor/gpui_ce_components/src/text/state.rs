@@ -1,10 +1,5 @@
 use futures::{Stream as _, StreamExt as _};
-use std::{
-    ops::RangeInclusive,
-    pin::Pin,
-    sync::{Arc, Mutex},
-    task::Poll,
-};
+use std::{ops::RangeInclusive, pin::Pin, sync::Arc, task::Poll};
 
 use gpui::{
     App, AppContext as _, Bounds, Context, FocusHandle, IntoElement, KeyBinding, ListState,
@@ -165,7 +160,7 @@ pub struct TextViewState {
     pub(super) max_lines: Option<usize>,
     /// Line spans reported by `Inline` during prepaint (collected only while
     /// [`Self::max_lines`] is set); cleared by `TextView` at each frame start.
-    pub(super) line_spans: Arc<Mutex<Vec<LineSpan>>>,
+    pub(super) line_spans: Vec<LineSpan>,
     /// Whether the last painted frame clipped content due to `max_lines`.
     pub(super) clamped: bool,
     pub(super) text_view_style: TextViewStyle,
@@ -257,7 +252,7 @@ impl TextViewState {
             selection_format: SelectionFormat::default(),
             scrollable: false,
             max_lines: None,
-            line_spans: Arc::default(),
+            line_spans: Vec::new(),
             clamped: false,
             // Measure all blocks (not just visible ones) so the scrollbar
             // thumb size stays stable. Without this, off-screen blocks count

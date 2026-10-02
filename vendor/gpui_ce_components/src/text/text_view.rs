@@ -590,9 +590,7 @@ impl Element for TextView {
         let state = request_layout.state.clone();
         let max_lines_active = state.read(cx).max_lines.is_some();
         if max_lines_active {
-            if let Ok(mut line_spans) = state.read(cx).line_spans.lock() {
-                line_spans.clear();
-            }
+            state.update(cx, |state, _| state.line_spans.clear());
             // Descendant `Inline`s report their line spans through the state
             // stack during prepaint (in addition to the paint-time push below).
             UiGlobalState::global_mut(cx)
@@ -608,14 +606,7 @@ impl Element for TextView {
         if max_lines_active {
             let (line_spans, content_bottom) = {
                 let state = state.read(cx);
-                (
-                    state
-                        .line_spans
-                        .lock()
-                        .map(|spans| spans.clone())
-                        .unwrap_or_default(),
-                    state.bounds().bottom(),
-                )
+                (state.line_spans.clone(), state.bounds().bottom())
             };
             // The content keeps its natural height inside the capped box, so
             // this sees everything the box cannot show — including a tall image
