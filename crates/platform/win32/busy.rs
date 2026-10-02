@@ -10,8 +10,10 @@
 //! seconds. Unix has no equivalent: a rename never waits on a reader.
 //!
 //! The wait is short and bounded. A holder that outlasts it is reported with
-//! the original operating-system error, so a genuine permission problem or a
-//! genuinely long-lived handle still fails closed instead of hanging.
+//! the operating-system error of the final attempt (the request is repeated
+//! unchanged, so that is the holder's own code), so a genuine permission
+//! problem or a genuinely long-lived handle still fails closed instead of
+//! hanging.
 
 use std::io;
 use std::thread;
@@ -22,7 +24,7 @@ use windows_sys::Win32::Foundation::{
 
 /// Pause before each retry. The total (about 320 ms) is far longer than a scan
 /// of a small state file and far shorter than any caller's own deadline.
-const BACKOFF: [Duration; 10] = [
+pub(crate) const BACKOFF: [Duration; 10] = [
     Duration::from_millis(1),
     Duration::from_millis(2),
     Duration::from_millis(4),
@@ -54,28 +56,61 @@ pub(crate) fn is_busy(error: &io::Error) -> bool {
 /// holds for every open and rename in this crate: the kernel either performs
 /// the call or refuses it before changing anything.
 pub(crate) fn retry_while_busy<T>(operation: impl FnMut() -> io::Result<T>) -> io::Result<T> {
-    retry_with(operation, &BACKOFF, thread::sleep)
+    retry_while_busy_pausing(operation, thread::sleep)
 }
 
-/// The retry loop with its schedule and clock injected, so tests can drive it
-/// without sleeping.
-fn retry_with<T>(
-    mut operation: impl FnMut() -> io::Result<T>,
+/// [`retry_while_busy`] with the pause injected, so a test can release the
+/// holder at the exact moment the first attempt was refused instead of
+/// guessing a duration.
+pub(crate) fn retry_while_busy_pausing<T>(
+    operation: impl FnMut() -> io::Result<T>,
+    pause: impl FnMut(Duration),
+) -> io::Result<T> {
+    retry_with(operation, &BACKOFF, pause)
+}
+
+/// Runs `operation` once per scheduled pause while `again` calls its outcome a
+/// lost race, then once more. Whatever the final attempt returns is the
+/// result, so a persistent loser sees the last outcome rather than a
+/// fabricated one.
+///
+/// The schedule is the same short, bounded one the busy-file retry uses: a
+/// caller that raced a replacing rename wants the next generation promptly,
+/// but a hot publisher must not be spun against with no pause at all.
+pub(crate) fn retry_when<T>(
+    mut operation: impl FnMut() -> T,
+    again: impl Fn(&T) -> bool,
     backoff: &[Duration],
     mut pause: impl FnMut(Duration),
-) -> io::Result<T> {
+) -> T {
     for delay in backoff {
-        match operation() {
-            Err(error) if is_busy(&error) => pause(*delay),
-            outcome => return outcome,
+        let outcome = operation();
+        if !again(&outcome) {
+            return outcome;
         }
+        pause(*delay);
     }
     operation()
 }
 
+/// The busy-file retry with its schedule and clock injected, so tests can
+/// drive it without sleeping.
+fn retry_with<T>(
+    operation: impl FnMut() -> io::Result<T>,
+    backoff: &[Duration],
+    pause: impl FnMut(Duration),
+) -> io::Result<T> {
+    retry_when(
+        operation,
+        |outcome| matches!(outcome, Err(error) if is_busy(error)),
+        backoff,
+        pause,
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{BACKOFF, is_busy, retry_while_busy, retry_with};
+    use super::{BACKOFF, is_busy, retry_when, retry_while_busy, retry_with};
     use std::cell::Cell;
     use std::io;
     use std::time::Duration;
@@ -181,5 +216,39 @@ mod tests {
         })
         .expect("two busy answers then success");
         assert!(started.elapsed() >= Duration::from_millis(3));
+    }
+
+    #[test]
+    fn a_lost_race_is_retried_with_the_schedule_and_the_last_outcome_is_returned() {
+        let attempts = Cell::new(0_usize);
+        let slept = Cell::new(Duration::ZERO);
+        let outcome = retry_when(
+            || {
+                attempts.set(attempts.get() + 1);
+                attempts.get()
+            },
+            |_| true,
+            &BACKOFF,
+            |delay| slept.set(slept.get() + delay),
+        );
+        assert_eq!(
+            outcome,
+            BACKOFF.len() + 1,
+            "the final attempt is the result"
+        );
+        assert_eq!(attempts.get(), BACKOFF.len() + 1);
+        assert_eq!(slept.get(), BACKOFF.iter().sum::<Duration>());
+
+        attempts.set(0);
+        let outcome = retry_when(
+            || {
+                attempts.set(attempts.get() + 1);
+                attempts.get()
+            },
+            |attempt| *attempt < 3,
+            &BACKOFF,
+            |_| {},
+        );
+        assert_eq!(outcome, 3, "the first outcome that is not a lost race wins");
     }
 }

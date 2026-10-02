@@ -8,7 +8,7 @@
     reason = "reviewed NT relative-open and handle metadata boundary for Windows workspace files"
 )]
 
-use super::busy::retry_while_busy;
+use super::busy::{BACKOFF, retry_when, retry_while_busy, retry_while_busy_pausing};
 use super::identity::{current_user, is_owned_by_current_user, owner_of};
 use super::security::restrict_handle_to_current_user;
 use crate::directory::DirectoryRenameError;
@@ -20,6 +20,8 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle as _, IntoRawHandle as _, 
 use std::path::{Component, Path, Prefix};
 use std::ptr;
 use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 use windows_sys::Win32::Foundation::{ERROR_NO_MORE_FILES, GENERIC_ALL, HANDLE};
 use windows_sys::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SE_FILE_OBJECT,
@@ -431,8 +433,9 @@ impl WorkspaceRoot {
             parent.handle.as_raw_handle().cast(),
             leaf,
             FILE_READ_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
-            |handle| {
-                ensure_regular_file_handle(handle)?;
+            IfUnlinked::Keep,
+            |handle, linkage| {
+                ensure_regular_file_handle_with(handle, linkage)?;
                 ensure_private_handle(handle)
             },
         )?;
@@ -446,7 +449,8 @@ impl WorkspaceRoot {
             parent.handle.as_raw_handle().cast(),
             leaf,
             FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-            ensure_regular_file_handle,
+            IfUnlinked::Keep,
+            ensure_regular_file_handle_with,
         )?;
         file_from_handle(handle)
     }
@@ -459,8 +463,9 @@ impl WorkspaceRoot {
             parent.handle.as_raw_handle().cast(),
             leaf,
             FILE_READ_ATTRIBUTES | FILE_READ_DATA | FILE_WRITE_DATA | READ_CONTROL | SYNCHRONIZE,
-            |handle| {
-                ensure_regular_file_handle(handle)?;
+            IfUnlinked::Reopen,
+            |handle, linkage| {
+                ensure_regular_file_handle_with(handle, linkage)?;
                 ensure_private_handle(handle)
             },
         ) {
@@ -566,26 +571,59 @@ impl WorkspaceRoot {
         replace: bool,
         directory: bool,
         before_commit: impl FnOnce(),
+        flush: impl FnMut(*mut c_void) -> io::Result<()>,
+    ) -> Result<(), DirectoryRenameError> {
+        self.rename_checked_entry_pausing(
+            source,
+            destination,
+            replace,
+            directory,
+            before_commit,
+            flush,
+            &mut thread::sleep,
+        )
+    }
+
+    /// [`Self::rename_checked_entry_with_flush`] with the pause between
+    /// retries of a busy or replaced file injected as well. A test releases a
+    /// scanner's hold from the pause that follows the refused attempt, so the
+    /// wait is proven by ordering rather than by a sleep that a loaded
+    /// machine can overrun.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the protocol's complete set of test seams"
+    )]
+    fn rename_checked_entry_pausing(
+        &self,
+        source: &[&str],
+        destination: &[&str],
+        replace: bool,
+        directory: bool,
+        before_commit: impl FnOnce(),
         mut flush: impl FnMut(*mut c_void) -> io::Result<()>,
+        pause: &mut dyn FnMut(Duration),
     ) -> Result<(), DirectoryRenameError> {
         let precommit = DirectoryRenameError::NotCommitted;
         let (source_parent, source_leaf) = self.parent_and_leaf(source).map_err(precommit)?;
         let (destination_parent, destination_leaf) = self
             .parent_and_leaf(destination)
             .map_err(DirectoryRenameError::NotCommitted)?;
-        let source_handle = retry_while_busy(|| {
-            open_relative(
-                source_parent.handle.as_raw_handle().cast(),
-                source_leaf,
-                FILE_READ_ATTRIBUTES | READ_CONTROL | DELETE | SYNCHRONIZE,
-                if directory {
-                    FILE_DIRECTORY_FILE
-                } else {
-                    FILE_NON_DIRECTORY_FILE
-                },
-                Sharing::Transient,
-            )
-        })
+        let source_handle = retry_while_busy_pausing(
+            || {
+                open_relative(
+                    source_parent.handle.as_raw_handle().cast(),
+                    source_leaf,
+                    FILE_READ_ATTRIBUTES | READ_CONTROL | DELETE | SYNCHRONIZE,
+                    if directory {
+                        FILE_DIRECTORY_FILE
+                    } else {
+                        FILE_NON_DIRECTORY_FILE
+                    },
+                    Sharing::Transient,
+                )
+            },
+            &mut *pause,
+        )
         .map_err(DirectoryRenameError::NotCommitted)?;
         if directory {
             ensure_directory_handle(source_handle.as_raw_handle())
@@ -596,7 +634,7 @@ impl WorkspaceRoot {
         }
         ensure_private_handle(source_handle.as_raw_handle())
             .map_err(DirectoryRenameError::NotCommitted)?;
-        check_replace_destination(&destination_parent, destination_leaf, replace)
+        check_replace_destination(&destination_parent, destination_leaf, replace, &mut *pause)
             .map_err(DirectoryRenameError::NotCommitted)?;
         let name = wide_component(destination_leaf).map_err(DirectoryRenameError::NotCommitted)?;
         before_commit();
@@ -605,6 +643,7 @@ impl WorkspaceRoot {
             destination_parent.handle.as_raw_handle().cast(),
             &name,
             replace,
+            &mut *pause,
         )
         .map_err(DirectoryRenameError::NotCommitted)?;
         flush(destination_parent.handle.as_raw_handle())
@@ -619,16 +658,29 @@ impl WorkspaceRoot {
     /// Unlinks one checked regular file by its opened handle, then flushes its
     /// parent directory. A concurrent name replacement cannot redirect it.
     pub fn remove_file_relative(&self, path: &[&str]) -> io::Result<()> {
+        self.remove_file_pausing(path, &mut thread::sleep)
+    }
+
+    /// [`Self::remove_file_relative`] with the pause between retries of a busy
+    /// file injected, so a test can release a scanner's hold deterministically.
+    fn remove_file_pausing(
+        &self,
+        path: &[&str],
+        pause: &mut dyn FnMut(Duration),
+    ) -> io::Result<()> {
         let (parent, leaf) = self.parent_and_leaf(path)?;
-        let handle = retry_while_busy(|| {
-            open_relative(
-                parent.handle.as_raw_handle().cast(),
-                leaf,
-                FILE_READ_ATTRIBUTES | READ_CONTROL | DELETE | SYNCHRONIZE,
-                FILE_NON_DIRECTORY_FILE,
-                Sharing::Transient,
-            )
-        })?;
+        let handle = retry_while_busy_pausing(
+            || {
+                open_relative(
+                    parent.handle.as_raw_handle().cast(),
+                    leaf,
+                    FILE_READ_ATTRIBUTES | READ_CONTROL | DELETE | SYNCHRONIZE,
+                    FILE_NON_DIRECTORY_FILE,
+                    Sharing::Transient,
+                )
+            },
+            pause,
+        )?;
         ensure_regular_file_handle(handle.as_raw_handle())?;
         ensure_private_handle(handle.as_raw_handle())?;
         mark_delete(handle.as_raw_handle())?;
@@ -1013,86 +1065,164 @@ fn open_directory_child_with_delete(
     }))
 }
 
-/// How many times a check re-opens a name that was replaced between the open
-/// and the check before it gives up.
-const REPLACEMENT_RETRIES: usize = 16;
-
-/// Whether the object `handle` holds has lost its last name since it was
-/// opened: a replacing rename or a delete unlinked it (zero links) or left it
-/// delete-pending.
-fn is_unlinked(handle: *mut c_void) -> io::Result<bool> {
-    let standard = standard_info(handle)?;
-    Ok(standard.NumberOfLinks == 0 || standard.DeletePending)
+/// How many directory entries may still name an object an admission check
+/// inspects.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Linkage {
+    /// Exactly one: the object is the live entry that was opened by name, and
+    /// no second name can reach (and mutate) its bytes.
+    Named,
+    /// One, or none because a replacing rename or a delete removed the last
+    /// name after the open. An unlinked object has no names at all, so it
+    /// cannot be reached through an alias either; a reader that already holds
+    /// it has exactly what a POSIX reader of an unlinked inode has.
+    NamedOrUnlinked,
 }
 
-/// Opens the file `leaf` and runs `admit` on the opened handle, reopening when
-/// the name was replaced in between.
+impl Linkage {
+    fn admits(self, standard: &FILE_STANDARD_INFO) -> bool {
+        standard.NumberOfLinks == 1 || (self == Self::NamedOrUnlinked && is_unlinked(standard))
+    }
+}
+
+/// Whether the object lost its last name since it was opened: a replacing
+/// rename or a delete unlinked it (zero links) or left it delete-pending.
+fn is_unlinked(standard: &FILE_STANDARD_INFO) -> bool {
+    standard.NumberOfLinks == 0 || standard.DeletePending
+}
+
+/// Whether the object `handle` holds lost its last name since it was opened.
+fn handle_is_unlinked(handle: *mut c_void) -> bool {
+    standard_info(handle).is_ok_and(|standard| is_unlinked(&standard))
+}
+
+/// What an open does when the object it holds lost its last name before the
+/// admission checks ran.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IfUnlinked {
+    /// Keep the handle. A reader then has the complete generation that was
+    /// published under the name when it opened it. No second open is needed,
+    /// so a publisher that replaces the name in a loop cannot starve it.
+    Keep,
+    /// Discard the handle and open the name again after a short pause. A
+    /// writer must act on the object the name refers to now; a handle to the
+    /// replaced generation would swallow its writes.
+    Reopen,
+}
+
+impl IfUnlinked {
+    const fn linkage(self) -> Linkage {
+        match self {
+            Self::Keep => Linkage::NamedOrUnlinked,
+            Self::Reopen => Linkage::Named,
+        }
+    }
+}
+
+/// One attempt that can lose a race to a replacing rename.
+enum Attempt<T> {
+    /// The attempt produced its result.
+    Done(T),
+    /// A replacing rename unlinked what the attempt inspected; look again.
+    Replaced,
+}
+
+/// Repeats `attempt` after a short pause while it reports that a replacing
+/// rename got there first. A name replaced faster than the schedule can open
+/// it is reported as busy rather than spun against.
+fn reopen_while_replaced<T>(
+    attempt: impl FnMut() -> io::Result<Attempt<T>>,
+    pause: impl FnMut(Duration),
+    exhausted: &'static str,
+) -> io::Result<T> {
+    let outcome = retry_when(
+        attempt,
+        |outcome| matches!(outcome, Ok(Attempt::Replaced)),
+        &BACKOFF,
+        pause,
+    );
+    match outcome? {
+        Attempt::Done(value) => Ok(value),
+        Attempt::Replaced => Err(io::Error::new(io::ErrorKind::ResourceBusy, exhausted)),
+    }
+}
+
+/// Opens the file `leaf` and runs `admit` on the opened handle.
 ///
 /// A writer that publishes with a replacing rename unlinks the old object while
-/// a reader may already hold it. That object then reports zero links, so the
-/// single-link check would reject it even though the name is healthy. Such a
-/// failure is a lost race, not a refusal: the name is opened again and the
-/// reader sees the new generation. Any other failure is returned unchanged.
+/// a reader may already hold it, so the object can lose its last name between
+/// the open and the checks. `if_unlinked` decides what that means: a reader
+/// keeps the generation it opened, a writer opens the name again. Any other
+/// admission failure is returned unchanged.
 fn open_admitted_file(
     parent: HANDLE,
     leaf: &str,
     access: u32,
-    admit: impl Fn(*mut c_void) -> io::Result<()>,
+    if_unlinked: IfUnlinked,
+    admit: impl Fn(*mut c_void, Linkage) -> io::Result<()>,
 ) -> io::Result<OwnedHandle> {
-    for _ in 0..REPLACEMENT_RETRIES {
-        let handle = open_relative(
-            parent,
-            leaf,
-            access,
-            FILE_NON_DIRECTORY_FILE,
-            Sharing::Transient,
-        )?;
-        match admit(handle.as_raw_handle()) {
-            Ok(()) => return Ok(handle),
-            Err(_) if is_unlinked(handle.as_raw_handle()).unwrap_or(false) => {}
-            Err(error) => return Err(error),
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::ResourceBusy,
+    reopen_while_replaced(
+        || {
+            let handle = open_relative(
+                parent,
+                leaf,
+                access,
+                FILE_NON_DIRECTORY_FILE,
+                Sharing::Transient,
+            )?;
+            match admit(handle.as_raw_handle(), if_unlinked.linkage()) {
+                Ok(()) => Ok(Attempt::Done(handle)),
+                Err(_)
+                    if if_unlinked == IfUnlinked::Reopen
+                        && handle_is_unlinked(handle.as_raw_handle()) =>
+                {
+                    Ok(Attempt::Replaced)
+                }
+                Err(error) => Err(error),
+            }
+        },
+        thread::sleep,
         "file was replaced faster than it could be opened",
-    ))
+    )
 }
 
 fn check_replace_destination(
     parent: &Arc<DirectoryNode>,
     name: &str,
     replace: bool,
+    pause: &mut dyn FnMut(Duration),
 ) -> io::Result<()> {
-    for _ in 0..REPLACEMENT_RETRIES {
-        let existing = match open_relative(
-            parent.handle.as_raw_handle().cast(),
-            name,
-            FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
-            0,
-            Sharing::Transient,
-        ) {
-            Ok(handle) => handle,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(error),
-        };
-        if !replace {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "rename destination already exists",
-            ));
-        }
-        match admit_replaceable(existing.as_raw_handle()) {
-            Ok(()) => return Ok(()),
-            // Another replacement unlinked the object we probed: look again.
-            Err(_) if is_unlinked(existing.as_raw_handle()).unwrap_or(false) => {}
-            Err(error) => return Err(error),
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::ResourceBusy,
+    reopen_while_replaced(
+        || {
+            let existing = match open_relative(
+                parent.handle.as_raw_handle().cast(),
+                name,
+                FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+                0,
+                Sharing::Transient,
+            ) {
+                Ok(handle) => handle,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    return Ok(Attempt::Done(()));
+                }
+                Err(error) => return Err(error),
+            };
+            if !replace {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "rename destination already exists",
+                ));
+            }
+            match admit_replaceable(existing.as_raw_handle()) {
+                Ok(()) => Ok(Attempt::Done(())),
+                // Another replacement unlinked the object we probed: look again.
+                Err(_) if handle_is_unlinked(existing.as_raw_handle()) => Ok(Attempt::Replaced),
+                Err(error) => Err(error),
+            }
+        },
+        pause,
         "rename destination was replaced faster than it could be checked",
-    ))
+    )
 }
 
 /// Whether the object a rename would replace is an ordinary private file.
@@ -1256,19 +1386,34 @@ fn nt_status_error(status: i32) -> io::Error {
 /// reader that holds the old file open with delete sharing does not block the
 /// publication; older systems fall back to the classic rename. A holder that
 /// does not share delete (a scanner, say) is waited out for a bounded time.
+///
+/// # Lookup gap
+/// POSIX-semantics replacement unlinks the target name and then links the
+/// source name, and the two are not one step for a concurrent lookup: a reader
+/// that opens the name in between is told it does not exist. Measured with one
+/// publisher replacing continuously and four readers opening continuously,
+/// eight such processes at once, 1,018 and 1,070 of 640,000 lookups (about
+/// 0.16 %) reported `NotFound` for a name that had never been absent, for up
+/// to tens of milliseconds when the publisher was preempted between the two
+/// steps. The classic rename and `MoveFileExW` never showed it in 1,280,000
+/// lookups each, but they refuse to replace a file that any other handle holds
+/// open, which POSIX semantics exist to allow. Callers that need a lock-free
+/// reader to tell "absent" from "being replaced" must hold the lock the
+/// publisher holds, or recover the name's state from a second source.
 fn rename_into(
     source: HANDLE,
     destination_parent: HANDLE,
     name: &[u16],
     replace: bool,
+    pause: &mut dyn FnMut(Duration),
 ) -> io::Result<()> {
     let extended_flags = if replace {
         FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS
     } else {
         0
     };
-    retry_while_busy(|| {
-        match set_rename_information(
+    retry_while_busy_pausing(
+        || match set_rename_information(
             source,
             destination_parent,
             name,
@@ -1283,8 +1428,9 @@ fn rename_into(
                 u32::from(replace),
             ),
             outcome => outcome,
-        }
-    })
+        },
+        pause,
+    )
 }
 
 /// Whether a failed extended request means "this system or file system does not
@@ -1458,6 +1604,10 @@ fn ensure_directory_handle(handle: *mut c_void) -> io::Result<()> {
 }
 
 fn ensure_regular_file_handle(handle: *mut c_void) -> io::Result<()> {
+    ensure_regular_file_handle_with(handle, Linkage::Named)
+}
+
+fn ensure_regular_file_handle_with(handle: *mut c_void, linkage: Linkage) -> io::Result<()> {
     let attributes = attributes(handle)?;
     if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(invalid_data("workspace file is a reparse point"));
@@ -1466,7 +1616,7 @@ fn ensure_regular_file_handle(handle: *mut c_void) -> io::Result<()> {
     if standard.Directory || attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
         return Err(invalid_data("workspace object is not a regular file"));
     }
-    if standard.NumberOfLinks != 1 {
+    if !linkage.admits(&standard) {
         return Err(invalid_data("workspace file has multiple hard links"));
     }
     Ok(())

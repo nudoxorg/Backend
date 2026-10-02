@@ -8,11 +8,12 @@
 //! parent module's tests.
 
 use super::{
-    EntryKind, RenameInformation, WorkspaceRoot, flush_handle, is_full_control,
-    is_reserved_device_name, rename_information_length, validate_component,
+    BACKOFF, EntryKind, IfUnlinked, RenameInformation, WorkspaceRoot, ensure_private_handle,
+    ensure_regular_file_handle_with, file_from_handle, flush_handle, is_full_control,
+    is_reserved_device_name, open_admitted_file, rename_information_length, validate_component,
 };
 use std::fs;
-use std::io::{Read as _, Write as _};
+use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -533,9 +534,15 @@ fn concurrent_replacing_renames_publish_one_complete_generation_to_readers() {
         let mut observed = 0_usize;
         while !reader_flag.load(Ordering::Relaxed) {
             let mut bytes = Vec::new();
-            reader_root
-                .open_file_read_checked(&["state"])
-                .expect("a published name always opens")
+            let mut opened = match reader_root.open_file_read_checked(&["state"]) {
+                Ok(opened) => opened,
+                // The replace unlinks the old name before it links the new one, so a lookup
+                // between the two can report the name missing (see `rename_into` for the
+                // measurement). Every successful open must still be one whole generation.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => panic!("a published name opens or is briefly absent: {error}"),
+            };
+            opened
                 .read_to_end(&mut bytes)
                 .expect("read a published generation");
             assert_eq!(
@@ -677,57 +684,138 @@ fn only_full_control_masks_count_as_a_private_grant() {
     assert!(!is_full_control(FILE_ALL_ACCESS & !1));
 }
 
-/// Holds `path` open for `hold` without sharing delete access, the way a virus
-/// scanner or indexer does, and reports when the hold began.
-fn scanner_holds(path: PathBuf, hold: std::time::Duration) -> std::thread::JoinHandle<()> {
-    use std::os::windows::fs::OpenOptionsExt as _;
-    use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+/// A virus scanner or indexer that has opened a file without sharing delete access and keeps it
+/// until released, the way real-time protection does while it inspects what was just written.
+///
+/// Holding and releasing are ordered by handshake, never by a sleep: a test that lets a scanner
+/// "hold for 60 ms" fails whenever a loaded machine delays the scanner thread past the bounded
+/// wait it is exercising, which proves nothing about the code under test.
+struct Scanner {
+    release: std::sync::mpsc::Sender<()>,
+    released: std::sync::mpsc::Receiver<()>,
+    thread: std::thread::JoinHandle<()>,
+}
 
-    let (held, ready) = std::sync::mpsc::channel();
-    let scanner = std::thread::spawn(move || {
-        let handle = fs::OpenOptions::new()
-            .read(true)
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-            .open(&path)
-            .expect("scanner opens the file");
-        held.send(()).expect("announce the hold");
-        std::thread::sleep(hold);
-        drop(handle);
-    });
-    ready.recv().expect("scanner holds the file");
-    scanner
+impl Scanner {
+    /// Opens `path` and returns once the hold is in place.
+    fn hold(path: PathBuf) -> Self {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use std::sync::mpsc;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+        let (held, ready) = mpsc::channel();
+        let (release, release_requested) = mpsc::channel::<()>();
+        let (closed, released) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            let handle = fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                .open(&path)
+                .expect("scanner opens the file");
+            held.send(()).expect("announce the hold");
+            // A dropped sender also ends the hold, so a failing test cannot leak it.
+            let _ = release_requested.recv();
+            drop(handle);
+            let _ = closed.send(());
+        });
+        ready.recv().expect("scanner holds the file");
+        Self {
+            release,
+            released,
+            thread,
+        }
+    }
+
+    /// Lets go of the file and returns once the scanner's handle is closed.
+    fn release(&self) {
+        self.release.send(()).expect("scanner is still holding");
+        self.released.recv().expect("scanner closed its handle");
+    }
+
+    fn finish(self) {
+        drop(self.release);
+        self.thread.join().expect("join scanner");
+    }
+}
+
+/// The pause an operation takes after a refused attempt, wired to release a [`Scanner`]: the
+/// first refusal proves the hold was real, and the very next attempt must therefore succeed.
+struct ReleaseOnFirstRefusal<'a> {
+    scanner: &'a Scanner,
+    refusals: usize,
+}
+
+impl<'a> ReleaseOnFirstRefusal<'a> {
+    fn new(scanner: &'a Scanner) -> Self {
+        Self {
+            scanner,
+            refusals: 0,
+        }
+    }
+
+    fn pause(&mut self, _delay: std::time::Duration) {
+        self.refusals += 1;
+        if self.refusals == 1 {
+            self.scanner.release();
+        }
+    }
+}
+
+/// Renames with the scanner released at the first refusal, returning how many were seen.
+fn rename_through_scanner(
+    root: &WorkspaceRoot,
+    scanner: &Scanner,
+    source: &[&str],
+    destination: &[&str],
+    replace: bool,
+) -> usize {
+    let mut waiter = ReleaseOnFirstRefusal::new(scanner);
+    root.rename_checked_entry_pausing(
+        source,
+        destination,
+        replace,
+        false,
+        || {},
+        flush_handle,
+        &mut |delay| waiter.pause(delay),
+    )
+    .expect("the rename waits for the scanner and then succeeds");
+    waiter.refusals
 }
 
 #[test]
-fn a_scanner_briefly_holding_the_destination_is_waited_out_by_a_replacing_rename() {
+fn a_scanner_holding_the_destination_is_waited_out_by_a_replacing_rename() {
     let (root, path) = private_root("scan-destination");
     put(&root, &["state"], b"old generation");
     put(&root, &["next"], b"new generation");
 
-    let scanner = scanner_holds(path.join("state"), std::time::Duration::from_millis(60));
-    root.rename_relative(&["next"], &["state"], true)
-        .expect("the publication waits for the scanner and then succeeds");
-    scanner.join().expect("join scanner");
+    let scanner = Scanner::hold(path.join("state"));
+    let refusals = rename_through_scanner(&root, &scanner, &["next"], &["state"], true);
+    scanner.finish();
 
+    assert_eq!(refusals, 1, "refused once while held, then admitted");
     assert_eq!(get(&root, &["state"]), b"new generation");
     drop(root);
     fs::remove_dir_all(path).expect("cleanup");
 }
 
 #[test]
-fn a_scanner_briefly_holding_the_source_is_waited_out_by_rename_and_remove() {
+fn a_scanner_holding_the_source_is_waited_out_by_rename_and_remove() {
     let (root, path) = private_root("scan-source");
     put(&root, &["next"], b"new generation");
 
-    let scanner = scanner_holds(path.join("next"), std::time::Duration::from_millis(60));
-    root.rename_relative(&["next"], &["state"], false)
-        .expect("opening the source for rename waits out the scanner");
-    scanner.join().expect("join scanner");
+    let scanner = Scanner::hold(path.join("next"));
+    let refusals = rename_through_scanner(&root, &scanner, &["next"], &["state"], false);
+    scanner.finish();
+    assert_eq!(refusals, 1, "the source open was refused once while held");
 
-    let scanner = scanner_holds(path.join("state"), std::time::Duration::from_millis(60));
-    root.remove_file_relative(&["state"])
+    let scanner = Scanner::hold(path.join("state"));
+    let mut waiter = ReleaseOnFirstRefusal::new(&scanner);
+    root.remove_file_pausing(&["state"], &mut |delay| waiter.pause(delay))
         .expect("removal waits out the scanner");
-    scanner.join().expect("join scanner");
+    let refusals = waiter.refusals;
+    scanner.finish();
+    assert_eq!(refusals, 1, "the delete open was refused once while held");
 
     assert!(root.read_dir_checked(&[]).expect("list").is_empty());
     drop(root);
@@ -740,69 +828,200 @@ fn a_holder_that_never_lets_go_fails_with_its_own_error_and_changes_nothing() {
     put(&root, &["state"], b"old generation");
     put(&root, &["next"], b"new generation");
 
-    let scanner = scanner_holds(path.join("state"), std::time::Duration::from_secs(3));
-    let started = std::time::Instant::now();
+    let scanner = Scanner::hold(path.join("state"));
+    // The pauses are recorded instead of slept: the wait is bounded by the schedule, and a
+    // wall-clock bound would only measure how loaded the machine is.
+    let mut pauses = Vec::new();
     let error = root
-        .rename_relative(&["next"], &["state"], true)
-        .expect_err("a holder outlasting the wait is an error");
-    let waited = started.elapsed();
+        .rename_checked_entry_pausing(
+            &["next"],
+            &["state"],
+            true,
+            false,
+            || {},
+            flush_handle,
+            &mut |delay| pauses.push(delay),
+        )
+        .expect_err("a holder outlasting the wait is an error")
+        .into_io_error();
     assert!(
         matches!(error.raw_os_error(), Some(5 | ERROR_SHARING_VIOLATION)),
         "the holder's own error is reported, got {error}"
     );
-    assert!(
-        waited < std::time::Duration::from_millis(2_500),
-        "the wait is bounded, took {waited:?}"
+    assert_eq!(
+        pauses, BACKOFF,
+        "the wait follows the bounded schedule exactly"
     );
     assert_eq!(get(&root, &["state"]), b"old generation");
     assert_eq!(get(&root, &["next"]), b"new generation");
 
-    scanner.join().expect("join scanner");
+    scanner.finish();
     drop(root);
     fs::remove_dir_all(path).expect("cleanup");
 }
 
 #[test]
 fn republishing_beside_a_scanner_that_inspects_every_generation_never_fails() {
-    use std::os::windows::fs::OpenOptionsExt as _;
-    use std::sync::mpsc;
-
     let (root, path) = private_root("scan-loop");
     put(&root, &["state"], b"generation 0");
 
-    // Real-time protection opens each file the moment it changes and holds it
-    // without sharing delete while it scans, which is exactly when the next
-    // publication arrives.
-    let (changed, notifications) = mpsc::channel::<()>();
-    let scanned = path.join("state");
-    let scanner = std::thread::spawn(move || {
-        while notifications.recv().is_ok() {
-            if let Ok(handle) = fs::OpenOptions::new()
-                .read(true)
-                .share_mode(1 | 2)
-                .open(&scanned)
-            {
-                std::thread::sleep(std::time::Duration::from_millis(3));
-                drop(handle);
-            }
-        }
-    });
-
+    // Real-time protection opens each file the moment it changes and holds it without sharing
+    // delete while it scans, which is exactly when the next publication arrives. Every
+    // generation here is therefore scanned before it is replaced, and each replacement must be
+    // refused exactly once and then succeed once the scan ends.
     for generation in 1..=100_u32 {
+        let scanner = Scanner::hold(path.join("state"));
         let temporary = format!(".state.{generation}.tmp");
         put(
             &root,
             &[temporary.as_str()],
             format!("generation {generation}").as_bytes(),
         );
-        root.rename_relative(&[temporary.as_str()], &["state"], true)
-            .expect("republish beside a scanner");
-        changed.send(()).expect("notify the scanner");
+        let refusals =
+            rename_through_scanner(&root, &scanner, &[temporary.as_str()], &["state"], true);
+        scanner.finish();
+        assert_eq!(refusals, 1, "generation {generation}");
     }
-    drop(changed);
-    scanner.join().expect("join scanner");
 
     assert_eq!(get(&root, &["state"]), b"generation 100");
+    drop(root);
+    fs::remove_dir_all(path).expect("cleanup");
+}
+
+/// Opens `state` through [`open_admitted_file`] while a publisher replaces the name `replacements`
+/// times, each time between the open and the admission checks, returning the outcome, how many
+/// times the checks ran, and the bytes of whatever generation was opened.
+fn open_state_while_published(
+    root: &WorkspaceRoot,
+    if_unlinked: IfUnlinked,
+    replacements: usize,
+) -> (io::Result<Vec<u8>>, usize) {
+    use std::cell::Cell;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_READ_ATTRIBUTES, FILE_READ_DATA, READ_CONTROL, SYNCHRONIZE,
+    };
+
+    let admissions = Cell::new(0_usize);
+    let opened = open_admitted_file(
+        root.handle(),
+        "state",
+        FILE_READ_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+        if_unlinked,
+        |handle, linkage| {
+            let ordinal = admissions.get();
+            admissions.set(ordinal + 1);
+            if ordinal < replacements {
+                let next = format!(".next.{ordinal}.tmp");
+                put(
+                    root,
+                    &[next.as_str()],
+                    format!("generation {}", ordinal + 1).as_bytes(),
+                );
+                root.rename_relative(&[next.as_str()], &["state"], true)
+                    .expect("the publisher replaces the name between open and admission");
+            }
+            ensure_regular_file_handle_with(handle, linkage)?;
+            ensure_private_handle(handle)
+        },
+    );
+    let bytes = opened.and_then(|handle| {
+        let mut bytes = Vec::new();
+        file_from_handle(handle)?.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    });
+    (bytes, admissions.get())
+}
+
+#[test]
+fn a_reader_keeps_the_generation_it_opened_when_a_publisher_unlinks_it_before_the_checks() {
+    let (root, path) = private_root("keep-generation");
+    put(&root, &["state"], b"generation 0");
+
+    // The publisher replaces the name at every admission, so a reader that insisted on the
+    // current generation could never settle. Keeping the opened one settles at once.
+    let (outcome, admissions) = open_state_while_published(&root, IfUnlinked::Keep, usize::MAX);
+    assert_eq!(
+        outcome.expect("the opened generation is admitted"),
+        b"generation 0"
+    );
+    assert_eq!(admissions, 1, "no second open was needed");
+
+    drop(root);
+    fs::remove_dir_all(path).expect("cleanup");
+}
+
+#[test]
+fn a_writer_reopens_the_name_after_a_pause_and_gives_up_on_a_name_that_never_settles() {
+    let (root, path) = private_root("reopen-generation");
+    put(&root, &["state"], b"generation 0");
+
+    let (outcome, admissions) = open_state_while_published(&root, IfUnlinked::Reopen, 3);
+    assert_eq!(
+        outcome.expect("the writer settles on the current generation"),
+        b"generation 3"
+    );
+    assert_eq!(admissions, 4, "three replaced opens, then the settled one");
+
+    let (outcome, admissions) = open_state_while_published(&root, IfUnlinked::Reopen, usize::MAX);
+    let error = outcome.expect_err("a name replaced at every open never settles");
+    assert_eq!(error.kind(), std::io::ErrorKind::ResourceBusy);
+    assert_eq!(
+        admissions,
+        BACKOFF.len() + 1,
+        "the retries follow the bounded schedule"
+    );
+
+    drop(root);
+    fs::remove_dir_all(path).expect("cleanup");
+}
+
+#[test]
+fn a_reader_is_never_starved_by_a_hot_publisher() {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::thread;
+
+    const PAYLOAD: usize = 4096;
+    const READS: usize = 2_000;
+    let (root, path) = private_root("hot-publisher");
+    put(&root, &["state"], &[0xAA; PAYLOAD]);
+    let finished = Arc::new(AtomicBool::new(false));
+    let writer_root = root.clone();
+    let writer_flag = Arc::clone(&finished);
+    let writer = thread::spawn(move || {
+        let mut round = 0_usize;
+        while !writer_flag.load(Ordering::Relaxed) {
+            let temporary = format!(".state.{round}.tmp");
+            put(&writer_root, &[temporary.as_str()], &[0xBB; PAYLOAD]);
+            writer_root
+                .rename_relative(&[temporary.as_str()], &["state"], true)
+                .expect("publish");
+            round += 1;
+        }
+    });
+    let mut vanished = 0_usize;
+    for read in 0..READS {
+        let mut bytes = Vec::new();
+        let mut opened = match root.open_file_read_checked(&["state"]) {
+            Ok(opened) => opened,
+            // A POSIX-semantics replace unlinks the old name before it links the new one, and a
+            // lookup that lands between the two reports the name missing. That platform gap is
+            // not what this test is about; starvation would surface as `ResourceBusy` below.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                vanished += 1;
+                continue;
+            }
+            Err(error) => panic!("read {read} of a published name failed: {error}"),
+        };
+        opened
+            .read_to_end(&mut bytes)
+            .expect("read a published generation");
+        assert_eq!(bytes.len(), PAYLOAD);
+        assert!(bytes.iter().all(|byte| *byte == bytes[0]));
+    }
+    eprintln!("{vanished} of {READS} lookups landed in the replace gap");
+    finished.store(true, Ordering::Relaxed);
+    writer.join().expect("join writer");
     drop(root);
     fs::remove_dir_all(path).expect("cleanup");
 }

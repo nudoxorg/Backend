@@ -5,7 +5,7 @@
     reason = "reviewed MoveFileExW and GetFileInformationByHandleEx calls over owned buffers and live handles"
 )]
 
-use super::busy::retry_while_busy;
+use super::busy::retry_while_busy_pausing;
 use std::fs::File;
 use std::io;
 use std::os::windows::ffi::OsStrExt as _;
@@ -22,9 +22,19 @@ use windows_sys::Win32::Storage::FileSystem::{
 /// access makes the move fail with a sharing error; see [`super::busy`]. The
 /// move is retried for a bounded time before that error is reported.
 pub(crate) fn replace(source: &Path, destination: &Path) -> io::Result<()> {
+    replace_pausing(source, destination, std::thread::sleep)
+}
+
+/// [`replace`] with the pause between retries injected, so a test can release
+/// a scanner's hold at the exact moment the first attempt was refused.
+fn replace_pausing(
+    source: &Path,
+    destination: &Path,
+    pause: impl FnMut(std::time::Duration),
+) -> io::Result<()> {
     let source = wide_path(source)?;
     let destination = wide_path(destination)?;
-    retry_while_busy(|| move_replacing(&source, &destination))
+    retry_while_busy_pausing(|| move_replacing(&source, &destination), pause)
 }
 
 fn move_replacing(source: &[u16], destination: &[u16]) -> io::Result<()> {
@@ -83,7 +93,7 @@ fn wide_path(path: &Path) -> io::Result<Vec<u16>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{identity_of, replace};
+    use super::{identity_of, replace, replace_pausing};
     use std::fs;
     use std::os::windows::fs::OpenOptionsExt as _;
     use std::path::PathBuf;
@@ -113,13 +123,17 @@ mod tests {
     }
 
     #[test]
-    fn replace_waits_out_a_scanner_that_briefly_holds_the_destination() {
+    fn replace_waits_out_a_scanner_that_holds_the_destination_until_the_first_refusal() {
         let directory = scratch("scanner");
         let (source, destination) = (directory.join("next"), directory.join("state"));
         fs::write(&destination, b"old").expect("write destination");
         fs::write(&source, b"new").expect("write source");
 
+        // The scanner holds the destination until the replacement has been refused once, so the
+        // wait is ordered by handshake and not by a sleep a loaded machine can overrun.
         let (held, ready) = std::sync::mpsc::channel();
+        let (release, release_requested) = std::sync::mpsc::channel::<()>();
+        let (closed, released) = std::sync::mpsc::channel();
         let scanned = destination.clone();
         let scanner = std::thread::spawn(move || {
             let handle = fs::OpenOptions::new()
@@ -128,11 +142,23 @@ mod tests {
                 .open(&scanned)
                 .expect("scanner opens the destination");
             held.send(()).expect("announce the hold");
-            std::thread::sleep(Duration::from_millis(60));
+            let _ = release_requested.recv();
             drop(handle);
+            let _ = closed.send(());
         });
         ready.recv().expect("scanner holds the destination");
-        replace(&source, &destination).expect("replace waits for the scanner");
+
+        let mut refusals = 0_usize;
+        replace_pausing(&source, &destination, |_| {
+            refusals += 1;
+            if refusals == 1 {
+                release.send(()).expect("scanner is still holding");
+                released.recv().expect("scanner closed its handle");
+            }
+        })
+        .expect("replace waits for the scanner");
+        assert_eq!(refusals, 1, "refused once while held, then published");
+        drop(release);
         scanner.join().expect("join scanner");
 
         assert_eq!(fs::read(&destination).expect("read"), b"new");
