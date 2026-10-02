@@ -208,7 +208,7 @@ impl OwnerGate {
     /// could combine two different owners during a rapid same-root restart.
     pub(crate) fn serves_attachment(&self, expected: Option<Epoch>) -> bool {
         let inner = self.lock();
-        matches!(inner.state, OwnerState::Ready { .. }) && Some(inner.epoch) == expected
+        matches!(inner.state, OwnerState::Ready { .. }) && Some(inner.attachment) == expected
     }
 
     /// Reports confirmed endpoint loss only for the attached generation that
@@ -916,6 +916,9 @@ mod publication_tests {
         );
         assert!(gate.lock().epoch > initial_wake);
         assert_eq!(gate.attached_ready_epoch(), Some(attachment));
+        // A publication advances the epoch, not the attachment, so the owner a
+        // reader captured through `ready_epoch` still counts as serving.
+        assert!(gate.serves_attachment(Some(attachment)));
         let (kept, kept_cursor) = gate.publication(attachment).expect("latest shared root");
         assert!(Arc::ptr_eq(&kept, &second));
         assert_eq!(kept_cursor, published);
