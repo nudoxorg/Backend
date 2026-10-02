@@ -26,6 +26,15 @@ fn frame(rig: &mut Rig) -> super::Frame {
     rig.shell.read_with(rig.cx, |shell: &Shell, _| shell.frame()).expect("frame")
 }
 
+fn native_tree(rig: &mut Rig) -> serde_json::Value {
+    // VisualTestContext does not force AccessKit on by default. Register
+    // native accessibility before drawing the frame under assertion.
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
+    rig.repaint();
+    let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native AccessKit tree");
+    serde_json::from_str(&json).expect("native tree JSON")
+}
+
 /// A shelf row's words are on screen (the shelf is open, inline or over).
 fn shelf_shown(ledger: &Ledger) -> bool {
     ledger.texts.iter().any(|text| text.content == "glyph" && text.key.starts_with("shelf-row:"))
@@ -357,29 +366,24 @@ fn assert_ask_geometry(rig: &mut Rig, settled: bool) {
 fn a_sheet_removes_a_previously_mounted_reader_action_from_accesskit(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(view_route("RelationLabel", View::Code)), 360.0, 640.0);
     rig.settle();
-    let native = |rig: &mut Rig| {
-        rig.repaint();
-        let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native AccessKit tree");
-        serde_json::from_str::<serde_json::Value>(&json).expect("native tree JSON")
-    };
     let has_jump = |tree: &serde_json::Value| tree["nodes"].as_object().expect("native nodes")
         .values().any(|node| node["aria"]["role"].as_str() == Some("Button")
             && node["aria"]["label"].as_str() == Some("Go to line")
             && node["aria"]["on_action"].as_array().is_some_and(|actions|
                 actions.iter().any(|action| action.as_str() == Some("Click"))));
-    assert!(has_jump(&native(&mut rig)), "the Code Reader must positively mount a native action before Ask");
+    assert!(has_jump(&native_tree(&mut rig)), "the Code Reader must positively mount a native action before Ask");
     rig.keys("cmd-k");
     rig.keys("r e l a t i o n");
     rig.settle();
     let plate = rig.cx.debug_bounds("ask-plate").expect("Ask sheet");
     assert!((f32::from(plate.size.width) - 360.0).abs() < 1.0);
-    assert!(!has_jump(&native(&mut rig)), "the covered Reader action remains in the native modal tree");
+    assert!(!has_jump(&native_tree(&mut rig)), "the covered Reader action remains in the native modal tree");
     rig.cx.simulate_keystrokes("escape");
     rig.frame(0);
     assert!(rig.cx.debug_bounds("ask-plate").is_some(), "the sheet should have painted exit pixels");
-    assert!(!has_jump(&native(&mut rig)), "the Reader action returned beneath a departing sheet");
+    assert!(!has_jump(&native_tree(&mut rig)), "the Reader action returned beneath a departing sheet");
     rig.settle();
-    assert!(has_jump(&native(&mut rig)), "the Reader action did not return after the sheet cleared");
+    assert!(has_jump(&native_tree(&mut rig)), "the Reader action did not return after the sheet cleared");
 }
 
 /// Real resize events hold one placement around the readable-width edge,
@@ -422,9 +426,7 @@ fn ask_phase(ledger: &Ledger) -> Option<StackPhase> {
 }
 
 fn has_native_ask_results(rig: &mut Rig) -> bool {
-    rig.repaint();
-    let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native AccessKit tree");
-    let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree JSON");
+    let tree = native_tree(rig);
     tree["nodes"].as_object().expect("native nodes").values().any(|node|
         node["aria"]["label"].as_str() == Some("Search results"))
 }
@@ -446,25 +448,20 @@ fn ask_entering_results_remain_inert_until_the_plate_exposes_them(cx: &mut TestA
     assert!(f32::from(plate.size.width) < 439.0, "the plate unexpectedly settled with the veil: {plate:?}");
     assert_eq!(ask_phase(&painted(&mut rig)), Some(StackPhase::Entering),
         "a settled veil mislabeled the still-moving plate Open");
-    let native = |rig: &mut Rig| {
-        rig.repaint();
-        let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native Ask tree");
-        serde_json::from_str::<serde_json::Value>(&json).expect("native tree JSON")
-    };
     let actionable_links = |tree: &serde_json::Value| tree["nodes"].as_object().expect("native nodes")
         .values().filter(|node| node["aria"]["role"].as_str() == Some("Link")
             && node["aria"]["on_action"].as_array().is_some_and(|actions|
                 actions.iter().any(|action| action.as_str() == Some("Click")))).count();
-    assert_eq!(actionable_links(&native(&mut rig)), 0, "a clipped entering row registered a native action");
+    assert_eq!(actionable_links(&native_tree(&mut rig)), 0, "a clipped entering row registered a native action");
     rig.cx.simulate_keystrokes("tab");
     rig.frame(0);
-    let tree = native(&mut rig);
+    let tree = native_tree(&mut rig);
     let focus = tree["accesskit_focus"].as_str().expect("native focus");
     assert_eq!(tree["nodes"][focus]["aria"]["role"].as_str(), Some("TextInput"),
         "Tab escaped the editor into a clipped result");
     rig.settle();
     assert_eq!(ask_phase(&painted(&mut rig)), Some(StackPhase::Open));
-    assert!(actionable_links(&native(&mut rig)) > 0, "settled results never became actionable");
+    assert!(actionable_links(&native_tree(&mut rig)) > 0, "settled results never became actionable");
 }
 
 /// The modal's painted shell reverses from its current width. Results and
