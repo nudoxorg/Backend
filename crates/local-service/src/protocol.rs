@@ -286,6 +286,10 @@ pub enum ProtocolError {
     CommandExecution(String),
     /// The caller's selected semantic stamp is no longer current.
     SemanticStaleSelection,
+    /// The owner cannot mint a process-unique subscription lease.
+    LeaseEntropyUnavailable,
+    /// The owner has used every monotonic lease ordinal in this process.
+    LeaseIdsExhausted,
     /// A stream read or write failed.
     Io(io::ErrorKind),
     /// The endpoint timed out while the peer was idle.
@@ -336,6 +340,12 @@ impl fmt::Display for ProtocolError {
             }
             Self::SemanticStaleSelection => {
                 formatter.write_str("selected semantic generation is stale")
+            }
+            Self::LeaseEntropyUnavailable => {
+                formatter.write_str("owner subscription lease entropy is unavailable")
+            }
+            Self::LeaseIdsExhausted => {
+                formatter.write_str("owner subscription lease identities are exhausted")
             }
             Self::Io(kind) => write!(formatter, "local endpoint I/O failed: {kind:?}"),
             Self::Timeout => formatter.write_str("local endpoint timed out"),

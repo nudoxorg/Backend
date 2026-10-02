@@ -13,6 +13,8 @@ use backend_engine::{
 };
 use std::collections::BTreeMap;
 use std::fmt;
+#[cfg(unix)]
+use std::io::Read;
 use std::time::{Duration, Instant};
 
 #[path = "service/runtime.rs"]
@@ -83,7 +85,7 @@ pub struct LocaldOwner<
     replication: R,
     semantic_ranges: S,
     leases: BTreeMap<LocalSubscriptionId, DurableLease>,
-    next_lease_nonce: u64,
+    lease_identity: OwnerLeaseIdentity,
     deferred: Option<Box<dyn DeferredCommands<M, V, A> + Send>>,
 }
 
@@ -107,6 +109,91 @@ struct DurableSnapshot {
     reason: backend_engine::CursorResetReason,
     next: Option<ViewPageCursor>,
     next_token: Option<Box<[u8]>>,
+}
+
+/// One process-local lease namespace. It is minted from the OS before the
+/// first Open, never serialized, and discarded when this owner stops. A peer
+/// reconnecting to the same endpoint path receives a new random namespace;
+/// reusing an old 128-bit lease ID would require a cryptographic collision.
+struct OwnerBootNonce([u8; 32]);
+
+impl OwnerBootNonce {
+    fn fresh() -> std::io::Result<Self> {
+        let mut bytes = [0_u8; 32];
+        #[cfg(unix)]
+        std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+        #[cfg(windows)]
+        backend_platform::win32::random::fill(&mut bytes)?;
+        #[cfg(not(any(unix, windows)))]
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "owner lease entropy is unavailable on this platform",
+        ));
+        Ok(Self(bytes))
+    }
+
+    fn lease_id(&self, nonce: u64, request_id: u64, cursor: &[u8]) -> Option<LocalSubscriptionId> {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"backend-locald-subscription-lease.v2\0");
+        hasher.update(&self.0);
+        hasher.update(&nonce.to_be_bytes());
+        hasher.update(&request_id.to_be_bytes());
+        hasher.update(cursor);
+        let digest = hasher.finalize();
+        let mut bytes = [0_u8; 16];
+        bytes.copy_from_slice(&digest.as_bytes()[..16]);
+        (bytes != [0_u8; 16]).then_some(LocalSubscriptionId::from_bytes(bytes))
+    }
+}
+
+impl Drop for OwnerBootNonce {
+    fn drop(&mut self) {
+        self.0.fill(0);
+    }
+}
+
+#[derive(Default)]
+struct OwnerLeaseIdentity {
+    boot_nonce: Option<OwnerBootNonce>,
+    next_nonce: u64,
+}
+
+impl OwnerLeaseIdentity {
+    fn allocate(
+        &mut self,
+        request_id: u64,
+        cursor: &[u8],
+        active: &BTreeMap<LocalSubscriptionId, DurableLease>,
+    ) -> Result<LocalSubscriptionId, ProtocolError> {
+        if self.boot_nonce.is_none() {
+            self.boot_nonce =
+                Some(OwnerBootNonce::fresh().map_err(|_| ProtocolError::LeaseEntropyUnavailable)?);
+        }
+        let boot_nonce = self
+            .boot_nonce
+            .as_ref()
+            .ok_or(ProtocolError::LeaseEntropyUnavailable)?;
+        loop {
+            self.next_nonce = self
+                .next_nonce
+                .checked_add(1)
+                .ok_or(ProtocolError::LeaseIdsExhausted)?;
+            if let Some(lease) = boot_nonce.lease_id(self.next_nonce, request_id, cursor)
+                && !active.contains_key(&lease)
+            {
+                return Ok(lease);
+            }
+        }
+    }
+}
+
+fn retained_lease(
+    active: &BTreeMap<LocalSubscriptionId, DurableLease>,
+    lease: LocalSubscriptionId,
+) -> Result<&DurableLease, ProtocolError> {
+    active
+        .get(&lease)
+        .ok_or(ProtocolError::InvalidControl("unknown subscription lease"))
 }
 
 #[path = "service/admission.rs"]
@@ -135,7 +222,11 @@ where
             .field("replication", &self.replication)
             .field("semantic_ranges", &self.semantic_ranges)
             .field("leases", &self.leases)
-            .field("next_lease_nonce", &self.next_lease_nonce)
+            .field(
+                "boot_nonce_initialized",
+                &self.lease_identity.boot_nonce.is_some(),
+            )
+            .field("next_lease_nonce", &self.lease_identity.next_nonce)
             .finish()
     }
 }
@@ -160,26 +251,13 @@ where
         self
     }
 
-    fn allocate_lease(&mut self, request_id: u64, cursor: &[u8]) -> LocalSubscriptionId {
-        loop {
-            self.next_lease_nonce = self.next_lease_nonce.wrapping_add(1);
-            let mut hasher = blake3::Hasher::new();
-            hasher.update(b"backend-locald-subscription-lease\0");
-            hasher.update(&request_id.to_be_bytes());
-            hasher.update(&self.next_lease_nonce.to_be_bytes());
-            hasher.update(cursor);
-            let digest = hasher.finalize();
-            let mut bytes = [0_u8; 16];
-            let byte_len = bytes.len();
-            bytes.copy_from_slice(&digest.as_bytes()[..byte_len]);
-            if bytes == [0_u8; 16] {
-                bytes[0] = 1;
-            }
-            let lease = LocalSubscriptionId::from_bytes(bytes);
-            if !self.leases.contains_key(&lease) {
-                return lease;
-            }
-        }
+    fn allocate_lease(
+        &mut self,
+        request_id: u64,
+        cursor: &[u8],
+    ) -> Result<LocalSubscriptionId, ProtocolError> {
+        self.lease_identity
+            .allocate(request_id, cursor, &self.leases)
     }
 
     fn request_subscription(
@@ -249,8 +327,8 @@ where
         if credit == 0 || credit > backend_engine::MAX_SUBSCRIPTION_EVENTS || lease_ms == 0 {
             return Err(ProtocolError::InvalidControl("subscription lease bounds"));
         }
+        let lease = self.allocate_lease(request_id, cursor)?;
         let reply = self.request_subscription(request_id, cursor, credit)?;
-        let lease = self.allocate_lease(request_id, cursor);
         let expires_at = Instant::now()
             .checked_add(Duration::from_millis(lease_ms))
             .unwrap_or_else(Instant::now);
@@ -427,9 +505,7 @@ where
         credit: usize,
         lease_ms: u64,
     ) -> Result<EngineStatus, ProtocolError> {
-        let Some(state) = self.leases.get(&lease) else {
-            return Err(ProtocolError::InvalidControl("unknown subscription lease"));
-        };
+        let state = retained_lease(&self.leases, lease)?;
         if state.expires_at <= Instant::now() {
             self.leases.remove(&lease);
             return Err(ProtocolError::InvalidControl("subscription lease expired"));
@@ -775,7 +851,7 @@ where
             replication: NoReplicationAdmission,
             semantic_ranges: NoSemanticRangeAdmission,
             leases: BTreeMap::new(),
-            next_lease_nonce: 0,
+            lease_identity: OwnerLeaseIdentity::default(),
             deferred: None,
         }
     }
@@ -798,7 +874,7 @@ where
             replication: NoReplicationAdmission,
             semantic_ranges: NoSemanticRangeAdmission,
             leases: BTreeMap::new(),
-            next_lease_nonce: 0,
+            lease_identity: OwnerLeaseIdentity::default(),
             deferred: None,
         }
     }
@@ -819,7 +895,7 @@ where
             replication,
             semantic_ranges: NoSemanticRangeAdmission,
             leases: BTreeMap::new(),
-            next_lease_nonce: 0,
+            lease_identity: OwnerLeaseIdentity::default(),
             deferred: None,
         }
     }
@@ -843,7 +919,7 @@ where
             replication,
             semantic_ranges,
             leases: BTreeMap::new(),
-            next_lease_nonce: 0,
+            lease_identity: OwnerLeaseIdentity::default(),
             deferred: None,
         }
     }
