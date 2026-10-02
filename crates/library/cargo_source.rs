@@ -292,6 +292,39 @@ pub enum CargoPackageSourceSemanticStatusV1 {
     NotIndexed,
 }
 
+/// Exact package route and project-tree request required for a source read.
+/// A package authority binds its effective workspace but not the requested
+/// directory that admitted the tree, so source reads carry both commitments.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CargoPackageSourceRequestV1 {
+    /// Exact source-qualified package route from the tree row.
+    pub package: PackageReference,
+    /// Exact requested and effective roots from that same tree response.
+    pub request_binding: ProjectTreeRequestBindingV1,
+}
+
+impl CargoPackageSourceRequestV1 {
+    /// Makes a request from one exact ProjectTree row and its owner binding.
+    #[must_use]
+    pub fn from_tree(
+        package: PackageReference,
+        request_binding: ProjectTreeRequestBindingV1,
+    ) -> Self {
+        Self {
+            package,
+            request_binding,
+        }
+    }
+
+    /// Validates the package authority selector and both root commitments.
+    #[must_use]
+    pub fn has_admissible_shape(&self) -> bool {
+        CargoPackageSourceAuthorityV1::digest_from_package_reference(&self.package).is_some()
+            && self.request_binding.has_admissible_shape()
+    }
+}
+
 /// Result of reading one file under an owner-admitted Cargo package root.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "kebab-case", deny_unknown_fields)]
@@ -302,6 +335,8 @@ pub enum CargoPackageSourceFileResultV1 {
         package: PackageReference,
         /// Current owner-revalidated Cargo source receipt.
         authority: CargoPackageSourceAuthorityV1,
+        /// Exact tree request that admitted this source route.
+        request_binding: ProjectTreeRequestBindingV1,
         /// Exact relative path read.
         path: CargoPackageSourcePathV1,
         /// BLAKE3 of the exact returned UTF-8 bytes.
@@ -315,11 +350,15 @@ pub enum CargoPackageSourceFileResultV1 {
     Stale {
         /// Exact source-qualified package route requested.
         package: PackageReference,
+        /// Exact request selector which failed to match current owner state.
+        request_binding: ProjectTreeRequestBindingV1,
     },
     /// No file was returned; the failure remains typed.
     Unavailable {
         /// Exact source-qualified package route requested when it was valid.
         package: Option<PackageReference>,
+        /// Exact request selector, when it was structurally valid.
+        request_binding: Option<ProjectTreeRequestBindingV1>,
         /// Stable reason the source-file authority could not answer.
         reason: CargoPackageSourceReadFailureV1,
     },
@@ -333,6 +372,7 @@ impl CargoPackageSourceFileResultV1 {
             Self::Read {
                 package,
                 authority,
+                request_binding,
                 path,
                 content_digest,
                 contents,
@@ -340,17 +380,30 @@ impl CargoPackageSourceFileResultV1 {
             } => {
                 authority.matches_package_reference(package)
                     && authority.has_admissible_shape()
+                    && request_binding.has_admissible_shape()
+                    && request_binding
+                        .matches_workspace_root_identity(authority.roots().workspace_root)
                     && path.has_admissible_shape()
                     && contents.len() <= MAX_CARGO_PACKAGE_SOURCE_FILE_BYTES
                     && !contents.as_bytes().contains(&0)
                     && blake3::hash(contents.as_bytes()).as_bytes() == content_digest
             }
-            Self::Stale { package } => {
+            Self::Stale {
+                package,
+                request_binding,
+            } => {
                 CargoPackageSourceAuthorityV1::digest_from_package_reference(package).is_some()
+                    && request_binding.has_admissible_shape()
             }
-            Self::Unavailable { package, .. } => package.as_ref().is_none_or(|package| {
-                CargoPackageSourceAuthorityV1::digest_from_package_reference(package).is_some()
-            }),
+            Self::Unavailable {
+                package,
+                request_binding,
+                ..
+            } => {
+                package.as_ref().is_none_or(|package| {
+                    CargoPackageSourceAuthorityV1::digest_from_package_reference(package).is_some()
+                }) && request_binding.is_none_or(|binding| binding.has_admissible_shape())
+            }
         }
     }
 }
@@ -1027,6 +1080,8 @@ pub struct CargoPackageSourceInventoryV1 {
     pub package: PackageReference,
     /// Current Cargo authority revalidated by the owner.
     pub authority: CargoPackageSourceAuthorityV1,
+    /// Exact tree request that admitted this source route.
+    pub request_binding: ProjectTreeRequestBindingV1,
     /// Sorted canonical relative file addresses, each requiring an individual
     /// digest-checked read before its bytes are displayed.
     pub paths: Box<[CargoPackageSourcePathV1]>,
@@ -1040,6 +1095,10 @@ impl CargoPackageSourceInventoryV1 {
     pub fn has_admissible_shape(&self) -> bool {
         self.authority.matches_package_reference(&self.package)
             && self.authority.has_admissible_shape()
+            && self.request_binding.has_admissible_shape()
+            && self
+                .request_binding
+                .matches_workspace_root_identity(self.authority.roots().workspace_root)
             && self.paths.len() <= MAX_CARGO_PACKAGE_SOURCE_INVENTORY_PATHS
             && self
                 .paths
@@ -1081,11 +1140,15 @@ pub enum CargoPackageSourceInventoryResultV1 {
     Stale {
         /// Exact source-qualified package reference requested.
         package: PackageReference,
+        /// Exact request selector which failed to match current owner state.
+        request_binding: ProjectTreeRequestBindingV1,
     },
     /// No inventory was returned; the failure remains typed.
     Unavailable {
         /// Exact source-qualified package reference when it was valid.
         package: Option<PackageReference>,
+        /// Exact request selector, when it was structurally valid.
+        request_binding: Option<ProjectTreeRequestBindingV1>,
         /// Stable reason the source inventory could not answer.
         reason: CargoPackageSourceInventoryFailureV1,
     },
@@ -1097,12 +1160,22 @@ impl CargoPackageSourceInventoryResultV1 {
     pub fn has_admissible_shape(&self) -> bool {
         match self {
             Self::Listed(inventory) => inventory.has_admissible_shape(),
-            Self::Stale { package } => {
+            Self::Stale {
+                package,
+                request_binding,
+            } => {
                 CargoPackageSourceAuthorityV1::digest_from_package_reference(package).is_some()
+                    && request_binding.has_admissible_shape()
             }
-            Self::Unavailable { package, .. } => package.as_ref().is_none_or(|package| {
-                CargoPackageSourceAuthorityV1::digest_from_package_reference(package).is_some()
-            }),
+            Self::Unavailable {
+                package,
+                request_binding,
+                ..
+            } => {
+                package.as_ref().is_none_or(|package| {
+                    CargoPackageSourceAuthorityV1::digest_from_package_reference(package).is_some()
+                }) && request_binding.is_none_or(|binding| binding.has_admissible_shape())
+            }
         }
     }
 }
@@ -1300,6 +1373,34 @@ impl CargoPackageSourceAuthorityV1 {
     #[must_use]
     pub fn effective_target(&self) -> &str {
         self.effective_target.as_str()
+    }
+
+    /// Heap capacity retained by this receipt's owned text fields.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn retained_text_capacity_bytes(&self) -> usize {
+        let mut bytes = self
+            .name
+            .retained_capacity()
+            .saturating_add(self.version.retained_capacity())
+            .saturating_add(self.effective_target.retained_capacity());
+        bytes = bytes.saturating_add(match &self.source {
+            CargoPackageSourceV1::Registry { index_url, .. } => index_url.retained_capacity(),
+            CargoPackageSourceV1::Git {
+                repository_url,
+                requested_query,
+                resolved_commit,
+            } => repository_url
+                .retained_capacity()
+                .saturating_add(
+                    requested_query
+                        .as_ref()
+                        .map_or(0, ProductText::retained_capacity),
+                )
+                .saturating_add(resolved_commit.retained_capacity()),
+            CargoPackageSourceV1::Path => 0,
+        });
+        bytes
     }
 
     /// Hash of the exact sorted features Cargo resolved for this package.

@@ -2184,14 +2184,14 @@ impl CommandAdapter {
                         },
                     )
             }
-            backend_engine::SurfaceCommand::CargoPackageSourceFile { package, path } => {
+            backend_engine::SurfaceCommand::CargoPackageSourceFile { request, path } => {
                 CommandReply::Surface(backend_engine::SurfaceReply::CargoPackageSourceFile(
-                    self.browse.source_file(package, path),
+                    self.browse.source_file(request, path),
                 ))
             }
-            backend_engine::SurfaceCommand::CargoPackageSourceInventory { package } => {
+            backend_engine::SurfaceCommand::CargoPackageSourceInventory { request } => {
                 CommandReply::Surface(backend_engine::SurfaceReply::CargoPackageSourceInventory(
-                    self.browse.source_inventory(package),
+                    self.browse.source_inventory(request),
                 ))
             }
             backend_engine::SurfaceCommand::CargoPackageReadme { request } => {
