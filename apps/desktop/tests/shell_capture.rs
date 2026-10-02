@@ -850,7 +850,27 @@ fn capture(
             set.frames[index].native_accessibility.as_ref().expect("paired native tree")
                 .has_label("Search results")
         };
-        assert!(native_has_results(24), "the populated Ask has native results before closing");
+        assert!(native_has_results(17), "the earlier populated Ask never exposed its results");
+        let entering = &set.frames[24];
+        let plate = entering.ledger.stacks.iter().flat_map(|stack| stack.entries.iter())
+            .find(|entry| entry.key == "ask-plate").expect("entering Ask plate stack entry");
+        assert_eq!(plate.phase, facet::probe::StackPhase::Entering,
+            "the interrupted Ask entry was mislabeled Open");
+        let width = plate.bounds.as_ref().expect("painted entering plate").width;
+        assert!(width > 1.0 && width < 439.0,
+            "the interrupted entry needs a genuinely clipped plate, got {width}");
+        let tree = &entering.native_accessibility.as_ref().expect("paired entering native tree").tree;
+        let nodes = tree["nodes"].as_object().expect("entering native nodes");
+        let editors = nodes.iter().filter(|(_, node)| node["aria"]["role"].as_str() == Some("TextInput")
+            && node["aria"]["label"].as_str() == Some("Ask anything, or find a package")).collect::<Vec<_>>();
+        assert_eq!(editors.len(), 1, "the opening modal needs one native editor");
+        assert_eq!(tree["accesskit_focus"].as_str(), Some(editors[0].0.as_str()),
+            "a clipped result stole the editor's native focus");
+        assert_eq!(editors[0].1["aria"]["value"].as_str(), Some("RelationLabel"));
+        assert!(!nodes.values().any(|node| node["aria"]["role"].as_str() == Some("Link")
+            && node["aria"]["on_action"].as_array().is_some_and(|actions|
+                actions.iter().any(|action| action.as_str() == Some("Click")))),
+            "a clipped entering result registered a native Click action");
         assert!(!native_has_results(25), "the painted exit retained native Ask results");
         assert!(native_has_results(29), "the reopened Ask restores native results after resize");
         assert!(!native_has_results(30) && !native_has_results(31), "the final exit retained native Ask results");
