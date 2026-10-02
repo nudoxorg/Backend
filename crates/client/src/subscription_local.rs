@@ -6,6 +6,10 @@
 //! a dropped event or reset.
 
 #[cfg(any(unix, windows))]
+use crate::lease_contract::BOOTSTRAP_LEASE;
+#[cfg(any(unix, windows))]
+use crate::monotonic::{MonotonicClock, SystemClock};
+#[cfg(any(unix, windows))]
 use crate::subscription::{
     snapshot_page_from_bytes_with_verifier, subscription_read_from_bytes,
     subscription_read_from_bytes_against,
@@ -27,7 +31,11 @@ use backend_replication::{
 #[cfg(any(unix, windows))]
 use std::{
     path::{Path, PathBuf},
-    time::Duration,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 #[cfg(any(unix, windows))]
@@ -47,10 +55,42 @@ fn map_control_error(error: LocalControlError) -> ClientError {
     crate::map_frame(error)
 }
 
+/// One underlying socket, for the life of this process.
+///
+/// A lease is never bound to a socket on the wire, but a terminal cancel must
+/// only travel on the socket the lease was last used on. Giving every
+/// connection (including each replacement made when a connection's frame
+/// budget is spent) its own identity lets that rule be checked instead of
+/// remembered.
+#[cfg(any(unix, windows))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ConnectionId(u64);
+
+#[cfg(any(unix, windows))]
+impl ConnectionId {
+    fn next() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+/// Whether the transport may still carry requests.
+#[cfg(any(unix, windows))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Lifecycle {
+    Serving,
+    /// A terminal cancel has been attempted on the socket: it carries short
+    /// deadlines and may hold half a frame, so nothing else may use it.
+    Released,
+}
+
 /// A bounded local endpoint subscription adapter.
 #[cfg(any(unix, windows))]
 pub struct LocalSubscriptionTransport {
     client: LocalControlClient<backend_replication::LocalStream>,
+    connection: ConnectionId,
+    lifecycle: Lifecycle,
+    clock: Arc<dyn MonotonicClock>,
     interrupt: Option<crate::TransportInterrupt>,
     peer: Option<backend_replication::AuthenticatedLocalPeer>,
     endpoint: Option<PathBuf>,
@@ -103,6 +143,9 @@ impl LocalSubscriptionTransport {
         let interrupt = Some(crate::TransportInterrupt::new(&stream)?);
         Ok(Self {
             client: LocalControlClient::new(stream, control_limits()),
+            connection: ConnectionId::next(),
+            lifecycle: Lifecycle::Serving,
+            clock: Arc::new(SystemClock),
             interrupt,
             peer: Some(peer),
             endpoint: Some(path.to_path_buf()),
@@ -123,6 +166,9 @@ impl LocalSubscriptionTransport {
         let interrupt = crate::TransportInterrupt::new(&stream).ok();
         Self {
             client: LocalControlClient::new(stream, control_limits()),
+            connection: ConnectionId::next(),
+            lifecycle: Lifecycle::Serving,
+            clock: Arc::new(SystemClock),
             interrupt,
             peer: None,
             endpoint: None,
@@ -131,6 +177,30 @@ impl LocalSubscriptionTransport {
             frames_on_connection: 0,
             next_request_id: 1,
         }
+    }
+
+    /// Replaces the monotonic clock that bounds reset hydration. Production
+    /// callers keep the system clock; a test supplies a manual one.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn MonotonicClock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    pub(crate) fn now(&self) -> Instant {
+        self.clock.now()
+    }
+
+    /// The socket currently carrying this transport's requests.
+    pub(crate) const fn connection(&self) -> ConnectionId {
+        self.connection
+    }
+
+    /// Spends this connection's frame budget, so the next ordinary request
+    /// must replace the connection.
+    #[cfg(test)]
+    pub(crate) fn exhaust_connection_budget_for_test(&mut self) {
+        self.frames_on_connection = CONNECTION_FRAME_BUDGET;
     }
 
     /// Returns a handle for the exact currently connected control socket.
@@ -158,6 +228,7 @@ impl LocalSubscriptionTransport {
             interrupt.replace(self.client.stream())?;
         }
         self.peer = Some(peer);
+        self.connection = ConnectionId::next();
         self.frames_on_connection = 0;
         Ok(())
     }
@@ -176,7 +247,7 @@ impl LocalSubscriptionTransport {
     /// continuation, descriptor, or final root commitment fails admission.
     pub fn bootstrap_root(&mut self) -> Result<(ViewRoot, Cursor), ClientError> {
         let previous = Cursor::new();
-        let mut response = self.open_lease(None, MAX_EVENTS, 30_000)?;
+        let mut response = self.open_lease(None, MAX_EVENTS, BOOTSTRAP_LEASE.get())?;
         let mut expected_page: Box<[u8]> = Box::new([]);
         let mut hydrator: Option<SnapshotHydrator> = None;
         loop {
@@ -234,6 +305,11 @@ impl LocalSubscriptionTransport {
         &mut self,
         request: &LocalControlRequest,
     ) -> Result<LocalControlResponse, ClientError> {
+        if self.lifecycle == Lifecycle::Released {
+            return Err(ClientError::Io(
+                "transport released after a terminal lease cancellation".to_owned(),
+            ));
+        }
         self.prepare_request()?;
         let response = self.client.request(request).map_err(map_control_error)?;
         self.frames_on_connection = self.frames_on_connection.saturating_add(1);
@@ -353,6 +429,48 @@ impl LocalSubscriptionTransport {
         lease: LocalSubscriptionId,
     ) -> Result<LocalSubscriptionResponse, ClientError> {
         self.lease_request(LocalSubscriptionOperation::Cancel { lease })
+    }
+
+    /// Best-effort terminal release on this exact socket. Never reconnects or
+    /// rotates a connection, and so never touches any other socket. Each of
+    /// the two socket waits is limited to `timeout`; native socket
+    /// configuration is not preemptible.
+    ///
+    /// The transport is finished whatever the outcome: the socket now carries
+    /// the short deadlines and may hold half a frame, so every later request
+    /// is refused.
+    pub(crate) fn cancel_lease_current(
+        &mut self,
+        lease: LocalSubscriptionId,
+        timeout: Duration,
+    ) -> Result<(), ClientError> {
+        if std::mem::replace(&mut self.lifecycle, Lifecycle::Released) == Lifecycle::Released {
+            return Err(ClientError::Io(
+                "transport already released by a terminal lease cancellation".to_owned(),
+            ));
+        }
+        let stream = self.client.stream();
+        stream
+            .set_read_timeout(Some(timeout))
+            .and_then(|()| stream.set_write_timeout(Some(timeout)))
+            .map_err(|error| ClientError::Io(error.to_string()))?;
+        let request_id = self.next_request_id;
+        self.next_request_id = request_id
+            .checked_add(1)
+            .ok_or_else(|| ClientError::Protocol("subscription request id exhausted".to_owned()))?;
+        let request = LocalControlRequest::Subscription(LocalSubscriptionRequest {
+            request_id,
+            operation: LocalSubscriptionOperation::Cancel { lease },
+        });
+        match self.client.request(&request).map_err(map_control_error)? {
+            LocalControlResponse::Subscription(LocalSubscriptionResponse::Cancelled {
+                request_id: observed,
+                lease: acknowledged,
+            }) if observed == request_id && acknowledged == lease => Ok(()),
+            _ => Err(ClientError::Protocol(
+                "exact-socket lease cancellation was not acknowledged".to_owned(),
+            )),
+        }
     }
 
     /// Requests one bounded snapshot page for a reset descriptor. The page

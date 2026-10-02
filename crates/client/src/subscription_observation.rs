@@ -1,20 +1,30 @@
 //! Proof-admitted state of one durable local publication lease. Socket work
 //! belongs to the caller's worker; cancellation is checked between bounded
 //! frames. No partial reset can replace the retained complete root.
+//!
+//! # Protocol limits
+//!
+//! Every number this module relies on (the lease term it asks for, its page
+//! credit, the row and page caps and the reset allowance) comes from
+//! [`crate::lease_contract`], the same module the owner imports its defaults
+//! from. The owner either grants the term asked for or refuses the request, so
+//! the term stored in a [`PublicationLease`] is the term the owner will honor.
 
+use crate::lease_contract::{LeaseMs, PUBLICATION_CREDIT, PUBLICATION_LEASE};
+use crate::reset_budget::{ResetBudget, ResetFault};
 use crate::subscription::{
     snapshot_page_from_bytes_with_verifier, subscription_read_from_bytes_against,
 };
+use crate::subscription_local::ConnectionId;
 use crate::{ClientError, LocalSubscriptionTransport};
 use backend_library::{Cursor, CursorEvent, CursorRead, SnapshotHydrator, ViewRoot};
 use backend_replication::{LocalSubscriptionId, LocalSubscriptionResponse};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-const CREDIT: usize = 64;
-const LEASE_MS: u64 = 10_000;
-const MAX_RESET_ROWS: u64 = 131_072;
-const RESET_TIME: Duration = Duration::from_secs(10);
+/// Read and write limit for the terminal cancel on an exact socket. A cancel
+/// that cannot finish this fast is abandoned to the owner's lease expiry.
+const TERMINAL_CANCEL_IO: Duration = Duration::from_millis(50);
 
 /// Exact producer state retained across socket reconnects. The lease is an
 /// owner-issued identity, never reconstructed from a path or a clock.
@@ -22,6 +32,11 @@ pub struct PublicationLease {
     lease: LocalSubscriptionId,
     cursor: Cursor,
     root: Arc<ViewRoot>,
+    /// The term the owner granted, which governs how often to renew.
+    term: LeaseMs,
+    /// The connection this lease was last used on: the only socket a terminal
+    /// cancel may use.
+    held_on: ConnectionId,
 }
 
 impl PublicationLease {
@@ -29,14 +44,26 @@ impl PublicationLease {
     pub fn root(&self) -> Arc<ViewRoot> {
         Arc::clone(&self.root)
     }
+
     /// Exact admitted producer cursor.
     pub const fn cursor(&self) -> Cursor {
         self.cursor
+    }
+
+    /// How long a quiet holder may wait between renewals: half the term the
+    /// owner granted, so one lost renewal still leaves a second chance.
+    pub const fn renew_after(&self) -> Duration {
+        self.term.renewal_interval()
     }
 }
 
 impl LocalSubscriptionTransport {
     /// Acquires a lease from a previously admitted exact root/cursor.
+    ///
+    /// If the reset that follows cannot be admitted, the lease is released on
+    /// the socket it was opened on (see [`Self::cancel_publications_current`])
+    /// before the error is returned; the owner reclaims it on expiry if that
+    /// cancel cannot be delivered.
     /// # Errors
     /// Returns a transport, proof, cancellation, or bounded-reset error.
     pub fn acquire_publications(
@@ -49,14 +76,20 @@ impl LocalSubscriptionTransport {
         if root.root() != cursor.root() || !root.is_coherent() || root.capability().is_none() {
             return Err(protocol("publication base root/cursor mismatch"));
         }
-        let response = self.open_lease(Some(cursor), CREDIT, LEASE_MS)?;
+        let response =
+            self.open_lease(Some(cursor), PUBLICATION_CREDIT, PUBLICATION_LEASE.get())?;
         let lease = response.lease();
         let mut state = PublicationLease {
             lease,
             cursor,
             root,
+            term: PUBLICATION_LEASE,
+            held_on: self.connection(),
         };
-        self.admit_publications(&mut state, response, cancelled)?;
+        if let Err(error) = self.admit_publications(&mut state, response, cancelled) {
+            let _ = self.cancel_publications_current(&state);
+            return Err(error);
+        }
         Ok(state)
     }
 
@@ -70,7 +103,12 @@ impl LocalSubscriptionTransport {
         cancelled: &dyn Fn() -> bool,
     ) -> Result<(), ClientError> {
         check(cancelled)?;
-        let response = self.resume_lease(state.lease, state.cursor, CREDIT, LEASE_MS)?;
+        let response = self.resume_lease(
+            state.lease,
+            state.cursor,
+            PUBLICATION_CREDIT,
+            PUBLICATION_LEASE.get(),
+        )?;
         self.admit_publications(state, response, cancelled)
     }
 
@@ -78,11 +116,16 @@ impl LocalSubscriptionTransport {
     /// # Errors
     /// Returns an error if the owner no longer retains this exact lease.
     pub fn renew_publications(&mut self, state: &PublicationLease) -> Result<(), ClientError> {
-        match self.renew_lease(state.lease, state.cursor, CREDIT, LEASE_MS)? {
-            LocalSubscriptionResponse::Renewed { cursor, .. }
-                if cursor.as_ref() == state.cursor.encode_control().as_ref() =>
-            {
-                Ok(())
+        match self.renew_lease(
+            state.lease,
+            state.cursor,
+            PUBLICATION_CREDIT,
+            PUBLICATION_LEASE.get(),
+        )? {
+            LocalSubscriptionResponse::Renewed {
+                cursor, lease_ms, ..
+            } if cursor.as_ref() == state.cursor.encode_control().as_ref() => {
+                granted_term(lease_ms).map(drop)
             }
             _ => Err(protocol(
                 "publication renewal did not fence the admitted cursor",
@@ -93,11 +136,35 @@ impl LocalSubscriptionTransport {
     /// Releases owner-side retention. Socket I/O remains subject to this
     /// transport's timeout; a caller closing a cancelled socket can instead
     /// drop it and let the finite producer lease expire.
+    /// # Errors
+    /// Returns a transport error, or a protocol error when the owner did not
+    /// acknowledge the cancellation.
     pub fn cancel_publications(&mut self, state: &PublicationLease) -> Result<(), ClientError> {
         match self.cancel_lease(state.lease)? {
             LocalSubscriptionResponse::Cancelled { .. } => Ok(()),
             _ => Err(protocol("publication cancellation was not acknowledged")),
         }
+    }
+
+    /// Terminal best-effort release on the socket the lease was last used on,
+    /// without opening a replacement socket.
+    ///
+    /// Read and write each have a 50 ms socket timeout; this does not promise
+    /// preemption of native syscalls, scheduling, or decoding. The transport
+    /// cannot be used afterwards, whatever the outcome: its socket now carries
+    /// those short deadlines and may hold a half-read frame. A lease held on a
+    /// different socket is refused without sending anything.
+    /// # Errors
+    /// Returns an I/O or protocol error when this exact socket cannot release
+    /// the lease; the caller must not assume successful producer cleanup.
+    pub fn cancel_publications_current(
+        &mut self,
+        state: &PublicationLease,
+    ) -> Result<(), ClientError> {
+        if state.held_on != self.connection() {
+            return Err(protocol("publication lease is not held on this socket"));
+        }
+        self.cancel_lease_current(state.lease, TERMINAL_CANCEL_IO)
     }
 
     fn admit_publications(
@@ -106,24 +173,28 @@ impl LocalSubscriptionTransport {
         mut response: LocalSubscriptionResponse,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<(), ClientError> {
-        let deadline = Instant::now() + RESET_TIME;
+        let mut budget = ResetBudget::begin(self.now())?;
         let previous = state.cursor;
         let mut hydrator: Option<SnapshotHydrator> = None;
         let mut expected_page: Box<[u8]> = Box::new([]);
         let (root, cursor) = loop {
             check(cancelled)?;
-            if Instant::now() >= deadline {
-                return Err(protocol("publication reset exceeded its time budget"));
-            }
+            budget.check(self.now())?;
             if response.lease() != state.lease {
                 return Err(protocol("publication response changed lease identity"));
             }
+            state.held_on = self.connection();
             match response {
-                LocalSubscriptionResponse::Opened { cursor, .. }
-                | LocalSubscriptionResponse::Resumed { cursor, .. } => {
+                LocalSubscriptionResponse::Opened {
+                    cursor, lease_ms, ..
+                }
+                | LocalSubscriptionResponse::Resumed {
+                    cursor, lease_ms, ..
+                } => {
                     if hydrator.is_some() || cursor.as_ref() != previous.encode_control().as_ref() {
                         return Err(protocol("publication acknowledgement changed its cursor"));
                     }
+                    state.term = granted_term(lease_ms)?;
                     break (Arc::clone(&state.root), previous);
                 }
                 LocalSubscriptionResponse::Batch {
@@ -146,7 +217,8 @@ impl LocalSubscriptionTransport {
                     let CursorRead::Events { cursor, events } = read else {
                         return Err(protocol("publication batch carried a reset"));
                     };
-                    if events.len() > CREDIT || target.as_ref() != cursor.encode_control().as_ref()
+                    if events.len() > PUBLICATION_CREDIT
+                        || target.as_ref() != cursor.encode_control().as_ref()
                     {
                         return Err(protocol("publication batch credit/cursor mismatch"));
                     }
@@ -175,10 +247,11 @@ impl LocalSubscriptionTransport {
                     })?;
                     let claim =
                         snapshot_page_from_bytes_with_verifier(&payload, previous, None, peer)?;
-                    if claim.descriptor().row_count() > MAX_RESET_ROWS {
-                        return Err(protocol("publication reset exceeds its row budget"));
-                    }
+                    budget.admit_page(claim.descriptor().row_count(), self.now())?;
                     let admitted_next = claim.next_token().map_err(ClientError::Protocol)?;
+                    if next.as_deref() == Some(page.as_ref()) {
+                        return Err(ResetFault::RepeatedContinuation.into());
+                    }
                     if admitted_next.as_deref() != next.as_deref() {
                         return Err(protocol(
                             "publication reset continuation is not authenticated",
@@ -204,12 +277,14 @@ impl LocalSubscriptionTransport {
                         next.ok_or_else(|| protocol("publication reset omitted continuation"))?;
                     hydrator = Some(current);
                     check(cancelled)?;
-                    response = self.snapshot_page(state.lease, expected_page.clone(), CREDIT)?;
+                    response =
+                        self.snapshot_page(state.lease, expected_page.clone(), PUBLICATION_CREDIT)?;
                 }
                 _ => return Err(protocol("unexpected publication lifecycle response")),
             }
         };
         check(cancelled)?;
+        budget.check(self.now())?;
         // Quiet Resume has already fenced this exact durable cursor; it
         // does not need another frame or a duplicate root publication.
         if cursor == previous {
@@ -222,15 +297,27 @@ impl LocalSubscriptionTransport {
             _ => return Err(protocol("publication acknowledgement cursor mismatch")),
         }
         check(cancelled)?;
+        budget.check(self.now())?;
+        state.held_on = self.connection();
         state.cursor = cursor;
         state.root = root;
         Ok(())
     }
 }
 
+/// The term the owner reports for a lease. It never exceeds the term asked
+/// for: the owner refuses a longer one rather than shortening it, so anything
+/// longer is a protocol violation, and zero is not a term.
+fn granted_term(lease_ms: u64) -> Result<LeaseMs, ClientError> {
+    LeaseMs::new(lease_ms)
+        .filter(|granted| *granted <= PUBLICATION_LEASE)
+        .ok_or_else(|| protocol("publication lease term exceeds the term requested"))
+}
+
 fn protocol(message: &str) -> ClientError {
     ClientError::Protocol(message.to_owned())
 }
+
 fn check(cancelled: &dyn Fn() -> bool) -> Result<(), ClientError> {
     if cancelled() {
         Err(protocol("publication observation withdrawn"))
@@ -239,21 +326,25 @@ fn check(cancelled: &dyn Fn() -> bool) -> Result<(), ClientError> {
     }
 }
 
-#[cfg(all(test, unix))]
-#[allow(clippy::expect_used, clippy::panic)]
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic, clippy::too_many_lines)]
 mod tests {
     use super::*;
+    use crate::test_socket::local_pair;
     use backend_library::{
         AuthorityScopeClaim, Basis, CoverageCapability, Frontier, ProducerObservationClaims,
         ProducerObservationVerifier, ScopeRoot, UntrustedProducerObservation, admit_complete_scope,
         admit_producer_observation, object_version, view_key, view_state_root,
     };
     use backend_replication::{
-        LocalControlRequest, LocalControlResponse, LocalSubscriptionOperation, decode_request,
-        encode_response, read_frame, write_frame,
+        LocalControlRequest, LocalControlResponse, LocalStream, LocalSubscriptionOperation,
+        decode_request, encode_response, read_frame, write_frame,
     };
-    use std::os::unix::net::UnixStream;
     use std::thread::JoinHandle;
+    use std::time::Instant;
+
+    const CREDIT: usize = PUBLICATION_CREDIT;
+    const LEASE_MS: u64 = 10_000;
 
     struct FixtureVerifier;
     impl ProducerObservationVerifier for FixtureVerifier {
@@ -306,9 +397,9 @@ mod tests {
         )
     }
     fn pair(
-        serve: impl FnOnce(&mut UnixStream) + Send + 'static,
+        serve: impl FnOnce(&mut LocalStream) + Send + 'static,
     ) -> (LocalSubscriptionTransport, JoinHandle<()>) {
-        let (client, mut server) = UnixStream::pair().expect("pair");
+        let (client, mut server) = local_pair();
         server
             .set_read_timeout(Some(Duration::from_secs(2)))
             .expect("server bound");
@@ -318,7 +409,7 @@ mod tests {
         let join = std::thread::spawn(move || serve(&mut server));
         (LocalSubscriptionTransport::from_stream(client), join)
     }
-    fn request(stream: &mut UnixStream) -> (u64, LocalSubscriptionOperation) {
+    fn request(stream: &mut LocalStream) -> (u64, LocalSubscriptionOperation) {
         let body = read_frame(stream, crate::limits()).expect("request frame");
         let LocalControlRequest::Subscription(request) =
             decode_request(&body, crate::limits()).expect("request")
@@ -327,9 +418,55 @@ mod tests {
         };
         (request.request_id, request.operation)
     }
-    fn reply(stream: &mut UnixStream, response: LocalControlResponse) {
+    fn reply(stream: &mut LocalStream, response: LocalControlResponse) {
         let body = encode_response(&response, crate::limits()).expect("response");
         write_frame(stream, &body, crate::limits()).expect("response frame");
+    }
+    /// The state a successful acquisition on `transport` would have produced.
+    fn lease_on(
+        transport: &LocalSubscriptionTransport,
+        lease: LocalSubscriptionId,
+        root: &Arc<ViewRoot>,
+        cursor: Cursor,
+    ) -> PublicationLease {
+        PublicationLease {
+            lease,
+            cursor,
+            root: Arc::clone(root),
+            term: PUBLICATION_LEASE,
+            held_on: transport.connection(),
+        }
+    }
+    fn cancelled_reply(request_id: u64, lease: LocalSubscriptionId) -> LocalControlResponse {
+        LocalControlResponse::Subscription(LocalSubscriptionResponse::Cancelled {
+            request_id,
+            lease,
+        })
+    }
+    fn opened_reply(
+        request_id: u64,
+        lease: LocalSubscriptionId,
+        cursor: Cursor,
+        lease_ms: u64,
+    ) -> LocalControlResponse {
+        LocalControlResponse::Subscription(LocalSubscriptionResponse::Opened {
+            request_id,
+            lease,
+            cursor: cursor.encode_control(),
+            credit: CREDIT,
+            lease_ms,
+        })
+    }
+    /// A first reset page this unauthenticated fixture cannot admit.
+    fn unadmittable_page(request_id: u64, lease: LocalSubscriptionId) -> LocalControlResponse {
+        LocalControlResponse::Subscription(LocalSubscriptionResponse::SnapshotPage {
+            request_id,
+            lease,
+            page: Box::new([]),
+            next: Some(Box::new([1])),
+            credit: CREDIT,
+            payload: Box::new([0]),
+        })
     }
 
     #[test]
@@ -342,20 +479,12 @@ mod tests {
             assert!(
                 matches!(operation, LocalSubscriptionOperation::Open { cursor: sent, credit: CREDIT, lease_ms: LEASE_MS } if sent.as_ref() == cursor.encode_control().as_ref())
             );
-            reply(
-                stream,
-                LocalControlResponse::Subscription(LocalSubscriptionResponse::Opened {
-                    request_id,
-                    lease,
-                    cursor: cursor.encode_control(),
-                    credit: CREDIT,
-                    lease_ms: LEASE_MS,
-                }),
-            );
+            reply(stream, opened_reply(request_id, lease, cursor, LEASE_MS));
         });
         let mut state = transport
             .acquire_publications(Arc::clone(&root), cursor, &|| false)
             .expect("acquire");
+        assert_eq!(state.renew_after(), Duration::from_millis(5_000));
         owner.join().expect("owner");
         drop(transport);
         let (mut transport, owner) = pair(move |stream| {
@@ -391,13 +520,7 @@ mod tests {
             assert!(
                 matches!(operation, LocalSubscriptionOperation::Cancel { lease: sent } if sent == lease)
             );
-            reply(
-                stream,
-                LocalControlResponse::Subscription(LocalSubscriptionResponse::Cancelled {
-                    request_id,
-                    lease,
-                }),
-            );
+            reply(stream, cancelled_reply(request_id, lease));
         });
         transport
             .resume_publications(&mut state, &|| false)
@@ -415,11 +538,6 @@ mod tests {
         let cursor = Cursor::for_view_root_at(&root, 0);
         for message in ["subscription lease expired", "unknown subscription lease"] {
             let lease = LocalSubscriptionId::from_bytes([3; 16]);
-            let mut state = PublicationLease {
-                lease,
-                root: Arc::clone(&root),
-                cursor,
-            };
             let (mut transport, owner) = pair(move |stream| {
                 let (request_id, _) = request(stream);
                 reply(
@@ -430,6 +548,7 @@ mod tests {
                     },
                 );
             });
+            let mut state = lease_on(&transport, lease, &root, cursor);
             assert!(
                 transport
                     .resume_publications(&mut state, &|| false)
@@ -446,16 +565,7 @@ mod tests {
                 assert!(
                     matches!(operation, LocalSubscriptionOperation::Open { cursor: sent, .. } if sent.as_ref() == cursor.encode_control().as_ref())
                 );
-                reply(
-                    stream,
-                    LocalControlResponse::Subscription(LocalSubscriptionResponse::Opened {
-                        request_id,
-                        lease: fresh,
-                        cursor: cursor.encode_control(),
-                        credit: CREDIT,
-                        lease_ms: LEASE_MS,
-                    }),
-                );
+                reply(stream, opened_reply(request_id, fresh, cursor, LEASE_MS));
             });
             let fresh = transport
                 .acquire_publications(state.root(), state.cursor(), &|| false)
@@ -499,12 +609,8 @@ mod tests {
             },
         ];
         for response in responses {
-            let mut state = PublicationLease {
-                lease,
-                cursor,
-                root: Arc::clone(&root),
-            };
             let (mut transport, owner) = pair(|_| {});
+            let mut state = lease_on(&transport, lease, &root, cursor);
             assert!(
                 transport
                     .admit_publications(&mut state, response, &|| false)
@@ -548,6 +654,213 @@ mod tests {
         assert!(worker.join().expect("worker").is_err());
         assert!(started.elapsed() < Duration::from_secs(1));
         release.send(()).expect("release");
+        owner.join().expect("owner");
+    }
+
+    #[test]
+    fn terminal_cancel_uses_the_exact_existing_socket() {
+        let root = root();
+        let cursor = Cursor::for_view_root_at(&root, 0);
+        let lease = LocalSubscriptionId::from_bytes([3; 16]);
+        let (mut transport, owner) = pair(move |stream| {
+            let (request_id, operation) = request(stream);
+            assert!(
+                matches!(operation, LocalSubscriptionOperation::Cancel { lease: sent } if sent == lease)
+            );
+            reply(stream, cancelled_reply(request_id, lease));
+        });
+        let state = lease_on(&transport, lease, &root, cursor);
+        transport
+            .cancel_publications_current(&state)
+            .expect("terminal cancel");
+        owner.join().expect("owner");
+        // A socket already interrupted by cancellation fails promptly; it
+        // must never dial an endpoint to perform terminal cleanup.
+        let (mut transport, owner) = pair(|_| {});
+        let state = lease_on(&transport, lease, &root, cursor);
+        transport.interrupt_handle().expect("socket").interrupt();
+        assert!(transport.cancel_publications_current(&state).is_err());
+        owner.join().expect("owner");
+    }
+
+    #[test]
+    fn terminal_cancel_is_bounded_by_its_short_deadline_and_leaves_the_transport_unusable() {
+        let root = root();
+        let cursor = Cursor::for_view_root_at(&root, 0);
+        let lease = LocalSubscriptionId::from_bytes([3; 16]);
+        let (mut transport, owner) = pair(move |stream| {
+            let _ = request(stream);
+            // Never answers within any reasonable deadline.
+            std::thread::sleep(Duration::from_millis(1_500));
+        });
+        let state = lease_on(&transport, lease, &root, cursor);
+        let started = Instant::now();
+        assert!(transport.cancel_publications_current(&state).is_err());
+        assert!(
+            started.elapsed() < Duration::from_millis(1_000),
+            "the cancel waited {:?} on a silent owner",
+            started.elapsed()
+        );
+        // The socket now carries 50 ms deadlines and may hold half a frame:
+        // nothing else may be sent on it.
+        assert!(matches!(
+            transport.cancel_lease(lease),
+            Err(ClientError::Io(message)) if message.contains("released")
+        ));
+        assert!(transport.cancel_publications_current(&state).is_err());
+        owner.join().expect("owner");
+    }
+
+    #[test]
+    fn terminal_cancel_never_takes_the_connection_rotation_path() {
+        let root = root();
+        let cursor = Cursor::for_view_root_at(&root, 0);
+        let lease = LocalSubscriptionId::from_bytes([3; 16]);
+        let (mut transport, owner) = pair(move |stream| {
+            let (request_id, operation) = request(stream);
+            assert!(
+                matches!(operation, LocalSubscriptionOperation::Cancel { lease: sent } if sent == lease)
+            );
+            reply(stream, cancelled_reply(request_id, lease));
+        });
+        transport.exhaust_connection_budget_for_test();
+        // An ordinary request would now have to rotate the connection, which a
+        // stream-backed transport cannot do.
+        assert!(
+            transport
+                .renew_lease(lease, cursor, CREDIT, LEASE_MS)
+                .is_err()
+        );
+        let state = lease_on(&transport, lease, &root, cursor);
+        transport
+            .cancel_publications_current(&state)
+            .expect("the terminal cancel does not rotate");
+        owner.join().expect("owner");
+    }
+
+    #[test]
+    fn a_lease_held_on_another_socket_is_never_cancelled_on_this_one() {
+        let root = root();
+        let cursor = Cursor::for_view_root_at(&root, 0);
+        let lease = LocalSubscriptionId::from_bytes([3; 16]);
+        let (mut here, here_owner) = pair(|stream| {
+            // Nothing may arrive: the client drops the socket instead.
+            assert!(read_frame(stream, crate::limits()).is_err());
+        });
+        let (elsewhere, elsewhere_owner) = pair(|_| {});
+        let foreign = lease_on(&elsewhere, lease, &root, cursor);
+        assert_eq!(
+            here.cancel_publications_current(&foreign),
+            Err(protocol("publication lease is not held on this socket"))
+        );
+        drop(here);
+        here_owner
+            .join()
+            .expect("no frame crossed the wrong socket");
+        drop(elsewhere);
+        elsewhere_owner.join().expect("owner");
+    }
+
+    #[test]
+    fn a_failed_acquisition_releases_its_lease_on_the_socket_it_was_opened_on() {
+        let root = root();
+        let cursor = Cursor::for_view_root_at(&root, 0);
+        let lease = LocalSubscriptionId::from_bytes([5; 16]);
+        let (mut transport, owner) = pair(move |stream| {
+            let (request_id, _) = request(stream);
+            reply(stream, unadmittable_page(request_id, lease));
+            let (request_id, operation) = request(stream);
+            assert!(
+                matches!(operation, LocalSubscriptionOperation::Cancel { lease: sent } if sent == lease),
+                "the abandoned reset was not released: {operation:?}"
+            );
+            reply(stream, cancelled_reply(request_id, lease));
+        });
+        let error = transport
+            .acquire_publications(root, cursor, &|| false)
+            .err()
+            .expect("the page cannot be admitted");
+        assert_eq!(
+            error,
+            protocol("publication reset requires authenticated producer"),
+            "the original failure, not the cleanup, is reported"
+        );
+        owner.join().expect("the owner saw the cancel");
+    }
+
+    #[test]
+    fn a_failed_cleanup_never_hides_the_original_acquisition_failure() {
+        let root = root();
+        let cursor = Cursor::for_view_root_at(&root, 0);
+        let lease = LocalSubscriptionId::from_bytes([5; 16]);
+        let (mut transport, owner) = pair(move |stream| {
+            let (request_id, _) = request(stream);
+            reply(stream, unadmittable_page(request_id, lease));
+            // The owner dies before the cancel can be acknowledged.
+        });
+        let error = transport
+            .acquire_publications(root, cursor, &|| false)
+            .err()
+            .expect("the page cannot be admitted");
+        assert_eq!(
+            error,
+            protocol("publication reset requires authenticated producer")
+        );
+        owner.join().expect("owner");
+    }
+
+    #[test]
+    fn a_lease_term_longer_than_the_one_requested_is_a_protocol_violation() {
+        let root = root();
+        let cursor = Cursor::for_view_root_at(&root, 0);
+        let lease = LocalSubscriptionId::from_bytes([3; 16]);
+        let (mut transport, owner) = pair(move |stream| {
+            let (request_id, _) = request(stream);
+            reply(
+                stream,
+                opened_reply(request_id, lease, cursor, LEASE_MS + 1),
+            );
+            // The failed acquisition cancels; the owner just closes.
+        });
+        assert_eq!(
+            transport
+                .acquire_publications(root, cursor, &|| false)
+                .err(),
+            Some(protocol(
+                "publication lease term exceeds the term requested"
+            ))
+        );
+        owner.join().expect("owner");
+    }
+
+    #[test]
+    fn the_renewal_cadence_follows_the_term_the_owner_reports() {
+        let root = root();
+        let cursor = Cursor::for_view_root_at(&root, 0);
+        let lease = LocalSubscriptionId::from_bytes([3; 16]);
+        let (mut transport, owner) = pair(move |stream| {
+            let (request_id, _) = request(stream);
+            reply(stream, opened_reply(request_id, lease, cursor, 3_000));
+            let (request_id, _) = request(stream);
+            reply(
+                stream,
+                LocalControlResponse::Subscription(LocalSubscriptionResponse::Resumed {
+                    request_id,
+                    lease,
+                    cursor: cursor.encode_control(),
+                    credit: CREDIT,
+                    lease_ms: 4_000,
+                }),
+            );
+        });
+        let mut state = transport
+            .acquire_publications(root, cursor, &|| false)
+            .expect("a shorter grant is honored");
+        assert_eq!(state.renew_after(), Duration::from_millis(1_500));
+        transport
+            .resume_publications(&mut state, &|| false)
+            .expect("resume");
+        assert_eq!(state.renew_after(), Duration::from_millis(2_000));
         owner.join().expect("owner");
     }
 }
