@@ -346,7 +346,11 @@ pub fn stop(child: &mut std::process::Child) -> io::Result<ExitStatus> {
 
 #[cfg(test)]
 mod tests {
+    // Every test here drives the Unix pipe poller; the Windows capture has its
+    // own tests beside its implementation in `windows_child_output`.
+    #[cfg(unix)]
     use super::*;
+    #[cfg(unix)]
     use std::time::Duration;
 
     #[cfg(unix)]

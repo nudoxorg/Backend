@@ -125,7 +125,7 @@ impl Attributes {
         if bytes == 0 {
             return Err(io::Error::last_os_error());
         }
-        let words = bytes.div_ceil(mem::size_of::<usize>());
+        let words = bytes.div_ceil(size_of::<usize>());
         let mut this = Self {
             storage: vec![0; words],
             initialized: false,
@@ -149,7 +149,7 @@ impl Attributes {
                 0,
                 attribute as usize,
                 handles.as_ptr().cast(),
-                mem::size_of_val(handles),
+                size_of_val(handles),
                 ptr::null_mut(),
                 ptr::null(),
             )
@@ -373,7 +373,7 @@ impl Pipe {
         })?;
         crate::win32::security::restrict_handle_to_current_user(&handle)?;
         let attributes = SECURITY_ATTRIBUTES {
-            nLength: mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: ptr::null_mut(),
             bInheritHandle: 1,
         };
@@ -616,7 +616,7 @@ pub(crate) fn capture(
             job.0,
             JobObjectExtendedLimitInformation,
             (&policy as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
-            mem::size_of_val(&policy) as u32,
+            size_of_val(&policy) as u32,
         )
     } == 0
     {
@@ -633,7 +633,7 @@ pub(crate) fn capture(
             source,
         })?;
     let inheritable = SECURITY_ATTRIBUTES {
-        nLength: mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: ptr::null_mut(),
         bInheritHandle: 1,
     };
@@ -666,7 +666,7 @@ pub(crate) fn capture(
         return Err(CaptureError::Spawn(source));
     }
     let mut startup = STARTUPINFOEXW::default();
-    startup.StartupInfo.cb = mem::size_of::<STARTUPINFOEXW>() as u32;
+    startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
     startup.StartupInfo.hStdInput = stdin.0;
     startup.StartupInfo.hStdOutput = stdout_writer.0;
@@ -1096,23 +1096,33 @@ mod tests {
         };
         match mode.as_str() {
             "dual" => {
-                assert_eq!(std::io::stdin().read(&mut [0]).expect("NUL stdin"), 0);
-                std::io::stdout()
-                    .write_all(b"bounded stdout\n")
-                    .expect("stdout");
-                std::io::stderr()
-                    .write_all(b"bounded stderr\n")
-                    .expect("stderr");
+                assert_eq!(io::stdin().read(&mut [0]).expect("NUL stdin"), 0);
+                io::stdout().write_all(b"bounded stdout\n").expect("stdout");
+                io::stderr().write_all(b"bounded stderr\n").expect("stderr");
             }
             "large-out" => {
-                std::io::stdout()
-                    .write_all(&[b'x'; CHUNK * 4])
-                    .expect("stdout");
+                io::stdout().write_all(&[b'x'; CHUNK * 4]).expect("stdout");
             }
             "large-err" => {
-                std::io::stderr()
-                    .write_all(&[b'y'; CHUNK * 4])
-                    .expect("stderr");
+                io::stderr().write_all(&[b'y'; CHUNK * 4]).expect("stderr");
+            }
+            "leak-audit" => {
+                // The process-wide handle count is only meaningful when no other
+                // thread opens or closes handles, so the accounting runs here, in
+                // a process of its own, instead of beside the parallel tests.
+                let cancelled = AtomicBool::new(false);
+                capture(&command("dual"), limits(), &cancelled).expect("warm-up capture");
+                assert_eq!(occupied(), 0);
+                let before = handles();
+                for _ in 0..8 {
+                    capture(&command("dual"), limits(), &cancelled).expect("repeat capture");
+                }
+                assert_eq!(occupied(), 0);
+                assert_eq!(
+                    handles(),
+                    before,
+                    "capture must return all process, pipe, Job and IOCP handles"
+                );
             }
             "sleep" => {
                 if let Some(path) = std::env::var_os("BACKEND_CAPTURE_PID") {
@@ -1159,15 +1169,26 @@ mod tests {
                 .any(|window| window == b"bounded stderr")
         );
         assert_eq!(occupied(), 0);
-        let before = handles();
-        for _ in 0..8 {
-            capture(&command("dual"), limits(), &cancelled).expect("repeat capture");
-        }
-        assert_eq!(occupied(), 0);
-        assert_eq!(
-            handles(),
-            before,
-            "capture must return all process, pipe, Job and IOCP handles"
+    }
+
+    #[test]
+    fn repeated_capture_returns_every_process_pipe_job_and_iocp_handle() {
+        let _serial = TESTS.lock().expect("test lock");
+        let audit = Command::new(std::env::current_exe().expect("test executable"))
+            .args(["--exact", FIXTURE, "--nocapture"])
+            .env("BACKEND_CAPTURE_FIXTURE", "leak-audit")
+            .stdin(Stdio::null())
+            .output()
+            .expect("run the isolated handle audit");
+        assert!(
+            audit.status.success(),
+            "isolated handle audit failed:\n{}\n{}",
+            String::from_utf8_lossy(&audit.stdout),
+            String::from_utf8_lossy(&audit.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&audit.stdout).contains("capture_fixture ... ok"),
+            "the audit fixture did not run: the filter matched no test"
         );
     }
 
