@@ -3928,6 +3928,9 @@ fn run_with_default_rustc(
         CaptureError::Unsupported => {
             "bounded Cargo child capture is unavailable on this platform".to_owned()
         }
+        CaptureError::Capacity { maximum } => {
+            format!("bounded Cargo child capture capacity is exhausted (maximum {maximum})")
+        }
         other => format!("cargo {} capture failed: {other:?}", arguments[0]),
     })?;
     if !output.status.success() {
