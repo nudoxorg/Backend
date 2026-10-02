@@ -512,8 +512,12 @@ impl Shell {
             StoreEvent::Snapshot(Branch::GraphFocus) => cx.notify(),
             StoreEvent::Snapshot(Branch::Overlay) => self.sync_overlay(window, cx),
             StoreEvent::Snapshot(Branch::Route) => {
-                let route = self.links.snapshot(cx).route().clone();
-                if !super::bodies::graph::is_graph(&route) {
+                let snapshot = self.links.snapshot(cx);
+                let route = snapshot.route().clone();
+                // A preview changes the Reader while Ask retains keyboard ownership.
+                if snapshot.overlay() != Some(Overlay::CommandPalette)
+                    && !super::bodies::graph::is_graph(&route)
+                {
                     self.focus.focus(window, cx);
                 }
                 // A route a click once left (not a key walk) restores the
@@ -963,6 +967,18 @@ impl Shell {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.ask_open {
+            let key = event.keystroke.key.as_str();
+            if !event.keystroke.modifiers.modified()
+                && matches!(key, "up" | "down")
+                && self.ask.read(cx).owns_focus(window, cx)
+            {
+                let delta = if key == "up" { -1 } else { 1 };
+                self.ask.update(cx, |ask, cx| ask.step(delta, window, cx));
+                cx.stop_propagation();
+                return;
+            }
+        }
         if self.hints.is_none() && self.hand_open && self.hand_key(event.keystroke.key.as_str(), cx) {
             cx.stop_propagation();
             return;
@@ -992,6 +1008,15 @@ impl Shell {
             Step::Missed => self.hints = None,
         }
         cx.notify();
+    }
+
+    /// Ask owns an action at the shell's depth before the component root's Tab.
+    fn ask_tab(&mut self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.ask_open && self.links.snapshot(cx).overlay() == Some(Overlay::CommandPalette) {
+            self.ask.update(cx, |ask, cx| ask.focus_next(backwards, window, cx));
+        } else {
+            cx.propagate();
+        }
     }
 
     /// Esc: the topmost transient closes, one per press.
@@ -1251,20 +1276,6 @@ impl Shell {
                         .left_0()
                         .w(width)
                         .on_click(|_, _, cx| cx.stop_propagation())
-                        .capture_key_down({
-                            let ask = self.ask.clone();
-                            move |event: &KeyDownEvent, _, cx| match event.keystroke.key.as_str() {
-                                "up" => {
-                                    ask.update(cx, |ask, cx| ask.step(-1, cx));
-                                    cx.stop_propagation();
-                                }
-                                "down" => {
-                                    ask.update(cx, |ask, cx| ask.step(1, cx));
-                                    cx.stop_propagation();
-                                }
-                                _ => {}
-                            }
-                        })
                         .child(self.ask.clone())
                 }))
                 .into_any_element(),
@@ -1377,6 +1388,9 @@ impl Render for Shell {
 
         let mut context = KeyContext::new_with_defaults();
         context.add(CONTEXT);
+        if self.ask_open {
+            context.add("Ask");
+        }
         if self.hints.is_some() {
             context.add("hints");
         }
@@ -1453,6 +1467,8 @@ impl Render for Shell {
             .on_action(cx.listener(|shell, _: &keys::ToggleShelf, _, cx| shell.toggle_shelf(cx)))
             .on_action(cx.listener(|shell, _: &keys::NextZone, window, cx| shell.cycle_zone(true, window, cx)))
             .on_action(cx.listener(|shell, _: &keys::PrevZone, window, cx| shell.cycle_zone(false, window, cx)))
+            .on_action(cx.listener(|shell, _: &keys::AskNext, window, cx| shell.ask_tab(false, window, cx)))
+            .on_action(cx.listener(|shell, _: &keys::AskPrev, window, cx| shell.ask_tab(true, window, cx)))
             .on_action(cx.listener(|shell, _: &keys::Escape, window, cx| shell.escape(window, cx)))
             .on_action(cx.listener(|shell, _: &keys::DepthOrbit, window, cx| shell.depth(RouteDepth::Orbit, window, cx)))
             .on_action(cx.listener(|shell, _: &keys::DepthPackage, window, cx| shell.depth(RouteDepth::Package, window, cx)))

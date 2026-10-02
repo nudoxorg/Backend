@@ -24,7 +24,7 @@ use backend_desktop::model::{
     SettingsState, WorkspaceProject, WorkspaceState,
 };
 use backend_desktop::navigation::{
-    Coordinate, Intent, OrbitRoute, PackageLane, PackageRoute, Route, SymbolRoute, View,
+    Coordinate, Intent, OrbitRoute, Overlay, PackageLane, PackageRoute, Route, SymbolRoute, View,
 };
 use backend_desktop::runtime::actor::EngineActor;
 use backend_desktop::runtime::client::LocalEngineClient;
@@ -139,6 +139,17 @@ enum Script {
     Ask,
     /// Move the real shell's keyboard zone to a mounted project row.
     ShelfFocus,
+    /// From the real Orbit, type and choose an indexed hit through the keyboard,
+    /// read its code, go Back, dismiss Ask, and reopen it.
+    AskJourney,
+}
+
+#[derive(Clone)]
+struct JourneyFrame {
+    label: String,
+    route: Route,
+    overlay: Option<Overlay>,
+    preview: Option<Route>,
 }
 
 struct Places {
@@ -297,6 +308,8 @@ fn capture(
     projects: &[PathBuf],
     out: &Path,
 ) {
+    let expected_journey_page = (shot.script == Script::AskJourney)
+        .then(|| places(endpoint, projects.first().expect("indexed project")).page);
     assert_eq!(
         shot.frames.first().copied(),
         Some(0),
@@ -317,6 +330,11 @@ fn capture(
     let build_slot = Rc::clone(&graph_slot);
     let hook_slot = Rc::clone(&graph_slot);
     let last_slot = Rc::clone(&graph_slot);
+    let journey = Rc::new(RefCell::new(Vec::<JourneyFrame>::new()));
+    let journey_hook = Rc::clone(&journey);
+    let journey_semantic = Rc::clone(&journey);
+    let partial_out = (shot.script == Script::AskJourney)
+        .then(|| out.join("partial-journey").join(&shot.name));
     let last_label = frames.last().map(|frame| frame.label.clone()).unwrap_or_default();
     let built = Rc::new(std::cell::Cell::new(false));
     let built_mark = Rc::clone(&built);
@@ -342,6 +360,22 @@ fn capture(
         // Ask opens at 700 ms. Type through the real keyboard path after that
         // paint so the next paired tree proves the editor consumed the text.
         Script::Ask => vec![InputStep::Wait { milliseconds: 760 }, InputStep::Text { value: "RelationLabel".to_owned() }],
+        Script::AskJourney => vec![
+            InputStep::Wait { milliseconds: 100 }, InputStep::key("cmd-k"),
+            InputStep::Wait { milliseconds: 100 }, InputStep::Text { value: "RelationLabel".to_owned() },
+            InputStep::Wait { milliseconds: 800 }, InputStep::key("down"),
+            InputStep::Wait { milliseconds: 100 }, InputStep::key("tab"),
+            InputStep::Wait { milliseconds: 100 }, InputStep::key("shift-tab"),
+            InputStep::Wait { milliseconds: 100 }, InputStep::key("tab"),
+            InputStep::Wait { milliseconds: 100 }, InputStep::key("down"),
+            InputStep::Wait { milliseconds: 100 }, InputStep::key("up"),
+            InputStep::Wait { milliseconds: 200 }, InputStep::key("enter"),
+            InputStep::Wait { milliseconds: 200 }, InputStep::key("cmd-."),
+            InputStep::Wait { milliseconds: 200 }, InputStep::key("cmd-["),
+            InputStep::Wait { milliseconds: 200 }, InputStep::key("cmd-k"),
+            InputStep::Wait { milliseconds: 200 }, InputStep::key("escape"),
+            InputStep::Wait { milliseconds: 200 }, InputStep::key("cmd-k"),
+        ],
         _ => Vec::new(),
     };
     let mut set = capture_gpui_state_with_adapters_result_and_semantics(
@@ -411,10 +445,33 @@ fn capture(
                 _ => {}
             }
             land(&store, cx);
+            if shot_hook.script == Script::AskJourney {
+                let snapshot = store.read(cx).snapshot();
+                journey_hook.borrow_mut().push(JourneyFrame {
+                    label: frame.label.clone(),
+                    route: snapshot.route().clone(),
+                    overlay: snapshot.overlay(),
+                    preview: snapshot.session().preview.clone(),
+                });
+            }
             Ok(())
         },
         |_, _, _| {},
-        move |frame: &AnimationFrame, _, _, _, _| -> Result<_, CaptureError> {
+        move |frame: &AnimationFrame, image, _, window, _| -> Result<_, CaptureError> {
+            if let Some(partial) = &partial_out {
+                let frame_dir = partial.join(&frame.label);
+                std::fs::create_dir_all(&frame_dir).map_err(|error| CaptureError::Gpui(error.to_string()))?;
+                image.save(frame_dir.join("pixels.png")).map_err(|error| CaptureError::Gpui(error.to_string()))?;
+                let tree = window.debug_a11y_tree_json().ok_or_else(|| {
+                    CaptureError::Accessibility("the journey frame has no native tree".to_owned())
+                })?;
+                std::fs::write(frame_dir.join("accesskit.json"), tree)
+                    .map_err(|error| CaptureError::Gpui(error.to_string()))?;
+                if let Some(state) = journey_semantic.borrow().last() {
+                    std::fs::write(frame_dir.join("route.txt"), format!("route={:?}\noverlay={:?}\npreview={:?}\n", state.route, state.overlay, state.preview))
+                        .map_err(|error| CaptureError::Gpui(error.to_string()))?;
+                }
+            }
             // Confirm the mounted Root still owns the graph through its final frame.
             if frame.label == last_label {
                 let slot = last_slot.borrow();
@@ -512,6 +569,7 @@ fn capture(
         Script::Narrow => "resize-narrow",
         Script::Ask => "ask-modal",
         Script::ShelfFocus => "shelf-focus",
+        Script::AskJourney => "ask-keyboard-journey",
     };
     let script_id = format!(
         "real-locald-shell|shot={}|route={route_name}|text-scale={}|density={:?}|actions={script_name}",
@@ -602,6 +660,74 @@ fn capture(
         assert_eq!(fields.len(), 1, "the live Ask input needs one named TextInput node");
         assert_eq!(after.tree["accesskit_focus"].as_str(), Some(fields[0].0.as_str()));
         assert_eq!(fields[0].1["aria"]["value"].as_str(), Some("RelationLabel"), "real keyboard typing must reach the focused Ask editor");
+        let links = nodes.values().filter(|node| node["aria"]["role"].as_str() == Some("Link")).collect::<Vec<_>>();
+        assert_eq!(links.len(), 9, "eight live indexed results and the complete results page must be accessible");
+        let mut names = std::collections::HashSet::new();
+        for link in links {
+            let name = link["aria"]["label"].as_str().expect("a result needs a spoken destination");
+            assert!(names.insert(name), "each indexed result needs a distinct accessible destination: {name}");
+            let actions = link["aria"]["on_action"].as_array().expect("native result actions");
+            for action in ["Click", "Focus"] {
+                assert!(actions.iter().any(|value| value.as_str() == Some(action)), "{name} has no {action} action");
+            }
+            assert!(link["bounds"]["width"].as_f64().is_some_and(|size| size > 0.0));
+            assert!(link["bounds"]["height"].as_f64().is_some_and(|size| size > 0.0));
+        }
+    }
+    if shot.script == Script::AskJourney {
+        let observed = journey.borrow();
+        assert_eq!(observed.len(), 15, "record every real journey frame after writing paired evidence");
+        let orbit = Route::Orbit(OrbitRoute::Home);
+        for (index, expected) in [
+            (&orbit, None),
+            (&orbit, Some(Overlay::CommandPalette)),
+            (&orbit, Some(Overlay::CommandPalette)),
+        ].into_iter().enumerate() {
+            assert_eq!((&observed[index].route, observed[index].overlay), (expected.0, expected.1), "{}", observed[index].label);
+        }
+        let target = expected_journey_page.expect("exact owner page for the keyboard journey");
+        assert_eq!(observed[3].route, target, "Down previews the exact owner search result");
+        assert_eq!(observed[3].preview, Some(orbit.clone()), "preview retains the departure place");
+        assert_eq!(observed[3].overlay, Some(Overlay::CommandPalette));
+        for index in 4..=6 {
+            assert_eq!(observed[index].route, target, "Tab must not replace the previewed page");
+            assert_eq!(observed[index].overlay, Some(Overlay::CommandPalette));
+        }
+        assert_ne!(observed[7].route, target, "Down on a focused Link previews the next exact destination");
+        assert_eq!(observed[7].preview, Some(orbit.clone()));
+        assert_eq!(observed[8].route, target, "Up on a focused Link returns to the first exact destination");
+        assert_eq!(observed[8].preview, Some(orbit.clone()));
+        let typed = set.frames.get(2).and_then(|frame| frame.native_accessibility.as_ref()).expect("typed Ask tree");
+        assert!(typed.tree["nodes"].as_object().expect("native nodes").values().any(|node| {
+            node["aria"]["role"].as_str() == Some("TextInput")
+                && node["aria"]["value"].as_str() == Some("RelationLabel")
+        }));
+        let focus_id = |index: usize| {
+            let tree = &set.frames[index].native_accessibility.as_ref().expect("native journey tree").tree;
+            tree["accesskit_focus"].as_str().expect("native focus id").to_owned()
+        };
+        let focus_at = |index: usize| {
+            let tree = &set.frames[index].native_accessibility.as_ref().expect("native journey tree").tree;
+            tree["nodes"].as_object().expect("native nodes").get(&focus_id(index)).expect("focused native node").clone()
+        };
+        assert_eq!(focus_at(3)["aria"]["role"].as_str(), Some("TextInput"), "preview keeps native focus in Ask's editor");
+        let row_focus = focus_at(4);
+        assert_eq!(row_focus["aria"]["role"].as_str(), Some("Link"), "Tab reaches the live result, not the veiled shelf");
+        assert!(row_focus["aria"]["label"].as_str().is_some_and(|name| name.contains("RelationLabel")));
+        assert_eq!(focus_at(5)["aria"]["role"].as_str(), Some("TextInput"), "Shift-Tab returns to Ask's editor");
+        assert_eq!(focus_id(6), focus_id(4), "Tab returns to the same exact result after a redraw");
+        assert_eq!(focus_at(7)["aria"]["role"].as_str(), Some("Link"), "Down keeps native focus on a live result");
+        assert_ne!(focus_id(7), focus_id(6), "Down moves the native Link focus to another exact result");
+        assert_eq!(focus_id(8), focus_id(6), "Up restores the first native Link focus");
+        assert_eq!(observed[9].route, target, "Enter on the focused exact result commits its page");
+        assert!(observed[9].preview.is_none() && observed[9].overlay.is_none());
+        let code = target.with_view(View::Code).expect("indexed symbol has a code view");
+        assert_eq!(observed[10].route, code, "keyboard code command opens the indexed source");
+        assert_eq!(observed[11].route, orbit, "Back returns to the actual Orbit departure");
+        assert_eq!(observed[12].overlay, Some(Overlay::CommandPalette), "Ask reopens after Back");
+        assert_eq!(observed[13].overlay, None, "Escape dismisses the live Ask");
+        assert_eq!(observed[14].overlay, Some(Overlay::CommandPalette), "keyboard shortcut reopens Ask");
+        assert!(observed[12..].iter().all(|frame| frame.route == orbit));
     }
     assert!(built.get(), "the mounted shell graph survived through the final frame");
     eprintln!("captured {} ({} frames)", shot.name, set.frames.len());
@@ -671,6 +797,17 @@ fn capture_the_shell_over_a_real_index() {
             route: Route::Orbit(OrbitRoute::Home),
             frames: vec![0, 700, 900],
             script: Script::Ask,
+        },
+        Shot {
+            name: "orbit-ask-keyboard-journey".to_owned(),
+            width: 1440,
+            height: 900,
+            percent: 100,
+            density: Comfortable,
+            appearance: Abyss,
+            route: Route::Orbit(OrbitRoute::Home),
+            frames: vec![0, 100, 900, 1050, 1150, 1250, 1350, 1450, 1550, 1750, 1950, 2150, 2350, 2550, 2750],
+            script: Script::AskJourney,
         },
         still("flow-2560", 2560, 1440, 100, Comfortable, Abyss, &places.page),
         still("flow-1440", 1440, 900, 100, Comfortable, Abyss, &places.page),

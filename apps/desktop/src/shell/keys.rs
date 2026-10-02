@@ -42,6 +42,10 @@ actions!(
         NextZone,
         /// The previous zone.
         PrevZone,
+        /// The next mounted Ask stop.
+        AskNext,
+        /// The previous mounted Ask stop.
+        AskPrev,
         /// Close the topmost thing.
         Escape,
         /// Text one step larger.
@@ -257,7 +261,7 @@ fn binding_context(key: &Key) -> String {
     let menu_owns = key.scope == Scope::Plain || key.command == Command::Escape;
     let compare_owns = matches!(key.command, Command::FocusNext | Command::FocusPrev);
     let mut context = String::from(CONTEXT);
-    if key.scope == Scope::Plain { context.push_str(" && !Input"); }
+    if key.scope == Scope::Plain { context.push_str(" && !Input && !Ask"); }
     if graph_owns { context.push_str(" && !Graph"); }
     if menu_owns { context.push_str(" && !Menu"); }
     if compare_owns { context.push_str(" && !BrowseCompare"); }
@@ -307,10 +311,17 @@ fn binding(key: &Key) -> KeyBinding {
     }
 }
 
-/// Every binding in the table.
+/// The public command table plus Ask's modal Tab ownership bindings.
 #[must_use]
 pub fn bindings() -> Vec<KeyBinding> {
-    TABLE.iter().map(binding).collect()
+    let mut bindings: Vec<_> = TABLE.iter().map(binding).collect();
+    // The component window root also binds Tab. Its action runs before raw
+    // key listeners, so the modal must own an action at the shell's depth.
+    bindings.extend([
+        KeyBinding::new("tab", AskNext, Some("NudoxShell && Ask")),
+        KeyBinding::new("shift-tab", AskPrev, Some("NudoxShell && Ask")),
+    ]);
+    bindings
 }
 
 #[cfg(test)]
@@ -343,6 +354,28 @@ mod tests {
         assert_eq!(reset.len(), 1);
         assert_eq!(reset[0].command, Command::ZoomReset);
         // Every binding parses.
-        assert_eq!(bindings().len(), TABLE.len());
+        assert_eq!(bindings().len(), TABLE.len() + 2);
+    }
+
+    #[test]
+    fn ask_tab_bindings_outrank_component_root_only_inside_the_modal() {
+        use gpui::{Action as _, KeyContext, Keymap, Keystroke};
+
+        let mut bindings = vec![KeyBinding::new("tab", NextZone, Some("Root")),
+            KeyBinding::new("shift-tab", PrevZone, Some("Root"))];
+        bindings.extend(super::bindings());
+        let keymap = Keymap::new(bindings);
+        let root = KeyContext::parse("Root").expect("component root context");
+        let shell = KeyContext::parse(CONTEXT).expect("shell context");
+        let modal = KeyContext::parse("NudoxShell Ask").expect("Ask context");
+        let input = KeyContext::parse("Input").expect("editor context");
+        for (chord, next, previous) in [("tab", AskNext.name(), NextZone.name()),
+            ("shift-tab", AskPrev.name(), PrevZone.name())] {
+            let stroke = Keystroke::parse(chord).expect("Tab stroke");
+            let actions = |contexts: &[KeyContext]| keymap.bindings_for_input(&[stroke.clone()], contexts).0;
+            assert_eq!(actions(&[root.clone(), modal.clone()])[0].action().name(), next);
+            assert_eq!(actions(&[root.clone(), modal.clone(), input.clone()])[0].action().name(), next);
+            assert_eq!(actions(&[root.clone(), shell.clone()])[0].action().name(), previous);
+        }
     }
 }
