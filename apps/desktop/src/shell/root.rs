@@ -507,7 +507,13 @@ impl Shell {
                 cx.notify();
             }
             StoreEvent::Snapshot(Branch::GraphFocus) => cx.notify(),
-            StoreEvent::Snapshot(Branch::Overlay) => self.sync_overlay(window, cx),
+            StoreEvent::Snapshot(Branch::Overlay) => {
+                if self.links.snapshot(cx).overlay().is_some() {
+                    self.reader
+                        .update(cx, |reader, _| reader.cancel_native_return());
+                }
+                self.sync_overlay(window, cx);
+            }
             StoreEvent::Snapshot(Branch::Route) => {
                 let route = self.links.snapshot(cx).route().clone();
                 if !super::bodies::graph::is_graph(&route) {

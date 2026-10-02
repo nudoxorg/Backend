@@ -36,9 +36,10 @@ use crate::model::pages::{
     CargoSourceKey, CargoSourcePage, HealthModel, OrbitModel, PackageDossier, PackageRef, PageKey, SourceView, SymbolPage, SymbolRef,
 };
 use crate::runtime::store::{DataStore, RouteDependencies};
-use std::collections::BTreeMap;
 use facet::{Measure, Palette, Reveal};
 use gpui::{AnyElement, Context, FocusHandle, SharedString};
+use std::collections::BTreeMap;
+use std::rc::Rc;
 
 /// One block of a page, with its margin note.
 pub(crate) struct Leaf {
@@ -114,6 +115,8 @@ pub(crate) struct Ctx<'a> {
     pub source_focus_applied: std::rc::Rc<std::cell::Cell<Option<(u64, u32, Option<crate::shell::reader::SourceGeneration>)>>>,
     /// Exact Reader place whose content this body represents.
     pub place_key: u64,
+    /// Shell input interruption generation at this body render.
+    pub native_return_interruption: u64,
     /// Exact indexed-source revision or owner-verified Cargo file digest.
     pub source_generation: Option<crate::shell::reader::SourceGeneration>,
     /// Source cursor/history retained by Reader across page body unmounts.
@@ -171,19 +174,11 @@ impl Ctx<'_> {
         let route = snapshot.route().clone();
         let overlay = snapshot.overlay();
         let root = snapshot.key();
-        let source = inventory_revision.is_none().then_some(self.source_generation).flatten();
-        let dependencies = RouteDependencies::new(&route, snapshot.overlay());
-        let lease = {
-            let store = self.links.store.read(cx);
-            match kind {
-                NativeActionKind::LocalUi => super::reader::NativeActionLease::LocalUi,
-                NativeActionKind::OwnerSnapshot => super::reader::NativeActionLease::OwnerSnapshot(store.current_owner_attachment()),
-                NativeActionKind::Resource => super::reader::NativeActionLease::Resource {
-                    attachment: store.current_owner_attachment(),
-                    stamp: dependencies.native_stamp(store, inventory_revision.is_some()),
-                },
-            }
-        };
+        let source = inventory_revision
+            .is_none()
+            .then_some(self.source_generation)
+            .flatten();
+        let lease = self.native_lease(&route, overlay, inventory_revision.is_some(), kind, cx);
         std::rc::Rc::new(move |window, app| {
             if reader.upgrade().is_some_and(|reader| reader.update(app, |reader, cx| {
                 let admitted = reader.admits_native_visit(place, &route, overlay, root, &lease, source, inventory_revision, cx);
@@ -192,6 +187,70 @@ impl Ctx<'_> {
             })) {
                 action(window, app);
             }
+        })
+    }
+
+    fn native_lease(
+        &self,
+        route: &Route,
+        overlay: Option<Overlay>,
+        inventory: bool,
+        kind: NativeActionKind,
+        cx: &Context<Reader>,
+    ) -> super::reader::NativeActionLease {
+        let store = self.links.store.read(cx);
+        match kind {
+            NativeActionKind::LocalUi => super::reader::NativeActionLease::LocalUi,
+            NativeActionKind::OwnerSnapshot => {
+                super::reader::NativeActionLease::OwnerSnapshot(store.current_owner_attachment())
+            }
+            NativeActionKind::Resource => super::reader::NativeActionLease::Resource {
+                attachment: store.current_owner_attachment(),
+                stamp: RouteDependencies::new(route, overlay).native_stamp(store, inventory),
+            },
+        }
+    }
+
+    /// A mounted facet row supplies the handle; Reader owns whether a later
+    /// deferred transfer is still the settled, current keyboard visit.
+    pub(crate) fn native_return_focus(
+        &self,
+        cx: &mut Context<Reader>,
+    ) -> Rc<
+        dyn Fn(
+            FocusHandle,
+            &mut Window,
+            &mut gpui::App,
+        ) -> facet::browse::library::ReturnDisposition,
+    > {
+        let reader = cx.weak_entity();
+        let place = self.place_key;
+        let snapshot = self.links.snapshot(cx);
+        let route = snapshot.route().clone();
+        let overlay = snapshot.overlay();
+        let root = snapshot.key();
+        let lease = self.native_lease(&route, overlay, false, NativeActionKind::Resource, cx);
+        let interruption = self.native_return_interruption;
+        Rc::new(move |focus, window, app| {
+            let Some(reader) = reader.upgrade() else {
+                return facet::browse::library::ReturnDisposition::Invalid;
+            };
+            let result = reader.update(app, |reader, cx| {
+                reader.native_return_disposition(
+                    place,
+                    &route,
+                    overlay,
+                    root,
+                    &lease,
+                    interruption,
+                    window,
+                    cx,
+                )
+            });
+            if result == facet::browse::library::ReturnDisposition::Applied {
+                window.focus(&focus, app);
+            }
+            result
         })
     }
 

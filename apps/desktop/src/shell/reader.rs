@@ -428,6 +428,8 @@ pub(crate) struct Reader {
     /// A Back return belongs to one visit, and waits for its live control to
     /// mount before transferring native focus from the Shell.
     native_return: Option<NativeReturn>,
+    /// Tab/J/overlay interruptions invalidate a deferred component return.
+    native_return_interruption: u64,
     /// What the last frame was laid out for: width, height, text scale,
     /// density. A change is a reflow.
     laid_out: Option<(Pixels, Pixels, f32, facet::Density)>,
@@ -497,6 +499,7 @@ impl Reader {
             reveal: Rc::new(Cell::new(false)),
             source_focus_applied: Rc::new(Cell::new(None)),
             native_return: None,
+            native_return_interruption: 0,
             laid_out: None,
             lens: Lens::Reference,
             route: snapshot.route().clone(),
@@ -715,6 +718,10 @@ impl Reader {
 
     pub(crate) fn cancel_native_return(&mut self) {
         self.native_return = None;
+        self.native_return_interruption = self.native_return_interruption.wrapping_add(1);
+        for entry in &self.library_state.entries {
+            entry.state.borrow_mut().cancel_return();
+        }
     }
 
     pub(crate) fn admits_native_visit(
@@ -785,6 +792,37 @@ impl Reader {
             }
         }
         true
+    }
+
+    /// Facet supplies the exact mounted virtual-row handle, but this Reader
+    /// alone admits its deferred focus after the return page has settled.
+    pub(crate) fn native_return_disposition(
+        &self,
+        place: u64,
+        route: &Route,
+        overlay: Option<Overlay>,
+        root: crate::core::VersionedRoot,
+        lease: &NativeActionLease,
+        interruption: u64,
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) -> facet::browse::library::ReturnDisposition {
+        use facet::browse::library::ReturnDisposition;
+        if self.native_return_interruption != interruption
+            || !self.admits_native_visit(place, route, overlay, root, lease, None, None, cx)
+            || !self
+                .links
+                .shell
+                .upgrade()
+                .is_some_and(|shell| shell.read(cx).allows_reader_native_return(window))
+            || super::titlebar::menu_open(window, cx)
+        {
+            return ReturnDisposition::Invalid;
+        }
+        if self.painted != Some(place) || self.transit.is_some() || self.arrival.is_some() {
+            return ReturnDisposition::Waiting;
+        }
+        ReturnDisposition::Applied
     }
 
     #[cfg(test)]
@@ -1497,6 +1535,7 @@ struct LibraryStateMemory {
 struct LibraryStateEntry {
     route: Route,
     revision: Option<crate::core::VersionedRoot>,
+    attachment: Option<OwnerAttachment>,
     state: Rc<RefCell<facet::browse::library::State>>,
 }
 
@@ -1505,9 +1544,20 @@ impl LibraryStateMemory {
         &mut self,
         route: &Route,
         revision: Option<crate::core::VersionedRoot>,
+        attachment: Option<OwnerAttachment>,
         active: bool,
     ) -> Rc<RefCell<facet::browse::library::State>> {
-        if let Some(index) = self.entries.iter().position(|entry| entry.route == *route && entry.revision == revision) {
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|entry| entry.route == *route && entry.revision == revision)
+        {
+            if self.entries[index].attachment != attachment {
+                // Scroll and disclosure are local reading state. Only the
+                // actionable return intent is tied to the old attachment.
+                self.entries[index].state.borrow_mut().cancel_return();
+                self.entries[index].attachment = attachment;
+            }
             if active {
                 let entry = self.entries.remove(index);
                 let state = Rc::clone(&entry.state);
@@ -1518,8 +1568,15 @@ impl LibraryStateMemory {
         }
         let state = Rc::new(RefCell::new(facet::browse::library::State::default()));
         if active {
-            self.entries.push(LibraryStateEntry { route: route.clone(), revision, state: Rc::clone(&state) });
-            if self.entries.len() > MAX_LIBRARY_STATE_MEMORY { self.entries.remove(0); }
+            self.entries.push(LibraryStateEntry {
+                route: route.clone(),
+                revision,
+                attachment,
+                state: Rc::clone(&state),
+            });
+            if self.entries.len() > MAX_LIBRARY_STATE_MEMORY {
+                self.entries.remove(0);
+            }
         }
         state
     }
@@ -1546,24 +1603,41 @@ mod library_state_memory_tests {
         let changed = VersionedRoot::synthetic(
             backend_library::view_state_root(&[("library".to_owned(), "changed".to_owned())]), 7,
         );
-        let first = memory.for_route(&route, Some(root), true);
-        assert!(Rc::ptr_eq(&first, &memory.for_route(&route, Some(root), true)));
-        assert!(!Rc::ptr_eq(&first, &memory.for_route(&route, Some(changed), true)));
-        assert!(!Rc::ptr_eq(&first, &memory.for_route(&tree("/tmp/library-memory-two"), Some(root), true)));
+        let first = memory.for_route(&route, Some(root), None, true);
+        assert!(Rc::ptr_eq(
+            &first,
+            &memory.for_route(&route, Some(root), None, true)
+        ));
+        assert!(!Rc::ptr_eq(
+            &first,
+            &memory.for_route(&route, Some(changed), None, true)
+        ));
+        assert!(!Rc::ptr_eq(
+            &first,
+            &memory.for_route(&tree("/tmp/library-memory-two"), Some(root), None, true)
+        ));
     }
 
     #[test]
     fn leaving_tree_does_not_admit_state_and_old_trees_are_evicted() {
         let mut memory = LibraryStateMemory::default();
         let first_route = tree("/tmp/library-memory-first");
-        let transient = memory.for_route(&first_route, None, false);
-        let first = memory.for_route(&first_route, None, true);
+        let transient = memory.for_route(&first_route, None, None, false);
+        let first = memory.for_route(&first_route, None, None, true);
         assert!(!Rc::ptr_eq(&transient, &first));
         for at in 0..MAX_LIBRARY_STATE_MEMORY {
-            memory.for_route(&tree(&format!("/tmp/library-memory-{at}")), None, true);
+            memory.for_route(
+                &tree(&format!("/tmp/library-memory-{at}")),
+                None,
+                None,
+                true,
+            );
         }
         assert_eq!(memory.entries.len(), MAX_LIBRARY_STATE_MEMORY);
-        assert!(!Rc::ptr_eq(&first, &memory.for_route(&first_route, None, true)));
+        assert!(!Rc::ptr_eq(
+            &first,
+            &memory.for_route(&first_route, None, None, true)
+        ));
     }
 }
 
@@ -1824,8 +1898,12 @@ impl Reader {
         };
         let library_state = match &place.route {
             Route::Orbit(OrbitRoute::Browse(BrowseRoute::Tree(project))) => {
-                let revision = pages.browse(&crate::model::browse::BrowseKey::Tree(project.clone())).value_root();
-                self.library_state.for_route(&place.route, revision, current)
+                let revision = pages
+                    .browse(&crate::model::browse::BrowseKey::Tree(project.clone()))
+                    .value_root();
+                let attachment = self.links.store.read(cx).current_owner_attachment();
+                self.library_state
+                    .for_route(&place.route, revision, attachment, current)
             }
             _ => Rc::new(RefCell::new(facet::browse::library::State::default())),
         };
@@ -1847,6 +1925,7 @@ impl Reader {
                 reader_reveal: Rc::clone(&self.reveal),
                 source_focus_applied: Rc::clone(&self.source_focus_applied),
                 place_key: place.key,
+                native_return_interruption: self.native_return_interruption,
                 source_generation,
                 source_paging,
                 library_state,
