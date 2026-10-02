@@ -1104,24 +1104,9 @@ fn session_view(reply: &SurfaceReply) -> ProductView {
             ),
         },
         SurfaceReply::CargoPackageReadme(result) => match result {
-            backend_library::CargoPackageReadmeResultV1::Read {
-                package,
-                request_binding,
-                readme,
-                ..
-            } => {
-                let origin = backend_library::CargoPackageReadmeOriginV1 {
-                    package,
-                    request_binding,
-                    root_scope: readme.root_scope,
-                    path: readme.path.clone(),
-                    selection: readme.selection,
-                    content_digest: readme.content_digest,
-                };
-                let origin = origin
-                    .has_admissible_shape()
-                    .then(|| serde_json::to_string(&origin).ok())
-                    .flatten()
+            backend_library::CargoPackageReadmeResultV1::Read { readme, .. } => {
+                let origin = backend_library::CargoPackageReadmeOriginV1::from_result(result)
+                    .and_then(|origin| serde_json::to_string(&origin).ok())
                     .unwrap_or_else(|| "unavailable".to_owned());
                 ProductView::scalar(
                     "cargo-package-readme",

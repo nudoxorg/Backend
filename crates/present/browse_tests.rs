@@ -206,7 +206,7 @@ fn lockfile_fallback_never_claims_workspace_membership() {
         "Cargo unavailable",
     )
     .expect("lockfile-only input");
-    let tree = build_tree(&input, &|_, _| {
+    let tree = build_tree(&input, &|_: &str, _: &str| {
         let authority = AdvisoryAuthority::new(0);
         authority.observe(
             &normalize_package("cargo", "none").expect("test identity"),
