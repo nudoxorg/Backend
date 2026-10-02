@@ -912,13 +912,67 @@ pub(super) fn features(source: &SourceFacts) -> Option<FeatureFacts> {
     })
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum HeaderLinkKind {
+    Repository,
+    Homepage,
+    Documentation,
+}
+
+impl HeaderLinkKind {
+    pub(super) const fn key(self) -> &'static str {
+        match self {
+            Self::Repository => "repository",
+            Self::Homepage => "homepage",
+            Self::Documentation => "documentation",
+        }
+    }
+
+    pub(super) fn value(self, source: &SourceFacts) -> Option<&str> {
+        let manifest = &source.manifest;
+        match self {
+            Self::Repository => manifest.repository.as_deref(),
+            Self::Homepage => manifest.homepage.as_deref(),
+            Self::Documentation => manifest.documentation.as_deref(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(super) enum BylinePart {
+    Words(SharedString),
+    External {
+        kind: HeaderLinkKind,
+        label: SharedString,
+        url: Arc<str>,
+    },
+}
+
+impl BylinePart {
+    pub(super) fn label(&self) -> SharedString {
+        match self {
+            Self::Words(label) | Self::External { label, .. } => label.clone(),
+        }
+    }
+}
+
+pub(super) fn external_destination(url: &str) -> Option<Arc<str>> {
+    let lower = url.to_ascii_lowercase();
+    (url.len() <= crate::model::local_package::MAX_README_LINK_DESTINATION_BYTES
+        && !url.chars().any(char::is_control)
+        && (lower.starts_with("https://") || lower.starts_with("http://"))
+        && super::readme_links::valid_external(url, &lower))
+    .then(|| Arc::from(url))
+}
+
 /// The line under the lede: who made it, where, what it is about, and what
-/// it needs to build, each as read from its manifest.
-pub(super) fn byline(source: &SourceFacts) -> Vec<SharedString> {
+/// it needs to build, each as read from its manifest. URL controls retain the
+/// manifest's full destination, never the shortened display spelling.
+pub(super) fn byline(source: &SourceFacts) -> Vec<BylinePart> {
     let manifest = &source.manifest;
-    let mut parts: Vec<SharedString> = Vec::new();
+    let mut parts: Vec<BylinePart> = Vec::new();
     if !manifest.authors.is_empty() {
-        parts.push(
+        parts.push(BylinePart::Words(
             format!(
                 "by {}",
                 manifest
@@ -930,7 +984,7 @@ pub(super) fn byline(source: &SourceFacts) -> Vec<SharedString> {
                     .join(", ")
             )
             .into(),
-        );
+        ));
     }
     if let Some(repository) = &manifest.repository {
         let short = repository
@@ -939,10 +993,29 @@ pub(super) fn byline(source: &SourceFacts) -> Vec<SharedString> {
             .trim_start_matches("www.")
             .trim_end_matches(".git")
             .trim_end_matches('/');
-        parts.push(short.to_owned().into());
+        parts.push(external_destination(repository).map_or_else(
+            || BylinePart::Words(short.to_owned().into()),
+            |url| BylinePart::External {
+                kind: HeaderLinkKind::Repository,
+                label: short.to_owned().into(),
+                url,
+            },
+        ));
+    }
+    for (kind, label) in [
+        (HeaderLinkKind::Homepage, "Homepage"),
+        (HeaderLinkKind::Documentation, "Documentation"),
+    ] {
+        if let Some(url) = kind.value(source).and_then(external_destination) {
+            parts.push(BylinePart::External {
+                kind,
+                label: label.into(),
+                url,
+            });
+        }
     }
     if !manifest.categories.is_empty() {
-        parts.push(
+        parts.push(BylinePart::Words(
             manifest
                 .categories
                 .iter()
@@ -951,16 +1024,16 @@ pub(super) fn byline(source: &SourceFacts) -> Vec<SharedString> {
                 .collect::<Vec<_>>()
                 .join(", ")
                 .into(),
-        );
+        ));
     }
     if let Some(edition) = &manifest.edition {
-        parts.push(
+        parts.push(BylinePart::Words(
             match &manifest.rust_version {
                 Some(version) => format!("Rust {edition}, needs {version}"),
                 None => format!("Rust {edition}"),
             }
             .into(),
-        );
+        ));
     }
     parts
 }
