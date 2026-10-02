@@ -197,6 +197,30 @@ impl ProjectRoot {
     }
 }
 
+/// Returns the revision of the file or directory `path` names, walking every
+/// component relative to a pinned handle. A reparse point, hard-link alias, or
+/// delete-pending object at any component, including the last, fails closed
+/// instead of describing a link's target. Unlike [`ProjectRoot::open`], the
+/// path may name a regular file, and the drive root itself is accepted.
+pub fn revision_of_path(path: &Path) -> io::Result<FileRevision> {
+    let (drive_root, parts) = absolute_drive_components(path)?;
+    let mut current = open_drive_root(&drive_root)?;
+    let Some((leaf, ancestors)) = parts.split_last() else {
+        return revision_for_handle(current.handle.as_raw_handle());
+    };
+    for ancestor in ancestors {
+        current = open_directory_child(&current, ancestor)?;
+    }
+    let handle = open_relative(
+        current.handle.as_raw_handle().cast(),
+        leaf,
+        FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        0,
+    )?;
+    validate_open_object(handle.as_raw_handle())?;
+    revision_for_handle(handle.as_raw_handle())
+}
+
 /// Reads revision metadata from an already-opened handle. This lets a caller
 /// compare the same pinned file both before and after streaming its contents.
 pub fn revision_for_file(file: &File) -> io::Result<FileRevision> {
@@ -542,6 +566,51 @@ mod tests {
         assert_ne!(before.file_id, [0; 16]);
         assert_ne!(before.change_time, 0);
         fs::remove_dir_all(directory).expect("remove project fixture");
+    }
+
+    #[test]
+    fn revision_of_path_matches_the_pinned_revision_for_files_and_directories() {
+        let directory = fixture("path-revision");
+        fs::write(directory.join("source.rs"), b"before").expect("write fixture source");
+        let root = ProjectRoot::open(&directory).expect("open project root");
+        assert_eq!(
+            super::revision_of_path(&directory.join("source.rs")).expect("file revision"),
+            root.revision_relative(&["source.rs"])
+                .expect("pinned file revision"),
+        );
+        assert_eq!(
+            super::revision_of_path(&directory).expect("directory revision"),
+            root.revision().expect("pinned directory revision"),
+        );
+        fs::remove_dir_all(directory).expect("remove project fixture");
+    }
+
+    #[test]
+    fn revision_of_path_fails_closed_on_reparse_points_and_missing_names() {
+        let parent = fixture("path-revision-reparse");
+        let target = parent.join("target");
+        let junction = parent.join("junction");
+        fs::create_dir(&target).expect("create junction target");
+        fs::write(target.join("inside"), b"inside").expect("write file behind the junction");
+        let output = Command::new("cmd.exe")
+            .args(["/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&target)
+            .output()
+            .expect("run junction fixture command");
+        assert!(output.status.success(), "mklink /J failed: {output:?}");
+        assert!(
+            super::revision_of_path(&junction).is_err(),
+            "a junction as the final component must not describe its target"
+        );
+        assert!(
+            super::revision_of_path(&junction.join("inside")).is_err(),
+            "a junction as an ancestor must not be traversed"
+        );
+        let missing = super::revision_of_path(&parent.join("absent"))
+            .expect_err("a missing name has no revision");
+        assert_eq!(missing.kind(), std::io::ErrorKind::NotFound);
+        fs::remove_dir_all(parent).expect("remove project fixture");
     }
 
     #[test]
