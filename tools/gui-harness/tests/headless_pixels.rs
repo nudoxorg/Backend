@@ -389,6 +389,7 @@ fn the_renderer_names_its_gpu_and_refuses_impossible_frames() {
     let mut renderer =
         gpui_platform::try_current_headless_renderer().expect("a Windows headless renderer");
     let specs = renderer.gpu_specs().expect("a wgpu renderer names its GPU");
+    eprintln!("headless renderer GPU: {specs:?}");
     assert!(!specs.device_name.is_empty());
     let scene = Scene::default();
     for (width, height) in [(0, 10), (10, 0), (-1, 10)] {
@@ -444,8 +445,12 @@ fn hardware_only_never_settles_for_the_software_rasterizer() {
     match WgpuHeadlessRenderer::new(HeadlessAdapterPolicy::HardwareOnly) {
         Ok(renderer) => {
             let specs = renderer.gpu_specs().expect("specs");
+            eprintln!("hardware-only headless GPU: {specs:?}");
             assert!(!specs.is_software_emulated, "{specs:?}");
         }
-        Err(error) => assert!(error.to_string().contains("hardware"), "{error:#}"),
+        Err(error) => {
+            eprintln!("no hardware headless GPU: {error:#}");
+            assert!(error.to_string().contains("hardware"), "{error:#}");
+        }
     }
 }
