@@ -23,7 +23,7 @@ use windows_sys::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SE_FILE_OBJECT,
 };
 use windows_sys::Win32::Security::{
-    ACCESS_ALLOWED_ACE, ACCESS_ALLOWED_ACE_TYPE, ACL, ACL_SIZE_INFORMATION,
+    ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION,
     DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, GetSecurityDescriptorControl,
     GetSecurityDescriptorDacl, PSECURITY_DESCRIPTOR, SE_DACL_PROTECTED,
     SECURITY_DESCRIPTOR_CONTROL,
@@ -35,13 +35,14 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FILE_GENERIC_WRITE, FILE_ID_BOTH_DIR_INFO,
     FILE_ID_INFO, FILE_INFO_BY_HANDLE_CLASS, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
     FILE_READ_DATA, FILE_RENAME_INFO, FILE_RENAME_INFO_0, FILE_STANDARD_INFO, FILE_TRAVERSE,
-    FILE_WRITE_DATA, FileAttributeTagInfo, FileDispositionInfo, FileDispositionInfoEx,
+    FILE_WRITE_DATA, FileAttributeTagInfo, FileDispositionInfo, FileDispositionInfoEx, FileRenameInfo,
     FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, FileIdInfo, FileStandardInfo,
     FlushFileBuffers, GetFileInformationByHandleEx, READ_CONTROL, SYNCHRONIZE,
     SetFileInformationByHandle, WRITE_DAC,
 };
 
 const STATUS_SUCCESS: i32 = 0;
+const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
 const FILE_OPEN: u32 = 1;
 const FILE_CREATE: u32 = 2;
 const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
@@ -52,7 +53,7 @@ const FILE_SHARE_READ: u32 = 1;
 const FILE_SHARE_WRITE: u32 = 2;
 const FILE_SHARE_DELETE: u32 = 4;
 const OBJ_CASE_INSENSITIVE: u32 = 0x40;
-const ACL_INFORMATION_CLASS_SIZE: u32 = 2;
+const ACL_INFORMATION_CLASS_SIZE: i32 = 2;
 const GENERIC_ALL: u32 = 0x1000_0000;
 
 #[repr(C)]
@@ -229,18 +230,20 @@ impl WorkspaceRoot {
         for part in &parts[..parts.len() - 1] {
             current = open_directory_child_unchecked(&current, part)?;
         }
-        let parent =
-            open_directory_child_writable(&current, parts.last().ok_or_else(invalid_name)?)?;
-        if !is_owned_by_current_user(&owner_of(&HandleRef(parent.handle.as_raw_handle()))?)? {
+        let parent = Self(open_directory_child_writable(
+            &current,
+            parts.last().ok_or_else(invalid_name)?,
+        )?);
+        if !is_owned_by_current_user(&owner_of(&HandleRef(parent.0.handle.as_raw_handle()))?)? {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "application data parent has a foreign owner",
             ));
         }
 
-        match open_directory_child(&parent, name) {
+        match open_directory_child(&parent.0, name) {
             Ok(child) => {
-                child.flush_dir()?;
+                Self(child).flush_dir()?;
                 parent.flush_dir()
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -250,8 +253,7 @@ impl WorkspaceRoot {
                         parent.flush_dir()
                     }
                     Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                        let child = open_directory_child(&parent, name)?;
-                        child.flush_dir()?;
+                        Self(open_directory_child(&parent.0, name)?).flush_dir()?;
                         parent.flush_dir()
                     }
                     Err(error) => Err(error),
@@ -499,7 +501,7 @@ impl WorkspaceRoot {
         self.0.handle.as_raw_handle().cast()
     }
 
-    fn parent_and_leaf(&self, path: &[&str]) -> io::Result<(Arc<DirectoryNode>, &str)> {
+    fn parent_and_leaf<'a>(&self, path: &[&'a str]) -> io::Result<(Arc<DirectoryNode>, &'a str)> {
         let (leaf, parent_path) = path.split_last().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -512,7 +514,7 @@ impl WorkspaceRoot {
             validate_component(part)?;
             parent = open_directory_child(&parent, part)?;
         }
-        Ok((parent, leaf))
+        Ok((parent, *leaf))
     }
 }
 

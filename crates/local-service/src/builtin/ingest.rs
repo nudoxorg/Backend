@@ -1674,6 +1674,22 @@ fn file_system_revision(path: &Path) -> Option<FileSystemRevision> {
     Some(file_system_revision_from_metadata(&metadata))
 }
 
+/// The entry itself, as `symlink_metadata` reads it on Unix: a reparse point
+/// is described, never followed.
+#[cfg(windows)]
+fn file_system_revision(path: &Path) -> Option<FileSystemRevision> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    const FILE_READ_ATTRIBUTES: u32 = 0x0080;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    let entry = fs::OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .ok()?;
+    file_system_revision_from_open_file(&entry).ok()
+}
+
 #[cfg(not(windows))]
 fn file_system_revision_from_metadata(metadata: &fs::Metadata) -> FileSystemRevision {
     #[cfg(unix)]

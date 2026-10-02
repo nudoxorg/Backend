@@ -327,6 +327,7 @@ fn the_owners_revision_is_the_root_its_subscription_hydrates() {
     .expect("manifest");
     std::fs::write(project.join("src/lib.rs"), b"pub struct RevisionProof;\n").expect("source");
     // The owner keeps its private state under an owner-only parent.
+    #[cfg(unix)]
     std::fs::set_permissions(&root, std::os::unix::fs::PermissionsExt::from_mode(0o700))
         .expect("owner-only root");
     let paths = WorkspacePaths::discover(Some(project.clone()), Some(data), Some(endpoint.clone()))

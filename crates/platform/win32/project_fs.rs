@@ -180,7 +180,7 @@ impl ProjectRoot {
         file_from_handle(handle)
     }
 
-    fn parent_and_leaf(&self, path: &[&str]) -> io::Result<(Arc<DirectoryNode>, &str)> {
+    fn parent_and_leaf<'a>(&self, path: &[&'a str]) -> io::Result<(Arc<DirectoryNode>, &'a str)> {
         let (leaf, parents) = path
             .split_last()
             .ok_or_else(|| invalid_name("relative path must contain at least one component"))?;
@@ -190,7 +190,7 @@ impl ProjectRoot {
             validate_component(parent)?;
             current = open_directory_child(&current, parent)?;
         }
-        Ok((current, leaf))
+        Ok((current, *leaf))
     }
 }
 
