@@ -604,24 +604,27 @@ impl Element for TextView {
 
         let mut clip_bottom = None;
         if max_lines_active {
-            let (line_spans, content_bottom) = {
+            let (clipped, clamped_changed, measured_clip_bottom) = {
                 let state = state.read(cx);
-                (state.line_spans.clone(), state.bounds().bottom())
+                let content_bottom = state.bounds().bottom();
+                // The content keeps its natural height inside the capped box,
+                // including tall images that report no lines of their own.
+                let clipped = content_bottom > bounds.bottom() + px(1.);
+                let clip_bottom = if clipped {
+                    line_safe_clip_bottom(&state.line_spans, bounds.bottom(), content_bottom)
+                } else {
+                    None
+                };
+                (clipped, state.clamped != clipped, clip_bottom)
             };
-            // The content keeps its natural height inside the capped box, so
-            // this sees everything the box cannot show — including a tall image
-            // that reports no lines of its own.
-            let clipped = content_bottom > bounds.bottom() + px(1.);
+            clip_bottom = measured_clip_bottom;
             // Notify on change so observers (e.g. an "expand" button gated on
             // `is_clamped`) re-render once the flag flips.
-            if state.read(cx).clamped != clipped {
+            if clamped_changed {
                 state.update(cx, |state, cx| {
                     state.clamped = clipped;
                     cx.notify();
                 });
-            }
-            if clipped {
-                clip_bottom = line_safe_clip_bottom(&line_spans, bounds.bottom(), content_bottom);
             }
         }
 
