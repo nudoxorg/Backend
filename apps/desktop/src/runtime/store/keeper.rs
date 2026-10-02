@@ -91,7 +91,12 @@ impl SnapshotKeeper {
 
     /// The route's pages as they are now, when all are current at a served
     /// root: what the next launch paints first.
-    fn to_save(&self, pages: &PageStore, snapshot: &AppSnapshot) -> Option<PendingSave> {
+    fn to_save(&self, pages: &PageStore, snapshot: &AppSnapshot, owner_serving: bool) -> Option<PendingSave> {
+        // Gate loss may precede the store's revocation events. Such bytes
+        // must not be saved as current during that intervening UI turn.
+        if !owner_serving {
+            return None;
+        }
         fn at<T>(resource: &Resource<T>, root: VersionedRoot) -> Option<Arc<T>> {
             (resource.is_loaded()
                 && resource
@@ -109,7 +114,7 @@ impl SnapshotKeeper {
             // A staged page is useful on screen, but its read is still in
             // flight. Never replay that partial model as a complete page on
             // the next launch.
-            if pages.is_seeded(key) || pages.inflight(key).is_some() {
+            if pages.is_seeded(key) || pages.is_owner_read_revoked(key) || pages.inflight(key).is_some() {
                 return None;
             }
             match key {
@@ -142,8 +147,9 @@ impl SnapshotKeeper {
         &self,
         pages: &PageStore,
         snapshot: &AppSnapshot,
+        owner_serving: bool,
     ) -> std::io::Result<usize> {
-        self.to_save(pages, snapshot)
+        self.to_save(pages, snapshot, owner_serving)
             .map_or(Ok(0), |save| save.write("on quit"))
     }
 
@@ -156,7 +162,7 @@ impl SnapshotKeeper {
         self.saving = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SAVE_IDLE).await;
             let Ok(Some(save)) = this.update(cx, |store, _| {
-                store.keeper.to_save(&store.pages, &store.snapshot)
+                store.keeper.to_save(&store.pages, &store.snapshot, store.owner_serving())
             }) else {
                 return;
             };
@@ -198,6 +204,36 @@ fn requires_worker_verification(key: &PageKey) -> bool {
 mod tests {
     use super::*;
     use crate::model::pages::{Known, OrbitModel, PageValue};
+
+    #[test]
+    fn revoked_predecessors_cannot_be_saved_as_current_launch_pages() {
+        let root = VersionedRoot::synthetic(backend_library::view_state_root(&[("keeper".into(), "owner-revoked".into())]), 1);
+        let package = crate::shell::tests::dossier().package;
+        let key = PageKey::Package(package.clone());
+        let mut snapshot = AppSnapshot::empty(root);
+        let mut session = snapshot.session().clone();
+        session.route = crate::shell::kit::package_route(&package).expect("package route");
+        snapshot = snapshot.with_session(session);
+        let keeper = SnapshotKeeper {
+            file: Some(SnapshotFile::in_data(std::path::Path::new("/unused/fixture/owner-revocation"))),
+            ..SnapshotKeeper::default()
+        };
+        let mut pages = PageStore::default();
+        let first = pages.begin(&key, root).expect("first read");
+        assert_eq!(pages.land(&key, first, Ok(PageValue::Package(crate::shell::tests::dossier()))), crate::model::pages::Landing::Applied);
+        assert!(keeper.to_save(&pages, &snapshot, true).is_some());
+        assert!(keeper.to_save(&pages, &snapshot, false).is_none(), "gate loss is immediate even before slot revocation");
+        assert!(pages.revoke_owner_read(&key));
+        assert!(pages.package(&package).loaded_value().is_some(), "revocation retains predecessor bytes");
+        assert!(keeper.to_save(&pages, &snapshot, true).is_none());
+        let next = pages.begin(&key, root).expect("same-root renewal");
+        let _ = pages.cancel(&key);
+        assert_eq!(pages.land(&key, next, Ok(PageValue::Package(crate::shell::tests::dossier()))), crate::model::pages::Landing::Superseded);
+        assert!(keeper.to_save(&pages, &snapshot, true).is_none(), "cancellation cannot save the predecessor as current");
+        let next = pages.begin(&key, root).expect("fresh renewal");
+        assert_eq!(pages.land(&key, next, Ok(PageValue::Package(crate::shell::tests::dossier()))), crate::model::pages::Landing::Applied);
+        assert!(keeper.to_save(&pages, &snapshot, true).is_some());
+    }
 
     #[test]
     fn saved_release_claims_remain_seeded_until_the_worker_verifies_them() {
@@ -319,12 +355,12 @@ mod tests {
             crate::model::pages::Landing::Applied
         );
         assert!(
-            keeper.to_save(&pages, &snapshot).is_none(),
+            keeper.to_save(&pages, &snapshot, true).is_none(),
             "an in-flight stage is not complete"
         );
         assert_eq!(pages.cancel(&key), Some(first));
         assert!(
-            keeper.to_save(&pages, &snapshot).is_none(),
+            keeper.to_save(&pages, &snapshot, true).is_none(),
             "cancellation must not erase partial provenance"
         );
         let second = pages.begin(&key, root).expect("second read");
@@ -333,7 +369,7 @@ mod tests {
             crate::model::pages::Landing::Applied
         );
         let saved = keeper
-            .to_save(&pages, &snapshot)
+            .to_save(&pages, &snapshot, true)
             .expect("the completed page is savable");
         assert!(matches!(saved.pages.as_slice(), [SeedEntry::Orbit(_)]));
     }
