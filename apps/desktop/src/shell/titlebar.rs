@@ -81,7 +81,7 @@ enum JumpAction {
     Ask,
     Back,
     Forward,
-    Navigate { visit: JumpVisit, route: Route },
+    Navigate { visit: JumpVisit, index: usize, route: Route },
     Siblings { visit: JumpVisit, index: usize },
     View { visit: JumpVisit, view: View },
 }
@@ -92,8 +92,15 @@ impl JumpAction {
             Self::Ask => links.shell(cx, |shell, cx| shell.open_ask(cx)),
             Self::Back if !links.snapshot(cx).session().back.is_empty() => links.dispatch(Intent::Back, cx),
             Self::Forward if !links.snapshot(cx).session().forward.is_empty() => links.dispatch(Intent::Forward, cx),
-            Self::Navigate { visit, route } if visit.current(links, cx) => {
-                links.dispatch(Intent::Navigate(route.clone()), cx);
+            Self::Navigate { visit, index, route } if visit.current(links, cx) => {
+                let still_here = {
+                    let store = links.store.read(cx);
+                    let snapshot = store.snapshot();
+                    jump::bar_segments(&snapshot, store).get(*index).is_some_and(|segment| {
+                        !segment.quiet && segment.route.as_ref() == Some(route)
+                    })
+                };
+                if still_here { links.dispatch(Intent::Navigate(route.clone()), cx); }
             }
             Self::Siblings { visit, index } if visit.current(links, cx) => {
                 siblings_menu(links, targets, *index, visit.clone(), window, cx);
@@ -134,7 +141,7 @@ fn segment_action(visit: &JumpVisit, index: usize, segment: &Segment, store: &Da
         return Some(JumpAction::Siblings { visit: visit.clone(), index });
     }
     if current { return None; }
-    segment.route.clone().map(|route| JumpAction::Navigate { visit: visit.clone(), route })
+    segment.route.clone().map(|route| JumpAction::Navigate { visit: visit.clone(), index, route })
 }
 
 /// The titlebar region.
