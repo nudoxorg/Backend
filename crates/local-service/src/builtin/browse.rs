@@ -3079,7 +3079,8 @@ fn resolve_cargo_tool_value(
 }
 
 fn find_executable_on_path(name: &std::ffi::OsStr, workspace: &Path) -> Option<PathBuf> {
-    std::env::var_os("PATH")
+    let path = std::env::var_os("PATH");
+    path.as_deref()
         .into_iter()
         .flat_map(std::env::split_paths)
         .map(|directory| {
@@ -3687,7 +3688,9 @@ fn selected_cargo_program(workspace: &Path) -> Result<PathBuf, String> {
             return Ok(found);
         }
     }
-    let mut candidates: Vec<PathBuf> = std::env::var_os("PATH")
+    let path = std::env::var_os("PATH");
+    let mut candidates: Vec<PathBuf> = path
+        .as_deref()
         .into_iter()
         .flat_map(std::env::split_paths)
         .map(|directory| {
@@ -4656,10 +4659,9 @@ mod tests {
         let root = scratch.0.canonicalize().expect("canonical root");
 
         // Plant a cache entry whose witness matches the files exactly as
-        // they stand right now, but whose `input` is a sentinel no real read
-        // of this project would ever produce (a real read's `root` is this
-        // absolute path, never the literal string below). If an untouched
-        // read is served from the cache, it must come back exactly as
+        // they stand right now, but whose `input` contains a sentinel
+        // Lockfile source reason no real read of this project could produce.
+        // An untouched read must come back exactly as
         // planted — proving `read_project` (and so Cargo) was never called
         // again. This is the half of the seam a mutation that always
         // recomputes (never caches) cannot pass.
@@ -4707,11 +4709,7 @@ mod tests {
 
         let untouched = cache.project_tree(&root, None).expect("untouched read");
         assert_eq!(
-            match &untouched.source {
-                TreeSource::Lockfile { reason, .. } => reason.as_str(),
-                TreeSource::CargoMetadata { .. } => "real read unexpectedly replaced the sentinel",
-            },
-            "planted by the test, never a real read",
+            untouched.source, sentinel.source,
             "an untouched workspace must be served from the cache, not recomputed: {untouched:?}"
         );
         assert_eq!(cache.counters.cache_hits, 1);
@@ -4730,14 +4728,11 @@ mod tests {
         )
         .expect("changed lockfile");
         let touched = cache.project_tree(&root, None).expect("lockfile-only read");
-        assert_ne!(
-            match &touched.source {
-                TreeSource::Lockfile { reason, .. } => reason.as_str(),
-                TreeSource::CargoMetadata { .. } => "real metadata replaced sentinel as expected",
-            },
-            "real metadata replaced sentinel as expected",
-            "a changed lockfile alone must invalidate the cache and force a real read"
+        assert!(
+            matches!(&touched.source, TreeSource::Cargo { host } if !host.is_empty()),
+            "a lockfile-only change must force a fresh metadata authority, not the planted sentinel: {touched:?}"
         );
+        assert_eq!(cache.counters.tree_input_allocations, 1);
 
         // Replant the sentinel against the new lockfile, then change only
         // Cargo.toml. Both inputs to Cargo's answer have independent guards.
@@ -4749,9 +4744,10 @@ mod tests {
         .expect("changed manifest");
         let touched = cache.project_tree(&root, None).expect("manifest-only read");
         assert_ne!(
-            touched.root, "sentinel-root",
-            "a changed manifest alone must force a real read"
+            touched.source, sentinel.source,
+            "a changed manifest alone must force a real read: {touched:?}"
         );
+        assert_eq!(cache.counters.tree_input_allocations, 2);
     }
 
     #[test]
@@ -4838,7 +4834,8 @@ mod tests {
         );
         assert!(
             result
-                .expect_err("changed path dependency must invalidate source authority")
+                .err()
+                .expect("changed path dependency must invalidate source authority")
                 .contains("changed during metadata"),
             "the observation must fail closed when Cargo ran across an input replacement"
         );
@@ -4937,7 +4934,8 @@ mod tests {
         );
         assert!(
             result
-                .expect_err("required absent manifest must refuse authority")
+                .err()
+                .expect("required absent manifest must refuse authority")
                 .contains("metadata-listed package manifest was absent"),
             "the refusal must identify the required-input condition without exposing a path"
         );
