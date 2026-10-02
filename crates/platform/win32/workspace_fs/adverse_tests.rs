@@ -8,12 +8,14 @@
 //! parent module's tests.
 
 use super::{
-    BACKOFF, EntryKind, ExistingName, IfUnlinked, NewName, RenameInformation, WorkspaceRoot,
-    ensure_private_handle, ensure_regular_file_handle_with, file_from_handle, flush_handle,
-    is_full_control, open_admitted_file, rename_information_length,
+    BACKOFF, EntryKind, ExistingName, IfUnlinked, NewName, RenameInformation, Sharing,
+    WorkspaceRoot, ensure_private_handle, ensure_regular_file_handle_with, file_from_handle,
+    flush_handle, is_full_control, open_admitted_file, open_relative, rename_information_length,
+    sid_text,
 };
 use std::fs;
 use std::io::{self, Read as _, Write as _};
+use std::os::windows::io::AsRawHandle as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1219,6 +1221,231 @@ fn replacing_a_read_only_destination_behaves_like_unix_rename() {
         "a permanent refusal was never retried: {pauses:?}"
     );
     assert_eq!(get(&root, &["state"]), b"new");
+    drop(root);
+    fs::remove_dir_all(path).expect("cleanup");
+}
+
+// ---- end-to-end coverage of the private-DACL rules -------------------------------------------
+//
+// `only_full_control_masks_count_as_a_private_grant` tests one pure function. These drive
+// `ensure_private_handle` through the public checked opens with real security descriptors, so
+// every clause of "one protected, non-inheritable allow ACE granting full control to the current
+// user" is needed by some test: weakening any clause, or accepting `FILE_ALL_ACCESS` in a way
+// that widens access, makes one of them fail.
+
+/// How the replacement DACL relates to the parent's.
+#[derive(Clone, Copy)]
+enum Inheritance {
+    /// Blocks inherited entries (`SE_DACL_PROTECTED`), as the workspace requires.
+    Protected,
+    /// Leaves the DACL open to inheritance.
+    Open,
+}
+
+fn current_sid_text() -> String {
+    sid_text(
+        crate::win32::identity::current_user()
+            .expect("current user")
+            .as_bytes(),
+    )
+    .expect("SID text")
+}
+
+/// A SID of the same shape as `sid` whose last relative identifier is one higher.
+fn neighbour_sid_text(sid: &str) -> String {
+    let (prefix, rid) = sid.rsplit_once('-').expect("a SID has several parts");
+    let rid: u32 = rid.parse().expect("the last part is numeric");
+    format!("{prefix}-{}", rid + 1)
+}
+
+/// Replaces the DACL of `path` with the one `sddl` describes.
+fn set_dacl(path: &Path, sddl: &str, inheritance: Inheritance) {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SE_FILE_OBJECT, SetNamedSecurityInfoW,
+    };
+    use windows_sys::Win32::Security::{
+        DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, PROTECTED_DACL_SECURITY_INFORMATION,
+        UNPROTECTED_DACL_SECURITY_INFORMATION,
+    };
+
+    let wide_sddl = sddl.encode_utf16().chain([0]).collect::<Vec<_>>();
+    let wide_path = path
+        .as_os_str()
+        .encode_wide()
+        .chain([0])
+        .collect::<Vec<_>>();
+    let mut descriptor = std::ptr::null_mut();
+    // SAFETY: both buffers are NUL-terminated and outlive the call; the output pointer is a
+    // writable local, and the allocation it receives is released below.
+    let converted = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            wide_sddl.as_ptr(),
+            1,
+            &raw mut descriptor,
+            std::ptr::null_mut(),
+        )
+    };
+    assert_ne!(converted, 0, "convert {sddl}");
+    let (mut present, mut defaulted) = (0, 0);
+    let mut dacl = std::ptr::null_mut();
+    // SAFETY: `descriptor` is the live descriptor returned above and the outputs are locals.
+    let read = unsafe {
+        GetSecurityDescriptorDacl(
+            descriptor,
+            &raw mut present,
+            &raw mut dacl,
+            &raw mut defaulted,
+        )
+    };
+    assert_ne!(read, 0, "read the DACL of {sddl}");
+    let protection = match inheritance {
+        Inheritance::Protected => PROTECTED_DACL_SECURITY_INFORMATION,
+        Inheritance::Open => UNPROTECTED_DACL_SECURITY_INFORMATION,
+    };
+    // SAFETY: the path is NUL-terminated, and `dacl` points into `descriptor`, which is alive
+    // until the `LocalFree` below.
+    let status = unsafe {
+        SetNamedSecurityInfoW(
+            wide_path.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | protection,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            dacl,
+            std::ptr::null_mut(),
+        )
+    };
+    // SAFETY: the descriptor was allocated by the convert call with `LocalAlloc`.
+    unsafe { LocalFree(descriptor) };
+    assert_eq!(status, 0, "set DACL {sddl}");
+}
+
+/// Runs the private-DACL admission on `path` through a handle that asks for nothing but
+/// `READ_CONTROL`, which the owner always holds. Admission is judged by the rules themselves:
+/// the checked opens also need `SYNCHRONIZE`, so a DACL that withholds it from the owner would
+/// fail the open and never reach them.
+fn admits_as_private(path: &Path) -> io::Result<()> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, READ_CONTROL,
+    };
+
+    let handle = fs::OpenOptions::new()
+        .access_mode(READ_CONTROL)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    ensure_private_handle(handle.as_raw_handle())
+}
+
+/// Restores the private DACL so the owner can remove a probe.
+fn restore_private(path: &Path, me: &str) {
+    set_dacl(path, &format!("D:P(A;;FA;;;{me})"), Inheritance::Protected);
+}
+
+#[test]
+fn only_one_protected_full_control_allow_for_the_current_user_is_a_private_file() {
+    let (root, path) = private_root("private-file-acl");
+    let me = current_sid_text();
+    for (label, sddl, inheritance, admitted) in [
+        (
+            "owner full control",
+            format!("D:P(A;;FA;;;{me})"),
+            Inheritance::Protected,
+            true,
+        ),
+        (
+            "everyone full control",
+            "D:P(A;;FA;;;WD)".to_owned(),
+            Inheritance::Protected,
+            false,
+        ),
+        (
+            // The same SID shape (so the ACE is exactly as long as the owner's), one RID off.
+            "another principal with full control",
+            format!("D:P(A;;FA;;;{})", neighbour_sid_text(&me)),
+            Inheritance::Protected,
+            false,
+        ),
+        (
+            // An allow ACE of another type (callback) with the owner's SID and a mask that
+            // grants everything, whose condition holds, so the open itself succeeds.
+            "owner full control through a conditional ACE",
+            format!("D:P(XA;;FA;;;{me};(1==1))"),
+            Inheritance::Protected,
+            false,
+        ),
+        (
+            "owner read only",
+            format!("D:P(A;;FR;;;{me})"),
+            Inheritance::Protected,
+            false,
+        ),
+        (
+            "owner write only",
+            format!("D:P(A;;FW;;;{me})"),
+            Inheritance::Protected,
+            false,
+        ),
+        (
+            "owner denied",
+            format!("D:P(D;;FA;;;{me})"),
+            Inheritance::Protected,
+            false,
+        ),
+        (
+            "owner full control plus everyone read",
+            format!("D:P(A;;FA;;;{me})(A;;FR;;;WD)"),
+            Inheritance::Protected,
+            false,
+        ),
+        (
+            "owner full control but open to inheritance",
+            format!("D:(A;;FA;;;{me})"),
+            Inheritance::Open,
+            false,
+        ),
+    ] {
+        put(&root, &["probe"], b"x");
+        set_dacl(&path.join("probe"), &sddl, inheritance);
+        let outcome = admits_as_private(&path.join("probe"));
+        assert_eq!(outcome.is_ok(), admitted, "{label}: {sddl}: {outcome:?}");
+        restore_private(&path.join("probe"), &me);
+        root.remove_file_relative(&["probe"]).expect("remove probe");
+    }
+    drop(root);
+    fs::remove_dir_all(path).expect("cleanup");
+}
+
+#[test]
+fn an_inheritable_allow_entry_does_not_make_a_directory_private() {
+    let (root, path) = private_root("private-directory-acl");
+    let me = current_sid_text();
+    for (label, sddl, admitted) in [
+        (
+            "owner full, not inheritable",
+            format!("D:P(A;;FA;;;{me})"),
+            true,
+        ),
+        (
+            "owner full, inheritable",
+            format!("D:P(A;OICI;FA;;;{me})"),
+            false,
+        ),
+        (
+            "owner full, inherit-only",
+            format!("D:P(A;OICIIO;FA;;;{me})"),
+            false,
+        ),
+    ] {
+        root.create_child_dir_exclusive("probe").expect("probe dir");
+        set_dacl(&path.join("probe"), &sddl, Inheritance::Protected);
+        let outcome = admits_as_private(&path.join("probe"));
+        assert_eq!(outcome.is_ok(), admitted, "{label}: {sddl}: {outcome:?}");
+        restore_private(&path.join("probe"), &me);
+        root.remove_empty_dir(&["probe"]).expect("remove probe");
+    }
     drop(root);
     fs::remove_dir_all(path).expect("cleanup");
 }

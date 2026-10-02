@@ -1550,9 +1550,9 @@ fn unicode_string(buffer: &mut [u16]) -> io::Result<UnicodeString> {
     })
 }
 
-fn private_security_descriptor() -> io::Result<PrivateSecurityDescriptor> {
-    let sid = current_user()?;
-    let bytes = sid.as_bytes();
+/// The textual form (`S-1-5-21-...`) of a binary SID, the way a security
+/// descriptor string names a trustee.
+fn sid_text(bytes: &[u8]) -> io::Result<String> {
     if bytes.len() < 8 || bytes[1] as usize > (bytes.len() - 8) / 4 {
         return Err(invalid_data("current-user SID is malformed"));
     }
@@ -1563,7 +1563,7 @@ fn private_security_descriptor() -> io::Result<PrivateSecurityDescriptor> {
     let identifier_authority = bytes[2..8]
         .iter()
         .fold(0_u64, |value, byte| (value << 8) | u64::from(*byte));
-    let mut sid_text = format!("S-{}-{identifier_authority}", bytes[0]);
+    let mut text = format!("S-{}-{identifier_authority}", bytes[0]);
     for index in 0..sub_authority_count {
         let offset = 8 + index * 4;
         let sub_authority = u32::from_le_bytes(
@@ -1571,13 +1571,18 @@ fn private_security_descriptor() -> io::Result<PrivateSecurityDescriptor> {
                 .try_into()
                 .map_err(|_| invalid_data("current-user SID is malformed"))?,
         );
-        sid_text.push('-');
-        sid_text.push_str(&sub_authority.to_string());
+        text.push('-');
+        text.push_str(&sub_authority.to_string());
     }
+    Ok(text)
+}
+
+fn private_security_descriptor() -> io::Result<PrivateSecurityDescriptor> {
+    let trustee = sid_text(current_user()?.as_bytes())?;
     // `P` blocks inherited grants and the sole `GA` ACE names the current
     // token user. This descriptor is supplied to NtCreateFile, so the object
     // never appears under a broader inherited ACL, even briefly.
-    let sddl = format!("D:P(A;;GA;;;{sid_text})");
+    let sddl = format!("D:P(A;;GA;;;{trustee})");
     let mut wide = sddl.encode_utf16().collect::<Vec<_>>();
     wide.push(0);
     let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
