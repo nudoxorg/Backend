@@ -3428,6 +3428,7 @@ const fn toolchain_terminal(
 
 #[cfg(test)]
 mod tests {
+    use crate::test_support::host_path;
     use std::{
         path::Path,
         sync::atomic::{AtomicBool, Ordering},
@@ -3509,7 +3510,7 @@ mod tests {
         let target = CompilerPackageTargetV2::for_package(package.as_ref().clone()).target();
         let toolchain = ResolvedToolchain::from_version(
             NativeTool::Rustc,
-            Path::new("/toolchain/bin/rustc"),
+            host_path("/toolchain/bin/rustc"),
             b"rustc 1.90.0",
         )
         .expect("absolute fixture toolchain path");
@@ -3594,10 +3595,10 @@ mod tests {
         assert_ne!(target_a.target(), target_b.target());
 
         let unit_a =
-            PackageSourceSet::new_for_unit(&request, &target_a, Path::new("/workspace"), &sources)
+            PackageSourceSet::new_for_unit(&request, &target_a, host_path("/workspace"), &sources)
                 .expect("unit A is present in the immutable frontier");
         let unit_b =
-            PackageSourceSet::new_for_unit(&request, &target_b, Path::new("/workspace"), &sources)
+            PackageSourceSet::new_for_unit(&request, &target_b, host_path("/workspace"), &sources)
                 .expect("unit B is present in the immutable frontier");
         assert_eq!(unit_a.embedding_provisioning_failure, None);
         let configured_failure = unit_a
@@ -3639,7 +3640,7 @@ mod tests {
             PackageSourceSet::new_for_unit(
                 &request,
                 &wrong_unit,
-                Path::new("/workspace"),
+                host_path("/workspace"),
                 &sources,
             )
             .err(),
@@ -3686,14 +3687,14 @@ mod tests {
         let alpha = PackageSourceSet::new_for_unit(
             &request,
             &target_alpha,
-            Path::new("/workspace"),
+            host_path("/workspace"),
             &sources,
         )
         .expect("the first project has a source in its exact directory");
         let beta = PackageSourceSet::new_for_unit(
             &request,
             &target_beta,
-            Path::new("/workspace"),
+            host_path("/workspace"),
             &sources,
         )
         .expect("the second project has a source in its exact directory");
@@ -3722,7 +3723,7 @@ mod tests {
             PackageSourceSet::new_for_unit(
                 &request,
                 &mutated_target,
-                Path::new("/workspace"),
+                host_path("/workspace"),
                 &sources,
             )
             .err(),

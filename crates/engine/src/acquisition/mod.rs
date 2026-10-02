@@ -18,6 +18,7 @@ mod freshness;
 mod identity;
 mod lease;
 mod outcome;
+mod owned_file;
 mod permit;
 mod phase;
 mod receipt_store;

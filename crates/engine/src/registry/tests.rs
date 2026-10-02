@@ -513,10 +513,9 @@ fn acquisition_service_keeps_negative_facts_distinct_from_unavailable_and_circui
 
 fn temporary(label: &str) -> PathBuf {
     let value = TEMPORARY.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "backend-registry-{label}-{}-{value}",
-        std::process::id()
-    ))
+    // Registry state is owner-private, which on Windows needs a protected DACL that a plain
+    // directory under the temporary directory does not carry.
+    crate::test_support::private_directory(&format!("registry-{label}-{value}"))
 }
 
 const MAX_REQUEST_HEAD_BYTES: usize = 16 * 1024;
