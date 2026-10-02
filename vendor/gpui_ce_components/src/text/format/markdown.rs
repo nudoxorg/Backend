@@ -202,13 +202,6 @@ fn parse_paragraph(paragraph: &mut Paragraph, node: &mdast::Node, cx: &mut NodeC
             });
         }
         Node::Text(val) => {
-            // The parser leaves syntactically reference-shaped text as Text
-            // when its label has no definition in this parse. Keep this
-            // conservative candidate bit: an appended definition can change
-            // the meaning of an earlier run of text. False positives only
-            // cause a bounded full-grammar reparse when a winning definition
-            // is later added.
-            cx.unresolved_references |= val.value.contains('[');
             text = val.value.clone();
             paragraph.push_str(&val.value)
         }
@@ -305,9 +298,7 @@ fn parse_paragraph(paragraph: &mut Paragraph, node: &mdast::Node, cx: &mut NodeC
             )]));
         }
         Node::LinkReference(link) => {
-            cx.reference_links_present = true;
             let identifier: SharedString = link.identifier.clone().into();
-            cx.unresolved_references |= cx.link_refs.get(&identifier).is_none();
             let link_mark = LinkMark {
                 url: "".into(),
                 title: link.label.clone().map(Into::into),
@@ -341,6 +332,13 @@ fn ast_to_document(source: &str, root: mdast::Node, cx: &mut NodeContext) -> Par
     };
 
     fn references(node: &mdast::Node, context: &mut NodeContext) {
+        match node {
+            Node::LinkReference(_) | Node::ImageReference(_) => {
+                context.reference_dependencies.record_link();
+            }
+            Node::Text(text) => context.reference_dependencies.record_text(&text.value),
+            _ => {}
+        }
         if let Node::Definition(def) = node {
             let position = def.position.as_ref();
             context.add_ref(
@@ -361,7 +359,8 @@ fn ast_to_document(source: &str, root: mdast::Node, cx: &mut NodeContext) -> Par
         }
     }
     // References may occur after a custom heading, including in nested blocks.
-    // Publish their authority to every inline projection before conversion.
+    // Publish their authority and collect dependencies before conversion,
+    // including children whose containing block a plugin will claim.
     for child in &root.children {
         references(child, cx);
     }

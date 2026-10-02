@@ -1358,8 +1358,7 @@ pub(crate) struct NodeContext {
     /// Used for incremental updates.
     pub(crate) offset: usize,
     pub(crate) link_refs: super::reference_environment::ReferenceEnvironment,
-    pub(crate) unresolved_references: bool,
-    pub(crate) reference_links_present: bool,
+    pub(crate) reference_dependencies: super::reference_environment::ReferenceDependencies,
     pub(crate) style: TextViewStyle,
     pub(crate) code_block_actions: Option<Arc<CodeBlockActionsFn>>,
     pub(crate) table_actions: Option<Arc<TableActionsFn>>,
@@ -1394,8 +1393,7 @@ impl NodeContext {
 impl PartialEq for NodeContext {
     fn eq(&self, other: &Self) -> bool {
         self.link_refs == other.link_refs
-            && self.unresolved_references == other.unresolved_references
-            && self.reference_links_present == other.reference_links_present
+            && self.reference_dependencies == other.reference_dependencies
             && self.style == other.style
         // Note: code_block_actions, table_actions and markdown_extensions are
         // intentionally not compared (closures can't be compared)

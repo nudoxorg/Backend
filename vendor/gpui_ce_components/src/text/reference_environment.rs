@@ -5,6 +5,38 @@ use gpui::SharedString;
 use std::sync::Arc;
 use sum_tree::TreeMap;
 
+/// Dependencies of the complete parser AST, including nodes claimed by plugins.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ReferenceDependencies {
+    links: bool,
+    unresolved_candidates: bool,
+}
+
+impl ReferenceDependencies {
+    pub(crate) fn record_link(&mut self) {
+        self.links = true;
+    }
+
+    pub(crate) fn record_text(&mut self, text: &str) {
+        // The grammar leaves undefined references as Text. A conservative
+        // candidate also covers a suffix referring to a retained definition.
+        self.unresolved_candidates |= text.contains('[');
+    }
+
+    pub(crate) fn depends_on_definitions(self) -> bool {
+        self.links || self.unresolved_candidates
+    }
+
+    pub(crate) fn has_unresolved_candidates(self) -> bool {
+        self.unresolved_candidates
+    }
+
+    pub(crate) fn merge(&mut self, other: Self) {
+        self.links |= other.links;
+        self.unresolved_candidates |= other.unresolved_candidates;
+    }
+}
+
 #[derive(Debug)]
 struct Reference {
     mark: Arc<LinkMark>,

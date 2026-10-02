@@ -925,11 +925,9 @@ fn parse_content(
         NodeContext::default()
     };
     node_cx.markdown_extensions = options.markdown_extensions.clone();
-    let prior_unresolved = node_cx.unresolved_references;
-    let prior_reference_links = node_cx.reference_links_present;
+    let prior_dependencies = node_cx.reference_dependencies;
     node_cx.link_refs.begin_update();
-    node_cx.unresolved_references = false;
-    node_cx.reference_links_present = false;
+    node_cx.reference_dependencies = Default::default();
 
     // Re-parse the last block together with the appended text, so a block the
     // new text continues (an unclosed list, a fenced code block) is not split
@@ -998,11 +996,12 @@ fn parse_content(
     {
         content.grammar_input_bytes += source.len();
     }
-    let suffix_unresolved = node_cx.unresolved_references;
+    let suffix_dependencies = node_cx.reference_dependencies;
     let reference_mapping_changed = node_cx.link_refs.finish_update();
     if options.append
-        && (((prior_unresolved || prior_reference_links) && reference_mapping_changed)
-            || (suffix_unresolved && !content.node_cx.link_refs.is_empty()))
+        && ((prior_dependencies.depends_on_definitions() && reference_mapping_changed)
+            || (suffix_dependencies.has_unresolved_candidates()
+                && !content.node_cx.link_refs.is_empty()))
     {
         // A new definition can change previously plain prose into a reference
         // link. A suffix reference may need definitions outside its parse
@@ -1024,8 +1023,7 @@ fn parse_content(
         result.append_compatible = false;
         return Ok(result);
     }
-    node_cx.unresolved_references |= prior_unresolved;
-    node_cx.reference_links_present |= prior_reference_links;
+    node_cx.reference_dependencies.merge(prior_dependencies);
     content.append_compatible = options.mode == ParseMode::Compatible;
 
     if options.append {
@@ -1122,7 +1120,12 @@ mod tests {
     #[test]
     fn appended_definition_reprojects_an_earlier_unresolved_reference() {
         let initial = replace_markdown("[link][id]\n\nbody\n\n");
-        assert!(initial.node_cx.unresolved_references);
+        assert!(
+            initial
+                .node_cx
+                .reference_dependencies
+                .has_unresolved_candidates()
+        );
         assert!(initial.document.text().contains("[link][id]"));
 
         let appended = append_markdown(initial, "[id]: dest");
@@ -1296,6 +1299,130 @@ mod tests {
                         .is_some_and(|link| link.identifier.as_deref() == Some("id"))
                 })
         );
+    }
+
+    fn prepared_heading_extensions() -> Arc<MarkdownExtensions> {
+        Arc::new(MarkdownExtensions::default().block_parser(|node, context| {
+            let markdown::mdast::Node::Heading(heading) = node else {
+                return None;
+            };
+            let inline_source = context.node_source(node)?.strip_prefix("## ")?;
+            Some(MarkdownNode::new(
+                "derived",
+                context.prepare_inline(&heading.children, inline_source),
+            ))
+        }))
+    }
+
+    fn prepared_heading(content: &ParsedContent) -> Option<&PreparedMarkdown> {
+        content.document.blocks.iter().find_map(|block| {
+            let node::BlockNode::Custom(custom) = block else {
+                return None;
+            };
+            custom.data::<PreparedMarkdown>()
+        })
+    }
+
+    #[test]
+    fn custom_heading_appends_reproject_reference_dependencies_from_parent_ast() {
+        for (source, suffix, previous_target, target) in [
+            ("## [Guide][id]\n\nbody\n\n", "[id]: dest", None, "dest"),
+            ("## [Guide][id]\n\n[id]: old", "er", Some("old"), "older"),
+            ("[id]: dest\n\nbody\n\n", "## [Guide][id]", None, "dest"),
+        ] {
+            let (_, rx) = pending_update::channel(UpdateOptions::merge);
+            let (tx_result, _) = pending_update::channel(ParsedUpdate::merge);
+            let mut worker = UpdateFuture::new(TextViewFormat::Markdown, rx, tx_result);
+            let extensions = prepared_heading_extensions();
+            let options = |revision, text: &str, append| UpdateOptions {
+                revision,
+                pending_text: text.into(),
+                append,
+                mode: if append {
+                    ParseMode::Compatible
+                } else {
+                    ParseMode::Replace
+                },
+                markdown_extensions: extensions.clone(),
+            };
+            let initial = worker.apply(options(1, source, false)).result.unwrap();
+            let original_blocks = initial.document.blocks.len();
+            let appended = worker.apply(options(2, suffix, true));
+            assert!(!appended.selection_compatible);
+            let appended = appended.result.unwrap();
+            let projection = prepared_heading(&appended).expect("custom heading exists");
+            assert_eq!(projection.source().as_str(), "[Guide][id]");
+            assert_eq!(projection.0.document.text().trim(), "Guide");
+            // Use the native renderer's production reference lookup, rather
+            // than checking only the parent's definition table.
+            assert_eq!(
+                projection
+                    .0
+                    .node_cx
+                    .resolve_link_mark(first_reference_link(&projection.0).clone())
+                    .url
+                    .as_str(),
+                target
+            );
+            assert_eq!(
+                appended.document.source.as_str(),
+                format!("{source}{suffix}")
+            );
+            assert_eq!(initial.document.source.as_str(), source);
+            assert_eq!(initial.document.blocks.len(), original_blocks);
+            if let Some(previous_target) = previous_target {
+                let original = prepared_heading(&initial).unwrap();
+                assert_eq!(
+                    original
+                        .0
+                        .node_cx
+                        .resolve_link_mark(first_reference_link(&original.0).clone())
+                        .url
+                        .as_str(),
+                    previous_target
+                );
+            } else if let Some(original) = prepared_heading(&initial) {
+                assert_eq!(original.0.document.text().trim(), "[Guide][id]");
+                assert!(original.0.node_cx.link_refs.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn unchanged_references_reuse_custom_heading_projection_and_prefix_identity() {
+        let extensions = prepared_heading_extensions();
+        let options = |text: &str, append| UpdateOptions {
+            revision: if append { 2 } else { 1 },
+            pending_text: text.into(),
+            append,
+            mode: if append {
+                ParseMode::Compatible
+            } else {
+                ParseMode::Replace
+            },
+            markdown_extensions: extensions.clone(),
+        };
+        let initial = parse_content(
+            TextViewFormat::Markdown,
+            ParsedContent::default(),
+            &options("## [Guide][id]\n\n[id]: dest\n\nbody\n\n", false),
+        )
+        .unwrap();
+        let appended = parse_content(
+            TextViewFormat::Markdown,
+            initial.clone(),
+            &options("next\n\n", true),
+        )
+        .unwrap();
+        assert!(appended.append_compatible);
+        assert_eq!(
+            initial.document.blocks.get(0).unwrap() as *const node::BlockNode,
+            appended.document.blocks.get(0).unwrap() as *const node::BlockNode
+        );
+        assert!(Arc::ptr_eq(
+            &prepared_heading(&initial).unwrap().0,
+            &prepared_heading(&appended).unwrap().0
+        ));
     }
 
     #[gpui::test]
