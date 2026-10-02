@@ -233,6 +233,7 @@ impl BrowseCache {
             return Err("project-tree needs an absolute project directory".to_owned());
         }
         let input = self.input(root)?;
+        observation_budget()?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_secs());
@@ -253,6 +254,7 @@ impl BrowseCache {
                 .ok_or_else(|| {
                     "Cargo project tree could not bind its requested and resolved roots".to_owned()
                 })?;
+        observation_budget()?;
         self.admit_request_binding(Path::new(&input.root), binding);
         tree.request_binding = Some(binding);
         Ok(tree)
@@ -1030,6 +1032,9 @@ impl BrowseCache {
             )
             .is_ok_and(|observed| observed.digest == entry.witness)
         });
+        // A cancelled witness read says nothing about freshness. Keep the
+        // prior admitted observation and bindings for a later real request.
+        observation_budget()?;
         if cache_hit {
             self.touch_entry(&workspace);
             let entry = self
@@ -3237,6 +3242,7 @@ fn read_project(
             ))
         }
         Err(reason) => {
+            observation_budget()?;
             let mut watched = basic_input_paths(&workspace)?;
             watched.extend(cargo_config_paths(&workspace)?);
             watched.extend(sccache_configuration_paths(&workspace)?);
