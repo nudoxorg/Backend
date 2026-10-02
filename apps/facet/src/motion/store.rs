@@ -320,7 +320,11 @@ impl Motion {
         cx: &mut App,
     ) -> f32 {
         let now = now(cx);
-        let spec = if reduced_in(window, cx) { Spec::Snap } else { spec };
+        let spec = if reduced_in(window, cx) {
+            Spec::Snap
+        } else {
+            spec
+        };
         let (sample, meta) = {
             let mut store = self.store.borrow_mut();
             let state = store
@@ -334,7 +338,10 @@ impl Motion {
                     }
                     _ => State::Still(target),
                 });
-            if matches!(state, State::Keys { .. }) {
+            // Snap is a presentation policy, not just a retarget policy.
+            // An unchanged goal can still be moving when reduced motion or a
+            // retained-body still/inert scope is enabled during its run.
+            if matches!(spec, Spec::Snap) || matches!(state, State::Keys { .. }) {
                 *state = State::Still(target);
             }
             // The segment being sampled: a sample that settles the track
@@ -833,5 +840,225 @@ mod tests {
         assert!(held.live && held.value == 0.0);
         assert!(state.sample(at(start, 100)).value > 0.5);
         assert_eq!(state.budget(), Duration::from_millis(150));
+    }
+}
+
+#[cfg(test)]
+mod mounted_policy_tests {
+    use super::{Motion, Spec, frames_requested};
+    use crate::motion::spring::GENTLE;
+    use crate::theme::{Facet, set_facet};
+    use crate::tokens::motion::GLIDE;
+    use gpui::{
+        AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, Styled as _,
+        TestAppContext, VisualTestContext, Window, div,
+    };
+    use std::{cell::Cell, rc::Rc, time::Duration};
+
+    #[derive(Clone, Copy, Debug)]
+    enum Policy {
+        FacetReduced,
+        PlatformReduced,
+        Still,
+        Inert,
+        ExplicitSnap,
+    }
+
+    struct Scalar {
+        motion: Motion,
+        target: f32,
+        spec: Spec,
+        still: bool,
+        seen: Rc<Cell<f32>>,
+    }
+
+    impl Render for Scalar {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let _still = self.still.then(|| crate::motion::still(cx));
+            self.seen.set(
+                self.motion
+                    .animate("value", self.target, self.spec, window, cx),
+            );
+            div().size_full()
+        }
+    }
+
+    struct Host {
+        scalar: Entity<Scalar>,
+        inert: bool,
+    }
+
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let child = if self.inert {
+                gpui::inert("scalar-retained", "Previous value", self.scalar.clone())
+                    .into_any_element()
+            } else {
+                self.scalar.clone().into_any_element()
+            };
+            div().size_full().child(child)
+        }
+    }
+
+    fn frame(cx: &mut VisualTestContext) -> usize {
+        cx.update(|window, cx| {
+            // Commit the new native ownership before delivering callbacks,
+            // matching the production dirty-frame reconciliation path.
+            window.refresh();
+            window.draw(cx).clear(cx);
+            let (callbacks, _) = window.simulate_reconciled_next_frame(cx);
+            callbacks
+        })
+    }
+
+    fn exercise(cx: &mut TestAppContext, policy: Policy) {
+        for spec in [
+            Spec::tween(Duration::from_millis(240), GLIDE),
+            Spec::Spring(GENTLE),
+        ] {
+            cx.update(|cx| {
+                set_facet(Facet::default(), cx);
+                cx.set_reduce_motion(false);
+            });
+            let seen = Rc::new(Cell::new(f32::NAN));
+            let (host, cx) = cx.add_window_view({
+                let seen = seen.clone();
+                move |_, cx| Host {
+                    scalar: cx.new(|_| Scalar {
+                        motion: Motion::new(),
+                        target: 0.0,
+                        spec,
+                        still: false,
+                        seen,
+                    }),
+                    inert: false,
+                }
+            });
+            let scalar = host.read_with(cx, |host, _| host.scalar.clone());
+            frame(cx);
+            scalar.update(cx, |scalar, cx| {
+                scalar.target = 100.0;
+                cx.notify();
+            });
+            frame(cx);
+            cx.executor().advance_clock(Duration::from_millis(16));
+            cx.run_until_parked();
+            frame(cx);
+            let moving = seen.get();
+            assert!(
+                moving > 0.0 && moving < 100.0,
+                "{policy:?} {spec:?}: {moving}"
+            );
+            assert!(scalar.read_with(cx, |scalar, cx| scalar.motion.is_live(cx)));
+            let requested = cx.update(|_, cx| frames_requested(cx));
+
+            // Change only policy: the logical target remains exactly 100.
+            match policy {
+                Policy::FacetReduced => cx.update(|window, cx| {
+                    let mut facet = Facet::default();
+                    facet.reduced_motion = true;
+                    set_facet(facet, cx);
+                    window.refresh();
+                }),
+                Policy::PlatformReduced => cx.update(|window, cx| {
+                    cx.set_reduce_motion(true);
+                    window.refresh();
+                }),
+                Policy::Still => scalar.update(cx, |scalar, cx| {
+                    scalar.still = true;
+                    cx.notify();
+                }),
+                Policy::Inert => host.update(cx, |host, cx| {
+                    host.inert = true;
+                    cx.notify();
+                }),
+                Policy::ExplicitSnap => scalar.update(cx, |scalar, cx| {
+                    scalar.spec = Spec::Snap;
+                    cx.notify();
+                }),
+            }
+            frame(cx);
+            assert_eq!(
+                seen.get().to_bits(),
+                100.0_f32.to_bits(),
+                "{policy:?} {spec:?}: unchanged target must land immediately"
+            );
+            assert!(!scalar.read_with(cx, |scalar, cx| scalar.motion.is_live(cx)));
+            assert_eq!(
+                cx.update(|_, cx| frames_requested(cx)),
+                requested,
+                "settling requests no new wake"
+            );
+            // A wake queued by the previous live frame may drain once; it
+            // must not renew itself or cancel another view's gate callback.
+            assert_eq!(frame(cx), 0, "{policy:?}: no live callback remains");
+            cx.executor().advance_clock(Duration::from_millis(16));
+            assert_eq!(frame(cx), 0);
+
+            // Releasing a local policy never changes either user preference.
+            // A settled unchanged target stays at rest, then a genuinely new
+            // target starts from the settled value on the same executor clock.
+            match policy {
+                Policy::FacetReduced => cx.update(|_, cx| set_facet(Facet::default(), cx)),
+                Policy::PlatformReduced => cx.update(|_, cx| cx.set_reduce_motion(false)),
+                Policy::Still => scalar.update(cx, |scalar, cx| {
+                    scalar.still = false;
+                    cx.notify();
+                }),
+                Policy::Inert => host.update(cx, |host, cx| {
+                    host.inert = false;
+                    cx.notify();
+                }),
+                Policy::ExplicitSnap => scalar.update(cx, |scalar, cx| {
+                    scalar.spec = spec;
+                    cx.notify();
+                }),
+            }
+            frame(cx);
+            assert_eq!(seen.get().to_bits(), 100.0_f32.to_bits());
+            assert_eq!(cx.update(|_, cx| frames_requested(cx)), requested);
+            cx.update(|_, cx| {
+                assert!(!crate::ActiveFacet::facet(cx).reduced_motion);
+                assert!(!cx.reduce_motion());
+            });
+            scalar.update(cx, |scalar, cx| {
+                scalar.target = 150.0;
+                cx.notify();
+            });
+            frame(cx);
+            assert_eq!(
+                seen.get().to_bits(),
+                100.0_f32.to_bits(),
+                "fresh motion starts at the settled value"
+            );
+            assert!(scalar.read_with(cx, |scalar, cx| scalar.motion.is_live(cx)));
+            assert!(cx.update(|_, cx| frames_requested(cx)) > requested);
+            cx.executor().advance_clock(Duration::from_millis(2_000));
+            cx.run_until_parked();
+            frame(cx);
+            assert_eq!(seen.get().to_bits(), 150.0_f32.to_bits());
+            assert_eq!(frame(cx), 0);
+        }
+    }
+
+    #[gpui::test]
+    fn unchanged_scalar_target_settles_when_reduced_motion_is_enabled(cx: &mut TestAppContext) {
+        exercise(cx, Policy::FacetReduced);
+        exercise(cx, Policy::PlatformReduced);
+    }
+
+    #[gpui::test]
+    fn unchanged_scalar_target_settles_in_a_still_scope(cx: &mut TestAppContext) {
+        exercise(cx, Policy::Still);
+    }
+
+    #[gpui::test]
+    fn unchanged_scalar_target_settles_when_its_live_view_becomes_inert(cx: &mut TestAppContext) {
+        exercise(cx, Policy::Inert);
+    }
+
+    #[gpui::test]
+    fn explicit_snap_settles_a_running_scalar_without_changing_its_target(cx: &mut TestAppContext) {
+        exercise(cx, Policy::ExplicitSnap);
     }
 }
