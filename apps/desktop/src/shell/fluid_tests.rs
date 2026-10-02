@@ -429,6 +429,38 @@ fn has_native_ask_results(rig: &mut Rig) -> bool {
         node["aria"]["label"].as_str() == Some("Search results"))
 }
 
+/// A result can be painted through the moving plate, but its clipped rows
+/// cannot become native or keyboard actions until the full row is revealed.
+#[gpui::test]
+fn ask_entering_results_remain_inert_until_the_plate_exposes_them(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    rig.cx.simulate_keystrokes("cmd-k");
+    rig.frame(16);
+    rig.cx.simulate_keystrokes("r e l a t i o n");
+    rig.frame(32);
+    let plate = rig.cx.debug_bounds("ask-plate").expect("entering plate");
+    assert!(f32::from(plate.size.width) > 1.0 && f32::from(plate.size.width) < 439.0,
+        "the test must sample an actually clipped entry: {plate:?}");
+    let native = |rig: &mut Rig| {
+        rig.repaint();
+        let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native Ask tree");
+        serde_json::from_str::<serde_json::Value>(&json).expect("native tree JSON")
+    };
+    let actionable_links = |tree: &serde_json::Value| tree["nodes"].as_object().expect("native nodes")
+        .values().filter(|node| node["aria"]["role"].as_str() == Some("Link")
+            && node["aria"]["on_action"].as_array().is_some_and(|actions|
+                actions.iter().any(|action| action.as_str() == Some("Click")))).count();
+    assert_eq!(actionable_links(&native(&mut rig)), 0, "a clipped entering row registered a native action");
+    rig.cx.simulate_keystrokes("tab");
+    rig.frame(0);
+    let tree = native(&mut rig);
+    let focus = tree["accesskit_focus"].as_str().expect("native focus");
+    assert_eq!(tree["nodes"][focus]["aria"]["role"].as_str(), Some("TextInput"),
+        "Tab escaped the editor into a clipped result");
+    rig.settle();
+    assert!(actionable_links(&native(&mut rig)) > 0, "settled results never became actionable");
+}
+
 /// The modal's painted shell reverses from its current width. Results and
 /// their native actions leave in the first closing frame, even while plate
 /// pixels continue out, and a quick reopen starts at that painted width.

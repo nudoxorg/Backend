@@ -14,7 +14,10 @@ pub(super) struct AskScene {
     pub phase: Option<StackPhase>,
     pub veil: f32,
     pub geometry: Option<AskGeometry>,
-    /// Only the authoritative overlay may mount its query results.
+    /// Active results paint behind the horizontal reveal. They stay inert
+    /// until the plate exposes their full content width.
+    pub paint_results: bool,
+    /// Only fully exposed results may register focus or native actions.
     pub live_results: bool,
     /// The full layout width of the results inside the clipped reveal.
     pub content_width: Pixels,
@@ -81,7 +84,9 @@ impl AskPresentation {
         } else {
             None
         };
-        let scene = AskScene { phase, veil, geometry, live_results: active && has_query && geometry.is_some(), content_width: target };
+        let paint_results = active && has_query && geometry.is_some();
+        let live_results = paint_results && width + 0.5 >= f32::from(target);
+        let scene = AskScene { phase, veil, geometry, paint_results, live_results, content_width: target };
         self.last = Some(scene);
         scene
     }

@@ -1299,7 +1299,7 @@ impl Shell {
         }
         let plate = scene.geometry.map(|geometry| {
             let mut plate = div()
-                .id(if scene.live_results { "ask-frame" } else { "ask-exit-frame" })
+                .id(if !self.ask_open { "ask-exit-frame" } else if scene.live_results { "ask-frame" } else { "ask-enter-frame" })
                 .debug_selector(|| "ask-plate".to_owned())
                 .absolute()
                 .top(geometry.plate.origin.y)
@@ -1310,12 +1310,18 @@ impl Shell {
                 .bg(palette.g2)
                 .border_r_1()
                 .border_color(palette.line2.hsla());
-            if scene.live_results {
+            if scene.paint_results {
                 // The inner plate keeps its full readable measure while the
                 // outer occupied rectangle reveals it and Reader follows.
-                plate = plate
-                    .on_click(|_, _, cx| cx.stop_propagation())
-                    .child(div().w(scene.content_width).h_full().child(self.ask.clone()));
+                // An incomplete reveal paints the content but cannot expose
+                // clipped row actions or take focus from the titlebar editor.
+                let content = div().w(scene.content_width).h_full().child(self.ask.clone());
+                plate = plate.on_click(|_, _, cx| cx.stop_propagation());
+                plate = if scene.live_results {
+                    plate.child(content)
+                } else {
+                    plate.child(gpui::inert("entering-ask-results", "Search results are opening", content))
+                };
             } else {
                 plate = plate.on_click(|_, _, cx| cx.stop_propagation());
             }
