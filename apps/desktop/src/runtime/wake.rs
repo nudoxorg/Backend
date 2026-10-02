@@ -11,6 +11,11 @@
 //! The signal carries no payload on purpose. The payload stays in the bounded
 //! mailbox that already owns backpressure; this type only answers "is there
 //! anything to drain?".
+//!
+//! A pending wake resolves without suspending the task, so a consumer that
+//! lands work in bounded turns re-arms the wake and awaits [`yield_now`]
+//! between turns: one executor poll then covers one turn, and input, paint,
+//! and other tasks run before the next.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -158,6 +163,33 @@ impl Future for Next<'_> {
     }
 }
 
+/// Suspends the awaiting task once: it is woken at once and rescheduled
+/// behind the work its executor already queued, so input, paint, and other
+/// tasks run before it resumes.
+pub fn yield_now() -> YieldNow {
+    YieldNow { yielded: false }
+}
+
+/// Future returned by [`yield_now`].
+#[derive(Debug)]
+#[must_use = "a yield does nothing unless awaited"]
+pub struct YieldNow {
+    yielded: bool,
+}
+
+impl Future for YieldNow {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        if self.yielded {
+            return Poll::Ready(());
+        }
+        self.yielded = true;
+        cx.waker().wake_by_ref();
+        Poll::Pending
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
@@ -206,6 +238,33 @@ mod tests {
         sender.close();
         assert_eq!(poll_once(&mut receiver, &waker), Poll::Ready(Some(())));
         assert_eq!(poll_once(&mut receiver, &waker), Poll::Ready(None));
+    }
+
+    #[test]
+    fn a_yield_suspends_once_and_reschedules_itself() {
+        let counter = Arc::new(CountingWaker(AtomicUsize::new(0)));
+        let waker = Waker::from(Arc::clone(&counter));
+        let mut context = Context::from_waker(&waker);
+        let mut turn = yield_now();
+        assert_eq!(Pin::new(&mut turn).poll(&mut context), Poll::Pending);
+        assert_eq!(counter.0.load(Ordering::SeqCst), 1, "it asked to run again");
+        assert_eq!(Pin::new(&mut turn).poll(&mut context), Poll::Ready(()));
+        assert_eq!(counter.0.load(Ordering::SeqCst), 1, "and only once");
+    }
+
+    #[test]
+    fn a_rearmed_wake_coalesces_with_a_workers_wake() {
+        let (sender, mut receiver) = wake_channel();
+        let rearm = receiver.sender();
+        let waker = Waker::from(Arc::new(CountingWaker(AtomicUsize::new(0))));
+        rearm.wake();
+        sender.wake();
+        assert_eq!(poll_once(&mut receiver, &waker), Poll::Ready(Some(())));
+        assert_eq!(
+            poll_once(&mut receiver, &waker),
+            Poll::Pending,
+            "one turn covers both"
+        );
     }
 
     #[test]
