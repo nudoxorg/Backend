@@ -22,7 +22,7 @@ use facet::folio::heads::{Finding, heads, open_sheet};
 use facet::folio::module::module as module_view;
 use facet::folio::rail::rail;
 use facet::folio::shingles::{ModuleFacts, ShingleFacts, Spot, shingles};
-use facet::folio::state::{Extent, Fold, Pose, Time, Use};
+use facet::folio::state::{Extent, Fold, Time, Use};
 use facet::folio::text::{key, one};
 use facet::folio::ticker::{TickerFacts, ticker};
 use facet::marks::badges::{Glyph, Item, glyph};
@@ -50,8 +50,8 @@ struct Nav {
     lit: Option<SharedString>,
     /// Whether the full berg is showing.
     berg: Fold,
-    /// Whether the licence stamp is held unfolded (Enter on it).
-    licence: Pose,
+    /// The licence disclosure's explicit choice; None follows hover/focus.
+    licence: Option<bool>,
     /// The shingles of the module just opened, on their way to its cards.
     flight: Option<Flying>,
     /// A different module chosen while the current carry is still returning.
@@ -327,7 +327,7 @@ impl Folio {
         measure: &Measure,
         nav: &Entity<Nav>,
         berg_open: Fold,
-        licence: Pose,
+        licence: Option<bool>,
     ) -> AnyElement {
         let (stamp_w, cell_w, spread) = (tracks.stamp, tracks.cell, tracks.spread);
         let source_words = |what: &str| -> SharedString {
@@ -401,11 +401,7 @@ impl Folio {
             let state = nav.clone();
             Rc::new(move |_, cx| {
                 state.update(cx, |nav, cx| {
-                    nav.licence = if nav.licence == Pose::Held {
-                        Pose::Live
-                    } else {
-                        Pose::Held
-                    };
+                    nav.licence = Some(!nav.licence.unwrap_or(false));
                     cx.notify();
                 });
             })
@@ -430,13 +426,20 @@ impl Folio {
             });
             act
         });
+        let stamp_nav = nav.clone();
         let stamp = crest::stamp(
             key(&self.id, "licence"),
             self.facts.licence.clone(),
             stamp_w,
             measure,
         )
-        .pose(licence)
+        .choice(licence)
+        .on_toggle(move |open, _, cx| {
+            stamp_nav.update(cx, |nav, cx| {
+                nav.licence = Some(open);
+                cx.notify();
+            });
+        })
         .into_any_element();
         let cells = [
             cell(
