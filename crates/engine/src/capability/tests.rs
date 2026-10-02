@@ -320,7 +320,10 @@ fn verified_model_and_tokenizer_drive_the_external_runtime_end_to_end()
         workspace: root.clone(),
         environment: backend_compile::ProcessEnvironment::new(vec![(
             "PATH".into(),
-            "/usr/bin:/bin".into(),
+            // The fixture's shebang resolves its interpreter through PATH;
+            // NixOS has nothing under /usr/bin or /bin, so inherit the real
+            // ambient PATH instead of a hardcoded FHS-style default.
+            std::env::var("PATH").unwrap_or_default(),
         )])?,
         process_limits: backend_compile::ProcessLimits::new(64, 64, Duration::from_secs(2), 128)?
             .with_input_bytes_limit(512)?,

@@ -2266,6 +2266,14 @@ mod tests {
         })
     }
 
+    // The fixture's #!/usr/bin/env python3 shebang resolves the interpreter
+    // through PATH; a hardcoded "/usr/bin:/bin" finds nothing on NixOS, where
+    // python3 lives only under /nix/store. Inherit the real ambient PATH
+    // instead, which already has whatever the test process itself was given.
+    fn ambient_path() -> String {
+        std::env::var("PATH").unwrap_or_default()
+    }
+
     fn fixture() -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error>> {
         let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -2416,7 +2424,7 @@ else:
     ) -> Result<(PathBuf, EmbeddingRuntimeSpecV1, EmbeddingExecutable), Box<dyn std::error::Error>>
     {
         let (root, program) = fixture()?;
-        let mut environment = vec![("PATH".into(), "/usr/bin:/bin".into())];
+        let mut environment = vec![("PATH".into(), ambient_path())];
         if let Some(counter) = counter {
             environment.push((
                 "BACKEND_EMBEDDING_ACTIVE_COUNTER".into(),
@@ -2545,7 +2553,7 @@ else:
                 calls.to_string_lossy().into_owned(),
             ),
             ("BACKEND_EMBEDDING_REQUIRE_BEM2".into(), "1".into()),
-            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("PATH".into(), ambient_path()),
         ])?;
         let (root, _, runtime) = activate_fixture(
             root,
@@ -2659,7 +2667,7 @@ else:
                 "/private/first/tokenizer.bin".into(),
             ),
             ("EMBEDDING_MODE".into(), "float32".into()),
-            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("PATH".into(), ambient_path()),
         ])?;
         let relocated = ProcessEnvironment::new(vec![
             (MODEL_FILE_ENV.into(), "/private/second/model.bin".into()),
@@ -2668,7 +2676,7 @@ else:
                 "/private/second/tokenizer.bin".into(),
             ),
             ("EMBEDDING_MODE".into(), "float32".into()),
-            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("PATH".into(), ambient_path()),
         ])?;
         let changed_mode = ProcessEnvironment::new(vec![
             (MODEL_FILE_ENV.into(), "/private/second/model.bin".into()),
@@ -2677,7 +2685,7 @@ else:
                 "/private/second/tokenizer.bin".into(),
             ),
             ("EMBEDDING_MODE".into(), "bf16".into()),
-            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("PATH".into(), ambient_path()),
         ])?;
         let arguments = ["--device=cpu".to_owned(), "--precision=float32".to_owned()];
         let program = Path::new("/opt/backend/embedding-worker");

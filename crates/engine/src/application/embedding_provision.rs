@@ -1150,7 +1150,13 @@ sys.stdout.buffer.write(response)
                 program,
                 arguments: Vec::new(),
                 dependencies: Vec::new(),
-                environment: vec![("PATH".to_owned(), "/usr/bin:/bin".to_owned())],
+                // Inherit the real ambient PATH: a hardcoded "/usr/bin:/bin"
+                // finds nothing on NixOS, where the fixture's interpreter
+                // lives only under /nix/store.
+                environment: vec![(
+                    "PATH".to_owned(),
+                    std::env::var("PATH").unwrap_or_default(),
+                )],
                 limits,
                 model_bytes: b"exact-model-artifact".to_vec(),
                 tokenizer_bytes: b"exact-tokenizer-artifact".to_vec(),

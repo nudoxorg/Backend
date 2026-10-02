@@ -678,7 +678,13 @@ sys.stdout.buffer.write(b"BEC1" + struct.pack(">H", dimension) + struct.pack("<"
         embedding_program,
         Vec::new(),
         embedding_workspace.clone(),
-        ProcessEnvironment::new(vec![("PATH".into(), "/usr/bin:/bin".into())])?,
+        // Inherit the real ambient PATH: a hardcoded "/usr/bin:/bin" finds
+        // nothing on NixOS, where the fixture's interpreter lives only
+        // under /nix/store.
+        ProcessEnvironment::new(vec![(
+            "PATH".into(),
+            std::env::var("PATH").unwrap_or_default(),
+        )])?,
         ProcessLimits::new(64, 64, Duration::from_secs(2), 128)?.with_input_bytes_limit(512)?,
         embedding_tool,
         model,
