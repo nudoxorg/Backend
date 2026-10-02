@@ -15,7 +15,7 @@ use facet::ActiveFacet as _;
 use facet::fluid::Modes;
 use facet::folio::berg::{BergFacts, berg as berg_view, weight};
 use facet::folio::cards::CardFacts;
-use facet::folio::crest::{self, Advisories, REST};
+use facet::folio::crest::{self, Advisories, DisclosureChoice, REST};
 use facet::folio::features::{FeatureFacts, feature_preview};
 use facet::folio::flight::{Marks, Stone, flight, progress};
 use facet::folio::heads::{Finding, heads, open_sheet};
@@ -37,6 +37,7 @@ use gpui::{
     AnyElement, App, Bounds, ElementId, Entity, InteractiveElement, IntoElement, ParentElement,
     Pixels, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, div,
 };
+use std::cell::Cell;
 use std::rc::Rc;
 
 /// What the folio remembers between frames.
@@ -50,8 +51,10 @@ struct Nav {
     lit: Option<SharedString>,
     /// Whether the full berg is showing.
     berg: Fold,
-    /// The licence disclosure's explicit choice; None follows hover/focus.
-    licence: Option<bool>,
+    /// The licence disclosure's one explicit choice.
+    licence: DisclosureChoice,
+    /// What its mounted native control last resolved from choice and input.
+    licence_resolved: Rc<Cell<bool>>,
     /// The shingles of the module just opened, on their way to its cards.
     flight: Option<Flying>,
     /// A different module chosen while the current carry is still returning.
@@ -327,7 +330,8 @@ impl Folio {
         measure: &Measure,
         nav: &Entity<Nav>,
         berg_open: Fold,
-        licence: Option<bool>,
+        licence: DisclosureChoice,
+        licence_resolved: Rc<Cell<bool>>,
     ) -> AnyElement {
         let (stamp_w, cell_w, spread) = (tracks.stamp, tracks.cell, tracks.spread);
         let source_words = |what: &str| -> SharedString {
@@ -401,7 +405,7 @@ impl Folio {
             let state = nav.clone();
             Rc::new(move |_, cx| {
                 state.update(cx, |nav, cx| {
-                    nav.licence = Some(!nav.licence.unwrap_or(false));
+                    nav.licence = DisclosureChoice::explicit(!nav.licence_resolved.get());
                     cx.notify();
                 });
             })
@@ -433,10 +437,9 @@ impl Folio {
             stamp_w,
             measure,
         )
-        .choice(licence)
-        .on_toggle(move |open, _, cx| {
+        .controlled(licence, licence_resolved, move |open, _, cx| {
             stamp_nav.update(cx, |nav, cx| {
-                nav.licence = Some(open);
+                nav.licence = DisclosureChoice::explicit(open);
                 cx.notify();
             });
         })
@@ -1077,6 +1080,7 @@ impl RenderOnce for Folio {
             &nav,
             nav_value.berg,
             nav_value.licence,
+            Rc::clone(&nav_value.licence_resolved),
         );
         // The berg rises into the room it opens and lifts out again (the board's
         // 380 ms ease-out, no overshoot: everything under it moves with it);
