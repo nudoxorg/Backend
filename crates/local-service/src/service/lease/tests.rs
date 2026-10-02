@@ -83,6 +83,8 @@ pub(super) enum PageScript {
     ServeAfter(Duration),
     /// Fail to produce or encode the page.
     Fail(ProtocolError),
+    /// Fail, but only after the clock moved while the page was being built.
+    FailAfter(Duration, ProtocolError),
     /// Return a page with no rows.
     Empty,
     /// Return a page whose continuation is the cursor it was asked for.
@@ -98,9 +100,13 @@ pub(super) struct ScriptedSource {
     /// Clock movement during the next daemon round trip.
     during_subscribe: Cell<Option<Duration>>,
     pages: RefCell<VecDeque<PageScript>>,
-    subscribe_calls: Cell<usize>,
-    pages_built: Cell<usize>,
-    events_error: Option<ProtocolError>,
+    pub(super) subscribe_calls: Cell<usize>,
+    pub(super) pages_built: Cell<usize>,
+    pub(super) events_error: Option<ProtocolError>,
+    /// Serve pages with the production certifier instead of a scripted one.
+    production: Cell<bool>,
+    /// Clock movement per page produced, to model a slow encode.
+    page_cost: Cell<Duration>,
 }
 
 impl ScriptedSource {
@@ -114,7 +120,30 @@ impl ScriptedSource {
             subscribe_calls: Cell::new(0),
             pages_built: Cell::new(0),
             events_error: None,
+            production: Cell::new(false),
+            page_cost: Cell::new(Duration::ZERO),
         }
+    }
+
+    /// Serves every page with the production certifier. The retained root must
+    /// then be a certified one (see `publication_tests`).
+    pub(super) fn use_production_pager(&self) {
+        self.production.set(true);
+    }
+
+    /// Makes every page take `cost` of clock time to produce.
+    pub(super) fn set_page_cost(&self, cost: Duration) {
+        self.page_cost.set(cost);
+    }
+
+    /// Makes the owner report `cursor` as its current one.
+    pub(super) fn set_owner_cursor(&mut self, cursor: Cursor) {
+        self.owner_cursor = cursor;
+    }
+
+    /// The cursor bytes the owner currently reports.
+    pub(super) fn owner_cursor_bytes(&self) -> Box<[u8]> {
+        self.owner_cursor.encode_control()
     }
 
     fn page_token(cursor: ViewPageCursor) -> Box<[u8]> {
@@ -161,12 +190,17 @@ impl LeaseSource for ScriptedSource {
     }
 
     fn reset_page(&self, plan: &PagePlan, credit: PageCredit) -> Result<ResetPage, ProtocolError> {
+        self.pages_built.set(self.pages_built.get() + 1);
+        if self.production.get() {
+            let page = super::host::production_reset_page(plan, credit)?;
+            self.clock.advance(self.page_cost.get());
+            return Ok(page);
+        }
         let script = self
             .pages
             .borrow_mut()
             .pop_front()
             .unwrap_or(PageScript::Serve);
-        self.pages_built.set(self.pages_built.get() + 1);
         let page = plan
             .root
             .page(plan.requested, credit.get())
@@ -190,6 +224,10 @@ impl LeaseSource for ScriptedSource {
                 Ok(served)
             }
             PageScript::Fail(error) => Err(error),
+            PageScript::FailAfter(elapsed, error) => {
+                self.clock.advance(elapsed);
+                Err(error)
+            }
             PageScript::Empty => Ok(ResetPage { rows: 0, ..served }),
             PageScript::Repeating => Ok(ResetPage {
                 next: Some(continuation(plan.requested)),
@@ -204,14 +242,14 @@ impl LeaseSource for ScriptedSource {
 }
 
 pub(super) struct Harness {
-    clock: Arc<ManualClock>,
-    table: LeaseTable,
-    source: ScriptedSource,
+    pub(super) clock: Arc<ManualClock>,
+    pub(super) table: LeaseTable,
+    pub(super) source: ScriptedSource,
     next_request: u64,
 }
 
 impl Harness {
-    fn new(limits: SubscriptionLeaseLimits) -> Self {
+    pub(super) fn new(limits: SubscriptionLeaseLimits) -> Self {
         let clock = ManualClock::new();
         let table = LeaseTable::new(limits, clock.clone());
         let source = ScriptedSource::new(clock.clone());
@@ -223,7 +261,7 @@ impl Harness {
         }
     }
 
-    fn with_limits(
+    pub(super) fn with_limits(
         max_active: usize,
         max_term: Duration,
         max_reset_pages: usize,
@@ -239,11 +277,11 @@ impl Harness {
         self.source.replies.push_back(Ok(reply));
     }
 
-    fn script_pages(&self, pages: impl IntoIterator<Item = PageScript>) {
+    pub(super) fn script_pages(&self, pages: impl IntoIterator<Item = PageScript>) {
         self.source.pages.borrow_mut().extend(pages);
     }
 
-    fn call(
+    pub(super) fn call(
         &mut self,
         operation: LocalSubscriptionOperation,
     ) -> Result<LocalSubscriptionResponse, ProtocolError> {
@@ -259,7 +297,7 @@ impl Harness {
         }
     }
 
-    fn open_with(
+    pub(super) fn open_with(
         &mut self,
         reply: SubscriptionReply,
         credit: usize,
@@ -274,7 +312,7 @@ impl Harness {
     }
 
     /// Opens a quiet lease and returns it with the cursor it holds.
-    fn open_quiet(&mut self) -> (LocalSubscriptionId, Box<[u8]>) {
+    pub(super) fn open_quiet(&mut self) -> (LocalSubscriptionId, Box<[u8]>) {
         let response = self
             .open_with(
                 SubscriptionReply::Accepted { credit: CREDIT },
@@ -302,7 +340,7 @@ impl Harness {
     }
 
     /// Opens a lease whose first reply is a reset of `labels`, one row a page.
-    fn open_reset(
+    pub(super) fn open_reset(
         &mut self,
         labels: &[&str],
     ) -> Result<(LocalSubscriptionId, Option<Box<[u8]>>), ProtocolError> {
@@ -317,7 +355,7 @@ impl Harness {
         Ok((lease, next))
     }
 
-    fn page(
+    pub(super) fn page(
         &mut self,
         lease: LocalSubscriptionId,
         token: &[u8],
@@ -330,7 +368,11 @@ impl Harness {
     }
 
     /// Fetches a page and returns the continuation it announces.
-    fn next_page(&mut self, lease: LocalSubscriptionId, token: &[u8]) -> Option<Box<[u8]>> {
+    pub(super) fn next_page(
+        &mut self,
+        lease: LocalSubscriptionId,
+        token: &[u8],
+    ) -> Option<Box<[u8]>> {
         match self.page(lease, token).expect("page") {
             LocalSubscriptionResponse::SnapshotPage { next, page, .. } => {
                 assert_eq!(page.as_ref(), token);
@@ -340,7 +382,7 @@ impl Harness {
         }
     }
 
-    fn resume(
+    pub(super) fn resume(
         &mut self,
         lease: LocalSubscriptionId,
         cursor: &[u8],
@@ -353,7 +395,7 @@ impl Harness {
         })
     }
 
-    fn renew(
+    pub(super) fn renew(
         &mut self,
         lease: LocalSubscriptionId,
         cursor: &[u8],
@@ -366,7 +408,7 @@ impl Harness {
         })
     }
 
-    fn ack(
+    pub(super) fn ack(
         &mut self,
         lease: LocalSubscriptionId,
         cursor: &[u8],
@@ -377,27 +419,40 @@ impl Harness {
         })
     }
 
-    fn cancel(
+    pub(super) fn cancel(
         &mut self,
         lease: LocalSubscriptionId,
     ) -> Result<LocalSubscriptionResponse, ProtocolError> {
         self.call(LocalSubscriptionOperation::Cancel { lease })
     }
 
-    fn weak_root(&self, lease: LocalSubscriptionId) -> Weak<ViewRoot> {
+    pub(super) fn weak_root(&self, lease: LocalSubscriptionId) -> Weak<ViewRoot> {
         match self.table.get(lease).expect("retained lease").phase() {
             LeasePhase::Hydrating(hydration) => Arc::downgrade(hydration.root()),
             LeasePhase::Live => panic!("a live lease retains no reset root"),
         }
     }
 
-    fn released(&self, reason: ReleaseReason) -> u64 {
+    pub(super) fn try_open_quiet(
+        &mut self,
+    ) -> Result<(LocalSubscriptionId, Box<[u8]>), ProtocolError> {
+        match self.open_with(
+            SubscriptionReply::Accepted { credit: CREDIT },
+            CREDIT,
+            PUBLICATION_LEASE.get(),
+        )? {
+            LocalSubscriptionResponse::Opened { lease, cursor, .. } => Ok((lease, cursor)),
+            other => panic!("a quiet open answers Opened: {other:?}"),
+        }
+    }
+
+    pub(super) fn released(&self, reason: ReleaseReason) -> u64 {
         self.table.released().count(reason)
     }
 
     /// The table's earliest-expiry hint must never exceed the true earliest
     /// retention deadline, or a due lease would be missed by the idle poll.
-    fn assert_hint_is_a_lower_bound(&self) {
+    pub(super) fn assert_hint_is_a_lower_bound(&self) {
         match (self.table.earliest(), self.table.exact_earliest()) {
             (_, None) => {}
             (Some(hint), Some(exact)) => assert!(hint <= exact, "hint {hint:?} > exact {exact:?}"),
@@ -1607,4 +1662,62 @@ fn the_terms_the_observer_requests_fit_the_owner_defaults() {
         assert_eq!(limits.grant_term(requested.get()), Some(requested));
     }
     assert_eq!(LeaseMs::new(1).map(LeaseMs::get), Some(1));
+}
+
+// -------------------------------------- bounds that must hold under every schedule
+
+#[test]
+fn the_idle_poll_frees_a_reset_root_at_its_window_even_while_the_lease_term_runs() {
+    // A 5 s window inside a 10 s term: when the window ends nothing a holder
+    // does is pending, and the root must go without waiting for the term.
+    let mut harness = Harness::with_limits(4, Duration::from_secs(60), 100, Duration::from_secs(5));
+    let (lease, token) = harness.open_reset(&["a", "b", "c"]).expect("reset");
+    token.expect("hydrating");
+    let root = harness.weak_root(lease);
+    harness.clock.advance(Duration::from_secs(5) - NANOSECOND);
+    assert_eq!(harness.table.reclaim_due(harness.clock.now()), 0);
+    harness.clock.advance(NANOSECOND);
+    assert_eq!(harness.table.reclaim_due(harness.clock.now()), 1);
+    assert!(root_gone(&root));
+    assert_eq!(harness.released(ReleaseReason::ResetWindowElapsed), 1);
+    assert_eq!(harness.released(ReleaseReason::Expired), 0);
+}
+
+#[test]
+fn a_lease_that_expires_while_its_page_fails_to_encode_is_released_exactly_once() {
+    let mut harness = Harness::default();
+    let (lease, token) = harness.open_reset(&["a", "b", "c"]).expect("reset");
+    let root = harness.weak_root(lease);
+    harness.clock.advance(term() - SECOND);
+    let failure = ProtocolError::InvalidControl("snapshot page encoding");
+    harness.script_pages([PageScript::FailAfter(2 * SECOND, failure.clone())]);
+    assert_eq!(
+        harness.page(lease, &token.expect("continuation")),
+        Err(failure)
+    );
+    assert!(root_gone(&root));
+    assert_eq!(
+        harness.table.released().total(),
+        1,
+        "one lease, one release"
+    );
+    assert_eq!(harness.released(ReleaseReason::ResetPageUnservable), 1);
+    assert_eq!(
+        harness.table.reclaim_due(harness.clock.now()),
+        0,
+        "nothing left to sweep"
+    );
+}
+
+#[test]
+fn a_resume_whose_reset_needs_more_pages_than_the_budget_releases_the_lease() {
+    let mut harness = Harness::with_limits(4, Duration::from_secs(60), 1, Duration::from_secs(60));
+    let (lease, cursor) = harness.open_quiet();
+    harness.script(reset_reply(&["a", "b"]));
+    assert_eq!(
+        harness.resume(lease, &cursor),
+        Err(ProtocolError::ResetPageBudgetExhausted)
+    );
+    assert!(harness.table.get(lease).is_none());
+    assert_eq!(harness.released(ReleaseReason::ResetPagesExhausted), 1);
 }

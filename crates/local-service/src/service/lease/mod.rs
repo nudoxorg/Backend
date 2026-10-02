@@ -20,9 +20,13 @@
 mod host;
 mod identity;
 mod limits;
+#[cfg(test)]
+mod model_tests;
 mod owner;
 #[cfg(test)]
 mod owner_tests;
+#[cfg(test)]
+mod publication_tests;
 mod state;
 mod table;
 #[cfg(test)]

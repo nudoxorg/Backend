@@ -77,7 +77,10 @@ pub(crate) trait LeaseSource {
     }
 }
 
-fn production_reset_page(plan: &PagePlan, credit: PageCredit) -> Result<ResetPage, ProtocolError> {
+pub(crate) fn production_reset_page(
+    plan: &PagePlan,
+    credit: PageCredit,
+) -> Result<ResetPage, ProtocolError> {
     let page = subscription::snapshot_page(
         &plan.root,
         plan.target,

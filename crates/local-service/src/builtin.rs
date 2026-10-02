@@ -49,7 +49,7 @@ const AUTHORITY_VALUE: &[u8] = backend_engine::PRODUCT_AUTHORITY_BYTES;
 /// ones) must name itself anew: otherwise a reopened workspace serves the
 /// old projection until its sources change, and replays journal events
 /// written under an older wire version it can no longer decode.
-const VIEW_SOURCE_VALUE: &[u8] = b"product-source-relation-v3";
+pub(crate) const VIEW_SOURCE_VALUE: &[u8] = b"product-source-relation-v3";
 const MAX_REBUILD_PACKAGES: usize = 1_000_000;
 pub(super) const MAX_REBUILD_BYTES: usize = 64 * 1024 * 1024;
 // One compact event is fsynced before publication. Keep short edit suffixes
