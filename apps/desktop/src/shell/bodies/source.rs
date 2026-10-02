@@ -810,6 +810,7 @@ fn pager_controls(
         let act: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
             state.update(app, |pager, cx| pager.previous(previous, cx));
         });
+        let act = ctx.native_action(act, cx);
         ctx.targets.push(Target {
             id: id.clone(),
             label: "Previous source lines".into(),
@@ -817,13 +818,14 @@ fn pager_controls(
             peek: None,
             source: None,
         });
+        let focus = ctx.native_handle(&id, cx);
+        let mut control = facet::controls::button(id.clone(), "Previous lines", &measure)
+            .ghost().size(Control::Small).on_click(move |window, app| act(window, app));
+        if let Some(focus) = focus { control = control.focus_handle(focus); }
         controls = controls.child(
             ctx.targets.track(
                 id.clone(),
-                facet::controls::button(id, "Previous lines", &measure)
-                    .ghost()
-                    .size(Control::Small)
-                    .on_click(move |window, app| act(window, app)),
+                div().key_context(crate::shell::keys::NATIVE_CONTROL).child(control),
             ),
         );
     }
@@ -837,6 +839,7 @@ fn pager_controls(
         let act: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
             state.update(app, |pager, cx| pager.next(next, cx));
         });
+        let act = ctx.native_action(act, cx);
         ctx.targets.push(Target {
             id: id.clone(),
             label: "Next source lines".into(),
@@ -844,13 +847,14 @@ fn pager_controls(
             peek: None,
             source: None,
         });
+        let focus = ctx.native_handle(&id, cx);
+        let mut control = facet::controls::button(id.clone(), "Next lines", &measure)
+            .ghost().size(Control::Small).on_click(move |window, app| act(window, app));
+        if let Some(focus) = focus { control = control.focus_handle(focus); }
         controls = controls.child(
             ctx.targets.track(
                 id.clone(),
-                facet::controls::button(id, "Next lines", &measure)
-                    .ghost()
-                    .size(Control::Small)
-                    .on_click(move |window, app| act(window, app)),
+                div().key_context(crate::shell::keys::NATIVE_CONTROL).child(control),
             ),
         );
     }

@@ -85,6 +85,7 @@ actions!(
 
 /// The key context of the shell root.
 pub(crate) const CONTEXT: &str = "NudoxShell";
+pub(crate) const NATIVE_CONTROL: &str = "NativeControl";
 
 /// A command the table binds.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -261,6 +262,9 @@ fn binding_context(key: &Key) -> String {
     if graph_owns { context.push_str(" && !Graph"); }
     if menu_owns { context.push_str(" && !Menu"); }
     if compare_owns { context.push_str(" && !BrowseCompare"); }
+    if matches!(key.command, Command::Activate | Command::Peek) {
+        context.push_str(" && !NativeControl");
+    }
     context
 }
 

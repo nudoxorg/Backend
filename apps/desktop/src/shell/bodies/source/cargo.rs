@@ -12,7 +12,7 @@ use crate::shell::kit::{quiet, text};
 use crate::shell::reader::Reader;
 use facet::{Space, tokens::ty};
 use gpui::{
-    App, AppContext as _, ClickEvent, Context, ElementId, InteractiveElement, IntoElement,
+    App, AppContext as _, ClickEvent, Context, ElementId, InteractiveElement, IntoElement, KeyDownEvent,
     ParentElement, SharedString, StatefulInteractiveElement, Styled, StyledText, Window, div, px,
 };
 use sha2::{Digest, Sha256};
@@ -178,6 +178,7 @@ fn code(
             let words = copy_source.text().get(span.range()).unwrap_or_default();
             app.write_to_clipboard(gpui::ClipboardItem::new_string(words.to_owned()));
         });
+        let copy = ctx.native_action(copy, cx);
         ctx.targets.push(Target {
             id: id.clone(),
             label: format!("Copy visible part of source line {number}").into(),
@@ -185,18 +186,35 @@ fn code(
             peek: None,
             source: None,
         });
+        let native_focus = ctx.native_handle(&id, cx);
         let mut pieces = div().flex().flex_col();
         for (piece_index, piece) in grouped.remove(&source_index).unwrap_or_default().into_iter().enumerate() {
             let label = if piece_index == 0 {
                 if page.lines[source_index].continued { format!("{number}+") } else { number.to_string() }
             } else { String::new() };
             let gutter_copy = copy.clone();
-            let gutter = div()
+            let gutter_key = copy.clone();
+            let mut gutter = div()
                 .id(format!("cargo-source-copy-line-{number}-{piece_index}"))
+                .role(if piece_index == 0 { gpui::Role::Button } else { gpui::Role::Label })
+                .aria_label(if piece_index == 0 { format!("Copy source line {number}") } else { format!("Continuation of source line {number}") })
+                .key_context(crate::shell::keys::NATIVE_CONTROL)
                 .flex_none().w(number_width).flex().justify_end()
                 .child(text(ty::CODE, &measure, if requested == Some(number) { palette.peri.base } else { palette.ink3 }).child(label))
                 .cursor_pointer()
-                .on_click(move |_: &ClickEvent, window, app| gutter_copy(window, app));
+                .on_click(move |_: &ClickEvent, window, app| gutter_copy(window, app))
+                .on_key_down(move |event: &KeyDownEvent, window, app| {
+                    if !event.keystroke.modifiers.modified()
+                        && matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        if !event.is_held { gutter_key(window, app); }
+                        app.stop_propagation();
+                    }
+                });
+            if piece_index == 0
+                && let Some(focus) = &native_focus
+            {
+                gutter = gutter.track_focus(focus).tab_index(0);
+            }
             pieces = pieces.child(div().flex().items_start().gap(gap).child(gutter).child(
                 div().set(ty::CODE, &measure).text_color(palette.ink1.hsla()).min_w(px(0.0))
                     .whitespace_nowrap().child(StyledText::new(SharedString::from(piece.text)).with_highlights(piece.runs))

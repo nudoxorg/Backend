@@ -1,0 +1,43 @@
+# J15 · Native Library and current Cargo source. This starts through the
+# production installer. Every click below uses the text's painted bounds;
+# no route is injected to make a source page appear.
+size 1440x900
+start from install-all frontends/rust/fixtures/toml_pin
+
+check library
+  route like "orbit"
+  text "toml_pin" in reader
+
+click "toml_pin" in reader
+check project
+  route like "package *toml_pin"
+
+key cmd-[
+check library-return
+  route like "orbit"
+  focus restored
+
+click "Dependency tree ›" in reader
+check tree
+  route like "tree *toml_pin*"
+  text "toml" in reader
+
+click "toml" in reader
+check cargo-package
+  route like "package *toml*"
+  text "Open Cargo.toml" in reader
+
+click "Open Cargo.toml" in reader
+check cargo-source
+  route like "cargo-source *toml* file=Cargo.toml*"
+  text "Cargo files" in reader
+  like "Current Cargo file *" in reader
+
+key cmd-[
+check package-return
+  route like "package *toml*"
+  focus restored
+
+key cmd-[
+check tree-return
+  route like "tree *toml_pin*"
