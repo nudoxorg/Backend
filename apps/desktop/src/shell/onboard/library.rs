@@ -26,7 +26,10 @@ use facet::icons::Kind;
 use facet::tokens::fluid::EMPTY_GEM;
 use facet::tokens::ty;
 use facet::Space;
-use gpui::{AnyElement, Context, Global, IntoElement as _, ParentElement, SharedString, Styled, Task, div, px};
+use gpui::{
+    AnyElement, Context, Global, InteractiveElement as _, IntoElement as _, ParentElement,
+    SharedString, Styled, Task, div, px,
+};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};

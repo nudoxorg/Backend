@@ -39,9 +39,9 @@ fn scratch(tag: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    // `/tmp`, not `temp_dir()`: under nix the latter makes the socket path
-    // longer than `sockaddr_un` allows.
-    PathBuf::from("/tmp").join(format!("nx-w1-{tag}-{}-{nonce}", std::process::id()))
+    // `/tmp` on Unix, not `temp_dir()`: under nix the latter makes the socket
+    // path longer than `sockaddr_un` allows (see `scratch_base`).
+    crate::host::scratch_base().join(format!("nx-w1-{tag}-{}-{nonce}", std::process::id()))
 }
 
 /// A project, its data directory holding a session left on a package page,
@@ -316,6 +316,8 @@ fn a_window_before_its_owner_holds_its_reads_then_says_why_the_owner_failed(cx: 
 #[test]
 fn the_owners_revision_is_the_root_its_subscription_hydrates() {
     let root = scratch("revision");
+    // The owner keeps its private state under an owner-only parent.
+    crate::host::private_dir(&root).expect("owner-only root");
     let project = root.join("project");
     let data = root.join("data");
     let endpoint = root.with_extension("sock");
@@ -326,9 +328,6 @@ fn the_owners_revision_is_the_root_its_subscription_hydrates() {
     )
     .expect("manifest");
     std::fs::write(project.join("src/lib.rs"), b"pub struct RevisionProof;\n").expect("source");
-    // The owner keeps its private state under an owner-only parent.
-    std::fs::set_permissions(&root, std::os::unix::fs::PermissionsExt::from_mode(0o700))
-        .expect("owner-only root");
     let paths = WorkspacePaths::discover(Some(project.clone()), Some(data), Some(endpoint.clone()))
         .expect("paths");
     let host = super::lease::DesktopHost::start_with_paths(paths).expect("embedded owner");

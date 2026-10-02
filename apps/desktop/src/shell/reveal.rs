@@ -55,9 +55,13 @@ impl RevealHold {
 
     /// The modifier state changed.
     pub(crate) fn modifiers(&mut self, modifiers: Modifiers) -> Change {
-        let others = modifiers.shift || modifiers.control || modifiers.function;
-        let lone_cmd = modifiers.platform && !modifiers.alt && !others;
-        let lone_alt = modifiers.alt && !modifiers.platform && !others;
+        // The shortcut modifier every shell chord is spelled with (`secondary`):
+        // ⌘ on macOS, Ctrl elsewhere. The other of the two counts as any key.
+        let command = modifiers.secondary();
+        let other_command = if cfg!(target_os = "macos") { modifiers.control } else { modifiers.platform };
+        let others = modifiers.shift || other_command || modifiers.function;
+        let lone_cmd = command && !modifiers.alt && !others;
+        let lone_alt = modifiers.alt && !command && !others;
         let before = self.reveal;
         // A reveal lasts exactly as long as its own modifier is held alone.
         self.reveal.keys &= lone_cmd;
@@ -127,11 +131,9 @@ impl RevealHold {
 mod tests {
     use super::*;
 
+    /// The shortcut modifier held alone: ⌘ on macOS, Ctrl elsewhere.
     fn cmd() -> Modifiers {
-        Modifiers {
-            platform: true,
-            ..Modifiers::default()
-        }
+        Modifiers::secondary_key()
     }
 
     fn alt() -> Modifiers {
@@ -151,6 +153,20 @@ mod tests {
         assert_eq!(shown.reveal, Some(Reveal { keys: true, xray: false }));
         let released = hold.modifiers(Modifiers::default());
         assert_eq!(released.reveal, Some(Reveal::default()));
+    }
+
+    /// Off macOS the shell's chords are Ctrl chords: Ctrl held alone reveals
+    /// them, and the Windows (logo) key held alone does not.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn off_macos_ctrl_not_the_logo_key_reveals_the_keys() {
+        let mut hold = RevealHold::default();
+        let logo = Modifiers { platform: true, ..Modifiers::default() };
+        assert_eq!(hold.modifiers(logo).arm, None, "the logo key is not the shortcut modifier");
+        let _ = hold.modifiers(Modifiers::default());
+        let ctrl = Modifiers { control: true, ..Modifiers::default() };
+        let generation = hold.modifiers(ctrl).arm.expect("Ctrl arms the hold");
+        assert_eq!(hold.fire(generation).reveal, Some(Reveal { keys: true, xray: false }));
     }
 
     #[test]

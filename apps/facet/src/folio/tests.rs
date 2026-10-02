@@ -22,7 +22,7 @@ use crate::probe::{self, Ledger, TextOverflow};
 use crate::theme::{ActiveFacet, Facet, set_facet};
 use crate::tokens::Family;
 use gpui::{
-    AnyElement, Context, IntoElement, Modifiers, MouseButton, ParentElement, Render, Styled, TestAppContext, VisualTestContext, Window, div,
+    AnyElement, Context, InteractiveElement as _, IntoElement, Modifiers, MouseButton, ParentElement, Render, Styled, TestAppContext, VisualTestContext, Window, div,
     point, px, size,
 };
 use std::cell::RefCell;
@@ -36,6 +36,9 @@ const WIDTH: f32 = 1100.0;
 struct Page {
     build: Box<dyn Fn(&mut Window, &mut Context<Page>, &Log) -> AnyElement>,
     log: Log,
+    /// The page root's own focus, so keys reach its Tab walk before any
+    /// control has focus (as on the gallery's scene root).
+    focus: Option<gpui::FocusHandle>,
 }
 
 impl Render for Page {
@@ -43,7 +46,22 @@ impl Render for Page {
         probe::draw_started(cx);
         let palette = cx.facet().palette();
         let content = (self.build)(window, cx, &self.log);
+        let focus = self.focus.get_or_insert_with(|| {
+            let handle = cx.focus_handle();
+            window.focus(&handle, cx);
+            handle
+        });
         div()
+            .track_focus(focus)
+            // Tab walks focus as the gallery's scene root and the shell do;
+            // a bare test window binds no Tab key of its own.
+            .on_key_down(|event: &gpui::KeyDownEvent, window, cx| {
+                match (event.keystroke.modifiers.shift, event.keystroke.key.as_str()) {
+                    (false, "tab") => window.focus_next(cx),
+                    (true, "tab") => window.focus_prev(cx),
+                    _ => {}
+                }
+            })
             .relative()
             .size_full()
             .bg(gpui::Hsla::from(palette.g1))
@@ -60,17 +78,29 @@ fn frame(cx: &mut VisualTestContext) {
     });
 }
 
+/// One display frame at 60 Hz, in ms.
+const FRAME_MS: u64 = 16;
+
+/// Lets `millis` of virtual time pass the way the app sees it: a frame at
+/// least every [`FRAME_MS`]. A track that starts when another crosses a
+/// threshold (a disclosure's copy after its plate) only moves across frames;
+/// one jump of the whole span would sample every track at a single instant.
 fn advance(cx: &mut VisualTestContext, millis: u64) {
-    cx.executor().advance_clock(Duration::from_millis(millis));
-    cx.run_until_parked();
-    frame(cx);
+    let mut left = millis;
+    while left > 0 {
+        let step = left.min(FRAME_MS);
+        cx.executor().advance_clock(Duration::from_millis(step));
+        cx.run_until_parked();
+        frame(cx);
+        left -= step;
+    }
     frame(cx);
 }
 
 fn open(cx: &mut TestAppContext, build: impl Fn(&mut Window, &mut Context<Page>, &Log) -> AnyElement + 'static) -> (&mut VisualTestContext, Log) {
     let log: Log = Rc::default();
     let page_log = log.clone();
-    let (_view, cx) = cx.add_window_view(move |_, _| Page { build: Box::new(build), log: page_log });
+    let (_view, cx) = cx.add_window_view(move |_, _| Page { build: Box::new(build), log: page_log, focus: None });
     cx.update(|_, cx| probe::enable(cx));
     cx.simulate_resize(size(px(WIDTH), px(700.0)));
     advance(cx, 16);
@@ -498,7 +528,12 @@ fn the_native_licence_stamp_enter_and_space_toggle_focused_details(cx: &mut Test
     cx.simulate_keystrokes("enter");
     frame(cx);
     assert_eq!(native_stamp_state(cx), (false, true), "Enter must close focused details once");
+    // A button activates on Space's release; the simulated keystroke is only
+    // the press, so release it as a keyboard does.
     cx.simulate_keystrokes("space");
+    frame(cx);
+    assert_eq!(native_stamp_state(cx), (false, true), "pressing Space alone does not activate");
+    cx.simulate_event(gpui::KeyUpEvent { keystroke: gpui::Keystroke::parse("space").expect("space") });
     frame(cx);
     assert_eq!(native_stamp_state(cx), (true, true), "Space must reopen focused details once");
 }

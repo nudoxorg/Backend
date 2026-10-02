@@ -1744,7 +1744,7 @@ fn compose_package(
             if engine_record {
                 loader.readme(&project)
             } else {
-                loader.load_with_cancel(&project, &|| context.cancel.is_cancelled())
+                loader.load_with_cancel(&project, context.cancel.flag())
             }
         });
     check(context.cancel)?;
@@ -2342,7 +2342,7 @@ mod tests {
                     SurfaceCommand::ProjectTree { root } => {
                         assert_eq!(root.as_str(), "/workspace/backend/member");
                         self.seen.push("tree");
-                        Ok(SurfaceReply::ProjectTree(self.tree.clone()))
+                        Ok(SurfaceReply::ProjectTree(Box::new(self.tree.clone())))
                     }
                     SurfaceCommand::CargoPackageSourceFile { request, path } => {
                         assert_eq!(path.as_str(), "Cargo.toml");

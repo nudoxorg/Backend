@@ -111,6 +111,13 @@ opacity). Off by default: one `has_global` check per painted line.
 Known gap: a cached view (`AnyView::cached`) that replays last frame's primitives does not
 repaint its lines, so they are not traced in the replayed frame.
 
+## Virtual list height hints (W-Library, 2026-10-02)
+
+| Site | Change | Why |
+|---|---|---|
+| `src/elements/list.rs` `ListState::remeasure_with_uniform_item_height` | new: re-hint every item at a new uniform height, keeping the logical scroll anchor and focus handles | a Library row's height follows the text size; offscreen estimates must follow a reflow |
+| `src/elements/list.rs` `StateInner::uniform_item_height`; `apply_uniform_item_height`, `remeasure_items_with_scroll_anchor`, `List::prepaint` | the declared uniform height is remembered, and the width-change invalidation in `prepaint` (which the first layout also takes) re-hints unmeasured items with it instead of `None` | upstream reset every hint to `None` there, so `with_uniform_item_height` was erased before its first use: unmeasured rows counted as zero height, the scrollbar covered only the measured rows, and a wheel scroll stopped at their end (`uniform_hints_survive_the_first_layout_and_a_width_change`) |
+
 ## gpui_ce_macos 0.1.0 (vendored 2026-09-25, `vendor/gpui_ce_macos`)
 
 Copied verbatim from crates.io, wired through `[patch.crates-io]`. Patched
@@ -134,3 +141,4 @@ lines carry `NUDOX:` comments.
 | `src/highlighter/languages.rs` | `Json` behind `tree-sitter-json`; C# uses the grammar's `HIGHLIGHTS_QUERY` (was `""`: no highlighting); C++ uses `languages/cpp/highlights.scm` | C# and C++ were unhighlighted |
 | `src/highlighter/languages/cpp/highlights.scm` (new) | C's query plus C++'s, specific patterns first (upstream's C++ query is written for `; inherits: c`, which this highlighter does not resolve) | C++ highlighting |
 | `src/highlighter/languages/rust/highlights.scm` | `(lifetime "'" @label)` | a lifetime reads as one token |
+| `Cargo.toml` (non-wasm dev-dependency), `src/highlighter/registry.rs` `test_registry` | `tree-sitter-json` is also a dev-dependency; the built-in `json` lookup is asserted present or absent by the `tree-sitter-json` feature | the registry and Markdown code-block tests register the JSON grammar as a custom language; after the split they no longer compiled with `tree-sitter` on and `tree-sitter-json` off (the desktop's feature set) |

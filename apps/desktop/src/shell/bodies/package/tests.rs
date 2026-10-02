@@ -99,7 +99,7 @@ fn readme_link_keyboard_back_restores_exact_row_and_unavailable_row_stays_action
     walk_to(&mut rig, "readme-link-0", 200);
     rig.keys("enter");
     assert!(format!("{:?}", rig.route()).contains("serde@1.0.229"));
-    rig.keys("cmd-[");
+    rig.keys("secondary-[");
     assert_eq!(rig.route(), package_route());
     assert_eq!(focused(&mut rig).as_deref(), Some("readme-link-0"));
     walk_to(&mut rig, "readme-link-1", 200);
@@ -712,6 +712,7 @@ fn local_toml_named_root() -> PathBuf {
 fn route_for_package(package: &PackageRef) -> crate::navigation::Route {
     crate::navigation::Route::Package(crate::navigation::PackageRoute {
         project: None,
+        cargo: None,
         package: crate::core::PackageId::new(package.as_str()).expect("package route"),
         lane: crate::navigation::PackageLane::Overview,
         selected: None,
@@ -1701,7 +1702,7 @@ fn a_dependency_that_goes_somewhere_is_a_door_and_back_stands_on_it(cx: &mut Tes
         format!("{opened:?}").contains(&expected_destination),
         "Enter opened the exact indexed tree admitted by the test receipt: {opened:?}"
     );
-    rig.keys("cmd-[");
+    rig.keys("secondary-[");
     assert_eq!(rig.route(), package_route(), "⌘[ came back");
     assert_eq!(
         focused(&mut rig).as_deref(),
@@ -1733,7 +1734,7 @@ fn after_back_the_focus_bevel_comes_back_on_the_door_not_flying_in(cx: &mut Test
         rig.frame(16);
     }
     let _ = rig.cx.update(|_, cx| facet::probe::take(cx));
-    rig.keys("cmd-[");
+    rig.keys("secondary-[");
     for _ in 0..40 {
         rig.frame(16);
     }

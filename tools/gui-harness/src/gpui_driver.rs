@@ -612,7 +612,7 @@ fn apply_step(
                 .map_err(|error| CaptureError::Gpui(error.to_string()))?;
         }
         InputStep::Paste => {
-            let keystroke = Keystroke::parse("cmd-v")
+            let keystroke = Keystroke::parse("secondary-v")
                 .map_err(|error| CaptureError::Input(InputError::Keystroke(error.to_string())))?;
             context
                 .update_window(window, |_, window, cx| {

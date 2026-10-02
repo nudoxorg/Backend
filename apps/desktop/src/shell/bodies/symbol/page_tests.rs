@@ -454,7 +454,7 @@ fn a_click_on_a_place_opens_that_file_at_that_line_in_the_editor(cx: &mut TestAp
     let at = centre(&ledger, "s6-pkg-1-place-0");
     rig.cx.simulate_click(at, gpui::Modifiers::default());
     rig.settle();
-    assert_eq!(*ran.borrow(), [Command { program: "code".into(), args: vec!["-g".into(), "/work/gui-harness/src/c.rs:7".into()] }], "the file the place is in, at its line");
+    assert_eq!(*ran.borrow(), [Command { program: crate::host::editor::VS_CODE.into(), args: vec!["-g".into(), "/work/gui-harness/src/c.rs:7".into()] }], "the file the place is in, at its line");
 }
 
 #[gpui::test]

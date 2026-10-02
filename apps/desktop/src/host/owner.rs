@@ -291,7 +291,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock")
             .as_nanos();
-        let root = std::path::PathBuf::from("/tmp").join(format!(
+        let root = crate::host::scratch_base().join(format!(
             "nudox-owner-restart-{}-{nonce}",
             std::process::id()
         ));

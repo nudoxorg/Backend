@@ -255,8 +255,8 @@ pub(super) fn body(
                 leaves.push(Leaf::new(quiet(words, &measure, palette)));
             }
             match terminal {
-                ResourceTerminal::Fault(error) => leaves.extend(super::state::not_ready(&Shown::Fault(error), &PageKey::Orbit, "The packages around your projects", ctx, cx)),
-                ResourceTerminal::Unavailable(reason) => leaves.extend(super::state::not_ready(&Shown::Unavailable(reason, None), &PageKey::Orbit, "The packages around your projects", ctx, cx)),
+                ResourceTerminal::Fault(error) => leaves.extend(super::state::not_ready(&Shown::<()>::Fault(error), &PageKey::Orbit, "The packages around your projects", ctx, cx)),
+                ResourceTerminal::Unavailable(reason) => leaves.extend(super::state::not_ready(&Shown::<()>::Unavailable(reason, None), &PageKey::Orbit, "The packages around your projects", ctx, cx)),
                 ResourceTerminal::Complete | ResourceTerminal::Partial => {}
             }
         }

@@ -200,6 +200,8 @@ impl Render for EarlySemanticErrorRoot {
     }
 }
 
+// Needs `gpui_platform::current_headless_renderer`, which only macOS provides.
+#[cfg(target_os = "macos")]
 #[test]
 fn early_semantic_error_is_preserved_without_retaining_capture_entities() {
     let viewport = Viewport::new(64, 64, 1).expect("viewport");
@@ -297,6 +299,7 @@ fn places(endpoint: &Path, project: &Path) -> Places {
         alias: alias_coordinate.as_deref().map(|coordinate| page_route(coordinate, &package)),
         package: Route::Package(PackageRoute {
             project: None,
+            cargo: None,
             package,
             lane: PackageLane::Overview,
             selected: None,
@@ -373,26 +376,26 @@ fn find_settings_script() -> (Vec<InputStep>, Vec<u64>) {
         if let Some(action) = action { actions.push(action); }
         times.push(now);
     };
-    step(100, Some(InputStep::key("cmd-[")));          // 01 Code → Orbit
-    step(100, Some(InputStep::key("cmd-k")));          // 02 Ask
+    step(100, Some(InputStep::key("secondary-[")));          // 01 Code → Orbit
+    step(100, Some(InputStep::key("secondary-k")));          // 02 Ask
     step(100, Some(InputStep::Text { value: "RelationLabel".to_owned() })); // 03 owner query
-    step(800, Some(InputStep::key("cmd-enter")));      // 04 Find route while Ask exit still paints
+    step(800, Some(InputStep::key("secondary-enter")));      // 04 Find route while Ask exit still paints
     step(800, None);                                    // 05 settled Find claims query focus
     step(100, Some(InputStep::key("tab")));            // 06 native result focus
     step(100, Some(InputStep::key("shift-tab")));      // 07 back to Find query
     step(100, Some(InputStep::key("enter")));          // 08 exact selected declaration
-    step(200, Some(InputStep::key("cmd-[")));          // 09 Find again
-    step(200, Some(InputStep::key("cmd-a")));          // 10 select Find query
+    step(200, Some(InputStep::key("secondary-[")));          // 09 Find again
+    step(200, Some(InputStep::key("secondary-a")));          // 10 select Find query
     step(100, Some(InputStep::Text { value: "AbsentMarker".to_owned() })); // 11 dirty query
     step(50, Some(InputStep::key("enter")));           // 12 commit query; never open old row
     step(450, None);                                    // 13 current empty reading
-    step(200, Some(InputStep::key("cmd-k")));          // 14 Ask again
+    step(200, Some(InputStep::key("secondary-k")));          // 14 Ask again
     step(100, Some(InputStep::Text { value: "RelationLabel".to_owned() })); // 15 owner query
-    step(800, Some(InputStep::key("cmd-enter")));      // 16 Find at original root; Ask exits
+    step(800, Some(InputStep::key("secondary-enter")));      // 16 Find at original root; Ask exits
     step(800, None);                                    // 17 settled Find before replacement
     step(200, None);                                    // 18 owner source replaced in frame hook
     step(500, Some(InputStep::key("enter")));          // 19 old result cannot open
-    step(200, Some(InputStep::key("cmd-,")));          // 20 Settings
+    step(200, Some(InputStep::key("secondary-,")));          // 20 Settings
     step(100, Some(InputStep::FocusNext));              // 21 native entry
     step(100, Some(InputStep::key("tab")));            // 22 contrast
     step(100, Some(InputStep::key("tab")));            // 23 density
@@ -407,7 +410,7 @@ fn find_settings_script() -> (Vec<InputStep>, Vec<u64>) {
     step(100, Some(InputStep::Resize { width: 360, height: 900 }));  // 32
     step(100, Some(InputStep::Resize { width: 1440, height: 900 })); // 33
     step(200, Some(InputStep::key("escape")));         // 34 close Settings
-    step(200, Some(InputStep::key("cmd-[")));          // 35 Back at the current owner
+    step(200, Some(InputStep::key("secondary-[")));          // 35 Back at the current owner
     (actions, times)
 }
 
@@ -482,7 +485,7 @@ fn capture(
         // paint so the next paired tree proves the editor consumed the text.
         Script::Ask => vec![InputStep::Wait { milliseconds: 760 }, InputStep::Text { value: "RelationLabel".to_owned() }],
         Script::AskJourney => vec![
-            InputStep::Wait { milliseconds: 100 }, InputStep::key("cmd-k"),
+            InputStep::Wait { milliseconds: 100 }, InputStep::key("secondary-k"),
             InputStep::Wait { milliseconds: 100 }, InputStep::Text { value: "RelationLabel".to_owned() },
             InputStep::Wait { milliseconds: 800 }, InputStep::key("down"),
             InputStep::Wait { milliseconds: 100 }, InputStep::key("tab"),
@@ -493,14 +496,14 @@ fn capture(
             // settled Reader frame is captured before the Up event.
             InputStep::Wait { milliseconds: 750 }, InputStep::key("up"),
             InputStep::Wait { milliseconds: 200 }, InputStep::key("enter"),
-            InputStep::Wait { milliseconds: 200 }, InputStep::key("cmd-."),
+            InputStep::Wait { milliseconds: 200 }, InputStep::key("secondary-."),
             // Keep the first Code frame as transition evidence, then let
             // that Reader settle before the real Back event.
             InputStep::Wait { milliseconds: 750 },
-            InputStep::Wait { milliseconds: 200 }, InputStep::key("cmd-["),
-            InputStep::Wait { milliseconds: 200 }, InputStep::key("cmd-k"),
+            InputStep::Wait { milliseconds: 200 }, InputStep::key("secondary-["),
+            InputStep::Wait { milliseconds: 200 }, InputStep::key("secondary-k"),
             InputStep::Wait { milliseconds: 200 }, InputStep::key("escape"),
-            InputStep::Wait { milliseconds: 200 }, InputStep::key("cmd-k"),
+            InputStep::Wait { milliseconds: 200 }, InputStep::key("secondary-k"),
             InputStep::Wait { milliseconds: 100 }, InputStep::Text { value: "RelationLabel".to_owned() },
             InputStep::Wait { milliseconds: 500 }, InputStep::key("down"),
             InputStep::Wait { milliseconds: 100 }, InputStep::Resize { width: 800, height: shot.height },
@@ -510,10 +513,10 @@ fn capture(
             InputStep::Wait { milliseconds: 400 },
             // Keep the old settled evidence, then capture the next modal
             // entrance, exit, interrupted reopen, and resize on real input.
-            InputStep::Wait { milliseconds: 100 }, InputStep::key("cmd-k"),
+            InputStep::Wait { milliseconds: 100 }, InputStep::key("secondary-k"),
             InputStep::Wait { milliseconds: 100 }, InputStep::Text { value: "RelationLabel".to_owned() },
             InputStep::Wait { milliseconds: 100 }, InputStep::key("escape"),
-            InputStep::Wait { milliseconds: 80 }, InputStep::key("cmd-k"),
+            InputStep::Wait { milliseconds: 80 }, InputStep::key("secondary-k"),
             InputStep::Wait { milliseconds: 20 }, InputStep::Text { value: "RelationLabel".to_owned() },
             InputStep::Wait { milliseconds: 60 }, InputStep::Resize { width: 800, height: shot.height },
             InputStep::Wait { milliseconds: 100 }, InputStep::Resize { width: 1440, height: shot.height },
@@ -687,6 +690,7 @@ fn capture(
                 match &shot_build.route {
                     Route::Symbol(page) => Route::Package(PackageRoute {
                         project: None,
+                        cargo: None,
                         package: page.package.clone(),
                         lane: PackageLane::Overview,
                         selected: None,

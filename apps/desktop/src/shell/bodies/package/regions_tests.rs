@@ -53,7 +53,7 @@ fn a_multi_module_crate_reads_as_a_region_per_module_with_every_name_at_its_line
         .as_nanos();
     // `/tmp`, not `temp_dir()`: under nix the latter makes the socket path too long.
     let root =
-        PathBuf::from("/tmp").join(format!("nx-w-index-regions-{}-{nonce}", std::process::id()));
+        crate::host::scratch_base().join(format!("nx-w-index-regions-{}-{nonce}", std::process::id()));
     crate::host::private_dir(&root).expect("private scratch root");
     let project = root.join("multi");
     for (path, contents) in FILES {
