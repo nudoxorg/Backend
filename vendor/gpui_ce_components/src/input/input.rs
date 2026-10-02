@@ -1067,7 +1067,8 @@ mod tests {
         });
         let enabled = draw_tree(cx);
         let (_, node) = input_node(&enabled);
-        assert_eq!(node["aria"]["disabled"].as_bool(), Some(false));
+        // The native debug projection emits this AccessKit flag only when true.
+        assert!(node["aria"].get("disabled").is_none(), "reenabling clears the native disabled flag");
         assert!(
             node["aria"]["on_action"]
                 .as_array()
@@ -1082,7 +1083,7 @@ mod tests {
         });
         let readonly = draw_tree(cx);
         let (_, node) = input_node(&readonly);
-        assert_eq!(node["aria"]["disabled"].as_bool(), Some(false));
+        assert!(node["aria"].get("disabled").is_none(), "readonly remains natively enabled");
         assert!(
             !node["aria"]["on_action"]
                 .as_array()
