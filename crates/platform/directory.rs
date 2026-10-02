@@ -1217,6 +1217,7 @@ mod windows_tests {
     fn concurrent_entries_use_independent_handles_for_large_listings() {
         const FILES: usize = 1_300;
         let root = scratch("large-listing");
+        fs::create_dir(&root).expect("create listing fixture with inherited temp ACL");
         for index in 0..FILES {
             let name = format!("entry-{index:05}-{}", "x".repeat(64));
             fs::write(root.join(name), b"x").expect("create listing member");
