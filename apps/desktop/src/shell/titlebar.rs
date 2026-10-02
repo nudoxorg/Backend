@@ -21,6 +21,7 @@ use super::focus::{Target, Targets};
 use super::jump::{self, Here, Mark, Segment};
 use super::kit::{keycap, text};
 use super::region::{Links, Region, RegionCore};
+use crate::core::VersionedRoot;
 use crate::model::AppSnapshot;
 use crate::model::pages::PageKey;
 use crate::navigation::{Intent, OrbitRoute, Overlay, Route, View};
@@ -35,7 +36,7 @@ use facet::tokens::ty;
 use facet::{ActiveFacet as _, Measure, Palette, Set as _, Space};
 use gpui_component::input::{Input, InputState};
 use gpui::{
-    AnyElement, App, ClickEvent, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, SharedString,
+    AnyElement, App, ClickEvent, Context, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, ParentElement, Pixels, Render, SharedString,
     StatefulInteractiveElement, Styled, Task, Window, WindowControlArea, div, px,
 };
 use std::cell::Cell;
@@ -44,6 +45,97 @@ use std::time::Duration;
 
 /// How long a press on back waits before it lists the last places.
 const LONG_PRESS: Duration = Duration::from_millis(400);
+
+/// A titlebar action's exact visit. Observation counters are UI metadata;
+/// the producer authority and the route/overlay are the action boundary.
+#[derive(Clone)]
+struct JumpVisit {
+    route: Route,
+    bar_route: Route,
+    overlay: Option<Overlay>,
+    root: VersionedRoot,
+}
+
+impl JumpVisit {
+    fn at(snapshot: &AppSnapshot, store: &DataStore) -> Self {
+        Self {
+            route: snapshot.route().clone(),
+            bar_route: jump::bar_route(snapshot, store),
+            overlay: snapshot.overlay(),
+            root: snapshot.key(),
+        }
+    }
+
+    fn current(&self, links: &Links, cx: &App) -> bool {
+        let store = links.store.read(cx);
+        let snapshot = store.snapshot();
+        snapshot.route() == &self.route
+            && snapshot.overlay() == self.overlay
+            && snapshot.key().same_authority(self.root)
+            && jump::bar_route(&snapshot, store) == self.bar_route
+    }
+}
+
+#[derive(Clone)]
+enum JumpAction {
+    Ask,
+    Back,
+    Forward,
+    Navigate { visit: JumpVisit, route: Route },
+    Siblings { visit: JumpVisit, index: usize },
+    View { visit: JumpVisit, view: View },
+}
+
+impl JumpAction {
+    fn run(&self, links: &Links, targets: &Targets, window: &mut Window, cx: &mut App) {
+        match self {
+            Self::Ask => links.shell(cx, |shell, cx| shell.open_ask(cx)),
+            Self::Back if !links.snapshot(cx).session().back.is_empty() => links.dispatch(Intent::Back, cx),
+            Self::Forward if !links.snapshot(cx).session().forward.is_empty() => links.dispatch(Intent::Forward, cx),
+            Self::Navigate { visit, route } if visit.current(links, cx) => {
+                links.dispatch(Intent::Navigate(route.clone()), cx);
+            }
+            Self::Siblings { visit, index } if visit.current(links, cx) => {
+                siblings_menu(links, targets, *index, visit.clone(), window, cx);
+            }
+            Self::View { visit, view } if visit.current(links, cx) => match view {
+                View::Page => window.dispatch_action(Box::new(super::keys::DepthPage), cx),
+                View::Code => window.dispatch_action(Box::new(super::keys::DepthCode), cx),
+                View::Graph => {
+                    if !super::bodies::graph::is_graph(links.snapshot(cx).route()) {
+                        links.dispatch(Intent::SetView(View::Graph), cx);
+                    }
+                }
+            },
+            _ => {}
+        }
+    }
+}
+
+fn activate_key(event: &KeyDownEvent, action: &super::focus::Act, window: &mut Window, cx: &mut App) {
+    if !event.keystroke.modifiers.modified()
+        && matches!(event.keystroke.key.as_str(), "enter" | "space")
+        && !event.is_held
+    {
+        action(window, cx);
+        cx.stop_propagation();
+    }
+}
+
+fn jump_act(action: JumpAction, links: &Links, targets: &Targets) -> super::focus::Act {
+    let links = links.clone();
+    let targets = targets.clone();
+    Rc::new(move |window, cx| action.run(&links, &targets, window, cx))
+}
+
+fn segment_action(visit: &JumpVisit, index: usize, segment: &Segment, store: &DataStore, current: bool) -> Option<JumpAction> {
+    if segment.quiet { return None; }
+    if index > 0 && !jump::siblings(&visit.bar_route, index, store).is_empty() {
+        return Some(JumpAction::Siblings { visit: visit.clone(), index });
+    }
+    if current { return None; }
+    segment.route.clone().map(|route| JumpAction::Navigate { visit: visit.clone(), route })
+}
 
 /// The titlebar region.
 pub(crate) struct Titlebar {
@@ -149,7 +241,7 @@ impl Render for Titlebar {
             && bar.mode == Bar::Full
         {
             let fade = if bar.from.is_some_and(|from| from < Bar::Full) { arriving } else { 1.0 };
-            left = left.child(div().opacity(fade).child(self.view_switch(active, &measure, palette, keys)));
+            left = left.child(div().opacity(fade).child(self.view_switch(active, &measure, palette, keys, cx)));
         }
 
         let asking = snapshot.overlay() == Some(Overlay::CommandPalette);
@@ -262,30 +354,29 @@ impl Titlebar {
 
         // Back: a click steps back; a long press or a right click lists.
         let can_back = !session.back.is_empty();
-        let back_links = self.links.clone();
-        let menu_links = self.links.clone();
-        let targets = self.targets.clone();
-        let long = Rc::clone(&self.long);
-        let press_links = self.links.clone();
-        let press_targets = self.targets.clone();
-        let weak = cx.weak_entity();
-        let release = cx.weak_entity();
-        let act: super::focus::Act = Rc::new(move |_, cx| back_links.dispatch(Intent::Back, cx));
-        self.targets.push(Target { id: "jump-back".into(), label: "Back".into(), act: Rc::clone(&act), peek: None, source: None });
-        let right_links = menu_links.clone();
-        let right_targets = targets.clone();
-        bar = bar.child(
-            self.targets.track(
-                "jump-back",
+        if can_back {
+            let act = jump_act(JumpAction::Back, &self.links, &self.targets);
+            let key_act = Rc::clone(&act);
+            let click_act = Rc::clone(&act);
+            let menu_links = self.links.clone();
+            let targets = self.targets.clone();
+            let long = Rc::clone(&self.long);
+            let press_links = self.links.clone();
+            let press_targets = self.targets.clone();
+            let weak = cx.weak_entity();
+            let release = cx.weak_entity();
+            self.targets.push(Target { id: "jump-back".into(), label: "Back".into(), act, peek: None, source: None });
+            let right_links = menu_links.clone();
+            let right_targets = targets.clone();
+            bar = bar.child(self.targets.track("jump-back",
                 div()
                     .id("jump-back")
-                    .relative()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .size(hit_side(measure))
+                    .role(gpui::Role::Button)
+                    .aria_label("Back")
+                    .focusable()
+                    .relative().flex().items_center().justify_center().size(hit_side(measure))
                     .cursor_pointer()
-                    .child(text(ty::ROW, measure, if can_back { palette.ink2 } else { palette.ink3 }).child("‹"))
+                    .child(text(ty::ROW, measure, palette.ink2).child("‹"))
                     .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                         let links = press_links.clone();
                         let targets = press_targets.clone();
@@ -318,27 +409,43 @@ impl Titlebar {
                         if long.take() {
                             return;
                         }
-                        act(window, cx);
+                        if !window.last_input_was_keyboard() { click_act(window, cx); }
                     })
+                    .on_key_down(move |event, window, cx| activate_key(event, &key_act, window, cx))
                     .children(keycap(keys, "⌘[", measure)),
-            ),
-        );
+            ));
+        } else {
+            bar = bar.child(div()
+                .id("jump-back")
+                .role(gpui::Role::Button)
+                .aria_label("Back")
+                .aria_disabled(true)
+                .flex().items_center().justify_center().size(hit_side(measure))
+                .child(text(ty::ROW, measure, palette.ink3).child("‹")));
+        }
         if !session.forward.is_empty() {
-            let forward_links = self.links.clone();
-            let act: super::focus::Act = Rc::new(move |_, cx| forward_links.dispatch(Intent::Forward, cx));
+            let act = jump_act(JumpAction::Forward, &self.links, &self.targets);
+            let key_act = Rc::clone(&act);
+            let click_act = Rc::clone(&act);
             self.targets.push(Target { id: "jump-forward".into(), label: "Forward".into(), act: Rc::clone(&act), peek: None, source: None });
             bar = bar.child(
                 self.targets.track(
                     "jump-forward",
                     div()
                         .id("jump-forward")
+                        .role(gpui::Role::Button)
+                        .aria_label("Forward")
+                        .focusable()
                         .flex()
                         .items_center()
                         .justify_center()
                         .size(hit_side(measure))
                         .cursor_pointer()
                         .child(text(ty::ROW, measure, palette.ink2).child("›"))
-                        .on_click(move |_: &ClickEvent, window, cx| act(window, cx)),
+                        .on_click(move |_: &ClickEvent, window, cx| {
+                            if !window.last_input_was_keyboard() { click_act(window, cx); }
+                        })
+                        .on_key_down(move |event, window, cx| activate_key(event, &key_act, window, cx)),
                 ),
             );
         }
@@ -381,6 +488,7 @@ impl Titlebar {
         // Package › module segments before the name (the name is the last
         // segment); the narrow bar keeps the name and what is nearest it.
         let lead = segments.len().saturating_sub(1);
+        let visit = JumpVisit::at(snapshot, self.links.store.read(cx));
         let keep_from = match mode {
             Bar::Bare => lead,
             Bar::Snug => 1.min(lead),
@@ -399,24 +507,34 @@ impl Titlebar {
                 .child(self.flow.item(SharedString::from(format!("tb-flow-segment-{index}-sep")), text(ty::SMALL, measure, palette.ink3).child("›")));
         }
         let last_id: SharedString = format!("jump-seg-{lead}").into();
-        let last_links = self.links.clone();
-        let last_targets = self.targets.clone();
-        let here_name = self.targets.track(
-            last_id.clone(),
-            div()
-                .id(last_id.clone())
-                .flex()
-                .items_center()
-                .h(hit_side(measure))
-                .gap(measure.space(Space::Snug))
-                .min_w(px(0.0))
-                .cursor_pointer()
-                .child(mark)
-                .child(name)
+        let action = segments.get(lead).and_then(|segment| {
+            segment_action(&visit, lead, segment, self.links.store.read(cx), true)
+        });
+        let actionable = action.is_some();
+        let mut here_name = div()
+            .id(last_id.clone())
+            .flex().items_center().h(hit_side(measure))
+            .gap(measure.space(Space::Snug)).min_w(px(0.0))
+            .child(mark).child(name);
+        if let Some(action) = action {
+            let act = jump_act(action, &self.links, &self.targets);
+            let click_act = Rc::clone(&act);
+            let key_act = Rc::clone(&act);
+            self.targets.push(Target { id: last_id.clone(), label: format!("Show {} siblings", here.name).into(), act, peek: None, source: None });
+            here_name = here_name
+                .role(gpui::Role::Button)
+                .aria_label(format!("Show {} siblings", here.name))
+                .focusable().cursor_pointer()
                 .on_click(move |_: &ClickEvent, window, cx| {
-                    siblings_menu(&last_links, &last_targets, lead, window, cx);
-                }),
-        );
+                    if !window.last_input_was_keyboard() { click_act(window, cx); }
+                })
+                .on_key_down(move |event, window, cx| activate_key(event, &key_act, window, cx));
+        }
+        let here_name = if actionable {
+            self.targets.track(last_id.clone(), here_name).into_any_element()
+        } else {
+            here_name.into_any_element()
+        };
         plate = plate.child(self.flow.item("tb-flow-name", here_name));
         // Not a declaration: the place names itself (`registry`, `Appearance`).
         let quiet: Option<SharedString> = if segments.is_empty() || here.path.starts_with("viewing ") {
@@ -437,13 +555,22 @@ impl Titlebar {
         } else {
             plate = plate.child(div().flex_1());
         }
-        let ask_links = self.links.clone();
+        let ask = jump_act(JumpAction::Ask, &self.links, &self.targets);
+        let click_ask = Rc::clone(&ask);
+        let key_ask = Rc::clone(&ask);
+        self.targets.push(Target { id: "here".into(), label: "Ask anything, or find a package".into(), act: ask, peek: None, source: None });
         plate = plate.child(
-            div()
-                .id("jump-ask")
+            self.targets.track("here", div()
+                .id("here")
+                .role(gpui::Role::Button)
+                .aria_label("Ask anything, or find a package")
+                .focusable()
                 .cursor_pointer()
                 .child(icons::ui(Icon::Search, IconSize::S14, palette.ink4).size(measure.icon(14.0)))
-                .on_click(move |_: &ClickEvent, _, cx| ask_links.shell(cx, |shell, cx| shell.open_ask(cx))),
+                .on_click(move |_: &ClickEvent, window, cx| {
+                    if !window.last_input_was_keyboard() { click_ask(window, cx); }
+                })
+                .on_key_down(move |event, window, cx| activate_key(event, &key_ask, window, cx))),
         );
         let hover_targets = self.targets.clone();
         // A graph focus is fixture data, and the tip says so.
@@ -454,14 +581,9 @@ impl Titlebar {
                 .graph_focus()
                 .map_or_else(|| jump::address_parts(snapshot).full(), crate::runtime::graph_focus::GraphFocus::status),
         );
-        let ask_act_links = self.links.clone();
-        let act: super::focus::Act = Rc::new(move |_, cx| ask_act_links.shell(cx, |shell, cx| shell.open_ask(cx)));
-        self.targets.push(Target { id: "here".into(), label: here.name.clone(), act, peek: None, source: None });
         bar = bar.child(
-            self.targets.track(
-                "here",
                 div()
-                    .id("here")
+                    .id("jump-plate")
                     .relative()
                     .flex_1()
                     .min_w(px(0.0))
@@ -482,7 +604,6 @@ impl Titlebar {
                         }
                     })
                     .children(keycap(keys, "⌘K", measure)),
-            ),
         );
         bar.into_any_element()
     }
@@ -490,22 +611,20 @@ impl Titlebar {
     /// One segment before the name: its siblings, or its page when it has
     /// none to list (the package).
     fn segment(&mut self, id: SharedString, index: usize, segment: &Segment, measure: &Measure, palette: &Palette, cx: &App) -> AnyElement {
-        let links = self.links.clone();
-        let targets = self.targets.clone();
-        let route = segment.route.clone();
-        let act: super::focus::Act = {
-            let links = links.clone();
-            let route = route.clone();
-            Rc::new(move |_, cx| {
-                if let Some(route) = route.clone() {
-                    links.dispatch(Intent::Navigate(route), cx);
-                }
-            })
-        };
-        if segment.quiet {
+        let snapshot = self.links.snapshot(cx);
+        let store = self.links.store.read(cx);
+        let visit = JumpVisit::at(&snapshot, store);
+        let action = segment_action(&visit, index, segment, store, false);
+        let Some(action) = action else {
             return text(ty::SMALL, measure, palette.ink3).flex_none().whitespace_nowrap().child(segment.name.clone()).into_any_element();
-        }
-        self.targets.push(Target { id: id.clone(), label: segment.name.clone(), act: Rc::clone(&act), peek: None, source: None });
+        };
+        let navigates = matches!(&action, JumpAction::Navigate { .. });
+        let role = if navigates { gpui::Role::Link } else { gpui::Role::Button };
+        let label = if navigates { format!("Open {}", segment.name) } else { format!("Show {} siblings", segment.name) };
+        let act = jump_act(action, &self.links, &self.targets);
+        let click_act = Rc::clone(&act);
+        let key_act = Rc::clone(&act);
+        self.targets.push(Target { id: id.clone(), label: label.clone().into(), act, peek: None, source: None });
         // At least 24 × 24 to hit (gui-plan.md:213), grown by padding that
         // a matching negative margin takes back: the plate looks the same.
         let side = hit_side(measure);
@@ -515,6 +634,9 @@ impl Titlebar {
                 id.clone(),
                 div()
                     .id(id)
+                    .role(role)
+                    .aria_label(label)
+                    .focusable()
                     .cursor_pointer()
                     .flex_none()
                     .h(side)
@@ -524,12 +646,9 @@ impl Titlebar {
                     .mx(-pad)
                     .child(text(ty::SMALL, measure, palette.ink2).whitespace_nowrap().child(segment.name.clone()))
                     .on_click(move |_: &ClickEvent, window, cx| {
-                        if index == 0 {
-                            act(window, cx);
-                        } else {
-                            siblings_menu(&links, &targets, index, window, cx);
-                        }
-                    }),
+                        if !window.last_input_was_keyboard() { click_act(window, cx); }
+                    })
+                    .on_key_down(move |event, window, cx| activate_key(event, &key_act, window, cx)),
             )
             .into_any_element()
     }
@@ -622,8 +741,10 @@ impl Titlebar {
             .into_any_element()
     }
 
-    fn view_switch(&mut self, active: View, measure: &Measure, palette: &Palette, keys: bool) -> AnyElement {
+    fn view_switch(&mut self, active: View, measure: &Measure, palette: &Palette, keys: bool, cx: &App) -> AnyElement {
         let mut row = div().flex().items_center().gap(measure.space(Space::Hair));
+        let snapshot = self.links.snapshot(cx);
+        let visit = JumpVisit::at(&snapshot, self.links.store.read(cx));
         for view in [View::Graph, View::Page, View::Code] {
             let on = view == active;
             let id: SharedString = format!("view-{}", view.as_str()).into();
@@ -637,17 +758,6 @@ impl Titlebar {
                 View::Page => Icon::Book,
                 View::Code => Icon::File,
             };
-            let links = self.links.clone();
-            let act: super::focus::Act = Rc::new(move |window, cx| match view {
-                View::Page => window.dispatch_action(Box::new(super::keys::DepthPage), cx),
-                View::Code => window.dispatch_action(Box::new(super::keys::DepthCode), cx),
-                View::Graph => {
-                    if !super::bodies::graph::is_graph(links.snapshot(cx).route()) {
-                        links.dispatch(Intent::SetView(View::Graph), cx);
-                    }
-                }
-            });
-            self.targets.push(Target { id: id.clone(), label: name.into(), act: Rc::clone(&act), peek: None, source: None });
             let cap = match view {
                 View::Graph => super::keys::cap(super::keys::Command::Graph),
                 View::Page | View::Code => super::keys::cap(super::keys::Command::CodePage),
@@ -663,14 +773,25 @@ impl Titlebar {
                 .items_center()
                 .justify_center()
                 .gap(measure.space(Space::Snug))
-                .child(icons::ui(icon, IconSize::S14, ink).size(measure.icon(14.0)))
-                .on_click(move |_: &ClickEvent, window, cx| act(window, cx));
+                .child(icons::ui(icon, IconSize::S14, ink).size(measure.icon(14.0)));
             if on {
                 face = face.child(text(ty::DEPTH, measure, palette.ink0).child(name));
+                row = row.child(face.role(gpui::Role::Label).aria_label(format!("{name} view selected")));
+                continue;
             }
-            if keys && !on {
-                face = face.children(keycap(true, cap, measure));
-            }
+            let act = jump_act(JumpAction::View { visit: visit.clone(), view }, &self.links, &self.targets);
+            let click_act = Rc::clone(&act);
+            let key_act = Rc::clone(&act);
+            self.targets.push(Target { id: id.clone(), label: format!("Show {name} view").into(), act, peek: None, source: None });
+            face = face
+                .role(gpui::Role::Button)
+                .aria_label(format!("Show {name} view"))
+                .focusable().cursor_pointer()
+                .on_click(move |_: &ClickEvent, window, cx| {
+                    if !window.last_input_was_keyboard() { click_act(window, cx); }
+                })
+                .on_key_down(move |event, window, cx| activate_key(event, &key_act, window, cx));
+            if keys { face = face.children(keycap(true, cap, measure)); }
             row = row.child(self.targets.track(id, face));
         }
         row.into_any_element()
@@ -690,16 +811,16 @@ pub(crate) fn menu_open(window: &Window, cx: &mut App) -> bool {
 
 /// Opens the siblings of segment `index` under it: the outline level it
 /// sits at; choosing one opens its page.
-fn siblings_menu(links: &Links, targets: &Targets, index: usize, window: &mut Window, cx: &mut App) {
+fn siblings_menu(links: &Links, targets: &Targets, index: usize, visit: JumpVisit, window: &mut Window, cx: &mut App) {
     let Some(anchor) = targets.bounds_of(&format!("jump-seg-{index}")).or_else(|| targets.bounds_of("here")) else {
         return;
     };
-    let route = jump::bar_route(&links.snapshot(cx), links.store.read(cx));
-    let siblings = jump::siblings(&route, index, links.store.read(cx));
+    if !visit.current(links, cx) { return; }
+    let siblings = jump::siblings(&visit.bar_route, index, links.store.read(cx));
     if siblings.is_empty() {
         return;
     }
-    open_siblings(links, anchor, index, siblings, false, window, cx);
+    open_siblings(links, anchor, index, siblings, false, visit, window, cx);
 }
 
 /// The siblings menu: the real entries, then the test-only modules folded
@@ -710,6 +831,7 @@ fn open_siblings(
     index: usize,
     siblings: jump::Siblings,
     unfolded: bool,
+    visit: JumpVisit,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -727,13 +849,22 @@ fn open_siblings(
     }
     let links = links.clone();
     let menu = Menu::new(items, move |choice, window, cx| {
+        if !visit.current(&links, cx) { return; }
+        let current = jump::siblings(&visit.bar_route, index, links.store.read(cx));
+        if current.is_empty() { return; }
         if folded && choice == siblings.real.len() {
-            let (links, siblings) = (links.clone(), siblings.clone());
-            window.defer(cx, move |window, cx| open_siblings(&links, anchor, index, siblings, true, window, cx));
+            let (links, visit) = (links.clone(), visit.clone());
+            window.defer(cx, move |window, cx| {
+                if visit.current(&links, cx) {
+                    let fresh = jump::siblings(&visit.bar_route, index, links.store.read(cx));
+                    if !fresh.is_empty() { open_siblings(&links, anchor, index, fresh, true, visit, window, cx); }
+                }
+            });
             return;
         }
-        let chosen = siblings.real.iter().chain(siblings.tests.iter()).nth(choice);
-        if let Some(route) = chosen.and_then(|sibling| sibling.route.clone()) {
+        let shown = if unfolded { current.real.iter().chain(current.tests.iter()).nth(choice) } else { current.real.get(choice) };
+        let original = if unfolded { siblings.real.iter().chain(siblings.tests.iter()).nth(choice) } else { siblings.real.get(choice) };
+        if let Some(route) = shown.and_then(|sibling| sibling.route.clone()).filter(|route| original.and_then(|item| item.route.as_ref()) == Some(route)) {
             links.dispatch(Intent::Navigate(route), cx);
         }
     });

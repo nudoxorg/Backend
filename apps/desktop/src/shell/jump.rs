@@ -148,14 +148,16 @@ pub(crate) fn segments(route: &Route, store: &DataStore) -> Vec<Segment> {
             // Modules and owners, found in the outline by name so each
             // opens its own page.
             let dossier = store.package(&package);
-            let tree = dossier.loaded_value().and_then(|dossier| dossier.outline.known().cloned());
+            let tree = crate::core::admit_resource(&dossier, snapshot.key(), store.owner_serving())
+                .current_value()
+                .and_then(|dossier| dossier.outline.known().filter(|tree| tree.complete).cloned());
             let mut level: Option<&[OutlineNode]> = tree.as_ref().map(|tree| &tree.roots[..]);
             for name in crumbs(&identity).into_iter().skip(usize::from(identity.project().is_some())) {
                 let node = level.and_then(|nodes| nodes.iter().find(|node| super::shelf::shelf_name(node) == name));
                 out.push(Segment {
                     name: name.into(),
                     route: node.and_then(|node| super::kit::symbol_route(package.as_str(), &node.decl.coordinate)),
-                    quiet: false,
+                    quiet: node.is_none(),
                 });
                 level = node.map(|node| &node.children[..]);
             }
@@ -194,7 +196,11 @@ pub(crate) fn siblings(route: &Route, index: usize, store: &DataStore) -> Siblin
     let Ok(package) = PackageRef::parse(symbol.package.as_str()) else { return Siblings::default() };
     let identity = backend_present::Identity::parse(symbol.id.as_str());
     let dossier = store.package(&package);
-    let Some(tree) = dossier.loaded_value().and_then(|dossier| dossier.outline.known().cloned()) else { return Siblings::default() };
+    let snapshot = store.snapshot();
+    let Some(tree) = crate::core::admit_resource(&dossier, snapshot.key(), store.owner_serving())
+        .current_value()
+        .and_then(|dossier| dossier.outline.known().filter(|tree| tree.complete).cloned())
+    else { return Siblings::default() };
     if index == 0 {
         return Siblings::default();
     }
