@@ -24,7 +24,7 @@ pub(super) fn body(route: &BrowseRoute, store: &Pages, ctx: &mut Ctx<'_>, cx: &m
     if matches!(route, BrowseRoute::Find(_) | BrowseRoute::FindHome) {
         let (resource, owner_serving) = {
             let live = ctx.links.store.read(cx);
-            (live.browse(&key), live.owner_serving())
+            (live.pages().browse(&key), live.owner_serving())
         };
         let reading = admit_resource(&resource, ctx.links.snapshot(cx).key(), owner_serving);
         let value = match reading.current_value().or_else(|| reading.retained_value()) {
@@ -136,7 +136,7 @@ impl FindActionSource {
         {
             return Err("Find changed before that action. Choose a result from the current reading.");
         }
-        let resource = store.browse(&self.key);
+        let resource = store.pages().browse(&self.key);
         use_resource(&resource, snapshot.key(), store.owner_serving())
     }
 
