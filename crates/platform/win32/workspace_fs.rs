@@ -3,6 +3,14 @@
 //! Every name passed to this module is one validated UTF-8 path component.
 //! Directory traversal and mutation use NT handles with `RootDirectory`, so
 //! the kernel resolves each name beneath an already-open directory object.
+//!
+//! # Names are resolved, not canonicalized
+//! The kernel matches names case-insensitively and, on a volume that generates
+//! 8.3 aliases, by short name: `LONGFI~1.TXT` opens `longfilename_sample.txt`.
+//! Enumeration reports only the long name. A caller that decides anything from
+//! a name (an ignore rule, a collision check) must compare the entry's
+//! identity or the names an enumeration returned, never the string it was
+//! handed.
 #![allow(
     unsafe_code,
     reason = "reviewed NT relative-open and handle metadata boundary for Windows workspace files"

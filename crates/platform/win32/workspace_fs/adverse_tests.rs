@@ -1449,3 +1449,37 @@ fn an_inheritable_allow_entry_does_not_make_a_directory_private() {
     drop(root);
     fs::remove_dir_all(path).expect("cleanup");
 }
+
+/// This layer resolves exactly the name it is given and does no canonicalization, so on a volume
+/// that generates 8.3 aliases the short name of an entry opens that entry. Callers that decide
+/// anything from a name must compare the entry's identity (or the long names an enumeration
+/// returns), never the string they were handed: `LONGFI~1.TXT` and `longfilename_sample.txt`
+/// are one file.
+#[test]
+fn a_short_name_alias_opens_the_entry_it_aliases() {
+    let (root, path) = private_root("short-name-alias");
+    put(&root, &["longfilename_sample.txt"], b"long name");
+    if fs::metadata(path.join("LONGFI~1.TXT")).is_err() {
+        eprintln!("skipping: this volume does not generate 8.3 aliases");
+        drop(root);
+        fs::remove_dir_all(path).expect("cleanup");
+        return;
+    }
+    assert_eq!(get(&root, &["LONGFI~1.TXT"]), b"long name");
+    let listed = root.read_dir_checked(&[]).expect("list");
+    assert_eq!(
+        listed
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>(),
+        ["longfilename_sample.txt"],
+        "enumeration reports the long name only"
+    );
+    // The alias also collides on exclusive creation instead of creating a second entry.
+    let error = root
+        .create_file_exclusive(&["LONGFI~1.TXT"])
+        .expect_err("the alias is taken");
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    drop(root);
+    fs::remove_dir_all(path).expect("cleanup");
+}
