@@ -2367,7 +2367,6 @@ impl Render for Reader {
                 child: div().size_full().child(map.clone()).into_any_element(),
             };
             let mut root = div().relative().size_full()
-                .opacity(if self.ask_geometry.is_some_and(|ask| ask.preview_left.is_none()) { 0.0 } else { 1.0 })
                 .text_color(palette.ink1.hsla()).font_family(facet::fonts::family(ty::BODY));
             match (staged, transit.as_ref(), leaving, reader) {
                 (Some(staged), Some(transit), Some(leaving), Some(reader)) if staged.verb == Verb::Fold => {
@@ -2389,7 +2388,15 @@ impl Render for Reader {
                 }
                 _ => root = root.child(framed),
             }
-            return root;
+            // A sheet (including an unreadably narrow transitional panel)
+            // leaves no Reader pixels. Keep the map and route state above
+            // current, but do not mount descendants under a zero-opacity
+            // wrapper: they still enter the painted-text probe.
+            return if self.ask_geometry.is_some_and(|ask| ask.preview_left.is_none()) {
+                div().size_full()
+            } else {
+                root
+            };
         }
         if let Some(map) = &self.map { map.update(cx, |map, cx| map.suspend(window, cx)); }
 
@@ -2539,8 +2546,7 @@ impl Render for Reader {
             gpui::inert(("waiting-previous-page", previous.place.key),
                 format!("Previous page: {}. Opening {}.", place_name(&previous.place.route), place_name(&requested.route)), scroller).into_any_element()
         } else { scroller.into_any_element() };
-        let mut root = div().relative().size_full()
-            .opacity(if self.ask_geometry.is_some_and(|ask| ask.preview_left.is_none()) { 0.0 } else { 1.0 });
+        let mut root = div().relative().size_full();
         // Where you were: the row a Close came back to, tinted under the page.
         let tint = self.tint_now(cx);
         self.publish(staged, tint.map(|(_, strength)| strength), cx);
@@ -2636,6 +2642,13 @@ impl Render for Reader {
             root = root.child(div().id("reader-pending-destination").absolute().left_0().top_0().w_full()
                 .role(gpui::Role::Status).aria_label(message).px(pad).py(px(8.0 * scale))
                 .bg(palette.g1.hsla()).child(super::text_fit::name_lines(&lines, role, palette.ink2.hsla())));
+        }
+        // A full Ask sheet or a transitional plate with less than the
+        // readable preview minimum owns these pixels. Preserve the Reader's
+        // route, body, and motion state above, then omit its visual subtree
+        // until the same sampled Ask geometry exposes room beside the plate.
+        if self.ask_geometry.is_some_and(|ask| ask.preview_left.is_none()) {
+            return div().size_full();
         }
         root.child(facet::probe::scroll_probe("reader-scroll", self.scroll.clone()))
             .child(glow)
