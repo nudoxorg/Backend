@@ -555,7 +555,7 @@ fn what_you_hold_sits_above_the_lenses_and_where_you_have_been_at_the_foot(cx: &
     let said = said(&mut rig);
     assert!(said.iter().any(|text| text == "TRAIL"), "the trail is at the foot: {said:#?}");
     assert!(!said.iter().any(|text| text == "⌘1"), "nothing is held yet: {said:#?}");
-    rig.keys("cmd-d");
+    rig.keys("secondary-d");
     let said = self::said(&mut rig);
     assert!(said.iter().any(|text| text == "⌘1"), "the held card is a chip with its key: {said:#?}");
     assert!(at(&said, "⌘1") < at(&said, "Contents"), "chips are above the lenses: {said:#?}");

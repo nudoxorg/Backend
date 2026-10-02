@@ -554,7 +554,7 @@ mod tests {
     fn a_row_with_no_place_speaks_through_the_notice_on_enter(cx: &mut TestAppContext) {
         let pool = ReadPool::start(2, |_| NoPlaceSearch).expect("pool");
         let mut rig = rig_with_reads(cx, Some(page_route("RelationLabel")), 1440.0, 900.0, pool);
-        rig.keys("cmd-k");
+        rig.keys("secondary-k");
         // Open with nothing typed, Ask is its field: no plate is drawn, and
         // none is said to be (the page under the veil is what shows).
         let dialogs = |ledger: &facet::probe::Ledger| -> Vec<String> {

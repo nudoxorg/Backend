@@ -43,7 +43,7 @@ fn the_hand_arranges_what_you_hold_by_what_feeds_what(cx: &mut TestAppContext) {
 fn letting_go_re_routes_the_road(cx: &mut TestAppContext) {
     let mut rig = two_held(cx);
     rig.go(Intent::Navigate(page_route("SemanticLinkKind")));
-    rig.keys("cmd-d");
+    rig.keys("secondary-d");
     rig.keys("h");
     assert_eq!(
         row(&mut rig),
@@ -139,10 +139,10 @@ fn the_first_card_is_whispered_once(cx: &mut TestAppContext) {
         texts.windows(2).find(|pair| pair[1] == "in hand").map(|pair| pair[0].clone())
     };
     assert_eq!(whisper(&mut rig), None, "nothing held, nothing said");
-    rig.keys("cmd-d");
+    rig.keys("secondary-d");
     assert_eq!(whisper(&mut rig).as_deref(), Some("RelationLabel"), "the first card");
     rig.go(Intent::Navigate(page_route("relation_label")));
-    rig.keys("cmd-d");
+    rig.keys("secondary-d");
     assert_ne!(whisper(&mut rig).as_deref(), Some("relation_label"), "the second card is never whispered");
     for _ in 0..160 {
         rig.frame(16);
@@ -168,7 +168,7 @@ fn the_whisper_is_spent_when_its_timer_fires(cx: &mut TestAppContext) {
         let texts: Vec<String> = ledger.texts.iter().map(|text| text.content.clone()).collect();
         texts.windows(2).any(|pair| pair[1] == "in hand")
     };
-    rig.keys("cmd-d");
+    rig.keys("secondary-d");
     assert!(whisper(&mut rig), "the first card is whispered");
     rig.cx.executor().advance_clock(std::time::Duration::from_millis(3_000));
     rig.cx.run_until_parked();
@@ -185,7 +185,7 @@ fn a_taken_card_travels_from_the_hero_stone_to_the_foot(cx: &mut TestAppContext)
     rig.repaint();
     let hero = rig.cx.debug_bounds("decl:/fixture/present::glyph.rs:138::RelationLabel").expect("the hero stone");
     let _ = rig.cx.update(|_, cx| facet::probe::take(cx));
-    rig.cx.simulate_keystrokes("cmd-d");
+    rig.cx.simulate_keystrokes("secondary-d");
     for _ in 0..40 {
         rig.frame(16);
     }

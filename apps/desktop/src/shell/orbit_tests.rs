@@ -152,7 +152,7 @@ fn the_ring_stands_still_while_the_library_leaves_and_when_it_comes_back(cx: &mu
     // to wraps otherwise than the one it left.
     rig.cx.simulate_resize(gpui::size(gpui::px(1000.0), gpui::px(900.0)));
     watch(&mut rig, "away");
-    rig.cx.simulate_keystrokes("cmd-[");
+    rig.cx.simulate_keystrokes("secondary-[");
     watch(&mut rig, "back");
     assert!(matches!(rig.route(), Route::Orbit(_)), "back on the Library: {:?}", rig.route());
     assert!(flying.is_empty(), "no name of the ring flies: {flying:#?}");

@@ -262,7 +262,7 @@ fn typing_into_ask_draws_the_query_and_a_result_row(cx: &mut TestAppContext) {
     rig.cx.update(|_, cx| cx.set_global(gpui::TextTrace));
     for (width, height, plate) in [(1440.0_f32, 900.0_f32, 440.0_f32), (800.0, 600.0, 344.0), (360.0, 640.0, 360.0)] {
         resize(&mut rig, width, height);
-        rig.keys("cmd-k");
+        rig.keys("secondary-k");
         rig.keys("r e l a t i o n");
         rig.settle();
         let titlebar = f32::from(frame(&mut rig).titlebar);

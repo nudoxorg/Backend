@@ -858,7 +858,7 @@ fn escape_closes_settings_from_the_page_and_from_a_control_in_it(cx: &mut TestAp
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     let overlay = |rig: &mut Rig| rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay());
     let drawn = |rig: &mut Rig, words: &str| super::fit_tests::painted(rig).texts.iter().any(|text| text.content == words);
-    rig.keys("cmd-,");
+    rig.keys("secondary-,");
     assert!(matches!(overlay(&mut rig), Some(Overlay::Settings(_))), "⌘, opened Settings");
     assert!(drawn(&mut rig, "Contrast"), "and Settings is drawn");
     rig.keys("escape");
@@ -866,7 +866,7 @@ fn escape_closes_settings_from_the_page_and_from_a_control_in_it(cx: &mut TestAp
     assert!(!drawn(&mut rig, "Contrast"), "and it is gone from the window");
     assert_eq!(rig.route(), page_route("RelationLabel"), "the page under it did not move");
 
-    rig.keys("cmd-,");
+    rig.keys("secondary-,");
     // A segmented choice paints its own label (it is not a probe text): find
     // it where gpui painted it.
     rig.cx.update(|_, cx| cx.set_global(gpui::TextTrace));

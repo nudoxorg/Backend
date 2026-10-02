@@ -98,7 +98,7 @@ fn the_jump_bar_follows_the_graph_focus(cx: &mut TestAppContext) {
     rig.settle();
     let (words, _) = plate(&mut rig);
     assert_eq!(words[words.len() - 3..], ["app", "›", "main"], "{words:?}");
-    rig.keys("cmd-[");
+    rig.keys("secondary-[");
     assert_eq!(rig.route(), Route::Orbit(crate::navigation::OrbitRoute::Home), "walking the graph made no place");
 }
 
@@ -133,12 +133,12 @@ fn the_graph_comes_back_as_you_left_it(cx: &mut TestAppContext) {
     rig.keys("g");
     let opened = indexed_view_route("relation_label", View::Page);
     assert_eq!(rig.route(), opened, "the focus's page");
-    rig.keys("cmd-[");
+    rig.keys("secondary-[");
     assert_eq!(rig.route(), graph);
     assert_eq!(report(&mut rig), before, "Back: the same focus and camera");
-    rig.keys("cmd-]");
+    rig.keys("secondary-]");
     assert_eq!(rig.route(), opened);
-    rig.keys("cmd-[");
+    rig.keys("secondary-[");
     assert_eq!(report(&mut rig), before, "Forward, then Back: still the same");
 }
 
@@ -147,7 +147,7 @@ fn the_graph_comes_back_as_you_left_it(cx: &mut TestAppContext) {
 #[gpui::test]
 fn the_hand_stays_in_the_foot_while_the_graph_speaks(cx: &mut TestAppContext) {
     let mut rig = world_rig(cx, page_route("RelationLabel"));
-    rig.keys("cmd-d");
+    rig.keys("secondary-d");
     rig.keys("g");
     rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(RELATION_LABEL_FN, cx));
     rig.settle();
@@ -170,7 +170,7 @@ fn cmd_d_on_a_graph_focus_holds_the_focus_from_its_glyph(cx: &mut TestAppContext
     rig.repaint();
     let glyph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_focus_glyph(cx)).expect("the focus's glyph is on screen");
     let _ = rig.cx.update(|_, cx| facet::probe::take(cx));
-    rig.cx.simulate_keystrokes("cmd-d");
+    rig.cx.simulate_keystrokes("secondary-d");
     for _ in 0..40 {
         rig.frame(16);
     }
@@ -195,7 +195,7 @@ fn cmd_d_on_an_unindexed_graph_focus_speaks_through_the_notice(cx: &mut TestAppC
     let mut rig = world_rig(cx, Route::World);
     rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(RELATION_LABEL, cx));
     rig.settle();
-    rig.keys("cmd-d");
+    rig.keys("secondary-d");
     rig.settle();
     let held = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().hand.held().len());
     assert_eq!(held, 0, "not indexed: nothing to hold");
@@ -217,7 +217,7 @@ fn t_on_the_package_page_flies_its_tour_from_the_first_stop(cx: &mut TestAppCont
     rig.keys("t");
     assert_eq!(rig.route(), Route::World);
     assert_eq!(tour_stop(&mut rig).as_deref(), Some("relation_label"), "the first stop");
-    rig.keys("cmd-[");
+    rig.keys("secondary-[");
     assert_eq!(rig.route(), anatomy_tests::package_route(), "a tour is a place: Back returns");
     rig.keys("t");
     assert_eq!(rig.route(), Route::World);

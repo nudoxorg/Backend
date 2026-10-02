@@ -704,14 +704,22 @@ fn a_crate_whose_modules_are_private_says_its_names_are_all_at_the_root(cx: &mut
 #[test]
 fn a_dependency_links_to_the_release_the_library_holds() {
     use crate::model::pages::{Dependency, DependencyScope, IndexedPackage, Readiness};
-    let home = std::env::var("HOME").unwrap_or_default();
-    let tree = |name: &str| IndexedPackage {
-        package: PackageRef::parse(&format!("{home}/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/{name}")).expect("a tree"),
-        name: Arc::from(name),
-        readiness: Readiness::Ready,
+    // Trees laid out as cargo's cache lays them out, each with the manifest
+    // a registry tree is named from, so no machine's own cache is assumed.
+    let index = std::env::temp_dir()
+        .join(format!("nudox-package-library-{}", std::process::id()))
+        .join("registry/src/index.crates.io-1949cf8c6b5b557f");
+    let tree = |name: &str, version: &str| {
+        let root = index.join(format!("{name}-{version}"));
+        std::fs::create_dir_all(&root).expect("a tree");
+        std::fs::write(root.join("Cargo.toml"), format!("[package]\nname = \"{name}\"\nversion = \"{version}\"\n")).expect("its manifest");
+        IndexedPackage {
+            package: PackageRef::parse(root.to_str().expect("utf-8")).expect("a tree"),
+            name: Arc::from(format!("{name}-{version}")),
+            readiness: Readiness::Ready,
+        }
     };
-    // Trees this machine's cargo cache holds (the journeys read the same).
-    let library = [tree("toml-0.8.23"), tree("toml-0.5.11"), tree("serde-1.0.229")];
+    let library = [tree("toml", "0.8.23"), tree("toml", "0.5.11"), tree("serde", "1.0.229")];
     let wants = |name: &str, requirement: &str, resolved: Option<&str>| Dependency {
         name: Arc::from(name),
         requirement: Arc::from(requirement),
@@ -776,7 +784,7 @@ fn a_dependency_that_goes_somewhere_is_a_door_and_back_stands_on_it(cx: &mut Tes
     rig.keys("enter");
     let opened = rig.route();
     assert!(format!("{opened:?}").contains("serde@1.0.229"), "Enter opened the release the resolver chose: {opened:?}");
-    rig.keys("cmd-[");
+    rig.keys("secondary-[");
     assert_eq!(rig.route(), package_route(), "⌘[ came back");
     assert_eq!(focused(&mut rig).as_deref(), Some("pkg-dep-serde"), "and the keyboard stands on the door it left by");
 }
@@ -798,7 +806,7 @@ fn after_back_the_focus_bevel_comes_back_on_the_door_not_flying_in(cx: &mut Test
         rig.frame(16);
     }
     let _ = rig.cx.update(|_, cx| facet::probe::take(cx));
-    rig.keys("cmd-[");
+    rig.keys("secondary-[");
     for _ in 0..40 {
         rig.frame(16);
     }
