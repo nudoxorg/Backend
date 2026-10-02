@@ -782,7 +782,7 @@ impl Shell {
         }
         if self.with_zone(cx, |targets| targets.walk(delta)) {
             if self.zone != Zone::Reader
-                || !self.reader.read(cx).focus_native_current(window, cx)
+                || !self.reader.update(cx, |reader, cx| reader.focus_native_current(window, cx))
             {
                 self.focus.focus(window, cx);
             }
@@ -812,7 +812,7 @@ impl Shell {
         self.reader.update(cx, |reader, _| reader.cancel_native_return());
         self.adopt_reader_native_zone(window, cx);
         if self.zone == Zone::Reader
-            && self.reader.read(cx).step_native(forward, window, cx)
+            && self.reader.update(cx, |reader, cx| reader.step_native(forward, window, cx))
         {
             self.notify_zone(Zone::Reader, cx);
             return;
@@ -826,7 +826,7 @@ impl Shell {
         };
         self.set_zone(next, cx);
         if next != Zone::Reader
-            || !self.reader.read(cx).focus_native_current(window, cx)
+            || !self.reader.update(cx, |reader, cx| reader.focus_native_current(window, cx))
         {
             self.focus.focus(window, cx);
         }

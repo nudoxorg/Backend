@@ -297,6 +297,7 @@ fn places(endpoint: &Path, project: &Path) -> Places {
         alias: alias_coordinate.as_deref().map(|coordinate| page_route(coordinate, &package)),
         package: Route::Package(PackageRoute {
             project: None,
+            cargo: None,
             package,
             lane: PackageLane::Overview,
             selected: None,
@@ -687,6 +688,7 @@ fn capture(
                 match &shot_build.route {
                     Route::Symbol(page) => Route::Package(PackageRoute {
                         project: None,
+                        cargo: None,
                         package: page.package.clone(),
                         lane: PackageLane::Overview,
                         selected: None,

@@ -18,7 +18,10 @@ use crate::shell::reader::Reader;
 use crate::shell::reader::NativeActionLease;
 use facet::browse::library::{InventoryHandle, ReleaseHandle};
 use facet::browse::{LibraryActions, LibraryModel, library};
-use gpui::{App, AppContext as _, Context, InteractiveElement, ParentElement, SharedString, Styled, Window, div};
+use gpui::{
+    App, AppContext as _, Context, InteractiveElement, ParentElement, SharedString,
+    StatefulInteractiveElement as _, Styled, Window, div,
+};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -367,7 +370,7 @@ fn tree_body(route: &BrowseRoute, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -
                 let mut names = div().flex().flex_col();
                 for row in tree.inventory_links.iter().take(8) {
                     let name = ctx.say(format!("{} {} · earlier observation", row.name, row.version));
-                    names = names.child(div().role(gpui::Role::Label).aria_label(name.clone())
+                    names = names.child(div().id(SharedString::from(format!("retained-inventory-{}", row.key))).role(gpui::Role::Label).aria_label(name.clone())
                         .child(crate::shell::kit::text(facet::tokens::ty::BODY, &ctx.measure, ctx.palette.ink2).child(name)));
                 }
                 leaves.push(Leaf::new(names));
@@ -450,7 +453,7 @@ fn typed_library_inventory<'a>(
     }
 }
 
-fn typed_library_release(roles: &[TreeRoleLinks], handle: &ReleaseHandle) -> Option<&PackageRef> {
+fn typed_library_release<'a>(roles: &'a [TreeRoleLinks], handle: &ReleaseHandle) -> Option<&'a PackageRef> {
     let (role, row, release) = handle.positions();
     let (role_key, row_key, release_key) = handle.keys();
     let role = roles
