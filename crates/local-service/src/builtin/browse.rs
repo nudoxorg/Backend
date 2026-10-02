@@ -5468,6 +5468,9 @@ mod tests {
             sccache,
             PathBuf::from("/nix/store/4n5rm7aink6xcsj5df33sf7wm3m387a2-sccache-0.17.0/bin/sccache")
         );
+        let mut no_direct_shebang = generated.clone();
+        no_direct_shebang[..2].copy_from_slice(b"XX");
+        assert!(recognized_nudox_dependency_cache_wrapper(&no_direct_shebang).is_none());
 
         for suffix in [";id", " $(id)", "$HOME", "`id`", "*", "/../other"] {
             let mut injected = Vec::new();
@@ -5514,6 +5517,9 @@ mod tests {
                 )
             ))
         );
+        let mut no_nix_shebang = write_shell_script.clone();
+        no_nix_shebang[..2].copy_from_slice(b"XX");
+        assert!(recognized_nudox_dependency_cache_wrapper(&no_nix_shebang).is_none());
         let generated = String::from_utf8(write_shell_script).expect("ASCII generated wrapper");
         for altered in [
             generated.replace(" -e\n", " -x\n"),
