@@ -9,6 +9,13 @@
 //! image containing that address, so injected libraries and dyld image order
 //! cannot make a library's identity stand in for the main executable.
 //!
+//! Windows asks the kernel which file the loader mapped as the main image
+//! (`GetMappedFileNameW`, which names the file object itself and so follows it
+//! if it was renamed after launch), opens that file, and requires its PE header
+//! block to match the loaded one byte for byte except the `ImageBase` the loader
+//! rewrites when it relocates. A different file placed at the launch path is
+//! never read.
+//!
 //! Other platforms deliberately have no implementation yet. Callers must
 //! treat that as an unknown identity and revalidate their cache.
 
@@ -19,7 +26,7 @@ use std::time::SystemTime;
 /// Opens the running executable image, or refuses when it cannot establish
 /// the relationship between this process and the bytes being read.
 ///
-/// On macOS, `main_image_anchor` must be a function compiled into the main
+/// On macOS and Windows, `main_image_anchor` must be a function compiled into the main
 /// executable whose bytes the caller wants to identify. The returned opaque
 /// handle retains the no-follow file descriptor and the identity stamp taken
 /// before Mach-O verification; reads through it are checked against that same
@@ -40,7 +47,12 @@ pub fn open_running_executable(main_image_anchor: fn()) -> io::Result<RunningExe
         macos::open_running_executable(main_image_anchor)
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
+    {
+        windows::open_running_executable(main_image_anchor)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         let _ = main_image_anchor;
         Err(unsupported())
@@ -124,12 +136,456 @@ impl FileStamp {
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn unsupported() -> io::Error {
     io::Error::new(
         io::ErrorKind::Unsupported,
         "running executable identity is not proven on this platform",
     )
+}
+
+#[cfg(windows)]
+mod windows {
+    use super::{FileStamp, RunningExecutable, invalid};
+    use std::fs::{File, OpenOptions};
+    use std::io;
+    use std::os::windows::fs::FileExt as _;
+    use std::path::PathBuf;
+    use std::ptr;
+    use windows_sys::Win32::Foundation::HMODULE;
+    use windows_sys::Win32::System::LibraryLoader::{
+        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        GetModuleHandleExW, GetModuleHandleW,
+    };
+    use windows_sys::Win32::System::ProcessStatus::GetMappedFileNameW;
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    /// The longest header block the comparison reads from either side. Real executables keep
+    /// their headers in the first page or two; the bound stops a hostile `SizeOfHeaders`.
+    const MAX_HEADER_BYTES: usize = 64 * 1024;
+    /// Longest NT path of a mapped file that is read back (in UTF-16 units).
+    const MAX_MAPPED_NAME_UNITS: usize = 32 * 1024;
+
+    pub(super) fn open_running_executable(anchor: fn()) -> io::Result<RunningExecutable> {
+        let base = main_image_containing(anchor)?;
+        let path = mapped_image_path(base)?;
+        let file = OpenOptions::new().read(true).open(&path)?;
+        let stamp = FileStamp::capture(&file)?;
+
+        // SAFETY: `base` is the base of the main executable image, which stays mapped for the
+        // life of the process, and its first `MAX_HEADER_BYTES` bytes lie inside the headers
+        // region only as far as the loaded header claims (`loaded_headers` bounds it).
+        let loaded = unsafe { loaded_headers(base)? };
+        let on_disk = disk_headers(&file, loaded.len())?;
+        if !headers_match(&loaded, &on_disk)? {
+            return Err(invalid(
+                "the file at the mapped image's path is not the loaded main image",
+            ));
+        }
+        stamp.verify(&file)?;
+        Ok(RunningExecutable { file, stamp })
+    }
+
+    /// The base address of the main executable, provided `anchor` lies inside it. A function in
+    /// an injected library, or in a DLL the executable loaded, is refused: its identity must not
+    /// stand in for the executable's.
+    fn main_image_containing(anchor: fn()) -> io::Result<*const u8> {
+        let mut containing: HMODULE = ptr::null_mut();
+        // SAFETY: the address is a live function pointer; with the FROM_ADDRESS flag the second
+        // argument is read as an address and not as a string. UNCHANGED_REFCOUNT leaves the
+        // module's reference count alone, so there is no handle to release. `containing` is a
+        // writable local.
+        let found = unsafe {
+            GetModuleHandleExW(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                    | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                anchor as usize as *const u16,
+                &raw mut containing,
+            )
+        };
+        if found == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: a null module name asks for the handle of the calling process's executable.
+        let main = unsafe { GetModuleHandleW(ptr::null()) };
+        if containing.is_null() || containing != main {
+            return Err(invalid(
+                "the anchor is not inside the main executable image",
+            ));
+        }
+        Ok(containing.cast::<u8>().cast_const())
+    }
+
+    /// The file the loader mapped as the image at `base`, named by the kernel from the file
+    /// object itself. Unlike the load-time path in the loader's module list, it follows the file
+    /// if it was renamed after launch, so replacing the launch path with another file does not
+    /// redirect the read.
+    fn mapped_image_path(base: *const u8) -> io::Result<PathBuf> {
+        let mut name = vec![0_u16; 1024];
+        loop {
+            let capacity =
+                u32::try_from(name.len()).map_err(|_| invalid("mapped name too long"))?;
+            // SAFETY: the current process pseudo-handle is always valid; `base` is a mapped
+            // address; `name` is writable for `capacity` units.
+            let written = unsafe {
+                GetMappedFileNameW(
+                    GetCurrentProcess(),
+                    base.cast(),
+                    name.as_mut_ptr(),
+                    capacity,
+                )
+            };
+            if written == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let written = written as usize;
+            if written < name.len() {
+                name.truncate(written);
+                break;
+            }
+            // The name was truncated to the buffer: grow, within a bound.
+            if name.len() >= MAX_MAPPED_NAME_UNITS {
+                return Err(invalid("the mapped image's name exceeds its bound"));
+            }
+            name.resize(name.len() * 2, 0);
+        }
+        let device_path = String::from_utf16(&name)
+            .map_err(|_| invalid("the mapped image's name is not valid UTF-16"))?;
+        if !device_path.starts_with(r"\Device\") {
+            return Err(invalid("the mapped image's name is not an NT device path"));
+        }
+        // `\\?\GLOBALROOT` followed by the NT name is a path CreateFileW opens as given.
+        let mut path = String::from(r"\\?\GLOBALROOT");
+        path.push_str(&device_path);
+        Ok(PathBuf::from(std::ffi::OsString::from(path)))
+    }
+
+    /// The header block of the loaded main image, as the loader mapped it.
+    ///
+    /// # Safety
+    /// `base` must be the base address of a mapped PE image that stays mapped for the duration
+    /// of the call.
+    unsafe fn loaded_headers(base: *const u8) -> io::Result<Vec<u8>> {
+        // SAFETY: the DOS header and the bytes the loader validated behind `e_lfanew` are
+        // mapped; the first read is the fixed prefix every PE image has, and the second is the
+        // `SizeOfHeaders` the loader itself accepted, bounded again here.
+        let prefix = unsafe { std::slice::from_raw_parts(base, PE_PREFIX_BYTES) };
+        let layout = parse_pe_layout(prefix, true)?;
+        // SAFETY: as above; `layout.size_of_headers` is bounded by `MAX_HEADER_BYTES`.
+        let headers = unsafe { std::slice::from_raw_parts(base, layout.size_of_headers) };
+        Ok(headers.to_vec())
+    }
+
+    /// The first `length` bytes of the file, after checking it begins with a plausible PE header
+    /// block of that length.
+    fn disk_headers(file: &File, length: usize) -> io::Result<Vec<u8>> {
+        let mut bytes = vec![0_u8; length];
+        let mut filled = 0;
+        while filled < bytes.len() {
+            let read = file.seek_read(&mut bytes[filled..], filled as u64)?;
+            if read == 0 {
+                return Err(invalid("the executable ends inside its headers"));
+            }
+            filled += read;
+        }
+        parse_pe_layout(&bytes, false)?;
+        Ok(bytes)
+    }
+
+    /// Bytes every PE image has at its start that the layout parse reads: the DOS header, the
+    /// signature, the file header and the fixed part of the optional header.
+    const PE_PREFIX_BYTES: usize = 4096;
+
+    /// Where the pieces of a PE header block that matter for identity lie.
+    #[derive(Debug, Eq, PartialEq)]
+    pub(super) struct PeLayout {
+        /// Bytes of the whole header block (`SizeOfHeaders`).
+        pub(super) size_of_headers: usize,
+        /// The `ImageBase` field, which the loader rewrites in the mapped copy when it relocates
+        /// the image.
+        pub(super) image_base: std::ops::Range<usize>,
+    }
+
+    /// Parses the layout of the PE header block in `bytes`, refusing anything malformed. With
+    /// `prefix_only`, `bytes` is just the fixed prefix and the block length is not checked
+    /// against it.
+    pub(super) fn parse_pe_layout(bytes: &[u8], prefix_only: bool) -> io::Result<PeLayout> {
+        const DOS_MAGIC: &[u8; 2] = b"MZ";
+        const NT_SIGNATURE: &[u8; 4] = b"PE\0\0";
+        const FILE_HEADER_BYTES: usize = 20;
+        const OPTIONAL_PE32: u16 = 0x10b;
+        const OPTIONAL_PE32_PLUS: u16 = 0x20b;
+        // Offsets inside the optional header.
+        const IMAGE_BASE_PE32: usize = 28;
+        const IMAGE_BASE_PE32_PLUS: usize = 24;
+        const SIZE_OF_IMAGE: usize = 56;
+        const SIZE_OF_HEADERS: usize = 60;
+
+        let u16_at = |offset: usize| -> io::Result<u16> {
+            bytes
+                .get(offset..offset + 2)
+                .and_then(|slice| slice.try_into().ok())
+                .map(u16::from_le_bytes)
+                .ok_or_else(|| invalid("truncated PE header"))
+        };
+        let u32_at = |offset: usize| -> io::Result<u32> {
+            bytes
+                .get(offset..offset + 4)
+                .and_then(|slice| slice.try_into().ok())
+                .map(u32::from_le_bytes)
+                .ok_or_else(|| invalid("truncated PE header"))
+        };
+        if bytes.get(..2) != Some(DOS_MAGIC) {
+            return Err(invalid("missing DOS header"));
+        }
+        let nt = usize::try_from(u32_at(0x3c)?).map_err(|_| invalid("PE header offset"))?;
+        let signature_end = nt
+            .checked_add(4)
+            .ok_or_else(|| invalid("PE header offset"))?;
+        if bytes.get(nt..signature_end) != Some(NT_SIGNATURE) {
+            return Err(invalid("missing PE signature"));
+        }
+        let optional = signature_end
+            .checked_add(FILE_HEADER_BYTES)
+            .ok_or_else(|| invalid("PE header offset"))?;
+        let optional_size = usize::from(u16_at(signature_end + 16)?);
+        let image_base_offset = match u16_at(optional)? {
+            OPTIONAL_PE32 => IMAGE_BASE_PE32,
+            OPTIONAL_PE32_PLUS => IMAGE_BASE_PE32_PLUS,
+            _ => return Err(invalid("unsupported optional header")),
+        };
+        let image_base_width = if image_base_offset == IMAGE_BASE_PE32 {
+            4
+        } else {
+            8
+        };
+        if optional_size < SIZE_OF_HEADERS + 4 {
+            return Err(invalid("optional header too small"));
+        }
+        let size_of_image = u32_at(optional + SIZE_OF_IMAGE)? as usize;
+        let size_of_headers = u32_at(optional + SIZE_OF_HEADERS)? as usize;
+        let header_end = optional
+            .checked_add(optional_size)
+            .ok_or_else(|| invalid("PE header offset"))?;
+        if size_of_headers < header_end
+            || size_of_headers > size_of_image
+            || size_of_headers > MAX_HEADER_BYTES
+            || (!prefix_only && size_of_headers > bytes.len())
+        {
+            return Err(invalid("SizeOfHeaders is outside the image"));
+        }
+        let image_base =
+            optional + image_base_offset..optional + image_base_offset + image_base_width;
+        Ok(PeLayout {
+            size_of_headers,
+            image_base,
+        })
+    }
+
+    /// Whether the loaded header block and the file's are the same executable.
+    ///
+    /// Every byte must agree except the `ImageBase` field: the loader rewrites it in its copy
+    /// when it relocates the image. The block holds the timestamp, checksum, entry point, image
+    /// size and section table, so a different build of the same program does not match.
+    pub(super) fn headers_match(loaded: &[u8], on_disk: &[u8]) -> io::Result<bool> {
+        let layout = parse_pe_layout(loaded, false)?;
+        if loaded.len() != layout.size_of_headers || on_disk.len() != loaded.len() {
+            return Ok(false);
+        }
+        let masked = layout.image_base;
+        Ok(loaded[..masked.start] == on_disk[..masked.start]
+            && loaded[masked.end..] == on_disk[masked.end..])
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{PeLayout, headers_match, parse_pe_layout};
+
+        use super::super::open_running_executable;
+        use std::io::Read as _;
+        use std::process::Command;
+
+        const CHILD_MODE: &str = "NUDOX_TEST_PE_CHILD";
+        const PRISTINE: &str = "NUDOX_TEST_PE_PRISTINE";
+
+        fn anchor() {}
+
+        fn read_all(executable: &mut super::super::RunningExecutable) -> Vec<u8> {
+            executable
+                .with_verified_read(|file| {
+                    let mut bytes = Vec::new();
+                    file.read_to_end(&mut bytes)?;
+                    Ok(bytes)
+                })
+                .expect("verified read")
+        }
+
+        #[test]
+        fn the_running_test_binary_is_opened_and_read_back_exactly() {
+            if std::env::var_os(CHILD_MODE).is_some() {
+                return;
+            }
+            let mut executable = open_running_executable(anchor).expect("open the running image");
+            let expected = std::fs::read(std::env::current_exe().expect("test executable"))
+                .expect("read the test executable by path");
+            assert_eq!(read_all(&mut executable), expected);
+        }
+
+        #[test]
+        fn an_anchor_inside_a_loaded_library_is_refused() {
+            if std::env::var_os(CHILD_MODE).is_some() {
+                return;
+            }
+            // SAFETY: the address of a kernel32 export is only ever compared against the main
+            // module's range, never called, so its real signature does not matter.
+            let library_function: fn() = unsafe {
+                std::mem::transmute::<unsafe extern "system" fn() -> u32, fn()>(
+                    windows_sys::Win32::System::Threading::GetCurrentThreadId,
+                )
+            };
+            let error = open_running_executable(library_function)
+                .err()
+                .expect("a library's identity must not stand in for the executable's");
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        }
+
+        /// A copy of the test binary renames its own file away after launch and puts an imposter
+        /// at the launch path, as a self-updater (or an attacker with write access to the
+        /// install directory) would. The image it is running is still the renamed file, and that
+        /// is the file it must open: never the imposter, and not a refusal either.
+        #[test]
+        fn a_file_swapped_into_the_launch_path_is_never_read() {
+            if std::env::var_os(CHILD_MODE).is_some() {
+                return;
+            }
+            let directory = std::env::temp_dir().join(format!(
+                "nudox-pe-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("clock after epoch")
+                    .as_nanos()
+            ));
+            std::fs::create_dir(&directory).expect("test directory");
+            let source = std::env::current_exe().expect("test executable");
+            let launched = directory.join("launched.exe");
+            let pristine = directory.join("pristine.bin");
+            std::fs::copy(&source, &launched).expect("copy the test executable");
+            std::fs::copy(&source, &pristine).expect("keep the original bytes");
+
+            let status = Command::new(&launched)
+                .args([
+                    "--exact",
+                    "executable_identity::windows::tests::swapped_launch_path_child",
+                    "--nocapture",
+                ])
+                .env(CHILD_MODE, "child")
+                .env(PRISTINE, &pristine)
+                .status()
+                .expect("start the copied process");
+            let _ = std::fs::remove_dir_all(&directory);
+            assert!(
+                status.success(),
+                "the child opened the wrong file: {status}"
+            );
+        }
+
+        #[test]
+        fn swapped_launch_path_child() {
+            if std::env::var_os(CHILD_MODE).is_none() {
+                return;
+            }
+            let pristine = std::fs::read(std::env::var_os(PRISTINE).expect("pristine path"))
+                .expect("read the original bytes");
+            let launched = std::env::current_exe().expect("launch path");
+            let moved = launched.with_file_name("moved.exe");
+            std::fs::rename(&launched, &moved).expect("a running image can be renamed");
+            std::fs::write(&launched, b"imposter: not the running image")
+                .expect("place an imposter at the launch path");
+
+            let mut executable = open_running_executable(anchor)
+                .expect("the running image is still found, by what is mapped");
+            let bytes = read_all(&mut executable);
+            assert_ne!(bytes, b"imposter: not the running image");
+            assert_eq!(bytes, pristine, "the bytes are the running image's own");
+        }
+
+        /// A minimal PE32+ header block: DOS header, `PE` signature, file header, and an
+        /// optional header with the given image base and size fields.
+        fn forged_header(image_base: u64, size_of_headers: u32, time_stamp: u32) -> Vec<u8> {
+            let nt = 0x80_usize;
+            let optional_size = 0xf0_u16;
+            let mut bytes = vec![0_u8; size_of_headers as usize];
+            bytes[..2].copy_from_slice(b"MZ");
+            bytes[0x3c..0x40].copy_from_slice(&(nt as u32).to_le_bytes());
+            bytes[nt..nt + 4].copy_from_slice(b"PE\0\0");
+            bytes[nt + 8..nt + 12].copy_from_slice(&time_stamp.to_le_bytes());
+            bytes[nt + 20..nt + 22].copy_from_slice(&optional_size.to_le_bytes());
+            let optional = nt + 24;
+            bytes[optional..optional + 2].copy_from_slice(&0x20b_u16.to_le_bytes());
+            bytes[optional + 24..optional + 32].copy_from_slice(&image_base.to_le_bytes());
+            bytes[optional + 56..optional + 60].copy_from_slice(&0x2000_u32.to_le_bytes());
+            bytes[optional + 60..optional + 64].copy_from_slice(&size_of_headers.to_le_bytes());
+            bytes
+        }
+
+        #[test]
+        fn a_relocated_image_matches_its_file_but_a_different_build_does_not() {
+            let on_disk = forged_header(0x1_4000_0000, 0x400, 7);
+            // The loader rewrote ImageBase when it relocated the image.
+            let relocated = forged_header(0x7ff6_1234_0000, 0x400, 7);
+            assert!(headers_match(&relocated, &on_disk).expect("well-formed"));
+            // A rebuilt executable has another timestamp (or checksum, entry point, sections).
+            let rebuilt = forged_header(0x7ff6_1234_0000, 0x400, 8);
+            assert!(!headers_match(&rebuilt, &on_disk).expect("well-formed"));
+            // A header block of another length is another executable.
+            let longer = forged_header(0x1_4000_0000, 0x600, 7);
+            assert!(!headers_match(&longer, &on_disk).expect("well-formed"));
+        }
+
+        #[test]
+        fn the_layout_names_the_image_base_and_the_header_block() {
+            let layout = parse_pe_layout(&forged_header(1, 0x400, 0), false).expect("layout");
+            assert_eq!(
+                layout,
+                PeLayout {
+                    size_of_headers: 0x400,
+                    image_base: 0x80 + 24 + 24..0x80 + 24 + 32,
+                }
+            );
+        }
+
+        #[test]
+        fn malformed_header_blocks_are_refused() {
+            let good = forged_header(1, 0x400, 0);
+            let mut cases = Vec::<(&str, Vec<u8>)>::new();
+            cases.push(("empty", Vec::new()));
+            cases.push(("not a DOS header", vec![0_u8; 0x400]));
+            let mut bad = good.clone();
+            bad[0x3c..0x40].copy_from_slice(&u32::MAX.to_le_bytes());
+            cases.push(("e_lfanew past the block", bad));
+            let mut bad = good.clone();
+            bad[0x80..0x84].copy_from_slice(b"NE\0\0");
+            cases.push(("not a PE signature", bad));
+            let mut bad = good.clone();
+            bad[0x80 + 24..0x80 + 26].copy_from_slice(&0x107_u16.to_le_bytes());
+            cases.push(("a ROM image", bad));
+            let mut bad = good.clone();
+            bad[0x80 + 24 + 60..0x80 + 24 + 64].copy_from_slice(&0x10_u32.to_le_bytes());
+            cases.push(("SizeOfHeaders inside the headers", bad));
+            let mut bad = good.clone();
+            bad[0x80 + 24 + 60..0x80 + 24 + 64].copy_from_slice(&0x4000_u32.to_le_bytes());
+            cases.push(("SizeOfHeaders beyond SizeOfImage", bad));
+            let mut bad = good.clone();
+            bad[0x80 + 24 + 56..0x80 + 24 + 60].copy_from_slice(&0x10_0000_u32.to_le_bytes());
+            bad[0x80 + 24 + 60..0x80 + 24 + 64].copy_from_slice(&0x2_0000_u32.to_le_bytes());
+            cases.push(("SizeOfHeaders beyond the read bound", bad));
+            cases.push(("block shorter than SizeOfHeaders", good[..0x200].to_vec()));
+            for (label, bytes) in cases {
+                assert!(parse_pe_layout(&bytes, false).is_err(), "{label}");
+            }
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
