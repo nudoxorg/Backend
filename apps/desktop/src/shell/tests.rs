@@ -21,7 +21,7 @@ use crate::model::pages::{
 use crate::model::{AppSnapshot, DensityPreference, SessionState};
 use crate::navigation::{Coordinate, Intent, Route, SymbolRoute, View};
 use crate::runtime::actor::{EngineActor, EngineClient, EngineDto, EngineFault, EngineRequest};
-use crate::runtime::owner::{OwnerGate, OwnerState};
+use crate::runtime::owner::{OwnerFault, OwnerGate, OwnerState};
 use crate::runtime::reads::{PageReader, ReadContext, ReadPool, ReadRequest};
 use crate::runtime::{DesktopRuntime, UiEntityGraph};
 use backend_library::DeclarationKind;
@@ -29,7 +29,6 @@ use gpui::{
     AppContext as _, Entity, Modifiers, TestAppContext, VisualTestContext, WindowHandle, point, px,
     size,
 };
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -360,6 +359,7 @@ fn rig_with_engine_gate(
     engine: impl EngineClient,
     gate: Option<OwnerGate>,
 ) -> Rig {
+    let waiting_for_owner = gate.as_ref().is_some_and(|gate| !matches!(gate.state(), OwnerState::Ready { .. }));
     cx.executor().allow_parking();
     cx.update(|cx| {
         gpui_component::init(cx);
@@ -407,7 +407,7 @@ fn rig_with_engine_gate(
         cx: visual,
         patience: Duration::from_secs(20),
     };
-    rig.settle();
+    if waiting_for_owner { rig.draw(); } else { rig.settle(); }
     if let Some(route) = route {
         rig.go(Intent::Navigate(route));
     }
@@ -723,21 +723,85 @@ fn retained_native_callback_cannot_cross_a_same_root_owner_replacement(cx: &mut 
         targets.current().filter(|target| target.id.starts_with("orbit-package-")).map(|target| target.act)
     }).expect("Tab reaches an indexed package");
     gate.publish(OwnerState::Starting);
-    // Repaint retained Orbit bytes before the watcher processes Starting:
-    // a new callback can be built from visible old data, but cannot borrow
-    // the former owner's permission to navigate.
+    // Repaint retained Orbit bytes before the watcher processes Starting.
+    // The predecessor remains legible, but no new package callback mounts.
     rig.repaint();
-    let retained = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
-        .current().expect("the retained package chip is still visible").act;
-    assert!(!Rc::ptr_eq(&action, &retained), "Starting repainted a new callback over retained bytes");
+    let retained_targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
     assert!(rig.graph.store.read_with(rig.cx, |store, _| store.orbit().loaded_value().is_some()));
-    rig.cx.update(|window, cx| retained(window, cx));
-    assert!(matches!(rig.route(), Route::Orbit(_)), "a newly painted retained value is nonactionable");
+    assert!(!retained_targets.native_keys().iter().any(|id| id.starts_with("orbit-package-")), "retained bytes mount no native package callback");
+    assert!(rig.said().iter().any(|line| line.contains("Earlier Library reading retained")));
     gate.publish(OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
     // This action came from the former mounted visit. The gate's epoch has
     // already moved even if its UI watcher has not run yet.
     rig.cx.update(|window, cx| action(window, cx));
     assert!(matches!(rig.route(), Route::Orbit(_)), "the retained callback did not navigate");
+}
+
+#[gpui::test]
+fn starting_library_keeps_add_folder_mounted_and_actionable(cx: &mut TestAppContext) {
+    let gate = OwnerGate::starting();
+    let mut rig = rig_with_engine_gate(
+        cx, None, 1440.0, 900.0, ReadPool::start(2, |_| Fixture).expect("pool"), RootOnly, Some(gate),
+    );
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    assert!(targets.native_keys().iter().any(|id| id == "add-folder"));
+    rig.cx.simulate_keystrokes("tab");
+    rig.draw();
+    assert_eq!(targets.focused().as_deref(), Some("add-folder"));
+    assert!(rig.cx.update(|window, _| targets.focused_native_is_live(window)));
+    assert!(!rig.cx.did_prompt_for_paths());
+    rig.cx.simulate_keystrokes("enter");
+    rig.draw();
+    assert!(rig.cx.did_prompt_for_paths(), "local Add folder still opens while the owner starts");
+}
+
+#[gpui::test]
+fn local_library_control_cannot_act_after_its_visit_is_replaced(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, None, 1440.0, 900.0);
+    let add = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
+        .placed().into_iter().find(|(target, _)| target.id == "add-folder")
+        .expect("Library Add is mounted").0.act;
+    rig.go(Intent::Navigate(Route::World));
+    rig.cx.update(|window, cx| add(window, cx));
+    assert!(!rig.cx.did_prompt_for_paths(), "an old local UI callback cannot open a picker on another visit");
+}
+
+#[gpui::test]
+fn failed_library_keeps_add_and_native_retry_available(cx: &mut TestAppContext) {
+    let gate = OwnerGate::starting();
+    let mut rig = rig_with_engine_gate(
+        cx, None, 1440.0, 900.0, ReadPool::start(2, |_| Fixture).expect("pool"), RootOnly, Some(gate.clone()),
+    );
+    gate.publish(OwnerState::Failed(OwnerFault::Host(Arc::from("owner could not start"))));
+    rig.draw();
+    rig.repaint();
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let keys = targets.native_keys();
+    assert!(keys.iter().any(|id| id == "add-folder"), "recovery cannot hide local setup");
+    assert!(keys.iter().any(|id| id.starts_with("retry-")), "the fault mounts a semantic Retry control");
+    rig.cx.simulate_keystrokes("tab");
+    rig.draw();
+    assert_eq!(targets.focused().as_deref(), Some("add-folder"));
+    assert!(!rig.cx.did_prompt_for_paths());
+    rig.cx.simulate_keystrokes("enter");
+    rig.draw();
+    assert!(rig.cx.did_prompt_for_paths(), "Add folder also works from the failed Library");
+    rig.cx.simulate_path_prompt_response(|_| None);
+    rig.draw();
+    let mut reached_retry = false;
+    for _ in 0..8 {
+        rig.cx.simulate_keystrokes("tab");
+        rig.draw();
+        if targets.focused().is_some_and(|id| id.starts_with("retry-")) {
+            reached_retry = true;
+            break;
+        }
+    }
+    assert!(reached_retry, "Shell Tab reaches Retry through the failed Library");
+    assert!(rig.cx.update(|window, _| targets.focused_native_is_live(window)));
+    rig.cx.simulate_keystrokes("enter");
+    rig.draw();
+    assert!(matches!(gate.state(), OwnerState::Starting), "native Retry asks the failed owner to restart");
 }
 
 /// The lead's report: on a symbol page, Tab, J and Space each changed
