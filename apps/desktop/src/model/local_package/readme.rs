@@ -6,6 +6,7 @@
 use super::files::{
     editor_hint_for_opened_file, open_relative_source, read_bytes_under, read_text_under,
 };
+use backend_platform::FileIdentity;
 use backend_platform::directory::DirectoryCapability;
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -299,12 +300,12 @@ fn resolve_local_file(
     let Ok(file) = open_relative_source(root_capability, &relative) else {
         return (None, None);
     };
-    let Ok(metadata) = file.metadata() else {
+    let Ok(opened) = FileIdentity::of_file(&file) else {
         return (None, None);
     };
     // This path is for a later, explicit editor handoff only. The no-follow
     // descriptor above is the evidence used to read the file.
-    let path = editor_hint_for_opened_file(project_root, &relative, &metadata)
+    let path = editor_hint_for_opened_file(project_root, &relative, opened)
         .and_then(|candidate| candidate.to_str().map(str::to_owned));
     (path, fragment.and_then(source_line_fragment))
 }
