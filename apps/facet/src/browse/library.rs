@@ -2630,10 +2630,10 @@ fn list_navigation(
                 .size(Control::Small)
                 .disabled(top >= count.saturating_sub(8))
                 .on_click(move |_, cx| {
-                    last.scroll_to(ListOffset {
-                        item_ix: count - 1,
-                        offset_in_item: px(0.),
-                    });
+                    // The end of the list, not the top of its last row: a
+                    // row taller than the viewport (a long wrapped origin at
+                    // a large text size) keeps its actions at its bottom.
+                    last.scroll_to_end();
                     cx.refresh_windows();
                 }),
         )
