@@ -204,13 +204,6 @@ impl OwnerGate {
         (!inner.observation_suspended && matches!(inner.state, OwnerState::Ready { mode: ServiceMode::Attached, .. })).then_some(inner.attachment)
     }
 
-    /// Publication of any serving owner, including an embedded owner that
-    /// restarted at the same producer root. This does not report socket loss.
-    pub(crate) fn ready_epoch(&self) -> Option<Epoch> {
-        let inner = self.lock();
-        matches!(inner.state, OwnerState::Ready { .. }).then_some(inner.epoch)
-    }
-
     /// Read readiness and attachment together. Separate state/epoch reads
     /// could combine two different owners during a rapid same-root restart.
     pub(crate) fn serves_attachment(&self, expected: Option<Epoch>) -> bool {
@@ -284,7 +277,9 @@ impl OwnerGate {
             .then_some(inner.attachment)
     }
 
-    /// Current serving attachment, independent of publication wakes.
+    /// Current serving attachment, independent of publication wakes: any
+    /// serving owner, embedded or attached, including one that restarted at
+    /// the same producer root. It does not report socket loss.
     pub(crate) fn ready_epoch(&self) -> Option<Epoch> {
         let inner = self.lock();
         (!inner.closed
@@ -911,7 +906,8 @@ mod publication_tests {
                 first.capability().expect("complete source"),
             )
             .expect("prepared external delta");
-        let (second, _) = first.commit(prepared).expect("committed external delta");
+        // The base stays shared: commit against it instead of consuming it.
+        let (second, _) = prepared.commit(&first).expect("committed external delta");
         let second = Arc::new(second);
         let published = Cursor::for_view_root_at(&second, 1);
         assert_eq!(

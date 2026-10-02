@@ -26,7 +26,7 @@ pub(crate) fn fixture(project: &LocalProjectId) -> (TreeModel, PackageRef, Cargo
     const METADATA: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../crates/library/browse/fixtures/tree-2026-09-27/metadata.json"));
     let input = metadata_input_with_stable_source_witness(METADATA, "aarch64-apple-darwin", None, [7; 32]).expect("producer fixture");
     let authority = AdvisoryAuthority::new(1);
-    let mut tree = build_tree(&input, &|name, version| {
+    let mut tree = build_tree(&input, &|name: &str, version: &str| {
         authority.observe(&normalize_package("cargo", name).expect("identity"), version, false, false, 0, false)
     });
     let binding = ProjectTreeRequestBindingV1::for_paths(Path::new(project.service_coordinate().expect("requested member")), &tree.root).expect("fixture binding");
