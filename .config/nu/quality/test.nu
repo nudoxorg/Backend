@@ -279,7 +279,31 @@ def pr-quarantine []: nothing -> list<record<filter: string, reason: string>> {
     # The Linux worker's headless GPUI has no direct offscreen renderer
     # (Metal only; see tools/gui-harness/src/gpui_driver.rs), and its native
     # geometry and timings differ from the macOS values these tests pin.
+    # Exact names, not a module regex: other marks::tests paint without a
+    # capture and still run here.
+    let facet_captures = [
+        "gallery::compose::tests::more_labels_than_one_texture_holds_come_back_one_per_line"
+        "marks::tests::a_dependency_link_goes_to_the_package_it_names"
+        "marks::tests::a_dependency_without_a_resolved_target_is_drawn_as_text_not_a_link"
+        "marks::tests::a_known_project_license_reads_the_real_copyleft_consequence"
+        "marks::tests::a_license_choice_names_the_option_it_assumed_and_the_card_ends_with_the_hedge"
+        "marks::tests::a_marks_card_hangs_from_the_mark_and_flips_to_its_end_at_the_window_edge"
+        "marks::tests::an_unknown_project_license_omits_the_fit_line_rather_than_guess"
+        "marks::tests::a_quiet_mark_never_opens_a_card_where_its_loud_twin_does"
+        "marks::tests::dragging_the_rider_scrubs_and_escape_brings_it_home"
+        "marks::tests::enter_or_space_on_a_focused_mark_opens_its_card"
+        "marks::tests::every_license_card_on_the_board_reads_the_tree_and_hedges"
+        "marks::tests::mono_runs_render_exactly_as_written"
+        "marks::tests::the_copy_never_lies_over_the_line_it_came_from"
+        "marks::tests::the_ecosystem_card_says_what_it_is_where_it_lives_and_how_to_install_it"
+        "marks::tests::the_fold_shows_what_fits_and_counts_the_rest"
+        "marks::tests::the_version_cards_read_the_history_honestly"
+        "marks::tests::what_is_not_known_is_said_as_unknown_never_invented"
+    ] | each {|name| $"test\(=($name)\)" } | str join " or "
     let linux_platform = [
+        {filter: $"package\(backend-facet\) and \(($facet_captures)\)", reason: "gallery and marks captures need the macOS offscreen renderer: 'the current GPUI platform has no direct offscreen renderer'"}
+        {filter: "package(backend-journeys) and test(=cold_restart_preserves_atomic_roots_live_subscriptions_and_gui_shelf)", reason: "its GUI first-launch journey needs the macOS offscreen renderer: 'backend-journey-gui: the current GPUI platform has no direct offscreen renderer'"}
+        {filter: "package(backend-desktop) and (test(=host::embedded_owner_tests::a_finder_launch_compiles_rust_with_the_rust_the_person_installed) or test(=host::embedded_owner_tests::a_finder_launch_reads_a_projects_packages_as_cargo_resolves_them))", reason: "macOS Finder-launch journeys: they need a Rust a person installed through rustup or Homebrew, and the worker has Rust only through the Nix shell: 'this machine has no Rust a person installed (rustup or Homebrew)'"}
         {filter: "package(backend-facet) and (test(/^graph::gallery::/) or test(=data::tests::harness_storms_over_the_marks_find_nothing) or test(=overlay::float::storm::float_storm_keeps_every_invariant_and_settles_to_a_fresh_boot))", reason: "pixel captures need the macOS offscreen renderer: 'the current GPUI platform has no direct offscreen renderer'"}
         {filter: "package(backend-facet) and (test(=motion::tests::a_class_change_mid_drag_springs_from_the_painted_position_and_keeps_following) or test(=graph::view::tests::brief_hover_handoff_preserves_the_stronger_departing_envelope) or test(=graph::view::tests::cold_discovery_completion_after_blur_cannot_restart_search))", reason: "exact float and native-timing values recorded on macOS (spring jumps, native input blur)"}
         {filter: "package(backend-desktop) and test(=shell::tests::native_graph_handoff_uses_the_scaled_translated_canvas_and_rejects_absent_sources)", reason: "composited bounds differ by sub-pixel snapping (734.75 vs 734.6)"}
