@@ -383,6 +383,7 @@ fn find_callback(rig: &mut crate::shell::tests::Rig, route: &BrowseRoute) -> sup
             root: rig.graph.root.downgrade(), store: rig.graph.store.clone(), shell: rig.shell.downgrade(),
         },
         route: route.clone(), key: BrowseKey::from(route), root,
+        visit: browse_visit(rig),
     }
 }
 
@@ -452,6 +453,31 @@ fn find_source_callback_rechecks_membership_query_overlay_owner_and_root(cx: &mu
     invoke(&mut rig, &current);
 }
 
+#[gpui::test]
+fn find_callback_never_revives_on_a_new_same_route_visit_or_owner_attachment(cx: &mut TestAppContext) {
+    let browse = BrowseRoute::Find(SearchQuery::new("RelationLabel", SearchQuery::DEFAULT_LIMIT).expect("query"));
+    let route = Route::Orbit(OrbitRoute::Browse(browse.clone()));
+    let mut rig = rig(cx, Some(route.clone()), 1200.0, 800.0);
+    land_find(&mut rig, &browse, "RelationLabel", true);
+    let old_visit = find_callback(&mut rig, &browse);
+    assert!(rig.cx.update(|_, cx| old_visit.current(cx, |_| Some(())).is_ok()));
+
+    rig.go(crate::navigation::Intent::Navigate(Route::Orbit(OrbitRoute::Home)));
+    rig.settle();
+    rig.go(crate::navigation::Intent::Navigate(route.clone()));
+    rig.settle();
+    land_find(&mut rig, &browse, "RelationLabel", true);
+    assert!(rig.cx.update(|_, cx| old_visit.current(cx, |_| Some(())).is_err()), "a renewed identical route revived its old row");
+    let old_attachment = find_callback(&mut rig, &browse);
+    assert!(rig.cx.update(|_, cx| old_attachment.current(cx, |_| Some(())).is_ok()));
+    rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
+    rig.graph.store.update(rig.cx, |store, cx| store.owner_ready(cx));
+    land_find(&mut rig, &browse, "RelationLabel", true);
+    assert!(rig.cx.update(|_, cx| old_attachment.current(cx, |_| Some(())).is_err()),
+        "same route/root/content under a new owner attachment revived its old row");
+    assert_eq!(rig.route(), route);
+}
+
 fn compare_selection() -> CompareSet {
     CompareSet::new(["/fixture/present", "/fixture/second", "/fixture/third"]
         .into_iter().map(|key| PackageRef::parse(key).expect("fixture package"))).expect("three packages")
@@ -496,7 +522,42 @@ fn compare_callback(rig: &mut crate::shell::tests::Rig, selection: &CompareSet) 
             root: rig.graph.root.downgrade(), store: rig.graph.store.clone(), shell: rig.shell.downgrade(),
         },
         selection: selection.clone(), root,
+        visit: browse_visit(rig),
     }
+}
+
+#[gpui::test]
+fn compare_callback_never_revives_on_a_new_same_route_visit(cx: &mut TestAppContext) {
+    let selection = compare_selection();
+    let route = Route::Orbit(OrbitRoute::Browse(BrowseRoute::Compare(selection.clone())));
+    let mut rig = rig(cx, Some(route.clone()), 1200.0, 800.0);
+    land_compare(&mut rig, &selection, true, true);
+    let old = compare_callback(&mut rig, &selection);
+    assert!(rig.cx.update(|_, cx| old.current(cx, |_| Some(())).is_ok()));
+    rig.go(crate::navigation::Intent::Navigate(Route::Orbit(OrbitRoute::Home)));
+    rig.settle();
+    rig.go(crate::navigation::Intent::Navigate(route.clone()));
+    rig.settle();
+    land_compare(&mut rig, &selection, true, true);
+    assert!(rig.cx.update(|_, cx| old.current(cx, |_| Some(())).is_err()));
+    let current = compare_callback(&mut rig, &selection);
+    assert!(rig.cx.update(|_, cx| current.current(cx, |_| Some(())).is_ok()));
+}
+
+fn browse_visit(rig: &mut crate::shell::tests::Rig) -> super::CurrentBrowseVisit {
+    let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
+    let place = reader.read_with(rig.cx, |reader, _| reader.current_place_key().expect("mounted browse visit"));
+    let (route, root, lease) = rig.graph.store.read_with(rig.cx, |store, _| {
+        let snapshot = store.snapshot();
+        let route = snapshot.route().clone();
+        let root = snapshot.key();
+        let lease = crate::shell::reader::NativeActionLease::Resource {
+            attachment: store.current_owner_attachment(),
+            stamp: crate::runtime::store::RouteDependencies::new(&route, None).native_stamp(store, false),
+        };
+        (route, root, lease)
+    });
+    super::CurrentBrowseVisit { reader: reader.downgrade(), place, route, root, lease }
 }
 
 fn land_compare(rig: &mut crate::shell::tests::Rig, selection: &CompareSet, answer: bool, source_available: bool) {

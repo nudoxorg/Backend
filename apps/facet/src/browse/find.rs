@@ -138,6 +138,8 @@ pub struct Actions {
     pub initial_held: Vec<HeldPackage>,
     /// Publish each edit to the Reader before navigation can unmount Find.
     pub persist_held: Rc<dyn Fn(Vec<HeldPackage>, &mut App)>,
+    /// Restores this exact query handle after Ask releases the same visit.
+    pub return_focus: Rc<dyn Fn(gpui::FocusHandle, &mut Window, &mut App) -> super::library::ReturnDisposition>,
     pub query_input: Rc<dyn Fn(&str) -> QueryInput>,
     pub refine: Rc<dyn Fn(SharedString, &mut App)>,
     /// Retries the exact failed current route; absent when the owner cannot serve it.
@@ -385,6 +387,12 @@ impl RenderOnce for Find {
             if state.initial_focus_pending {
                 state.initial_focus_pending = false;
                 state.input.clone().update(cx, |input, cx| input.focus(window, cx));
+            } else {
+                let query = state.input.read(cx).focus_handle(cx);
+                let restore = Rc::clone(&self.actions.return_focus);
+                // A Reader is still rendering this element. Transfer only
+                // after its frame returns; the host rechecks the exact visit.
+                window.defer(cx, move |window, cx| { restore(query, window, cx); });
             }
             state.accept(&self.model, &self.actions, window, cx);
         }); }

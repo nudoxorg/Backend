@@ -469,6 +469,77 @@ fn find_claims_native_query_focus_only_after_ask_exit_and_its_page_settle(cx: &m
     assert_eq!(native_focus(&mut rig), away, "a Find redraw stole native focus back to its query");
 }
 
+fn native_focus_label(rig: &mut Rig) -> Option<String> {
+    let tree = native_tree(rig);
+    let id = tree["accesskit_focus"].as_str().expect("native focus id");
+    tree["nodes"][id]["aria"]["label"].as_str().map(str::to_owned)
+}
+
+#[gpui::test]
+fn tab_cannot_walk_the_native_folio_during_find_arrival(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0);
+    let destination = find_route();
+    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(destination.clone()), cx));
+    rig.frame(0);
+    assert_ne!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
+    let before = rig.cx.update(|window, cx| window.focused(cx));
+    rig.cx.simulate_keystrokes("tab");
+    rig.frame(0);
+    assert_eq!(rig.route(), destination);
+    assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), before,
+        "Tab escaped NativeFolio into the generic shell walk during arrival");
+    rig.settle();
+    assert_eq!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
+}
+
+#[gpui::test]
+fn same_find_visit_returns_query_focus_once_after_ask_exit(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(find_route()), 1440.0, 900.0);
+    rig.settle();
+    assert_eq!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
+    let route = rig.route();
+    rig.keys("cmd-k");
+    assert_ne!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
+    rig.cx.simulate_keystrokes("escape");
+    rig.frame(0);
+    assert_eq!(rig.route(), route);
+    assert_eq!(ask_phase(&painted(&mut rig)), Some(StackPhase::Leaving));
+    assert_ne!(native_focus_label(&mut rig).as_deref(), Some("Find query"),
+        "query focused beneath the departing Ask plate");
+    rig.settle();
+    assert_eq!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
+    rig.cx.update(|window, cx| window.focus_next(cx));
+    let away = native_focus_label(&mut rig);
+    rig.repaint();
+    assert_eq!(native_focus_label(&mut rig), away, "one-shot return stole focus on redraw");
+
+    // A later query-focused Ask has its return canceled by a Tab during exit.
+    rig.cx.update(|window, cx| window.focus_prev(cx));
+    assert_eq!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
+    rig.keys("cmd-k");
+    rig.cx.simulate_keystrokes("escape");
+    rig.frame(0);
+    rig.cx.simulate_keystrokes("tab");
+    rig.settle();
+    assert_ne!(native_focus_label(&mut rig).as_deref(), Some("Find query"),
+        "an intervening Tab revived the canceled query return");
+}
+
+#[gpui::test]
+fn pointer_during_ask_exit_cancels_find_query_return(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(find_route()), 1440.0, 900.0);
+    rig.settle();
+    assert_eq!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
+    rig.keys("cmd-k");
+    rig.cx.simulate_keystrokes("escape");
+    rig.frame(0);
+    assert_eq!(ask_phase(&painted(&mut rig)), Some(StackPhase::Leaving));
+    rig.cx.simulate_click(point(px(720.0), px(450.0)), Modifiers::default());
+    rig.settle();
+    assert_ne!(native_focus_label(&mut rig).as_deref(), Some("Find query"),
+        "a pointer interruption allowed a delayed query focus steal");
+}
+
 #[gpui::test]
 fn find_waits_for_its_own_arrival_and_releases_focus_on_departure(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0);

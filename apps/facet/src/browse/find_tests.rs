@@ -90,6 +90,7 @@ fn actions(reads: &Rc<RefCell<Vec<SharedString>>>, opened: &Rc<RefCell<Vec<Share
         retry: None,
         scroll: ScrollHandle::new(),
         initial_held: vec![], persist_held: Rc::new(|_, _| {}),
+        return_focus: Rc::new(|_, _, _| crate::browse::library::ReturnDisposition::Invalid),
         query_input: Rc::new(|text| if text.trim().chars().any(char::is_control) {
             QueryInput::Invalid("fixture invalid query".into())
         } else if text.trim().is_empty() { QueryInput::Blank } else { QueryInput::Valid }),

@@ -589,6 +589,8 @@ impl Shell {
         self.ask_open = wants_ask;
         self.ask_results_mounted = false;
         if wants_ask {
+            let focused = window.focused(cx);
+            self.reader.update(cx, |reader, cx| reader.begin_find_focus_return(focused, cx));
             self.ask.update(cx, |ask, cx| ask.opened(window, cx));
         } else {
             self.focus.focus(window, cx);
@@ -1025,6 +1027,9 @@ impl Shell {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if event.keystroke.key == "tab" {
+            self.reader.update(cx, |reader, _| reader.cancel_find_focus_return());
+        }
         if self.ask_presentation.blocks_background_input(self.ask_open) {
             // The exit's painted plate still covers the page. The shell's
             // key context gates its actions; this also stops raw child keys.
@@ -1106,8 +1111,9 @@ impl Shell {
     /// Find and Settings expose native field, row, and radio stops. Once a
     /// native control owns focus, Tab follows that real control order.
     fn folio_tab(&mut self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.background_input_allowed() || self.ask_open { return; }
         let snapshot = self.links.snapshot(cx);
+        if !self.background_input_allowed() || self.ask_open
+            || !self.reader.read(cx).native_input_for(snapshot.route(), snapshot.overlay()) { return; }
         let find = matches!(snapshot.route(), Route::Orbit(crate::navigation::OrbitRoute::Browse(
             crate::navigation::BrowseRoute::FindHome | crate::navigation::BrowseRoute::Find(_)
         )));
@@ -1660,6 +1666,9 @@ impl Render for Shell {
             }))
             .capture_key_down(cx.listener(|shell, event: &KeyDownEvent, window, cx| {
                 shell.key_down(event, window, cx);
+            }))
+            .capture_any_mouse_down(cx.listener(|shell, _, _, cx| {
+                shell.reader.update(cx, |reader, _| reader.cancel_find_focus_return());
             }))
             .child(ground())
             .child(

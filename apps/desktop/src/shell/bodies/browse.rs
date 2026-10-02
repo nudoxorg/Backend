@@ -15,6 +15,7 @@ use crate::model::pages::{PackageRef, PageKey, SearchQuery, SymbolRef};
 use crate::navigation::{BrowseRoute, CompareSet, Intent, OrbitRoute, Route, View};
 use crate::shell::kit::{package_route, symbol_route, symbol_view_route};
 use crate::shell::reader::Reader;
+use crate::shell::reader::NativeActionLease;
 use facet::browse::library::{InventoryHandle, ReleaseHandle};
 use facet::browse::{LibraryActions, LibraryModel, library};
 use gpui::{App, AppContext as _, Context, InteractiveElement, ParentElement, SharedString, Styled, Window, div};
@@ -142,20 +143,55 @@ fn symbol_routability(key: &SharedString) -> facet::browse::find::Routability {
 /// it. Every source action borrows the *current* store value again at the
 /// event boundary, after a refresh or route change may have replaced it.
 #[derive(Clone)]
+struct CurrentBrowseVisit {
+    reader: gpui::WeakEntity<Reader>,
+    place: u64,
+    route: Route,
+    root: VersionedRoot,
+    lease: NativeActionLease,
+}
+
+impl CurrentBrowseVisit {
+    fn new(ctx: &Ctx<'_>, cx: &Context<Reader>) -> Self {
+        let snapshot = ctx.links.snapshot(cx);
+        Self {
+            reader: cx.weak_entity(),
+            place: ctx.place_key,
+            route: snapshot.route().clone(),
+            root: snapshot.key(),
+            lease: ctx.native_resource_lease(cx),
+        }
+    }
+
+    /// No Reader mutation here: painting and an obsolete click must not
+    /// cancel a pending native focus return.
+    fn admits(&self, lease: &NativeActionLease, cx: &App) -> bool {
+        self.reader.upgrade().is_some_and(|reader| reader.read(cx).admits_native_visit(
+            self.place, &self.route, None, self.root, lease, None, None, cx,
+        ))
+    }
+
+    fn resource(&self, cx: &App) -> bool { self.admits(&self.lease, cx) }
+    fn local(&self, cx: &App) -> bool { self.admits(&NativeActionLease::LocalUi, cx) }
+}
+
+#[derive(Clone)]
 struct FindActionSource {
     links: super::super::region::Links,
     route: BrowseRoute,
     key: BrowseKey,
     root: VersionedRoot,
+    visit: CurrentBrowseVisit,
 }
 
 impl FindActionSource {
-    fn new(route: &BrowseRoute, ctx: &Ctx<'_>, cx: &App) -> Self {
+    fn new(route: &BrowseRoute, ctx: &Ctx<'_>, cx: &Context<Reader>) -> Self {
         Self {
             links: ctx.links.clone(),
             route: route.clone(),
             key: route.into(),
             root: ctx.links.snapshot(cx).key(),
+            visit: CurrentBrowseVisit::new(ctx, cx),
         }
     }
 
@@ -168,6 +204,9 @@ impl FindActionSource {
             bool,
         ) -> Result<R, &'static str>,
     ) -> Result<R, &'static str> {
+        if !self.visit.resource(cx) {
+            return Err("Find changed before that action. Choose a result from the current reading.");
+        }
         let store = self.links.store.read(cx);
         let snapshot = store.snapshot();
         if snapshot.route() != &Route::Orbit(OrbitRoute::Browse(self.route.clone()))
@@ -208,19 +247,26 @@ impl FindActionSource {
     }
 
     fn failed_retry(&self, cx: &App) -> Result<(), &'static str> {
-        self.resource(cx, |resource, root, serving| {
-            if matches!(
-                admit_resource(resource, root, serving),
-                ResourceAdmission::Failed {
-                    terminal: ResourceTerminal::Fault(_),
-                    ..
-                }
-            ) {
-                Ok(())
-            } else {
-                Err("That Find failure is no longer current. Retry the failure now shown.")
+        if !self.visit.local(cx) {
+            return Err("Find changed before that retry. Use the current page.");
+        }
+        let store = self.links.store.read(cx);
+        let snapshot = store.snapshot();
+        if snapshot.route() != &self.visit.route || snapshot.overlay().is_some() {
+            return Err("Find changed before that retry. Use the current page.");
+        }
+        let resource = store.pages().browse(&self.key);
+        if matches!(
+            admit_resource(&resource, snapshot.key(), store.owner_serving()),
+            ResourceAdmission::Failed {
+                terminal: ResourceTerminal::Fault(_),
+                ..
             }
-        })
+        ) {
+            Ok(())
+        } else {
+            Err("That Find failure is no longer current. Retry the failure now shown.")
+        }
     }
 }
 
@@ -437,6 +483,8 @@ fn find_actions(
     let compare_source = source.clone();
     let compare_reader = cx.weak_entity();
     let reader = cx.weak_entity();
+    let held_visit = source.visit.clone();
+    let refine_visit = source.visit.clone();
     let acquire = Some(crate::shell::acquire::add_actions(
         &ctx.links,
         cx.entity_id(),
@@ -447,10 +495,21 @@ fn find_actions(
         scroll: ctx.reader_scroll.clone(),
         initial_held: ctx.find_held.clone(),
         persist_held: Rc::new(move |held, cx| {
-            let _ = reader.update(cx, |reader, cx| reader.set_find_held(held, cx));
+            if held_visit.local(cx) {
+                let _ = reader.update(cx, |reader, cx| reader.set_find_held(held, cx));
+            }
         }),
+        return_focus: {
+            let reader = cx.weak_entity();
+            Rc::new(move |focus, window, cx| {
+                reader.upgrade().map_or(facet::browse::library::ReturnDisposition::Invalid, |reader| {
+                    reader.update(cx, |reader, cx| reader.return_find_query_focus(focus, window, cx))
+                })
+            })
+        },
         query_input: Rc::new(query_input),
         refine: Rc::new(move |text, cx| {
+            if !refine_visit.local(cx) { return; }
             let query = if text.trim().is_empty() {
                 None
             } else {
@@ -515,18 +574,31 @@ struct CompareActionSource {
     links: super::super::region::Links,
     selection: CompareSet,
     root: VersionedRoot,
+    visit: CurrentBrowseVisit,
 }
 
 impl CompareActionSource {
-    fn new(selection: &CompareSet, ctx: &Ctx<'_>, cx: &App) -> Self {
+    fn new(selection: &CompareSet, ctx: &Ctx<'_>, cx: &Context<Reader>) -> Self {
         Self {
             links: ctx.links.clone(),
             selection: selection.clone(),
             root: ctx.links.snapshot(cx).key(),
+            visit: CurrentBrowseVisit::new(ctx, cx),
         }
     }
 
     fn current<R>(
+        &self,
+        cx: &App,
+        member: impl FnOnce(&CompareModel) -> Option<R>,
+    ) -> Result<R, &'static str> {
+        if !self.visit.resource(cx) {
+            return Err("Compare changed before that action. Choose from the current reading.");
+        }
+        self.current_data(cx, member)
+    }
+
+    fn current_data<R>(
         &self,
         cx: &App,
         member: impl FnOnce(&CompareModel) -> Option<R>,
@@ -641,7 +713,7 @@ fn compare_actions(
     };
     let source = CompareActionSource::new(selection, ctx, cx);
     facet::browse::compare::Actions {
-        active: ctx.native_input_active && source.current(cx, |_| Some(())).is_ok(),
+        active: ctx.native_input_active && source.current_data(cx, |_| Some(())).is_ok(),
         scroll: ctx.reader_scroll.clone(),
         open_package: compare_package_action(source.clone()),
         open_symbol: compare_symbol_action(source.clone(), false),

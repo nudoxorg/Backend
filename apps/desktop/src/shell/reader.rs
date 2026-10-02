@@ -48,7 +48,7 @@ use facet::tokens::ty;
 use facet::tokens::fluid::{NOTES, Notes, READER_PAD, READER_TOP, WIDE_FOLIO};
 use facet::{ActiveFacet as _, Measure, Space};
 use gpui::{
-    AppContext as _, Bounds, Context, ElementId, Entity, InteractiveElement, IntoElement, ParentElement, Pixels, Point,
+    App, AppContext as _, Bounds, Context, ElementId, Entity, FocusHandle, InteractiveElement, IntoElement, ParentElement, Pixels, Point,
     Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Window, div, point, px, size,
 };
 use std::cell::{Cell, RefCell};
@@ -401,6 +401,15 @@ pub(crate) enum NativeActionLease {
     Resource { attachment: Option<OwnerAttachment>, stamp: Option<(PageKey, Stamp)> },
 }
 
+#[derive(Clone)]
+struct FindFocusReturn {
+    place: u64,
+    route: Route,
+    root: crate::core::VersionedRoot,
+    focused: FocusHandle,
+    interruption: u64,
+}
+
 /// The reader region.
 pub(crate) struct Reader {
     core: RegionCore,
@@ -434,6 +443,8 @@ pub(crate) struct Reader {
     /// A Back return belongs to one visit, and waits for its live control to
     /// mount before transferring native focus from the Shell.
     native_return: Option<NativeReturn>,
+    /// The Find query's exact focused handle before Ask took the keyboard.
+    find_focus_return: Option<FindFocusReturn>,
     /// Tab/J/overlay interruptions invalidate a deferred component return.
     native_return_interruption: u64,
     /// What the last frame was laid out for: width, height, text scale,
@@ -514,6 +525,7 @@ impl Reader {
             reveal: Rc::new(Cell::new(false)),
             source_focus_applied: Rc::new(Cell::new(None)),
             native_return: None,
+            find_focus_return: None,
             native_return_interruption: 0,
             laid_out: None,
             lens: Lens::Reference,
@@ -789,10 +801,51 @@ impl Reader {
 
     pub(crate) fn cancel_native_return(&mut self) {
         self.native_return = None;
+        self.find_focus_return = None;
         self.native_return_interruption = self.native_return_interruption.wrapping_add(1);
         for entry in &self.library_state.entries {
             entry.state.borrow_mut().cancel_return();
         }
+    }
+
+    pub(crate) fn cancel_find_focus_return(&mut self) {
+        self.find_focus_return = None;
+    }
+
+    pub(crate) fn begin_find_focus_return(&mut self, focused: Option<FocusHandle>, cx: &App) {
+        self.find_focus_return = None;
+        let Some(focused) = focused else { return; };
+        let Some(place) = self.places.last() else { return; };
+        if !matches!(place.route, Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome | BrowseRoute::Find(_))))
+            || self.painted != Some(place.key) { return; }
+        self.find_focus_return = Some(FindFocusReturn {
+            place: place.key,
+            route: place.route.clone(),
+            root: self.links.snapshot(cx).key(),
+            focused,
+            interruption: self.native_return_interruption,
+        });
+    }
+
+    pub(crate) fn return_find_query_focus(
+        &mut self,
+        query: FocusHandle,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> facet::browse::library::ReturnDisposition {
+        use facet::browse::library::ReturnDisposition;
+        let Some(pending) = self.find_focus_return.clone() else { return ReturnDisposition::Invalid; };
+        let result = if pending.focused == query {
+            self.native_return_disposition(
+                pending.place, &pending.route, None, pending.root,
+                &NativeActionLease::LocalUi, pending.interruption, window, cx,
+            )
+        } else {
+            ReturnDisposition::Invalid
+        };
+        if result != ReturnDisposition::Waiting { self.find_focus_return = None; }
+        if result == ReturnDisposition::Applied { window.focus(&query, cx); }
+        result
     }
 
     pub(crate) fn admits_native_visit(
@@ -809,6 +862,7 @@ impl Reader {
         if self.places.last().is_none_or(|current| current.key != place)
             || self.route != *route
             || self.overlay != overlay
+            || self.links.snapshot(cx).route() != route
             || self.links.snapshot(cx).overlay() != overlay
         {
             return false;
@@ -895,7 +949,7 @@ impl Reader {
         {
             return ReturnDisposition::Invalid;
         }
-        if self.painted != Some(place) || !self.native_motion_settled() {
+        if self.painted != Some(place) || !self.native_input_allowed() {
             return ReturnDisposition::Waiting;
         }
         ReturnDisposition::Applied
@@ -987,6 +1041,7 @@ impl Reader {
         self.arrival = arrival.map(|arrival| Arrival { key: self.descents, ..arrival });
         self.targets.new_page();
         self.native_return = None;
+        self.find_focus_return = None;
     }
 
     fn remember_scroll(&mut self, route: Route, overlay: Option<Overlay>, offset: Point<Pixels>) {
@@ -2058,8 +2113,17 @@ impl Reader {
         self.arrival.is_none() && self.transit.is_none()
     }
 
-    fn native_input_allowed(&self) -> bool {
+    pub(crate) fn native_input_allowed(&self) -> bool {
         self.ask_background_input_allowed && self.native_motion_settled()
+    }
+
+    pub(crate) fn native_input_for(&self, route: &Route, overlay: Option<Overlay>) -> bool {
+        self.native_input_allowed() && self.route == *route && self.overlay == overlay
+            && self.places.last().is_some_and(|place| self.painted == Some(place.key))
+    }
+
+    pub(crate) fn current_place_key(&self) -> Option<u64> {
+        self.places.last().map(|place| place.key)
     }
 
     pub(crate) fn set_ask_scene(&mut self, geometry: Option<super::frame::AskGeometry>, background_input_allowed: bool, cx: &mut Context<Self>) {

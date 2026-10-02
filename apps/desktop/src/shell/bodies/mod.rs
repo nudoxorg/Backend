@@ -224,6 +224,11 @@ impl Ctx<'_> {
         }
     }
 
+    pub(crate) fn native_resource_lease(&self, cx: &Context<Reader>) -> super::reader::NativeActionLease {
+        let snapshot = self.links.snapshot(cx);
+        self.native_lease(snapshot.route(), snapshot.overlay(), false, None, NativeActionKind::Resource, cx)
+    }
+
     /// A mounted facet row supplies the handle; Reader owns whether a later
     /// deferred transfer is still the settled, current keyboard visit.
     pub(crate) fn native_return_focus(
