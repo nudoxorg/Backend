@@ -5,6 +5,14 @@
 //! requested paths into one effective Cargo workspace may therefore repeat
 //! an observation in separate workers; there are exactly two workers, and
 //! each cache keeps its existing 128 MiB retention ceiling.
+//! Each worker reserves its only reply-payload permit before execution, so
+//! at most two reply payloads exist across worker locals and the completion
+//! queue. Admission retains at most 64 tiny owed tickets, plus at most two
+//! late worker receipts after deadline terminalization.
+//!
+//! While open, slow source I/O cannot hold the owner loop or block health and
+//! search reads. Joined close is cooperative: an uninterruptible OS file read
+//! cannot be cancelled mid-syscall and may delay shutdown.
 
 use super::super::browse::{BrowseCache, ObservationControl, with_observation_control};
 use super::super::registry::RegistryGateway;
@@ -89,6 +97,7 @@ impl AdvisorySelection {
 }
 
 struct Completion {
+    shard: usize,
     ticket: u64,
     request_id: u64,
     owner_cursor: backend_engine::Cursor,
@@ -107,8 +116,9 @@ struct Outstanding {
 #[derive(Default)]
 struct CompletionQueue {
     ready: VecDeque<Completion>,
-    /// At most one retained payload per worker; cancelled receipts are tiny.
-    payloads: usize,
+    /// A permit is reserved before execution and held through owner drain.
+    /// Each worker owns at most one local-or-queued reply payload.
+    payload_reserved: [bool; WORKERS],
     closed: bool,
 }
 
@@ -159,7 +169,7 @@ impl BrowseLane {
             lane.shards.push(shard);
             let worker = thread::Builder::new()
                 .name(format!("locald-cargo-browse-{index}"))
-                .spawn(move || run_worker(worker_shard, worker_completions, worker_executor))
+                .spawn(move || run_worker(index, worker_shard, worker_completions, worker_executor))
                 .map_err(|error| format!("start Cargo browse worker {index}: {error}"))?;
             lane.workers.push(worker);
         }
@@ -263,6 +273,7 @@ impl BrowseLane {
                 .unwrap_or_else(PoisonError::into_inner);
             for (ticket, request_id, owner_cursor, advisory) in superseded {
                 completed.ready.push_back(Completion {
+                    shard: index,
                     ticket,
                     request_id,
                     owner_cursor,
@@ -291,8 +302,12 @@ impl BrowseLane {
                 .queue
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            queue.payloads = 0;
             let completed = queue.ready.drain(..).collect::<Vec<_>>();
+            for completion in &completed {
+                if matches!(&completion.terminal, Terminal::Reply(_)) {
+                    queue.payload_reserved[completion.shard] = false;
+                }
+            }
             drop(queue);
             self.completions.capacity.notify_all();
             completed
@@ -377,6 +392,9 @@ impl BrowseLane {
             drop(queue);
             shard.ready.notify_all();
         }
+        // Cancellation stops Cargo through the platform capture boundary.
+        // A source-file OS read may be uninterruptible; joining honestly waits
+        // for that read rather than detaching an unbounded worker.
         for worker in self.workers.drain(..) {
             let _ = worker.join();
         }
@@ -416,7 +434,12 @@ fn shard_for(command: &SurfaceCommand) -> usize {
     usize::from(requested[0]) % WORKERS
 }
 
-fn run_worker(shard: Arc<Shard>, completions: Arc<Completions>, executor: Arc<ExecuteBrowse>) {
+fn run_worker(
+    index: usize,
+    shard: Arc<Shard>,
+    completions: Arc<Completions>,
+    executor: Arc<ExecuteBrowse>,
+) {
     let mut cache = BrowseCache::default();
     loop {
         let job = {
@@ -438,11 +461,30 @@ fn run_worker(shard: Arc<Shard>, completions: Arc<Completions>, executor: Arc<Ex
                     .unwrap_or_else(PoisonError::into_inner);
             }
         };
+        let mut reserved_payload = false;
         let terminal = if job.control.is_cancelled() {
             Terminal::Cancelled
         } else if job.control.is_expired() {
             Terminal::Deadline
         } else {
+            // Reserve the worker's only payload permit before the executor
+            // can allocate a reply. Another shard has its own permit.
+            let mut completed = completions
+                .queue
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            while !completed.closed && completed.payload_reserved[index] {
+                completed = completions
+                    .capacity
+                    .wait(completed)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+            if completed.closed {
+                return;
+            }
+            completed.payload_reserved[index] = true;
+            reserved_payload = true;
+            drop(completed);
             let reply = catch_unwind(AssertUnwindSafe(|| {
                 with_observation_control(Arc::clone(&job.control), || {
                     executor(
@@ -479,17 +521,15 @@ fn run_worker(shard: Arc<Shard>, completions: Arc<Completions>, executor: Arc<Ex
             .queue
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        while !completed.closed && payload && completed.payloads >= WORKERS {
-            completed = completions
-                .capacity
-                .wait(completed)
-                .unwrap_or_else(PoisonError::into_inner);
-        }
         if completed.closed {
             return;
         }
-        completed.payloads += usize::from(payload);
+        if reserved_payload && !payload {
+            completed.payload_reserved[index] = false;
+            completions.capacity.notify_all();
+        }
         completed.ready.push_back(Completion {
+            shard: index,
             ticket: job.ticket,
             request_id: job.request_id,
             owner_cursor: job.owner_cursor,
@@ -547,6 +587,13 @@ mod tests {
             .map(|index| tree(&format!("/tmp/browse-lane-other-{index}")))
             .find(|candidate| shard_for(candidate) != shard_for(command))
             .expect("a different request-root shard")
+    }
+
+    fn same_shard(command: &SurfaceCommand) -> SurfaceCommand {
+        (0..100)
+            .map(|index| tree(&format!("/tmp/browse-lane-same-{index}")))
+            .find(|candidate| candidate != command && shard_for(candidate) == shard_for(command))
+            .expect("another request in the same shard")
     }
 
     fn wait_for(
@@ -640,6 +687,72 @@ mod tests {
         assert!(matches!(new, Some(Terminal::Reply(_))));
         lane.close();
         assert!(lane.workers.is_empty());
+    }
+
+    #[test]
+    fn reply_payload_permit_is_reserved_before_execution_per_shard() {
+        use std::sync::atomic::AtomicUsize;
+        let first = tree("/tmp/browse-lane-payload-first");
+        let second = same_shard(&first);
+        let independent = other_shard(&first);
+        let same_started = Arc::new(AtomicUsize::new(0));
+        let independent_started = Arc::new(AtomicUsize::new(0));
+        let executor = {
+            let same_started = Arc::clone(&same_started);
+            let independent_started = Arc::clone(&independent_started);
+            let independent = independent.clone();
+            Arc::new(
+                move |_: &mut BrowseCache,
+                      command: SurfaceCommand,
+                      _: Option<&backend_engine::advisory::AdvisoryAuthority>,
+                      _: &ObservationControl| {
+                    if command == independent {
+                        independent_started.fetch_add(1, Ordering::AcqRel);
+                    } else {
+                        same_started.fetch_add(1, Ordering::AcqRel);
+                    }
+                    CommandReply::Failed(CommandFailure::InvalidQuery("payload".to_owned()))
+                },
+            ) as Arc<ExecuteBrowse>
+        };
+        let mut lane = BrowseLane::start_with(executor).expect("browse lane");
+        for (ticket, command) in [(1, first), (2, second), (3, independent)] {
+            lane.submit(ticket, ticket, backend_engine::Cursor::new(), command, None)
+                .expect("bounded request");
+        }
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let queued = lane
+                .completions
+                .queue
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if queued.ready.len() == 2 {
+                assert!(queued.payload_reserved.iter().all(|reserved| *reserved));
+                break;
+            }
+            drop(queued);
+            assert!(
+                Instant::now() < deadline,
+                "independent reply did not complete"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(same_started.load(Ordering::Acquire), 1);
+        assert_eq!(independent_started.load(Ordering::Acquire), 1);
+        let completions = lane.drain();
+        assert_eq!(completions.len(), 2);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while same_started.load(Ordering::Acquire) != 2 {
+            assert!(
+                Instant::now() < deadline,
+                "second same-shard job did not start"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        let (_, _, _, _, terminal) = wait_for(&mut lane, 2, Duration::from_secs(1));
+        assert!(matches!(terminal, Terminal::Reply(_)));
+        lane.close();
     }
 
     #[test]
