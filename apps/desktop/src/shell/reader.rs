@@ -732,14 +732,17 @@ impl Reader {
             || self.route != *route
             || self.overlay != overlay
             || self.links.snapshot(cx).overlay() != overlay
-            || !self.links.snapshot(cx).key().same_authority(root)
         {
             return false;
         }
+        // Local setup and recovery belong to this mounted visit, not to a
+        // producer. A fresh installation has an intentionally unserved root.
+        if matches!(lease, NativeActionLease::LocalUi) { return true; }
+        if !self.links.snapshot(cx).key().same_authority(root) { return false; }
         let store = self.links.store.read(cx);
         if !store.snapshot().key().same_authority(root) { return false; }
         let read_stamp = match lease {
-            NativeActionLease::LocalUi => None,
+            NativeActionLease::LocalUi => unreachable!("local UI returned before owner admission"),
             NativeActionLease::OwnerSnapshot(attachment) => {
                 if attachment.as_ref().is_none_or(|attachment| !store.admits_owner_attachment(attachment)) { return false; }
                 None
@@ -751,7 +754,6 @@ impl Reader {
                 stamp.as_ref()
             }
         };
-        if matches!(lease, NativeActionLease::LocalUi) { return true; }
         if let Route::CargoSource(file) = route {
             if !matches!(lease, NativeActionLease::Resource { .. }) || read_stamp.is_none() { return false; }
             let Ok(package) = crate::model::pages::PackageRef::parse(file.package.as_str()) else { return false };
