@@ -25,12 +25,13 @@ use backend_library::{
 };
 use backend_mcp::{decode_reply, encode_request};
 use std::ffi::OsString;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command as ProcessCommand, Output, Stdio};
+use std::process::{Child, ChildStdin, Command as ProcessCommand, Output, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -175,6 +176,288 @@ impl ChildGuard {
         }
         child.wait().expect("wait crashed locald");
     }
+
+    /// Leaves a successful owner for the parent runner's native GPUI receipt
+    /// consumer. The runner writes the PID before this is called and owns its
+    /// termination trap for the remainder of the joined lane.
+    fn handoff_to_runner(&mut self) {
+        self.child.take();
+    }
+}
+
+/// A real MCP JSON-RPC process whose protocol session remains open while its
+/// local owner is stopped and restarted.
+struct ProductMcpProcess {
+    child: Child,
+    stdin: Option<ChildStdin>,
+    replies: Receiver<String>,
+    reader: Option<thread::JoinHandle<()>>,
+    next_id: u64,
+    pid_file: PathBuf,
+}
+
+impl ProductMcpProcess {
+    fn spawn(
+        binary: &Path,
+        workspace: &Path,
+        endpoint: &Path,
+        stderr: &Path,
+        pid_file: &Path,
+    ) -> Self {
+        let mut command = ProcessCommand::new(binary);
+        scrub_owner_environment(&mut command);
+        command
+            .arg("--workspace")
+            .arg(workspace)
+            .arg("--endpoint")
+            .arg(endpoint)
+            .env("BACKEND_LOCALD_BIN", workspace.join("no-autostart-locald"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::from(std::fs::File::create(stderr).expect("MCP stderr evidence")));
+        let mut child = command.spawn().expect("spawn product backend-mcp");
+        let stdin = child.stdin.take().expect("product MCP stdin");
+        let stdout = child.stdout.take().expect("product MCP stdout");
+        let (sender, replies) = mpsc::channel();
+        let reader = thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if sender.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            child,
+            stdin: Some(stdin),
+            replies,
+            reader: Some(reader),
+            next_id: 1,
+            pid_file: pid_file.to_owned(),
+        }
+    }
+
+    fn notify(&mut self, value: serde_json::Value) {
+        let stdin = self.stdin.as_mut().expect("MCP stdin is open");
+        writeln!(stdin, "{value}").expect("write MCP notification");
+        stdin.flush().expect("flush MCP notification");
+    }
+
+    fn request(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+        let id = self.next_id;
+        self.next_id = self.next_id.checked_add(1).expect("MCP request id");
+        self.notify(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        }));
+        let deadline = Instant::now() + DEADLINE;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "MCP {method} request {id} timed out");
+            match self.replies.recv_timeout(remaining.min(Duration::from_millis(250))) {
+                Ok(line) => {
+                    let reply: serde_json::Value = serde_json::from_str(&line)
+                        .unwrap_or_else(|error| panic!("product MCP emitted invalid JSON: {error}"));
+                    if reply.get("id").and_then(serde_json::Value::as_u64) == Some(id) {
+                        return reply;
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    panic!("product MCP exited before request {id} replied")
+                }
+            }
+        }
+    }
+
+    fn initialize(&mut self) {
+        let initialized = self.request(
+            "initialize",
+            serde_json::json!({
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": {"name": "nudox-live-readiness", "version": "1"},
+            }),
+        );
+        assert!(initialized.get("error").is_none(), "MCP initialize failed: {initialized}");
+        assert!(initialized["result"]["protocolVersion"].is_string());
+        self.notify(serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": {},
+        }));
+    }
+
+    fn package_profile(&mut self, coordinate: &str) -> serde_json::Value {
+        let package = PackageReference::parse(coordinate).expect("MCP package reference");
+        let command = SurfaceCommand::PackageProfile { package };
+        self.request(
+            "tools/call",
+            serde_json::json!({
+                "name": "backend.surface",
+                "arguments": { "command": serde_json::to_value(command).expect("MCP surface command") },
+            }),
+        )
+    }
+
+    fn status(&mut self) -> serde_json::Value {
+        self.request(
+            "tools/call",
+            serde_json::json!({ "name": "backend.status", "arguments": {} }),
+        )
+    }
+
+    fn pid(&self) -> u32 {
+        self.child.id()
+    }
+}
+
+impl Drop for ProductMcpProcess {
+    fn drop(&mut self) {
+        drop(self.stdin.take());
+        if self.child.try_wait().expect("poll product MCP").is_none() {
+            let _ = self.child.kill();
+        }
+        let _ = self.child.wait();
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+        let _ = std::fs::remove_file(&self.pid_file);
+    }
+}
+
+fn scrub_owner_environment(command: &mut ProcessCommand) {
+    let allow = [
+        "PATH",
+        "HOME",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "LANG",
+        "LC_ALL",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "CURL_CA_BUNDLE",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+    ];
+    let inherited = allow
+        .iter()
+        .filter_map(|name| std::env::var_os(name).map(|value| ((*name).to_owned(), value)))
+        .collect::<Vec<_>>();
+    command.env_clear();
+    for (name, value) in inherited {
+        command.env(name, value);
+    }
+}
+
+fn product_path(name: &str) -> PathBuf {
+    let variable = format!("NUDOX_LIVE_{}_BIN", name.to_ascii_uppercase());
+    let path = std::env::var_os(&variable)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("{variable} is required; the joined lane uses product binaries"));
+    assert!(path.is_absolute(), "{variable} must be absolute");
+    let path = path.canonicalize().unwrap_or_else(|error| panic!("{variable}: {error}"));
+    assert!(path.is_file(), "{variable} is not a file: {}", path.display());
+    path
+}
+
+fn sha256_file(path: &Path) -> String {
+    let output = ProcessCommand::new("sha256sum")
+        .arg(path)
+        .output()
+        .expect("run sha256sum for exact product binary");
+    assert!(output.status.success(), "sha256sum failed for {}", path.display());
+    String::from_utf8(output.stdout)
+        .expect("sha256sum UTF-8")
+        .split_whitespace()
+        .next()
+        .expect("shasum digest")
+        .to_owned()
+}
+
+fn joined_build_receipt() -> (serde_json::Value, String) {
+    let receipt_path = std::env::var_os("NUDOX_LIVE_BUILD_RECEIPT")
+        .map(PathBuf::from)
+        .expect("NUDOX_LIVE_BUILD_RECEIPT is required");
+    let bytes = std::fs::read(&receipt_path).expect("read frozen product build receipt");
+    let receipt: serde_json::Value = serde_json::from_slice(&bytes).expect("decode build receipt");
+    assert_eq!(receipt["schema"], "nudox.live.product-build.v1");
+
+    let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("repository root");
+    let git = |argument: &str| {
+        let output = ProcessCommand::new("git")
+            .arg("-C")
+            .arg(&repository)
+            .args(argument.split_whitespace())
+            .output()
+            .expect("read source provenance");
+        assert!(output.status.success(), "git {argument} failed");
+        String::from_utf8(output.stdout).expect("git UTF-8").trim().to_owned()
+    };
+    let head = git("rev-parse HEAD");
+    let tree = git("rev-parse HEAD^{tree}");
+    assert!(git("status --porcelain --untracked-files=all").is_empty(), "joined readiness requires a clean source tree");
+    assert_eq!(receipt["git_head"], head, "product build was made from a different source head");
+    assert_eq!(receipt["git_tree"], tree, "product build source tree changed");
+    let lock = std::fs::read(repository.join("Cargo.lock")).expect("read Cargo.lock");
+    let lock_hash = sha256_bytes(&lock);
+    assert_eq!(receipt["cargo_lock_sha256"], lock_hash, "product build lockfile differs");
+
+    let target = PathBuf::from(
+        receipt["target_dir"]
+            .as_str()
+            .expect("build receipt target_dir"),
+    )
+    .canonicalize()
+    .expect("canonical product target directory");
+    let binaries = [
+        ("locald", product_path("locald")),
+        ("cli", product_path("cli")),
+        ("mcp", product_path("mcp")),
+    ];
+    for (name, binary) in binaries {
+        let recorded = PathBuf::from(
+            receipt["binaries"][name]["path"]
+                .as_str()
+                .unwrap_or_else(|| panic!("build receipt omitted {name} path")),
+        )
+        .canonicalize()
+        .unwrap_or_else(|error| panic!("canonical {name} build receipt path: {error}"));
+        assert_eq!(binary, recorded, "{name} binary is not the receipt-bound product");
+        assert!(binary.starts_with(&target), "{name} binary is outside the fresh target directory");
+        assert_eq!(receipt["binaries"][name]["sha256"], sha256_file(&binary), "{name} binary hash changed");
+    }
+    (receipt, blake3::hash(&bytes).to_hex().to_string())
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    let mut child = ProcessCommand::new("sha256sum")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn sha256sum for Cargo.lock");
+    child.stdin.take().expect("sha256sum stdin").write_all(bytes).expect("write Cargo.lock digest input");
+    let output = child.wait_with_output().expect("wait for sha256sum");
+    assert!(output.status.success(), "sha256sum failed for Cargo.lock");
+    String::from_utf8(output.stdout)
+        .expect("sha256sum UTF-8")
+        .split_whitespace()
+        .next()
+        .expect("Cargo.lock SHA-256")
+        .to_owned()
 }
 
 fn run_bounded(mut command: ProcessCommand, label: &str) -> Output {
@@ -265,6 +548,144 @@ fn keep_workspace() -> bool {
 
 fn endpoint_for(workspace: &Path) -> PathBuf {
     backend_runtime::derive_endpoint(workspace)
+}
+
+fn joined_private_directory(path: &Path) {
+    std::fs::create_dir(path).unwrap_or_else(|error| panic!("create {}: {error}", path.display()));
+    #[cfg(unix)]
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+        .unwrap_or_else(|error| panic!("restrict {}: {error}", path.display()));
+}
+
+fn product_locald_args(workspace: &Path, endpoint: &Path, offline: bool) -> Vec<OsString> {
+    let mut args = vec![
+        OsString::from("--workspace"),
+        workspace.as_os_str().to_owned(),
+        OsString::from("--endpoint"),
+        endpoint.as_os_str().to_owned(),
+        OsString::from("--profile"),
+        OsString::from("builtin"),
+        OsString::from("--idle-timeout-ms"),
+        OsString::from("0"),
+    ];
+    if offline {
+        args.push(OsString::from("--registry-offline"));
+    }
+    args
+}
+
+fn assert_mcp_success(reply: &serde_json::Value, label: &str) {
+    assert!(reply.get("error").is_none(), "{label} MCP protocol error: {reply}");
+    assert_eq!(reply["result"]["isError"], false, "{label} MCP tool error: {reply}");
+}
+
+fn assert_mcp_package_profile(reply: &serde_json::Value, coordinate: &str) {
+    assert_mcp_success(reply, "package profile");
+    assert!(
+        serde_json::to_string(reply)
+            .expect("MCP package profile JSON")
+            .contains(coordinate),
+        "MCP package profile omitted exact package {coordinate}: {reply}"
+    );
+}
+
+fn spawn_product_locald(
+    binary: &Path,
+    workspace: &Path,
+    endpoint: &Path,
+    offline: bool,
+    log_path: &Path,
+) -> ChildGuard {
+    let log = std::fs::File::create(log_path).expect("create private locald log");
+    let stdout = log.try_clone().expect("clone locald log handle");
+    let mut command = ProcessCommand::new(binary);
+    scrub_owner_environment(&mut command);
+    command
+        .args(product_locald_args(workspace, endpoint, offline))
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(log));
+    let child = command.spawn().expect("spawn product backend-locald");
+    ChildGuard { child: Some(child) }
+}
+
+fn product_cli(cli: &Path, workspace: &Path, endpoint: &Path, args: &[&str], label: &str) -> Output {
+    let mut command = ProcessCommand::new(cli);
+    scrub_owner_environment(&mut command);
+    command
+        .arg("--workspace")
+        .arg(workspace)
+        .arg("--endpoint")
+        .arg(endpoint)
+        .arg("--format")
+        .arg("json")
+        .args(args)
+        .env("BACKEND_LOCALD_BIN", workspace.join("no-autostart-locald"));
+    run_bounded(command, label)
+}
+
+fn package_profile_surface(coordinate: &str) -> String {
+    serde_json::to_string(&SurfaceCommand::PackageProfile {
+        package: PackageReference::parse(coordinate).expect("package profile reference"),
+    })
+    .expect("encode package profile surface")
+}
+
+fn turso_sql(turso: &Path, database: &Path, sql: &str, label: &str) -> String {
+    let mut command = ProcessCommand::new(turso);
+    scrub_owner_environment(&mut command);
+    command
+        .arg("-m")
+        .arg("list")
+        .arg("--experimental-multiprocess-wal")
+        .arg(database)
+        .arg(sql);
+    let output = run_bounded(command, label);
+    assert_process_success(&output, label);
+    String::from_utf8(output.stdout)
+        .unwrap_or_else(|error| panic!("{label} output was not UTF-8: {error}"))
+        .trim()
+        .to_owned()
+}
+
+fn turso_vacuum_into(turso: &Path, database: &Path, snapshot: &Path, label: &str) {
+    let escaped = snapshot.to_string_lossy().replace('\'', "''");
+    let sql = format!("VACUUM INTO '{escaped}'");
+    let mut command = ProcessCommand::new(turso);
+    scrub_owner_environment(&mut command);
+    command
+        .arg("--experimental-multiprocess-wal")
+        .arg(database)
+        .arg(sql);
+    let output = run_bounded(command, label);
+    assert_process_success(&output, label);
+    assert!(snapshot.is_file(), "{label} did not create {}", snapshot.display());
+}
+
+fn remove_turso_sidecars(workspace: &Path) {
+    for database in ["projection.turso", "index-authority.turso"] {
+        for suffix in ["-wal", "-shm", "-tshm"] {
+            let sidecar = workspace.join(format!("{database}{suffix}"));
+            match std::fs::remove_file(&sidecar) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => panic!("remove stale Turso sidecar {}: {error}", sidecar.display()),
+            }
+        }
+    }
+}
+
+fn restore_turso_database(snapshot: &Path, destination: &Path) {
+    let parent = destination.parent().expect("Turso database parent");
+    let staged = parent.join(format!("{}.restore-stage", destination.file_name().expect("db name").to_string_lossy()));
+    std::fs::copy(snapshot, &staged).unwrap_or_else(|error| panic!("stage Turso restore: {error}"));
+    std::fs::rename(&staged, destination)
+        .unwrap_or_else(|error| panic!("atomically install Turso snapshot: {error}"));
+}
+
+fn write_json(path: &Path, value: &serde_json::Value) {
+    let bytes = serde_json::to_vec_pretty(value).expect("encode joined readiness artifact");
+    std::fs::write(path, bytes)
+        .unwrap_or_else(|error| panic!("write {}: {error}", path.display()));
 }
 
 fn authority_secret(root: &Path) -> PathBuf {
@@ -399,6 +820,7 @@ fn assert_nix_pin(case: LiveCase) {
 
 fn curl_get(url: &str, label: &str) -> Vec<u8> {
     let mut command = ProcessCommand::new("curl");
+    scrub_owner_environment(&mut command);
     command
         .arg("--fail")
         .arg("--silent")
@@ -416,6 +838,7 @@ fn curl_get(url: &str, label: &str) -> Vec<u8> {
 
 fn curl_status_and_headers(url: &str, label: &str, if_none_match: Option<&str>) -> (u16, String) {
     let mut command = ProcessCommand::new("curl");
+    scrub_owner_environment(&mut command);
     command
         .arg("--silent")
         .arg("--show-error")
@@ -1297,6 +1720,458 @@ fn selected_case() -> Vec<LiveCase> {
         "NUDOX_LIVE_ECOSYSTEMS selected no cases"
     );
     selected
+}
+
+fn hex32(bytes: &[u8; 32]) -> String {
+    let mut text = String::with_capacity(64);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(text, "{byte:02x}");
+    }
+    text
+}
+
+fn record_phase(path: &Path, phase: &str) {
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .unwrap_or_else(|error| panic!("open phase evidence {}: {error}", path.display()));
+    writeln!(file, "{phase}").expect("write phase evidence");
+    file.sync_all().expect("flush phase evidence");
+}
+
+fn publish_owner_pid(path: &Path, owner: &ChildGuard, binary: &Path) {
+    let pid = owner.child.as_ref().expect("live owner child").id();
+    std::fs::write(path, format!("{pid}\n{}\n", binary.display()))
+        .expect("publish exact product owner PID to runner cleanup");
+}
+
+fn publish_mcp_pid(path: &Path, mcp: &ProductMcpProcess, binary: &Path) {
+    std::fs::write(path, format!("{}\n{}\n", mcp.pid(), binary.display()))
+        .expect("publish exact product MCP PID to runner cleanup");
+}
+
+fn clear_owner_pid(path: &Path) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => panic!("clear stopped owner PID {}: {error}", path.display()),
+    }
+}
+
+fn joined_revision(endpoint: &Path, workspace: &Path) -> (String, Vec<String>) {
+    let mut session = Session::connect(endpoint).expect("joined-owner session");
+    let revision = session.revision().expect("joined-owner revision");
+    let root = hex32(revision.root.as_bytes());
+    let reply = session.packages().expect("joined-owner package snapshot");
+    let CommandReply::Packages(snapshot) = reply.reply else {
+        panic!("joined-owner packages reply changed shape");
+    };
+    assert_eq!(hex32(snapshot.root.root().as_bytes()), root, "package snapshot root differs from revision");
+    assert_eq!(
+        snapshot.root.rows().len(),
+        CASES.len(),
+        "fresh joined owner must contain exactly one package row for each of the seven pins"
+    );
+    let project = LocalProjectId::from_path(workspace).expect("joined workspace identity");
+    let mut desktop = LocalEngineClient::new(endpoint, project);
+    let mapped = desktop
+        .execute(&EngineRequest::Root {
+            request: RequestId::new(1),
+            basis: VersionedRoot::from_revision(1, revision.cursor(), 0),
+            cancel: CancellationToken::new(),
+        })
+        .expect("joined owner desktop root");
+    let EngineDto::Root { key, .. } = mapped else {
+        panic!("joined owner root reply changed shape");
+    };
+    assert_eq!(hex32(key.root().as_bytes()), root, "desktop actor saw a different root");
+    let pins = CASES.iter().map(|case| purl_with_version(*case)).collect::<Vec<_>>();
+    for pin in &pins {
+        assert_eq!(
+            snapshot.root.rows().iter().filter(|row| row.label.contains(pin)).count(),
+            1,
+            "the exact owner package snapshot must contain exactly one row for {pin}"
+        );
+        assert!(
+            snapshot.root.rows().iter().any(|row| row.label.contains(pin)),
+            "the exact owner root omitted ingested pin {pin}"
+        );
+    }
+    (root, pins)
+}
+
+#[test]
+#[ignore = "requires the joined public registry, product-binary, Turso, and native GPUI runners"]
+#[allow(clippy::too_many_lines)]
+fn joined_public_registry_readiness_uses_one_product_owner_and_turso_restore() {
+    assert_eq!(std::env::var("NUDOX_LIVE_REGISTRY").as_deref(), Ok("1"));
+    assert!(
+        std::env::var_os("NUDOX_LIVE_ECOSYSTEMS").is_none(),
+        "the joined lane cannot be filtered; all seven public registry pins are required"
+    );
+    let (build_receipt, build_receipt_blake3) = joined_build_receipt();
+    assert_eq!(CASES.len(), 7, "the source corpus must cover all supported registries");
+    for case in CASES {
+        assert!(case.ingest, "{} is not an ingest lane", case.lane);
+        assert_nix_pin(*case);
+    }
+
+    let artifact_root = std::env::var_os("NUDOX_LIVE_ARTIFACT_DIR")
+        .map(PathBuf::from)
+        .expect("NUDOX_LIVE_ARTIFACT_DIR is required");
+    let artifact_root = artifact_root
+        .canonicalize()
+        .expect("canonical unique live readiness run root");
+    let workspace = artifact_root.join("owner");
+    let evidence = artifact_root.join("evidence");
+    joined_private_directory(&workspace);
+    joined_private_directory(&evidence);
+    let phases = evidence.join("phases.txt");
+    let owner_pid_file = std::env::var_os("NUDOX_LIVE_OWNER_PID_FILE")
+        .map(PathBuf::from)
+        .expect("NUDOX_LIVE_OWNER_PID_FILE is required for exact owner cleanup");
+    let mcp_pid_file = std::env::var_os("NUDOX_LIVE_MCP_PID_FILE")
+        .map(PathBuf::from)
+        .expect("NUDOX_LIVE_MCP_PID_FILE is required for exact MCP cleanup");
+    let locald = product_path("locald");
+    let cli = product_path("cli");
+    let mcp_binary = product_path("mcp");
+    let turso = std::env::var_os("NUDOX_TURSO_SQLITE_BIN")
+        .map(PathBuf::from)
+        .expect("NUDOX_TURSO_SQLITE_BIN must select an explicit tursodb executable");
+    assert!(turso.is_absolute() && turso.is_file(), "Turso executable must be an absolute file");
+    let turso = turso.canonicalize().expect("canonical tursodb executable");
+    let endpoint = endpoint_for(&workspace);
+    let locald_log = evidence.join("locald-initial.log");
+    write_json(
+        &evidence.join("build-receipt-copy.json"),
+        &build_receipt,
+    );
+    write_json(
+        &evidence.join("run.json"),
+        &serde_json::json!({
+            "schema": "nudox.live.joined-run.v1",
+            "phase": "starting",
+            "workspace": workspace.display().to_string(),
+            "endpoint": endpoint.display().to_string(),
+            "build_receipt_blake3": build_receipt_blake3,
+        }),
+    );
+    record_phase(&phases, "owner-created-with-default-seven-official-native-sources");
+    let mut owner = spawn_product_locald(&locald, &workspace, &endpoint, false, &locald_log);
+    let owner_pid = owner.child.as_ref().expect("product locald child").id();
+    publish_owner_pid(&owner_pid_file, &owner, &locald);
+    wait_for_socket(&endpoint, &mut owner);
+
+    let mut mcp = ProductMcpProcess::spawn(
+        &mcp_binary,
+        &workspace,
+        &endpoint,
+        &evidence.join("mcp.stderr.log"),
+        &mcp_pid_file,
+    );
+    publish_mcp_pid(&mcp_pid_file, &mcp, &mcp_binary);
+    mcp.initialize();
+    let mcp_pid = mcp.pid();
+
+    let mut observed = Vec::with_capacity(CASES.len());
+    for case in CASES {
+        let coordinate = purl_with_version(*case);
+        record_phase(&phases, &format!("ingest:{}", case.lane));
+        let added = product_cli(
+            &cli,
+            &workspace,
+            &endpoint,
+            &["add", coordinate.as_str()],
+            "product CLI public registry add",
+        );
+        std::fs::write(evidence.join(format!("cli-add-{}.json", case.lane)), &added.stdout)
+            .expect("preserve product CLI add reply before assertions");
+        assert_process_success(&added, "product CLI public registry add");
+        let recorded_name = if case.lane == "cpp" { "conan:zlib" } else { case.package_name };
+        let package_details = product_cli(
+            &cli,
+            &workspace,
+            &endpoint,
+            &[
+                "surface",
+                &serde_json::to_string(&SurfaceCommand::Package {
+                    package: PackageReference::parse(&coordinate)
+                        .expect("exact public pin package reference"),
+                })
+                .expect("encode exact package details surface"),
+            ],
+            "product CLI exact registry package details",
+        );
+        std::fs::write(
+            evidence.join(format!("cli-package-{}.json", case.lane)),
+            &package_details.stdout,
+        )
+        .expect("preserve exact package details response before assertions");
+        assert_process_success(&package_details, "product CLI exact registry package details");
+        let (archive_bytes, record) = assert_registry_facts(*case, &endpoint, &coordinate, recorded_name);
+        write_json(
+            &evidence.join(format!("registry-facts-{}.json", case.lane)),
+            &serde_json::to_value(&record).expect("typed registry facts JSON"),
+        );
+        assert!(archive_bytes > 0, "{} archive was empty", case.lane);
+        let profile_json = package_profile_surface(&coordinate);
+        let profile = product_cli(
+            &cli,
+            &workspace,
+            &endpoint,
+            &["surface", profile_json.as_str()],
+            "product CLI registry package profile",
+        );
+        std::fs::write(
+            evidence.join(format!("cli-profile-{}.json", case.lane)),
+            &profile.stdout,
+        )
+        .expect("preserve product CLI profile before assertions");
+        assert_profile_json(&profile, &coordinate);
+        observed.push(serde_json::json!({
+            "lane": case.lane,
+            "coordinate": coordinate,
+            "archive_bytes": archive_bytes,
+            "registry_record": record,
+        }));
+    }
+
+    record_phase(&phases, "product-mcp-long-lived-session-first-pass");
+    for case in CASES {
+        let coordinate = purl_with_version(*case);
+        let reply = mcp.package_profile(&coordinate);
+        write_json(
+            &evidence.join(format!("mcp-profile-before-restart-{}.json", case.lane)),
+            &reply,
+        );
+        assert_mcp_package_profile(&reply, &coordinate);
+    }
+    let initial_status = mcp.status();
+    write_json(&evidence.join("mcp-status-before-restart.json"), &initial_status);
+    assert_mcp_success(&initial_status, "initial status");
+    let (initial_root, initial_pins) = joined_revision(&endpoint, &workspace);
+    assert_eq!(initial_pins.len(), 7);
+    write_json(
+        &evidence.join("ingested-owner.json"),
+        &serde_json::json!({
+            "schema": "nudox.live.joined-owner.v1",
+            "workspace": workspace.display().to_string(),
+            "endpoint": endpoint.display().to_string(),
+            "owner_pid": owner_pid,
+            "mcp_pid": mcp_pid,
+            "root": initial_root,
+            "packages": initial_pins,
+            "observed": observed,
+        }),
+    );
+
+    record_phase(&phases, "cold-owner-restart-same-workspace-and-mcp-process");
+    clear_owner_pid(&owner_pid_file);
+    owner.crash();
+    let mut restarted = spawn_product_locald(
+        &locald,
+        &workspace,
+        &endpoint,
+        true,
+        &evidence.join("locald-cold-restart.log"),
+    );
+    publish_owner_pid(&owner_pid_file, &restarted, &locald);
+    wait_for_socket(&endpoint, &mut restarted);
+    let status = mcp.status();
+    write_json(&evidence.join("mcp-status-after-cold-restart.json"), &status);
+    assert_mcp_success(&status, "status after cold restart");
+    assert_eq!(mcp.pid(), mcp_pid, "the MCP JSON-RPC process was replaced across daemon restart");
+    for case in CASES {
+        let coordinate = purl_with_version(*case);
+        let reply = mcp.package_profile(&coordinate);
+        write_json(
+            &evidence.join(format!("mcp-profile-after-cold-restart-{}.json", case.lane)),
+            &reply,
+        );
+        assert_mcp_package_profile(&reply, &coordinate);
+    }
+    let (restarted_root, restarted_pins) = joined_revision(&endpoint, &workspace);
+    assert_eq!(restarted_root, initial_root, "cold daemon restart changed the package root");
+    assert_eq!(restarted_pins, initial_pins);
+
+    record_phase(&phases, "physical-turso-vacuum-and-in-place-restore");
+    clear_owner_pid(&owner_pid_file);
+    restarted.crash();
+    let turso_evidence = evidence.join("turso");
+    joined_private_directory(&turso_evidence);
+    let projection = workspace.join("projection.turso");
+    let authority = workspace.join("index-authority.turso");
+    let projection_backup = turso_evidence.join("projection.vacuum-into.turso");
+    let authority_backup = turso_evidence.join("index-authority.vacuum-into.turso");
+    let projection_sql = "SELECT schema_version||'|'||hex(root)||'|'||row_count||'|'||(SELECT count(*) FROM backend_projection_rows)||'|'||hex(row_digest) FROM backend_projection_meta;";
+    let authority_sql = "SELECT schema_version||'|'||(SELECT count(*) FROM backend_index_authority_attempts)||'|'||(SELECT count(*) FROM backend_index_authority_observations)||'|'||(SELECT count(*) FROM backend_index_authority_scopes)||'|'||(SELECT count(*) FROM backend_index_authority_projection_watermarks) FROM backend_index_authority_meta;";
+    let projection_before = turso_sql(&turso, &projection, projection_sql, "projection metadata before backup");
+    let authority_before = turso_sql(&turso, &authority, authority_sql, "authority metadata before backup");
+    std::fs::write(turso_evidence.join("projection-before.txt"), &projection_before)
+        .expect("preserve original projection metadata");
+    std::fs::write(turso_evidence.join("authority-before.txt"), &authority_before)
+        .expect("preserve original authority metadata");
+    for (database, label) in [(&projection, "projection"), (&authority, "authority")] {
+        let integrity = turso_sql(&turso, database, "PRAGMA integrity_check;", "Turso integrity check");
+        std::fs::write(turso_evidence.join(format!("{label}-integrity-before.txt")), &integrity)
+            .expect("preserve original Turso integrity result");
+        assert_eq!(integrity, "ok", "{label} Turso database failed its integrity check");
+    }
+    turso_vacuum_into(&turso, &projection, &projection_backup, "VACUUM INTO projection snapshot");
+    turso_vacuum_into(&turso, &authority, &authority_backup, "VACUUM INTO authority snapshot");
+    let projection_snapshot = turso_sql(&turso, &projection_backup, projection_sql, "projection snapshot metadata");
+    let authority_snapshot = turso_sql(&turso, &authority_backup, authority_sql, "authority snapshot metadata");
+    std::fs::write(turso_evidence.join("projection-snapshot.txt"), &projection_snapshot)
+        .expect("preserve projection snapshot metadata");
+    std::fs::write(turso_evidence.join("authority-snapshot.txt"), &authority_snapshot)
+        .expect("preserve authority snapshot metadata");
+    assert_eq!(projection_snapshot, projection_before, "projection metadata changed in VACUUM INTO");
+    assert_eq!(authority_snapshot, authority_before, "authority metadata changed in VACUUM INTO");
+    std::fs::copy(&projection, turso_evidence.join("projection-original.turso"))
+        .expect("preserve pre-restore projection database");
+    std::fs::copy(&authority, turso_evidence.join("index-authority-original.turso"))
+        .expect("preserve pre-restore authority database");
+    remove_turso_sidecars(&workspace);
+    restore_turso_database(&projection_backup, &projection);
+    restore_turso_database(&authority_backup, &authority);
+    assert_eq!(sha256_file(&projection), sha256_file(&projection_backup), "restored projection file differs from its physical backup");
+    assert_eq!(sha256_file(&authority), sha256_file(&authority_backup), "restored authority file differs from its physical backup");
+    let projection_restored = turso_sql(&turso, &projection, projection_sql, "restored projection metadata");
+    let authority_restored = turso_sql(&turso, &authority, authority_sql, "restored authority metadata");
+    std::fs::write(turso_evidence.join("projection-restored.txt"), &projection_restored)
+        .expect("preserve restored projection metadata");
+    std::fs::write(turso_evidence.join("authority-restored.txt"), &authority_restored)
+        .expect("preserve restored authority metadata");
+    assert_eq!(projection_restored, projection_before);
+    assert_eq!(authority_restored, authority_before);
+    for (database, label) in [(&projection, "projection"), (&authority, "authority")] {
+        let integrity = turso_sql(
+            &turso,
+            database,
+            "PRAGMA integrity_check;",
+            "restored Turso integrity check",
+        );
+        std::fs::write(
+            turso_evidence.join(format!("{label}-integrity-restored.txt")),
+            &integrity,
+        )
+        .expect("preserve restored Turso integrity result");
+        assert_eq!(integrity, "ok", "restored {label} Turso database failed its integrity check");
+    }
+    remove_turso_sidecars(&workspace);
+
+    let mut restored = spawn_product_locald(
+        &locald,
+        &workspace,
+        &endpoint,
+        true,
+        &evidence.join("locald-after-turso-restore.log"),
+    );
+    publish_owner_pid(&owner_pid_file, &restored, &locald);
+    wait_for_socket(&endpoint, &mut restored);
+    let restored_status = mcp.status();
+    write_json(&evidence.join("mcp-status-after-turso-restore.json"), &restored_status);
+    assert_mcp_success(&restored_status, "status after Turso restore");
+    assert_eq!(mcp.pid(), mcp_pid, "the same MCP process must span backup restore");
+    for case in CASES {
+        let coordinate = purl_with_version(*case);
+        let profile_json = package_profile_surface(&coordinate);
+        let profile = product_cli(
+            &cli,
+            &workspace,
+            &endpoint,
+            &["surface", profile_json.as_str()],
+            "restored product CLI package profile",
+        );
+        std::fs::write(
+            evidence.join(format!("cli-profile-after-restore-{}.json", case.lane)),
+            &profile.stdout,
+        )
+        .expect("preserve restored CLI profile before assertions");
+        assert_profile_json(&profile, &coordinate);
+        let reply = mcp.package_profile(&coordinate);
+        write_json(
+            &evidence.join(format!("mcp-profile-after-restore-{}.json", case.lane)),
+            &reply,
+        );
+        assert_mcp_package_profile(&reply, &coordinate);
+    }
+    let (restored_root, restored_pins) = joined_revision(&endpoint, &workspace);
+    assert_eq!(restored_root, initial_root, "restored Turso owner changed the logical package root");
+    assert_eq!(restored_pins, initial_pins, "restored Turso owner changed the exact package set");
+
+    record_phase(&phases, "joined-owner-receipt-ready-for-native-gpui-consumer");
+    let build_receipt_path = PathBuf::from(
+        std::env::var_os("NUDOX_LIVE_BUILD_RECEIPT").expect("build receipt path"),
+    )
+    .canonicalize()
+    .expect("canonical build receipt path");
+    let handoff_path = evidence.join("gui-handoff.json");
+    let joined_receipt_path = evidence.join("joined-receipt.json");
+    let turso_backup_sha256 = serde_json::json!({
+        "projection": sha256_file(&projection_backup),
+        "index_authority": sha256_file(&authority_backup),
+        "tursodb": sha256_file(&turso),
+        "tursodb_path": turso.display().to_string(),
+    });
+    let joined_receipt = serde_json::json!({
+        "schema": "nudox.live.joined-registry-receipt.v1",
+        "git_head": build_receipt["git_head"],
+        "git_tree": build_receipt["git_tree"],
+        "cargo_lock_sha256": build_receipt["cargo_lock_sha256"],
+        "build_receipt": build_receipt_path.display().to_string(),
+        "build_receipt_blake3": build_receipt_blake3,
+        "workspace": workspace.display().to_string(),
+        "endpoint": endpoint.display().to_string(),
+        "owner_pid": restored.child.as_ref().expect("restored owner child").id(),
+        "mcp_pid": mcp_pid,
+        "root": restored_root,
+        "packages": restored_pins,
+        "turso_backup": turso_backup_sha256,
+        "registry_facts": observed,
+        "cold_restart": "passed-on-same-workspace-and-mcp-process",
+        "turso_restore": "passed-in-place-from-vacuum-into-images",
+    });
+    write_json(&joined_receipt_path, &joined_receipt);
+    let joined_receipt_bytes = std::fs::read(&joined_receipt_path).expect("read joined receipt bytes");
+    write_json(
+        &handoff_path,
+        &serde_json::json!({
+            "schema": "nudox.gui.live-handoff.v2",
+            "workspace": workspace.display().to_string(),
+            "endpoint": endpoint.display().to_string(),
+            "packages": restored_pins,
+            "root": restored_root,
+            "joined_receipt": joined_receipt_path.display().to_string(),
+            "joined_receipt_blake3": blake3::hash(&joined_receipt_bytes).to_hex().to_string(),
+            "build_receipt": build_receipt_path.display().to_string(),
+            "build_receipt_blake3": build_receipt_blake3,
+            "capture": "apps/desktop shell_capture live_registry_handoff_receipt_is_consumed_by_real_gpui_capture",
+            "requires_native_frame_and_accesskit": true,
+        }),
+    );
+    write_json(
+        &evidence.join("run.json"),
+        &serde_json::json!({
+            "schema": "nudox.live.joined-run.v1",
+            "phase": "ready-for-native-gpui-consumer",
+            "workspace": workspace.display().to_string(),
+            "endpoint": endpoint.display().to_string(),
+            "root": restored_root,
+            "packages": restored_pins,
+            "owner_pid": restored.child.as_ref().expect("restored owner").id(),
+            "mcp_pid": mcp_pid,
+            "build_receipt_blake3": build_receipt_blake3,
+        }),
+    );
+    publish_owner_pid(&owner_pid_file, &restored, &locald);
+    drop(mcp);
+    restored.handoff_to_runner();
+    drop(owner);
+    record_phase(&phases, "owner-left-running-only-for-immediate-gpui-consumer-and-shell-cleanup");
 }
 
 #[test]
