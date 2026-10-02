@@ -48,34 +48,70 @@ use std::time::{Duration, Instant};
 
 const INDEX_DEADLINE: Duration = Duration::from_mins(15);
 
+/// The repository root, spelled as Cargo spells the manifest directory: no
+/// `..` (the owner's private walk refuses parent traversal) and no `\\?\`
+/// verbatim prefix (`canonicalize` adds one on Windows, and the owner labels
+/// its rows with the plain spelling it was asked for).
 fn repo() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .expect("repository root")
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("apps/desktop is two below the repository root")
+        .to_path_buf()
+}
+
+/// A project of this repository, joined with the platform's separators.
+fn repo_project(relative: &[&str]) -> PathBuf {
+    relative
+        .iter()
+        .fold(repo(), |path, component| path.join(component))
+}
+
+/// Where the capture owner keeps its state unless `NUDOX_CAPTURE_STATE`
+/// names a fresh directory.
+fn default_capture_state() -> PathBuf {
+    #[cfg(unix)]
+    let state = PathBuf::from("/tmp/nx-shell-cap");
+    #[cfg(not(unix))]
+    let state = std::env::temp_dir().join("nx-shell-cap");
+    state
 }
 
 /// Starts an embedded owner and waits until every requested project is Ready.
 fn serve(projects: &[PathBuf]) -> (backend_desktop::DesktopHost, PathBuf) {
-    let state = PathBuf::from(std::env::var("NUDOX_CAPTURE_STATE").unwrap_or_else(|_| "/tmp/nx-shell-cap".to_owned()));
+    let state =
+        std::env::var_os("NUDOX_CAPTURE_STATE").map_or_else(default_capture_state, PathBuf::from);
     serve_at(projects, &state)
+}
+
+/// Creates `state` and `state/data` with owner-only access. The real owner
+/// refuses state beneath a directory other users can reach; the capture
+/// fixture is subject to that same check, including first boot.
+fn private_state(state: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(state.join("data"))
+    }
+    #[cfg(windows)]
+    {
+        // The parent is an ordinary directory of this user (a capture root or
+        // the temporary directory); `state` is the first owner-only one.
+        if let Some(parent) = state.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        backend_platform::durable::ensure_private_child_directory(state)?;
+        backend_platform::durable::ensure_private_directory(&state.join("data"))
+    }
 }
 
 fn serve_at(projects: &[PathBuf], state: &Path) -> (backend_desktop::DesktopHost, PathBuf) {
     let primary = projects.first().expect("at least one indexed project");
     let endpoint = PathBuf::from(format!("{}.sock", state.display()));
-    // The real owner refuses state beneath a group-readable directory. Keep
-    // the capture fixture subject to that same check, including first boot.
-    let mut private_dir = std::fs::DirBuilder::new();
-    private_dir.recursive(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt as _;
-        private_dir.mode(0o700);
-    }
-    private_dir
-        .create(state.join("data"))
-        .expect("private state dir");
+    private_state(state).expect("private state dir");
     let paths = backend_runtime::WorkspacePaths::discover(
         Some(primary.clone()),
         Some(state.join("data")),
@@ -200,8 +236,9 @@ impl Render for EarlySemanticErrorRoot {
     }
 }
 
-// Needs `gpui_platform::current_headless_renderer`, which only macOS provides.
-#[cfg(target_os = "macos")]
+// Needs `gpui_platform::current_headless_renderer`: Metal on macOS, the wgpu
+// offscreen target on Windows (Linux has none).
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[test]
 fn early_semantic_error_is_preserved_without_retaining_capture_entities() {
     let viewport = Viewport::new(64, 64, 1).expect("viewport");
@@ -1124,7 +1161,7 @@ fn capture_the_shell_over_a_real_index() {
     } else {
         std::fs::create_dir_all(&out).expect("out");
     }
-    let projects = vec![repo().join("crates/present"), repo().join("crates/runtime")];
+    let projects = vec![repo_project(&["crates", "present"]), repo_project(&["crates", "runtime"])];
     let project = projects.first().expect("primary project");
     let (host, endpoint) = serve(&projects);
     let mut subscription = backend_client::LocalSubscriptionTransport::connect(&endpoint).expect("subscription");

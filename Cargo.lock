@@ -1342,6 +1342,7 @@ version = "0.1.0"
 dependencies = [
  "gpui-ce",
  "gpui_ce_platform",
+ "gpui_ce_wgpu",
  "image",
  "serde",
  "serde_json",
@@ -5283,14 +5284,14 @@ dependencies = [
 [[package]]
 name = "gpui_ce_platform"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42fc3ad60af3e375b224e701a3e5db31f4def8e3a1099899882e937a9e9c12e9"
 dependencies = [
+ "anyhow",
  "console_error_panic_hook",
  "gpui-ce",
  "gpui_ce_linux",
  "gpui_ce_macos",
  "gpui_ce_web",
+ "gpui_ce_wgpu",
  "gpui_ce_windows",
 ]
 
@@ -5377,16 +5378,16 @@ dependencies = [
 [[package]]
 name = "gpui_ce_wgpu"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d986e05a9106ac0ecf048f9b5a4a6b030d6b538836dc3ad0a0686da01d4a830"
 dependencies = [
  "anyhow",
  "bytemuck",
  "cosmic-text",
+ "criterion",
  "etagere",
  "gpui-ce",
  "gpui_ce_collections",
  "gpui_ce_util",
+ "image",
  "itertools 0.14.0",
  "js-sys",
  "log",

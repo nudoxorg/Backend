@@ -278,8 +278,9 @@ where
     let capture_native_accessibility = options.capture_native_accessibility;
     let platform = gpui_platform::current_platform(true);
     let text_system: Arc<dyn PlatformTextSystem> = platform.text_system();
-    if options.require_renderer && gpui_platform::current_headless_renderer().is_none() {
-        return Err(CaptureError::NoRenderer);
+    if options.require_renderer {
+        gpui_platform::try_current_headless_renderer()
+            .map_err(|error| CaptureError::NoRenderer(error.to_string()))?;
     }
 
     let mut context = HeadlessAppContext::with_platform(
@@ -291,9 +292,10 @@ where
         .open_window(
             size(px(viewport.width as f32), px(viewport.height as f32)),
             move |window, cx| {
-                // TestPlatform starts at 1x; set_scale_factor is the deterministic
-                // seam needed for 2x captures and causes device-pixel layout to be
-                // exercised by the same scene.
+                // A test window starts at 2x; set_scale_factor is the
+                // deterministic seam for the capture's scale. It sets the test
+                // window's display scale too, so the device surface and every
+                // later resize callback use the same scale as the scene.
                 window.set_scale_factor(f32::from(viewport.scale));
                 if capture_native_accessibility {
                     window.set_a11y_forced(true);
@@ -664,9 +666,10 @@ fn apply_step(
                 .map_err(|error| CaptureError::Gpui(error.to_string()))?;
             context
                 .update_window(window, |_, window, cx| {
-                    // The test platform reports its native scale factor as
-                    // 2x. Reapply the capture's requested scale after the
-                    // resize callback has updated the window viewport.
+                    // The resize callback already carried the test window's
+                    // scale (the capture's, since `set_scale_factor` sets it);
+                    // reapplying it keeps that true for any platform window
+                    // that reports its own.
                     window.set_scale_factor(scale);
                     if pointer != position {
                         window.dispatch_event(
@@ -850,11 +853,11 @@ fn draw_and_capture(
 
 /// Normalizes the renderer's device surface to the requested capture scale.
 ///
-/// GPUI's deterministic `TestPlatform` currently renders through a fixed 2x
-/// device surface. At a requested 1x scale the scene occupies the logical
-/// viewport in the upper-left and the remainder of that surface is unused.
-/// Cropping that unused backing area preserves the logical scene and produces
-/// the requested physical artifact dimensions. A smaller renderer surface is
+/// A test window's device surface follows `Window::set_scale_factor`, so it
+/// is normally exactly the requested size and this returns it unchanged. A
+/// larger surface (a platform window reporting its own, larger scale) holds
+/// the scene in its upper-left; cropping the unused area keeps the logical
+/// scene at the requested physical dimensions. A smaller renderer surface is
 /// rejected rather than upscaled: upscaling a clipped scene would make the
 /// artifact appear complete while losing the logical layout contract.
 pub(crate) fn normalize_capture_image(
