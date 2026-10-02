@@ -5,6 +5,8 @@
 //! bounds, and reply admission path.
 #![forbid(unsafe_code)]
 
+pub mod lease_contract;
+pub mod monotonic;
 #[cfg(any(unix, windows))]
 mod remote_command;
 #[cfg(any(unix, windows))]
