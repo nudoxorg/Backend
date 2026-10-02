@@ -10,9 +10,9 @@
 
 use super::fit_tests::{findings, package_route, painted, resize};
 use super::root::Shell;
-use super::tests::{Rig, page_route, rig};
+use super::tests::{Rig, page_route, rig, view_route};
 use super::ShelfMode;
-use crate::navigation::{BrowseRoute, Intent, OrbitRoute, Route, SettingsPage};
+use crate::navigation::{BrowseRoute, Intent, OrbitRoute, Route, SettingsPage, View};
 use facet::probe::{Ledger, TextSample};
 use facet::tokens::fluid::Dock;
 use gpui::{Modifiers, TestAppContext, point, px};
@@ -299,6 +299,145 @@ fn typing_into_ask_draws_the_query_and_a_result_row(cx: &mut TestAppContext) {
         let after: Vec<gpui::PaintedText> = rig.cx.update(|window, _| window.painted_texts().to_vec());
         assert!(!after.iter().any(|text| text.text.as_ref() == "relation" && f32::from(text.bounds.origin.y) < titlebar), "Escape left the query in the titlebar at {width} px");
     }
+}
+
+/// This checks the mounted page's measured hero, not a second copy of the
+/// layout formula. Ask and Reader must agree on the plate's occupied pixels
+/// while the window, text scale, and inline shelf move underneath them.
+#[gpui::test]
+fn ask_preview_stays_beside_its_plate_through_zoom_and_resize(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    rig.keys("cmd-k");
+    rig.keys("r e l a t i o n");
+    rig.settle();
+    rig.keys("down");
+    rig.settle();
+    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    for percent in [100_u16, 150, 200] {
+        rig.go(Intent::ZoomTo { display: display.clone(), percent });
+        resize(&mut rig, 1440.0, 900.0);
+        assert_ask_geometry(&mut rig, true);
+    }
+    rig.go(Intent::ZoomTo { display, percent: 100 });
+    for width in [800.0, 640.0, 360.0, 1440.0] {
+        rig.cx.simulate_resize(gpui::size(px(width), px(900.0)));
+        rig.draw();
+        assert_ask_geometry(&mut rig, false);
+        rig.settle();
+        assert_ask_geometry(&mut rig, true);
+        let plate = rig.cx.debug_bounds("ask-plate").expect("Ask plate");
+        if width <= 640.0 {
+            assert!((f32::from(plate.size.width) - width).abs() < 1.0,
+                "{width} px cannot fit a readable preview beside Ask: {plate:?}");
+        }
+    }
+}
+
+fn assert_ask_geometry(rig: &mut Rig, settled: bool) {
+    let ledger = painted(rig);
+    let plate = rig.cx.debug_bounds("ask-plate").expect("Ask plate");
+    let viewport_width = rig.cx.update(|window, _| f32::from(window.viewport_size().width));
+    if f32::from(plate.size.width) >= viewport_width - 0.5 {
+        assert!((f32::from(plate.right()) - viewport_width).abs() < 1.0,
+            "Ask sheet must cover the whole Reader: {plate:?}");
+        return;
+    }
+    let hero = ledger.texts.iter()
+        .find(|text| text.key.starts_with("name:0:") && text.content == "RelationLabel");
+    if settled { assert!(hero.is_some(), "the settled Reader drew no symbol hero beside Ask"); }
+    if let Some(hero) = hero {
+        assert!(hero.bounds.x >= f32::from(plate.right()) + 8.0,
+            "Reader hero {:?} crosses Ask plate {plate:?}", hero.bounds);
+    }
+}
+
+#[gpui::test]
+fn a_sheet_removes_a_previously_mounted_reader_action_from_accesskit(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(view_route("RelationLabel", View::Code)), 360.0, 640.0);
+    rig.settle();
+    let native = |rig: &mut Rig| {
+        rig.repaint();
+        let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native AccessKit tree");
+        serde_json::from_str::<serde_json::Value>(&json).expect("native tree JSON")
+    };
+    let has_jump = |tree: &serde_json::Value| tree["nodes"].as_object().expect("native nodes")
+        .values().any(|node| node["aria"]["role"].as_str() == Some("Button")
+            && node["aria"]["label"].as_str() == Some("Go to line")
+            && node["aria"]["on_action"].as_array().is_some_and(|actions|
+                actions.iter().any(|action| action.as_str() == Some("Click"))));
+    assert!(has_jump(&native(&mut rig)), "the Code Reader must positively mount a native action before Ask");
+    rig.keys("cmd-k");
+    rig.keys("r e l a t i o n");
+    rig.settle();
+    let plate = rig.cx.debug_bounds("ask-plate").expect("Ask sheet");
+    assert!((f32::from(plate.size.width) - 360.0).abs() < 1.0);
+    assert!(!has_jump(&native(&mut rig)), "the covered Reader action remains in the native modal tree");
+}
+
+/// Real resize events hold one placement around the readable-width edge,
+/// then change it once in each direction. The sampled plate may still be
+/// moving; this checks its settled, painted rectangle at each stop.
+#[gpui::test]
+fn ask_panel_and_sheet_hold_through_oscillating_resizes(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 800.0, 700.0);
+    rig.keys("cmd-k");
+    rig.keys("r e l a t i o n");
+    rig.settle();
+    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    for percent in [100_u16, 150, 200] {
+        let scale = f32::from(percent) / 100.0;
+        rig.go(Intent::ZoomTo { display: display.clone(), percent });
+        let mut sheets = Vec::new();
+        for design_width in [800.0, 700.0, 720.0, 670.0, 685.0, 700.0, 740.0] {
+            let width = design_width * scale;
+            resize(&mut rig, width, 700.0);
+            let plate = rig.cx.debug_bounds("ask-plate").expect("Ask plate");
+            sheets.push((f32::from(plate.size.width) - width).abs() < 1.0);
+        }
+        assert_eq!(sheets, [false, false, false, true, true, true, false],
+            "{percent}% text alternated panel and sheet across the resize band");
+        assert_eq!(sheets.windows(2).filter(|pair| pair[0] != pair[1]).count(), 2,
+            "{percent}% text changed placement more than once in each direction");
+    }
+    rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+    rig.cx.simulate_resize(gpui::size(px(670.0 * 2.0), px(700.0)));
+    rig.draw();
+    let plate = rig.cx.debug_bounds("ask-plate").expect("reduced-motion sheet");
+    assert!((f32::from(plate.size.width) - 1340.0).abs() < 1.0,
+        "reduced motion settles the occupied rectangle in the resize frame");
+}
+
+#[gpui::test]
+fn reader_clearance_follows_the_plate_that_was_painted_mid_flight(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 670.0, 700.0);
+    rig.keys("cmd-k");
+    rig.keys("r e l a t i o n");
+    rig.settle();
+    rig.keys("down");
+    rig.settle();
+    assert!((f32::from(rig.cx.debug_bounds("ask-plate").expect("sheet").size.width) - 670.0).abs() < 1.0);
+    rig.cx.simulate_resize(gpui::size(px(800.0), px(700.0)));
+    rig.draw();
+    let mut widths = Vec::new();
+    for _ in 0..40 {
+        rig.frame(16);
+        let ledger = painted(&mut rig);
+        let plate = rig.cx.debug_bounds("ask-plate").expect("painted Ask plate");
+        let width = f32::from(plate.size.width);
+        widths.push(width);
+        if let Some(hero) = ledger.texts.iter().find(|text|
+            text.key.starts_with("name:0:") && text.content == "RelationLabel") {
+            assert!(hero.bounds.x >= f32::from(plate.right()) + 8.0,
+                "frame hero {:?} crossed its actually painted plate {plate:?}", hero.bounds);
+        }
+    }
+    let between = widths.iter().filter(|width| **width > 350.0 && **width < 660.0).count();
+    assert!(between >= 3, "plate skipped its moving widths: {widths:?}");
+    rig.settle();
+    let settled = rig.cx.debug_bounds("ask-plate").expect("settled Ask panel");
+    assert!((f32::from(settled.size.width) - 344.0).abs() < 2.0,
+        "panel did not settle at its FACET width after {widths:?}");
+    assert_ask_geometry(&mut rig, true);
 }
 
 /// A fast shrink (a maximise-then-restore, an edge snap: 1440 to 360 at once)

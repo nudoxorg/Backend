@@ -204,6 +204,7 @@ impl Ask {
         if draft == self.draft {
             return;
         }
+        let plate_changed = matches!(&self.draft, QueryDraft::Blank) != matches!(&draft, QueryDraft::Blank);
         self.selected = 0;
         // A new query shows where you were again until you walk its rows.
         if self.walked || self.links.snapshot(cx).session().preview.is_some() {
@@ -218,6 +219,9 @@ impl Ask {
             self.links.store.update(cx, |store, cx| store.cancel_unfocused_search(&query, cx));
         }
         cx.notify();
+        if plate_changed {
+            self.links.shell(cx, |_, cx| cx.notify());
+        }
         let Some(query) = self.draft.query().cloned() else {
             return;
         };

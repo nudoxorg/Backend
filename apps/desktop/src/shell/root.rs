@@ -12,7 +12,7 @@ use super::facet_sync::{Surroundings, facet_for};
 use super::system;
 use facet::overlay::float;
 use super::focus::{Target, Zone};
-use super::frame::{Frame, FrameInput, ShelfMode};
+use super::frame::{AskGeometry, AskPlacement, Frame, FrameInput, ShelfMode};
 use super::hints::{HintMode, Step};
 use super::keys::{self, CONTEXT};
 use super::pins::Pins;
@@ -33,7 +33,7 @@ use crate::runtime::UiEntityGraph;
 use facet::fluid::{Modes, Room};
 use facet::motion::{Motion, spec};
 use facet::paint::ground;
-use facet::tokens::fluid::{ASK, ASK_PANEL, COLUMNS_SHARE, Float};
+use facet::tokens::fluid::COLUMNS_SHARE;
 use facet::tokens::geo;
 use facet::{ActiveFacet as _, Measure, Reveal};
 use gpui::{
@@ -80,6 +80,7 @@ pub struct Shell {
     status: Entity<Status>,
     pins: Entity<Pins>,
     ask: Entity<Ask>,
+    ask_placement: AskPlacement,
     motion: Motion,
     zen: bool,
     /// The hand's Row rung is open (H, or the foot's marks).
@@ -212,6 +213,7 @@ impl Shell {
             status,
             pins,
             ask,
+            ask_placement: AskPlacement::default(),
             motion: Motion::new(),
             zen: false,
             hand_open: false,
@@ -1241,40 +1243,39 @@ impl Shell {
 
     /// Ask's results: a plate over the shelf's column below the titlebar
     /// (which draws the query itself), a panel from 320 to 440 px as the
-    /// window grows and a sheet across it on a phone (`facet::tokens::fluid::ASK`,
-    /// held through its hysteresis band). The rest of the page is veiled; a click
-    /// on the veil puts Ask away.
-    fn ask_layer(&self, frame: &Frame, status: f32, viewport: gpui::Size<Pixels>, cx: &App) -> Option<AnyElement> {
+    /// window grows and a sheet when the Reader cannot fit beside it. The
+    /// rest of the page is veiled; a click on the veil puts Ask away.
+    fn ask_layer(&self, frame: &Frame, status: f32, geometry: Option<AskGeometry>, cx: &App) -> Option<AnyElement> {
         if !self.ask_open {
             return None;
         }
         let palette = cx.facet().palette();
         let links = self.links.clone();
-        let width = match self.modes.settle(&ASK, frame.room).mode {
-            Float::Panel => ASK_PANEL.at(frame.room),
-            Float::Sheet => viewport.width,
-        };
         Some(
             div()
-                .id("ask-veil")
+                .id("ask-overlay")
                 .absolute()
-                .top(frame.titlebar)
-                .bottom(px(status))
-                .left_0()
-                .right_0()
-                .bg(palette.veil)
-                .on_click(move |_, _, cx| links.dispatch(Intent::DismissOverlay, cx))
+                .inset_0()
+                .child(div()
+                    .id("ask-veil")
+                    .absolute()
+                    .top(frame.titlebar)
+                    .bottom(px(status))
+                    .left_0()
+                    .right_0()
+                    .bg(palette.veil)
+                    .on_click(move |_, _, cx| links.dispatch(Intent::DismissOverlay, cx)))
                 // The plate is there once there is a query for it to answer:
                 // an empty plate is not something to look at.
-                .children(self.ask.read(cx).shows().then(|| {
+                .children(geometry.map(|geometry| {
                     div()
                         .id("ask-frame")
                         .debug_selector(|| "ask-plate".to_owned())
                         .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .left_0()
-                        .w(width)
+                        .top(geometry.plate.origin.y)
+                        .left(geometry.plate.origin.x)
+                        .w(geometry.plate.size.width)
+                        .h(geometry.plate.size.height)
                         .on_click(|_, _, cx| cx.stop_propagation())
                         .child(self.ask.clone())
                 }))
@@ -1399,6 +1400,16 @@ impl Render for Shell {
         if super::titlebar::menu_open(window, cx) {
             context.add("Menu");
         }
+
+        let ask_geometry = if self.ask_open && self.ask.read(cx).shows() {
+            let target = self.ask_placement.target_width(&frame, viewport, px(shelf_width), &self.modes);
+            let painted = self.motion.animate("ask-plate-w", f32::from(target), spec::SETTLE, window, cx)
+                .min(f32::from(viewport.width));
+            Some(AskGeometry::resolve(&frame, viewport, px(status_height), px(shelf_width), px(painted)))
+        } else {
+            None
+        };
+        self.reader.update(cx, |reader, cx| reader.set_ask_geometry(ask_geometry, cx));
 
         let body = div()
             .flex_1()
@@ -1591,10 +1602,6 @@ impl Render for Shell {
             self.pinned = pinned;
             self.pins.update(cx, |_, cx| cx.notify());
         }
-        let ask_width = match self.modes.settle(&ASK, frame.room).mode {
-            Float::Panel => ASK_PANEL.at(frame.room),
-            Float::Sheet => viewport.width,
-        };
         // Ask is a dialog over the veiled page: its field (the titlebar) and
         // its plate are what a person reads; the page under the veil is not.
         let ask_bounds = self.ask_open.then(|| {
@@ -1610,8 +1617,9 @@ impl Render for Shell {
             // (`ask_layer`): before that the page under the veil is all
             // there is (J9's ask-open frame held the shelf's words to text
             // contrast under a plate that was not there).
-            if self.ask.read(cx).shows() {
-                parts.push(sample("ask-plate", px(0.0), frame.titlebar, ask_width, (viewport.height - frame.titlebar - px(status_height)).max(px(0.0))));
+            if let Some(geometry) = ask_geometry {
+                parts.push(sample("ask-plate", geometry.plate.origin.x, geometry.plate.origin.y,
+                    geometry.plate.size.width, geometry.plate.size.height));
             }
             parts
         });
@@ -1631,7 +1639,7 @@ impl Render for Shell {
             ];
             super::side::twin::rings(&regions, window.mouse_position(), cx)
         });
-        root.children(self.ask_layer(&frame, status_height, viewport, cx))
+        root.children(self.ask_layer(&frame, status_height, ask_geometry, cx))
             .children(self.hint_layer(cx))
             .children(twins)
             .child(float)

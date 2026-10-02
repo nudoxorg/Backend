@@ -140,7 +140,7 @@ enum Script {
     /// Move the real shell's keyboard zone to a mounted project row.
     ShelfFocus,
     /// From the real Orbit, type and choose an indexed hit through the keyboard,
-    /// read its code, go Back, dismiss Ask, and reopen it.
+    /// read its code, go Back, reopen Ask, and resize a live preview.
     AskJourney,
 }
 
@@ -375,6 +375,13 @@ fn capture(
             InputStep::Wait { milliseconds: 200 }, InputStep::key("cmd-k"),
             InputStep::Wait { milliseconds: 200 }, InputStep::key("escape"),
             InputStep::Wait { milliseconds: 200 }, InputStep::key("cmd-k"),
+            InputStep::Wait { milliseconds: 100 }, InputStep::Text { value: "RelationLabel".to_owned() },
+            InputStep::Wait { milliseconds: 500 }, InputStep::key("down"),
+            InputStep::Wait { milliseconds: 100 }, InputStep::Resize { width: 800, height: shot.height },
+            InputStep::Wait { milliseconds: 100 }, InputStep::Resize { width: 360, height: shot.height },
+            InputStep::Wait { milliseconds: 100 }, InputStep::Resize { width: 1440, height: shot.height },
+            InputStep::Wait { milliseconds: 100 }, InputStep::key("escape"),
+            InputStep::Wait { milliseconds: 400 },
         ],
         _ => Vec::new(),
     };
@@ -676,7 +683,7 @@ fn capture(
     }
     if shot.script == Script::AskJourney {
         let observed = journey.borrow();
-        assert_eq!(observed.len(), 15, "record every real journey frame after writing paired evidence");
+        assert_eq!(observed.len(), 21, "record every real journey frame after writing paired evidence");
         let orbit = Route::Orbit(OrbitRoute::Home);
         for (index, expected) in [
             (&orbit, None),
@@ -727,7 +734,19 @@ fn capture(
         assert_eq!(observed[12].overlay, Some(Overlay::CommandPalette), "Ask reopens after Back");
         assert_eq!(observed[13].overlay, None, "Escape dismisses the live Ask");
         assert_eq!(observed[14].overlay, Some(Overlay::CommandPalette), "keyboard shortcut reopens Ask");
-        assert!(observed[12..].iter().all(|frame| frame.route == orbit));
+        assert!(observed[12..15].iter().all(|frame| frame.route == orbit));
+        for index in 15..=18 {
+            assert_eq!(observed[index].route, target, "live Ask preview survives the resize frame");
+            assert_eq!(observed[index].overlay, Some(Overlay::CommandPalette));
+        }
+        assert!(observed[19..].iter().all(|frame| frame.route == orbit && frame.overlay.is_none()),
+            "Escape returns the preview to its departure, including the settled frame");
+        for (index, width) in [(16, 800), (17, 360), (18, 1440)] {
+            let frame = &set.frames[index];
+            assert_eq!(frame.image.width(), width, "{} captures the resized real window", frame.label);
+            assert!(frame.native_accessibility.as_ref().expect("paired native tree").has_label("Ask anything, or find a package"),
+                "{} keeps the modal keyboard owner", frame.label);
+        }
     }
     assert!(built.get(), "the mounted shell graph survived through the final frame");
     eprintln!("captured {} ({} frames)", shot.name, set.frames.len());
@@ -806,7 +825,8 @@ fn capture_the_shell_over_a_real_index() {
             density: Comfortable,
             appearance: Abyss,
             route: Route::Orbit(OrbitRoute::Home),
-            frames: vec![0, 100, 900, 1050, 1150, 1250, 1350, 1450, 1550, 1750, 1950, 2150, 2350, 2550, 2750],
+            frames: vec![0, 100, 900, 1050, 1150, 1250, 1350, 1450, 1550, 1750, 1950, 2150, 2350, 2550, 2750,
+                3350, 3450, 3550, 3650, 3750, 4150],
             script: Script::AskJourney,
         },
         still("flow-2560", 2560, 1440, 100, Comfortable, Abyss, &places.page),

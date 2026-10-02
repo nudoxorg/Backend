@@ -383,6 +383,8 @@ fn uncovered(reader: Bounds<Pixels>, plate: Bounds<Pixels>, has_row: bool) -> [B
 /// The reader region.
 pub(crate) struct Reader {
     core: RegionCore,
+    /// The shell's occupied Ask rectangle for this frame, if results show.
+    ask_geometry: Option<super::frame::AskGeometry>,
     map: Option<Entity<bodies::graph::Map>>,
     graph_source: Option<crate::model::pages::SymbolRef>,
     links: Links,
@@ -466,6 +468,7 @@ impl Reader {
                 store,
                 &[Branch::Root, Branch::Route, Branch::Overlay, Branch::Workspace, Branch::Settings],
             ),
+            ask_geometry: None,
             links,
             map: None,
             graph_source: None,
@@ -1099,11 +1102,17 @@ impl Reader {
     /// The reader's column geometry for one exact place.
     fn layout(&self, route: &Route, overlay: Option<Overlay>, measure: &Measure, facet: &facet::Facet) -> Layout {
         let width = self.core.width();
-        let room = measure.fluid_room();
+        // Ask's plate and this preview use one occupied rectangle. Reserve
+        // the part of the reader beneath that plate before choosing the
+        // folio and margin-note modes.
+        let reserved = self.ask_geometry.and_then(|ask| ask.preview_left.map(|left|
+            (left - ask.reader_left).max(px(0.0)))).unwrap_or(px(0.0)).min(width);
+        let room = facet::fluid::Room::new((width - reserved).max(px(0.0)), measure.scale());
         // The gutters glide from 16 px on a phone to the design's 40; nothing
         // here compares the width with a number.
-        let pad = READER_PAD.at(room);
-        let content = (width - pad * 2.0).max(px(0.0));
+        let right_pad = READER_PAD.at(room);
+        let pad = right_pad.max(reserved);
+        let content = (width - pad - right_pad).max(px(0.0));
         let scale = measure.scale();
         let notes_possible = matches!(route, Route::Symbol(route) if route.view == View::Code)
             && overlay.is_none();
@@ -1119,6 +1128,7 @@ impl Reader {
         let folio = if own_width { content } else { px(FOLIO * scale).min((content - beside).max(px(0.0))) };
         Layout {
             pad,
+            right_pad,
             top: READER_TOP.at(room),
             wide_measure: Measure::new(WIDE_FOLIO.at(room).min(content), facet),
             folio,
@@ -1127,7 +1137,7 @@ impl Reader {
             wide,
             gutter,
             margin,
-            measure: *measure,
+            measure: Measure::new((width - reserved).max(px(0.0)), facet),
             folio_measure: Measure::new(folio, facet),
         }
     }
@@ -1160,7 +1170,8 @@ impl Reader {
                     .left_0()
                     .right_0()
                     .top(scroll.y)
-                    .px(layout.pad)
+                    .pl(layout.pad)
+                    .pr(layout.right_pad)
                     .pt(layout.top)
                     .child(div().relative().w_full().flex().justify_center().child(body)),
             )
@@ -1269,6 +1280,7 @@ impl Reader {
     fn compose(leaves: Vec<bodies::Leaf>, layout: &Layout, palette: &facet::Palette, edge: Option<Edge>) -> gpui::Div {
         let Layout {
             pad: _,
+            right_pad: _,
             top: _,
             folio,
             beside,
@@ -1689,8 +1701,9 @@ struct RouteScroll {
 /// The reader's column geometry for one frame.
 #[derive(Clone, Copy)]
 struct Layout {
-    /// The scroller's side padding and top padding.
+    /// The scroller's left and right padding, then top padding.
     pad: Pixels,
+    right_pad: Pixels,
     top: Pixels,
     folio: Pixels,
     beside: Pixels,
@@ -1781,6 +1794,13 @@ pub(crate) fn reader_keys(snapshot: &AppSnapshot) -> Vec<PageKey> {
 }
 
 impl Reader {
+    pub(crate) fn set_ask_geometry(&mut self, geometry: Option<super::frame::AskGeometry>, cx: &mut Context<Self>) {
+        if self.ask_geometry != geometry {
+            self.ask_geometry = geometry;
+            cx.notify();
+        }
+    }
+
     /// Builds one place's body. The current place registers its targets and
     /// records its words; a leaving place is inert.
     #[allow(clippy::too_many_arguments)]
@@ -1950,7 +1970,7 @@ impl Render for Reader {
         }
         let on_graph = bodies::graph::is_graph(&current.route) && current.overlay.is_none();
         let layout = self.layout(&current.route, current.overlay, &measure, &facet);
-        let Layout { pad, top, folio, beside, content, .. } = layout;
+        let Layout { pad, right_pad, top, folio, beside, content, .. } = layout;
         let scale = measure.scale();
         // A page counts as painted once it drew its content: a skeleton "on its
         // way" is not a page that can leave (a route that supersedes it cuts
@@ -2066,7 +2086,9 @@ impl Render for Reader {
                 land: Vec::new(),
                 child: div().size_full().child(map.clone()).into_any_element(),
             };
-            let mut root = div().relative().size_full().text_color(palette.ink1.hsla()).font_family(facet::fonts::family(ty::BODY));
+            let mut root = div().relative().size_full()
+                .opacity(if self.ask_geometry.is_some_and(|ask| ask.preview_left.is_none()) { 0.0 } else { 1.0 })
+                .text_color(palette.ink1.hsla()).font_family(facet::fonts::family(ty::BODY));
             match (staged, transit.as_ref(), leaving, reader) {
                 (Some(staged), Some(transit), Some(leaving), Some(reader)) if staged.verb == Verb::Fold => {
                     // The graph was always behind the page: it is uncovered
@@ -2190,7 +2212,7 @@ impl Render for Reader {
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
-            .child(div().w_full().px(pad).pt(top).pb(px(96.0 * scale)).child(stack));
+            .child(div().w_full().pl(pad).pr(right_pad).pt(top).pb(px(96.0 * scale)).child(stack));
         // A reflow that scrolls to keep the focus in view lands the page's
         // moving parts: a flight from where they were would carry the focus
         // back off screen.
@@ -2215,7 +2237,8 @@ impl Render for Reader {
             gpui::inert(("waiting-previous-page", previous.place.key),
                 format!("Previous page: {}. Opening {}.", place_name(&previous.place.route), place_name(&requested.route)), scroller).into_any_element()
         } else { scroller.into_any_element() };
-        let mut root = div().relative().size_full();
+        let mut root = div().relative().size_full()
+            .opacity(if self.ask_geometry.is_some_and(|ask| ask.preview_left.is_none()) { 0.0 } else { 1.0 });
         // Where you were: the row a Close came back to, tinted under the page.
         let tint = self.tint_now(cx);
         self.publish(staged, tint.map(|(_, strength)| strength), cx);
