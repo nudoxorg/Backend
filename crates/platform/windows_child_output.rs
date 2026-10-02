@@ -5,6 +5,14 @@
 //! are involved. Pipe reads, leader status, and cancellation are polled with
 //! zero-wait APIs under one absolute deadline.
 //!
+//! The absolute budget controls preflight, the final check before process
+//! creation, and every capture-poll turn. Native process/pipe creation,
+//! security setup and ordinary filesystem probes cannot be preempted by this
+//! synchronous adapter; an OS syscall can itself outlast the deadline. Cleanup
+//! adds at most 100ms of application polling, with the same native-syscall
+//! limitation. This is bounded polling and ownership, not a claim that Windows
+//! guarantees a wall-clock bound for all kernel/filesystem operations.
+//!
 //! Cancellation is not completion: an OVERLAPPED and its buffer cannot be
 //! freed until the kernel completes the request. Cleanup polls for at most
 //! 100ms after closing the Job. In the exceptional case that the kernel does
