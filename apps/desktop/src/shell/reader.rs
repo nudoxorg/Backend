@@ -1825,6 +1825,18 @@ pub(crate) fn reader_keys(snapshot: &AppSnapshot) -> Vec<PageKey> {
 }
 
 impl Reader {
+    /// The page cannot claim native input while its arrival still lacks a
+    /// measured frame or any of its departure/arrival plate is in flight.
+    /// A Find field may still focus before its read completes, so resource
+    /// readiness and `painted` are intentionally separate from this gate.
+    pub(crate) fn native_motion_settled(&self) -> bool {
+        self.arrival.is_none() && self.transit.is_none()
+    }
+
+    fn native_input_allowed(&self) -> bool {
+        self.ask_background_input_allowed && self.native_motion_settled()
+    }
+
     pub(crate) fn set_ask_scene(&mut self, geometry: Option<super::frame::AskGeometry>, background_input_allowed: bool, cx: &mut Context<Self>) {
         if self.ask_geometry != geometry || self.ask_background_input_allowed != background_input_allowed {
             self.ask_geometry = geometry;
@@ -1875,7 +1887,7 @@ impl Reader {
             let symbol_disclosure = route_symbol(&place.route).map(|symbol| self.symbol_disclosure(&symbol)).unwrap_or_default();
             let mut ctx = Ctx {
                 active: current,
-                native_input_active: current && self.ask_background_input_allowed && self.transit.is_none(),
+                native_input_active: current && self.native_input_allowed(),
                 measure: layout.folio_measure,
                 note: if layout.wide { Measure::new(layout.margin, facet) } else { layout.folio_measure },
                 wide: layout.wide_measure,
@@ -2187,7 +2199,7 @@ impl Render for Reader {
             }
             self.targets.clear_focus();
         }
-        if !waiting && staged.is_none()
+        if !waiting && staged.is_none() && self.native_input_allowed()
             && let Some(focus) = self.pending_page_focus.take()
             && focus.place == current.key && focus.root.same_authority(snapshot.key())
             && let Some(target) = focus.target
@@ -2199,7 +2211,7 @@ impl Render for Reader {
         if let Some(mut pending) = self.pending_settings_focus.take()
             && pending.place == current.key
         {
-            if self.painted == Some(current.key) {
+            if self.painted == Some(current.key) && self.native_input_allowed() {
                 if !pending.has_same_authority(snapshot.key()) { pending.target = None; }
                 if self.targets.is_active() {
                     if let Some(target) = pending.target {
