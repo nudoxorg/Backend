@@ -5520,11 +5520,12 @@ mod tests {
         let mut no_nix_shebang = write_shell_script.clone();
         no_nix_shebang[..2].copy_from_slice(b"XX");
         assert!(recognized_nudox_dependency_cache_wrapper(&no_nix_shebang).is_none());
-        let generated = String::from_utf8(write_shell_script).expect("ASCII generated wrapper");
+        let generated_script =
+            String::from_utf8(write_shell_script).expect("ASCII generated wrapper");
         for altered in [
-            generated.replace(" -e\n", " -x\n"),
-            generated.replace("set -eu\n", "set -e\n"),
-            generated.replace("/bin/sccache", "/bin/other"),
+            generated_script.replace(" -e\n", " -x\n"),
+            generated_script.replace("set -eu\n", "set -e\n"),
+            generated_script.replace("/bin/sccache", "/bin/other"),
         ] {
             assert!(recognized_nudox_dependency_cache_wrapper(altered.as_bytes()).is_none());
         }
