@@ -265,6 +265,10 @@ fn binding_context(key: &Key) -> String {
     if graph_owns { context.push_str(" && !Graph"); }
     if menu_owns { context.push_str(" && !Menu"); }
     if compare_owns { context.push_str(" && !BrowseCompare"); }
+    // Ask's exiting plate is visually modal even after its query owner has
+    // gone. Only ⌘K may interrupt that exit; all background shell actions
+    // wait until the sampled plate and veil have cleared.
+    if key.command != Command::Ask { context.push_str(" && !AskLeaving"); }
     context
 }
 
@@ -320,6 +324,8 @@ pub fn bindings() -> Vec<KeyBinding> {
     bindings.extend([
         KeyBinding::new("tab", AskNext, Some("NudoxShell && Ask")),
         KeyBinding::new("shift-tab", AskPrev, Some("NudoxShell && Ask")),
+        KeyBinding::new("tab", AskNext, Some("NudoxShell && AskLeaving")),
+        KeyBinding::new("shift-tab", AskPrev, Some("NudoxShell && AskLeaving")),
     ]);
     bindings
 }
@@ -354,7 +360,7 @@ mod tests {
         assert_eq!(reset.len(), 1);
         assert_eq!(reset[0].command, Command::ZoomReset);
         // Every binding parses.
-        assert_eq!(bindings().len(), TABLE.len() + 2);
+        assert_eq!(bindings().len(), TABLE.len() + 4);
     }
 
     #[test]
@@ -368,6 +374,7 @@ mod tests {
         let root = KeyContext::parse("Root").expect("component root context");
         let shell = KeyContext::parse(CONTEXT).expect("shell context");
         let modal = KeyContext::parse("NudoxShell Ask").expect("Ask context");
+        let leaving = KeyContext::parse("NudoxShell AskLeaving").expect("Ask exit context");
         let input = KeyContext::parse("Input").expect("editor context");
         for (chord, next, previous) in [("tab", AskNext.name(), NextZone.name()),
             ("shift-tab", AskPrev.name(), PrevZone.name())] {
@@ -375,7 +382,15 @@ mod tests {
             let actions = |contexts: &[KeyContext]| keymap.bindings_for_input(&[stroke.clone()], contexts).0;
             assert_eq!(actions(&[root.clone(), modal.clone()])[0].action().name(), next);
             assert_eq!(actions(&[root.clone(), modal.clone(), input.clone()])[0].action().name(), next);
+            assert_eq!(actions(&[root.clone(), leaving.clone()])[0].action().name(), next);
             assert_eq!(actions(&[root.clone(), shell.clone()])[0].action().name(), previous);
         }
+        for chord in ["j", "enter", "secondary-.", "ctrl-1"] {
+            let stroke = Keystroke::parse(chord).expect("background key stroke");
+            assert!(keymap.bindings_for_input(&[stroke], &[root.clone(), leaving.clone()]).0.is_empty(),
+                "{chord} reached a background action beneath Ask's painted exit");
+        }
+        let reopen = Keystroke::parse("secondary-k").expect("Ask key stroke");
+        assert_eq!(keymap.bindings_for_input(&[reopen], &[root, leaving]).0[0].action().name(), Ask.name());
     }
 }

@@ -9,11 +9,13 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::too_many_lines)]
 
 use super::fit_tests::{findings, package_route, painted, resize};
+use super::focus::Zone;
 use super::root::Shell;
 use super::tests::{Rig, page_route, rig, view_route};
 use super::ShelfMode;
 use crate::navigation::{BrowseRoute, Intent, OrbitRoute, Route, SettingsPage, View};
 use facet::probe::{Ledger, TextSample};
+use facet::probe::StackPhase;
 use facet::tokens::fluid::Dock;
 use gpui::{Modifiers, TestAppContext, point, px};
 
@@ -372,6 +374,12 @@ fn a_sheet_removes_a_previously_mounted_reader_action_from_accesskit(cx: &mut Te
     let plate = rig.cx.debug_bounds("ask-plate").expect("Ask sheet");
     assert!((f32::from(plate.size.width) - 360.0).abs() < 1.0);
     assert!(!has_jump(&native(&mut rig)), "the covered Reader action remains in the native modal tree");
+    rig.cx.simulate_keystrokes("escape");
+    rig.frame(0);
+    assert!(rig.cx.debug_bounds("ask-plate").is_some(), "the sheet should have painted exit pixels");
+    assert!(!has_jump(&native(&mut rig)), "the Reader action returned beneath a departing sheet");
+    rig.settle();
+    assert!(has_jump(&native(&mut rig)), "the Reader action did not return after the sheet cleared");
 }
 
 /// Real resize events hold one placement around the readable-width edge,
@@ -405,6 +413,135 @@ fn ask_panel_and_sheet_hold_through_oscillating_resizes(cx: &mut TestAppContext)
     let plate = rig.cx.debug_bounds("ask-plate").expect("reduced-motion sheet");
     assert!((f32::from(plate.size.width) - 1340.0).abs() < 1.0,
         "reduced motion settles the occupied rectangle in the resize frame");
+}
+
+fn ask_phase(ledger: &Ledger) -> Option<StackPhase> {
+    ledger.stacks.iter().rev().flat_map(|stack| stack.entries.iter())
+        .find(|entry| entry.key == "ask-plate" || entry.key == "ask-field" || entry.key == "ask-veil")
+        .map(|entry| entry.phase)
+}
+
+fn has_native_ask_results(rig: &mut Rig) -> bool {
+    rig.repaint();
+    let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native AccessKit tree");
+    let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree JSON");
+    tree["nodes"].as_object().expect("native nodes").values().any(|node|
+        node["aria"]["label"].as_str() == Some("Search results"))
+}
+
+/// The modal's painted shell reverses from its current width. Results and
+/// their native actions leave in the first closing frame, even while plate
+/// pixels continue out, and a quick reopen starts at that painted width.
+#[gpui::test]
+fn ask_exit_is_inert_and_reopen_reverses_its_painted_plate(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    rig.keys("cmd-k");
+    rig.keys("r e l a t i o n");
+    assert!(has_native_ask_results(&mut rig), "the live Ask results must first exist in AccessKit");
+    let opened = rig.cx.debug_bounds("ask-plate").expect("open plate");
+    assert!((f32::from(opened.size.width) - 440.0).abs() < 1.0);
+
+    rig.cx.simulate_keystrokes("escape");
+    rig.frame(0);
+    let leaving = painted(&mut rig);
+    let first = rig.cx.debug_bounds("ask-plate").expect("painted exit plate");
+    assert_eq!(ask_phase(&leaving), Some(StackPhase::Leaving));
+    assert!(!has_native_ask_results(&mut rig), "exiting pixels retained stale native result actions");
+    rig.frame(80);
+    let narrowing = rig.cx.debug_bounds("ask-plate").expect("mid-exit plate");
+    assert!(f32::from(narrowing.size.width) < f32::from(first.size.width) - 2.0);
+    assert!(f32::from(narrowing.size.width) > 1.0);
+
+    rig.cx.simulate_keystrokes("cmd-k");
+    rig.frame(0);
+    rig.cx.simulate_keystrokes("r e l a t i o n");
+    rig.frame(0);
+    let reversed = rig.cx.debug_bounds("ask-plate").expect("reopened plate");
+    assert!((f32::from(reversed.size.width) - f32::from(narrowing.size.width)).abs() < 3.0,
+        "reopen jumped rather than retargeted the painted plate: {narrowing:?} -> {reversed:?}");
+    let mut widths = Vec::new();
+    for _ in 0..10 {
+        rig.frame(32);
+        widths.push(f32::from(rig.cx.debug_bounds("ask-plate").expect("reopening plate").size.width));
+    }
+    assert!(widths.last().copied().unwrap_or_default() > f32::from(reversed.size.width) + 15.0,
+        "reopened plate did not turn toward its target: {widths:?}");
+    rig.cx.simulate_resize(gpui::size(px(800.0), px(900.0)));
+    rig.frame(16);
+    assert_ask_geometry(&mut rig, false);
+    rig.settle();
+    assert_ask_geometry(&mut rig, true);
+    assert!(has_native_ask_results(&mut rig), "the reopened modal did not restore its live results");
+
+    rig.cx.simulate_keystrokes("escape");
+    rig.frame(0);
+    rig.settle();
+    let gone = painted(&mut rig);
+    assert_eq!(ask_phase(&gone), None, "the exit kept scheduling or left a painted stack entry");
+    assert!(rig.cx.debug_bounds("ask-plate").is_none(), "Ask left plate pixels after settling");
+    assert!(!has_native_ask_results(&mut rig));
+
+    rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+    rig.cx.simulate_keystrokes("cmd-k");
+    rig.frame(0);
+    rig.cx.simulate_keystrokes("r e l a t i o n");
+    rig.frame(0);
+    let reduced = rig.cx.debug_bounds("ask-plate").expect("reduced-motion Ask plate");
+    assert!((f32::from(reduced.size.width) - 344.0).abs() < 1.0,
+        "reduced motion did not place the whole panel in its first query frame");
+    rig.cx.simulate_keystrokes("escape");
+    rig.frame(0);
+    let gone = painted(&mut rig);
+    assert_eq!(ask_phase(&gone), None, "reduced motion kept an exit animation");
+    assert!(rig.cx.debug_bounds("ask-plate").is_none());
+}
+
+/// The Code Reader's visible copy target stays selected across Ask, but its
+/// keys cannot walk, activate, or change routes beneath a departing plate.
+/// Once the final pixel clears, the same target and shortcuts work again.
+#[gpui::test]
+fn ask_exit_blocks_background_keyboard_until_its_sampled_scene_clears(cx: &mut TestAppContext) {
+    let code = view_route("RelationLabel", View::Code);
+    let mut rig = rig(cx, Some(code.clone()), 1440.0, 900.0);
+    let visible = painted(&mut rig);
+    assert!(visible.targets.iter().any(|target| target.key == "source-copy-excerpt"),
+        "the Code Reader must positively paint the control used in this test");
+    rig.keys("j");
+    rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx).focus("source-copy-excerpt"));
+    let selected = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    assert_eq!(selected, (Zone::Reader, Some("source-copy-excerpt".into())),
+        "the keyboard did not stand on the visible Code control");
+    rig.cx.write_to_clipboard(gpui::ClipboardItem::new_string("ask-exit-sentinel"));
+
+    rig.keys("cmd-k");
+    rig.keys("r e l a t i o n");
+    rig.cx.simulate_keystrokes("escape");
+    rig.frame(0);
+    assert_eq!(ask_phase(&painted(&mut rig)), Some(StackPhase::Leaving));
+    rig.cx.simulate_keystrokes("tab shift-tab j enter cmd-. ctrl-1");
+    rig.frame(0);
+    assert_eq!(rig.route(), code, "a background navigation key fired under the painted Ask exit");
+    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)), selected,
+        "Tab or J moved focus to a covered control");
+    assert_eq!(rig.cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("ask-exit-sentinel"),
+        "Enter activated the selected Code control beneath Ask's exit");
+
+    rig.cx.simulate_keystrokes("cmd-k");
+    rig.frame(0);
+    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+        Some(crate::navigation::Overlay::CommandPalette), "⌘K could not interrupt Ask's exit");
+    rig.cx.simulate_keystrokes("escape");
+    rig.frame(0);
+    rig.settle();
+    assert_eq!(ask_phase(&painted(&mut rig)), None);
+    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)), selected,
+        "the Code control lost its selected focus after the exit settled");
+    rig.keys("enter");
+    assert_ne!(rig.cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("ask-exit-sentinel"),
+        "the Code control did not activate after Ask's plate cleared");
+    rig.keys("cmd-.");
+    assert_eq!(rig.route(), view_route("RelationLabel", View::Page),
+        "source navigation did not resume after Ask's plate cleared");
 }
 
 #[gpui::test]

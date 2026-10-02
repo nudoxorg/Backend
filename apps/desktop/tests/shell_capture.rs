@@ -382,6 +382,17 @@ fn capture(
             InputStep::Wait { milliseconds: 100 }, InputStep::Resize { width: 1440, height: shot.height },
             InputStep::Wait { milliseconds: 100 }, InputStep::key("escape"),
             InputStep::Wait { milliseconds: 400 },
+            // Keep the old settled evidence, then capture the next modal
+            // entrance, exit, interrupted reopen, and resize on real input.
+            InputStep::Wait { milliseconds: 100 }, InputStep::key("cmd-k"),
+            InputStep::Wait { milliseconds: 100 }, InputStep::Text { value: "RelationLabel".to_owned() },
+            InputStep::Wait { milliseconds: 100 }, InputStep::key("escape"),
+            InputStep::Wait { milliseconds: 80 }, InputStep::key("cmd-k"),
+            InputStep::Wait { milliseconds: 20 }, InputStep::Text { value: "RelationLabel".to_owned() },
+            InputStep::Wait { milliseconds: 60 }, InputStep::Resize { width: 800, height: shot.height },
+            InputStep::Wait { milliseconds: 100 }, InputStep::Resize { width: 1440, height: shot.height },
+            InputStep::Wait { milliseconds: 500 }, InputStep::key("escape"),
+            InputStep::Wait { milliseconds: 1000 },
         ],
         _ => Vec::new(),
     };
@@ -683,7 +694,7 @@ fn capture(
     }
     if shot.script == Script::AskJourney {
         let observed = journey.borrow();
-        assert_eq!(observed.len(), 21, "record every real journey frame after writing paired evidence");
+        assert_eq!(observed.len(), 30, "record every real journey frame after writing paired evidence");
         let orbit = Route::Orbit(OrbitRoute::Home);
         for (index, expected) in [
             (&orbit, None),
@@ -746,6 +757,26 @@ fn capture(
             assert_eq!(frame.image.width(), width, "{} captures the resized real window", frame.label);
             assert!(frame.native_accessibility.as_ref().expect("paired native tree").has_label("Ask anything, or find a package"),
                 "{} keeps the modal keyboard owner", frame.label);
+        }
+        assert_eq!(observed[21].overlay, Some(Overlay::CommandPalette), "the next opening has a live editor");
+        assert_eq!(observed[22].overlay, Some(Overlay::CommandPalette), "typed Ask is live before interruption");
+        assert_eq!(observed[23].overlay, None, "the exit has revoked Ask interaction");
+        assert_eq!(observed[24].overlay, Some(Overlay::CommandPalette), "the close was interrupted by a real reopen key");
+        assert!(observed[25..=27].iter().all(|frame| frame.overlay == Some(Overlay::CommandPalette)),
+            "the reopened Ask stays authoritative through its resize");
+        assert!(observed[28..].iter().all(|frame| frame.overlay.is_none()),
+            "the final exit settles without restoring a modal");
+        let native_has_results = |index: usize| {
+            set.frames[index].native_accessibility.as_ref().expect("paired native tree")
+                .has_label("Search results")
+        };
+        assert!(native_has_results(22), "the populated Ask has native results before closing");
+        assert!(!native_has_results(23), "the painted exit retained native Ask results");
+        assert!(native_has_results(27), "the reopened Ask restores native results after resize");
+        assert!(!native_has_results(28) && !native_has_results(29), "the final exit retained native Ask results");
+        for (index, width) in [(26, 800), (27, 1440)] {
+            assert_eq!(set.frames[index].image.width(), width,
+                "{} captures the interrupted modal at its real resized width", set.frames[index].label);
         }
     }
     assert!(built.get(), "the mounted shell graph survived through the final frame");
@@ -826,7 +857,7 @@ fn capture_the_shell_over_a_real_index() {
             appearance: Abyss,
             route: Route::Orbit(OrbitRoute::Home),
             frames: vec![0, 100, 900, 1050, 1150, 1250, 1350, 1450, 1550, 1750, 1950, 2150, 2350, 2550, 2750,
-                3350, 3450, 3550, 3650, 3750, 4150],
+                3350, 3450, 3550, 3650, 3750, 4150, 4250, 4350, 4450, 4490, 4530, 4600, 4700, 5200, 6200],
             script: Script::AskJourney,
         },
         still("flow-2560", 2560, 1440, 100, Comfortable, Abyss, &places.page),

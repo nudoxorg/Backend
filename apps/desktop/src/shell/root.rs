@@ -7,12 +7,13 @@
 //! held modifiers re-render only the region they belong to.
 
 use super::ask::Ask;
+use super::ask_presentation::{AskPresentation, AskScene};
 use super::bodies::graph::OpenView;
 use super::facet_sync::{Surroundings, facet_for};
 use super::system;
 use facet::overlay::float;
 use super::focus::{Target, Zone};
-use super::frame::{AskGeometry, AskPlacement, Frame, FrameInput, ShelfMode};
+use super::frame::{Frame, FrameInput, ShelfMode};
 use super::hints::{HintMode, Step};
 use super::keys::{self, CONTEXT};
 use super::pins::Pins;
@@ -80,7 +81,7 @@ pub struct Shell {
     status: Entity<Status>,
     pins: Entity<Pins>,
     ask: Entity<Ask>,
-    ask_placement: AskPlacement,
+    ask_presentation: AskPresentation,
     motion: Motion,
     zen: bool,
     /// The hand's Row rung is open (H, or the foot's marks).
@@ -102,6 +103,9 @@ pub struct Shell {
     /// How many peeks are pinned (the pins column exists only for pins).
     pinned: usize,
     ask_open: bool,
+    /// True only while the current overlay has a physically mounted result
+    /// plate; a just-opened query cannot focus a clipped-away destination.
+    ask_results_mounted: bool,
     /// An exact fixture-node link waiting for the index. Each new visit
     /// invalidates it even if Back later restores the same route.
     /// The system's appearance and text size, and the window's display.
@@ -213,7 +217,7 @@ impl Shell {
             status,
             pins,
             ask,
-            ask_placement: AskPlacement::default(),
+            ask_presentation: AskPresentation::default(),
             motion: Motion::new(),
             zen: false,
             hand_open: false,
@@ -228,6 +232,7 @@ impl Shell {
             peeking: None,
             pinned: 0,
             ask_open: false,
+            ask_results_mounted: false,
             around: Surroundings {
                 dark: is_dark(window.appearance()),
                 text: 1.0,
@@ -564,6 +569,7 @@ impl Shell {
             return;
         }
         self.ask_open = wants_ask;
+        self.ask_results_mounted = false;
         if wants_ask {
             self.ask.update(cx, |ask, cx| ask.opened(window, cx));
         } else {
@@ -969,10 +975,22 @@ impl Shell {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.ask_presentation.blocks_background_input(self.ask_open) {
+            // The exit's painted plate still covers the page. The shell's
+            // key context gates its actions; this also stops raw child keys.
+            // A new Ask and the platform's close shortcuts stay available.
+            let key = event.keystroke.key.as_str();
+            let platform = event.keystroke.modifiers.platform;
+            if !(platform && matches!(key, "k" | "q" | "w")) {
+                cx.stop_propagation();
+            }
+            return;
+        }
         if self.ask_open {
             let key = event.keystroke.key.as_str();
             if !event.keystroke.modifiers.modified()
                 && matches!(key, "up" | "down")
+                && self.ask_results_mounted
                 && self.ask.read(cx).owns_focus(window, cx)
             {
                 let delta = if key == "up" { -1 } else { 1 };
@@ -1012,10 +1030,24 @@ impl Shell {
         cx.notify();
     }
 
+    fn background_input_allowed(&self) -> bool {
+        !self.ask_presentation.blocks_background_input(self.ask_open)
+    }
+
+    fn with_background_input(&mut self, action: impl FnOnce(&mut Self)) {
+        if self.background_input_allowed() {
+            action(self);
+        }
+    }
+
     /// Ask owns an action at the shell's depth before the component root's Tab.
     fn ask_tab(&mut self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.ask_open && self.links.snapshot(cx).overlay() == Some(Overlay::CommandPalette) {
+        if self.ask_open && self.ask_results_mounted
+            && self.links.snapshot(cx).overlay() == Some(Overlay::CommandPalette) {
             self.ask.update(cx, |ask, cx| ask.focus_next(backwards, window, cx));
+        } else if self.ask_open || self.ask_presentation.blocks_background_input(self.ask_open) {
+            // The opening editor remains focused; a leaving plate keeps Tab
+            // from handing focus to a still-covered background control.
         } else {
             cx.propagate();
         }
@@ -1241,44 +1273,61 @@ impl Shell {
         Some(layer.into_any_element())
     }
 
-    /// Ask's results: a plate over the shelf's column below the titlebar
-    /// (which draws the query itself), a panel from 320 to 440 px as the
-    /// window grows and a sheet when the Reader cannot fit beside it. The
-    /// rest of the page is veiled; a click on the veil puts Ask away.
-    fn ask_layer(&self, frame: &Frame, status: f32, geometry: Option<AskGeometry>, cx: &App) -> Option<AnyElement> {
-        if !self.ask_open {
+    /// The active overlay owns the query and results. During exit the same
+    /// rectangle holds only painted plate pixels: no Ask entity, result
+    /// callbacks, or native accessibility descendants survive the overlay.
+    fn ask_layer(&self, frame: &Frame, status: f32, scene: AskScene, cx: &App) -> Option<AnyElement> {
+        if !scene.visible() {
             return None;
         }
         let palette = cx.facet().palette();
         let links = self.links.clone();
+        let mut veil = div()
+            .id(if self.ask_open { "ask-veil" } else { "ask-exit-veil" })
+            .absolute()
+            .top(frame.titlebar)
+            .bottom(px(status))
+            .left_0()
+            .right_0()
+            .bg(palette.veil.alpha(scene.veil));
+        if self.ask_open {
+            veil = veil.on_click(move |_, _, cx| links.dispatch(Intent::DismissOverlay, cx));
+        } else {
+            // The page under a departing sheet is not yet available. Consume
+            // its pointer hit without reviving any of Ask's old actions.
+            veil = veil.on_click(|_, _, cx| cx.stop_propagation());
+        }
+        let plate = scene.geometry.map(|geometry| {
+            let mut plate = div()
+                .id(if scene.live_results { "ask-frame" } else { "ask-exit-frame" })
+                .debug_selector(|| "ask-plate".to_owned())
+                .absolute()
+                .top(geometry.plate.origin.y)
+                .left(geometry.plate.origin.x)
+                .w(geometry.plate.size.width)
+                .h(geometry.plate.size.height)
+                .overflow_hidden()
+                .bg(palette.g2)
+                .border_r_1()
+                .border_color(palette.line2.hsla());
+            if scene.live_results {
+                // The inner plate keeps its full readable measure while the
+                // outer occupied rectangle reveals it and Reader follows.
+                plate = plate
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .child(div().w(scene.content_width).h_full().child(self.ask.clone()));
+            } else {
+                plate = plate.on_click(|_, _, cx| cx.stop_propagation());
+            }
+            plate
+        });
         Some(
             div()
-                .id("ask-overlay")
+                .id(if self.ask_open { "ask-overlay" } else { "ask-exit" })
                 .absolute()
                 .inset_0()
-                .child(div()
-                    .id("ask-veil")
-                    .absolute()
-                    .top(frame.titlebar)
-                    .bottom(px(status))
-                    .left_0()
-                    .right_0()
-                    .bg(palette.veil)
-                    .on_click(move |_, _, cx| links.dispatch(Intent::DismissOverlay, cx)))
-                // The plate is there once there is a query for it to answer:
-                // an empty plate is not something to look at.
-                .children(geometry.map(|geometry| {
-                    div()
-                        .id("ask-frame")
-                        .debug_selector(|| "ask-plate".to_owned())
-                        .absolute()
-                        .top(geometry.plate.origin.y)
-                        .left(geometry.plate.origin.x)
-                        .w(geometry.plate.size.width)
-                        .h(geometry.plate.size.height)
-                        .on_click(|_, _, cx| cx.stop_propagation())
-                        .child(self.ask.clone())
-                }))
+                .child(veil)
+                .children(plate)
                 .into_any_element(),
         )
     }
@@ -1293,7 +1342,7 @@ fn run(act: super::focus::Act, window: &mut Window, cx: &mut App) {
 impl Shell {
     /// Publishes the transient layers as the float stack the harness checks
     /// (unique keys, at most one of each, nothing left once settled).
-    fn publish_stack(&self, ask: Option<Vec<facet::probe::BoundsSample>>, cx: &mut App) {
+    fn publish_stack(&self, ask: Option<(facet::probe::StackPhase, Vec<facet::probe::BoundsSample>)>, cx: &mut App) {
         let hints = self.hints.as_ref().map(HintMode::remaining);
         facet::probe::record_stack(cx, move || {
             let entry = |key: String, kind: &str, pinned: bool| facet::probe::StackEntry {
@@ -1307,8 +1356,13 @@ impl Shell {
             // Peeks and pins are W-Float's layer's own entries; the shell
             // adds its transients: Ask and hint mode.
             let mut entries = Vec::new();
-            for bounds in ask.into_iter().flatten() {
-                entries.push(facet::probe::StackEntry { bounds: Some(bounds.clone()), ..entry(bounds.key.clone(), "dialog", false) });
+            if let Some((phase, bounds)) = ask {
+                for bounds in bounds {
+                    entries.push(facet::probe::StackEntry {
+                        bounds: Some(bounds.clone()), phase,
+                        ..entry(bounds.key.clone(), "dialog", false)
+                    });
+                }
             }
             if let Some(count) = hints {
                 entries.push(entry(format!("hints:{count}"), "hints", false));
@@ -1387,10 +1441,28 @@ impl Render for Shell {
         let drawer = f32::from(frame.drawer);
         let over_x = self.motion.animate("over-x", if over { 0.0 } else { -drawer }, spec::SETTLE, window, cx).min(columns_cap);
 
+        let ask_scene = self.ask_presentation.sample(
+            self.ask_open,
+            self.ask_open && self.ask.read(cx).shows(),
+            &frame,
+            viewport,
+            px(status_height),
+            px(shelf_width),
+            &self.modes,
+            window,
+            cx,
+        );
+        self.ask_results_mounted = ask_scene.live_results;
+        self.reader.update(cx, |reader, cx| reader.set_ask_geometry(ask_scene.geometry, cx));
+
         let mut context = KeyContext::new_with_defaults();
         context.add(CONTEXT);
         if self.ask_open {
+            // The modal owns Tab, arrows, and result activation. Leave shell
+            // shortcuts available while its plain zone bindings step aside.
             context.add("Ask");
+        } else if self.ask_presentation.blocks_background_input(false) {
+            context.add("AskLeaving");
         }
         if self.hints.is_some() {
             context.add("hints");
@@ -1400,16 +1472,6 @@ impl Render for Shell {
         if super::titlebar::menu_open(window, cx) {
             context.add("Menu");
         }
-
-        let ask_geometry = if self.ask_open && self.ask.read(cx).shows() {
-            let target = self.ask_placement.target_width(&frame, viewport, px(shelf_width), &self.modes);
-            let painted = self.motion.animate("ask-plate-w", f32::from(target), spec::SETTLE, window, cx)
-                .min(f32::from(viewport.width));
-            Some(AskGeometry::resolve(&frame, viewport, px(status_height), px(shelf_width), px(painted)))
-        } else {
-            None
-        };
-        self.reader.update(cx, |reader, cx| reader.set_ask_geometry(ask_geometry, cx));
 
         let body = div()
             .flex_1()
@@ -1436,10 +1498,9 @@ impl Render for Shell {
                     StyleRefinement::default().w(px(pins_width)).h_full().flex_none(),
                 )
             }));
-        // Ask owns the interactive surface while its modal plate is open.
-        // Keep the page pixels beneath the veil without a second accessible
-        // set of search, shelf, or page controls.
-        let body: AnyElement = if self.ask_open {
+        // Keep the page's native controls out until its pixels reappear from
+        // beneath the last painted plate, including Ask's inert exit.
+        let body: AnyElement = if ask_scene.visible() {
             a11y_inert(body).into_any_element()
         } else {
             body.into_any_element()
@@ -1461,51 +1522,51 @@ impl Render for Shell {
             .font_family(facet::fonts::family(facet::tokens::ty::BODY))
             .track_focus(&self.focus)
             .key_context(context)
-            .on_action(cx.listener(|shell, _: &keys::FocusNext, window, cx| shell.walk(1, window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::FocusPrev, window, cx| shell.walk(-1, window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::Activate, window, cx| shell.activate(window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::Peek, window, cx| shell.peek(window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::PeelSource, window, cx| shell.peel(window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::HintMode, _, cx| shell.hint_mode(cx)))
+            .on_action(cx.listener(|shell, _: &keys::FocusNext, window, cx| shell.with_background_input(|shell| shell.walk(1, window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::FocusPrev, window, cx| shell.with_background_input(|shell| shell.walk(-1, window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::Activate, window, cx| shell.with_background_input(|shell| shell.activate(window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::Peek, window, cx| shell.with_background_input(|shell| shell.peek(window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::PeelSource, window, cx| shell.with_background_input(|shell| shell.peel(window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::HintMode, _, cx| shell.with_background_input(|shell| shell.hint_mode(cx))))
             .on_action(cx.listener(|shell, _: &keys::Ask, _, cx| shell.open_ask(cx)))
-            .on_action(cx.listener(|shell, _: &keys::Back, _, cx| shell.links.dispatch(Intent::Back, cx)))
-            .on_action(cx.listener(|shell, _: &keys::Forward, _, cx| shell.links.dispatch(Intent::Forward, cx)))
-            .on_action(cx.listener(|shell, _: &keys::Surface, _, cx| shell.links.dispatch(Intent::ZoomOut, cx)))
-            .on_action(cx.listener(|shell, _: &keys::Zen, _, cx| {
+            .on_action(cx.listener(|shell, _: &keys::Back, _, cx| shell.with_background_input(|shell| shell.links.dispatch(Intent::Back, cx))))
+            .on_action(cx.listener(|shell, _: &keys::Forward, _, cx| shell.with_background_input(|shell| shell.links.dispatch(Intent::Forward, cx))))
+            .on_action(cx.listener(|shell, _: &keys::Surface, _, cx| shell.with_background_input(|shell| shell.links.dispatch(Intent::ZoomOut, cx))))
+            .on_action(cx.listener(|shell, _: &keys::Zen, _, cx| shell.with_background_input(|shell| {
                 shell.zen = !shell.zen;
                 cx.notify();
-            }))
-            .on_action(cx.listener(|shell, _: &keys::ToggleShelf, _, cx| shell.toggle_shelf(cx)))
-            .on_action(cx.listener(|shell, _: &keys::NextZone, window, cx| shell.cycle_zone(true, window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::PrevZone, window, cx| shell.cycle_zone(false, window, cx)))
+            })))
+            .on_action(cx.listener(|shell, _: &keys::ToggleShelf, _, cx| shell.with_background_input(|shell| shell.toggle_shelf(cx))))
+            .on_action(cx.listener(|shell, _: &keys::NextZone, window, cx| shell.with_background_input(|shell| shell.cycle_zone(true, window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::PrevZone, window, cx| shell.with_background_input(|shell| shell.cycle_zone(false, window, cx))))
             .on_action(cx.listener(|shell, _: &keys::AskNext, window, cx| shell.ask_tab(false, window, cx)))
             .on_action(cx.listener(|shell, _: &keys::AskPrev, window, cx| shell.ask_tab(true, window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::Escape, window, cx| shell.escape(window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::DepthOrbit, window, cx| shell.depth(RouteDepth::Orbit, window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::DepthPackage, window, cx| shell.depth(RouteDepth::Package, window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::DepthPage, window, cx| shell.depth(RouteDepth::Page, window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::DepthCode, window, cx| shell.depth(RouteDepth::Source, window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::Graph, window, cx| shell.toggle_graph(window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::CodePage, window, cx| shell.code_page(window, cx)))
-            .on_action(cx.listener(|shell, open: &facet::anatomy::Open, _, cx| shell.open_anatomy(open, cx)))
-            .on_action(cx.listener(|shell, _: &keys::ZoomIn, _, cx| shell.zoom(ZoomStep::In, cx)))
-            .on_action(cx.listener(|shell, _: &keys::ZoomOut, _, cx| shell.zoom(ZoomStep::Out, cx)))
-            .on_action(cx.listener(|shell, _: &keys::ZoomReset, _, cx| shell.zoom(ZoomStep::Reset, cx)))
-            .on_action(cx.listener(|shell, _: &keys::Hold, window, cx| shell.hold(window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::OpenHand, _, cx| shell.toggle_hand(cx)))
-            .on_action(cx.listener(|shell, _: &keys::HandCard1, _, cx| shell.hand_card(0, cx)))
-            .on_action(cx.listener(|shell, _: &keys::HandCard2, _, cx| shell.hand_card(1, cx)))
-            .on_action(cx.listener(|shell, _: &keys::HandCard3, _, cx| shell.hand_card(2, cx)))
-            .on_action(cx.listener(|shell, _: &keys::HandCard4, _, cx| shell.hand_card(3, cx)))
-            .on_action(cx.listener(|shell, _: &keys::HandCard5, _, cx| shell.hand_card(4, cx)))
-            .on_action(cx.listener(|shell, _: &keys::CopyAddress, _, cx| shell.copy_address(cx)))
-            .on_action(cx.listener(|shell, _: &keys::Tour, _, cx| shell.tour(cx)))
-            .on_action(cx.listener(|shell, _: &keys::OpenSettings, _, cx| {
+            .on_action(cx.listener(|shell, _: &keys::Escape, window, cx| shell.with_background_input(|shell| shell.escape(window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::DepthOrbit, window, cx| shell.with_background_input(|shell| shell.depth(RouteDepth::Orbit, window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::DepthPackage, window, cx| shell.with_background_input(|shell| shell.depth(RouteDepth::Package, window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::DepthPage, window, cx| shell.with_background_input(|shell| shell.depth(RouteDepth::Page, window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::DepthCode, window, cx| shell.with_background_input(|shell| shell.depth(RouteDepth::Source, window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::Graph, window, cx| shell.with_background_input(|shell| shell.toggle_graph(window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::CodePage, window, cx| shell.with_background_input(|shell| shell.code_page(window, cx))))
+            .on_action(cx.listener(|shell, open: &facet::anatomy::Open, _, cx| shell.with_background_input(|shell| shell.open_anatomy(open, cx))))
+            .on_action(cx.listener(|shell, _: &keys::ZoomIn, _, cx| shell.with_background_input(|shell| shell.zoom(ZoomStep::In, cx))))
+            .on_action(cx.listener(|shell, _: &keys::ZoomOut, _, cx| shell.with_background_input(|shell| shell.zoom(ZoomStep::Out, cx))))
+            .on_action(cx.listener(|shell, _: &keys::ZoomReset, _, cx| shell.with_background_input(|shell| shell.zoom(ZoomStep::Reset, cx))))
+            .on_action(cx.listener(|shell, _: &keys::Hold, window, cx| shell.with_background_input(|shell| shell.hold(window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::OpenHand, _, cx| shell.with_background_input(|shell| shell.toggle_hand(cx))))
+            .on_action(cx.listener(|shell, _: &keys::HandCard1, _, cx| shell.with_background_input(|shell| shell.hand_card(0, cx))))
+            .on_action(cx.listener(|shell, _: &keys::HandCard2, _, cx| shell.with_background_input(|shell| shell.hand_card(1, cx))))
+            .on_action(cx.listener(|shell, _: &keys::HandCard3, _, cx| shell.with_background_input(|shell| shell.hand_card(2, cx))))
+            .on_action(cx.listener(|shell, _: &keys::HandCard4, _, cx| shell.with_background_input(|shell| shell.hand_card(3, cx))))
+            .on_action(cx.listener(|shell, _: &keys::HandCard5, _, cx| shell.with_background_input(|shell| shell.hand_card(4, cx))))
+            .on_action(cx.listener(|shell, _: &keys::CopyAddress, _, cx| shell.with_background_input(|shell| shell.copy_address(cx))))
+            .on_action(cx.listener(|shell, _: &keys::Tour, _, cx| shell.with_background_input(|shell| shell.tour(cx))))
+            .on_action(cx.listener(|shell, _: &keys::OpenSettings, _, cx| shell.with_background_input(|shell| {
                 shell.links.dispatch(Intent::OpenSettings(SettingsPage::Appearance), cx);
-            }))
-            .on_action(cx.listener(|shell, _: &keys::AddFolder, _, cx| shell.links.dispatch(Intent::OpenAddProject, cx)))
+            })))
+            .on_action(cx.listener(|shell, _: &keys::AddFolder, _, cx| shell.with_background_input(|shell| shell.links.dispatch(Intent::OpenAddProject, cx))))
             .on_modifiers_changed(cx.listener(|shell, event: &ModifiersChangedEvent, _, cx| {
-                shell.modifiers(event.modifiers, cx);
+                shell.with_background_input(|shell| shell.modifiers(event.modifiers, cx));
             }))
             .capture_key_down(cx.listener(|shell, event: &KeyDownEvent, window, cx| {
                 shell.key_down(event, window, cx);
@@ -1604,7 +1665,7 @@ impl Render for Shell {
         }
         // Ask is a dialog over the veiled page: its field (the titlebar) and
         // its plate are what a person reads; the page under the veil is not.
-        let ask_bounds = self.ask_open.then(|| {
+        let ask_bounds = ask_scene.phase.map(|phase| {
             let sample = |key: &str, x: Pixels, y: Pixels, width: Pixels, height: Pixels| facet::probe::BoundsSample {
                 key: key.to_owned(),
                 x: f32::from(x),
@@ -1612,16 +1673,21 @@ impl Render for Shell {
                 width: f32::from(width),
                 height: f32::from(height),
             };
-            let mut parts = vec![sample("ask-field", px(0.0), px(0.0), viewport.width, frame.titlebar)];
-            // The plate is drawn once there is a query for it to answer
-            // (`ask_layer`): before that the page under the veil is all
-            // there is (J9's ask-open frame held the shelf's words to text
-            // contrast under a plate that was not there).
-            if let Some(geometry) = ask_geometry {
+            let mut parts = Vec::new();
+            if self.ask_open {
+                parts.push(sample("ask-field", px(0.0), px(0.0), viewport.width, frame.titlebar));
+            }
+            // The same measured plate may still be painted after its live
+            // query and results have been removed on exit.
+            if let Some(geometry) = ask_scene.geometry {
                 parts.push(sample("ask-plate", geometry.plate.origin.x, geometry.plate.origin.y,
                     geometry.plate.size.width, geometry.plate.size.height));
             }
-            parts
+            if parts.is_empty() {
+                parts.push(sample("ask-veil", px(0.0), frame.titlebar, viewport.width,
+                    (viewport.height - frame.titlebar - px(status_height)).max(px(0.0))));
+            }
+            (phase, parts)
         });
         self.publish_stack(ask_bounds, cx);
         let float = float::layer(window, cx);
@@ -1639,7 +1705,7 @@ impl Render for Shell {
             ];
             super::side::twin::rings(&regions, window.mouse_position(), cx)
         });
-        root.children(self.ask_layer(&frame, status_height, ask_geometry, cx))
+        root.children(self.ask_layer(&frame, status_height, ask_scene, cx))
             .children(self.hint_layer(cx))
             .children(twins)
             .child(float)
