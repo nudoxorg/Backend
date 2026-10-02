@@ -215,6 +215,7 @@ struct State {
     all_packages: bool,
     all_answers: bool,
     source: bool,
+    initial_focus_pending: bool,
     pending: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -234,10 +235,6 @@ impl State {
             input.set_value(query.clone(), window, cx);
             input
         });
-        // Opening Find from Ask (or the shelf) hands the keyboard to the
-        // query. The keyed state is retained while a refinement redraws it,
-        // so subsequent result focus is never stolen by a new reading.
-        input.update(cx, |input, cx| input.focus(window, cx));
         let subscription = cx.subscribe_in(&input, window, |state: &mut Self, input, event: &InputEvent, window, cx| {
             if !state.active { return; }
             if matches!(event, InputEvent::Change) {
@@ -292,7 +289,7 @@ impl State {
         let held = Held(actions.initial_held.clone());
         let reveal = KeyboardReveal::new(actions.scroll.clone());
         Self { active: true, read_admission: ReadAdmission::Current, input, route_query: query, refine, actions, keyboard: vec![], loaded_query: None, snapshot: None, submitted: None, generation: 0, selected: None, reveal, held,
-            all_packages: false, all_answers: false, source: false, pending: None, _subscriptions: vec![subscription] }
+            all_packages: false, all_answers: false, source: false, initial_focus_pending: true, pending: None, _subscriptions: vec![subscription] }
     }
     /// A release added to the library changes its address (the offer's
     /// package URL becomes the tree the owner indexed): the selection follows
@@ -381,7 +378,16 @@ impl RenderOnce for Find {
             state.active = self.active;
             if !self.active { state.pending = None; state.generation = state.generation.wrapping_add(1); }
         });
-        if self.active { state.update(cx, |state, cx| state.accept(&self.model, &self.actions, window, cx)); }
+        if self.active { state.update(cx, |state, cx| {
+            // A retained/departing Find may mount for its pixels while Ask or
+            // a different route owns the keyboard. Only its first active
+            // paint transfers native focus to the query.
+            if state.initial_focus_pending {
+                state.initial_focus_pending = false;
+                state.input.clone().update(cx, |input, cx| input.focus(window, cx));
+            }
+            state.accept(&self.model, &self.actions, window, cx);
+        }); }
         // A query admission keeps the last immutable reading in place. Its
         // evidence remains inspectable, but navigation waits for the new read.
         let model = state.read(cx).snapshot.clone().unwrap_or_else(|| Arc::clone(&self.model));
