@@ -15,8 +15,8 @@
 #![cfg_attr(not(any(windows, target_os = "macos")), forbid(unsafe_code))]
 #![cfg_attr(test, allow(clippy::expect_used))]
 
-pub mod directory;
 pub mod child_output;
+pub mod directory;
 pub mod durability;
 pub mod durable;
 #[cfg_attr(target_os = "macos", allow(unsafe_code))]
@@ -27,6 +27,8 @@ pub mod macos_process;
 mod native_path;
 #[cfg(windows)]
 pub mod win32;
+#[cfg(windows)]
+mod windows_child_output;
 
 pub use directory::{DirectoryCapability, DirectoryEntry, DirectoryRenameError, EntryKind};
 pub use native_path::{NativePath, NativePathError, NativePathKey, NativePathWire};
