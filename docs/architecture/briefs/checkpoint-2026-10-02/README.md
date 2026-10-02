@@ -1,5 +1,7 @@
 # Nudox stopping checkpoint — 2 October 2026
 
+**Subsequent publication request:** after this stopping brief was committed, the user explicitly requested a push to canonical on `dev.nudox.org`. See [publication checkpoint](publication-2026-10-02.md) and [saved branch identities](publication-2026-10-02.json). The historical stopping state below remains intact; publication does not close its validation gates.
+
 This is the handoff at the user's request to reach a stopping point. Implementation, agent work, and builds have stopped. Source changes are committed in their worktrees; unfinished slices and failed runs are preserved. **Nudox is not yet accepted as production ready.** The continuation candidate has substantial reviewed source work, but has not been compiled as a whole. This checkpoint does not merge code into canonical or push anything.
 
 The most immediate work is to review the remaining isolated patches, compile the composed candidate, fix the remaining required-content failure precedence, and execute native journeys against a real owner. The broader index/compiler/IR-history goal remains open and should be paused, not marked complete.
