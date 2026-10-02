@@ -594,7 +594,7 @@ impl RenderOnce for Seg {
                     let accessible_focus = touch.focus.clone();
                     let pointer_focus = touch.focus.clone();
                     item = item
-                        .on_a11y_action(gpui::AccessibleAction::Click, move |_, window, cx| { window.focus(&accessible_focus); accessible_select(index, window, cx); })
+                        .on_a11y_action(gpui::AccessibleAction::Click, move |_, window, cx| { window.focus(&accessible_focus, cx); accessible_select(index, window, cx); })
                         .on_key_down({
                             let select = select.clone();
                             move |event, window, cx| {
@@ -604,7 +604,7 @@ impl RenderOnce for Seg {
                                 }
                             }
                         })
-                        .on_click(move |_, window, cx| { window.focus(&pointer_focus); select(index, window, cx); });
+                        .on_click(move |_, window, cx| { window.focus(&pointer_focus, cx); select(index, window, cx); });
                 }
             }
             row = row.child(item);
