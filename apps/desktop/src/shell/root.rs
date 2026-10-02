@@ -1822,6 +1822,7 @@ pub(crate) fn held_route(held: &crate::model::hand::Held) -> Option<Route> {
             selected: None,
         }),
         None => Route::Package(crate::navigation::PackageRoute {
+            cargo: None,
             project: None,
             package: held.package.clone(),
             lane: crate::navigation::PackageLane::Overview,

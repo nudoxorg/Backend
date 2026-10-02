@@ -30,6 +30,8 @@ mod owner_link;
 #[cfg(test)]
 mod cargo_tests;
 #[cfg(test)]
+pub(crate) mod cargo_context_tests;
+#[cfg(test)]
 mod owner_read_tests;
 
 pub(crate) use self::dependencies::RouteDependencies;

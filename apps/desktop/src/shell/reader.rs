@@ -834,10 +834,15 @@ impl Reader {
         if let Route::CargoSource(file) = route {
             if !matches!(lease, NativeActionLease::Resource { .. }) || read_stamp.is_none() { return false; }
             let Ok(package) = crate::model::pages::PackageRef::parse(file.package.as_str()) else { return false };
+            if file.browse.context().is_none() {
+                return source.is_none() && inventory_revision.is_none()
+                    && RouteDependencies::new(route, overlay).current_cargo_package(store, &package).is_some();
+            }
+            let Some(context) = file.browse.context() else { return false; };
             match source {
                 Some(SourceGeneration::Cargo(digest)) => {
                     let key = crate::model::pages::CargoSourceKey {
-                        project: file.project.clone(), package, file: file.file.clone(),
+                        context: context.clone(), package, file: file.file.clone(),
                     };
                     let resource = store.cargo_source(&key);
                     if resource.loaded_value().is_none_or(|page| page.content_digest != digest)
@@ -849,7 +854,7 @@ impl Reader {
                     let Some(revision) = inventory_revision else { return false };
                     let key = crate::model::browse::BrowseKey::CargoSourceInventory(
                         crate::model::browse::CargoSourceInventoryKey {
-                            project: file.project.clone(), package,
+                            context: context.clone(), package,
                         },
                     );
                     let resource = store.pages().browse(&key);
@@ -1950,7 +1955,7 @@ mod source_paging_memory_tests {
         ).expect("authority address");
         let project = crate::core::LocalProjectId::new("/tmp/nudox-cargo-reader").expect("tree address");
         let file = CargoSourcePath::new("src/lib.rs").expect("file");
-        let route = Route::CargoSource(CargoSourceRoute::new(project, package, file, Some(77)).expect("route"));
+        let route = Route::CargoSource(CargoSourceRoute::new(crate::navigation::cargo_browse::fixture_context(project), package, file, Some(77)).expect("route"));
         let original = memory.for_route(&route, Some(SourceGeneration::Cargo([1; 32])), true);
         assert!(Rc::ptr_eq(&original, &memory.for_route(&route, Some(SourceGeneration::Cargo([1; 32])), true)));
         assert!(!Rc::ptr_eq(&original, &memory.for_route(&route, Some(SourceGeneration::Cargo([2; 32])), true)));
@@ -2014,7 +2019,7 @@ impl Region for Reader {
             let snapshot = store.snapshot();
             let overlay = snapshot.overlay().filter(|overlay| matches!(overlay, Overlay::Settings(_) | Overlay::Inbox));
             if *snapshot.route() != self.route || overlay != self.overlay {
-                if overlay == self.overlay && find_refinement(&self.route, snapshot.route()) {
+                if overlay == self.overlay && (find_refinement(&self.route, snapshot.route()) || cargo_binding_refinement(&self.route, snapshot.route())) {
                     // Typing refines one place. Keeping its keyed surface
                     // holds the live input and selection while results reflow.
                     self.route = snapshot.route().clone();
@@ -2054,6 +2059,11 @@ impl Region for Reader {
             }
         }
     }
+}
+
+fn cargo_binding_refinement(previous: &Route, next: &Route) -> bool {
+    let (Route::CargoSource(previous), Route::CargoSource(next)) = (previous, next) else { return false };
+    next.browse.context().cloned().and_then(|context| previous.resolve_context(context)).as_ref() == Some(next)
 }
 
 fn find_refinement(previous: &Route, next: &Route) -> bool {
@@ -2959,6 +2969,7 @@ mod transit_tests {
 
     fn package() -> Route {
         Route::Package(crate::navigation::PackageRoute {
+            cargo: None,
             project: None,
             at: None,
             package: crate::core::PackageId::new(PACKAGE).expect("package"),
@@ -3610,6 +3621,7 @@ mod transit_ledger {
     fn route_film(cx: &mut TestAppContext) {
         let Some(dir) = std::env::var_os("NUDOX_TRANSIT_LEDGER") else { return };
         let package = Route::Package(crate::navigation::PackageRoute {
+            cargo: None,
             project: None,
             at: None,
             package: crate::core::PackageId::new(PACKAGE).expect("package"),

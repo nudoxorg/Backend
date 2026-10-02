@@ -193,8 +193,7 @@ impl Region for Titlebar {
     }
 
     fn keys(&self, snapshot: &AppSnapshot) -> Vec<PageKey> {
-        let route = snapshot.route();
-        route_symbol(route).map(PageKey::Symbol).into_iter().chain(route_package(route).map(PageKey::Package)).collect()
+        crate::runtime::store::RouteDependencies::chrome_keys(snapshot.route())
     }
 
     fn urgency(&self) -> super::region::Urgency {

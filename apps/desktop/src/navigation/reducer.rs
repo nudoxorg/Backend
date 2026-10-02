@@ -30,6 +30,14 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
             navigate(&mut next, route);
             effects.push(Effect::Persist);
         }
+        Intent::ResolveCargoBrowse { expected, context } => {
+            if snapshot.route() == &Route::CargoSource(expected.clone())
+                && let Some(route) = expected.resolve_context(context)
+            {
+                replace(&mut next, Route::CargoSource(route));
+                effects.push(Effect::Persist);
+            }
+        }
         Intent::Preview(route) => {
             let mut session = next.session().clone();
             if session.preview.is_none() {
@@ -334,6 +342,7 @@ mod tests {
 
     fn package_route(selected: Option<crate::model::ObjectId>) -> Route {
         Route::Package(PackageRoute {
+            cargo: None,
             project: None,
             package: crate::core::PackageId::new("pkg").expect("package"),
             lane: PackageLane::Overview,

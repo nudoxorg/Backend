@@ -73,6 +73,7 @@ fn record_like(about: &crate::model::pages::PackageDossier) -> PackageRecord {
 
 fn toml() -> Route {
     Route::Package(PackageRoute {
+        cargo: None,
         project: None,
         package: PackageId::new(PINNED).expect("package"),
         lane: PackageLane::Overview,

@@ -74,6 +74,14 @@ pub enum FolderPickerOutcome {
 pub enum Intent {
     /// Replace the current typed route.
     Navigate(Route),
+    /// Replace a legacy source address after the current Tree admits its exact
+    /// package and full binding. The callback must carry the current read lease.
+    ResolveCargoBrowse {
+        /// Exact unbound source visit that owns this resolution.
+        expected: super::CargoSourceRoute,
+        /// Address projected from that visit's current Tree observation.
+        context: super::CargoBrowseContext,
+    },
     /// Refine the current Find page without adding a history stop per keystroke.
     /// An old field callback cannot replace a different page or newer query.
     RefineFind {

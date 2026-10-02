@@ -134,6 +134,9 @@ impl WorkspaceProject {
 /// launch.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Note {
+    /// The saved Cargo source address lacked a usable exact Tree address or
+    /// canonical file/package coordinate. Library is the recovery destination.
+    CargoSourceAddressUnread,
     /// The saved session could not be read (damaged, too large, or written
     /// by a version this one must not reinterpret). Nothing was deleted:
     /// the file was kept, and this launch started from the defaults.

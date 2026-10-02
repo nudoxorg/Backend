@@ -1246,6 +1246,7 @@ fn an_earlier_release_is_read_from_its_own_tree_once_it_is_added() {
     };
     let at = |version: &str| {
         Route::Package(PackageRoute {
+            cargo: None,
             project: None,
             package: crate::core::PackageId::new(pinned_page.as_str()).expect("package id"),
             lane: PackageLane::Overview,

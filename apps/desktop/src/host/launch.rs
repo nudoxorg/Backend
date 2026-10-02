@@ -200,7 +200,8 @@ fn restore(paths: &WorkspacePaths) -> Restored {
                 PersistenceRecovery::Current | PersistenceRecovery::Missing => {}
             }
             let may_save = !matches!(&admitted.recovery, PersistenceRecovery::RetainedAtSource { .. });
-            Restored { note: admitted.recovery.note(), state: admitted.state, persistence: may_save.then_some(persistence) }
+            let note = admitted.recovery.note().or_else(|| admitted.state.cargo_source_recovery_note());
+            Restored { note, state: admitted.state, persistence: may_save.then_some(persistence) }
         }
         Err(error) => {
             eprintln!("backend-desktop: admit desktop state at {}: {error}", persistence.path().display());

@@ -179,6 +179,7 @@ mod tests {
 
     fn package(at: Option<&str>) -> Route {
         Route::Package(PackageRoute {
+            cargo: None,
             project: None,
             package: PackageId::new(BOOK).expect("package"),
             lane: PackageLane::Overview,

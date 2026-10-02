@@ -59,6 +59,7 @@ fn left_on_a_package_page(tag: &str) -> WorkspacePaths {
     std::fs::create_dir_all(&data).expect("data");
     let state = PersistedDesktopState {
         route: PersistedRoute::Package {
+            cargo: None,
             project: None,
             package: "/fixture/restored".to_owned(),
             lane: PersistedPackageLane::Overview,
@@ -189,6 +190,7 @@ fn a_window_before_its_owner_holds_its_reads_then_says_why_the_owner_failed(cx: 
     let gate = OwnerGate::starting();
     let package = PackageRef::parse(PACKAGE).expect("package");
     let route = Route::Package(PackageRoute {
+        cargo: None,
         project: None,
         package: PackageId::new(PACKAGE).expect("package id"),
         lane: PackageLane::Overview,

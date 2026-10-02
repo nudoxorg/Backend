@@ -220,6 +220,7 @@ mod tests {
         ).expect("world"));
         let identities = Arc::new(IdentityAdapter::synthetic_catalog(&world, vec![left.clone(), right.clone()]));
         let route = Route::Package(crate::navigation::PackageRoute {
+            cargo: None,
             project: None, package: crate::core::PackageId::new(left.as_str()).expect("route package"), lane: crate::navigation::PackageLane::Overview,
             selected: None, at: None,
         });

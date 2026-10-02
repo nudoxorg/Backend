@@ -95,6 +95,10 @@ pub(crate) fn notes(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Context<
     let mut leaves = Vec::new();
     for (index, note) in snapshot.workspace().notes.iter().enumerate() {
         let (headline, detail) = match note {
+            Note::CargoSourceAddressUnread => (
+                "Your saved Cargo source address could not be reopened.".to_owned(),
+                "Open the release from its Library project tree to browse current files.".to_owned(),
+            ),
             Note::StateKept { backup, why } => (
                 "Your saved layout could not be read, so this launch started fresh.".to_owned(),
                 format!("It said: {why}. The file is kept at {backup}; nothing was deleted."),

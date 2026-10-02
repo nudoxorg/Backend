@@ -93,6 +93,7 @@ fn left_as_it_was(parent: &Path) -> (AppSnapshot, LocalProjectId, LocalProjectId
         snapshot = go(&snapshot, intent);
     }
     let page = Route::Package(PackageRoute {
+        cargo: None,
         project: None,
         package: PackageId::new("/fixture/present").expect("package id"),
         lane: PackageLane::Overview,

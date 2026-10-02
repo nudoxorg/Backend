@@ -36,7 +36,7 @@ use backend_client::{ClientError, Session};
 use backend_library::{
     CargoPackageSourceFileResultV1, CargoPackageSourcePathV1, CargoPackageSourceReadFailureV1,
     CargoPackageSourceSemanticStatusV1, CargoPackageSourceInventoryResultV1,
-    CargoPackageSourceInventoryFailureV1,
+    CargoPackageSourceInventoryFailureV1, CargoPackageSourceRequestV1,
     CommandFailure, CommandReply, HealthReport, PageContinuation, PageTerminal, ProductText,
     ReplyDto, Row, SurfaceCommand, SurfaceReply, ViewSnapshot, ViewStateRoot,
 };
@@ -1434,21 +1434,19 @@ fn compose_cargo_source(
     let SurfaceReply::CargoPackageSourceFile(result) = reply else {
         return Err(shape("Cargo source file"));
     };
-    if !result.has_admissible_shape() {
-        return Err(shape("Cargo source file proof"));
-    }
+    validate_cargo_file_reply(key, &result)?;
     if matches!(
         &result,
         CargoPackageSourceFileResultV1::Unavailable {
-            package,
             reason: CargoPackageSourceReadFailureV1::AuthorityUnavailable,
-        } if package.as_ref().is_none_or(|package| package == key.package.reference())
+            ..
+        }
     ) {
         // A cold owner has no prior ProjectTree observation. The retained
         // project is only an address: the owner reads it again, then this
         // worker verifies that its current tree contains the exact qualified
         // package before asking for bytes. No UI path becomes file authority.
-        rehydrate_cargo_source_authority(engine, &key.project, &key.package, context.cancel)?;
+        rehydrate_cargo_source_authority(engine, &key.context, &key.package, context.cancel)?;
         check(context.cancel)?;
         let reply = request_cargo_source_file(engine, key, &path)?;
         check(context.cancel)?;
@@ -1467,20 +1465,25 @@ fn request_cargo_source_file(
 ) -> Result<SurfaceReply, ReadFailure> {
     engine
         .surface(SurfaceCommand::CargoPackageSourceFile {
-            package: key.package.reference().clone(),
+            request: cargo_source_request(&key.context, &key.package)?,
             path: path.clone(),
         })
         .map_err(|error| failure(&error))
 }
 
+fn cargo_source_request(context: &crate::navigation::CargoBrowseContext, package: &PackageRef) -> Result<CargoPackageSourceRequestV1, ReadFailure> {
+    let request = CargoPackageSourceRequestV1::from_tree(package.reference().clone(), context.request_binding());
+    if request.has_admissible_shape() { Ok(request) } else { Err(shape("Cargo source request selector")) }
+}
+
 fn rehydrate_cargo_source_authority(
     engine: &mut dyn Engine,
-    project: &LocalProjectId,
+    browse: &crate::navigation::CargoBrowseContext,
     package: &PackageRef,
     cancel: &CancellationToken,
 ) -> Result<(), ReadFailure> {
     check(cancel)?;
-    let root = project.service_coordinate().map_err(|_| {
+    let root = browse.requested_project().service_coordinate().map_err(|_| {
         ReadFailure::Fault(ErrorValue::new(
             FaultCode::Protocol,
             "This project path cannot be sent to the Cargo owner.",
@@ -1499,10 +1502,16 @@ fn rehydrate_cargo_source_authority(
     if !tree.has_admissible_shape() {
         return Err(shape("Cargo project-tree proof"));
     }
+    if tree.request_binding != Some(browse.request_binding()) {
+        return Err(ReadFailure::Fault(ErrorValue::new(
+            FaultCode::Missing,
+            "This project tree now has a different Cargo browse binding. Reopen its current tree.",
+        )));
+    }
     if tree.package_by_reference(package.reference()).is_none() {
         return Err(ReadFailure::Fault(ErrorValue::new(
             FaultCode::Missing,
-            "This exact Cargo package is no longer in the project tree.",
+            "This tree does not admit the requested exact Cargo package. Reopen its current observation.",
         )));
     }
     Ok(())
@@ -1514,16 +1523,12 @@ fn cargo_source_page(
     key: &CargoSourceKey,
     result: CargoPackageSourceFileResultV1,
 ) -> Result<PageValue, ReadFailure> {
-    if !result.has_admissible_shape() {
-        return Err(shape("Cargo source file proof"));
-    }
+    validate_cargo_file_reply(key, &result)?;
     match result {
         CargoPackageSourceFileResultV1::Read {
-            package, authority, path, content_digest, contents,
-            semantic: CargoPackageSourceSemanticStatusV1::NotIndexed,
-        } if package == *key.package.reference()
-            && path.as_str() == key.file.as_str()
-            && authority.matches_package_reference(&package) => {
+            authority, request_binding, content_digest, contents,
+            semantic: CargoPackageSourceSemanticStatusV1::NotIndexed, ..
+        } => {
                 let text = crate::model::pages::SourceText::new(
                     Arc::from(contents),
                     1,
@@ -1533,24 +1538,37 @@ fn cargo_source_page(
                 .map_err(|_| shape("Cargo source line range"))?;
                 Ok(PageValue::CargoSource(CargoSourcePage {
                     package: key.package.clone(),
+                    request_binding,
                     file: key.file.clone(),
                     source: text,
                     content_digest,
                     source_revision: authority.source_revision(),
                 }))
         }
-        CargoPackageSourceFileResultV1::Stale { package }
-            if package == *key.package.reference() => Err(ReadFailure::Fault(ErrorValue::new(
+        CargoPackageSourceFileResultV1::Stale { .. } => Err(ReadFailure::Fault(ErrorValue::new(
                 FaultCode::Missing,
                 "The Cargo source changed. Reopen the project tree to get its current files.",
             ))),
-        CargoPackageSourceFileResultV1::Unavailable { package, reason }
-            if package.as_ref().is_none_or(|package| package == key.package.reference()) => {
+        CargoPackageSourceFileResultV1::Unavailable { reason, .. } => {
                 let (code, message) = cargo_source_failure(reason);
                 Err(ReadFailure::Fault(ErrorValue::new(code, message)))
             }
-        _ => Err(shape("Cargo source address mismatch")),
     }
+}
+
+/// A valid submitted selector must be echoed even on a negative reply. A
+/// missing selector is not a current owner observation for this request.
+fn validate_cargo_file_reply(key: &CargoSourceKey, result: &CargoPackageSourceFileResultV1) -> Result<(), ReadFailure> {
+    if !result.has_admissible_shape() { return Err(shape("Cargo source file proof")); }
+    let exact = match result {
+        CargoPackageSourceFileResultV1::Read { package, request_binding, path, .. } =>
+            package == key.package.reference() && *request_binding == key.context.request_binding() && path.as_str() == key.file.as_str(),
+        CargoPackageSourceFileResultV1::Stale { package, request_binding } =>
+            package == key.package.reference() && *request_binding == key.context.request_binding(),
+        CargoPackageSourceFileResultV1::Unavailable { package, request_binding, .. } =>
+            package.as_ref() == Some(key.package.reference()) && *request_binding == Some(key.context.request_binding()),
+    };
+    if exact { Ok(()) } else { Err(shape("Cargo source address mismatch")) }
 }
 
 fn cargo_source_failure(reason: CargoPackageSourceReadFailureV1) -> (FaultCode, &'static str) {
@@ -1590,17 +1608,15 @@ fn compose_cargo_source_inventory(
     let SurfaceReply::CargoPackageSourceInventory(result) = reply else {
         return Err(shape("Cargo source inventory"));
     };
-    if !result.has_admissible_shape() {
-        return Err(shape("Cargo source inventory proof"));
-    }
+    validate_cargo_inventory_reply(key, &result)?;
     if matches!(
         &result,
         CargoPackageSourceInventoryResultV1::Unavailable {
-            package,
             reason: CargoPackageSourceInventoryFailureV1::AuthorityUnavailable,
-        } if package.as_ref().is_none_or(|package| package == key.package.reference())
+            ..
+        }
     ) {
-        rehydrate_cargo_source_authority(engine, &key.project, &key.package, context.cancel)?;
+        rehydrate_cargo_source_authority(engine, &key.context, &key.package, context.cancel)?;
         check(context.cancel)?;
         let reply = request_cargo_source_inventory(engine, key)?;
         check(context.cancel)?;
@@ -1618,7 +1634,7 @@ fn request_cargo_source_inventory(
 ) -> Result<SurfaceReply, ReadFailure> {
     engine
         .surface(SurfaceCommand::CargoPackageSourceInventory {
-            package: key.package.reference().clone(),
+            request: cargo_source_request(&key.context, &key.package)?,
         })
         .map_err(|error| failure(&error))
 }
@@ -1627,13 +1643,9 @@ fn cargo_source_inventory_page(
     key: &CargoSourceInventoryKey,
     result: CargoPackageSourceInventoryResultV1,
 ) -> Result<PageValue, ReadFailure> {
-    if !result.has_admissible_shape() {
-        return Err(shape("Cargo source inventory proof"));
-    }
+    validate_cargo_inventory_reply(key, &result)?;
     match result {
-        CargoPackageSourceInventoryResultV1::Listed(inventory)
-            if inventory.package == *key.package.reference()
-                && inventory.authority.matches_package_reference(&inventory.package) => {
+        CargoPackageSourceInventoryResultV1::Listed(inventory) => {
                 let paths = inventory
                     .paths
                     .iter()
@@ -1645,19 +1657,18 @@ fn cargo_source_inventory_page(
                 Ok(PageValue::Browse(BrowseValue::CargoSourceInventory(Arc::new(
                     CargoSourceInventoryModel {
                         package: key.package.clone(),
+                        request_binding: inventory.request_binding,
                         paths: paths.into(),
                         coverage: inventory.coverage,
                         source_revision: inventory.authority.source_revision(),
                     },
                 ))))
         }
-        CargoPackageSourceInventoryResultV1::Stale { package }
-            if package == *key.package.reference() => Err(ReadFailure::Fault(ErrorValue::new(
+        CargoPackageSourceInventoryResultV1::Stale { .. } => Err(ReadFailure::Fault(ErrorValue::new(
                 FaultCode::Missing,
                 "The Cargo source changed. Reopen the project tree for its current files.",
             ))),
-        CargoPackageSourceInventoryResultV1::Unavailable { package, reason }
-            if package.as_ref().is_none_or(|package| package == key.package.reference()) => {
+        CargoPackageSourceInventoryResultV1::Unavailable { reason, .. } => {
                 let message = match reason {
                     CargoPackageSourceInventoryFailureV1::AuthorityUnavailable =>
                         "This Cargo package has no current source receipt. Reopen its project tree.",
@@ -1670,8 +1681,20 @@ fn cargo_source_inventory_page(
                 };
                 Err(ReadFailure::Fault(ErrorValue::new(FaultCode::Missing, message)))
             }
-        _ => Err(shape("Cargo source inventory address mismatch")),
     }
+}
+
+fn validate_cargo_inventory_reply(key: &CargoSourceInventoryKey, result: &CargoPackageSourceInventoryResultV1) -> Result<(), ReadFailure> {
+    if !result.has_admissible_shape() { return Err(shape("Cargo source inventory proof")); }
+    let exact = match result {
+        CargoPackageSourceInventoryResultV1::Listed(inventory) =>
+            inventory.package == *key.package.reference() && inventory.request_binding == key.context.request_binding(),
+        CargoPackageSourceInventoryResultV1::Stale { package, request_binding } =>
+            package == key.package.reference() && *request_binding == key.context.request_binding(),
+        CargoPackageSourceInventoryResultV1::Unavailable { package, request_binding, .. } =>
+            package.as_ref() == Some(key.package.reference()) && *request_binding == Some(key.context.request_binding()),
+    };
+    if exact { Ok(()) } else { Err(shape("Cargo source inventory address mismatch")) }
 }
 
 fn compose_package(
@@ -2205,15 +2228,17 @@ mod tests {
             else { panic!("resolved metadata must carry exact authority") };
         let reference = authority.package_reference().expect("qualified package");
         let path = CargoPackageSourcePathV1::new("Cargo.toml").expect("relative file");
+        let project = crate::core::LocalProjectId::new("/tmp/nudox-source-reply").expect("project");
+        let binding = backend_library::browse::ProjectTreeRequestBindingV1::for_paths(Path::new(project.service_coordinate().expect("coordinate")), &input.root).expect("fixture binding");
         let key = CargoSourceKey {
-            project: crate::core::LocalProjectId::new("/tmp/nudox-source-reply").expect("project"),
+            context: crate::navigation::CargoBrowseContext::from_binding_address(project, binding).expect("bound address"),
             package: PackageRef::from_reference(reference.clone()),
             file: crate::navigation::CargoSourcePath::new(path.as_str()).expect("GUI path"),
         };
         let contents: Box<str> = "[package]\nname = \"serde\"\n".into();
         let digest = *blake3::hash(contents.as_bytes()).as_bytes();
         let reply = CargoPackageSourceFileResultV1::Read {
-            package: reference.clone(), authority: authority.clone(), path: path.clone(),
+            package: reference.clone(), authority: authority.clone(), request_binding: binding, path: path.clone(),
             content_digest: digest, contents: contents.clone(),
             semantic: CargoPackageSourceSemanticStatusV1::NotIndexed,
         };
@@ -2226,12 +2251,22 @@ mod tests {
         assert_eq!(page.source.coverage(), crate::model::pages::SourceCoverage::Unverified);
 
         let forged = CargoPackageSourceFileResultV1::Read {
-            package: reference.clone(), authority: authority.clone(), path: path.clone(),
+            package: reference.clone(), authority: authority.clone(), request_binding: binding, path: path.clone(),
             content_digest: [0; 32], contents,
             semantic: CargoPackageSourceSemanticStatusV1::NotIndexed,
         };
         assert!(cargo_source_page(&key, forged).is_err(), "a display address cannot authenticate file bytes");
-        assert!(matches!(cargo_source_page(&key, CargoPackageSourceFileResultV1::Stale { package: reference }),
+        let mut unrelated = binding;
+        unrelated.requested_root_digest = [3; 32];
+        for negative in [
+            CargoPackageSourceFileResultV1::Stale { package: reference.clone(), request_binding: unrelated },
+            CargoPackageSourceFileResultV1::Unavailable { package: Some(reference.clone()), request_binding: Some(unrelated), reason: CargoPackageSourceReadFailureV1::AuthorityUnavailable },
+            CargoPackageSourceFileResultV1::Unavailable { package: Some(reference.clone()), request_binding: None, reason: CargoPackageSourceReadFailureV1::AuthorityUnavailable },
+            CargoPackageSourceFileResultV1::Unavailable { package: None, request_binding: Some(binding), reason: CargoPackageSourceReadFailureV1::AuthorityUnavailable },
+        ] {
+            assert!(matches!(cargo_source_page(&key, negative), Err(ReadFailure::Fault(error)) if error.code() == FaultCode::Protocol), "a negative reply must echo the exact submitted package and complete binding");
+        }
+        assert!(matches!(cargo_source_page(&key, CargoPackageSourceFileResultV1::Stale { package: reference, request_binding: binding }),
             Err(ReadFailure::Fault(error)) if error.code() == FaultCode::Missing));
     }
 
@@ -2256,7 +2291,10 @@ mod tests {
             let package = normalize_package("cargo", name).expect("identity");
             advisories.observe(&package, version, false, false, 0, false)
         };
-        let tree = build_tree(&input, &observe);
+        let mut tree = build_tree(&input, &observe);
+        let requested_project = LocalProjectId::new("/workspace/backend/member").expect("requested member");
+        let binding = backend_library::browse::ProjectTreeRequestBindingV1::for_paths(Path::new(requested_project.service_coordinate().expect("coordinate")), &tree.root).expect("owner fixture binding");
+        tree.request_binding = Some(binding);
         let row = tree.package("serde", "1.0.219").expect("exact row");
         let CargoPackageSourceAuthorityStateV1::Admitted(authority) = &row.source_authority
             else { panic!("metadata receipt") };
@@ -2267,6 +2305,7 @@ mod tests {
         let current = CargoPackageSourceFileResultV1::Read {
             package: package.clone(),
             authority: authority.clone(),
+            request_binding: binding,
             path: path.clone(),
             content_digest: digest,
             contents,
@@ -2289,25 +2328,27 @@ mod tests {
             }
             fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
                 match command {
-                    SurfaceCommand::CargoPackageSourceFile { .. } if self.seen.is_empty() => {
+                    SurfaceCommand::CargoPackageSourceFile { request, .. } if self.seen.is_empty() => {
                         self.seen.push("file");
                         Ok(SurfaceReply::CargoPackageSourceFile(
                             CargoPackageSourceFileResultV1::Unavailable {
-                                package: None,
+                                package: Some(request.package),
+                                request_binding: Some(request.request_binding),
                                 reason: CargoPackageSourceReadFailureV1::AuthorityUnavailable,
                             },
                         ))
                     }
                     SurfaceCommand::ProjectTree { root } => {
-                        assert_eq!(root.as_str(), "/workspace/backend");
+                        assert_eq!(root.as_str(), "/workspace/backend/member");
                         self.seen.push("tree");
                         Ok(SurfaceReply::ProjectTree(self.tree.clone()))
                     }
-                    SurfaceCommand::CargoPackageSourceFile { package, path } => {
+                    SurfaceCommand::CargoPackageSourceFile { request, path } => {
                         assert_eq!(path.as_str(), "Cargo.toml");
                         self.seen.push("file");
                         if let CargoPackageSourceFileResultV1::Read { package: current, .. } = &self.current {
-                            assert_eq!(&package, current);
+                            assert_eq!(&request.package, current);
+                            assert_eq!(Some(request.request_binding), self.tree.request_binding);
                         }
                         Ok(SurfaceReply::CargoPackageSourceFile(self.current.clone()))
                     }
@@ -2317,7 +2358,7 @@ mod tests {
         }
 
         let key = CargoSourceKey {
-            project: LocalProjectId::new("/workspace/backend").expect("tree root"),
+            context: crate::navigation::CargoBrowseContext::from_binding_address(requested_project, binding).expect("bound member"),
             package: PackageRef::from_reference(package),
             file: crate::navigation::CargoSourcePath::new(path.as_str()).expect("path"),
         };
@@ -2327,6 +2368,12 @@ mod tests {
         let mut engine = ColdEngine { tree, current, seen: Vec::new() };
         assert!(matches!(compose_cargo_source(&mut engine, &key, &context), Ok(PageValue::CargoSource(_))));
         assert_eq!(engine.seen, ["file", "tree", "file"]);
+
+        let mut changed_tree = engine.tree.clone();
+        changed_tree.request_binding.as_mut().expect("binding").requested_root_digest = [4; 32];
+        let mut changed = ColdEngine { tree: changed_tree, current: engine.current.clone(), seen: Vec::new() };
+        assert!(matches!(compose_cargo_source(&mut changed, &key, &context), Err(ReadFailure::Fault(error)) if error.code() == FaultCode::Missing));
+        assert_eq!(changed.seen, ["file", "tree"], "a different requested Tree binding cannot trigger a retry");
 
         let other = CargoSourceKey {
             package: PackageRef::parse("pkg:cargo/serde@1.0.219?cargo-authority=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
@@ -2356,8 +2403,10 @@ mod tests {
         let CargoPackageSourceAuthorityStateV1::Admitted(authority) = &row.source_authority
             else { panic!("source receipt") };
         let package = authority.package_reference().expect("qualified package");
+        let project = LocalProjectId::new("/workspace/backend/member").expect("requested member");
+        let binding = backend_library::browse::ProjectTreeRequestBindingV1::for_paths(Path::new(project.service_coordinate().expect("coordinate")), &input.root).expect("owner fixture binding");
         let key = CargoSourceInventoryKey {
-            project: LocalProjectId::new("/workspace/backend").expect("tree"),
+            context: crate::navigation::CargoBrowseContext::from_binding_address(project, binding).expect("bound member"),
             package: PackageRef::from_reference(package.clone()),
         };
         let paths = ["Cargo.toml", "src/lib.rs"]
@@ -2368,6 +2417,7 @@ mod tests {
         let inventory = CargoPackageSourceInventoryV1 {
             package: package.clone(),
             authority: authority.clone(),
+            request_binding: binding,
             paths,
             coverage: CargoPackageSourceInventoryCoverageV1::Partial {
                 reason: CargoPackageSourceInventoryGapV1::DirectoryUnavailable,
@@ -2380,6 +2430,16 @@ mod tests {
         assert_eq!(model.paths.iter().map(|path| path.as_str()).collect::<Vec<_>>(), ["Cargo.toml", "src/lib.rs"]);
         assert_eq!(model.coverage, inventory.coverage);
         assert_eq!(model.source_revision, authority.source_revision());
+
+        let mut unrelated = binding;
+        unrelated.requested_root_digest = [3; 32];
+        for negative in [
+            CargoPackageSourceInventoryResultV1::Stale { package: package.clone(), request_binding: unrelated },
+            CargoPackageSourceInventoryResultV1::Unavailable { package: Some(package.clone()), request_binding: Some(unrelated), reason: CargoPackageSourceInventoryFailureV1::AuthorityUnavailable },
+            CargoPackageSourceInventoryResultV1::Unavailable { package: Some(package.clone()), request_binding: None, reason: CargoPackageSourceInventoryFailureV1::AuthorityUnavailable },
+        ] {
+            assert!(matches!(cargo_source_inventory_page(&key, negative), Err(ReadFailure::Fault(error)) if error.code() == FaultCode::Protocol));
+        }
 
         let mut wrong = inventory.clone();
         wrong.paths.swap(0, 1);

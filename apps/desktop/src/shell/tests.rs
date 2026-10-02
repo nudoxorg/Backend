@@ -1387,6 +1387,7 @@ fn tab_j_and_space_each_change_a_fresh_symbol_page(cx: &mut TestAppContext) {
 #[gpui::test]
 fn enter_descends_and_the_descent_plays_down_then_up(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(Route::Package(crate::navigation::PackageRoute {
+        cargo: None,
         project: None,
         at: None,
         package: crate::core::PackageId::new(PACKAGE).expect("package"),

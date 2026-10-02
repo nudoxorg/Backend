@@ -93,6 +93,7 @@ mod tests {
 
     fn package(name: &str) -> Route {
         Route::Package(PackageRoute {
+            cargo: None,
             project: None,
             package: PackageId::new(&format!("pkg:cargo/{name}@1.0.0")).expect("package"),
             lane: PackageLane::Overview,

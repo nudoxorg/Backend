@@ -38,6 +38,7 @@ impl PageReader for ScheduledReader {
                 let content_digest = *blake3::hash(contents.as_bytes()).as_bytes();
                 Ok(PageValue::CargoSource(CargoSourcePage {
                     package: key.package.clone(),
+                    request_binding: key.context.request_binding(),
                     file: key.file.clone(),
                     source: SourceText::new(contents.into(), 1, SourceOrigin::LocalFile, true)
                         .expect("fixture bytes"),
@@ -60,6 +61,7 @@ impl PageReader for ScheduledReader {
                 Ok(PageValue::Browse(BrowseValue::CargoSourceInventory(
                     Arc::new(CargoSourceInventoryModel {
                         package: key.package.clone(),
+                        request_binding: key.context.request_binding(),
                         paths: Arc::from([
                             CargoSourcePath::new("src/lib.rs").expect("file address")
                         ]),
@@ -101,7 +103,7 @@ fn root() -> VersionedRoot {
 fn route() -> Route {
     Route::CargoSource(
         CargoSourceRoute::new(
-            LocalProjectId::new("/fixture/cargo-schedule").expect("project address"),
+            crate::navigation::cargo_browse::fixture_context(LocalProjectId::new("/fixture/cargo-schedule").expect("project address")),
             PackageId::new(&format!(
                 "pkg:cargo/scheduled@1.0.0?cargo-authority={}",
                 "a".repeat(64)
@@ -407,17 +409,13 @@ fn closing_settings_reenters_the_same_source_pair_with_a_fresh_owner_read(cx: &m
 }
 
 #[test]
-fn settings_and_inbox_replace_the_visible_cargo_dependency_pair() {
+fn settings_and_inbox_replace_cargo_content_and_keep_the_visible_package_header() {
     let route = route();
     assert_eq!(
         RouteDependencies::new(&route, Some(Overlay::Settings(SettingsPage::Appearance))).keys(),
-        &[PageKey::Health]
+        &[PageKey::Health, PageKey::Package(route_package(&route).expect("visible package"))]
     );
-    assert!(
-        RouteDependencies::new(&route, Some(Overlay::Inbox))
-            .keys()
-            .is_empty()
-    );
+    assert_eq!(RouteDependencies::new(&route, Some(Overlay::Inbox)).keys(), &[PageKey::Package(route_package(&route).expect("visible package"))]);
     assert!(
         RouteDependencies::new(&route, Some(Overlay::Inbox))
             .cargo()
@@ -439,7 +437,7 @@ fn code_source_and_symbol_dependencies_are_kept_once_each() {
     let keys = RouteDependencies::new(&route, None).into_keys();
     assert!(matches!(
         keys.as_slice(),
-        [PageKey::Source(_), PageKey::Symbol(_)]
+        [PageKey::Source(_), PageKey::Symbol(_), PageKey::Package(_)]
     ));
     let kept = crate::runtime::snapshot::kept_keys(&route);
     assert_eq!(

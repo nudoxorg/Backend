@@ -151,6 +151,7 @@ impl Drop for RemoveOnDrop {
 
 pub(crate) fn package_route() -> Route {
     Route::Package(PackageRoute {
+        cargo: None,
         project: None,
         at: None,
         package: crate::core::PackageId::new(super::tests::PACKAGE).expect("package"),

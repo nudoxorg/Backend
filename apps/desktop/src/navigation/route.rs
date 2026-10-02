@@ -5,6 +5,7 @@
 //! zoom-out operation can retain the selected thing without parsing a URL.
 
 use crate::core::{DocumentId, LocalProjectId, PackageId, ProjectId};
+use super::{CargoBrowseAddress, CargoBrowseContext};
 use crate::model::ObjectId;
 use std::cmp::Ordering;
 use std::fmt;
@@ -161,6 +162,8 @@ impl ReleaseId {
 pub struct PackageRoute {
     /// Optional project selected at the orbit level.
     pub project: Option<ProjectId>,
+    /// Independent Cargo observation address, never semantic dossier proof.
+    pub cargo: Option<CargoBrowseContext>,
     /// Stable package coordinate (the release you pin).
     pub package: PackageId,
     /// The selected package lane.
@@ -247,7 +250,7 @@ pub struct SymbolRoute {
 pub struct CargoSourceRoute {
     /// The exact project-tree address that supplied this package authority.
     /// It is rechecked by the owner; it is not file-system proof.
-    pub project: LocalProjectId,
+    pub browse: CargoBrowseAddress,
     /// Full source-qualified package coordinate, including its authority digest.
     pub package: PackageId,
     /// Canonical package-relative file spelling.
@@ -262,32 +265,30 @@ impl CargoSourceRoute {
     /// open a file, and the owner revalidates the receipt on every read.
     #[must_use]
     pub fn supports_package(package: &PackageId) -> bool {
-        let Ok(backend_library::PackageReference::Purl(purl)) =
+        let Ok(reference) =
             backend_library::PackageReference::parse(package.as_str())
         else {
             return false;
         };
-        let Some(digest) = purl.qualifiers().and_then(|value| value.strip_prefix("cargo-authority=")) else {
-            return false;
-        };
-        purl.package_type().as_str() == "cargo"
-            && digest.len() == 64
-            && digest.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        backend_library::CargoPackageSourceAuthorityV1::digest_from_package_reference(&reference).is_some()
     }
 
     /// Creates an address that can only ask the owner for a source-qualified
     /// Cargo package. The digest is an address hint, never proof by itself.
-    pub fn new(project: LocalProjectId, package: PackageId, file: CargoSourcePath, line: Option<u32>) -> Option<Self> {
-        // ProjectTree currently admits only an exact UTF-8 service address.
-        // A display-only native spelling cannot rehydrate a cold owner.
-        let coordinate = project.service_coordinate().ok()?;
-        if !std::path::Path::new(coordinate).is_absolute() {
-            return None;
-        }
+    pub fn new(context: CargoBrowseContext, package: PackageId, file: CargoSourcePath, line: Option<u32>) -> Option<Self> {
         if !Self::supports_package(&package) || line == Some(0) {
             return None;
         }
-        Some(Self { project, package, file, line })
+        Some(Self { browse: CargoBrowseAddress::Bound(context), package, file, line })
+    }
+
+    /// Retains an old saved address without inventing its effective binding.
+    pub(crate) fn from_unbound_saved(project: LocalProjectId, package: PackageId, file: CargoSourcePath, line: Option<u32>) -> Option<Self> {
+        let coordinate = project.service_coordinate().ok()?;
+        if backend_library::ProductText::new(coordinate).ok()?.as_str() != coordinate
+            || !std::path::Path::new(coordinate).is_absolute()
+            || !Self::supports_package(&package) || line == Some(0) { return None; }
+        Some(Self { browse: CargoBrowseAddress::AwaitingTree { requested_project: project }, package, file, line })
     }
 
     /// The package page returned to by zoom-out and Back.
@@ -295,11 +296,20 @@ impl CargoSourceRoute {
     pub fn package_route(&self) -> PackageRoute {
         PackageRoute {
             project: None,
+            cargo: self.browse.context().cloned(),
             package: self.package.clone(),
             lane: PackageLane::Overview,
             selected: None,
             at: None,
         }
+    }
+
+    /// Resolves only the exact requested legacy address, preserving its place.
+    pub(crate) fn resolve_context(&self, context: CargoBrowseContext) -> Option<Self> {
+        if !matches!(self.browse, CargoBrowseAddress::AwaitingTree { .. })
+            || self.browse.requested_project() != context.requested_project()
+        { return None; }
+        Self::new(context, self.package.clone(), self.file.clone(), self.line)
     }
 }
 
@@ -523,7 +533,7 @@ impl Route {
     pub fn same_place(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Symbol(a), Self::Symbol(b)) => a.same_place(b),
-            (Self::CargoSource(a), Self::CargoSource(b)) => a.project == b.project && a.package == b.package && a.file == b.file,
+            (Self::CargoSource(a), Self::CargoSource(b)) => a.browse == b.browse && a.package == b.package && a.file == b.file,
             _ => self == other,
         }
     }
@@ -535,6 +545,7 @@ impl Route {
         match self {
             Self::CargoSource(route) => Some(Self::Package(route.package_route())),
             Self::Symbol(route) => Some(Self::Package(PackageRoute {
+                cargo: None,
                 project: route.project.clone(),
                 package: route.package.clone(),
                 lane: PackageLane::Overview,
@@ -560,7 +571,7 @@ impl Route {
             Self::Orbit(OrbitRoute::Home) => RouteKey::OrbitHome,
             Self::Orbit(OrbitRoute::Project(id)) => RouteKey::OrbitProject(id.clone()),
             Self::Package(route) => {
-                RouteKey::Package(route.project.clone(), route.package.clone(), route.lane)
+                RouteKey::Package(route.project.clone(), route.package.clone(), route.lane, route.cargo.clone())
             }
             Self::Symbol(route) => RouteKey::Symbol(
                 route.project.clone(),
@@ -568,7 +579,7 @@ impl Route {
                 route.id.clone(),
                 route.at.clone(),
             ),
-            Self::CargoSource(route) => RouteKey::CargoSource(route.project.clone(), route.package.clone(), route.file.clone()),
+            Self::CargoSource(route) => RouteKey::CargoSource(route.browse.clone(), route.package.clone(), route.file.clone()),
             Self::Orbit(OrbitRoute::Browse(route)) => RouteKey::Browse(route.clone()),
             Self::World => RouteKey::World,
         }
@@ -583,11 +594,11 @@ pub enum RouteKey {
     /// Project orbit.
     OrbitProject(ProjectId),
     /// Package coordinate.
-    Package(Option<ProjectId>, PackageId, PackageLane),
+    Package(Option<ProjectId>, PackageId, PackageLane, Option<CargoBrowseContext>),
     /// Declaration coordinate and release.
     Symbol(Option<ProjectId>, PackageId, Coordinate, Option<ReleaseId>),
     /// Exact Cargo source package and package-relative file.
-    CargoSource(LocalProjectId, PackageId, CargoSourcePath),
+    CargoSource(CargoBrowseAddress, PackageId, CargoSourcePath),
     /// The whole graph.
     World,
     /// A browsing page.
@@ -611,25 +622,26 @@ mod tests {
     #[test]
     fn cargo_file_route_keeps_exact_package_authority_and_line_independent_place() {
         let project = LocalProjectId::new("/tmp/nudox-cargo-route").expect("tree address");
+        let context = super::super::cargo_browse::fixture_context(project.clone());
         let package = PackageId::new("pkg:cargo/demo@1.0.0?cargo-authority=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").expect("qualified package");
         let file = CargoSourcePath::new("src/lib.rs").expect("relative file");
-        let first = Route::CargoSource(CargoSourceRoute::new(project.clone(), package.clone(), file.clone(), Some(12)).expect("route"));
-        let later = Route::CargoSource(CargoSourceRoute::new(project.clone(), package.clone(), file.clone(), Some(90)).expect("route"));
+        let first = Route::CargoSource(CargoSourceRoute::new(context.clone(), package.clone(), file.clone(), Some(12)).expect("route"));
+        let later = Route::CargoSource(CargoSourceRoute::new(context.clone(), package.clone(), file.clone(), Some(90)).expect("route"));
         assert!(first.same_place(&later));
         assert_eq!(first.key(), later.key());
         let other_project = LocalProjectId::new("/tmp/nudox-cargo-route-other").expect("other tree");
-        let other = Route::CargoSource(CargoSourceRoute::new(other_project, package.clone(), file.clone(), Some(12)).expect("other route"));
+        let other = Route::CargoSource(CargoSourceRoute::new(super::super::cargo_browse::fixture_context(other_project), package.clone(), file.clone(), Some(12)).expect("other route"));
         assert!(!first.same_place(&other), "the same package in a different tree needs its own cold observation");
         assert_ne!(first.key(), other.key());
         assert_eq!(first.depth(), Some(RouteDepth::Source));
-        assert_eq!(first.zoom_out().expect("package").key(), Route::Package(CargoSourceRoute::new(project.clone(), package.clone(), file, None).expect("route").package_route()).key());
+        assert_eq!(first.zoom_out().expect("package").key(), Route::Package(CargoSourceRoute::new(context.clone(), package.clone(), file, None).expect("route").package_route()).key());
         assert!(CargoSourcePath::new("../Cargo.toml").is_none());
         assert!(CargoSourcePath::new("src//lib.rs").is_none());
         assert!(CargoSourcePath::new("/Cargo.toml").is_none());
         assert!(CargoSourcePath::new("C:\\Cargo.toml").is_none());
-        assert!(CargoSourceRoute::new(project.clone(), PackageId::new("/local/project").expect("local"), CargoSourcePath::new("Cargo.toml").expect("path"), None).is_none());
-        assert!(CargoSourceRoute::new(LocalProjectId::new("relative/tree").expect("relative address"), package.clone(), CargoSourcePath::new("Cargo.toml").expect("path"), None).is_none());
-        assert!(CargoSourceRoute::new(project, PackageId::new("pkg:cargo/demo@1.0.0").expect("unqualified"), CargoSourcePath::new("Cargo.toml").expect("path"), None).is_none());
+        assert!(CargoSourceRoute::new(context.clone(), PackageId::new("/local/project").expect("local"), CargoSourcePath::new("Cargo.toml").expect("path"), None).is_none());
+        assert!(CargoSourceRoute::from_unbound_saved(LocalProjectId::new("relative/tree").expect("relative address"), package.clone(), CargoSourcePath::new("Cargo.toml").expect("path"), None).is_none());
+        assert!(CargoSourceRoute::new(context, PackageId::new("pkg:cargo/demo@1.0.0").expect("unqualified"), CargoSourcePath::new("Cargo.toml").expect("path"), None).is_none());
     }
 
     #[test]
@@ -684,6 +696,7 @@ mod tests {
     fn package_zoom_out_returns_the_selected_project_orbit() {
         let project = ProjectId::test(1).expect("project");
         let route = Route::Package(PackageRoute {
+            cargo: None,
             project: Some(project.clone()),
             package: PackageId::new("pkg").expect("package"),
             lane: PackageLane::Overview,

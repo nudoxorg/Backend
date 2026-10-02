@@ -516,6 +516,7 @@ impl UiRootEntity {
         self.first_catalog_route_admitted = true;
         self.queue(
             Intent::Navigate(Route::Package(PackageRoute {
+                cargo: None,
                 project: None,
                 package: package.coordinate.clone(),
                 lane: PackageLane::Overview,

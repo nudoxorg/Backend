@@ -313,6 +313,7 @@ struct Shot {
 
 fn route_of(package: &PackageRef, at: Option<&str>) -> Route {
     Route::Package(PackageRoute {
+        cargo: None,
         project: None,
         package: PackageId::new(package.as_str()).expect("package"),
         lane: PackageLane::Overview,
