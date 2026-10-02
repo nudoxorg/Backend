@@ -2715,11 +2715,43 @@ impl fmt::Debug for RemoteIndexConnection {
     }
 }
 
+/// Why a listener closes a remote-index connection without admitting a session.
+///
+/// The reason travels to the peer as the QUIC application close code and reason, so a refused
+/// client learns what happened at once instead of waiting for its own timeout.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RemoteIndexRefusal {
+    /// This role serves no remote-index queries. The endpoint advertises the ALPN for every
+    /// cluster role, so a capability-bearing client may still dial a role that cannot serve it.
+    NotServed,
+}
+
+impl RemoteIndexRefusal {
+    /// Application close code. Every refusal in this crate uses the same code; the reason bytes
+    /// say which one it was.
+    pub const CODE: u32 = 1;
+
+    /// Short machine-stable reason delivered to the peer.
+    #[must_use]
+    pub const fn reason(self) -> &'static [u8] {
+        match self {
+            Self::NotServed => b"remote-index queries are not served by this role",
+        }
+    }
+}
+
 impl RemoteIndexConnection {
     /// Authenticated Iroh peer identity. Application access still requires a valid grant.
     #[must_use]
     pub fn peer(&self) -> EndpointId {
         self.connection.remote_id()
+    }
+
+    /// Closes the connection with an explicit application code and reason instead of dropping
+    /// it. No grant is read and no session is admitted.
+    pub fn refuse(self, refusal: RemoteIndexRefusal) {
+        self.connection
+            .close(RemoteIndexRefusal::CODE.into(), refusal.reason());
     }
 
     /// Verifies the owner-signed capability and opens the bounded request channel.
