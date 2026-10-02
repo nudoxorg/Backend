@@ -1,7 +1,10 @@
 //! Bounded Cargo browse work behind the owner's existing deferred command
 //! tickets. Each worker exclusively owns its cache; no mutex protects source
 //! I/O or a Cargo child. The shard is chosen by the exact requested-root
-//! commitment, which is present in every follow-on source request.
+//! commitment, which is present in every follow-on source request. Two
+//! requested paths into one effective Cargo workspace may therefore repeat
+//! an observation in separate workers; there are exactly two workers, and
+//! each cache keeps its existing 128 MiB retention ceiling.
 
 use super::super::browse::{BrowseCache, ObservationControl, with_observation_control};
 use super::super::registry::RegistryGateway;
