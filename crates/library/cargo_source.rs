@@ -1863,7 +1863,7 @@ mod tests {
     fn serde_rejects_a_tampered_authority_digest() {
         let receipt = authority(Some("registry+https://example.test/index"));
         let mut value = serde_json::to_value(receipt).expect("serialize");
-        value["authority_digest"] = serde_json::json!([0; 32]);
+        value["authority_digest"] = serde_json::json!(vec![0_u8; 32]);
         assert!(serde_json::from_value::<CargoPackageSourceAuthorityV1>(value).is_err());
     }
 
