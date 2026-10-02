@@ -416,11 +416,11 @@ impl Titlebar {
                             back_menu(&right_links, anchor, window, cx);
                         }
                     })
-                    .on_click(move |_: &ClickEvent, window, cx| {
+                    .on_click(move |event: &ClickEvent, window, cx| {
                         if long.take() {
                             return;
                         }
-                        if !window.last_input_was_keyboard() { click_act(window, cx); }
+                        if !matches!(event, ClickEvent::Keyboard(_)) { click_act(window, cx); }
                     })
                     .on_key_down(move |event, window, cx| activate_key(event, &key_act, window, cx))
                     .children(keycap(keys, "⌘[", measure)),
@@ -453,8 +453,8 @@ impl Titlebar {
                         .size(hit_side(measure))
                         .cursor_pointer()
                         .child(text(ty::ROW, measure, palette.ink2).child("›"))
-                        .on_click(move |_: &ClickEvent, window, cx| {
-                            if !window.last_input_was_keyboard() { click_act(window, cx); }
+                        .on_click(move |event: &ClickEvent, window, cx| {
+                            if !matches!(event, ClickEvent::Keyboard(_)) { click_act(window, cx); }
                         })
                         .on_key_down(move |event, window, cx| activate_key(event, &key_act, window, cx)),
                 ),
@@ -536,8 +536,8 @@ impl Titlebar {
                 .role(gpui::Role::Button)
                 .aria_label(format!("Show {} siblings", here.name))
                 .focusable().cursor_pointer()
-                .on_click(move |_: &ClickEvent, window, cx| {
-                    if !window.last_input_was_keyboard() { click_act(window, cx); }
+                .on_click(move |event: &ClickEvent, window, cx| {
+                    if !matches!(event, ClickEvent::Keyboard(_)) { click_act(window, cx); }
                 })
                 .on_key_down(move |event, window, cx| activate_key(event, &key_act, window, cx));
         }
@@ -578,8 +578,8 @@ impl Titlebar {
                 .focusable()
                 .cursor_pointer()
                 .child(icons::ui(Icon::Search, IconSize::S14, palette.ink4).size(measure.icon(14.0)))
-                .on_click(move |_: &ClickEvent, window, cx| {
-                    if !window.last_input_was_keyboard() { click_ask(window, cx); }
+                .on_click(move |event: &ClickEvent, window, cx| {
+                    if !matches!(event, ClickEvent::Keyboard(_)) { click_ask(window, cx); }
                 })
                 .on_key_down(move |event, window, cx| activate_key(event, &key_ask, window, cx))),
         );
@@ -656,8 +656,8 @@ impl Titlebar {
                     .px(pad)
                     .mx(-pad)
                     .child(text(ty::SMALL, measure, palette.ink2).whitespace_nowrap().child(segment.name.clone()))
-                    .on_click(move |_: &ClickEvent, window, cx| {
-                        if !window.last_input_was_keyboard() { click_act(window, cx); }
+                    .on_click(move |event: &ClickEvent, window, cx| {
+                        if !matches!(event, ClickEvent::Keyboard(_)) { click_act(window, cx); }
                     })
                     .on_key_down(move |event, window, cx| activate_key(event, &key_act, window, cx)),
             )
@@ -745,8 +745,8 @@ impl Titlebar {
                                     .child("Ask anything, or find a package"),
                             ),
                     )
-                    .on_click(move |_: &ClickEvent, window, cx| {
-                        if !window.last_input_was_keyboard() { click_act(window, cx); }
+                    .on_click(move |event: &ClickEvent, window, cx| {
+                        if !matches!(event, ClickEvent::Keyboard(_)) { click_act(window, cx); }
                     })
                     .on_key_down(move |event, window, cx| activate_key(event, &key_act, window, cx))
                     .children(keycap(keys, "⌘K", measure)),
@@ -800,8 +800,8 @@ impl Titlebar {
                 .role(gpui::Role::Button)
                 .aria_label(format!("Show {name} view"))
                 .focusable().cursor_pointer()
-                .on_click(move |_: &ClickEvent, window, cx| {
-                    if !window.last_input_was_keyboard() { click_act(window, cx); }
+                .on_click(move |event: &ClickEvent, window, cx| {
+                    if !matches!(event, ClickEvent::Keyboard(_)) { click_act(window, cx); }
                 })
                 .on_key_down(move |event, window, cx| activate_key(event, &key_act, window, cx));
             if keys { face = face.children(keycap(true, cap, measure)); }

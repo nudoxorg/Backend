@@ -368,9 +368,9 @@ where
         }
     });
     if let Some(activate) = activate {
-        element = element.on_click(move |_event: &ClickEvent, window: &mut Window, cx: &mut App| {
+        element = element.on_click(move |event: &ClickEvent, window: &mut Window, cx: &mut App| {
             // A keyboard "click" is handled by the key listeners above.
-            if !window.last_input_was_keyboard() {
+            if !matches!(event, ClickEvent::Keyboard(_)) {
                 activate(window, cx);
             }
         });

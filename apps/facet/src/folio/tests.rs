@@ -106,6 +106,24 @@ fn click(cx: &mut VisualTestContext, x: f32, y: f32) {
     frame(cx);
 }
 
+fn native_stamp_state(cx: &mut VisualTestContext) -> (bool, bool) {
+    frame(cx);
+    let json = cx.update(|window, _| window.debug_a11y_tree_json())
+        .expect("the mounted stamp has a native AccessKit tree");
+    let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree JSON");
+    let nodes = tree["nodes"].as_object().expect("native nodes");
+    let (id, node) = nodes.iter().find(|(_, node)| node["aria"]["label"].as_str() == Some("Toggle licence details"))
+        .expect("the mounted stamp has a named native control");
+    assert_eq!(node["aria"]["role"].as_str(), Some("Button"));
+    assert!(node["aria"]["on_action"].as_array().is_some_and(|actions|
+        actions.iter().any(|action| action.as_str() == Some("Click"))),
+        "the native stamp must expose Click: {node}");
+    (
+        node["aria"]["expanded"].as_bool().expect("the native stamp discloses expanded state"),
+        tree["accesskit_focus"].as_str() == Some(id.as_str()),
+    )
+}
+
 fn rust_card(name: &str, kind: crate::icons::Kind, signature: &str, doc: Option<&str>) -> Rc<CardFacts> {
     Rc::new(CardFacts::of(&Item::new(name, Lang::Rust).kind(Some(kind)).signature(Some(signature)), doc))
 }
@@ -442,6 +460,45 @@ fn the_licence_stamp_unfolds_in_place_and_folds_back(cx: &mut TestAppContext) {
     move_to(cx, 5.0, 690.0);
     advance(cx, 500);
     assert!(!said(cx).iter().any(|t| t.contains("keep the notice")), "the stamp stayed unfolded");
+}
+
+#[gpui::test]
+fn the_native_licence_stamp_click_toggles_hovered_details(cx: &mut TestAppContext) {
+    let (cx, _) = open(cx, |_, cx, _| {
+        let m = cx.facet().measure(px(WIDTH - 40.0));
+        stamp("lic-toggle", Rc::new(LicenseFacts::new(Some("MIT OR Apache-2.0"), Some("MIT OR Apache-2.0"), "backend")), px(330.0), &m).into_any_element()
+    });
+    assert!(!native_stamp_state(cx).0);
+    let (_, x, y, w, h) = text_at(cx, "verdict").expect("the verdict");
+    let (x, y) = (x + w * 0.5, y + h * 0.5);
+    move_to(cx, x, y);
+    advance(cx, 400);
+    assert!(native_stamp_state(cx).0, "hover opened the native disclosure");
+    click(cx, x, y);
+    advance(cx, 400);
+    assert!(!native_stamp_state(cx).0, "click must close the already hovered disclosure");
+    assert!(!said(cx).iter().any(|word| word.contains("keep the notice")));
+    click(cx, x, y);
+    advance(cx, 400);
+    assert!(native_stamp_state(cx).0, "a second click must reopen the disclosure");
+    assert!(said(cx).iter().any(|word| word.contains("keep the notice")));
+}
+
+#[gpui::test]
+fn the_native_licence_stamp_enter_and_space_toggle_focused_details(cx: &mut TestAppContext) {
+    let (cx, _) = open(cx, |_, cx, _| {
+        let m = cx.facet().measure(px(WIDTH - 40.0));
+        stamp("lic-keys", Rc::new(LicenseFacts::new(Some("MIT OR Apache-2.0"), Some("MIT OR Apache-2.0"), "backend")), px(330.0), &m).into_any_element()
+    });
+    cx.simulate_keystrokes("tab");
+    frame(cx);
+    assert_eq!(native_stamp_state(cx), (true, true), "keyboard focus revealed the native disclosure");
+    cx.simulate_keystrokes("enter");
+    frame(cx);
+    assert_eq!(native_stamp_state(cx), (false, true), "Enter must close focused details once");
+    cx.simulate_keystrokes("space");
+    frame(cx);
+    assert_eq!(native_stamp_state(cx), (true, true), "Space must reopen focused details once");
 }
 
 #[gpui::test]
