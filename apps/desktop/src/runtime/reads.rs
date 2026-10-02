@@ -1739,9 +1739,10 @@ fn compose_package(
             if engine_record {
                 loader.readme(&project)
             } else {
-                Some(loader.load(&project))
+                loader.load_with_cancel(&project, &|| context.cancel.is_cancelled())
             }
         });
+    check(context.cancel)?;
     // Every part failing the same way means the package itself is unknown.
     if let (Err(error), None) = (&records, &local)
         && matches!(
