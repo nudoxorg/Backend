@@ -936,6 +936,38 @@ fn focused(rig: &mut Rig) -> Option<String> {
         .map(|id| id.to_string())
 }
 
+fn native_licence_expanded(rig: &mut Rig) -> bool {
+    rig.settle();
+    let json = rig.cx.update(|window, _| window.debug_a11y_tree_json())
+        .expect("mounted package native AccessKit tree");
+    let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree JSON");
+    let node = tree["nodes"].as_object().expect("native nodes").values()
+        .find(|node| node["aria"]["label"].as_str() == Some("Toggle licence details"))
+        .expect("package stamp native Button");
+    assert_eq!(node["aria"]["role"].as_str(), Some("Button"));
+    assert!(node["aria"]["on_action"].as_array().is_some_and(|actions|
+        actions.iter().any(|action| action.as_str() == Some("Click"))),
+        "the controlled stamp has no native Click: {node}");
+    node["aria"]["expanded"].as_bool().expect("native expanded state")
+}
+
+#[gpui::test]
+fn licence_native_shell_native_uses_one_resolved_disclosure(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, None, 1440.0, 900.0);
+    read_and_open(&mut rig);
+    assert!(!native_licence_expanded(&mut rig));
+    let at = centre(&painted(&mut rig), "licence-verdict");
+    move_to(&mut rig, at);
+    assert!(native_licence_expanded(&mut rig), "hover opened the actual Stamp");
+    click(&mut rig, at);
+    assert!(!native_licence_expanded(&mut rig), "native Click must close hover-open details");
+    walk_to(&mut rig, "pkg-licence", 6);
+    rig.keys("enter");
+    assert!(native_licence_expanded(&mut rig), "shell Target must reopen the same Stamp state");
+    click(&mut rig, at);
+    assert!(!native_licence_expanded(&mut rig), "native Click must close the shell-open state");
+}
+
 /// The crest's cells and the releases are on the keyboard's
 /// list after the territory (a reader walks what the page is about first),
 /// and Enter does on each what a click does.

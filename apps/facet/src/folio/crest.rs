@@ -22,9 +22,10 @@ use crate::theme::ActiveFacet;
 use crate::tokens::{Face, Palette, TypeRole, Voice, ty};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, Bounds, Element, ElementId, GlobalElementId, Hsla, InspectorElementId, InteractiveElement, IntoElement, LayoutId,
+    App, Bounds, Element, ElementId, Entity, GlobalElementId, Hsla, InspectorElementId, InteractiveElement, IntoElement, LayoutId,
     ParentElement, Pixels, Refineable, RenderOnce, SharedString, Style, StyleRefinement, Styled, Window, div, px,
 };
+use std::cell::Cell;
 use std::rc::Rc;
 
 /// A cell at rest, px at 100 %.
@@ -293,6 +294,42 @@ pub fn verdict(facts: &LicenseFacts) -> Verdict {
     Verdict { word, tone, line, expression, permits, asks, limits }
 }
 
+/// Explicit disclosure intent, distinct from a transient hover or focus.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DisclosureChoice {
+    /// Follow hover and keyboard focus until the reader activates the stamp.
+    #[default]
+    Auto,
+    /// Keep details visible.
+    Open,
+    /// Keep details folded, even while hover or focus remains.
+    Closed,
+}
+
+impl DisclosureChoice {
+    /// Resolve the owner's choice against the currently rendered pointer/focus.
+    #[must_use]
+    pub const fn resolve(self, automatic: bool) -> bool {
+        match self { Self::Auto => automatic, Self::Open => true, Self::Closed => false }
+    }
+
+    /// Record an explicit activation result.
+    #[must_use]
+    pub const fn explicit(open: bool) -> Self {
+        if open { Self::Open } else { Self::Closed }
+    }
+}
+
+enum StampMode {
+    Owned,
+    Controlled {
+        choice: DisclosureChoice,
+        resolved: Rc<Cell<bool>>,
+        toggle: Rc<dyn Fn(bool, &mut Window, &mut App)>,
+    },
+    HeldSnapshot,
+}
+
 /// The licence stamp (see [`stamp`]).
 #[derive(IntoElement)]
 pub struct Stamp {
@@ -300,44 +337,41 @@ pub struct Stamp {
     facts: Rc<LicenseFacts>,
     measure: Measure,
     width: Pixels,
-    held: Pose,
-    /// `Some(None)` means a parent owns the automatic hover/focus state.
-    choice: Option<Option<bool>>,
-    on_toggle: Option<Rc<dyn Fn(bool, &mut Window, &mut App)>>,
+    mode: StampMode,
 }
 
 /// A stamp for `facts`, `width` px wide.
 #[must_use]
 pub fn stamp(id: impl Into<ElementId>, facts: Rc<LicenseFacts>, width: Pixels, measure: &Measure) -> Stamp {
-    Stamp { id: id.into(), facts, measure: *measure, width, held: Pose::Live, choice: None, on_toggle: None }
+    Stamp { id: id.into(), facts, measure: *measure, width, mode: StampMode::Owned }
 }
 
 impl Stamp {
     /// The pose the stamp is held in (`Held`: unfolded whatever the pointer does).
     #[must_use]
-    pub const fn pose(mut self, pose: Pose) -> Self {
-        self.held = pose;
+    pub fn pose(mut self, pose: Pose) -> Self {
+        self.mode = match pose { Pose::Live => StampMode::Owned, Pose::Held => StampMode::HeldSnapshot };
         self
     }
 
     /// Shows the stamp unfolded whatever the pointer does (scenes, tests).
     #[must_use]
-    pub const fn open(mut self) -> Self {
-        self.held = Pose::Held;
+    pub fn open(mut self) -> Self {
+        self.mode = StampMode::HeldSnapshot;
         self
     }
 
-    /// The owning page's explicit choice. `None` follows hover and focus.
+    /// Give the parent one complete disclosure controller. `resolved` is
+    /// written from the mounted frame so its shell key target can toggle the
+    /// same state the native control shows.
     #[must_use]
-    pub const fn choice(mut self, choice: Option<bool>) -> Self {
-        self.choice = Some(choice);
-        self
-    }
-
-    /// Set the owning page's choice after a native pointer or key activation.
-    #[must_use]
-    pub fn on_toggle(mut self, toggle: impl Fn(bool, &mut Window, &mut App) + 'static) -> Self {
-        self.on_toggle = Some(Rc::new(toggle));
+    pub fn controlled(
+        mut self,
+        choice: DisclosureChoice,
+        resolved: Rc<Cell<bool>>,
+        toggle: impl Fn(bool, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.mode = StampMode::Controlled { choice, resolved, toggle: Rc::new(toggle) };
         self
     }
 }
@@ -349,14 +383,27 @@ impl RenderOnce for Stamp {
         let measure = self.measure;
         let scale = measure.scale();
         let verdict = verdict(&self.facts);
-        let live = self.held == Pose::Live && (self.choice.is_none() || self.on_toggle.is_some());
+        let live = !matches!(&self.mode, StampMode::HeldSnapshot);
         let touch = Touch::read(&self.id, crate::controls::Look::LIVE, live, window, cx);
         let motion = touch.motion.clone();
         // Hover and focus can reveal the details; activation pins an explicit
         // choice and can close them while the pointer or focus remains here.
-        let owned_choice = window.use_keyed_state(key(&self.id, "disclosure"), cx, |_, _| None::<bool>);
-        let choice = self.choice.unwrap_or(*owned_choice.read(cx));
-        let requested = self.held == Pose::Held || choice.unwrap_or(touch.hovered || touch.focused);
+        let (choice, owned_choice, resolved, on_toggle): (
+            DisclosureChoice,
+            Option<Entity<DisclosureChoice>>,
+            Option<Rc<Cell<bool>>>,
+            Option<Rc<dyn Fn(bool, &mut Window, &mut App)>>,
+        ) = match self.mode {
+            StampMode::Owned => {
+                let state = window.use_keyed_state(key(&self.id, "disclosure"), cx, |_, _| DisclosureChoice::Auto);
+                let choice = *state.read(cx);
+                (choice, Some(state), None, None)
+            }
+            StampMode::Controlled { choice, resolved, toggle } => (choice, None, Some(resolved), Some(toggle)),
+            StampMode::HeldSnapshot => (DisclosureChoice::Open, None, None, None),
+        };
+        let requested = choice.resolve(touch.hovered || touch.focused);
+        if let Some(resolved) = &resolved { resolved.set(requested); }
         let disclosure = DisclosureFlow::read(&self.id, &touch, requested, window, cx);
         let open = disclosure.progress;
         let hover = motion.animate(track(&self.id, "hover"), if touch.hovered { 1.0 } else { 0.0 }, spec::HOVER, window, cx);
@@ -487,13 +534,12 @@ impl RenderOnce for Stamp {
             .children(more_item)
             .id(self.id.clone());
         let plate = if live {
-            let on_toggle = self.on_toggle;
             let toggle: crate::controls::button::Handler = Rc::new(move |window, cx| {
                 if let Some(on_toggle) = &on_toggle {
                     on_toggle(!requested, window, cx);
-                } else {
+                } else if let Some(owned_choice) = &owned_choice {
                     owned_choice.update(cx, |choice, cx| {
-                        *choice = Some(!choice.unwrap_or(requested));
+                        *choice = DisclosureChoice::explicit(!requested);
                         cx.notify();
                     });
                 }
