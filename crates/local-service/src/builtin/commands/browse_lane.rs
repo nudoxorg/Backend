@@ -6,8 +6,8 @@
 //! an observation in separate workers; there are exactly two workers, and
 //! each cache keeps its existing 128 MiB retention ceiling.
 //! Each worker reserves its only reply-payload permit before execution, so
-//! at most two reply payloads exist across worker locals and the completion
-//! queue. Admission retains at most 64 tiny owed tickets, plus at most two
+//! at most two reply payloads exist across worker locals, the completion
+//! queue, and owner serialization. Admission retains at most 64 tiny owed tickets, plus at most two
 //! late worker receipts after deadline terminalization.
 //!
 //! While open, slow source I/O cannot hold the owner loop or block health and
@@ -64,7 +64,7 @@ struct Shard {
 }
 
 pub(super) enum Terminal {
-    Reply(CommandReply),
+    Reply(CommandReply, PayloadPermit),
     Cancelled,
     Deadline,
     Failed,
@@ -97,7 +97,6 @@ impl AdvisorySelection {
 }
 
 struct Completion {
-    shard: usize,
     ticket: u64,
     request_id: u64,
     owner_cursor: backend_engine::Cursor,
@@ -116,8 +115,8 @@ struct Outstanding {
 #[derive(Default)]
 struct CompletionQueue {
     ready: VecDeque<Completion>,
-    /// A permit is reserved before execution and held through owner drain.
-    /// Each worker owns at most one local-or-queued reply payload.
+    /// A permit is reserved before execution and held through owner encoding.
+    /// Each worker owns at most one local, queued, or encoding reply payload.
     payload_reserved: [bool; WORKERS],
     closed: bool,
 }
@@ -125,6 +124,26 @@ struct CompletionQueue {
 struct Completions {
     queue: Mutex<CompletionQueue>,
     capacity: Condvar,
+}
+
+/// Keeps one worker's reply slot reserved through owner serialization, even
+/// after a completion has left the shared queue.
+pub(super) struct PayloadPermit {
+    completions: Arc<Completions>,
+    shard: usize,
+}
+
+impl Drop for PayloadPermit {
+    fn drop(&mut self) {
+        let mut queue = self
+            .completions
+            .queue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        queue.payload_reserved[self.shard] = false;
+        drop(queue);
+        self.completions.capacity.notify_all();
+    }
 }
 
 /// A fixed worker pool, owned by the command adapter and joined on close.
@@ -273,7 +292,6 @@ impl BrowseLane {
                 .unwrap_or_else(PoisonError::into_inner);
             for (ticket, request_id, owner_cursor, advisory) in superseded {
                 completed.ready.push_back(Completion {
-                    shard: index,
                     ticket,
                     request_id,
                     owner_cursor,
@@ -303,13 +321,7 @@ impl BrowseLane {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             let completed = queue.ready.drain(..).collect::<Vec<_>>();
-            for completion in &completed {
-                if matches!(&completion.terminal, Terminal::Reply(_)) {
-                    queue.payload_reserved[completion.shard] = false;
-                }
-            }
             drop(queue);
-            self.completions.capacity.notify_all();
             completed
         };
         let mut terminals = completed
@@ -399,12 +411,16 @@ impl BrowseLane {
             let _ = worker.join();
         }
         self.outstanding.clear();
-        self.completions
-            .queue
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .ready
-            .clear();
+        let pending = {
+            let mut queue = self
+                .completions
+                .queue
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            std::mem::take(&mut queue.ready)
+        };
+        // A reply drop releases its permit through the same queue mutex.
+        drop(pending);
     }
 }
 
@@ -485,28 +501,40 @@ fn run_worker(
             completed.payload_reserved[index] = true;
             reserved_payload = true;
             drop(completed);
-            let reply = catch_unwind(AssertUnwindSafe(|| {
-                with_observation_control(Arc::clone(&job.control), || {
-                    executor(
-                        &mut cache,
-                        job.command,
-                        job.advisory.as_authority(),
-                        &job.control,
-                    )
-                })
-            }));
             if job.control.is_cancelled() {
                 Terminal::Cancelled
             } else if job.control.is_expired() {
                 Terminal::Deadline
             } else {
-                match reply {
-                    Ok(reply) => Terminal::Reply(reply),
-                    Err(_) => {
-                        // An unexpected cache panic cannot strand an owed
-                        // transport ticket or retain partially changed state.
-                        cache = BrowseCache::default();
-                        Terminal::Failed
+                let reply = catch_unwind(AssertUnwindSafe(|| {
+                    with_observation_control(Arc::clone(&job.control), || {
+                        executor(
+                            &mut cache,
+                            job.command,
+                            job.advisory.as_authority(),
+                            &job.control,
+                        )
+                    })
+                }));
+                if job.control.is_cancelled() {
+                    Terminal::Cancelled
+                } else if job.control.is_expired() {
+                    Terminal::Deadline
+                } else {
+                    match reply {
+                        Ok(reply) => Terminal::Reply(
+                            reply,
+                            PayloadPermit {
+                                completions: Arc::clone(&completions),
+                                shard: index,
+                            },
+                        ),
+                        Err(_) => {
+                            // An unexpected cache panic cannot strand an owed
+                            // transport ticket or retain partially changed state.
+                            cache = BrowseCache::default();
+                            Terminal::Failed
+                        }
                     }
                 }
             }
@@ -516,7 +544,7 @@ fn run_worker(
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .running = None;
-        let payload = matches!(&terminal, Terminal::Reply(_));
+        let payload = matches!(&terminal, Terminal::Reply(_, _));
         let mut completed = completions
             .queue
             .lock()
@@ -529,7 +557,6 @@ fn run_worker(
             completions.capacity.notify_all();
         }
         completed.ready.push_back(Completion {
-            shard: index,
             ticket: job.ticket,
             request_id: job.request_id,
             owner_cursor: job.owner_cursor,
@@ -662,7 +689,7 @@ mod tests {
         lane.submit(2, 22, backend_engine::Cursor::new(), fast, None)
             .expect("independent request");
         let (_, _, _, _, fast_terminal) = wait_for(&mut lane, 2, Duration::from_secs(1));
-        assert!(matches!(fast_terminal, Terminal::Reply(_)));
+        assert!(matches!(fast_terminal, Terminal::Reply(_, _)));
         lane.submit(3, 33, backend_engine::Cursor::new(), slow, None)
             .expect("newest request");
         release.store(true, Ordering::Release);
@@ -684,7 +711,7 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
         assert!(matches!(old, Some(Terminal::Cancelled)));
-        assert!(matches!(new, Some(Terminal::Reply(_))));
+        assert!(matches!(new, Some(Terminal::Reply(_, _))));
         lane.close();
         assert!(lane.workers.is_empty());
     }
@@ -742,6 +769,20 @@ mod tests {
         assert_eq!(independent_started.load(Ordering::Acquire), 1);
         let completions = lane.drain();
         assert_eq!(completions.len(), 2);
+        // Owner may be busy binding and encoding these moved replies. The
+        // drained objects still own both permits; no third payload may start.
+        thread::sleep(Duration::from_millis(50));
+        assert_eq!(same_started.load(Ordering::Acquire), 1);
+        assert!(
+            lane.completions
+                .queue
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .payload_reserved
+                .iter()
+                .all(|reserved| *reserved)
+        );
+        drop(completions);
         let deadline = Instant::now() + Duration::from_secs(1);
         while same_started.load(Ordering::Acquire) != 2 {
             assert!(
@@ -751,7 +792,7 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
         let (_, _, _, _, terminal) = wait_for(&mut lane, 2, Duration::from_secs(1));
-        assert!(matches!(terminal, Terminal::Reply(_)));
+        assert!(matches!(terminal, Terminal::Reply(_, _)));
         lane.close();
     }
 

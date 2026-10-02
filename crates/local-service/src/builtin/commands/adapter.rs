@@ -1191,36 +1191,41 @@ impl CommandAdapter {
         let current_owner = daemon.engine().daemon().library().cursor();
         ready.extend(self.browse_lane.drain().into_iter().map(
             |(ticket, request_id, admitted_owner, advisory, terminal)| {
-                let reply = if admitted_owner != current_owner
+                let (reply, permit) = if admitted_owner != current_owner
                     || !advisory.still_selected(self.registry.as_ref())
                 {
-                    CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
-                        "owner view changed during Cargo browse observation; retry".to_owned(),
-                    ))
+                    (
+                        CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
+                            "owner view changed during Cargo browse observation; retry".to_owned(),
+                        )),
+                        None,
+                    )
                 } else {
                     match terminal {
-                        BrowseTerminal::Reply(reply) => reply,
-                        BrowseTerminal::Cancelled => {
+                        BrowseTerminal::Reply(reply, permit) => (reply, Some(permit)),
+                        BrowseTerminal::Cancelled => (
                             CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
                                 "Cargo browse request was cancelled".to_owned(),
-                            ))
-                        }
-                        BrowseTerminal::Deadline => {
+                            )),
+                            None,
+                        ),
+                        BrowseTerminal::Deadline => (
                             CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
                                 "Cargo browse request exceeded its deadline".to_owned(),
-                            ))
-                        }
-                        BrowseTerminal::Failed => {
+                            )),
+                            None,
+                        ),
+                        BrowseTerminal::Failed => (
                             CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
                                 "Cargo browse worker could not complete the observation".to_owned(),
-                            ))
-                        }
+                            )),
+                            None,
+                        ),
                     }
                 };
-                (
-                    ticket,
-                    Self::encode(daemon, request_id, (reply, None), None),
-                )
+                let encoded = Self::encode(daemon, request_id, (reply, None), None);
+                drop(permit); // release only after serialization consumed the reply
+                (ticket, encoded)
             },
         ));
         ready
