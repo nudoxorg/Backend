@@ -73,6 +73,11 @@ struct StateInner {
     measuring_behavior: ListMeasuringBehavior,
     pending_scroll: Option<PendingScroll>,
     follow_state: FollowState,
+    /// NUDOX: the height the owner declared for items not yet measured at
+    /// the current width ([`ListState::with_uniform_item_height`] and its
+    /// reset/remeasure forms). A width change falls back to it instead of
+    /// to no hint, which counted those items as zero height.
+    uniform_item_height: Option<Pixels>,
 }
 
 /// Deferred scroll adjustment applied after the scroll-top item has been remeasured.
@@ -325,6 +330,7 @@ impl ListState {
             measuring_behavior: ListMeasuringBehavior::default(),
             pending_scroll: None,
             follow_state: FollowState::default(),
+            uniform_item_height: None,
         })));
         this.splice(0..0, item_count);
         this
@@ -380,6 +386,7 @@ impl ListState {
             height,
         };
         let mut state = self.0.borrow_mut();
+        state.uniform_item_height = Some(height); // NUDOX: remembered for width changes
         let new_items = state
             .items
             .iter()
@@ -423,6 +430,9 @@ impl ListState {
 
     fn remeasure_items_with_scroll_anchor(&self, range: Range<usize>, scroll_anchor: ScrollAnchor, height_hint: Option<Pixels>) {
         let state = &mut *self.0.borrow_mut();
+        if let Some(height) = height_hint {
+            state.uniform_item_height = Some(height); // NUDOX: the new declared baseline
+        }
 
         if let Some(scroll_top) = state.logical_scroll_top {
             if range.contains(&scroll_top.item_ix) {
@@ -1550,9 +1560,18 @@ impl Element for List {
             .last_layout_bounds
             .is_none_or(|last_bounds| last_bounds.size.width != bounds.size.width)
         {
+            // NUDOX: fall back to the owner's declared uniform height, not to
+            // no hint. The first layout comes through here too, so `None`
+            // erased `with_uniform_item_height` before it was ever used, and
+            // every unmeasured item counted as zero height: the scrollbar and
+            // a wheel scroll stopped at the end of the measured rows.
+            let size_hint = state.uniform_item_height.map(|height| Size {
+                width: px(0.),
+                height,
+            });
             let new_items = SumTree::from_iter(
                 state.items.iter().map(|item| ListItem::Unmeasured {
-                    size_hint: None,
+                    size_hint,
                     focus_handle: item.focus_handle(),
                 }),
                 (),
@@ -1744,6 +1763,41 @@ mod test {
         let items = state.0.borrow();
         assert!(items.items.iter().all(|item| item.size_hint().is_some_and(|hint| hint.height == px(30.))));
         assert_eq!(items.items.iter().nth(7).and_then(|item| item.focus_handle()), Some(focus));
+    }
+
+    /// NUDOX: a declared uniform height outlives the first layout and a width
+    /// change (both invalidate measured heights). 100 rows are declared 30 px
+    /// and render 20 px; a 60 px viewport measures a handful of them.
+    #[gpui::test]
+    fn uniform_hints_survive_the_first_layout_and_a_width_change(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let state = ListState::new(100, crate::ListAlignment::Top, px(0.))
+            .with_uniform_item_height(px(30.));
+
+        struct TestView(ListState);
+        impl Render for TestView {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                list(self.0.clone(), |_, _, _| div().h(px(20.)).w_full().into_any())
+                    .w_full()
+                    .h_full()
+            }
+        }
+
+        // Every row counts: at most ten measured at 20 px, the rest at their
+        // declared 30 px, less the 60 px viewport. Zero-height rows would
+        // leave only the measured rows' few pixels.
+        let plausible = |max: gpui::Pixels| max > px(90. * 30. - 60.) && max <= px(100. * 30. - 60.);
+        for width in [px(100.), px(80.)] {
+            cx.draw(point(px(0.), px(0.)), size(width, px(60.)), |_, cx| {
+                cx.new(|_| TestView(state.clone())).into_any_element()
+            });
+            let max = state.max_offset_for_scrollbar().y;
+            assert!(plausible(max), "width {width:?}: the list's scroll extent is {max:?}");
+        }
+
+        // A scroll beyond the measured rows lands among the hinted ones.
+        state.scroll_by(px(600.));
+        assert!(state.logical_scroll_top().item_ix >= 20, "{:?}", state.logical_scroll_top());
     }
 
     #[gpui::test]
