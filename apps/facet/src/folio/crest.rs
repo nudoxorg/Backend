@@ -301,12 +301,15 @@ pub struct Stamp {
     measure: Measure,
     width: Pixels,
     held: Pose,
+    /// `Some(None)` means a parent owns the automatic hover/focus state.
+    choice: Option<Option<bool>>,
+    on_toggle: Option<Rc<dyn Fn(bool, &mut Window, &mut App)>>,
 }
 
 /// A stamp for `facts`, `width` px wide.
 #[must_use]
 pub fn stamp(id: impl Into<ElementId>, facts: Rc<LicenseFacts>, width: Pixels, measure: &Measure) -> Stamp {
-    Stamp { id: id.into(), facts, measure: *measure, width, held: Pose::Live }
+    Stamp { id: id.into(), facts, measure: *measure, width, held: Pose::Live, choice: None, on_toggle: None }
 }
 
 impl Stamp {
@@ -323,6 +326,20 @@ impl Stamp {
         self.held = Pose::Held;
         self
     }
+
+    /// The owning page's explicit choice. `None` follows hover and focus.
+    #[must_use]
+    pub const fn choice(mut self, choice: Option<bool>) -> Self {
+        self.choice = Some(choice);
+        self
+    }
+
+    /// Set the owning page's choice after a native pointer or key activation.
+    #[must_use]
+    pub fn on_toggle(mut self, toggle: impl Fn(bool, &mut Window, &mut App) + 'static) -> Self {
+        self.on_toggle = Some(Rc::new(toggle));
+        self
+    }
 }
 
 impl RenderOnce for Stamp {
@@ -332,13 +349,14 @@ impl RenderOnce for Stamp {
         let measure = self.measure;
         let scale = measure.scale();
         let verdict = verdict(&self.facts);
-        let live = self.held == Pose::Live;
+        let live = self.held == Pose::Live && (self.choice.is_none() || self.on_toggle.is_some());
         let touch = Touch::read(&self.id, crate::controls::Look::LIVE, live, window, cx);
         let motion = touch.motion.clone();
         // Hover and focus can reveal the details; activation pins an explicit
         // choice and can close them while the pointer or focus remains here.
-        let choice = window.use_keyed_state(key(&self.id, "disclosure"), cx, |_, _| None::<bool>);
-        let requested = self.held == Pose::Held || choice.read(cx).unwrap_or(touch.hovered || touch.focused);
+        let owned_choice = window.use_keyed_state(key(&self.id, "disclosure"), cx, |_, _| None::<bool>);
+        let choice = self.choice.unwrap_or(*owned_choice.read(cx));
+        let requested = self.held == Pose::Held || choice.unwrap_or(touch.hovered || touch.focused);
         let disclosure = DisclosureFlow::read(&self.id, &touch, requested, window, cx);
         let open = disclosure.progress;
         let hover = motion.animate(track(&self.id, "hover"), if touch.hovered { 1.0 } else { 0.0 }, spec::HOVER, window, cx);
@@ -469,11 +487,16 @@ impl RenderOnce for Stamp {
             .children(more_item)
             .id(self.id.clone());
         let plate = if live {
-            let toggle: crate::controls::button::Handler = Rc::new(move |_, cx| {
-                choice.update(cx, |choice, cx| {
-                    *choice = Some(!choice.unwrap_or(requested));
-                    cx.notify();
-                });
+            let on_toggle = self.on_toggle;
+            let toggle: crate::controls::button::Handler = Rc::new(move |window, cx| {
+                if let Some(on_toggle) = &on_toggle {
+                    on_toggle(!requested, window, cx);
+                } else {
+                    owned_choice.update(cx, |choice, cx| {
+                        *choice = Some(!choice.unwrap_or(requested));
+                        cx.notify();
+                    });
+                }
             });
             crate::controls::button::wire(
                 plate.role(gpui::Role::Button)
@@ -483,7 +506,7 @@ impl RenderOnce for Stamp {
                 Some(toggle),
             )
         } else {
-            plate.role(gpui::Role::Label).aria_label("Licence details expanded")
+            plate.role(gpui::Role::Label).aria_label(if requested { "Licence details expanded" } else { "Licence details" })
         };
         div().flex_none().w(self.width).child(hover_zone(plate, &touch, 9.0 * scale, live)).into_any_element()
     }
