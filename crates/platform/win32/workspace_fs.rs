@@ -1300,6 +1300,20 @@ fn extended_class_unsupported(error: &io::Error) -> bool {
     )
 }
 
+/// Byte length of a `FILE_RENAME_INFORMATION` request whose target name takes
+/// `name_bytes`, or `None` when the length is not representable.
+///
+/// The structure already contains the first name unit, and the I/O manager
+/// rejects a request shorter than the structure itself with
+/// `STATUS_INFO_LENGTH_MISMATCH` (Win32 error 24). The header and name of a
+/// one-character target add up to 22 bytes, two short of the 24-byte
+/// structure, so the length is never allowed to fall below it.
+fn rename_information_length(name_bytes: usize) -> Option<usize> {
+    offset_of!(RenameInformation, file_name)
+        .checked_add(name_bytes)
+        .map(|content| content.max(size_of::<RenameInformation>()))
+}
+
 /// Issues one `FileRenameInformation`-family request with the target name
 /// copied in after the header.
 fn set_rename_information(
@@ -1314,9 +1328,7 @@ fn set_rename_information(
         .checked_mul(size_of::<u16>())
         .ok_or_else(invalid_name)?;
     let name_length = u32::try_from(name_bytes).map_err(|_| invalid_name())?;
-    let total = offset_of!(RenameInformation, file_name)
-        .checked_add(name_bytes)
-        .ok_or_else(invalid_name)?;
+    let total = rename_information_length(name_bytes).ok_or_else(invalid_name)?;
     let total_length = u32::try_from(total).map_err(|_| invalid_name())?;
     // Zeroed, 8-byte-aligned storage covers the header and every name unit.
     let mut storage = vec![0_u64; total.div_ceil(size_of::<u64>())];

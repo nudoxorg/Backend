@@ -8,8 +8,8 @@
 //! parent module's tests.
 
 use super::{
-    EntryKind, WorkspaceRoot, flush_handle, is_full_control, is_reserved_device_name,
-    validate_component,
+    EntryKind, RenameInformation, WorkspaceRoot, flush_handle, is_full_control,
+    is_reserved_device_name, rename_information_length, validate_component,
 };
 use std::fs;
 use std::io::{Read as _, Write as _};
@@ -803,6 +803,42 @@ fn republishing_beside_a_scanner_that_inspects_every_generation_never_fails() {
     scanner.join().expect("join scanner");
 
     assert_eq!(get(&root, &["state"]), b"generation 100");
+    drop(root);
+    fs::remove_dir_all(path).expect("cleanup");
+}
+
+/// The kernel rejects a `FILE_RENAME_INFORMATION` request shorter than the structure with
+/// `STATUS_INFO_LENGTH_MISMATCH` (os error 24). The header plus a one-character name is 22 bytes,
+/// two short, so the sizing must pad to the structure and grow linearly beyond it.
+#[test]
+fn rename_information_is_never_shorter_than_its_structure() {
+    let structure = size_of::<RenameInformation>();
+    assert_eq!(rename_information_length(0), Some(structure));
+    assert_eq!(rename_information_length(2), Some(structure));
+    assert_eq!(rename_information_length(4), Some(structure));
+    assert_eq!(rename_information_length(6), Some(26));
+    assert_eq!(rename_information_length(usize::MAX), None);
+}
+
+/// A one-character destination is an ordinary Windows name; renaming a file and a directory to
+/// one must work, both creating the name and replacing it.
+#[test]
+fn a_one_character_destination_name_renames_files_and_directories() {
+    let (root, path) = private_root("one-char-name");
+    put(&root, &["staged"], b"x");
+    root.rename_relative(&["staged"], &["a"], false)
+        .expect("a one-character destination name is a valid Windows name");
+    assert_eq!(get(&root, &["a"]), b"x");
+    put(&root, &["next"], b"y");
+    root.rename_relative(&["next"], &["a"], true)
+        .expect("a one-character destination is replaceable");
+    assert_eq!(get(&root, &["a"]), b"y");
+
+    root.create_child_dir_exclusive("dir")
+        .expect("create directory");
+    root.rename_directory_relative(&["dir"], &["d"])
+        .expect("a directory renames to a one-character name");
+    assert!(root.child_is_directory(&["d"]).expect("renamed directory"));
     drop(root);
     fs::remove_dir_all(path).expect("cleanup");
 }
