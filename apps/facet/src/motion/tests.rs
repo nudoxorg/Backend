@@ -644,7 +644,7 @@ fn a_row_that_leaves_mid_flight_ends_its_track_at_rest(cx: &mut TestAppContext) 
 #[gpui::test]
 fn retained_still_scope_is_nested_and_panic_safe(cx: &mut TestAppContext) {
     cx.update(|cx| {
-        set_facet(cx, Facet::default());
+        set_facet(Facet::default(), cx);
         assert!(!super::reduced(cx));
         let outer = super::still(cx);
         assert!(super::reduced(cx));
