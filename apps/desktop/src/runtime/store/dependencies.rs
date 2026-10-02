@@ -1,9 +1,9 @@
 //! The exact resources read by one visible route, shared by the store and Reader.
 
 use super::{CargoReadAdmission, DataStore, route_package, route_symbol};
-use crate::core::admit_resource;
+use crate::core::{VersionedRoot, admit_resource};
 use crate::model::browse::{BrowseKey, CargoSourceInventoryKey};
-use crate::model::pages::{CargoSourceKey, PackageRef, PageKey};
+use crate::model::pages::{CargoSourceKey, PackageRef, PageKey, Stamp};
 use crate::navigation::{Overlay, Route, View};
 
 /// A Cargo file and its independently arriving current path inventory.
@@ -88,6 +88,45 @@ impl RouteDependencies {
 
     pub(crate) fn cargo(&self) -> Option<&CargoSourceDependencies> {
         self.cargo.as_ref()
+    }
+
+    /// One bounded, mounted action's exact read slot. Snapshot-only controls
+    /// capture no slot; a Cargo inventory action uses its independent path
+    /// receipt rather than the file's bytes.
+    pub(crate) fn native_stamp(&self, store: &DataStore, inventory: bool) -> Option<(PageKey, Stamp)> {
+        let key = if inventory {
+            self.keys.iter().find(|key| matches!(key, PageKey::Browse(BrowseKey::CargoSourceInventory(_))))
+        } else {
+            self.keys.iter().find(|key| !matches!(key, PageKey::Health))
+        }?;
+        Some((key.clone(), store.stamp(key)))
+    }
+
+    /// The same dependency map used for fetching decides whether a retained
+    /// native action still reads a current, completed value. The owner lease
+    /// and exact visit are checked by Reader before this slot test.
+    pub(crate) fn admits_native_stamp(
+        &self,
+        store: &DataStore,
+        root: VersionedRoot,
+        expected: &(PageKey, Stamp),
+    ) -> bool {
+        let (key, stamp) = expected;
+        if !self.keys.contains(key) || store.stamp(key) != *stamp { return false; }
+        let serving = store.owner_serving();
+        match key {
+            PageKey::Orbit => admit_resource(&store.orbit(), root, serving).allows_actions(),
+            PageKey::Package(package) => admit_resource(&store.package(package), root, serving).allows_actions(),
+            PageKey::Browse(browse @ BrowseKey::CargoSourceInventory(_)) => {
+                store.cargo_read_admission(key, &store.pages().browse(browse)) == CargoReadAdmission::Current
+            }
+            PageKey::Browse(browse) => admit_resource(&store.pages().browse(browse), root, serving).allows_actions(),
+            PageKey::CargoSource(file) => store.cargo_read_admission(key, &store.cargo_source(file)) == CargoReadAdmission::Current,
+            PageKey::Source(symbol) => admit_resource(&store.source(symbol), root, serving).allows_actions(),
+            PageKey::Symbol(symbol) => admit_resource(&store.symbol(symbol), root, serving).allows_actions(),
+            PageKey::Search(query) => admit_resource(&store.search(query), root, serving).allows_actions(),
+            PageKey::Health => admit_resource(&store.health(), root, serving).allows_actions(),
+        }
     }
 
     /// Keeps current page readiness alongside the resource plan.
