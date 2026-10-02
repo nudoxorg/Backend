@@ -581,11 +581,12 @@ fn update_text(hasher: &mut blake3::Hasher, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::native_test_paths;
 
     fn fixture_facts() -> RustCargoWorkspaceFactsV1 {
         RustCargoWorkspaceFactsV1 {
-            manifest_path: PathBuf::from("/workspace/Cargo.toml"),
-            workspace_root: PathBuf::from("/workspace"),
+            manifest_path: native_test_paths::absolute_path("/workspace/Cargo.toml"),
+            workspace_root: native_test_paths::absolute_path("/workspace"),
             selected_package_id: Some("path+file:///workspace#fixture@1.0.0".into()),
             requested_features: RustCargoFeatureSelectionV1 {
                 all_features: false,
@@ -596,7 +597,7 @@ mod tests {
                 package_id: "path+file:///workspace#fixture@1.0.0".into(),
                 name: "fixture".into(),
                 version: "1.0.0".into(),
-                manifest_path: PathBuf::from("/workspace/Cargo.toml"),
+                manifest_path: native_test_paths::absolute_path("/workspace/Cargo.toml"),
                 features: vec![RustCargoFeatureFactV1 {
                     name: "default".into(),
                     enables: Box::new([]),
@@ -606,7 +607,7 @@ mod tests {
                     name: "fixture".into(),
                     kinds: vec!["lib".into()].into_boxed_slice(),
                     crate_types: vec!["lib".into()].into_boxed_slice(),
-                    source_path: PathBuf::from("/workspace/src/lib.rs"),
+                    source_path: native_test_paths::absolute_path("/workspace/src/lib.rs"),
                     required_features: Box::new([]),
                     edition: "2024".into(),
                     test: true,

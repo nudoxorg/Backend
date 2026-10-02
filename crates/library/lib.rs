@@ -31,6 +31,11 @@ mod forge_identity;
 mod graph_query;
 /// Transport-independent application service and reply vocabulary.
 pub mod interface;
+/// Spelling of absolute fixture paths in the host's native form, for tests.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+#[allow(clippy::expect_used)]
+pub mod native_test_paths;
 mod package_graph;
 mod package_graph_page;
 mod progress;
