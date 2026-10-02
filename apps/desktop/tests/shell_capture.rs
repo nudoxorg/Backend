@@ -200,6 +200,8 @@ impl Render for EarlySemanticErrorRoot {
     }
 }
 
+// Needs `gpui_platform::current_headless_renderer`, which only macOS provides.
+#[cfg(target_os = "macos")]
 #[test]
 fn early_semantic_error_is_preserved_without_retaining_capture_entities() {
     let viewport = Viewport::new(64, 64, 1).expect("viewport");
