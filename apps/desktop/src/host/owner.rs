@@ -52,26 +52,39 @@ struct Started<H> {
 
 /// Starts the owner for `paths` on its own thread. Returns at once.
 pub(crate) fn spawn(paths: WorkspacePaths, gate: OwnerGate) -> Option<OwnerThread> {
-    spawn_with(gate, move |gate| {
-        start(&paths, gate).map(|(host, key)| {
-            let mode = match host.mode() {
-                HostMode::Embedded => ServiceMode::Embedded,
-                HostMode::Attached => ServiceMode::Attached,
-            };
-            Started { host, key, mode }
-        })
-    })
+    spawn_with_observer(
+        gate,
+        move |gate| {
+            start(&paths, gate).map(|(host, key)| {
+                let mode = match host.mode() {
+                    HostMode::Embedded => ServiceMode::Embedded,
+                    HostMode::Attached => ServiceMode::Attached,
+                };
+                Started { host, key, mode }
+            })
+        },
+        |gate, host: &DesktopHost| super::observation::serve(gate, host.endpoint()),
+    )
 }
 
 /// [`spawn`] over any way of starting an owner (a test's panics).
-fn spawn_with<H>(
+#[cfg(test)]
+fn spawn_with<H: 'static>(
     gate: OwnerGate,
     starter: impl FnMut(&OwnerGate) -> Result<Started<H>, String> + Send + 'static,
+) -> Option<OwnerThread> {
+    spawn_with_observer(gate, starter, |gate, _| gate.await_close_or_restart())
+}
+
+fn spawn_with_observer<H: 'static>(
+    gate: OwnerGate,
+    starter: impl FnMut(&OwnerGate) -> Result<Started<H>, String> + Send + 'static,
+    observer: impl FnMut(&OwnerGate, &H) -> bool + Send + 'static,
 ) -> Option<OwnerThread> {
     let owner = gate.clone();
     match std::thread::Builder::new()
         .name("nudox-owner".to_owned())
-        .spawn(move || run(&owner, starter))
+        .spawn(move || run(&owner, starter, observer))
     {
         Ok(join) => Some(OwnerThread {
             gate,
@@ -90,12 +103,25 @@ fn spawn_with<H>(
 /// publish why not and wait for "Try again". A start that panics is that
 /// fault ([`OwnerFault::Panicked`]), never a thread that vanished with every
 /// worker waiting on a gate nobody will open.
-fn run<H>(gate: &OwnerGate, mut starter: impl FnMut(&OwnerGate) -> Result<Started<H>, String>) {
+fn run<H>(
+    gate: &OwnerGate,
+    mut starter: impl FnMut(&OwnerGate) -> Result<Started<H>, String>,
+    mut observer: impl FnMut(&OwnerGate, &H) -> bool,
+) {
     loop {
         let fault = match std::panic::catch_unwind(AssertUnwindSafe(|| starter(gate))) {
             Ok(Ok(Started { host, key, mode })) => {
                 gate.publish(OwnerState::Ready { key, mode });
-                let restart = gate.await_close_or_restart();
+                let restart =
+                    match std::panic::catch_unwind(AssertUnwindSafe(|| observer(gate, &host))) {
+                        Ok(restart) => restart,
+                        Err(panic) => {
+                            gate.publish(OwnerState::Failed(OwnerFault::Panicked(
+                                crate::runtime::offload::describe(panic.as_ref()),
+                            )));
+                            gate.await_restart()
+                        }
+                    };
                 drop(host);
                 if restart {
                     continue;

@@ -12,6 +12,8 @@ mod semantic_range_local;
 mod subscription;
 #[cfg(any(unix, windows))]
 mod subscription_local;
+#[cfg(any(unix, windows))]
+mod subscription_observation;
 
 #[cfg(any(unix, windows))]
 pub use remote_command::RemoteIndexCommandTransport;
@@ -26,6 +28,8 @@ pub use subscription::{
 };
 #[cfg(any(unix, windows))]
 pub use subscription_local::LocalSubscriptionTransport;
+#[cfg(any(unix, windows))]
+pub use subscription_observation::PublicationLease;
 
 use backend_library::{
     AdmittedGraphQueryInput, Command, CommandDto, CommandFailure, CommandMutation, CommandReply,

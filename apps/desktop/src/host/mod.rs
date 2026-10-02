@@ -12,6 +12,7 @@ pub(crate) mod lease;
 mod lifecycle_tests;
 pub(crate) mod menus;
 pub(crate) mod owner;
+mod observation;
 pub(crate) mod paths;
 pub(crate) mod registry;
 pub(crate) mod toolchain;
