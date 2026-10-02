@@ -155,7 +155,7 @@ impl TextView {
     /// Uses native selection and links without scheduling a parse task.
     /// Extension parsing is fixed by the prepared projection.
     pub fn prepared_markdown(id: impl Into<ElementId>, prepared: PreparedMarkdown) -> Self {
-        let mut view = Self::markdown(id, prepared.source());
+        let mut view = Self::markdown(id, SharedString::default());
         view.text = None;
         view.background_parse = true;
         view.prepared = Some(prepared);
@@ -879,6 +879,62 @@ mod tests {
                 let _ = window.draw(cx);
             });
             live_state.read_with(cx, |state, _| assert_eq!(state.source().as_str(), LATER));
+            cx.simulate_click(point(px(10.), px(10.)), Modifiers::default());
+            assert_eq!(
+                cx.opened_url(),
+                Some("https://example.com/background".to_string())
+            );
+            // Republish reference-bearing prepared snapshots under the same
+            // mounted key. Native hit testing and copy must use the latest
+            // reference authority while the old projection stays immutable.
+            const FIRST_REFERENCE: &str =
+                "[雪 prepared][id]\n\n[id]: https://example.com/parent-first";
+            const NEXT_REFERENCE: &str =
+                "[雪 prepared][id]\n\n[id]: https://example.com/parent-next";
+            let old_projection = PreparedMarkdown::parse(FIRST_REFERENCE).unwrap();
+            for (prepared, source, url) in [
+                (
+                    old_projection.clone(),
+                    FIRST_REFERENCE,
+                    "https://example.com/parent-first",
+                ),
+                (
+                    PreparedMarkdown::parse(NEXT_REFERENCE).unwrap(),
+                    NEXT_REFERENCE,
+                    "https://example.com/parent-next",
+                ),
+            ] {
+                root.update(cx, |root, cx| {
+                    root.show_prepared = true;
+                    root.prepared = prepared;
+                    cx.notify();
+                });
+                cx.update(|window, cx| {
+                    let _ = window.draw(cx);
+                });
+                cx.simulate_click(point(px(10.), px(10.)), Modifiers::default());
+                assert_eq!(cx.opened_url(), Some(url.to_string()));
+                let state = captured.borrow().clone().unwrap();
+                cx.update(|window, cx| {
+                    state.read(cx).focus_handle.clone().focus(window, cx);
+                });
+                cx.dispatch_action(crate::input::SelectAll);
+                state.read_with(cx, |state, _| assert_eq!(state.selected_text(), source));
+            }
+            assert_eq!(old_projection.source().as_str(), FIRST_REFERENCE);
+            root.update(cx, |root, cx| {
+                root.show_prepared = false;
+                cx.notify();
+            });
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            let state = captured.borrow().clone().unwrap();
+            state.read_with(cx, |state, _| assert_eq!(state.source().as_str(), LATER));
             cx.simulate_click(point(px(10.), px(10.)), Modifiers::default());
             assert_eq!(
                 cx.opened_url(),

@@ -108,6 +108,49 @@ impl PreparedMarkdown {
     }
 }
 
+/// Ownership follows the document's lifecycle: editable source and workers
+/// exist only for live documents; prepared projections remain shared.
+enum DocumentLifecycle {
+    Live(LiveDocument),
+    Prepared(PreparedMarkdown),
+}
+
+struct LiveDocument {
+    text: String,
+    tx: Publisher<UpdateOptions>,
+    _parse_task: Task<()>,
+    _receive_task: Task<()>,
+}
+
+impl LiveDocument {
+    fn new(format: TextViewFormat, text: &str, cx: &mut Context<TextViewState>) -> Self {
+        let (tx, rx) = pending_update::channel(UpdateOptions::merge);
+        let (tx_result, mut rx_result) = pending_update::channel(ParsedUpdate::merge);
+        let receive_task = cx.spawn(async move |weak_self, cx| {
+            while let Some(parsed_update) = rx_result.next().await {
+                _ = weak_self.update(cx, |state, cx| {
+                    state.accept_parsed_update(parsed_update, cx);
+                });
+            }
+        });
+        Self {
+            text: text.to_owned(),
+            tx,
+            _parse_task: cx.background_spawn(UpdateFuture::new(format, rx, tx_result)),
+            _receive_task: receive_task,
+        }
+    }
+}
+
+impl DocumentLifecycle {
+    fn live(&self) -> Option<&LiveDocument> {
+        match self {
+            Self::Live(live) => Some(live),
+            Self::Prepared(_) => None,
+        }
+    }
+}
+
 /// The state of a TextView.
 pub struct TextViewState {
     pub(super) focus_handle: FocusHandle,
@@ -139,19 +182,15 @@ pub struct TextViewState {
     pub(super) selection_adapter: TextViewSelectionAdapter,
 
     pub(super) parsed_content: ParsedContent,
-    prepared_snapshot: Option<PreparedMarkdown>,
+    lifecycle: DocumentLifecycle,
     /// Content format (markdown / html), used for bounded synchronous parsing
     /// of small full-replace updates.
     format: TextViewFormat,
     pub(super) background_parse: bool,
-    text: String,
     revision: usize,
     pub(super) selection_revision: usize,
     compatible_layout_update: bool,
     parsed_error: Option<SharedString>,
-    tx: Publisher<UpdateOptions>,
-    _parse_task: Task<()>,
-    _receive_task: Task<()>,
 }
 
 impl TextViewState {
@@ -177,61 +216,38 @@ impl TextViewState {
         background_parse: bool,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::new_inner(
-            format,
-            text,
-            markdown_extensions,
-            background_parse,
-            None,
-            cx,
-        )
+        let lifecycle = DocumentLifecycle::Live(LiveDocument::new(format, text, cx));
+        let mut this =
+            Self::new_inner(format, markdown_extensions, background_parse, lifecycle, cx);
+        this.increment_update(text, false, cx);
+        this
     }
 
     pub(super) fn new_prepared(prepared: PreparedMarkdown, cx: &mut Context<Self>) -> Self {
         Self::new_inner(
             TextViewFormat::Markdown,
-            prepared.0.document.source.as_str(),
             Arc::default(),
             true,
-            Some(prepared.clone()),
+            DocumentLifecycle::Prepared(prepared),
             cx,
         )
     }
 
     fn new_inner(
         format: TextViewFormat,
-        text: &str,
         markdown_extensions: Arc<MarkdownExtensions>,
         background_parse: bool,
-        prepared: Option<PreparedMarkdown>,
+        lifecycle: DocumentLifecycle,
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
         let selection_adapter = TextViewSelectionAdapter::new(cx.entity().downgrade(), cx);
-
-        let (tx, rx) = pending_update::channel(UpdateOptions::merge);
-        let (tx_result, mut rx_result) = pending_update::channel(ParsedUpdate::merge);
-        let _receive_task = if prepared.is_none() {
-            cx.spawn({
-                async move |weak_self, cx| {
-                    while let Some(parsed_update) = rx_result.next().await {
-                        _ = weak_self.update(cx, |state, cx| {
-                            state.accept_parsed_update(parsed_update, cx);
-                        });
-                    }
-                }
-            })
-        } else {
-            Task::ready(())
+        let parsed_content = match &lifecycle {
+            DocumentLifecycle::Live(_) => ParsedContent::default(),
+            DocumentLifecycle::Prepared(snapshot) => (*snapshot.0).clone(),
         };
 
-        let _parse_task = if prepared.is_none() {
-            cx.background_spawn(UpdateFuture::new(format, rx, tx_result))
-        } else {
-            Task::ready(())
-        };
-
-        let mut this = Self {
+        Self {
             focus_handle,
             bounds: Bounds::default(),
             multi_click_selection: None,
@@ -256,37 +272,24 @@ impl TextViewState {
             is_selecting: false,
             auto_scroll: AutoScroll::default(),
             selection_adapter,
-            parsed_content: prepared
-                .as_ref()
-                .map_or_else(ParsedContent::default, |snapshot| (*snapshot.0).clone()),
-            prepared_snapshot: prepared.clone(),
+            parsed_content,
+            lifecycle,
             format,
             background_parse,
             parsed_error: None,
-            text: text.to_string(),
             revision: 0,
             selection_revision: 0,
             compatible_layout_update: false,
-            tx,
-            _parse_task,
-            _receive_task,
-        };
-        if prepared.is_none() {
-            this.increment_update(text, false, cx);
         }
-        this
     }
 
     pub(super) fn set_prepared(&mut self, prepared: &PreparedMarkdown, cx: &mut Context<Self>) {
-        if self
-            .prepared_snapshot
-            .as_ref()
-            .is_some_and(|current| Arc::ptr_eq(&current.0, &prepared.0))
+        if matches!(&self.lifecycle, DocumentLifecycle::Prepared(current)
+            if Arc::ptr_eq(&current.0, &prepared.0))
         {
             return;
         }
-        self.prepared_snapshot = Some(prepared.clone());
-        self.text = prepared.0.document.source.to_string();
+        self.lifecycle = DocumentLifecycle::Prepared(prepared.clone());
         self.revision = self.revision.wrapping_add(1);
         self.selection_revision = self.selection_revision.wrapping_add(1);
         self.parsed_content = (*prepared.0).clone();
@@ -303,7 +306,7 @@ impl TextViewState {
         parsed_update: ParsedUpdate,
         cx: &mut Context<Self>,
     ) -> bool {
-        if parsed_update.revision != self.revision {
+        if self.lifecycle.live().is_none() || parsed_update.revision != self.revision {
             return false;
         }
         if parsed_update.baseline_ack {
@@ -387,12 +390,22 @@ impl TextViewState {
 
     /// Set the text content.
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
-        if self.text.as_str() == text {
-            return;
+        match &mut self.lifecycle {
+            DocumentLifecycle::Live(live) => {
+                if live.text == text {
+                    return;
+                }
+                live.text.clear();
+                live.text.push_str(text);
+            }
+            DocumentLifecycle::Prepared(prepared) => {
+                // Only explicit editing may materialize a prepared source.
+                if prepared.0.document.source.as_str() == text {
+                    return;
+                }
+                self.lifecycle = DocumentLifecycle::Live(LiveDocument::new(self.format, text, cx));
+            }
         }
-
-        self.text.clear();
-        self.text.push_str(text);
         self.parsed_error = None;
         self.increment_update(text, false, cx);
     }
@@ -402,8 +415,20 @@ impl TextViewState {
         if new_text.is_empty() {
             return;
         }
-        self.text.push_str(new_text);
-        self.increment_update(new_text, true, cx);
+        match &mut self.lifecycle {
+            DocumentLifecycle::Live(live) => {
+                live.text.push_str(new_text);
+                self.increment_update(new_text, true, cx);
+            }
+            DocumentLifecycle::Prepared(prepared) => {
+                // Promotion publishes a complete baseline, so the new worker
+                // cannot interpret this append as a standalone document.
+                let mut text = prepared.0.document.source.to_string();
+                text.push_str(new_text);
+                self.lifecycle = DocumentLifecycle::Live(LiveDocument::new(self.format, &text, cx));
+                self.increment_update(&text, false, cx);
+            }
+        }
     }
 
     pub(crate) fn set_markdown_extensions(
@@ -416,8 +441,10 @@ impl TextViewState {
         }
 
         self.markdown_extensions = markdown_extensions;
-        if self.format == TextViewFormat::Markdown {
-            let text = self.text.clone();
+        if self.format == TextViewFormat::Markdown
+            && let Some(live) = self.lifecycle.live()
+        {
+            let text = live.text.clone();
             self.increment_update(&text, false, cx);
         }
     }
@@ -513,12 +540,22 @@ impl TextViewState {
             // Keep the background parser's accumulated document in sync so a
             // later append extends this baseline instead of parsing the delta
             // as a standalone document.
-            _ = self.tx.try_send(update_options);
+            _ = self
+                .lifecycle
+                .live()
+                .expect("updates require a live document")
+                .tx
+                .try_send(update_options);
             cx.notify();
             return;
         }
 
-        _ = self.tx.try_send(update_options);
+        _ = self
+            .lifecycle
+            .live()
+            .expect("updates require a live document")
+            .tx
+            .try_send(update_options);
     }
 
     /// Save bounds and unselect if bounds changed.
@@ -1452,18 +1489,7 @@ mod tests {
             assert_eq!(destinations, ["src/lib.rs#L7"]);
             // A prepared heading has no parser consumer or background receive
             // task: it must not depend on another executor turn to fill in.
-            assert!(
-                state
-                    .tx
-                    .try_send(UpdateOptions {
-                        revision: 1,
-                        pending_text: "unwanted parse".into(),
-                        append: false,
-                        mode: ParseMode::Replace,
-                        markdown_extensions: Arc::default(),
-                    })
-                    .is_err()
-            );
+            assert!(matches!(state.lifecycle, DocumentLifecycle::Prepared(_)));
         });
         state.update(cx, |state, cx| {
             state.selectable = true;
@@ -1482,6 +1508,112 @@ mod tests {
                 state.source().as_str(),
                 "🦀 **Guide** [local](src/lib.rs#L7)"
             )
+        });
+    }
+
+    #[gpui::test]
+    fn prepared_install_and_republication_keep_large_source_unmaterialized(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::init);
+        let first = PreparedMarkdown::parse(&"large prepared paragraph\n\n".repeat(2048)).unwrap();
+        let second =
+            PreparedMarkdown::parse(&"replacement prepared paragraph\n\n".repeat(2048)).unwrap();
+        let first_copies = first.0.document.source.copied_bytes();
+        let second_copies = second.0.document.source.copied_bytes();
+        let _view = crate::text::TextView::prepared_markdown("large-prepared", first.clone());
+        assert_eq!(first.0.document.source.copied_bytes(), first_copies);
+        let state = cx.update(|cx| cx.new(|cx| TextViewState::new_prepared(first.clone(), cx)));
+        state.update(cx, |state, cx| {
+            assert!(matches!(state.lifecycle, DocumentLifecycle::Prepared(_)));
+            assert_eq!(first.0.document.source.copied_bytes(), first_copies);
+            state.set_prepared(&first, cx);
+            state.set_prepared(&second, cx);
+            assert_eq!(second.0.document.source.copied_bytes(), second_copies);
+            assert!(
+                matches!(&state.lifecycle, DocumentLifecycle::Prepared(current)
+                if Arc::ptr_eq(&current.0, &second.0))
+            );
+        });
+        cx.run_until_parked();
+        state.read_with(cx, |state, _| {
+            assert_eq!(first.0.document.source.copied_bytes(), first_copies);
+            assert_eq!(second.0.document.source.copied_bytes(), second_copies);
+            assert_eq!(state.parsed_content.document.blocks.len(), 2048);
+        });
+    }
+
+    #[gpui::test]
+    fn prepared_promotion_starts_a_complete_live_baseline_and_rejects_old_completion(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::init);
+        let prepared = PreparedMarkdown::parse("[雪][id]\n\n[id]: prepared").unwrap();
+        let state = cx.update(|cx| cx.new(|cx| TextViewState::markdown("old live", cx)));
+        let retired_extensions = Arc::new(MarkdownExtensions::default());
+        let retired = Arc::downgrade(&retired_extensions);
+        state.update(cx, |state, cx| {
+            let retired_revision = state.revision;
+            state
+                .lifecycle
+                .live()
+                .unwrap()
+                .tx
+                .try_send(UpdateOptions {
+                    revision: retired_revision,
+                    pending_text: "queued retiring live worker".into(),
+                    append: false,
+                    mode: ParseMode::Replace,
+                    markdown_extensions: retired_extensions,
+                })
+                .unwrap();
+            state.set_prepared(&prepared, cx);
+            // Reject even a matching revision while the lifecycle is prepared.
+            assert!(!state.accept_parsed_update(
+                ParsedUpdate {
+                    revision: state.revision,
+                    full_parse: true,
+                    selection_compatible: false,
+                    baseline_ack: false,
+                    result: Ok(replace_markdown("obsolete live")),
+                },
+                cx
+            ));
+            state.push_str("\n\ntail", cx);
+            assert!(state.lifecycle.live().is_some());
+            assert!(!state.accept_parsed_update(
+                ParsedUpdate {
+                    revision: retired_revision,
+                    full_parse: true,
+                    selection_compatible: false,
+                    baseline_ack: false,
+                    result: Err("retired live failure".into()),
+                },
+                cx
+            ));
+        });
+        cx.run_until_parked();
+        assert!(
+            retired.upgrade().is_none(),
+            "retired worker or publication retained its input"
+        );
+        state.update(cx, |state, cx| {
+            assert_eq!(
+                state.source().as_str(),
+                "[雪][id]\n\n[id]: prepared\n\ntail"
+            );
+            assert_eq!(
+                state
+                    .parsed_content
+                    .node_cx
+                    .resolve_link_mark(first_reference_link(&state.parsed_content).clone())
+                    .url
+                    .as_str(),
+                "prepared"
+            );
+            state.selection_format = SelectionFormat::Source;
+            state.select_all(cx);
+            assert_eq!(state.selected_text(), "[雪][id]\n\n[id]: prepared\n\ntail");
         });
     }
 
@@ -1822,12 +1954,15 @@ mod tests {
         });
 
         markdown_state.read_with(cx, |state, _| {
-            assert_eq!(state.text.as_str(), markdown.as_str());
+            assert_eq!(
+                state.lifecycle.live().unwrap().text.as_str(),
+                markdown.as_str()
+            );
             assert!(state.source().as_str().is_empty());
             assert!(state.parsed_content.document.blocks.is_empty());
         });
         html_state.read_with(cx, |state, _| {
-            assert_eq!(state.text.as_str(), html.as_str());
+            assert_eq!(state.lifecycle.live().unwrap().text.as_str(), html.as_str());
             assert!(state.source().as_str().is_empty());
             assert!(state.parsed_content.document.blocks.is_empty());
         });
@@ -1859,7 +1994,10 @@ mod tests {
         cx.run_until_parked();
 
         state.read_with(cx, |state, _| {
-            assert_eq!(state.text.as_str(), expected.as_str());
+            assert_eq!(
+                state.lifecycle.live().unwrap().text.as_str(),
+                expected.as_str()
+            );
             assert_eq!(state.source().as_str(), expected.as_str());
         });
     }
@@ -1903,7 +2041,7 @@ mod tests {
         cx.run_until_parked();
 
         state.read_with(cx, |state, _| {
-            assert_eq!(state.text.as_str(), "new text");
+            assert_eq!(state.lifecycle.live().unwrap().text.as_str(), "new text");
             assert_eq!(state.source().as_str(), "new text");
         });
 
@@ -1913,7 +2051,7 @@ mod tests {
         cx.run_until_parked();
 
         state.read_with(cx, |state, _| {
-            assert_eq!(state.text.as_str(), "");
+            assert_eq!(state.lifecycle.live().unwrap().text.as_str(), "");
             assert_eq!(state.source().as_str(), "");
         });
     }
