@@ -96,6 +96,9 @@ struct Completion {
 struct Outstanding {
     command: SurfaceCommand,
     control: Arc<ObservationControl>,
+    request_id: u64,
+    owner_cursor: backend_engine::Cursor,
+    advisory: AdvisorySelection,
 }
 
 #[derive(Default)]
@@ -235,11 +238,19 @@ impl BrowseLane {
             request_id,
             owner_cursor,
             command: command.clone(),
-            advisory,
+            advisory: advisory.clone(),
             control: Arc::clone(&control),
         });
-        self.outstanding
-            .insert(ticket, Outstanding { command, control });
+        self.outstanding.insert(
+            ticket,
+            Outstanding {
+                command,
+                control,
+                request_id,
+                owner_cursor,
+                advisory,
+            },
+        );
         drop(queue);
         if !superseded.is_empty() {
             let mut completed = self
@@ -283,7 +294,7 @@ impl BrowseLane {
             self.completions.capacity.notify_all();
             completed
         };
-        completed
+        let mut terminals = completed
             .into_iter()
             .filter_map(|completion| {
                 self.outstanding
@@ -305,7 +316,38 @@ impl BrowseLane {
                         )
                     })
             })
-            .collect()
+            .collect::<Vec<_>>();
+        // A worker may be in an OS read that cannot be preempted. The owner
+        // still owes a terminal at the absolute deadline; late worker output
+        // is discarded because its ticket is removed here.
+        let expired = self
+            .outstanding
+            .iter()
+            .filter_map(|(ticket, job)| job.control.is_expired().then_some(*ticket))
+            .collect::<Vec<_>>();
+        for ticket in &expired {
+            if let Some(job) = self.outstanding.remove(ticket) {
+                job.control.cancel();
+                terminals.push((
+                    *ticket,
+                    job.request_id,
+                    job.owner_cursor,
+                    job.advisory,
+                    Terminal::Deadline,
+                ));
+            }
+        }
+        if !expired.is_empty() {
+            for shard in &self.shards {
+                shard
+                    .queue
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .pending
+                    .retain(|job| !expired.contains(&job.ticket));
+            }
+        }
+        terminals
     }
 
     pub(super) fn close(&mut self) {
@@ -698,5 +740,68 @@ mod tests {
         assert_eq!(lane.outstanding.len(), MAX_QUEUED_PER_WORKER + 1);
         lane.close();
         assert!(lane.workers.is_empty());
+    }
+
+    #[test]
+    fn deadline_delivers_one_terminal_even_if_worker_finishes_later() {
+        let entered = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(AtomicBool::new(false));
+        let executor = {
+            let entered = Arc::clone(&entered);
+            let release = Arc::clone(&release);
+            Arc::new(
+                move |_: &mut BrowseCache,
+                      _: SurfaceCommand,
+                      _: Option<&backend_engine::advisory::AdvisoryAuthority>,
+                      _: &ObservationControl| {
+                    entered.store(true, Ordering::Release);
+                    while !release.load(Ordering::Acquire) {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    CommandReply::Failed(CommandFailure::InvalidQuery("late".to_owned()))
+                },
+            ) as Arc<ExecuteBrowse>
+        };
+        let mut lane = BrowseLane::start_with(executor).expect("browse lane");
+        lane.submit(
+            1,
+            11,
+            backend_engine::Cursor::new(),
+            tree("/tmp/browse-lane-deadline"),
+            None,
+        )
+        .expect("request");
+        let start = Instant::now();
+        while !entered.load(Ordering::Acquire) {
+            assert!(
+                start.elapsed() < Duration::from_secs(1),
+                "worker did not start"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        lane.outstanding
+            .get(&1)
+            .expect("active request")
+            .control
+            .expire_for_test();
+        let ready = lane.drain();
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].0, 1);
+        assert!(matches!(ready[0].4, Terminal::Deadline));
+        release.store(true, Ordering::Release);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while lane
+            .completions
+            .queue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .ready
+            .is_empty()
+        {
+            assert!(Instant::now() < deadline, "worker did not retire");
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(lane.drain().is_empty(), "late result must be discarded");
+        lane.close();
     }
 }
