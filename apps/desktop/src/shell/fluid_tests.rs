@@ -19,7 +19,7 @@ use crate::navigation::{BrowseRoute, Intent, OrbitRoute, Route, SettingsPage, Vi
 use facet::probe::{Ledger, TextSample};
 use facet::probe::StackPhase;
 use facet::tokens::fluid::Dock;
-use gpui::{Modifiers, TestAppContext, point, px};
+use gpui::{Focusable as _, Modifiers, TestAppContext, point, px};
 
 /// The phone sizes the brief names.
 const PHONES: [(f32, f32); 3] = [(320.0, 568.0), (360.0, 640.0), (390.0, 844.0)];
@@ -469,6 +469,21 @@ fn find_claims_native_query_focus_only_after_ask_exit_and_its_page_settle(cx: &m
     assert_eq!(native_focus(&mut rig), away, "a Find redraw stole native focus back to its query");
 }
 
+/// The centre of the one native node with `role` and `label`, in window
+/// pixels, as the last AccessKit tree placed it.
+fn native_center(rig: &mut Rig, role: &str, label: &str) -> (f32, f32) {
+    let tree = native_tree(rig);
+    let nodes: Vec<_> = tree["nodes"].as_object().expect("native nodes").values()
+        .filter(|node| node["aria"]["role"].as_str() == Some(role) && node["aria"]["label"].as_str() == Some(label))
+        .collect();
+    assert_eq!(nodes.len(), 1, "exactly one native {role} named {label:?}");
+    let bounds = &nodes[0]["bounds"];
+    let at = |key: &str| bounds[key].as_f64().unwrap_or_else(|| panic!("{role} {label:?} has no bounds.{key}"));
+    #[allow(clippy::cast_possible_truncation)]
+    let center = ((at("x") + at("width") / 2.0) as f32, (at("y") + at("height") / 2.0) as f32);
+    center
+}
+
 fn native_focus_label(rig: &mut Rig) -> Option<String> {
     let tree = native_tree(rig);
     let id = tree["accesskit_focus"].as_str().expect("native focus id");
@@ -549,6 +564,39 @@ fn same_find_visit_returns_query_focus_once_after_ask_exit(cx: &mut TestAppConte
     rig.settle();
     assert_ne!(native_focus_label(&mut rig).as_deref(), Some("Find query"),
         "an intervening Tab revived the canceled query return");
+}
+
+/// Interaction inside the open modal (Tab to a result, a click back into the
+/// editor) is not a departure from the Find visit: Escape still returns the
+/// keyboard to the exact pre-Ask query field.
+#[gpui::test]
+fn ask_modal_tab_and_editor_click_preserve_find_query_return(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(find_route()), 1440.0, 900.0);
+    rig.settle();
+    assert_eq!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
+    let route = rig.route();
+    rig.keys("secondary-k");
+    rig.keys("r e l a t i o n");
+    let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+    let editor = ask.read_with(rig.cx, |ask, _| ask.input().clone());
+    let editor_focused = |rig: &mut Rig| rig.cx.update(|window, cx| editor.read(cx).focus_handle(cx).is_focused(window));
+    assert!(editor_focused(&mut rig), "Ask did not own its editor before Tab");
+    rig.cx.simulate_keystrokes("tab");
+    rig.frame(0);
+    assert!(!editor_focused(&mut rig), "Tab did not cycle to a mounted Ask result");
+    assert!(rig.cx.update(|window, cx| ask.read(cx).owns_focus(window, cx)), "Tab left Ask's own stops");
+    assert_eq!(rig.route(), route, "modal Tab navigated the background Find route");
+    // The click lands on the editor's own native node, where AccessKit says it is.
+    let (x, y) = native_center(&mut rig, "TextInput", "Ask anything, or find a package");
+    click(&mut rig, x, y);
+    assert!(editor_focused(&mut rig), "pointer did not return focus to the Ask editor");
+    rig.cx.simulate_keystrokes("escape");
+    rig.frame(0);
+    assert_eq!(ask_phase(&painted(&mut rig)), Some(StackPhase::Leaving));
+    rig.settle();
+    assert_eq!(rig.route(), route);
+    assert_eq!(native_focus_label(&mut rig).as_deref(), Some("Find query"),
+        "normal interaction within the open modal erased Find's pre-modal query focus");
 }
 
 #[gpui::test]
