@@ -3887,15 +3887,30 @@ fn run_with_default_rustc(
         return Err("cargo has no stderr".to_owned());
     };
     let limit = u64::try_from(maximum).unwrap_or(u64::MAX).saturating_add(1);
-    let reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stdout.take(limit).read_to_end(&mut bytes).map(|_| bytes)
-    });
-    let errors = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = stderr.take(64 * 1024).read_to_end(&mut bytes);
-        bytes
-    });
+    let reader = std::thread::Builder::new()
+        .name("cargo-browse-stdout".to_owned())
+        .spawn(move || {
+            let mut bytes = Vec::new();
+            stdout.take(limit).read_to_end(&mut bytes).map(|_| bytes)
+        })
+        .map_err(|error| {
+            terminate_cargo_child(&mut child);
+            format!("start cargo stdout reader: {error}")
+        })?;
+    let errors = match std::thread::Builder::new()
+        .name("cargo-browse-stderr".to_owned())
+        .spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = stderr.take(64 * 1024).read_to_end(&mut bytes);
+            bytes
+        }) {
+        Ok(errors) => errors,
+        Err(error) => {
+            terminate_cargo_child(&mut child);
+            let _ = reader.join();
+            return Err(format!("start cargo stderr reader: {error}"));
+        }
+    };
     let started = Instant::now();
     let deadline = observation_deadline().map_or(started + CARGO_DEADLINE, |deadline| {
         deadline.min(started + CARGO_DEADLINE)
