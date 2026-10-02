@@ -1764,6 +1764,16 @@ fn file_system_revision(path: &Path) -> Option<FileSystemRevision> {
     Some(file_system_revision_from_metadata(&metadata))
 }
 
+/// Reads the revision of the object `path` names, walking every component
+/// relative to a held handle. A reparse point anywhere, including the final
+/// component, makes the revision unavailable rather than describing its target.
+#[cfg(windows)]
+fn file_system_revision(path: &Path) -> Option<FileSystemRevision> {
+    backend_platform::win32::project_fs::revision_of_path(path)
+        .ok()
+        .map(file_system_revision_from_windows)
+}
+
 #[cfg(not(windows))]
 fn file_system_revision_from_metadata(metadata: &fs::Metadata) -> FileSystemRevision {
     #[cfg(unix)]
