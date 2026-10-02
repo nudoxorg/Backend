@@ -3546,12 +3546,7 @@ mod tests {
                 std::process::id()
             ));
             fs::create_dir(&path).expect("create private test root");
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
-                    .expect("set private test root mode");
-            }
+            crate::test_support::make_private(&path).expect("make the test root private");
             Self(path)
         }
     }
@@ -3609,7 +3604,12 @@ mod tests {
                 target_platform: [20; 32],
             },
             captured_work: PendingAckCapturedWork {
-                source_root: "/tmp/project".into(),
+                // Absolute on every platform: a bare `/tmp/...` has no drive on Windows.
+                source_root: std::env::temp_dir()
+                    .join("project")
+                    .to_string_lossy()
+                    .into_owned()
+                    .into(),
                 package_lineage: [21; 32],
                 target: [22; 32],
                 recipe: [16; 32],

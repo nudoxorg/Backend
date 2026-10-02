@@ -5443,8 +5443,12 @@ mod tests {
             "4n5rm7aink6xcsj5df33sf7wm3m387a2-sccache-0.17.0"
         ));
         assert!(!is_nix_store_object_name("not-a-store-object"));
+        // `e`, `o`, `t` and `u` are not in the store's base-32 alphabet.
         assert!(!is_nix_store_object_name(
-            "ffffffffffffffffffffffffffffffff-unknown-hash-alphabet"
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-unknown-hash-alphabet"
+        ));
+        assert!(is_nix_store_object_name(
+            "ffffffffffffffffffffffffffffffff-valid-hash-alphabet"
         ));
     }
 

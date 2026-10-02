@@ -3243,7 +3243,11 @@ mod tests {
                 std::process::id()
             ));
             match fs::create_dir(&path) {
-                Ok(()) => return path,
+                Ok(()) => {
+                    crate::test_support::make_private(&path)
+                        .expect("make the registry fixture directory private");
+                    return path;
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(error) => panic!("create isolated registry fixture directory: {error}"),
             }

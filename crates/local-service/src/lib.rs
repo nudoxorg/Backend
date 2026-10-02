@@ -20,6 +20,8 @@ pub mod protocol;
 pub use backend_engine::registry;
 pub(crate) mod reconcile;
 pub mod service;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub(crate) mod worker_transport;
 
 use backend_engine::{
