@@ -524,11 +524,6 @@ impl Reader {
         self.map.as_ref().is_none_or(|map| map.read(cx).ready(cx))
     }
 
-    #[cfg(test)]
-    pub(crate) fn graph_mount_entity(&self) -> Option<Entity<bodies::graph::Map>> {
-        self.map.clone()
-    }
-
     pub(crate) fn graph_work_status(
         &self,
         cx: &gpui::App,

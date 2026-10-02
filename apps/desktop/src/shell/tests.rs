@@ -676,20 +676,22 @@ fn hidden_graph_projection_slot_does_not_hold_settle_and_reopens_into_the_scene(
         "a completed projection stays hidden and cached until the graph returns"
     );
 
-    // Completion while hidden remains cached. Observe the real map wake:
-    // GPUI may consume the mounting frame before update() returns, so the
-    // transient stage is asserted at its notification boundary.
-    let stages = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let observed = std::rc::Rc::clone(&stages);
-    let map = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_mount_entity(cx)).expect("retained map");
-    let _subscription = rig.cx.update(|_, cx| cx.observe(&map, move |map, cx| {
-        observed.borrow_mut().push(map.read(cx).work_status(cx));
-    }));
+    // Completion while hidden remains cached. Reopening consumes the single
+    // mounting wake within the native draw and starts graph discovery. Do not
+    // drain the discovery executor before checking the actual mounted stage.
     rig.graph.root.update(rig.cx, |root, cx| {
         root.dispatch(Intent::Navigate(Route::World), cx);
     });
     rig.draw_frame();
-    assert!(stages.borrow().contains(&Some(MapWorkStatus::SceneMount)), "cached scene passed through mounting: {:?}", stages.borrow());
+    assert_eq!(
+        rig.shell.read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)),
+        Some(MapWorkStatus::Discovery),
+        "the cached projection mounted and began discovery"
+    );
+    assert!(
+        rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx)).contains("fixture 3 nodes"),
+        "the completed projection reached the real graph entity"
+    );
     assert!(!rig.shell.read_with(rig.cx, |shell, cx| shell.graph_ready(cx)));
 
     // Hide before discovery settles. The page settles, then returning uses
