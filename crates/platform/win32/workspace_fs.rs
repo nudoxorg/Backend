@@ -16,11 +16,14 @@
     reason = "reviewed NT relative-open and handle metadata boundary for Windows workspace files"
 )]
 
-use super::busy::{retry_while_busy, retry_while_busy_pausing};
+use super::busy::{is_busy, retry_while_busy, retry_while_busy_pausing};
+use super::file::Replacement;
 use super::identity::{current_user, is_owned_by_current_user, owner_of};
 use super::security::restrict_handle_to_current_user;
 use crate::directory::DirectoryRenameError;
 use crate::linkage::{Attempt, IfUnlinked, Linkage, open_admitted, reopen_while_replaced};
+use crate::retry::retry_when;
+use std::cell::RefCell;
 use std::ffi::c_void;
 use std::fs::File;
 use std::io;
@@ -599,6 +602,7 @@ impl WorkspaceRoot {
             flush,
             &mut thread::sleep,
         )
+        .map(|_| ())
     }
 
     /// [`Self::rename_checked_entry_with_flush`] with the pause between
@@ -619,7 +623,7 @@ impl WorkspaceRoot {
         before_commit: impl FnOnce(),
         mut flush: impl FnMut(*mut c_void) -> io::Result<()>,
         pause: &mut dyn FnMut(Duration),
-    ) -> Result<(), DirectoryRenameError> {
+    ) -> Result<Replacement, DirectoryRenameError> {
         let precommit = DirectoryRenameError::NotCommitted;
         let (source_parent, source_leaf) = self.parent_and_leaf(source).map_err(precommit)?;
         let (destination_parent, destination_leaf) = self
@@ -662,7 +666,7 @@ impl WorkspaceRoot {
         .map_err(DirectoryRenameError::NotCommitted)?;
         let name = destination_name.wide();
         before_commit();
-        rename_into(
+        let replacement = rename_into(
             source_handle.as_raw_handle().cast(),
             destination_parent.handle.as_raw_handle().cast(),
             &name,
@@ -676,7 +680,7 @@ impl WorkspaceRoot {
             flush(source_parent.handle.as_raw_handle())
                 .map_err(DirectoryRenameError::CommittedButNotDurable)?;
         }
-        Ok(())
+        Ok(replacement)
     }
 
     /// Unlinks one checked regular file by its opened handle, then flushes its
@@ -1104,6 +1108,30 @@ fn handle_is_unlinked(handle: *mut c_void) -> bool {
     standard_info(handle).is_ok_and(|standard| links_of(&standard) == 0)
 }
 
+/// Pauses before each further look at a name a reader could not find.
+///
+/// A replacing rename is not one step for a concurrent opener: the POSIX-semantics rename unlinks
+/// the old name before it links the new one, so a lookup in between is told `NotFound`, and the
+/// classic swap leaves the old file delete-pending for a moment, so a lookup then is told
+/// `ACCESS_DENIED`. Measured with one publisher replacing continuously and four readers opening
+/// continuously, in eight processes at once, about 0.3 % of lookups saw the first and about
+/// 0.005 % the second, the first for up to tens of milliseconds when the publisher was
+/// preempted between its two steps. Looking again for 7 ms removed all of the second and all but
+/// about 0.01 % of the first.
+const LOOKUP_CONFIRMATION: [Duration; 3] = [
+    Duration::from_millis(1),
+    Duration::from_millis(2),
+    Duration::from_millis(4),
+];
+
+/// Whether a failed lookup could be a replacing rename caught half done.
+fn is_replacement_transient(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+    )
+}
+
 /// Opens the file `leaf` and runs `admit` on the opened handle.
 ///
 /// A writer that publishes with a replacing rename unlinks the old object while
@@ -1118,20 +1146,47 @@ fn open_admitted_file(
     if_unlinked: IfUnlinked,
     admit: impl Fn(*mut c_void, Linkage) -> io::Result<()>,
 ) -> io::Result<OwnedHandle> {
+    open_admitted_file_pausing(parent, leaf, access, if_unlinked, admit, &mut thread::sleep)
+}
+
+/// [`open_admitted_file`] with its pauses injected.
+///
+/// A reader ([`IfUnlinked::Keep`]) that cannot find the name looks again for
+/// [`LOOKUP_CONFIRMATION`] before it believes the name is absent, because the name may be mid
+/// replacement. A writer does not: it is about to create the name or act on it, and a missing
+/// name is its answer.
+fn open_admitted_file_pausing(
+    parent: HANDLE,
+    leaf: ExistingName<'_>,
+    access: u32,
+    if_unlinked: IfUnlinked,
+    admit: impl Fn(*mut c_void, Linkage) -> io::Result<()>,
+    pause: &mut dyn FnMut(Duration),
+) -> io::Result<OwnedHandle> {
+    let pause = RefCell::new(pause);
+    let lookup = || {
+        open_relative(
+            parent,
+            leaf,
+            access,
+            FILE_NON_DIRECTORY_FILE,
+            Sharing::Transient,
+        )
+    };
     open_admitted(
         if_unlinked,
-        || {
-            open_relative(
-                parent,
-                leaf,
-                access,
-                FILE_NON_DIRECTORY_FILE,
-                Sharing::Transient,
-            )
+        || match if_unlinked {
+            IfUnlinked::Keep => retry_when(
+                lookup,
+                |outcome| matches!(outcome, Err(error) if is_replacement_transient(error)),
+                &LOOKUP_CONFIRMATION,
+                |delay| (pause.borrow_mut())(delay),
+            ),
+            IfUnlinked::Reopen => lookup(),
         },
         |handle, linkage| admit(handle.as_raw_handle(), linkage),
         |handle| handle_is_unlinked(handle.as_raw_handle()),
-        thread::sleep,
+        |delay| (pause.borrow_mut())(delay),
     )
 }
 
@@ -1336,54 +1391,69 @@ fn nt_status_error(status: i32) -> io::Error {
 /// path, which would reintroduce the very name lookup this module avoids. The
 /// kernel resolves `name` beneath the held destination directory.
 ///
-/// Replacement uses POSIX semantics where the file system supports them, so a
-/// reader that holds the old file open with delete sharing does not block the
-/// publication; older systems fall back to the classic rename. A holder that
-/// does not share delete (a scanner, say) is waited out for a bounded time.
+/// A replacement tries the classic one-step swap first, which no concurrent
+/// lookup can catch half done, and falls back to POSIX semantics only when the
+/// kernel refuses the swap because another handle holds the destination open
+/// (see [`Replacement`]). That keeps a reader that holds the old file open, with
+/// delete sharing, from blocking the publication, as on Unix. Older systems fall
+/// back to the classic rename for both. A holder that does not share delete (a
+/// scanner, say) defeats both and is waited out for a bounded time.
 ///
-/// # Lookup gap
-/// POSIX-semantics replacement unlinks the target name and then links the
-/// source name, and the two are not one step for a concurrent lookup: a reader
-/// that opens the name in between is told it does not exist. Measured with one
-/// publisher replacing continuously and four readers opening continuously,
-/// eight such processes at once, 1,018 and 1,070 of 640,000 lookups (about
-/// 0.16 %) reported `NotFound` for a name that had never been absent, for up
-/// to tens of milliseconds when the publisher was preempted between the two
-/// steps. The classic rename and `MoveFileExW` never showed it in 1,280,000
-/// lookups each, but they refuse to replace a file that any other handle holds
-/// open, which POSIX semantics exist to allow. Callers that need a lock-free
-/// reader to tell "absent" from "being replaced" must hold the lock the
-/// publisher holds, or recover the name's state from a second source.
+/// # What a concurrent opener can see
+/// Neither replacement is invisible to a lookup that races it. The POSIX-semantics
+/// one unlinks the target name and then links the source name, so an opener in
+/// between is told `NotFound` for a name that was never absent. The classic swap
+/// leaves the replaced file delete-pending for a moment, so an opener then is told
+/// `ACCESS_DENIED`. Measured with one publisher replacing continuously and four
+/// readers opening continuously, eight such processes at once: about 0.3 % of
+/// lookups saw the first (for up to tens of milliseconds when the publisher was
+/// preempted between its two steps), about 0.005 % the second. Trying the swap
+/// first therefore keeps the larger exposure to a destination that is held open
+/// at the moment of the replacement. Readers of state that is replaced look
+/// again before they believe either answer ([`LOOKUP_CONFIRMATION`]); a caller
+/// that must never be misled holds the lock the publisher holds, or recovers the
+/// name's state from a second source.
 fn rename_into(
     source: HANDLE,
     destination_parent: HANDLE,
     name: &[u16],
     replace: bool,
     pause: &mut dyn FnMut(Duration),
-) -> io::Result<()> {
-    let extended_flags = if replace {
-        FILE_RENAME_REPLACE_IF_EXISTS
-            | FILE_RENAME_POSIX_SEMANTICS
-            | FILE_RENAME_IGNORE_READONLY_ATTRIBUTE
-    } else {
-        0
-    };
-    retry_while_busy_pausing(
-        || match set_rename_information(
+) -> io::Result<Replacement> {
+    let rename = |flags: u32| match set_rename_information(
+        source,
+        destination_parent,
+        name,
+        FILE_RENAME_INFORMATION_EX_CLASS,
+        flags,
+    ) {
+        Err(error) if extended_class_unsupported(&error) => set_rename_information(
             source,
             destination_parent,
             name,
-            FILE_RENAME_INFORMATION_EX_CLASS,
-            extended_flags,
-        ) {
-            Err(error) if extended_class_unsupported(&error) => set_rename_information(
-                source,
-                destination_parent,
-                name,
-                FILE_RENAME_INFORMATION_CLASS,
-                u32::from(replace),
-            ),
-            outcome => outcome,
+            FILE_RENAME_INFORMATION_CLASS,
+            u32::from(replace),
+        ),
+        outcome => outcome,
+    };
+    retry_while_busy_pausing(
+        || {
+            if !replace {
+                return rename(0).map(|()| Replacement::NewName);
+            }
+            let swap = FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_IGNORE_READONLY_ATTRIBUTE;
+            match rename(swap) {
+                Ok(()) => Ok(Replacement::Swapped),
+                Err(swap_error) if is_busy(&swap_error) => {
+                    match rename(swap | FILE_RENAME_POSIX_SEMANTICS) {
+                        Ok(()) => Ok(Replacement::Unlinked),
+                        // Both refused for the same reason: report the swap's error.
+                        Err(unlink_error) if is_busy(&unlink_error) => Err(swap_error),
+                        Err(other) => Err(other),
+                    }
+                }
+                Err(other) => Err(other),
+            }
         },
         pause,
     )
@@ -1469,6 +1539,97 @@ fn set_rename_information(
     } else {
         Ok(())
     }
+}
+
+/// Replaces `destination` with `source`, both absolute paths to ordinary files, using POSIX
+/// semantics: the destination is unlinked at once even while another handle holds it open (and
+/// even if it carries the read-only attribute), then the source takes its name.
+///
+/// This is the second rung of [`super::file::replace`], used when the one-step swap is refused.
+/// Neither file is followed through a final link: a link is renamed or replaced as itself.
+///
+/// # Errors
+/// The kernel's error when either file cannot be opened or the rename is refused, including the
+/// sharing violation of a holder that does not share delete access.
+pub(crate) fn replace_unlinking(source: &Path, destination: &Path) -> io::Result<()> {
+    let source_name = nt_path(source)?;
+    let destination_name = nt_path(destination)?;
+    let handle = nt_open_absolute(
+        &source_name,
+        DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FILE_OPEN,
+        FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+        ptr::null_mut(),
+    )?;
+    set_rename_information(
+        handle.as_raw_handle().cast(),
+        ptr::null_mut(),
+        &destination_name,
+        FILE_RENAME_INFORMATION_EX_CLASS,
+        FILE_RENAME_REPLACE_IF_EXISTS
+            | FILE_RENAME_POSIX_SEMANTICS
+            | FILE_RENAME_IGNORE_READONLY_ATTRIBUTE,
+    )
+    .map_err(|error| {
+        if extended_class_unsupported(&error) {
+            io::Error::from(io::ErrorKind::Unsupported)
+        } else {
+            error
+        }
+    })
+}
+
+/// The NT object-manager name (`\??\C:\dir\file`, `\??\UNC\server\share\file`) of an absolute
+/// Win32 path, with `.` and `..` already resolved by [`std::path::absolute`].
+fn nt_path(path: &Path) -> io::Result<Vec<u16>> {
+    let absolute = std::path::absolute(path)?;
+    let mut components = absolute.components();
+    let mut name = String::from(r"\??\");
+    match components.next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
+                name.push(char::from(letter));
+                name.push(':');
+            }
+            Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => {
+                name.push_str(r"UNC\");
+                name.push_str(&server.to_string_lossy());
+                name.push('\\');
+                name.push_str(&share.to_string_lossy());
+            }
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "only drive and UNC paths can be renamed by name",
+                ));
+            }
+        },
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a rename by name needs an absolute path",
+            ));
+        }
+    }
+    for component in components {
+        match component {
+            Component::RootDir => {}
+            Component::Normal(part) => {
+                name.push('\\');
+                name.push_str(part.to_str().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "path component is not Unicode")
+                })?);
+            }
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "path holds a component that is not a plain name",
+                ));
+            }
+        }
+    }
+    Ok(name.encode_utf16().collect())
 }
 
 fn unicode_string(buffer: &mut [u16]) -> io::Result<UnicodeString> {

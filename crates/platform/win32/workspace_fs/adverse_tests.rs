@@ -8,10 +8,11 @@
 //! parent module's tests.
 
 use super::{
-    EntryKind, EnumeratedEntry, ExistingName, FileId128, NewName, RenameInformation, Sharing,
-    WorkspaceRoot, decode_directory_records, ensure_private_handle,
+    EntryKind, EnumeratedEntry, ExistingName, FileId128, LOOKUP_CONFIRMATION, NewName,
+    RenameInformation, Sharing, WorkspaceRoot, decode_directory_records, ensure_private_handle,
     ensure_regular_file_handle_with, enumerate_names, file_from_handle, flush_handle,
-    is_full_control, open_admitted_file, open_relative, rename_information_length, sid_text,
+    is_full_control, is_replacement_transient, open_admitted_file, open_admitted_file_pausing,
+    open_relative, rename_information_length, sid_text,
 };
 use crate::linkage::IfUnlinked;
 use crate::retry::BACKOFF;
@@ -1668,4 +1669,191 @@ fn a_real_enumeration_reports_the_ids_its_handles_report() {
     }
     drop(root);
     fs::remove_dir_all(path).expect("cleanup");
+}
+
+/// Which replacement one `rename_relative` performed, by the injectable-seam variant.
+fn replacement_of(
+    root: &WorkspaceRoot,
+    source: &str,
+    destination: &str,
+    replace: bool,
+) -> crate::win32::file::Replacement {
+    root.rename_checked_entry_pausing(
+        &[source],
+        &[destination],
+        replace,
+        false,
+        || {},
+        flush_handle,
+        &mut |_| {},
+    )
+    .expect("rename")
+}
+
+#[test]
+fn a_replacement_swaps_the_name_unless_a_reader_holds_the_destination_open() {
+    use crate::win32::file::Replacement;
+
+    let (root, path) = private_root("replacement-kinds");
+    put(&root, &["state"], b"generation 0");
+
+    // Nothing holds the destination: the name is swapped in one step, so no lookup can miss it.
+    put(&root, &["next"], b"generation 1");
+    assert_eq!(
+        replacement_of(&root, "next", "state", true),
+        Replacement::Swapped
+    );
+    assert_eq!(get(&root, &["state"]), b"generation 1");
+
+    // A reader holds the old generation open: only POSIX semantics can publish over it.
+    let mut reader = root
+        .open_file_read_checked(&["state"])
+        .expect("hold the destination");
+    put(&root, &["next"], b"generation 2");
+    assert_eq!(
+        replacement_of(&root, "next", "state", true),
+        Replacement::Unlinked
+    );
+    let mut held = Vec::new();
+    reader
+        .read_to_end(&mut held)
+        .expect("read the held generation");
+    assert_eq!(held, b"generation 1");
+    drop(reader);
+    assert_eq!(get(&root, &["state"]), b"generation 2");
+
+    // Without replacement the rename is a plain new name.
+    put(&root, &["fresh-source"], b"fresh");
+    assert_eq!(
+        replacement_of(&root, "fresh-source", "fresh", false),
+        Replacement::NewName
+    );
+    drop(root);
+    fs::remove_dir_all(path).expect("cleanup");
+}
+
+#[test]
+fn a_rename_by_name_uses_the_nt_form_of_an_absolute_path() {
+    use super::nt_path;
+
+    let text = |path: &str| String::from_utf16(&nt_path(Path::new(path)).expect("nt path"));
+    assert_eq!(text(r"C:\a\b\c").expect("utf16"), r"\??\C:\a\b\c");
+    assert_eq!(
+        text(r"C:\a\b\..\c\.\d").expect("utf16"),
+        r"\??\C:\a\c\d",
+        "dot components are resolved before the kernel sees the name"
+    );
+    assert_eq!(text(r"\\?\C:\a\b").expect("utf16"), r"\??\C:\a\b");
+    assert_eq!(
+        text(r"\\server\share\dir\file").expect("utf16"),
+        r"\??\UNC\server\share\dir\file"
+    );
+    // A relative path is anchored at the current directory, never left for the kernel to guess.
+    let relative = text(r"some\file").expect("utf16");
+    assert!(relative.starts_with(r"\??\"));
+    assert!(relative.ends_with(r"\some\file"));
+}
+
+#[test]
+fn a_device_path_has_no_nt_file_name() {
+    use super::nt_path;
+
+    assert_eq!(
+        nt_path(Path::new(r"\\.\pipe\name"))
+            .expect_err("a device path is not a file")
+            .kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+}
+
+/// Opens `state` as `if_unlinked` would, recording the pauses taken before it settles and
+/// running `on_pause` at each, which is where a test lets "the publisher" finish.
+fn open_state_pausing(
+    root: &WorkspaceRoot,
+    if_unlinked: IfUnlinked,
+    mut on_pause: impl FnMut(usize),
+) -> (io::Result<Vec<u8>>, usize) {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_READ_ATTRIBUTES, FILE_READ_DATA, READ_CONTROL, SYNCHRONIZE,
+    };
+
+    let mut pauses = 0_usize;
+    let opened = open_admitted_file_pausing(
+        root.handle(),
+        ExistingName::parse("state").expect("a valid name"),
+        FILE_READ_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+        if_unlinked,
+        |handle, linkage| {
+            ensure_regular_file_handle_with(handle, linkage)?;
+            ensure_private_handle(handle)
+        },
+        &mut |_| {
+            pauses += 1;
+            on_pause(pauses);
+        },
+    );
+    let bytes = opened.and_then(|handle| {
+        let mut bytes = Vec::new();
+        file_from_handle(handle)?.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    });
+    (bytes, pauses)
+}
+
+#[test]
+fn a_reader_looks_again_before_it_believes_a_name_is_absent() {
+    let (root, path) = private_root("confirm-absence");
+
+    // The publisher finishes its replacement during the reader's first pause: the name was never
+    // really absent, only caught between the unlink and the link.
+    let (outcome, pauses) = open_state_pausing(&root, IfUnlinked::Keep, |pause| {
+        if pause == 1 {
+            put(&root, &["state"], b"published");
+        }
+    });
+    assert_eq!(
+        outcome.expect("the second look finds the name"),
+        b"published"
+    );
+    assert_eq!(pauses, 1);
+    root.remove_file_relative(&["state"]).expect("remove");
+
+    // A name that really is absent is reported absent, after exactly the confirmation schedule.
+    let (outcome, pauses) = open_state_pausing(&root, IfUnlinked::Keep, |_| {});
+    assert_eq!(
+        outcome.expect_err("nothing was ever published").kind(),
+        std::io::ErrorKind::NotFound
+    );
+    assert_eq!(pauses, LOOKUP_CONFIRMATION.len());
+
+    // A writer is about to create the name or act on it: a missing name is its answer at once.
+    let (outcome, pauses) = open_state_pausing(&root, IfUnlinked::Reopen, |_| {});
+    assert_eq!(
+        outcome.expect_err("absent").kind(),
+        std::io::ErrorKind::NotFound
+    );
+    assert_eq!(pauses, 0);
+
+    drop(root);
+    fs::remove_dir_all(path).expect("cleanup");
+}
+
+#[test]
+fn only_not_found_and_access_denied_look_like_a_replacement_caught_half_done() {
+    use std::io::{Error, ErrorKind};
+
+    assert!(is_replacement_transient(&Error::from(ErrorKind::NotFound)));
+    assert!(is_replacement_transient(&Error::from(
+        ErrorKind::PermissionDenied
+    )));
+    for kind in [
+        ErrorKind::InvalidInput,
+        ErrorKind::InvalidData,
+        ErrorKind::AlreadyExists,
+        ErrorKind::ResourceBusy,
+        ErrorKind::TimedOut,
+    ] {
+        assert!(!is_replacement_transient(&Error::from(kind)), "{kind:?}");
+    }
+    assert!(LOOKUP_CONFIRMATION.iter().sum::<std::time::Duration>() < BACKOFF[BACKOFF.len() - 1]);
 }

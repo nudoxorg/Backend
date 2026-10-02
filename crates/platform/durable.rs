@@ -132,6 +132,16 @@ fn create_temporary(parent: &Path, file_name: Option<&OsStr>) -> io::Result<(Pat
 
 /// Atomically replaces `destination` with `source` on the same filesystem.
 ///
+/// This is the one reviewed replace-by-rename: it behaves like Unix `rename`. The replacement
+/// succeeds whether or not another handle holds `destination` open (that handle keeps the
+/// previous generation), whatever `destination`'s own mode or read-only attribute, and for paths
+/// of any length. Windows prefers the one-step swap and falls back to POSIX-semantics unlinking
+/// only when the swap is refused because the destination is held open. A lookup that races either
+/// can transiently fail on Windows (`NotFound` or access denied, never a torn file); readers of
+/// replaced state look again briefly, and a caller that must never be misled holds the
+/// publisher's lock. A scanner that holds a file without sharing delete is waited out for a
+/// bounded time (about 320 ms) before its error is returned.
+///
 /// # Errors
 ///
 /// Returns an I/O error when the operating system cannot replace the path.
