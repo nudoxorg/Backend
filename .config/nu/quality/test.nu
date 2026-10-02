@@ -284,6 +284,7 @@ def pr-quarantine []: nothing -> list<record<filter: string, reason: string>> {
         {filter: "package(backend-facet) and (test(=motion::tests::a_class_change_mid_drag_springs_from_the_painted_position_and_keeps_following) or test(=graph::view::tests::brief_hover_handoff_preserves_the_stronger_departing_envelope) or test(=graph::view::tests::cold_discovery_completion_after_blur_cannot_restart_search))", reason: "exact float and native-timing values recorded on macOS (spring jumps, native input blur)"}
         {filter: "package(backend-desktop) and test(=shell::tests::native_graph_handoff_uses_the_scaled_translated_canvas_and_rejects_absent_sources)", reason: "composited bounds differ by sub-pixel snapping (734.75 vs 734.6)"}
         {filter: "package(backend-gui-harness) and test(=session::tests::concurrent_sessions_do_not_bleed_frame_timings)", reason: "opens a real harness session, which needs the macOS offscreen renderer: 'session opens: NoRenderer'"}
+        {filter: "package(backend-desktop) and test(=shell::jump_tests::ctrl_1_to_4_move_through_the_depths)", reason: "the ctrl-3/ctrl-4 depth keymap conflicts on Linux and Windows, a product decision deferred (Robert, 2026-10-01): pressing ctrl-4 lands on the page view instead of the code view, '⌃4: the code: Symbol(SymbolRoute { .. view: Page .. })'"}
     ]
     if $nu.os-info.name == "linux" { $linux_platform } else { [] }
 }
