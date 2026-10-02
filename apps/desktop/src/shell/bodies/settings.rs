@@ -48,11 +48,10 @@ pub(super) fn body(
 fn title(words: &str, ctx: &mut Ctx<'_>) -> Leaf {
     let said = ctx.say(words.to_owned());
     Leaf::new(
-        text(ty::DISPLAY, &ctx.measure, ctx.palette.ink0)
-            .id(format!("settings-heading-{words}"))
+        div().id(format!("settings-heading-{words}"))
             .role(gpui::Role::Heading).aria_label(words.to_owned()).aria_level(1)
             .pb(ctx.measure.space(Space::Base))
-            .child(said),
+            .child(text(ty::DISPLAY, &ctx.measure, ctx.palette.ink0).child(said)),
     )
 }
 
