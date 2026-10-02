@@ -70,18 +70,93 @@ pub fn current_platform(headless: bool) -> Rc<dyn Platform> {
 }
 
 /// Returns a new [`HeadlessRenderer`] for the current platform, if available.
+///
+/// NUDOX: `None` hides why; [`try_current_headless_renderer`] says.
 #[cfg(feature = "test-support")]
 pub fn current_headless_renderer() -> Option<Box<dyn gpui::PlatformHeadlessRenderer>> {
+    try_current_headless_renderer().ok()
+}
+
+/// NUDOX: the variable that chooses which adapters a wgpu headless renderer
+/// may use: `prefer-hardware` (the default: a window's order, the software
+/// rasterizer last), `hardware`, or `software` (WARP on Windows).
+#[cfg(feature = "test-support")]
+pub const HEADLESS_ADAPTER_VAR: &str = "GPUI_HEADLESS_ADAPTER";
+
+/// NUDOX: why there is no headless renderer.
+#[cfg(feature = "test-support")]
+#[derive(Debug)]
+pub enum HeadlessRendererError {
+    /// This platform (or this build of it) has no headless renderer.
+    Unsupported(&'static str),
+    /// [`HEADLESS_ADAPTER_VAR`] is set to something that is not a policy.
+    AdapterPolicy(String),
+    /// The renderer could not be created on any admitted adapter.
+    Create(anyhow::Error),
+}
+
+#[cfg(feature = "test-support")]
+impl std::fmt::Display for HeadlessRendererError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unsupported(why) => write!(formatter, "no headless renderer: {why}"),
+            Self::AdapterPolicy(error) => write!(formatter, "{HEADLESS_ADAPTER_VAR}: {error}"),
+            Self::Create(error) => write!(formatter, "creating the headless renderer: {error:#}"),
+        }
+    }
+}
+
+#[cfg(feature = "test-support")]
+impl std::error::Error for HeadlessRendererError {}
+
+/// NUDOX: a new headless renderer for the current platform, or why there is
+/// none.
+///
+/// It is always the renderer this platform's windows draw with, so headless
+/// pixels are the product's pixels: Metal on macOS; on Windows the wgpu
+/// renderer's offscreen target, offered only when the `wgpu` feature makes
+/// windows draw with wgpu too (otherwise they use DirectX 11, which has no
+/// offscreen readback here).
+///
+/// # Errors
+/// [`HeadlessRendererError`].
+#[cfg(feature = "test-support")]
+pub fn try_current_headless_renderer()
+-> Result<Box<dyn gpui::PlatformHeadlessRenderer>, HeadlessRendererError> {
     #[cfg(target_os = "macos")]
     {
-        Some(Box::new(
+        Ok(Box::new(
             gpui_macos::metal_renderer::MetalHeadlessRenderer::new(),
         ))
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(target_os = "windows", feature = "wgpu"))]
     {
-        None
+        let policy = match std::env::var(HEADLESS_ADAPTER_VAR) {
+            Ok(spelling) => spelling
+                .parse::<gpui_wgpu::HeadlessAdapterPolicy>()
+                .map_err(|error| HeadlessRendererError::AdapterPolicy(error.to_string()))?,
+            Err(std::env::VarError::NotPresent) => gpui_wgpu::HeadlessAdapterPolicy::default(),
+            Err(error) => return Err(HeadlessRendererError::AdapterPolicy(error.to_string())),
+        };
+        gpui_wgpu::WgpuHeadlessRenderer::new(policy)
+            .map(|renderer| Box::new(renderer) as Box<dyn gpui::PlatformHeadlessRenderer>)
+            .map_err(HeadlessRendererError::Create)
+    }
+
+    #[cfg(all(target_os = "windows", not(feature = "wgpu")))]
+    {
+        Err(HeadlessRendererError::Unsupported(
+            "Windows windows draw with DirectX 11 unless the `wgpu` feature is on, \
+             and only the wgpu renderer has an offscreen target",
+        ))
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        Err(HeadlessRendererError::Unsupported(
+            "only macOS and Windows (with the `wgpu` feature) have one",
+        ))
     }
 }
 

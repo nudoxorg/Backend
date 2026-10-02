@@ -21,6 +21,10 @@ fn max_blur_radius(filters: &[ScaledFilter]) -> f32 {
 }
 #[cfg(not(target_family = "wasm"))]
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+
+// NUDOX: the offscreen target and its readback.
+mod offscreen;
+pub use offscreen::{OffscreenError, OffscreenPixels};
 use std::cell::RefCell;
 use std::num::NonZeroU64;
 use std::rc::Rc;
@@ -158,11 +162,58 @@ struct WgpuBindGroupLayouts {
 /// Shared GPU context reference, used to coordinate device recovery across multiple windows.
 pub type GpuContext = Rc<RefCell<Option<WgpuContext>>>;
 
+/// NUDOX: where a renderer's frames go.
+enum FrameTarget {
+    /// A window's swapchain: `draw` acquires each frame from it and presents it.
+    Surface(wgpu::Surface<'static>),
+    /// A texture nothing presents, sized to the configured viewport and
+    /// allocated at the first frame of each size; its pixels can be read back.
+    Offscreen(Option<offscreen::OffscreenTexture>),
+}
+
+impl FrameTarget {
+    /// Applies `config`: a surface is reconfigured; an offscreen texture of
+    /// another size is released, to be allocated again by the next frame.
+    fn configure(&mut self, device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) {
+        match self {
+            Self::Surface(surface) => surface.configure(device, config),
+            Self::Offscreen(texture) => {
+                if texture
+                    .as_ref()
+                    .is_some_and(|texture| !texture.matches(config))
+                {
+                    *texture = None;
+                }
+            }
+        }
+    }
+}
+
+/// NUDOX: the format and composite modes a target supports, chosen before the
+/// renderer's pipelines are built for them.
+struct TargetModes {
+    format: wgpu::TextureFormat,
+    transparent_alpha_mode: wgpu::CompositeAlphaMode,
+    opaque_alpha_mode: wgpu::CompositeAlphaMode,
+    present_mode: wgpu::PresentMode,
+}
+
+/// NUDOX: what became of one scene's encoding.
+enum SceneSubmission {
+    /// The scene is on the queue.
+    Submitted,
+    /// The scene needs more instance memory than the device's largest buffer;
+    /// nothing was submitted.
+    InstanceBufferExhausted,
+}
+
 /// GPU resources that must be dropped together during device recovery.
 struct WgpuResources {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
-    surface: wgpu::Surface<'static>,
+    /// NUDOX: where frames go: a window's swapchain, or an offscreen texture
+    /// (was `surface: wgpu::Surface<'static>`).
+    target: FrameTarget,
     pipelines: WgpuPipelines,
     bind_group_layouts: WgpuBindGroupLayouts,
     atlas_sampler: wgpu::Sampler,
@@ -418,6 +469,47 @@ impl WgpuRenderer {
             wgpu::CompositeAlphaMode::Inherit,
         ])?;
 
+        let present_mode = config
+            .preferred_present_mode
+            .filter(|mode| surface_caps.present_modes.contains(mode))
+            .unwrap_or(wgpu::PresentMode::Fifo);
+
+        Self::new_with_target(
+            gpu_context,
+            context,
+            FrameTarget::Surface(surface),
+            TargetModes {
+                format: surface_format,
+                transparent_alpha_mode,
+                opaque_alpha_mode,
+                present_mode,
+            },
+            config,
+            compositor_gpu,
+            extra_requirements,
+            atlas,
+        )
+    }
+
+    /// NUDOX: everything after the target's modes are known, shared by a
+    /// window's surface and an offscreen target (`new_internal` was one body).
+    fn new_with_target(
+        gpu_context: Option<GpuContext>,
+        context: &WgpuContext,
+        mut target: FrameTarget,
+        modes: TargetModes,
+        config: WgpuSurfaceConfig,
+        compositor_gpu: Option<CompositorGpuHint>,
+        extra_requirements: Option<WgpuDeviceRequirements>,
+        atlas: Arc<WgpuAtlas>,
+    ) -> anyhow::Result<Self> {
+        let TargetModes {
+            format: surface_format,
+            transparent_alpha_mode,
+            opaque_alpha_mode,
+            present_mode,
+        } = modes;
+
         let alpha_mode = if config.transparent {
             transparent_alpha_mode
         } else {
@@ -445,17 +537,14 @@ impl WgpuRenderer {
             format: surface_format,
             width: clamped_width.max(1),
             height: clamped_height.max(1),
-            present_mode: config
-                .preferred_present_mode
-                .filter(|mode| surface_caps.present_modes.contains(mode))
-                .unwrap_or(wgpu::PresentMode::Fifo),
+            present_mode,
             desired_maximum_frame_latency: 2,
             alpha_mode,
             view_formats: vec![],
         };
         // Configure the surface immediately. The adapter selection process already validated
         // that this adapter can successfully configure this surface.
-        surface.configure(&context.device, &surface_config);
+        target.configure(&context.device, &surface_config);
 
         let queue = Arc::clone(&context.queue);
         let dual_source_blending = context.supports_dual_source_blending();
@@ -583,7 +672,7 @@ impl WgpuRenderer {
         let resources = WgpuResources {
             device,
             queue,
-            surface,
+            target,
             pipelines,
             bind_group_layouts,
             atlas_sampler,
@@ -1224,7 +1313,7 @@ impl WgpuRenderer {
             }
 
             resources
-                .surface
+                .target
                 .configure(&resources.device, &surface_config);
 
             // Invalidate intermediate textures - they will be lazily recreated
@@ -1316,7 +1405,7 @@ impl WgpuRenderer {
                 return;
             };
             resources
-                .surface
+                .target
                 .configure(&resources.device, &surface_config);
             resources.pipelines = Self::create_pipelines(
                 &resources.device,
@@ -1398,7 +1487,12 @@ impl WgpuRenderer {
 
         self.atlas.before_frame();
 
-        let frame = match self.resources().surface.get_current_texture() {
+        // NUDOX: only a window's surface has frames to acquire and present.
+        let FrameTarget::Surface(surface) = &self.resources().target else {
+            log::error!("draw() called on an offscreen renderer; use render_offscreen()");
+            return false;
+        };
+        let frame = match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => frame,
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
                 // Textures must be destroyed before the surface can be reconfigured.
@@ -1406,7 +1500,7 @@ impl WgpuRenderer {
                 let surface_config = self.surface_config.clone();
                 let resources = self.resources_mut();
                 resources
-                    .surface
+                    .target
                     .configure(&resources.device, &surface_config);
                 return false;
             }
@@ -1414,7 +1508,7 @@ impl WgpuRenderer {
                 let surface_config = self.surface_config.clone();
                 let resources = self.resources_mut();
                 resources
-                    .surface
+                    .target
                     .configure(&resources.device, &surface_config);
                 return false;
             }
@@ -1428,6 +1522,29 @@ impl WgpuRenderer {
             }
         };
 
+        let frame_view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        // NUDOX: encoding moved to `encode_and_submit`, shared with the offscreen target.
+        // Upstream presented the frame after an instance-buffer overflow too.
+        if let SceneSubmission::InstanceBufferExhausted = self.encode_and_submit(scene, &frame_view)
+        {
+            log::error!(
+                "instance buffer size grew too large: {}",
+                self.instance_buffer_capacity
+            );
+        }
+        frame.present();
+        true
+    }
+
+    /// NUDOX: encodes `scene` into `frame_view` and submits it: everything
+    /// `draw` did after acquiring its frame, minus presenting it.
+    fn encode_and_submit(
+        &mut self,
+        scene: &Scene,
+        frame_view: &wgpu::TextureView,
+    ) -> SceneSubmission {
         // Now that we know the surface is healthy, ensure intermediate textures exist
         self.ensure_intermediate_textures();
 
@@ -1438,10 +1555,6 @@ impl WgpuRenderer {
         if use_offscreen {
             self.ensure_blur_textures();
         }
-
-        let frame_view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
 
         let gamma_params = GammaParams {
             gamma_ratios: self.rendering_params.gamma_ratios,
@@ -1735,12 +1848,7 @@ impl WgpuRenderer {
             if overflow {
                 drop(encoder);
                 if self.instance_buffer_capacity >= self.max_buffer_size {
-                    log::error!(
-                        "instance buffer size grew too large: {}",
-                        self.instance_buffer_capacity
-                    );
-                    frame.present();
-                    return true;
+                    return SceneSubmission::InstanceBufferExhausted;
                 }
                 self.grow_instance_buffer();
                 continue;
@@ -1749,14 +1857,13 @@ impl WgpuRenderer {
             // Present the offscreen scene by copying it into the swapchain texture. Skipped when
             // rendering went straight to the swapchain (no filters this frame).
             if let Some(scene_color_view) = &scene_color_view {
-                self.blit_to_frame(&mut encoder, scene_color_view, &frame_view);
+                self.blit_to_frame(&mut encoder, scene_color_view, frame_view);
             }
 
             self.resources()
                 .queue
                 .submit(std::iter::once(encoder.finish()));
-            frame.present();
-            return true;
+            return SceneSubmission::Submitted;
         }
     }
 
@@ -2504,7 +2611,7 @@ impl WgpuRenderer {
                 .as_mut()
                 .expect("GPU resources not available");
             surface.configure(&res.device, &self.surface_config);
-            res.surface = surface;
+            res.target = FrameTarget::Surface(surface);
 
             // Invalidate intermediate textures — they'll be recreated lazily.
             res.invalidate_intermediate_textures();

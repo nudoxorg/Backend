@@ -27,6 +27,9 @@ license = "Apache-2.0"
 [features]
 default = []
 font-kit = ["dep:font-kit"]
+# NUDOX: `WgpuHeadlessRenderer`, gpui's `PlatformHeadlessRenderer` over an
+# offscreen target (the trait and its `image::RgbaImage` exist only here).
+test-support = ["gpui/test-support", "dep:image"]
 
 [lib]
 name = "gpui_ce_wgpu"
@@ -65,6 +68,12 @@ package = "gpui-ce"
 [dependencies.gpui_util]
 version = "0.2.6"
 package = "gpui_ce_util"
+
+# NUDOX: the readback's image type, the same `image` gpui-ce uses.
+[dependencies.image]
+version = "0.25.1"
+default-features = false
+optional = true
 
 [dependencies.itertools]
 version = "0.14.0"

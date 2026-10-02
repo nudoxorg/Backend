@@ -57,6 +57,99 @@ impl WgpuContext {
         Self::new_with_options(instance, surface, compositor_gpu, true, extra_requirements)
     }
 
+    /// NUDOX: a context with no window and no surface, for headless rendering.
+    ///
+    /// Adapters are ranked exactly as a window ranks them ([`adapter_rank`]:
+    /// `ZED_DEVICE_ID`, then device type, then backend), on the backends a
+    /// window would use ([`native_backends`]), then filtered by `policy`. The
+    /// first adapter that creates a device wins; nothing is tested against a
+    /// surface because there is none, so this works in a session that cannot
+    /// show a window.
+    ///
+    /// # Errors
+    /// No adapter on these backends is admitted by `policy`, or every admitted
+    /// adapter failed to create a device (each failure is named).
+    #[cfg(not(target_family = "wasm"))]
+    pub fn new_headless(policy: HeadlessAdapterPolicy) -> anyhow::Result<Self> {
+        let backends = native_backends();
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends,
+            flags: wgpu::InstanceFlags::default(),
+            backend_options: wgpu::BackendOptions::default(),
+            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+            display: None,
+        });
+        let device_id_filter = device_id_filter_from_env();
+        let mut adapters: Vec<_> = gpui::block_on(instance.enumerate_adapters(backends))
+            .into_iter()
+            .filter(|adapter| policy.admits(adapter.get_info().device_type))
+            .collect();
+        adapters.sort_by_key(|adapter| adapter_rank(&adapter.get_info(), device_id_filter, None));
+
+        let mut refusals = Vec::new();
+        for adapter in adapters {
+            let info = adapter.get_info();
+            match gpui::block_on(Self::create_device(&adapter, None)) {
+                Ok((device, queue, dual_source_blending, color_texture_format)) => {
+                    log::info!(
+                        "Selected headless GPU adapter: {:?} ({:?}, {:?})",
+                        info.name,
+                        info.backend,
+                        info.device_type
+                    );
+                    return Ok(Self::from_parts(
+                        instance,
+                        adapter,
+                        device,
+                        queue,
+                        dual_source_blending,
+                        color_texture_format,
+                    ));
+                }
+                Err(error) => refusals.push(format!("{} ({:?}): {error}", info.name, info.backend)),
+            }
+        }
+        if refusals.is_empty() {
+            anyhow::bail!("no {policy} GPU adapter on backends {backends:?}");
+        }
+        anyhow::bail!(
+            "no {policy} GPU adapter could create a device: {}",
+            refusals.join("; ")
+        )
+    }
+
+    /// Wraps a created device, installing the device-lost flag every
+    /// constructor shares.
+    #[cfg(not(target_family = "wasm"))]
+    fn from_parts(
+        instance: wgpu::Instance,
+        adapter: wgpu::Adapter,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        dual_source_blending: bool,
+        color_texture_format: TextureFormat,
+    ) -> Self {
+        let device_lost = Arc::new(AtomicBool::new(false));
+        device.set_device_lost_callback({
+            let device_lost = Arc::clone(&device_lost);
+            move |reason, message| {
+                log::error!("wgpu device lost: reason={reason:?}, message={message}");
+                if reason != wgpu::DeviceLostReason::Destroyed {
+                    device_lost.store(true, Ordering::Relaxed);
+                }
+            }
+        });
+        Self {
+            instance,
+            adapter,
+            device: Arc::new(device),
+            queue: Arc::new(queue),
+            dual_source_blending,
+            color_texture_format,
+            device_lost,
+        }
+    }
+
     #[cfg(not(target_family = "wasm"))]
     fn new_with_options(
         instance: wgpu::Instance,
@@ -65,17 +158,8 @@ impl WgpuContext {
         reject_software: bool,
         extra_requirements: Option<&WgpuDeviceRequirements>,
     ) -> anyhow::Result<Self> {
-        let device_id_filter = match std::env::var("ZED_DEVICE_ID") {
-            Ok(val) => parse_pci_id(&val)
-                .context("Failed to parse device ID from `ZED_DEVICE_ID` environment variable")
-                .log_err(),
-            Err(std::env::VarError::NotPresent) => None,
-            err => {
-                err.context("Failed to read value of `ZED_DEVICE_ID` environment variable")
-                    .log_err();
-                None
-            }
-        };
+        // NUDOX: read once, shared with `new_headless`.
+        let device_id_filter = device_id_filter_from_env();
 
         // Select an adapter by actually testing surface configuration with the real device.
         // This is the only reliable way to determine compatibility on hybrid GPU systems.
@@ -89,32 +173,21 @@ impl WgpuContext {
                 extra_requirements,
             ))?;
 
-        let device_lost = Arc::new(AtomicBool::new(false));
-        device.set_device_lost_callback({
-            let device_lost = Arc::clone(&device_lost);
-            move |reason, message| {
-                log::error!("wgpu device lost: reason={reason:?}, message={message}");
-                if reason != wgpu::DeviceLostReason::Destroyed {
-                    device_lost.store(true, Ordering::Relaxed);
-                }
-            }
-        });
-
         log::info!(
             "Selected GPU adapter: {:?} ({:?})",
             adapter.get_info().name,
             adapter.get_info().backend
         );
 
-        Ok(Self {
+        // NUDOX: the device-lost callback moved to `from_parts`, shared with `new_headless`.
+        Ok(Self::from_parts(
             instance,
             adapter,
-            device: Arc::new(device),
-            queue: Arc::new(queue),
+            device,
+            queue,
             dual_source_blending,
             color_texture_format,
-            device_lost,
-        })
+        ))
     }
 
     #[cfg(target_family = "wasm")]
@@ -209,13 +282,9 @@ impl WgpuContext {
 
     #[cfg(not(target_family = "wasm"))]
     pub fn instance(display: Box<dyn wgpu::wgt::WgpuHasDisplayHandle>) -> wgpu::Instance {
-        #[cfg(not(target_os = "windows"))]
-        let backends = wgpu::Backends::VULKAN | wgpu::Backends::GL;
-        #[cfg(target_os = "windows")]
-        let backends = wgpu::Backends::DX12;
-
+        // NUDOX: the backend choice moved to `native_backends`, shared with `new_headless`.
         wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends,
+            backends: native_backends(),
             flags: wgpu::InstanceFlags::default(),
             backend_options: wgpu::BackendOptions::default(),
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
@@ -275,52 +344,9 @@ impl WgpuContext {
         // 3. Device type (Discrete > Integrated > Other > Virtual > Cpu).
         //    "Other" ranks above "Virtual" because OpenGL seems to count as "Other".
         // 4. Backend — prefer Vulkan/Metal/Dx12 over GL/etc.
+        // NUDOX: the ranking moved to `adapter_rank`, shared with `new_headless`.
         adapters.sort_by_key(|adapter| {
-            let info = adapter.get_info();
-
-            // Backends like OpenGL report device=0 for all adapters, so
-            // device-based matching is only meaningful when non-zero.
-            let device_known = info.device != 0;
-
-            let user_override: u8 = match device_id_filter {
-                Some(id) if device_known && info.device == id => 0,
-                _ => 1,
-            };
-
-            let compositor_match: u8 = match compositor_gpu {
-                Some(hint)
-                    if device_known
-                        && info.vendor == hint.vendor_id
-                        && info.device == hint.device_id =>
-                {
-                    0
-                }
-                _ => 1,
-            };
-
-            let type_priority: u8 = if info.device_type == wgpu::DeviceType::Cpu {
-                4
-            } else {
-                match info.device_type {
-                    wgpu::DeviceType::DiscreteGpu => 0,
-                    wgpu::DeviceType::IntegratedGpu => 1,
-                    wgpu::DeviceType::Other => 2,
-                    wgpu::DeviceType::VirtualGpu => 3,
-                    wgpu::DeviceType::Cpu => 4,
-                }
-            };
-
-            let backend_priority: u8 = match info.backend {
-                wgpu::Backend::Vulkan | wgpu::Backend::Metal | wgpu::Backend::Dx12 => 0,
-                _ => 1,
-            };
-
-            (
-                user_override,
-                compositor_match,
-                type_priority,
-                backend_priority,
-            )
+            adapter_rank(&adapter.get_info(), device_id_filter, compositor_gpu)
         });
 
         // Log all available adapters (in sorted order)
@@ -477,6 +503,169 @@ impl WgpuContext {
     /// Returns a clone of the device_lost flag for sharing with renderers.
     pub(crate) fn device_lost_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.device_lost)
+    }
+}
+
+/// NUDOX: the backends a native window renders with: DX12 on Windows, Vulkan
+/// or GL elsewhere. A headless context uses the same ones, so its pixels come
+/// from the backend the product draws with.
+#[cfg(not(target_family = "wasm"))]
+pub fn native_backends() -> wgpu::Backends {
+    #[cfg(not(target_os = "windows"))]
+    let backends = wgpu::Backends::VULKAN | wgpu::Backends::GL;
+    #[cfg(target_os = "windows")]
+    let backends = wgpu::Backends::DX12;
+    backends
+}
+
+/// NUDOX: the `ZED_DEVICE_ID` override, read the way upstream reads it (a
+/// malformed value is logged and ignored).
+#[cfg(not(target_family = "wasm"))]
+fn device_id_filter_from_env() -> Option<u32> {
+    match std::env::var("ZED_DEVICE_ID") {
+        Ok(val) => parse_pci_id(&val)
+            .context("Failed to parse device ID from `ZED_DEVICE_ID` environment variable")
+            .log_err(),
+        Err(std::env::VarError::NotPresent) => None,
+        err => {
+            err.context("Failed to read value of `ZED_DEVICE_ID` environment variable")
+                .log_err();
+            None
+        }
+    }
+}
+
+/// An adapter's place in the selection order; lower sorts first. Tiers (from
+/// highest to lowest):
+///
+/// 1. ZED_DEVICE_ID match — explicit user override
+/// 2. Compositor GPU match — the GPU the display server is rendering on
+/// 3. Device type (Discrete > Integrated > Other > Virtual > Cpu).
+///    "Other" ranks above "Virtual" because OpenGL seems to count as "Other".
+/// 4. Backend — prefer Vulkan/Metal/Dx12 over GL/etc.
+///
+/// NUDOX: upstream's sort-key closure, moved here so a headless context ranks
+/// adapters exactly as a window does.
+#[cfg(not(target_family = "wasm"))]
+fn adapter_rank(
+    info: &wgpu::AdapterInfo,
+    device_id_filter: Option<u32>,
+    compositor_gpu: Option<&CompositorGpuHint>,
+) -> (u8, u8, u8, u8) {
+    // Backends like OpenGL report device=0 for all adapters, so
+    // device-based matching is only meaningful when non-zero.
+    let device_known = info.device != 0;
+
+    let user_override: u8 = match device_id_filter {
+        Some(id) if device_known && info.device == id => 0,
+        _ => 1,
+    };
+
+    let compositor_match: u8 = match compositor_gpu {
+        Some(hint)
+            if device_known && info.vendor == hint.vendor_id && info.device == hint.device_id =>
+        {
+            0
+        }
+        _ => 1,
+    };
+
+    let type_priority: u8 = match info.device_type {
+        wgpu::DeviceType::DiscreteGpu => 0,
+        wgpu::DeviceType::IntegratedGpu => 1,
+        wgpu::DeviceType::Other => 2,
+        wgpu::DeviceType::VirtualGpu => 3,
+        wgpu::DeviceType::Cpu => 4,
+    };
+
+    let backend_priority: u8 = match info.backend {
+        wgpu::Backend::Vulkan | wgpu::Backend::Metal | wgpu::Backend::Dx12 => 0,
+        _ => 1,
+    };
+
+    (
+        user_override,
+        compositor_match,
+        type_priority,
+        backend_priority,
+    )
+}
+
+/// NUDOX: which adapters a headless context may render on.
+///
+/// The hardware order is the product's own; the software rasterizer (WARP on
+/// DX12) is a different device with its own rounding, so a capture records
+/// which one drew it and baselines are kept per adapter class.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum HeadlessAdapterPolicy {
+    /// Any adapter, in a window's order: hardware first, the software
+    /// rasterizer last (it still renders where no GPU is reachable).
+    #[default]
+    PreferHardware,
+    /// Only a hardware GPU; fail rather than fall back to software.
+    HardwareOnly,
+    /// Only the software rasterizer.
+    SoftwareOnly,
+}
+
+impl HeadlessAdapterPolicy {
+    /// Every policy, in the order its spelling is documented.
+    pub const ALL: [Self; 3] = [Self::PreferHardware, Self::HardwareOnly, Self::SoftwareOnly];
+
+    /// How the policy is spelled in configuration.
+    #[must_use]
+    pub const fn spelling(self) -> &'static str {
+        match self {
+            Self::PreferHardware => "prefer-hardware",
+            Self::HardwareOnly => "hardware",
+            Self::SoftwareOnly => "software",
+        }
+    }
+
+    /// Whether an adapter of this type may be chosen.
+    #[must_use]
+    pub const fn admits(self, device_type: wgpu::DeviceType) -> bool {
+        let software = matches!(device_type, wgpu::DeviceType::Cpu);
+        match self {
+            Self::PreferHardware => true,
+            Self::HardwareOnly => !software,
+            Self::SoftwareOnly => software,
+        }
+    }
+}
+
+impl std::fmt::Display for HeadlessAdapterPolicy {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.spelling())
+    }
+}
+
+/// A spelling that names no [`HeadlessAdapterPolicy`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnknownAdapterPolicy(pub String);
+
+impl std::fmt::Display for UnknownAdapterPolicy {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let known = HeadlessAdapterPolicy::ALL.map(HeadlessAdapterPolicy::spelling);
+        write!(
+            formatter,
+            "unknown headless adapter policy {:?} (expected one of {})",
+            self.0,
+            known.join(", ")
+        )
+    }
+}
+
+impl std::error::Error for UnknownAdapterPolicy {}
+
+impl std::str::FromStr for HeadlessAdapterPolicy {
+    type Err = UnknownAdapterPolicy;
+
+    fn from_str(spelling: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|policy| policy.spelling() == spelling)
+            .ok_or_else(|| UnknownAdapterPolicy(spelling.to_owned()))
     }
 }
 

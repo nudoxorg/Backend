@@ -11,6 +11,7 @@ members = [
     "tools/*",
     "vendor/gpui-ce",
     "vendor/gpui_ce_components",
+    "vendor/gpui_ce_wgpu",
 ]
 exclude = [
     ".config/dylint",

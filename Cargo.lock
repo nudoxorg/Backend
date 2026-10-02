@@ -1342,6 +1342,7 @@ version = "0.1.0"
 dependencies = [
  "gpui-ce",
  "gpui_ce_platform",
+ "gpui_ce_wgpu",
  "image",
  "serde",
  "serde_json",
@@ -5284,11 +5285,13 @@ dependencies = [
 name = "gpui_ce_platform"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "console_error_panic_hook",
  "gpui-ce",
  "gpui_ce_linux",
  "gpui_ce_macos",
  "gpui_ce_web",
+ "gpui_ce_wgpu",
  "gpui_ce_windows",
 ]
 
@@ -5379,10 +5382,12 @@ dependencies = [
  "anyhow",
  "bytemuck",
  "cosmic-text",
+ "criterion",
  "etagere",
  "gpui-ce",
  "gpui_ce_collections",
  "gpui_ce_util",
+ "image",
  "itertools 0.14.0",
  "js-sys",
  "log",
