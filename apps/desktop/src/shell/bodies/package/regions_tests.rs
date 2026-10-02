@@ -17,7 +17,6 @@ use crate::runtime::CancellationToken;
 use crate::runtime::reads::{OutlineCache, PageReader, ReadContext, ReadRequest, SessionReader};
 use backend_client::Session;
 use backend_library::DeclarationKind;
-use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// `(file, contents)` of a crate with four modules, types with `impl` blocks,

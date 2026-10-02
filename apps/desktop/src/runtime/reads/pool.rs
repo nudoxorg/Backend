@@ -325,6 +325,7 @@ impl Shared {
     }
 
     /// Takes the next job `worker` may run, without waiting.
+    #[cfg(test)]
     pub(super) fn try_start(&self, worker: usize) -> Option<RunningRead> {
         self.queue().start(worker)
     }
