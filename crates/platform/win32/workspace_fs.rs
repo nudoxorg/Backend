@@ -8,13 +8,14 @@
     reason = "reviewed NT relative-open and handle metadata boundary for Windows workspace files"
 )]
 
+use super::busy::retry_while_busy;
 use super::identity::{current_user, is_owned_by_current_user, owner_of};
 use super::security::restrict_handle_to_current_user;
 use crate::directory::DirectoryRenameError;
 use std::ffi::c_void;
 use std::fs::File;
 use std::io;
-use std::mem::{self, offset_of};
+use std::mem::offset_of;
 use std::os::windows::io::{AsRawHandle, FromRawHandle as _, IntoRawHandle as _, OwnedHandle};
 use std::path::{Component, Path, Prefix};
 use std::ptr;
@@ -34,11 +35,10 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
     FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FILE_GENERIC_WRITE, FILE_ID_BOTH_DIR_INFO,
     FILE_ID_INFO, FILE_INFO_BY_HANDLE_CLASS, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
-    FILE_READ_DATA, FILE_RENAME_INFO, FILE_RENAME_INFO_0, FILE_STANDARD_INFO, FILE_TRAVERSE,
-    FILE_WRITE_DATA, FileAttributeTagInfo, FileDispositionInfo, FileDispositionInfoEx,
-    FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, FileIdInfo, FileRenameInfo,
-    FileStandardInfo, FlushFileBuffers, GetFileInformationByHandleEx, READ_CONTROL, SYNCHRONIZE,
-    SetFileInformationByHandle, WRITE_DAC,
+    FILE_READ_DATA, FILE_STANDARD_INFO, FILE_TRAVERSE, FILE_WRITE_DATA, FileAttributeTagInfo,
+    FileDispositionInfo, FileDispositionInfoEx, FileIdBothDirectoryInfo,
+    FileIdBothDirectoryRestartInfo, FileIdInfo, FileStandardInfo, FlushFileBuffers,
+    GetFileInformationByHandleEx, READ_CONTROL, SYNCHRONIZE, SetFileInformationByHandle, WRITE_DAC,
 };
 use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
 
@@ -53,6 +53,45 @@ const FILE_SHARE_READ: u32 = 1;
 const FILE_SHARE_WRITE: u32 = 2;
 const FILE_SHARE_DELETE: u32 = 4;
 const OBJ_CASE_INSENSITIVE: u32 = 0x40;
+
+/// `FILE_INFORMATION_CLASS::FileRenameInformation`: the classic rename, which
+/// takes a `BOOLEAN ReplaceIfExists` in the first byte of its header.
+const FILE_RENAME_INFORMATION_CLASS: i32 = 10;
+/// `FILE_INFORMATION_CLASS::FileRenameInformationEx`: the same header with a
+/// `ULONG Flags`, available from Windows 10 1607.
+const FILE_RENAME_INFORMATION_EX_CLASS: i32 = 65;
+/// `FILE_RENAME_INFORMATION_EX::Flags`: replace an existing target.
+const FILE_RENAME_REPLACE_IF_EXISTS: u32 = 0x1;
+/// `FILE_RENAME_INFORMATION_EX::Flags`: unlink the target name at once, like
+/// POSIX `rename`, even while another handle shares delete access to it.
+const FILE_RENAME_POSIX_SEMANTICS: u32 = 0x2;
+
+/// How a handle constrains every other opener of the same object.
+///
+/// The share mode is the whole of Windows' pinning story: a handle that does
+/// not share delete access stops any other handle from renaming or deleting
+/// the object, and the NT file systems also refuse to rename a directory while
+/// any descendant is open. That is what keeps a held directory in its place.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Sharing {
+    /// Others may read and write but may not delete or rename the object for
+    /// as long as this handle lives. Directory handles that anchor a
+    /// traversal, and files being written, are opened this way.
+    Pinned,
+    /// Others may do anything. Short-lived probes and mutation handles are
+    /// opened this way so they never fail because someone else holds the same
+    /// object open, and never keep anyone else from replacing it.
+    Transient,
+}
+
+impl Sharing {
+    const fn bits(self) -> u32 {
+        match self {
+            Self::Pinned => FILE_SHARE_READ | FILE_SHARE_WRITE,
+            Self::Transient => FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        }
+    }
+}
 
 #[repr(C)]
 struct UnicodeString {
@@ -98,7 +137,28 @@ unsafe extern "system" {
         ea_buffer: *mut c_void,
         ea_length: u32,
     ) -> i32;
+    fn NtSetInformationFile(
+        file_handle: HANDLE,
+        io_status_block: *mut IoStatusBlock,
+        file_information: *const c_void,
+        length: u32,
+        file_information_class: i32,
+    ) -> i32;
     fn RtlNtStatusToDosError(status: i32) -> u32;
+}
+
+/// The header common to `FILE_RENAME_INFORMATION` and its `Ex` form. The
+/// UTF-16 target name follows it in the same allocation.
+#[repr(C)]
+struct RenameInformation {
+    /// `ReplaceIfExists` (a `BOOLEAN`) for the classic class, `Flags` for `Ex`.
+    flags: u32,
+    /// Directory the name is relative to; the kernel resolves the name there.
+    root_directory: HANDLE,
+    /// Byte length of the name that follows, without a terminator.
+    file_name_length: u32,
+    /// First code unit of the name.
+    file_name: [u16; 1],
 }
 
 #[repr(C)]
@@ -306,7 +366,6 @@ impl WorkspaceRoot {
                 | FILE_READ_ATTRIBUTES
                 | READ_CONTROL
                 | WRITE_DAC
-                | DELETE
                 | SYNCHRONIZE,
             FILE_DIRECTORY_FILE,
         )?;
@@ -355,7 +414,6 @@ impl WorkspaceRoot {
                 | FILE_WRITE_DATA
                 | READ_CONTROL
                 | WRITE_DAC
-                | DELETE
                 | SYNCHRONIZE,
             FILE_NON_DIRECTORY_FILE,
         )?;
@@ -369,29 +427,27 @@ impl WorkspaceRoot {
     /// and private DACL on that exact handle. It never repairs an existing ACL.
     pub fn open_file_read_checked(&self, path: &[&str]) -> io::Result<File> {
         let (parent, leaf) = self.parent_and_leaf(path)?;
-        let handle = open_relative_with_share(
+        let handle = open_admitted_file(
             parent.handle.as_raw_handle().cast(),
             leaf,
-            FILE_READ_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL | DELETE | SYNCHRONIZE,
-            FILE_NON_DIRECTORY_FILE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_READ_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+            |handle| {
+                ensure_regular_file_handle(handle)?;
+                ensure_private_handle(handle)
+            },
         )?;
-        ensure_regular_file_handle(handle.as_raw_handle())?;
-        ensure_private_handle(handle.as_raw_handle())?;
         file_from_handle(handle)
     }
 
     /// Opens a regular source file without requiring a private DACL.
     pub fn open_file_read_source_checked(&self, path: &[&str]) -> io::Result<File> {
         let (parent, leaf) = self.parent_and_leaf_source(path)?;
-        let handle = open_relative_with_share(
+        let handle = open_admitted_file(
             parent.handle.as_raw_handle().cast(),
             leaf,
             FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-            FILE_NON_DIRECTORY_FILE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            ensure_regular_file_handle,
         )?;
-        ensure_regular_file_handle(handle.as_raw_handle())?;
         file_from_handle(handle)
     }
 
@@ -399,18 +455,14 @@ impl WorkspaceRoot {
     /// creates it exclusively when requested.
     pub fn open_file_read_write_checked(&self, path: &[&str], create: bool) -> io::Result<File> {
         let (parent, leaf) = self.parent_and_leaf(path)?;
-        let handle = match open_relative_with_share(
+        let handle = match open_admitted_file(
             parent.handle.as_raw_handle().cast(),
             leaf,
-            FILE_READ_ATTRIBUTES
-                | FILE_READ_DATA
-                | FILE_WRITE_DATA
-                | READ_CONTROL
-                | WRITE_DAC
-                | DELETE
-                | SYNCHRONIZE,
-            FILE_NON_DIRECTORY_FILE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_READ_ATTRIBUTES | FILE_READ_DATA | FILE_WRITE_DATA | READ_CONTROL | SYNCHRONIZE,
+            |handle| {
+                ensure_regular_file_handle(handle)?;
+                ensure_private_handle(handle)
+            },
         ) {
             Ok(handle) => handle,
             Err(error) if create && error.kind() == io::ErrorKind::NotFound => {
@@ -418,8 +470,6 @@ impl WorkspaceRoot {
             }
             Err(error) => return Err(error),
         };
-        ensure_regular_file_handle(handle.as_raw_handle())?;
-        ensure_private_handle(handle.as_raw_handle())?;
         file_from_handle(handle)
     }
 
@@ -474,6 +524,7 @@ impl WorkspaceRoot {
             leaf,
             FILE_READ_ATTRIBUTES | READ_CONTROL,
             0,
+            Sharing::Transient,
         )?;
         let attributes = attributes(handle.as_raw_handle())?;
         if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
@@ -494,15 +545,27 @@ impl WorkspaceRoot {
         replace: bool,
         directory: bool,
     ) -> Result<(), DirectoryRenameError> {
-        self.rename_checked_entry_with_flush(source, destination, replace, directory, flush_handle)
+        self.rename_checked_entry_with_flush(
+            source,
+            destination,
+            replace,
+            directory,
+            || {},
+            flush_handle,
+        )
     }
 
+    /// The rename protocol with two test seams. `before_commit` runs after
+    /// every check and immediately before the kernel rename, so a test can
+    /// interleave an attacker at the one point that matters; `flush` makes the
+    /// post-commit directory flush injectable.
     fn rename_checked_entry_with_flush(
         &self,
         source: &[&str],
         destination: &[&str],
         replace: bool,
         directory: bool,
+        before_commit: impl FnOnce(),
         mut flush: impl FnMut(*mut c_void) -> io::Result<()>,
     ) -> Result<(), DirectoryRenameError> {
         let precommit = DirectoryRenameError::NotCommitted;
@@ -510,16 +573,19 @@ impl WorkspaceRoot {
         let (destination_parent, destination_leaf) = self
             .parent_and_leaf(destination)
             .map_err(DirectoryRenameError::NotCommitted)?;
-        let source_handle = open_relative(
-            source_parent.handle.as_raw_handle().cast(),
-            source_leaf,
-            FILE_READ_ATTRIBUTES | READ_CONTROL | DELETE | SYNCHRONIZE,
-            if directory {
-                FILE_DIRECTORY_FILE
-            } else {
-                FILE_NON_DIRECTORY_FILE
-            },
-        )
+        let source_handle = retry_while_busy(|| {
+            open_relative(
+                source_parent.handle.as_raw_handle().cast(),
+                source_leaf,
+                FILE_READ_ATTRIBUTES | READ_CONTROL | DELETE | SYNCHRONIZE,
+                if directory {
+                    FILE_DIRECTORY_FILE
+                } else {
+                    FILE_NON_DIRECTORY_FILE
+                },
+                Sharing::Transient,
+            )
+        })
         .map_err(DirectoryRenameError::NotCommitted)?;
         if directory {
             ensure_directory_handle(source_handle.as_raw_handle())
@@ -533,57 +599,14 @@ impl WorkspaceRoot {
         check_replace_destination(&destination_parent, destination_leaf, replace)
             .map_err(DirectoryRenameError::NotCommitted)?;
         let name = wide_component(destination_leaf).map_err(DirectoryRenameError::NotCommitted)?;
-        let header_size = offset_of!(FILE_RENAME_INFO, FileName);
-        let total_size = header_size
-            .checked_add(
-                name.len()
-                    .checked_mul(2)
-                    .ok_or_else(invalid_name)
-                    .map_err(DirectoryRenameError::NotCommitted)?,
-            )
-            .ok_or_else(invalid_name)
-            .map_err(DirectoryRenameError::NotCommitted)?;
-        let mut storage = vec![0_u64; total_size.div_ceil(mem::size_of::<u64>())];
-        // SAFETY: `storage` is aligned and sized for the fixed header plus all
-        // UTF-16 name bytes; the source and destination handles remain alive.
-        let rename = unsafe { storage.as_mut_ptr().cast::<FILE_RENAME_INFO>() };
-        // SAFETY: `rename` points into aligned, sufficiently sized storage;
-        // each field write stays within the documented FILE_RENAME_INFO
-        // header and the UTF-16 payload is copied below.
-        unsafe {
-            ptr::addr_of_mut!((*rename).Anonymous).write(FILE_RENAME_INFO_0 {
-                ReplaceIfExists: replace,
-            });
-            ptr::addr_of_mut!((*rename).RootDirectory)
-                .write(destination_parent.handle.as_raw_handle().cast());
-            ptr::addr_of_mut!((*rename).FileNameLength).write(
-                u32::try_from(name.len() * 2)
-                    .map_err(|_| invalid_name())
-                    .map_err(DirectoryRenameError::NotCommitted)?,
-            );
-            ptr::copy_nonoverlapping(
-                name.as_ptr(),
-                ptr::addr_of_mut!((*rename).FileName).cast::<u16>(),
-                name.len(),
-            );
-        }
-        // SAFETY: `source_handle` and the destination root handle remain live,
-        // and `storage` contains a correctly-sized FILE_RENAME_INFO buffer.
-        let moved = unsafe {
-            SetFileInformationByHandle(
-                source_handle.as_raw_handle().cast(),
-                FileRenameInfo,
-                rename.cast(),
-                u32::try_from(total_size)
-                    .map_err(|_| invalid_name())
-                    .map_err(DirectoryRenameError::NotCommitted)?,
-            )
-        };
-        if moved == 0 {
-            return Err(DirectoryRenameError::NotCommitted(
-                io::Error::last_os_error(),
-            ));
-        }
+        before_commit();
+        rename_into(
+            source_handle.as_raw_handle().cast(),
+            destination_parent.handle.as_raw_handle().cast(),
+            &name,
+            replace,
+        )
+        .map_err(DirectoryRenameError::NotCommitted)?;
         flush(destination_parent.handle.as_raw_handle())
             .map_err(DirectoryRenameError::CommittedButNotDurable)?;
         if !Arc::ptr_eq(&source_parent, &destination_parent) {
@@ -597,12 +620,15 @@ impl WorkspaceRoot {
     /// parent directory. A concurrent name replacement cannot redirect it.
     pub fn remove_file_relative(&self, path: &[&str]) -> io::Result<()> {
         let (parent, leaf) = self.parent_and_leaf(path)?;
-        let handle = open_relative(
-            parent.handle.as_raw_handle().cast(),
-            leaf,
-            FILE_READ_ATTRIBUTES | READ_CONTROL | DELETE | SYNCHRONIZE,
-            FILE_NON_DIRECTORY_FILE,
-        )?;
+        let handle = retry_while_busy(|| {
+            open_relative(
+                parent.handle.as_raw_handle().cast(),
+                leaf,
+                FILE_READ_ATTRIBUTES | READ_CONTROL | DELETE | SYNCHRONIZE,
+                FILE_NON_DIRECTORY_FILE,
+                Sharing::Transient,
+            )
+        })?;
         ensure_regular_file_handle(handle.as_raw_handle())?;
         ensure_private_handle(handle.as_raw_handle())?;
         mark_delete(handle.as_raw_handle())?;
@@ -651,11 +677,12 @@ impl WorkspaceRoot {
                 FILE_READ_ATTRIBUTES
                     | SYNCHRONIZE
                     | if purpose == WorkspacePurpose::PrivateState {
-                        READ_CONTROL | DELETE
+                        READ_CONTROL
                     } else {
                         0
                     },
                 0,
+                Sharing::Transient,
             )?;
             let attributes = attributes(handle.as_raw_handle())?;
             if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
@@ -919,6 +946,7 @@ fn open_directory_child_unchecked(
         name,
         FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
         FILE_DIRECTORY_FILE,
+        Sharing::Pinned,
     )?;
     ensure_directory_handle(handle.as_raw_handle())?;
     Ok(Arc::new(DirectoryNode {
@@ -943,9 +971,9 @@ fn open_directory_child_writable(
             | FILE_ADD_SUBDIRECTORY
             | FILE_DELETE_CHILD
             | READ_CONTROL
-            | DELETE
             | SYNCHRONIZE,
         FILE_DIRECTORY_FILE,
+        Sharing::Pinned,
     )?;
     ensure_directory_handle(handle.as_raw_handle())?;
     Ok(Arc::new(DirectoryNode {
@@ -959,20 +987,23 @@ fn open_directory_child_with_delete(
     parent: &Arc<DirectoryNode>,
     name: &str,
 ) -> io::Result<Arc<DirectoryNode>> {
-    let handle = open_relative(
-        parent.handle.as_raw_handle().cast(),
-        name,
-        FILE_LIST_DIRECTORY
-            | FILE_GENERIC_WRITE
-            | FILE_ADD_FILE
-            | FILE_ADD_SUBDIRECTORY
-            | FILE_DELETE_CHILD
-            | FILE_READ_ATTRIBUTES
-            | READ_CONTROL
-            | DELETE
-            | SYNCHRONIZE,
-        FILE_DIRECTORY_FILE,
-    )?;
+    let handle = retry_while_busy(|| {
+        open_relative(
+            parent.handle.as_raw_handle().cast(),
+            name,
+            FILE_LIST_DIRECTORY
+                | FILE_GENERIC_WRITE
+                | FILE_ADD_FILE
+                | FILE_ADD_SUBDIRECTORY
+                | FILE_DELETE_CHILD
+                | FILE_READ_ATTRIBUTES
+                | READ_CONTROL
+                | DELETE
+                | SYNCHRONIZE,
+            FILE_DIRECTORY_FILE,
+            Sharing::Pinned,
+        )
+    })?;
     ensure_directory_handle(handle.as_raw_handle())?;
     ensure_private_handle(handle.as_raw_handle())?;
     Ok(Arc::new(DirectoryNode {
@@ -982,39 +1013,102 @@ fn open_directory_child_with_delete(
     }))
 }
 
+/// How many times a check re-opens a name that was replaced between the open
+/// and the check before it gives up.
+const REPLACEMENT_RETRIES: usize = 16;
+
+/// Whether the object `handle` holds has lost its last name since it was
+/// opened: a replacing rename or a delete unlinked it (zero links) or left it
+/// delete-pending.
+fn is_unlinked(handle: *mut c_void) -> io::Result<bool> {
+    let standard = standard_info(handle)?;
+    Ok(standard.NumberOfLinks == 0 || standard.DeletePending)
+}
+
+/// Opens the file `leaf` and runs `admit` on the opened handle, reopening when
+/// the name was replaced in between.
+///
+/// A writer that publishes with a replacing rename unlinks the old object while
+/// a reader may already hold it. That object then reports zero links, so the
+/// single-link check would reject it even though the name is healthy. Such a
+/// failure is a lost race, not a refusal: the name is opened again and the
+/// reader sees the new generation. Any other failure is returned unchanged.
+fn open_admitted_file(
+    parent: HANDLE,
+    leaf: &str,
+    access: u32,
+    admit: impl Fn(*mut c_void) -> io::Result<()>,
+) -> io::Result<OwnedHandle> {
+    for _ in 0..REPLACEMENT_RETRIES {
+        let handle = open_relative(
+            parent,
+            leaf,
+            access,
+            FILE_NON_DIRECTORY_FILE,
+            Sharing::Transient,
+        )?;
+        match admit(handle.as_raw_handle()) {
+            Ok(()) => return Ok(handle),
+            Err(_) if is_unlinked(handle.as_raw_handle()).unwrap_or(false) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::ResourceBusy,
+        "file was replaced faster than it could be opened",
+    ))
+}
+
 fn check_replace_destination(
     parent: &Arc<DirectoryNode>,
     name: &str,
     replace: bool,
 ) -> io::Result<()> {
-    let existing = match open_relative(
-        parent.handle.as_raw_handle().cast(),
-        name,
-        FILE_READ_ATTRIBUTES | READ_CONTROL | DELETE | SYNCHRONIZE,
-        0,
-    ) {
-        Ok(handle) => handle,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
-    };
-    if !replace {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "rename destination already exists",
-        ));
+    for _ in 0..REPLACEMENT_RETRIES {
+        let existing = match open_relative(
+            parent.handle.as_raw_handle().cast(),
+            name,
+            FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+            0,
+            Sharing::Transient,
+        ) {
+            Ok(handle) => handle,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        if !replace {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "rename destination already exists",
+            ));
+        }
+        match admit_replaceable(existing.as_raw_handle()) {
+            Ok(()) => return Ok(()),
+            // Another replacement unlinked the object we probed: look again.
+            Err(_) if is_unlinked(existing.as_raw_handle()).unwrap_or(false) => {}
+            Err(error) => return Err(error),
+        }
     }
-    let attrs = attributes(existing.as_raw_handle())?;
+    Err(io::Error::new(
+        io::ErrorKind::ResourceBusy,
+        "rename destination was replaced faster than it could be checked",
+    ))
+}
+
+/// Whether the object a rename would replace is an ordinary private file.
+fn admit_replaceable(existing: *mut c_void) -> io::Result<()> {
+    let attrs = attributes(existing)?;
     if attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(invalid_data("refusing to replace a reparse point"));
     }
-    let standard = standard_info(existing.as_raw_handle())?;
+    let standard = standard_info(existing)?;
     if standard.Directory || attrs & FILE_ATTRIBUTE_DIRECTORY != 0 {
         return Err(invalid_data("refusing to replace a directory with a file"));
     }
     if standard.NumberOfLinks != 1 {
         return Err(invalid_data("refusing to replace a multiply linked file"));
     }
-    ensure_private_handle(existing.as_raw_handle())
+    ensure_private_handle(existing)
 }
 
 fn create_relative(parent: HANDLE, name: &str, access: u32, kind: u32) -> io::Result<OwnedHandle> {
@@ -1023,37 +1117,35 @@ fn create_relative(parent: HANDLE, name: &str, access: u32, kind: u32) -> io::Re
     nt_create_relative(
         parent,
         &name,
-        access,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        access | SYNCHRONIZE,
+        Sharing::Pinned.bits(),
         FILE_CREATE,
         kind | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
         security.0,
     )
 }
 
-fn open_relative(parent: HANDLE, name: &str, access: u32, kind: u32) -> io::Result<OwnedHandle> {
-    open_relative_with_share(
-        parent,
-        name,
-        access,
-        kind,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
-    )
-}
-
-fn open_relative_with_share(
+/// Opens an existing child of `parent` without following a final reparse
+/// point. `kind` is the `FILE_DIRECTORY_FILE`/`FILE_NON_DIRECTORY_FILE` check
+/// the kernel enforces, or zero to accept either.
+///
+/// Every open here is synchronous (`FILE_SYNCHRONOUS_IO_NONALERT`), and the
+/// kernel rejects that option with `STATUS_INVALID_PARAMETER` unless the
+/// access mask carries `SYNCHRONIZE`, so the right is added structurally
+/// instead of being left to each caller to remember.
+fn open_relative(
     parent: HANDLE,
     name: &str,
     access: u32,
     kind: u32,
-    share: u32,
+    sharing: Sharing,
 ) -> io::Result<OwnedHandle> {
     let name = wide_component(name)?;
     nt_create_relative(
         parent,
         &name,
-        access,
-        share,
+        access | SYNCHRONIZE,
+        sharing.bits(),
         FILE_OPEN,
         kind | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
         ptr::null_mut(),
@@ -1072,7 +1164,7 @@ fn nt_create_relative(
     let mut name = name.to_vec();
     let mut unicode = unicode_string(&mut name)?;
     let mut attributes = ObjectAttributes {
-        length: mem::size_of::<ObjectAttributes>() as u32,
+        length: size_of::<ObjectAttributes>() as u32,
         root_directory: parent,
         object_name: &raw mut unicode,
         attributes: OBJ_CASE_INSENSITIVE,
@@ -1093,7 +1185,7 @@ fn nt_open_absolute(
     let mut name = name.to_vec();
     let mut unicode = unicode_string(&mut name)?;
     let mut attributes = ObjectAttributes {
-        length: mem::size_of::<ObjectAttributes>() as u32,
+        length: size_of::<ObjectAttributes>() as u32,
         root_directory: ptr::null_mut(),
         object_name: &raw mut unicode,
         attributes: OBJ_CASE_INSENSITIVE,
@@ -1134,15 +1226,135 @@ fn nt_create(
         )
     };
     if status < STATUS_SUCCESS {
-        // SAFETY: this converts the NTSTATUS returned by the preceding call.
-        let error = unsafe { RtlNtStatusToDosError(status) };
-        return Err(io::Error::from_raw_os_error(error as i32));
+        return Err(nt_status_error(status));
     }
     if raw.is_null() || raw as isize == -1 {
         return Err(invalid_data("NtCreateFile returned an invalid handle"));
     }
     // SAFETY: successful NtCreateFile transfers one owning HANDLE to us.
     Ok(unsafe { OwnedHandle::from_raw_handle(raw.cast()) })
+}
+
+/// Converts a failed `NTSTATUS` into the Win32 error the standard library maps
+/// to an `io::ErrorKind` (`NotFound`, `AlreadyExists`, `PermissionDenied`, ...).
+fn nt_status_error(status: i32) -> io::Error {
+    // SAFETY: a pure table lookup over an integer; no pointers are involved.
+    let code = unsafe { RtlNtStatusToDosError(status) };
+    io::Error::from_raw_os_error(code.cast_signed())
+}
+
+/// Moves the object `source` holds open into `destination_parent` under
+/// `name`, replacing an existing file when `replace` is set.
+///
+/// This is `NtSetInformationFile` rather than `SetFileInformationByHandle`
+/// because the Win32 wrapper rejects any rename whose `RootDirectory` is not
+/// null (`ERROR_INVALID_PARAMETER`), and a null root means resolving a full
+/// path, which would reintroduce the very name lookup this module avoids. The
+/// kernel resolves `name` beneath the held destination directory.
+///
+/// Replacement uses POSIX semantics where the file system supports them, so a
+/// reader that holds the old file open with delete sharing does not block the
+/// publication; older systems fall back to the classic rename. A holder that
+/// does not share delete (a scanner, say) is waited out for a bounded time.
+fn rename_into(
+    source: HANDLE,
+    destination_parent: HANDLE,
+    name: &[u16],
+    replace: bool,
+) -> io::Result<()> {
+    let extended_flags = if replace {
+        FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS
+    } else {
+        0
+    };
+    retry_while_busy(|| {
+        match set_rename_information(
+            source,
+            destination_parent,
+            name,
+            FILE_RENAME_INFORMATION_EX_CLASS,
+            extended_flags,
+        ) {
+            Err(error) if extended_class_unsupported(&error) => set_rename_information(
+                source,
+                destination_parent,
+                name,
+                FILE_RENAME_INFORMATION_CLASS,
+                u32::from(replace),
+            ),
+            outcome => outcome,
+        }
+    })
+}
+
+/// Whether a failed extended request means "this system or file system does not
+/// implement the extended information class" rather than a refusal of this
+/// particular rename or delete.
+fn extended_class_unsupported(error: &io::Error) -> bool {
+    const ERROR_INVALID_FUNCTION: i32 = 1;
+    const ERROR_NOT_SUPPORTED: i32 = 50;
+    const ERROR_INVALID_PARAMETER: i32 = 87;
+    matches!(
+        error.raw_os_error(),
+        Some(ERROR_INVALID_FUNCTION | ERROR_NOT_SUPPORTED | ERROR_INVALID_PARAMETER)
+    )
+}
+
+/// Issues one `FileRenameInformation`-family request with the target name
+/// copied in after the header.
+fn set_rename_information(
+    source: HANDLE,
+    destination_parent: HANDLE,
+    name: &[u16],
+    class: i32,
+    flags: u32,
+) -> io::Result<()> {
+    let name_bytes = name
+        .len()
+        .checked_mul(size_of::<u16>())
+        .ok_or_else(invalid_name)?;
+    let name_length = u32::try_from(name_bytes).map_err(|_| invalid_name())?;
+    let total = offset_of!(RenameInformation, file_name)
+        .checked_add(name_bytes)
+        .ok_or_else(invalid_name)?;
+    let total_length = u32::try_from(total).map_err(|_| invalid_name())?;
+    // Zeroed, 8-byte-aligned storage covers the header and every name unit.
+    let mut storage = vec![0_u64; total.div_ceil(size_of::<u64>())];
+    let information = storage.as_mut_ptr().cast::<RenameInformation>();
+    // SAFETY: `storage` is at least `total` bytes and aligned for the header,
+    // so each field write and the name copy stay inside it; the name slice and
+    // the storage do not overlap.
+    unsafe {
+        (&raw mut (*information).flags).write(flags);
+        (&raw mut (*information).root_directory).write(destination_parent);
+        (&raw mut (*information).file_name_length).write(name_length);
+        ptr::copy_nonoverlapping(
+            name.as_ptr(),
+            (&raw mut (*information).file_name).cast::<u16>(),
+            name.len(),
+        );
+    }
+    let mut status_block = IoStatusBlock {
+        value: IoStatusValue { status: 0 },
+        information: 0,
+    };
+    // SAFETY: both handles are live for the call, `information` points at
+    // `total_length` initialised bytes, and the status block is a valid stack
+    // out-parameter.
+    let status = unsafe {
+        NtSetInformationFile(
+            source,
+            &raw mut status_block,
+            information.cast_const().cast(),
+            total_length,
+            class,
+        )
+    };
+    if status < STATUS_SUCCESS {
+        Err(nt_status_error(status))
+    } else {
+        Ok(())
+    }
 }
 
 fn unicode_string(buffer: &mut [u16]) -> io::Result<UnicodeString> {
@@ -1309,7 +1521,7 @@ fn ensure_private_handle(handle: *mut c_void) -> io::Result<()> {
         GetAclInformation(
             dacl_from_sd,
             (&raw mut info).cast(),
-            mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
+            size_of::<ACL_SIZE_INFORMATION>() as u32,
             AclSizeInformation,
         )
     } == 0
@@ -1400,7 +1612,7 @@ fn attributes(handle: *mut c_void) -> io::Result<u32> {
             handle.cast(),
             FileAttributeTagInfo,
             (&raw mut info).cast(),
-            mem::size_of::<FileAttributeTagInfo>() as u32,
+            size_of::<FileAttributeTagInfo>() as u32,
         )
     };
     if read == 0 {
@@ -1419,7 +1631,7 @@ fn standard_info(handle: *mut c_void) -> io::Result<FILE_STANDARD_INFO> {
             handle.cast(),
             FileStandardInfo,
             (&raw mut info).cast(),
-            mem::size_of::<FILE_STANDARD_INFO>() as u32,
+            size_of::<FILE_STANDARD_INFO>() as u32,
         )
     };
     if read == 0 {
@@ -1438,7 +1650,7 @@ fn identity_info(handle: *mut c_void) -> io::Result<FILE_ID_INFO> {
             handle.cast(),
             FileIdInfo,
             (&raw mut info).cast(),
-            mem::size_of::<FILE_ID_INFO>() as u32,
+            size_of::<FILE_ID_INFO>() as u32,
         )
     };
     if read == 0 {
@@ -1465,7 +1677,7 @@ fn enumerate_names(handle: HANDLE, maximum: usize) -> io::Result<Vec<(String, i6
                 handle,
                 class,
                 buffer.as_mut_ptr().cast(),
-                (buffer.len() * mem::size_of::<u64>()) as u32,
+                (buffer.len() * size_of::<u64>()) as u32,
             )
         };
         if read == 0 {
@@ -1476,10 +1688,10 @@ fn enumerate_names(handle: HANDLE, maximum: usize) -> io::Result<Vec<(String, i6
             return Err(error);
         }
         restart = false;
-        let bytes = buffer.len() * mem::size_of::<u64>();
+        let bytes = buffer.len() * size_of::<u64>();
         let mut offset = 0usize;
         loop {
-            if offset % mem::align_of::<FILE_ID_BOTH_DIR_INFO>() != 0
+            if offset % align_of::<FILE_ID_BOTH_DIR_INFO>() != 0
                 || offset
                     .checked_add(offset_of!(FILE_ID_BOTH_DIR_INFO, FileName))
                     .is_none_or(|end| end > bytes)
@@ -1503,7 +1715,7 @@ fn enumerate_names(handle: HANDLE, maximum: usize) -> io::Result<Vec<(String, i6
                 .ok_or_else(|| invalid_data("Windows returned an oversized directory name"))?;
             if name_bytes % 2 != 0
                 || end > bytes
-                || (buffer.as_ptr() as usize + offset + name_offset) % mem::align_of::<u16>() != 0
+                || (buffer.as_ptr() as usize + offset + name_offset) % align_of::<u16>() != 0
             {
                 return Err(invalid_data(
                     "Windows returned an invalid UTF-16 directory name",
@@ -1537,7 +1749,7 @@ fn enumerate_names(handle: HANDLE, maximum: usize) -> io::Result<Vec<(String, i6
             let next = usize::try_from(entry.NextEntryOffset)
                 .map_err(|_| invalid_data("invalid directory offset"))?;
             if next == 0
-                || next % mem::align_of::<FILE_ID_BOTH_DIR_INFO>() != 0
+                || next % align_of::<FILE_ID_BOTH_DIR_INFO>() != 0
                 || offset.checked_add(next).is_none_or(|end| end >= bytes)
             {
                 return Err(invalid_data("Windows returned an invalid directory offset"));
@@ -1568,17 +1780,20 @@ fn remove_tree_contents(
                 )
             })?;
         validate_component(&name)?;
-        let handle = open_relative(
-            directory.handle.as_raw_handle().cast(),
-            &name,
-            FILE_GENERIC_WRITE
-                | FILE_READ_ATTRIBUTES
-                | READ_CONTROL
-                | DELETE
-                | FILE_LIST_DIRECTORY
-                | SYNCHRONIZE,
-            0,
-        )?;
+        let handle = retry_while_busy(|| {
+            open_relative(
+                directory.handle.as_raw_handle().cast(),
+                &name,
+                FILE_GENERIC_WRITE
+                    | FILE_READ_ATTRIBUTES
+                    | READ_CONTROL
+                    | DELETE
+                    | FILE_LIST_DIRECTORY
+                    | SYNCHRONIZE,
+                0,
+                Sharing::Transient,
+            )
+        })?;
         let attrs = attributes(handle.as_raw_handle())?;
         if attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
             return Err(invalid_data(
@@ -1614,7 +1829,13 @@ fn remove_tree_contents(
     flush_handle(directory.handle.as_raw_handle())
 }
 
+/// Unlinks the object `handle` holds open, waiting out a scanner that holds it
+/// without sharing delete for a bounded time.
 fn mark_delete(handle: *mut c_void) -> io::Result<()> {
+    retry_while_busy(|| mark_delete_once(handle))
+}
+
+fn mark_delete_once(handle: *mut c_void) -> io::Result<()> {
     let extended = FILE_DISPOSITION_INFO_EX {
         Flags: FILE_DISPOSITION_FLAG_DELETE
             | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
@@ -1627,11 +1848,15 @@ fn mark_delete(handle: *mut c_void) -> io::Result<()> {
             handle.cast(),
             FileDispositionInfoEx,
             (&raw const extended).cast(),
-            mem::size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
+            size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
         )
     };
     if deleted != 0 {
         return Ok(());
+    }
+    let refusal = io::Error::last_os_error();
+    if !extended_class_unsupported(&refusal) {
+        return Err(refusal);
     }
     // Older Windows filesystems may not implement the Ex information class.
     let legacy = FILE_DISPOSITION_INFO { DeleteFile: true };
@@ -1642,7 +1867,7 @@ fn mark_delete(handle: *mut c_void) -> io::Result<()> {
             handle.cast(),
             FileDispositionInfo,
             (&raw const legacy).cast(),
-            mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+            size_of::<FILE_DISPOSITION_INFO>() as u32,
         )
     };
     if deleted == 0 {
@@ -1689,10 +1914,48 @@ fn validate_component(component: &str) -> io::Result<()> {
                 || matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
         })
         || component.encode_utf16().count() > 255
+        || is_reserved_device_name(component)
     {
         return Err(invalid_name());
     }
     Ok(())
+}
+
+/// Whether Win32 would treat `component` as a DOS device (`CON`, `NUL`,
+/// `COM1`, ...), which it does with any extension and in any letter case.
+///
+/// The NT calls in this module do not map those names to devices, so a
+/// workspace could create such an entry that no Win32 tool could then open,
+/// list, or delete. Refusing the names keeps every entry reachable by
+/// ordinary tools.
+fn is_reserved_device_name(component: &str) -> bool {
+    let stem = component
+        .split('.')
+        .next()
+        .unwrap_or(component)
+        .trim_end_matches(' ');
+    if ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
+        .iter()
+        .any(|device| stem.eq_ignore_ascii_case(device))
+    {
+        return true;
+    }
+    let mut characters = stem.chars();
+    let (Some(first), Some(second), Some(third), Some(number), None) = (
+        characters.next(),
+        characters.next(),
+        characters.next(),
+        characters.next(),
+        characters.next(),
+    ) else {
+        return false;
+    };
+    let prefix = [first, second, third]
+        .iter()
+        .collect::<String>()
+        .to_ascii_uppercase();
+    matches!(prefix.as_str(), "COM" | "LPT")
+        && matches!(number, '1'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}')
 }
 
 fn invalid_name() -> io::Error {
@@ -1705,6 +1968,9 @@ fn invalid_name() -> io::Error {
 fn invalid_data(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
+
+#[cfg(test)]
+mod adverse_tests;
 
 #[cfg(windows)]
 #[cfg(test)]
@@ -1898,10 +2164,31 @@ mod tests {
             fs::read(&outside).expect("read outside victim"),
             b"outside must survive"
         );
-        assert_eq!(
-            fs::read(&published).expect("read published file"),
-            b"workspace bytes"
-        );
+        // The racer renames the very object the workspace renamed, through a
+        // handle it opened earlier, so the object may legitimately end under
+        // any of the three names; `adverse_tests` pins the interleaving
+        // deterministically. What must hold under every interleaving is that
+        // the workspace bytes survive exactly once, and that the name this
+        // module publishes never became a link or the victim's bytes.
+        let survivors = [&source, &parked, &published]
+            .into_iter()
+            .filter(|name| {
+                fs::symlink_metadata(name).is_ok_and(|metadata| metadata.is_file())
+                    && fs::read(name).is_ok_and(|bytes| bytes == b"workspace bytes")
+            })
+            .count();
+        assert_eq!(survivors, 1, "the workspace file must survive exactly once");
+        if let Ok(metadata) = fs::symlink_metadata(&published) {
+            assert!(
+                metadata.is_file() && !metadata.file_type().is_symlink(),
+                "the published name is never a link"
+            );
+            assert_ne!(
+                fs::read(&published).expect("read published file"),
+                b"outside must survive",
+                "the victim's bytes were never published"
+            );
+        }
         drop(root);
         for candidate in [&source, &parked] {
             if candidate.exists() {
@@ -1927,13 +2214,19 @@ mod tests {
         source.sync_all().expect("flush staged file");
         drop(source);
 
-        let outcome =
-            root.rename_checked_entry_with_flush(&["staged"], &["selected"], false, false, |_| {
+        let outcome = root.rename_checked_entry_with_flush(
+            &["staged"],
+            &["selected"],
+            false,
+            false,
+            || {},
+            |_| {
                 Err(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
                     "injected parent flush failure after native rename",
                 ))
-            });
+            },
+        );
         let Err(DirectoryRenameError::CommittedButNotDurable(error)) = outcome else {
             panic!("native post-rename flush failure lost commit state: {outcome:?}");
         };
