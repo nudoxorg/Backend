@@ -475,6 +475,32 @@ fn native_focus_label(rig: &mut Rig) -> Option<String> {
     tree["nodes"][id]["aria"]["label"].as_str().map(str::to_owned)
 }
 
+/// With native accessibility live for the whole arrival, every frame of a
+/// Find visit reports exactly one focused node. The Reader renders inside
+/// the shell's frame after the shell root has already reported focus, so a
+/// query focused mid-frame would be a second focused node (GPUI's a11y
+/// builder panics on that in debug builds).
+#[gpui::test]
+fn find_arrival_moves_native_focus_only_between_frames(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0);
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
+    rig.repaint();
+    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(find_route()), cx));
+    let mut labels = Vec::new();
+    for _ in 0..40 {
+        rig.frame(16);
+        labels.push(native_focus_label(&mut rig));
+    }
+    rig.settle();
+    labels.push(native_focus_label(&mut rig));
+    assert_eq!(rig.route(), find_route());
+    assert_eq!(labels.last().cloned().flatten().as_deref(), Some("Find query"),
+        "the settled Find visit never focused its query: {labels:?}");
+    let first = labels.iter().position(|label| label.as_deref() == Some("Find query")).expect("query focus");
+    assert!(labels[first..].iter().all(|label| label.as_deref() == Some("Find query")),
+        "the query lost focus again during its own arrival: {labels:?}");
+}
+
 #[gpui::test]
 fn tab_cannot_walk_the_native_folio_during_find_arrival(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0);
