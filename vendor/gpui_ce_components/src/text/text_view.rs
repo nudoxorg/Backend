@@ -705,14 +705,14 @@ mod tests {
         Overflow, ParentElement as _, Pixels, Render, SharedString, StyleRefinement, Styled as _,
         TestAppContext, VisualTestContext, Window, div, point, px,
     };
-    use std::sync::{Arc, Mutex};
+    use std::{cell::RefCell, rc::Rc};
 
     // Observe the state after GPUI has requested layout through the mounted
     // tree. Calling request_layout from a context update bypasses the current
     // view/element stacks and cannot exercise keyed-state lifetime correctly.
     struct MountedTextView {
         view: TextView,
-        captured: Arc<Mutex<Option<Entity<TextViewState>>>>,
+        captured: Rc<RefCell<Option<Entity<TextViewState>>>>,
     }
 
     impl IntoElement for MountedTextView {
@@ -741,7 +741,7 @@ mod tests {
             cx: &mut gpui::App,
         ) -> (gpui::LayoutId, Self::RequestLayoutState) {
             let result = self.view.request_layout(id, inspector, window, cx);
-            *self.captured.lock().unwrap() = self.view.state.clone();
+            *self.captured.borrow_mut() = self.view.state.clone();
             result
         }
 
@@ -787,7 +787,7 @@ mod tests {
             show_prepared: bool,
             live_source: &'static str,
             background: bool,
-            captured: Arc<Mutex<Option<Entity<TextViewState>>>>,
+            captured: Rc<RefCell<Option<Entity<TextViewState>>>>,
         }
 
         impl Render for SwitchingRoot {
@@ -809,7 +809,7 @@ mod tests {
 
         cx.update(crate::init);
         for prepared_first in [false, true] {
-            let captured = Arc::new(Mutex::new(None));
+            let captured = Rc::new(RefCell::new(None));
             let (root, cx) = cx.add_window_view({
                 let captured = captured.clone();
                 move |_, _| SwitchingRoot {
@@ -833,7 +833,7 @@ mod tests {
                 cx.update(|window, cx| {
                     let _ = window.draw(cx);
                 });
-                let state = captured.lock().unwrap().clone().unwrap();
+                let state = captured.borrow().clone().unwrap();
                 let source = if show_prepared { FIXED } else { LIVE };
                 state.read_with(cx, |state, _| assert_eq!(state.source().as_str(), source));
                 if let Some((previous, previous_source)) = &previous {
@@ -870,7 +870,7 @@ mod tests {
                 let _ = window.draw(cx);
             });
             assert_eq!(
-                captured.lock().unwrap().as_ref().unwrap().entity_id(),
+                captured.borrow().as_ref().unwrap().entity_id(),
                 live_state.entity_id()
             );
             live_state.read_with(cx, |state, _| assert_eq!(state.source().as_str(), LIVE));
