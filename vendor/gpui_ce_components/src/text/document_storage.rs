@@ -64,7 +64,7 @@ impl SourceSnapshot {
 
         let mut line_endings = 0;
         let mut previous_was_cr = false;
-        for character in self.rope.slice(start..self.rope.len_chars()).chars() {
+        for character in self.rope.slice(end_offset..self.rope.len()).chars() {
             match character {
                 '\r' => {
                     line_endings += 1;
@@ -90,7 +90,8 @@ impl SourceSnapshot {
         if text.is_empty() {
             return;
         }
-        self.rope.insert(self.rope.len_chars(), text);
+        let byte_end = self.rope.len();
+        self.rope.insert(byte_end, text);
         self.flat = Arc::default();
         #[cfg(test)]
         self.copy_work
@@ -107,7 +108,7 @@ impl SourceSnapshot {
         {
             return None;
         }
-        let result = self.rope.slice(start..end).to_string();
+        let result = self.rope.slice(range).to_string();
         #[cfg(test)]
         self.copy_work
             .fetch_add(result.len(), std::sync::atomic::Ordering::Relaxed);
@@ -301,5 +302,28 @@ mod tests {
         closed.append("\r\n");
         assert!(!closed.reference_definition_can_continue(definition_end));
         assert!(!source.reference_definition_can_continue(1));
+    }
+
+    #[test]
+    fn source_snapshot_uses_byte_offsets_across_unicode_and_mixed_newlines() {
+        let prefix = "🦀 [id]: target";
+        let original = SourceSnapshot::from(prefix.to_owned());
+        let mut appended = original.clone();
+        let definition_end = prefix.len();
+
+        appended.append(" \r\n");
+        assert!(appended.reference_definition_can_continue(definition_end));
+        assert_eq!(appended.get(0..definition_end).as_deref(), Some(prefix));
+        assert_eq!(
+            appended.get(definition_end..appended.len()).as_deref(),
+            Some(" \r\n")
+        );
+        assert!(appended.get(1..4).is_none());
+
+        appended.append("\n\r\n🦊");
+        assert!(!appended.reference_definition_can_continue(definition_end));
+        assert_eq!(original.len(), prefix.len());
+        assert_eq!(original.as_str(), prefix);
+        assert_eq!(appended.as_str(), "🦀 [id]: target \r\n\n\r\n🦊");
     }
 }
