@@ -693,6 +693,7 @@ struct AnimationFrameRequest {
 #[derive(Default)]
 struct GroupedAnimationFrameRequests {
     claims: FxHashSet<AnimationFrameRequest>,
+    notified: FxHashSet<EntityId>,
     scheduled: bool,
 }
 
@@ -3382,18 +3383,29 @@ impl Window {
     }
 
     fn deliver_grouped_animation_frame(&mut self, cx: &mut App) {
-        // Release the latch before notification; a reconciliation draw may
-        // immediately register the next bounded batch.
-        let pending = mem::take(&mut self.grouped_animation_frame_requests);
+        let frame = &self.rendered_frame;
+        let GroupedAnimationFrameRequests {
+            claims,
+            notified,
+            scheduled,
+        } = &mut self.grouped_animation_frame_requests;
+        // Release the latch before queuing notifications. App::notify only
+        // queues effects and invalidation; it cannot render during this drain.
+        *scheduled = false;
+        notified.clear();
         if self.removed {
+            claims.clear();
             return;
         }
-        let mut notified = FxHashSet::default();
-        for claim in pending.claims {
-            if !self.callback_owner_is_inert(&claim.owner) && notified.insert(claim.view) {
+        for claim in claims.drain() {
+            if !Self::frame_callback_owner_is_inert(frame, &claim.owner)
+                && notified.insert(claim.view)
+            {
                 cx.notify(claim.view);
             }
         }
+        // Retain both allocations, without retaining owners or view IDs.
+        notified.clear();
     }
 
     fn prune_grouped_animation_frame_requests(&mut self) {
@@ -9641,7 +9653,14 @@ mod grouped_animation_frame_tests {
             second_notified.set(0);
             cx.update(|window, cx| {
                 // Ownership has committed before the coalesced delivery.
+                let claims_capacity = window.grouped_animation_frame_requests.claims.capacity();
                 assert_eq!(window.simulate_reconciled_next_frame(cx).0, 1);
+                let pending = &window.grouped_animation_frame_requests;
+                assert!(!pending.scheduled);
+                assert!(pending.claims.is_empty());
+                assert!(pending.notified.is_empty());
+                assert_eq!(pending.claims.capacity(), claims_capacity);
+                assert!(pending.notified.capacity() >= if live { 2 } else { 1 });
             });
             assert_eq!(first_notified.get(), if live { 1 } else { 0 });
             assert_eq!(
@@ -9656,6 +9675,12 @@ mod grouped_animation_frame_tests {
         cx.update(|window, cx| {
             window.remove_window();
             assert!(window.grouped_animation_frame_requests.claims.is_empty());
+            assert!(window.grouped_animation_frame_requests.notified.is_empty());
+            assert_eq!(window.grouped_animation_frame_requests.claims.capacity(), 0);
+            assert_eq!(
+                window.grouped_animation_frame_requests.notified.capacity(),
+                0
+            );
             assert!(!window.grouped_animation_frame_requests.scheduled);
             assert!(!window.request_grouped_animation_frame());
             assert_eq!(window.simulate_next_frame(cx), 0);
