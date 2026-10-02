@@ -1731,11 +1731,18 @@ impl LibraryStateMemory {
         attachment: Option<OwnerAttachment>,
         active: bool,
     ) -> Rc<RefCell<facet::browse::library::State>> {
-        if let Some(index) = self
-            .entries
-            .iter()
-            .position(|entry| entry.route == *route && entry.revision == revision)
+        if let Some(index) = self.entries.iter().position(|entry| {
+            entry.route == *route && match (entry.revision, revision) {
+                (Some(earlier), Some(current)) => earlier.same_authority(current),
+                (None, None) => true,
+                _ => false,
+            }
+        })
         {
+            // Observation is diagnostic metadata. Local scroll/disclosure
+            // follows producer authority; action intent remains attachment-
+            // and stamp-gated by the current Reader visit.
+            self.entries[index].revision = revision;
             if self.entries[index].attachment != attachment {
                 // Scroll and disclosure are local reading state. Only the
                 // actionable return intent is tied to the old attachment.
@@ -1780,10 +1787,12 @@ mod library_state_memory_tests {
     }
 
     #[test]
-    fn library_state_survives_back_only_for_the_exact_tree_revision() {
+    fn library_state_survives_observation_bumps_but_not_tree_authority() {
         let mut memory = LibraryStateMemory::default();
         let route = tree("/tmp/library-memory-one");
-        let root = VersionedRoot::unserved();
+        let root = VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("library".to_owned(), "same".to_owned())]), 7,
+        );
         let changed = VersionedRoot::synthetic(
             backend_library::view_state_root(&[("library".to_owned(), "changed".to_owned())]), 7,
         );
@@ -1792,6 +1801,12 @@ mod library_state_memory_tests {
             &first,
             &memory.for_route(&route, Some(root), None, true)
         ));
+        for observation in 1..=16 {
+            let observed = root.observed_at(observation);
+            assert!(Rc::ptr_eq(&first, &memory.for_route(&route, Some(observed), None, true)));
+            assert_eq!(memory.entries.len(), 1, "diagnostic observations cannot multiply neutral cache entries");
+            assert_eq!(memory.entries[0].revision, Some(observed));
+        }
         assert!(!Rc::ptr_eq(
             &first,
             &memory.for_route(&route, Some(changed), None, true)
