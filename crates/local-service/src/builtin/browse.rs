@@ -3960,14 +3960,20 @@ mod tests {
             cancelling.cancel();
         });
         let started = Instant::now();
-        // This shell stands in for a Cargo invocation that left a compiler
-        // descendant holding both inherited pipes open. The production run
-        // path and its process-group cleanup are exercised unchanged.
+        // This ignored native test binary stands in for a Cargo invocation
+        // with a compiler descendant holding both inherited pipes. The exact
+        // production run and platform capture path are exercised unchanged.
+        let executable = std::env::current_exe().expect("test executable");
         let outcome = with_observation_control(control, || {
             run(
-                Path::new("/bin/sh"),
-                Path::new("/tmp"),
-                &["-c", "sleep 10 & wait"],
+                &executable,
+                &std::env::temp_dir(),
+                &[
+                    "--ignored",
+                    "--exact",
+                    "builtin::browse::tests::blocked_cargo_capture_fixture",
+                    "--nocapture",
+                ],
                 1024,
             )
         });
@@ -3980,6 +3986,32 @@ mod tests {
             started.elapsed() < Duration::from_secs(3),
             "the descendant must not pin the output readers"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "native child fixture; invoked by the bounded capture test"]
+    fn blocked_cargo_capture_fixture() {
+        let child = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--ignored",
+                "--exact",
+                "builtin::browse::tests::blocked_cargo_descendant_fixture",
+                "--nocapture",
+            ])
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+            .expect("descendant");
+        let _ = child.id();
+        std::thread::sleep(Duration::from_secs(10));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "native child fixture; invoked by the bounded capture test"]
+    fn blocked_cargo_descendant_fixture() {
+        std::thread::sleep(Duration::from_secs(10));
     }
 
     struct Scratch(PathBuf);
