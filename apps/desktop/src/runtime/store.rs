@@ -23,6 +23,9 @@
 //!
 //! Results arrive through a coalescing wake signal awaited by one
 //! `cx.spawn` task: nothing polls, and an idle window requests no frame.
+//! The task lands at most [`LANDING_BATCH`] outcomes per executor poll and
+//! yields between turns, so a burst of finished reads cannot hold the UI
+//! thread for longer than one small turn at a time.
 
 mod dependencies;
 mod keeper;
@@ -53,6 +56,19 @@ use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Task};
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+
+/// Outcomes one UI turn lands at most. The wake task yields to the executor
+/// between turns, so input, paint, and other tasks run between batches.
+pub const LANDING_BATCH: NonZeroUsize = NonZeroUsize::MIN.saturating_add(7);
+
+/// Whether a landing turn left outcomes for the next turn.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Backlog {
+    /// Nothing was left undelivered when the turn took its batch.
+    Clear,
+    /// More outcomes wait; the wake task yields and lands them next turn.
+    Remaining,
+}
 
 /// What landing one outcome did.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -500,14 +516,26 @@ impl DataStore {
     }
 
     /// Spawns the one task that turns read-pool wakes into landings.
+    ///
+    /// Each wake lands one turn of at most [`LANDING_BATCH`] outcomes. When
+    /// more remain, the task re-arms its own wake (coalescing with any wake
+    /// a worker posts meanwhile) and yields to the executor before the next
+    /// turn: a pending wake resolves without suspending, so without the
+    /// yield one poll would land every batch back to back.
     fn start(&mut self, cx: &mut Context<Self>) {
         let Some(mut receiver) = self.pool.as_mut().and_then(ReadPool::take_wake) else {
             return;
         };
+        let rearm = receiver.sender();
         self.wake_task = Some(cx.spawn(async move |this, cx| {
             while receiver.wait().await.is_some() {
-                if this.update(cx, Self::drain).is_err() {
-                    break;
+                match this.update(cx, |store, cx| store.land_turn(cx).1) {
+                    Ok(Backlog::Clear) => {}
+                    Ok(Backlog::Remaining) => {
+                        rearm.wake();
+                        super::wake::yield_now().await;
+                    }
+                    Err(_) => break,
                 }
             }
         }));
@@ -1051,17 +1079,27 @@ impl DataStore {
         }
     }
 
-    /// Lands every finished read, reads a view waits on first. Called by the
-    /// wake task; public so tests and harnesses can drive it deterministically.
+    /// Lands one turn of finished reads: at most [`LANDING_BATCH`] outcomes,
+    /// reads a view waits on first. Returns how many changed a slot. Called
+    /// by the wake task; public so tests and harnesses can drive it
+    /// deterministically (they call it until the pool is idle).
     pub fn drain(&mut self, cx: &mut Context<Self>) -> usize {
+        self.land_turn(cx).0
+    }
+
+    /// [`Self::drain`], saying whether outcomes remain for another turn.
+    fn land_turn(&mut self, cx: &mut Context<Self>) -> (usize, Backlog) {
         if self.owner.attachment_changed() {
             self.revoke_inflight(cx);
         }
         self.stats.turns = self.stats.turns.saturating_add(1);
         let Some(pool) = &self.pool else {
-            return 0;
+            return (0, Backlog::Clear);
         };
-        let Batch { outcomes, .. } = pool.take(NonZeroUsize::MAX);
+        let Batch {
+            outcomes,
+            remaining,
+        } = pool.take(LANDING_BATCH);
         let mut applied = 0;
         let mut save = false;
         for outcome in outcomes {
@@ -1076,7 +1114,12 @@ impl DataStore {
         if save {
             self.keeper.save_at_rest(cx);
         }
-        applied
+        let backlog = if remaining == 0 {
+            Backlog::Clear
+        } else {
+            Backlog::Remaining
+        };
+        (applied, backlog)
     }
 
     /// Stages a partial page.
@@ -1708,6 +1751,77 @@ mod tests {
         rig.store
             .read_with(cx, |store, _| store.pool.as_ref().map(|pool| pool.load().held))
             .expect("the rig has a pool")
+    }
+
+    /// Asks for `count` fast pages and waits, without running the executor,
+    /// until every one of them finished and waits for the UI.
+    fn finish_without_landing(rig: &Rig, cx: &mut TestAppContext, count: usize) -> Vec<PageKey> {
+        let keys = (0..count)
+            .map(|index| PageKey::Symbol(symbol(&format!("fast-burst-{index}"))))
+            .collect::<Vec<_>>();
+        rig.store.update(cx, |store, cx| store.focus(keys.clone(), cx));
+        crate::runtime::wait::until("every burst read finished on its worker", || {
+            rig.store.read_with(cx, |store, _| store.pool_activity().undelivered) == count
+        });
+        rig.take_events();
+        keys
+    }
+
+    /// Schedule: 24 reads finish while the UI is not running. Each executor
+    /// poll then lands at most one batch, not the whole backlog.
+    #[gpui::test]
+    fn a_burst_of_finished_reads_lands_one_small_batch_per_executor_poll(cx: &mut TestAppContext) {
+        let rig = rig(cx, 3);
+        finish_without_landing(&rig, cx, 24);
+        let landed = |cx: &mut TestAppContext| rig.store.read_with(cx, |store, _| store.stats().landed);
+        let mut before = landed(cx);
+        let mut turns = 0;
+        while cx.executor().tick() {
+            let now = landed(cx);
+            let batch = usize::try_from(now - before).expect("small");
+            assert!(batch <= LANDING_BATCH.get(), "one poll landed {batch} outcomes");
+            turns += usize::from(batch > 0);
+            before = now;
+        }
+        assert_eq!(landed(cx) - rig.base.landed, 24, "every read landed");
+        assert!(turns >= 3, "24 outcomes took {turns} turns");
+        assert_eq!(held(&rig, cx), crate::runtime::reads::Held::default(), "landing returned every admission");
+    }
+
+    /// Schedule: a backlog of finished reads and another foreground task
+    /// that wants the UI thread. The other task runs between landing turns
+    /// on the real (deterministic) executor, instead of after the backlog.
+    #[gpui::test]
+    fn other_ui_work_runs_between_landing_turns(cx: &mut TestAppContext) {
+        let rig = rig(cx, 3);
+        let keys = finish_without_landing(&rig, cx, 24);
+        let log = Rc::new(RefCell::new(String::new()));
+        let landings = Rc::clone(&log);
+        let _landing = cx.update(|cx| {
+            cx.subscribe(&rig.store, move |_, event: &StoreEvent, _| {
+                if matches!(event, StoreEvent::Resource(_)) {
+                    landings.borrow_mut().push('L');
+                }
+            })
+        });
+        let probe = Rc::clone(&log);
+        let other = cx.update(|cx| {
+            cx.spawn(async move |_| {
+                for _ in 0..12 {
+                    probe.borrow_mut().push('P');
+                    crate::runtime::wake::yield_now().await;
+                }
+            })
+        });
+        cx.run_until_parked();
+        drop(other);
+        let log = log.borrow().clone();
+        assert_eq!(log.matches('L').count(), keys.len(), "{log}");
+        let first = log.find('L').expect("a landing");
+        let last = log.rfind('L').expect("a landing");
+        assert!(log[first..last].contains('P'), "the other task waited for the whole backlog: {log}");
+        let longest = log.split('P').map(str::len).max().unwrap_or(0);
+        assert!(longest <= LANDING_BATCH.get(), "a turn landed {longest} outcomes in one go: {log}");
     }
 
     /// Schedule: the pages a view waits on hold every admission. A further
