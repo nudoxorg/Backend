@@ -399,7 +399,15 @@ impl ListState {
     /// but the number and identity of items remains the same.
     pub fn remeasure(&self) {
         let count = self.item_count();
-        self.remeasure_items_with_scroll_anchor(0..count, ScrollAnchor::Proportional);
+        self.remeasure_items_with_scroll_anchor(0..count, ScrollAnchor::Proportional, None);
+    }
+
+    /// Remeasure all items with a fresh baseline for offscreen item heights.
+    /// The logical scroll anchor and registered focus handles remain intact.
+    /// Rendered items replace this estimate with their measured height.
+    pub fn remeasure_with_uniform_item_height(&self, height: Pixels) {
+        let count = self.item_count();
+        self.remeasure_items_with_scroll_anchor(0..count, ScrollAnchor::Proportional, Some(height));
     }
 
     /// Mark items in `range` as needing remeasurement while preserving
@@ -410,10 +418,10 @@ impl ListState {
     /// height may be different (e.g., streaming text, tool results
     /// loading), but the item itself still exists at the same index.
     pub fn remeasure_items(&self, range: Range<usize>) {
-        self.remeasure_items_with_scroll_anchor(range, ScrollAnchor::Absolute);
+        self.remeasure_items_with_scroll_anchor(range, ScrollAnchor::Absolute, None);
     }
 
-    fn remeasure_items_with_scroll_anchor(&self, range: Range<usize>, scroll_anchor: ScrollAnchor) {
+    fn remeasure_items_with_scroll_anchor(&self, range: Range<usize>, scroll_anchor: ScrollAnchor, height_hint: Option<Pixels>) {
         let state = &mut *self.0.borrow_mut();
 
         if let Some(scroll_top) = state.logical_scroll_top {
@@ -462,7 +470,7 @@ impl ListState {
             let invalidated = cursor.slice(&Count(range.end), Bias::Right);
             new_items.extend(
                 invalidated.iter().map(|item| ListItem::Unmeasured {
-                    size_hint: item.size_hint(),
+                    size_hint: height_hint.map(|height| Size { width: px(0.), height }).or_else(|| item.size_hint()),
                     focus_handle: item.focus_handle(),
                 }),
                 (),
@@ -1723,6 +1731,20 @@ mod test {
         IntoElement, ListState, Render, Styled, TestAppContext, Window, canvas, div, list, point,
         px, size,
     };
+
+    #[gpui::test]
+    fn rehint_keeps_logical_scroll_and_registered_focus(cx: &mut TestAppContext) {
+        let focus = cx.update(|cx| cx.focus_handle());
+        let state = ListState::new(20, gpui::ListAlignment::Top, px(10.))
+            .with_uniform_item_height(px(10.));
+        state.splice_focusable(7..8, [Some(focus.clone())]);
+        state.scroll_to(gpui::ListOffset { item_ix: 7, offset_in_item: px(0.) });
+        state.remeasure_with_uniform_item_height(px(30.));
+        assert_eq!(state.logical_scroll_top().item_ix, 7);
+        let items = state.0.borrow();
+        assert!(items.items.iter().all(|item| item.size_hint().is_some_and(|hint| hint.height == px(30.))));
+        assert_eq!(items.items.iter().nth(7).and_then(|item| item.focus_handle()), Some(focus));
+    }
 
     #[gpui::test]
     fn test_autoscroll_above_item_top_renders_items_above(cx: &mut TestAppContext) {

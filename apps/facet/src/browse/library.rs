@@ -445,7 +445,7 @@ impl State {
         if cache.state.item_count() != count {
             cache.state.reset_with_uniform_height(count, height);
         } else if cache.width != measure.width() || cache.scale != measure.scale() {
-            cache.state.remeasure();
+            cache.state.remeasure_with_uniform_item_height(height);
         }
         cache.width = measure.width();
         cache.scale = measure.scale();
@@ -1191,7 +1191,7 @@ mod mounted_tests {
             gpui_component::init(cx);
             set_facet(
                 Facet {
-                    text_scale: 2.0,
+                    text_scale: 1.0,
                     reduced_motion: true,
                     ..Facet::default()
                 },
@@ -1216,22 +1216,19 @@ mod mounted_tests {
             })
             .collect::<Vec<_>>();
         for (at, key) in ["registry-a", "registry-b"].into_iter().enumerate() {
+            let origin = if at == 1 {
+                format!("git+https://源.example/{}", "κλειδί-依存-".repeat(12))
+            } else {
+                format!("registry+https://{key}.example/index")
+            };
+            let chars = origin.chars().collect::<Vec<_>>();
             rows.push(InventoryRow {
                 key: key.into(),
                 name: "shared".into(),
                 version: "1.0.0".into(),
-                origin: format!("registry+https://{key}.example/index").into(),
-                copy_origin: Some(format!("registry+https://{key}.example/index").into()),
-                origin_chunks: vec![
-                    "registry+htt".into(),
-                    "ps://registr".into(),
-                    format!(
-                        "y-{}.example/",
-                        key.ends_with('b').then_some('b').unwrap_or('a')
-                    )
-                    .into(),
-                    "index".into(),
-                ],
+                origin: origin.clone().into(),
+                copy_origin: Some(origin.into()),
+                origin_chunks: chars.chunks(12).map(|chunk| chunk.iter().copied().collect::<String>().into()).collect(),
                 role: "transitive dependency".into(),
                 target: Some(InventoryHandle::new(1235 + at, key)),
             });
@@ -1273,7 +1270,7 @@ mod mounted_tests {
             state: Rc::clone(&state),
             opened: Rc::new(RefCell::new(Vec::new())),
             inventory_opened: Some(Rc::clone(&opened)),
-            width: px(260.0),
+            width: px(320.0),
             place_key: 1,
             visible: true,
         });
@@ -1312,6 +1309,7 @@ mod mounted_tests {
             .expect("inventory list")
             .state
             .clone();
+        let first_scroll_estimate = list_state.max_offset_for_scrollbar().y;
         let viewport = list_state.viewport_bounds();
         cx.simulate_event(gpui::ScrollWheelEvent {
             position: point(
@@ -1326,8 +1324,11 @@ mod mounted_tests {
             list_state.logical_scroll_top().item_ix > 0,
             "wheel reached retained rows"
         );
+        cx.update(|cx| {
+            set_facet(Facet { text_scale: 2.0, reduced_motion: true, ..Facet::default() }, cx);
+        });
         host.update(cx, |host, cx| {
-            host.width = px(320.0);
+            host.width = px(260.0);
             cx.notify();
         });
         let resized = draw(cx);
@@ -1336,9 +1337,20 @@ mod mounted_tests {
             "resize preserved reading position"
         );
         assert!((1..40).contains(&painted(&resized)));
+        assert!(list_state.max_offset_for_scrollbar().y > first_scroll_estimate * 1.4,
+            "offscreen height estimates follow 100→200% text reflow");
+        host.update(cx, |host, cx| {
+            host.width = px(320.0);
+            cx.notify();
+        });
+        let rewide = draw(cx);
 
-        click(cx, &resized, "last-packages");
+        click(cx, &rewide, "last-packages");
         let tail = draw(cx);
+        assert!(tail.texts.iter().any(|text| text.content.contains('源')),
+            "the long Unicode origin remains legible at the virtual tail");
+        assert!(tail.texts.iter().filter(|text| text.key.contains("origin-")).all(|text| !text.clipped_without_ellipsis()),
+            "the bounded long origin chunks wrap without clipping");
         assert!(list_state.logical_scroll_top().item_ix >= 1228);
         cx.simulate_keystrokes("tab");
         let mut previous_focused = false;
