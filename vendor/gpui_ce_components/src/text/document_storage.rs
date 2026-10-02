@@ -46,7 +46,7 @@ impl PartialEq for SourceSnapshot {
 }
 impl SourceSnapshot {
     pub(crate) fn len(&self) -> usize {
-        self.rope.len_bytes()
+        self.rope.len()
     }
 
     /// Check a suffix without materializing the whole rope or allocating a
@@ -57,8 +57,8 @@ impl SourceSnapshot {
         if end_offset > self.len() {
             return false;
         }
-        let start = self.rope.byte_to_char(end_offset);
-        if self.rope.char_to_byte(start) != end_offset {
+        let start = self.rope.byte_to_char_idx(end_offset);
+        if self.rope.char_to_byte_idx(start) != end_offset {
             return false;
         }
 
@@ -100,9 +100,10 @@ impl SourceSnapshot {
         if range.start > range.end || range.end > self.len() {
             return None;
         }
-        let start = self.rope.byte_to_char(range.start);
-        let end = self.rope.byte_to_char(range.end);
-        if self.rope.char_to_byte(start) != range.start || self.rope.char_to_byte(end) != range.end
+        let start = self.rope.byte_to_char_idx(range.start);
+        let end = self.rope.byte_to_char_idx(range.end);
+        if self.rope.char_to_byte_idx(start) != range.start
+            || self.rope.char_to_byte_idx(end) != range.end
         {
             return None;
         }
@@ -207,8 +208,10 @@ impl BlockSequence {
         if self.is_empty() {
             return;
         }
-        let mut cursor = self.0.cursor::<usize>(());
-        let prefix = cursor.slice(&(self.len() - 1), sum_tree::Bias::Left);
+        let prefix = {
+            let mut cursor = self.0.cursor::<usize>(());
+            cursor.slice(&(self.len() - 1), sum_tree::Bias::Left)
+        };
         self.0 = prefix;
     }
     pub(crate) fn append(&mut self, next: Self) {

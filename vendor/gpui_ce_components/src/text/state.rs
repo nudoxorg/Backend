@@ -1998,7 +1998,10 @@ mod tests {
     #[test]
     fn pending_completed_results_keep_latest_document_and_required_selection_reset() {
         let (tx, rx) = pending_update::channel(ParsedUpdate::merge);
-        let parsed = |revision, source: &str, append_compatible, baseline_ack| ParsedUpdate {
+        let parsed = |revision: usize,
+                      source: &str,
+                      append_compatible: bool,
+                      baseline_ack: bool| ParsedUpdate {
             revision,
             full_parse: !append_compatible,
             selection_compatible: append_compatible,

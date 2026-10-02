@@ -117,7 +117,7 @@ impl ReferenceEnvironment {
     }
 
     fn record_original_winner(&mut self, id: &SharedString) {
-        if self.tracking_update && !self.original_winners.contains_key(id) {
+        if self.tracking_update && self.original_winners.get(id).is_none() {
             self.original_winners.insert(
                 id.clone(),
                 self.by_id.get(id).map(|reference| reference.mark.clone()),
