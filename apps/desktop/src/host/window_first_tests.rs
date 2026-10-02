@@ -1002,7 +1002,13 @@ mod launch_snapshot {
         });
         assert_ne!(opened.stamps().0, failed.0, "recovery is a visible transition");
         assert!(opened.events_for(&symbol_key()) > 0, "successful recovery notifies its owner-backed controls");
-        assert_eq!(opened.stamps().1, failed.1, "the healthy Package seed still confirms without redraw");
-        assert!(!opened.latch.asked().contains(&package_key()), "the healthy Package seed is not fetched redundantly");
+        wait::until("the held titlebar Package also recovered", || {
+            paint(opened.cx);
+            opened.graph.store.read_with(opened.cx, |store, _| {
+                crate::core::admit_resource(&store.package(&package()), root, store.owner_serving()).allows_actions()
+            })
+        });
+        assert_ne!(opened.stamps().1, failed.1, "owner failure faulted the held titlebar dependency too");
+        assert!(opened.latch.asked().contains(&package_key()), "the faulted Package also requires typed success");
     }
 }
