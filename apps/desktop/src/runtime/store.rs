@@ -34,7 +34,7 @@ pub(crate) mod cargo_context_tests;
 #[cfg(test)]
 mod owner_read_tests;
 
-pub(crate) use self::dependencies::RouteDependencies;
+pub(crate) use self::dependencies::{RouteDependencies, RouteReadLease};
 pub(crate) use self::owner_link::OwnerAttachment;
 use self::keeper::SnapshotKeeper;
 use self::owner_link::{OwnerLink, OwnerPhase};
