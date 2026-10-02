@@ -769,9 +769,11 @@ pub(crate) struct ParsedContent {
     pub(crate) document: ParsedDocument,
     pub(crate) node_cx: node::NodeContext,
     append_compatible: bool,
-    /// Test-only grammar input volume, not a parse-time estimate. Required
-    /// open-block reparses and conservative full-document reference fallback
-    /// both contribute their actual source bytes.
+    /// Test-only successful grammar input in the current checked lineage,
+    /// not a parse-time estimate. Open-block reparses and reference fallback
+    /// contribute their source bytes. Replacement and failed-basis recovery
+    /// start a fresh lineage; failed parses are excluded. This is not total
+    /// worker input over its lifetime.
     #[cfg(test)]
     grammar_input_bytes: usize,
 }

@@ -77,6 +77,13 @@ Full source materialization is lazy for source-copy consumers and full recovery.
 The source-copy oracle measures ingestion, suffix slicing and parse-buffer source
 storage over 1,024 real parser appends while retaining an old snapshot. This is
 an operation counter, not an allocator profiler or a release timing measurement.
+Its bound applies to stable short-paragraph appends within one checked source
+lineage. Full reference fallback and failed-basis recovery construct a new
+snapshot counter; the separate logical-source rope and unrelated String/AST
+allocations are excluded. The grammar counter includes successful suffix and
+reference fallback passes in a checked lineage, but excludes failed passes and
+restarts on replacement/recovery. Neither counter establishes cumulative worker
+work across those transitions.
 Tree tests check prefix identity and bounded height after 4,096 appends/pops.
 
 A barrier-driven test holds the actual Markdown worker on A while a replacement

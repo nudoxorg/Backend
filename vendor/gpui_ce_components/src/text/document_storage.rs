@@ -13,8 +13,12 @@ use std::{
 pub(crate) struct SourceSnapshot {
     rope: Rope,
     flat: Arc<OnceLock<SharedString>>,
-    /// Test-only byte-copy volume for rope construction, materialized ranges,
-    /// appends, and explicit whole-source flattening.
+    /// Test-only copy work for this snapshot lineage: rope construction,
+    /// materialized ranges, appends, explicit whole-source flattening, and
+    /// manually recorded suffix parse buffers. Clones share the counter;
+    /// full replacement, reference fallback, and failed-basis recovery create
+    /// a fresh lineage. This excludes the worker's separate logical source,
+    /// AST allocations, and other String copies; it is not lifetime copy work.
     #[cfg(test)]
     copy_work: Arc<std::sync::atomic::AtomicUsize>,
 }
