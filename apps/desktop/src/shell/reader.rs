@@ -683,6 +683,18 @@ impl Reader {
             && self.find_held.iter().map(|item| &item.key).eq(keys.iter())
     }
 
+    /// A Compare removal edits the current held hand, never the hand captured
+    /// by an older painted callback or one stamped by a different owner.
+    pub(crate) fn remove_find_held_package(&mut self, key: &SharedString, root: crate::core::VersionedRoot, cx: &mut Context<Self>) {
+        if !self.find_held_root.is_some_and(|held| held.same_authority(root)) { return; }
+        let before = self.find_held.len();
+        self.find_held.retain(|package| package.key != *key);
+        if self.find_held.len() != before {
+            if self.find_held.is_empty() { self.find_held_root = None; }
+            cx.notify();
+        }
+    }
+
     /// Align a tracked section heading with the reading viewport. This uses
     /// real prepaint geometry, so text zoom and open folds need no estimates.
     pub(crate) fn jump_symbol_section(&mut self, id: &'static str, cx: &mut Context<Self>) {

@@ -12,9 +12,9 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
 use crate::core::{LocalProjectId, VersionedRoot};
-use crate::model::browse::{BrowseKey, BrowseValue, FindModel};
-use crate::model::pages::{DeclRef, Gap, GapReason, Known, MatchReason, SearchPage, SearchQuery, SearchRow, SignatureText};
-use crate::navigation::{BrowseRoute, OrbitRoute, Overlay, Route, SettingsPage};
+use crate::model::browse::{ApiItem, BrowseKey, BrowseValue, CompareModel, FindModel, PackageApi};
+use crate::model::pages::{DeclRef, Gap, GapReason, Known, MatchReason, PackageRef, SearchPage, SearchQuery, SearchRow, SignatureText};
+use crate::navigation::{BrowseRoute, CompareSet, OrbitRoute, Overlay, Route, SettingsPage};
 use crate::runtime::reads::{ReadPool, SessionReader};
 use crate::shell::tests::{rig, rig_with_reads};
 use backend_client::Session;
@@ -302,6 +302,154 @@ fn find_source_callback_rechecks_membership_query_overlay_owner_and_root(cx: &mu
     rig.graph.store.update(rig.cx, |store, cx| store.owner_ready(cx));
 
     let newer = VersionedRoot::synthetic(backend_library::view_state_root(&[("find".into(), "new root".into())]), 9);
+    rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::new(original.with_key(newer, None)), cx));
+    invoke(&mut rig, &current);
+}
+
+fn compare_selection() -> CompareSet {
+    CompareSet::new(["/fixture/present", "/fixture/second", "/fixture/third"]
+        .into_iter().map(|key| PackageRef::parse(key).expect("fixture package"))).expect("three packages")
+}
+
+fn compare_fixture(selection: &CompareSet, answer: bool, source_available: bool) -> BrowseValue {
+    let dossiers = selection.packages().iter().map(|package| {
+        let mut dossier = crate::shell::tests::dossier();
+        dossier.package = package.clone();
+        if let Known::Known(record) = &mut dossier.record {
+            record.package = package.clone();
+            record.name = Arc::from(package.display_name());
+        }
+        dossier.outline = Known::Unknown(Gap::new(GapReason::NotRecorded, "synthetic comparison outline"));
+        dossier
+    }).collect::<Vec<_>>();
+    let apis = selection.packages().iter().enumerate().map(|(at, package)| Known::Known(PackageApi {
+        package: package.clone(), complete: true,
+        items: if at == 0 && answer { Arc::from([ApiItem {
+            decl: DeclRef::from_label(
+                &format!("{}::glyph.rs:138::RelationLabel", package.as_str()),
+                None, Some(DeclarationKind::Struct), source_available.then_some(("glyph.rs", 138)),
+            ).expect("fixture declaration"),
+            signature: Known::Known(SignatureText {
+                text: Arc::from("pub struct RelationLabel"), tokens: Arc::from([]),
+                name_link_coverage: crate::model::pages::NameLinkCoverage::Unavailable,
+            }),
+            summary: None,
+        }]) } else { Arc::from([]) },
+    })).collect::<Vec<_>>();
+    let prepared = Arc::new(crate::runtime::browse_views::prepare_compare(&dossiers, &apis));
+    BrowseValue::Compare(Arc::new(CompareModel {
+        packages: dossiers.into(),
+        apis: apis.into(), prepared,
+    }))
+}
+
+fn compare_callback(rig: &mut crate::shell::tests::Rig, selection: &CompareSet) -> super::CompareActionSource {
+    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    super::CompareActionSource {
+        links: crate::shell::region::Links {
+            root: rig.graph.root.downgrade(), store: rig.graph.store.clone(), shell: rig.shell.downgrade(),
+        },
+        selection: selection.clone(), root,
+    }
+}
+
+fn land_compare(rig: &mut crate::shell::tests::Rig, selection: &CompareSet, answer: bool, source_available: bool) {
+    rig.graph.store.update(rig.cx, |store, cx| store.test_land_browse(
+        BrowseKey::Compare(selection.clone()), compare_fixture(selection, answer, source_available), cx,
+    ));
+}
+
+#[gpui::test]
+fn compare_source_callbacks_open_members_and_remove_only_from_the_current_reading(cx: &mut TestAppContext) {
+    let selection = compare_selection();
+    let current = Route::Orbit(OrbitRoute::Browse(BrowseRoute::Compare(selection.clone())));
+    let mut rig = rig(cx, Some(current.clone()), 1200.0, 800.0);
+    land_compare(&mut rig, &selection, true, true);
+    let source = compare_callback(&mut rig, &selection);
+    let open = super::compare_symbol_action(source.clone(), false);
+    rig.cx.update(|window, cx| open("/fixture/present::glyph.rs:138::RelationLabel".into(), window, cx));
+    rig.settle();
+    assert!(matches!(rig.route(), Route::Symbol(route) if route.id.as_str() == "/fixture/present::glyph.rs:138::RelationLabel"));
+
+    rig.go(crate::navigation::Intent::Navigate(current.clone()));
+    land_compare(&mut rig, &selection, true, true);
+    let source = compare_callback(&mut rig, &selection);
+    let open = super::compare_package_action(source);
+    rig.cx.update(|window, cx| open("/fixture/second".into(), window, cx));
+    rig.settle();
+    assert!(matches!(rig.route(), Route::Package(route) if route.package.as_str() == "/fixture/second"));
+
+    rig.go(crate::navigation::Intent::Navigate(current));
+    land_compare(&mut rig, &selection, true, true);
+    let source = compare_callback(&mut rig, &selection);
+    let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
+    let remove = super::compare_remove_action(source, reader.downgrade());
+    rig.cx.update(|window, cx| remove("/fixture/third".into(), window, cx));
+    rig.settle();
+    let expected = CompareSet::new(selection.packages()[..2].iter().cloned()).expect("two remaining packages");
+    assert_eq!(rig.route(), Route::Orbit(OrbitRoute::Browse(BrowseRoute::Compare(expected))));
+}
+
+#[gpui::test]
+fn compare_source_callbacks_deny_replaced_membership_selection_overlay_owner_and_root(cx: &mut TestAppContext) {
+    let selection = compare_selection();
+    let current = Route::Orbit(OrbitRoute::Browse(BrowseRoute::Compare(selection.clone())));
+    let mut rig = rig(cx, Some(current.clone()), 1200.0, 800.0);
+    land_compare(&mut rig, &selection, true, true);
+    let source = compare_callback(&mut rig, &selection);
+    let symbol = super::compare_symbol_action(source.clone(), false);
+    let code = super::compare_symbol_action(source.clone(), true);
+    let package = super::compare_package_action(source.clone());
+    let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
+    let remove = super::compare_remove_action(source.clone(), reader.downgrade());
+    let member = SharedString::from("/fixture/present::glyph.rs:138::RelationLabel");
+    let invoke = |rig: &mut crate::shell::tests::Rig, expected: &Route| {
+        rig.cx.update(|window, cx| symbol(member.clone(), window, cx));
+        rig.cx.update(|window, cx| code(member.clone(), window, cx));
+        rig.cx.update(|window, cx| package("/fixture/second".into(), window, cx));
+        rig.cx.update(|window, cx| remove("/fixture/third".into(), window, cx));
+        rig.cx.run_until_parked();
+        assert_eq!(&rig.route(), expected, "an obsolete Compare callback cannot navigate");
+    };
+
+    land_compare(&mut rig, &selection, false, false);
+    rig.cx.update(|window, cx| symbol(member.clone(), window, cx));
+    rig.cx.update(|window, cx| code(member.clone(), window, cx));
+    rig.cx.run_until_parked();
+    assert_eq!(rig.route(), current, "removed symbol membership cannot open Page or Code");
+    land_compare(&mut rig, &selection, true, false);
+    rig.cx.update(|window, cx| code(member.clone(), window, cx));
+    rig.cx.run_until_parked();
+    assert_eq!(rig.route(), current, "a signature without indexed source cannot open Code");
+
+    let another = CompareSet::new(["/fixture/present", "/fixture/other", "/fixture/third"]
+        .into_iter().map(|key| PackageRef::parse(key).expect("package"))).expect("other selection");
+    rig.graph.store.update(rig.cx, |store, cx| store.test_land_browse(
+        BrowseKey::Compare(selection.clone()), compare_fixture(&another, true, true), cx,
+    ));
+    invoke(&mut rig, &current);
+    land_compare(&mut rig, &selection, true, true);
+
+    let original = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let mut covered = original.session().clone();
+    covered.overlay = Some(Overlay::Settings(SettingsPage::Appearance));
+    rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::new(original.with_session(covered)), cx));
+    invoke(&mut rig, &current);
+    rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::clone(&original), cx));
+
+    let mut elsewhere = original.session().clone();
+    elsewhere.route = Route::Orbit(OrbitRoute::Home);
+    rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::new(original.with_session(elsewhere.clone())), cx));
+    invoke(&mut rig, &elsewhere.route);
+    rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::clone(&original), cx));
+    rig.cx.run_until_parked();
+    land_compare(&mut rig, &selection, true, true);
+
+    rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
+    invoke(&mut rig, &current);
+    rig.graph.store.update(rig.cx, |store, cx| store.owner_ready(cx));
+
+    let newer = VersionedRoot::synthetic(backend_library::view_state_root(&[("compare".into(), "new root".into())]), 9);
     rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::new(original.with_key(newer, None)), cx));
     invoke(&mut rig, &current);
 }

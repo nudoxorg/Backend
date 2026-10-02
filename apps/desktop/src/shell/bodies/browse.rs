@@ -4,7 +4,7 @@
 use super::state::{Shown, not_ready, shown};
 use super::{Ctx, Leaf, Pages};
 use crate::core::{ResourceAdmission, ReadHoldReason, ResourceTerminal, UnavailableReason, VersionedRoot, admit_resource};
-use crate::model::browse::{BrowseKey, BrowseValue, FindModel, TreeDestination, TreeModel, TreeRoleLinks};
+use crate::model::browse::{BrowseKey, BrowseValue, CompareModel, FindModel, TreeDestination, TreeModel, TreeRoleLinks};
 use crate::model::pages::{PageKey, PackageRef, SearchQuery, SymbolRef};
 use crate::navigation::{BrowseRoute, CompareSet, Intent, OrbitRoute, Route, View};
 use crate::shell::kit::{package_route, symbol_route, symbol_view_route};
@@ -188,23 +188,6 @@ fn find_package_action(source: FindActionSource) -> Rc<dyn Fn(SharedString, &mut
     })
 }
 
-fn open_symbol_action(ctx: &Ctx<'_>, code: bool) -> Rc<dyn Fn(SharedString, &mut gpui::Window, &mut gpui::App)> {
-    let links = ctx.links.clone();
-    Rc::new(move |key, _, cx| {
-        if let Ok(symbol) = SymbolRef::new(&key) && let Some(package) = symbol.package() {
-            let route = if code { symbol_view_route(package.as_str(), &symbol, View::Code, None) } else { symbol_route(package.as_str(), &symbol) };
-            if let Some(route) = route { links.dispatch(Intent::Navigate(route), cx); }
-        }
-    })
-}
-
-fn open_package_action(ctx: &Ctx<'_>) -> Rc<dyn Fn(SharedString, &mut gpui::Window, &mut gpui::App)> {
-    let links = ctx.links.clone();
-    Rc::new(move |key, _, cx| {
-        if let Ok(package) = PackageRef::parse(&key) && let Some(route) = package_route(&package) { links.dispatch(Intent::Navigate(route), cx); }
-    })
-}
-
 fn open_library_package_action(tree: Arc<TreeModel>, ctx: &Ctx<'_>) -> Rc<dyn Fn(ReleaseHandle, &mut gpui::Window, &mut gpui::App)> {
     let links = ctx.links.clone();
     let state = Rc::clone(&ctx.library_state);
@@ -270,20 +253,98 @@ fn find_actions(ctx: &Ctx<'_>, cx: &mut Context<Reader>, source: &FindActionSour
     }
 }
 
-fn compare_actions(route: &BrowseRoute, ctx: &Ctx<'_>, cx: &mut Context<Reader>) -> facet::browse::compare::Actions {
-    let packages = match route { BrowseRoute::Compare(selection) => selection.packages().to_vec(), _ => vec![] };
-    let links = ctx.links.clone();
-    let reader = cx.weak_entity();
-    let held = ctx.find_held.clone();
-    facet::browse::compare::Actions { active: ctx.native_input_active && ctx.links.snapshot(cx).overlay().is_none(), scroll: ctx.reader_scroll.clone(), open_package: open_package_action(ctx), open_symbol: open_symbol_action(ctx, false), open_code: open_symbol_action(ctx, true),
-        remove_package: Rc::new(move |key, _, cx| {
-            if let Ok(selection) = CompareSet::new(packages.iter().filter(|package| package.as_str() != key.as_ref()).cloned()) {
-                let updated = held.iter().filter(|package| package.key != key).cloned().collect();
-                let _ = reader.update(cx, |reader, cx| reader.set_find_held(updated, cx));
-                links.dispatch(Intent::Navigate(Route::Orbit(OrbitRoute::Browse(BrowseRoute::Compare(selection)))), cx);
-            }
-        })
+/// A Compare callback is a painted choice, not a lease on its original
+/// reading. Route, owner, selected packages and the current member all have
+/// to agree again when the user acts.
+#[derive(Clone)]
+struct CompareActionSource {
+    links: super::super::region::Links,
+    selection: CompareSet,
+    root: VersionedRoot,
+}
+
+impl CompareActionSource {
+    fn new(selection: &CompareSet, ctx: &Ctx<'_>, cx: &App) -> Self {
+        Self { links: ctx.links.clone(), selection: selection.clone(), root: ctx.links.snapshot(cx).key() }
     }
+
+    fn current<R>(&self, cx: &App, member: impl FnOnce(&CompareModel) -> Option<R>) -> Result<R, &'static str> {
+        let store = self.links.store.read(cx);
+        let snapshot = store.snapshot();
+        if snapshot.route() != &Route::Orbit(OrbitRoute::Browse(BrowseRoute::Compare(self.selection.clone())))
+            || snapshot.overlay().is_some()
+            || !snapshot.key().same_authority(self.root)
+        {
+            return Err("Compare changed before that action. Choose from the current reading.");
+        }
+        let resource = store.pages().browse(&BrowseKey::Compare(self.selection.clone()));
+        let ResourceAdmission::Current(BrowseValue::Compare(compare)) =
+            admit_resource(&resource, snapshot.key(), store.owner_serving()) else {
+                return Err("Compare results changed before that action. Wait for the current reading.");
+            };
+        if !compare.packages.iter().map(|package| &package.package).eq(self.selection.packages())
+            || compare.apis.len() != self.selection.packages().len()
+            || !compare.apis.iter().zip(self.selection.packages()).all(|(api, package)|
+                api.known().is_none_or(|api| &api.package == package))
+            || !compare.prepared.candidates.iter().map(|candidate| candidate.key.as_ref())
+                .eq(self.selection.packages().iter().map(PackageRef::as_str))
+        {
+            return Err("Compare results belong to another package selection. Wait for the current reading.");
+        }
+        member(compare).ok_or("That choice is no longer in the current Compare reading.")
+    }
+}
+
+fn compare_package_action(source: CompareActionSource) -> Rc<dyn Fn(SharedString, &mut Window, &mut App)> {
+    Rc::new(move |key, window, cx| {
+        let route = source.current(cx, |compare| {
+            let package = PackageRef::parse(&key).ok()?;
+            compare.packages.iter().any(|candidate| candidate.package == package).then(|| package_route(&package)).flatten()
+        });
+        match route { Ok(route) => source.links.dispatch(Intent::Navigate(route), cx), Err(reason) => find_action_notice(reason, window, cx) }
+    })
+}
+
+fn compare_symbol_action(source: CompareActionSource, code: bool) -> Rc<dyn Fn(SharedString, &mut Window, &mut App)> {
+    Rc::new(move |key, window, cx| {
+        let route = source.current(cx, |compare| {
+            let symbol = SymbolRef::new(&key).ok()?;
+            let package = symbol.package()?;
+            let present = compare.prepared.candidates.iter().any(|candidate| {
+                candidate.key.as_ref() == package.as_str() && candidate.operations.as_ref().is_some_and(|operations| {
+                    operations.iter().any(|operation| operation.answer.key == key && (!code || operation.answer.source_available))
+                })
+            });
+            if !present { return None; }
+            if code { symbol_view_route(package.as_str(), &symbol, View::Code, None) } else { symbol_route(package.as_str(), &symbol) }
+        });
+        match route { Ok(route) => source.links.dispatch(Intent::Navigate(route), cx), Err(reason) => find_action_notice(reason, window, cx) }
+    })
+}
+
+fn compare_actions(route: &BrowseRoute, ctx: &Ctx<'_>, cx: &mut Context<Reader>) -> facet::browse::compare::Actions {
+    let BrowseRoute::Compare(selection) = route else { unreachable!("Compare actions require a Compare route") };
+    let source = CompareActionSource::new(selection, ctx, cx);
+    facet::browse::compare::Actions { active: ctx.native_input_active && source.current(cx, |_| Some(())).is_ok(), scroll: ctx.reader_scroll.clone(), open_package: compare_package_action(source.clone()), open_symbol: compare_symbol_action(source.clone(), false), open_code: compare_symbol_action(source, true),
+        remove_package: compare_remove_action(CompareActionSource::new(selection, ctx, cx), cx.weak_entity()),
+    }
+}
+
+fn compare_remove_action(source: CompareActionSource, reader: gpui::WeakEntity<Reader>) -> Rc<dyn Fn(SharedString, &mut Window, &mut App)> {
+    Rc::new(move |key, window, cx| {
+        let next = source.current(cx, |compare| {
+            let package = PackageRef::parse(&key).ok()?;
+            if !compare.packages.iter().any(|candidate| candidate.package == package) { return None; }
+            CompareSet::new(source.selection.packages().iter().filter(|candidate| *candidate != &package).cloned()).ok()
+        });
+        match next {
+            Ok(selection) => {
+                let _ = reader.update(cx, |reader, cx| reader.remove_find_held_package(&key, source.root, cx));
+                source.links.dispatch(Intent::Navigate(Route::Orbit(OrbitRoute::Browse(BrowseRoute::Compare(selection)))), cx);
+            }
+            Err(reason) => find_action_notice(reason, window, cx),
+        }
+    })
 }
 
 /// Record the small set of words actually in the initial Library viewport.
