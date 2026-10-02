@@ -1,5 +1,6 @@
 //! Database opening and process-shared connection policy.
 
+use crate::sharing::SharedWalBackend;
 use crate::{ProjectionError, TursoProjection, schema};
 use std::path::Path;
 use std::time::Duration;
@@ -10,28 +11,15 @@ use std::time::Duration;
 /// still surfacing a wedged peer as an error instead of hanging local work.
 pub(crate) const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// A local-database builder that shares one WAL between processes.
-///
-/// Every database this crate opens may be opened by several processes at once.
-/// Turso refuses that mode on an I/O backend that cannot coordinate a shared
-/// WAL, and the default Windows backend is one: every open fails with
-/// "multiprocess WAL is not supported by the active IO backend". Windows'
-/// completion-port backend implements the coordination, so it is selected
-/// there explicitly. Other platforms keep their default backend.
-pub(crate) fn shared_wal_builder(path: &str) -> turso::Builder {
-    let builder = turso::Builder::new_local(path).experimental_multiprocess_wal(true);
-    #[cfg(windows)]
-    let builder = builder.with_io(turso::IoBackend::IOCP);
-    builder
-}
-
 impl TursoProjection {
     /// Opens or creates a local projection database and validates its schema.
     ///
     /// # Errors
     ///
     /// Returns an error for an invalid path, database failure, or incompatible
-    /// on-disk projection schema.
+    /// on-disk projection schema, and [`ProjectionError::Sharing`] when this
+    /// platform or volume cannot coordinate a write-ahead log between
+    /// processes. The projection is never opened in a weaker mode instead.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, ProjectionError> {
         let path = path.as_ref();
         let text = path
@@ -44,9 +32,8 @@ impl TursoProjection {
         // multiprocess WAL keeps immutable read snapshots independent from the
         // single serialized writer lane and persists the coordination state
         // next to the database.
-        let database = shared_wal_builder(text)
-            .build()
-            .await?;
+        let backend = SharedWalBackend::detect()?;
+        let database = backend.open_database(backend.builder(text)).await?;
         let connection = database.connect()?;
         connection.busy_timeout(BUSY_TIMEOUT)?;
         connection.execute_batch(schema::SCHEMA).await?;

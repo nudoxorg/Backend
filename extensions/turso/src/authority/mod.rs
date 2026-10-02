@@ -40,7 +40,8 @@ pub use versioned::{
     VersionedPlaneSegmentSchema,
 };
 
-use crate::connection::{BUSY_TIMEOUT, shared_wal_builder};
+use crate::connection::BUSY_TIMEOUT;
+use crate::sharing::SharedWalBackend;
 use backend_store::{ArtifactBudget, FileStore};
 use schema::{AUTHORITY_SCHEMA, AUTHORITY_SCHEMA_VERSION};
 use std::{fmt, path::Path};
@@ -70,14 +71,19 @@ impl TursoAuthority {
     ///
     /// Keep this file separate from [`crate::TursoProjection`]: the latter is
     /// disposable and may be removed when its projection schema changes.
+    ///
+    /// The authority is reached by the daemon, its workers and clients, so it
+    /// is opened with shared multiprocess logging or not at all:
+    /// [`AuthorityError::Sharing`] names the capability this platform or volume
+    /// lacks instead of a weaker mode being used.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, AuthorityError> {
         let path = path.as_ref();
         let text = path
             .to_str()
             .ok_or_else(|| AuthorityError::NonUtf8Path(path.to_path_buf()))?;
-        let database = shared_wal_builder(text)
-            .experimental_index_method(true)
-            .build()
+        let backend = SharedWalBackend::detect()?;
+        let database = backend
+            .open_database(backend.builder(text).experimental_index_method(true))
             .await?;
         let mut connection = database.connect()?;
         connection.busy_timeout(BUSY_TIMEOUT)?;
@@ -2544,4 +2550,12 @@ fn decode_array<const N: usize>(
     bytes
         .try_into()
         .map_err(|_| AuthorityError::CorruptRecord(field))
+}
+
+#[cfg(test)]
+impl TursoAuthority {
+    /// The raw connection, for tests that hold a transaction open on purpose.
+    pub(crate) fn raw_connection(&self) -> &turso::Connection {
+        &self.connection
+    }
 }

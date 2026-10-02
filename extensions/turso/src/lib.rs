@@ -15,11 +15,18 @@ mod graph;
 mod package_graph_read;
 mod read;
 mod schema;
+mod sharing;
 mod writer;
 
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod process_harness;
+
+#[cfg(test)]
+mod process_tests;
 
 pub use authority::{
     AttemptInvalidatedByObservationProof, AuthorityError, AuthorityHash, AuthorityNamespace,
@@ -41,6 +48,7 @@ pub use error::ProjectionError;
 pub use graph::{PackageGraphSourceSelection, PackageGraphState, RootedPackageGraph};
 pub use package_graph_read::PackageGraphReadError;
 pub use read::RootedRows;
+pub use sharing::{IoBackendName, SharedWalBackend, SharingRefusal};
 
 use std::fmt;
 
