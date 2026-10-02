@@ -287,6 +287,9 @@ impl Shell {
     pub(crate) fn ask_entity(&self) -> Entity<Ask> { self.ask.clone() }
 
     #[cfg(test)]
+    pub(crate) fn reader_entity(&self) -> Entity<Reader> { self.reader.clone() }
+
+    #[cfg(test)]
     pub(crate) fn graph_canvas_geometry(&self, node: facet::graph::NodeId, cx: &App) -> (Option<gpui::Bounds<gpui::Pixels>>, Option<gpui::Bounds<gpui::Pixels>>, gpui::LayerTransform) {
         self.reader.read(cx).graph_canvas_geometry(node, cx)
     }
