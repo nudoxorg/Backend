@@ -403,7 +403,7 @@ fn candidate(destination: &str, indexed: Option<&ReadmeLink>, package: &PackageR
     Candidate::Rustdoc
 }
 
-fn valid_external(destination: &str, lower: &str) -> bool {
+pub(super) fn valid_external(destination: &str, lower: &str) -> bool {
     if destination.chars().any(char::is_whitespace) || destination.contains('\\') {
         return false;
     }

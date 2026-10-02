@@ -8,12 +8,13 @@
 use super::state::{Shown, not_ready};
 use super::{Ctx, Leaf};
 use crate::core::{ResourceAdmission, ResourceTerminal, admit_resource};
+use crate::core::VersionedRoot;
 use crate::model::AppSnapshot;
 use crate::model::local_package::{ActiveProject, ReadmeBlock, active_project};
 use crate::model::pages::{
     Dependency, DependencyScope, PackageDossier, PackageRef, PageKey, RecordSource,
 };
-use crate::navigation::{CargoSourcePath, CargoSourceRoute, Intent, Route};
+use crate::navigation::{CargoSourcePath, CargoSourceRoute, Intent, Overlay, Route};
 use crate::shell::focus::Target;
 use crate::shell::kit::{HoverIntent, package_route, quiet, text};
 use crate::shell::markdown::FollowMarkdownLink;
@@ -26,9 +27,10 @@ use facet::{Measure, Palette, Set, Space};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, App, AppContext as _, ClickEvent, Context, ElementId, InteractiveElement,
-    IntoElement, ParentElement, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
-    Window, div, point, px,
+    IntoElement, KeyDownEvent, ParentElement, ScrollHandle, SharedString,
+    StatefulInteractiveElement, Styled, Window, div, point, px,
 };
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -56,10 +58,8 @@ pub(super) fn use_registry_binding_for_test(
     authority: impl Into<Arc<str>>,
     generation: u64,
 ) -> RegistryBindingTestGuard {
-    let previous = TEST_REGISTRY_BINDING.with(|binding| {
-        binding
-            .replace(Some((authority.into(), generation)))
-    });
+    let previous =
+        TEST_REGISTRY_BINDING.with(|binding| binding.replace(Some((authority.into(), generation))));
     RegistryBindingTestGuard(previous)
 }
 
@@ -257,7 +257,34 @@ pub(super) fn body(
     // territory wants the room the reader has.
     let measure = page_measure(ctx);
     let byline = ready.as_deref().map(data::byline).unwrap_or_default();
-    let hero = hero(&dossier, &active, &name, &byline, &measure, ctx, cx);
+    let links_admitted = crate::core::admit_resource(
+        &resource,
+        snapshot.key(),
+        ctx.links.store.read(cx).owner_serving(),
+    )
+    .allows_actions();
+    let header_ticket = ready
+        .as_ref()
+        .filter(|_| links_admitted)
+        .map(|facts| HeaderTicket {
+            package: dossier.package.clone(),
+            hints: hints.clone(),
+            project_path: project_path.clone(),
+            source_root: facts.root.clone(),
+            route: snapshot.route().clone(),
+            overlay: snapshot.overlay(),
+            root: snapshot.key(),
+        });
+    let hero = hero(
+        &dossier,
+        &active,
+        &name,
+        &byline,
+        header_ticket.as_ref(),
+        &measure,
+        ctx,
+        cx,
+    );
     let id = format!(
         "folio-{}",
         pin.as_ref().map_or_else(
@@ -403,11 +430,80 @@ fn page_measure(ctx: &Ctx<'_>) -> Measure {
 /// The widest the folio grows, px at 100 % text.
 const PAGE_MAX: f32 = 1800.0;
 
+/// A header URL is owned jointly by this exact page and its exact source
+/// reading. A retained dossier or a changed source read can still be shown,
+/// but cannot open a captured destination.
+#[derive(Clone)]
+struct HeaderTicket {
+    package: PackageRef,
+    hints: std::collections::HashMap<String, String>,
+    project_path: Option<PathBuf>,
+    source_root: PathBuf,
+    route: Route,
+    overlay: Option<Overlay>,
+    root: VersionedRoot,
+}
+
+impl HeaderTicket {
+    fn open(
+        &self,
+        kind: data::HeaderLinkKind,
+        destination: &str,
+        links: &crate::shell::region::Links,
+        cx: &mut App,
+    ) {
+        let store = links.store.read(cx);
+        let snapshot = store.snapshot();
+        if snapshot.route() != &self.route
+            || snapshot.overlay() != self.overlay
+            || !snapshot.key().same_authority(self.root)
+            || !crate::core::admit_resource(
+                &store.package(&self.package),
+                snapshot.key(),
+                store.owner_serving(),
+            )
+            .allows_actions()
+        {
+            return;
+        }
+        drop(store);
+        if let crate::model::source_facts::Reading::Ready(facts) =
+            crate::model::source_facts::reading(
+                &self.package,
+                &self.hints,
+                self.project_path.as_deref(),
+                cx,
+            )
+            && facts.root == self.source_root
+            && kind.value(&facts) == Some(destination)
+            && data::external_destination(destination).is_some()
+        {
+            cx.open_url(destination);
+        }
+    }
+}
+
+fn activate_header_link(
+    event: &KeyDownEvent,
+    action: &super::super::focus::Act,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if !event.keystroke.modifiers.modified()
+        && matches!(event.keystroke.key.as_str(), "enter" | "space")
+        && !event.is_held
+    {
+        action(window, cx);
+        cx.stop_propagation();
+    }
+}
+
 fn hero(
     dossier: &PackageDossier,
     active: &ActiveProject,
     name: &str,
-    byline: &[SharedString],
+    byline: &[data::BylinePart],
+    header_ticket: Option<&HeaderTicket>,
     measure: &Measure,
     ctx: &mut Ctx<'_>,
     cx: &gpui::App,
@@ -474,26 +570,66 @@ fn hero(
             if !stacked && index > 0 {
                 line = line.child(text(ty::SMALL, measure, palette.ink3).child("·"));
             }
-            let ink = if part.contains('.') && part.contains('/') {
+            let label = part.label();
+            let ink = if label.contains('.') && label.contains('/') {
                 palette.ink1
             } else {
                 palette.ink2
             };
             // `min_w_0` lets a long repository path wrap inside the column
             // instead of forcing the flex row past the reader's right edge.
-            let full_value = part.clone();
-            line = line.child(
-                div()
-                    .min_w_0()
-                    .max_w_full()
-                    .when(stacked, |this| this.w_full())
-                    .child(
-                        text(ty::SMALL, measure, ink)
-                            .min_w_0()
-                            .max_w_full()
-                            .child(ctx.say(full_value)),
+            let full_value = ctx.say(label);
+            let face = div()
+                .min_w_0()
+                .max_w_full()
+                .when(stacked, |this| this.w_full())
+                .child(
+                    text(ty::SMALL, measure, ink)
+                        .min_w_0()
+                        .max_w_full()
+                        .child(full_value),
+                );
+            if let (data::BylinePart::External { kind, url, .. }, Some(ticket)) =
+                (part, header_ticket)
+            {
+                let id: SharedString = format!("pkg-header-{}", kind.key()).into();
+                let label: SharedString = format!("Open package {}", kind.key()).into();
+                let ticket = ticket.clone();
+                let links = ctx.links.clone();
+                let kind = *kind;
+                let url = url.clone();
+                let act: super::super::focus::Act =
+                    Rc::new(move |_, cx| ticket.open(kind, &url, &links, cx));
+                let click_act = Rc::clone(&act);
+                let key_act = Rc::clone(&act);
+                ctx.targets.push(Target {
+                    id: id.clone(),
+                    label: label.clone(),
+                    act,
+                    peek: None,
+                    source: None,
+                });
+                line = line.child(
+                    ctx.targets.track(
+                        id.clone(),
+                        face.id(id)
+                            .role(gpui::Role::Link)
+                            .aria_label(label)
+                            .focusable()
+                            .cursor_pointer()
+                            .on_click(move |_: &ClickEvent, window, cx| {
+                                if !window.last_input_was_keyboard() {
+                                    click_act(window, cx);
+                                }
+                            })
+                            .on_key_down(move |event, window, cx| {
+                                activate_header_link(event, &key_act, window, cx)
+                            }),
                     ),
-            );
+                );
+            } else {
+                line = line.child(face);
+            }
         }
         words = words.child(line);
     }
@@ -704,7 +840,9 @@ fn in_the_library<'a>(
     indexed: &'a [crate::model::pages::IndexedPackage],
 ) -> Option<&'a PackageRef> {
     #[cfg(test)]
-    if let Some((authority, generation)) = TEST_REGISTRY_BINDING.with(|binding| binding.borrow().clone()) {
+    if let Some((authority, generation)) =
+        TEST_REGISTRY_BINDING.with(|binding| binding.borrow().clone())
+    {
         return in_the_library_for(dependency, indexed, authority.as_ref(), generation);
     }
     let composition = crate::host::registry::composed()?;
