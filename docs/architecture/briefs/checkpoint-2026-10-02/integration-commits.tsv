@@ -1,0 +1,117 @@
+commit	subject
+f44d914cb37fc41a92f4cec7ede2530256ebf795	feat(facet): allow human names for symbolic buttons
+d187b016b4b2f67694bf57384ffb9914d9ebc2bc	feat(gui): expose Settings radio choices and cache age native actions
+c7613c27bf2e89ff4cb5e30591007847db9c15f9	feat(components): accept scoped native identity for text inputs
+6fd551c060335adc255724ff9bd7a0e8721848a5	fix(facet): disable acquisition actions while Find evidence is pending
+f75475f68f5d7e6775b15c7a0ef4a7c6f7ea64f5	fix(facet): retain radio focus after native and pointer selection
+abbf5a44e1563197752b1983de3a85e6c0faf8bb	feat(gui): expose exact Find result identities and native selection controls
+99268bd4c61329d3af66a698814fa9b0b6759d92	test(facet): cover radio pointer focus and keyboard reversal fixture
+53e71fe620b6c4434cc209137cb2d911b975a153	test(gui): cover departing Find input ownership fixture
+359a473a04e46b99afd011d8df0fc270d32d62f6	fix(gui): exclude departing Settings native control subtree
+d5404c540b6ebfa3fc8b333a04ffef160cfe0271	fix(gui): admit Find actions from live authority and typed query routes
+5e9318048cb84075f76e08dfcab9b8b3ff6acb79	fix(gui): revalidate Find actions against live reading
+763c7d94d00a551646d43b3332812eb6f1fe9ffc	test(gui): recheck painted Find callbacks against live state
+40ccdbad5d342ce68ab638450d21966bd1b03c7c	fix(gui): preserve native Find accessibility metadata
+54f7f0ed210933a57adf20fe2147a49bae804854	fix(gui): pass app context to segment focus
+e10b8029a3b121ccbd0a66d3122b7d14b930d7e8	fix(gui): read live Find resource through page store
+862a1ea47f896a18bbc4d13a56509994d332ebdd	fix(gui): expose Settings heading on native element
+409de88adda880afc12d7809b551b9b374c01c02	test(facet): pass string slices to segment width
+f4c601894c89c5df74c309db7423f912e2995e8c	fix(gui): route Find and Settings Tab through native controls
+fd38685fedc86c1ddad0a2a46fd570d129b99f73	fix(facet): focus Find query only on first active paint
+4db62cd3356e362dd6a9404497f58b442a2236e4	test(gui): capture live Find and Settings journey on current native harness
+65306c07f06d289822459bf39d1eef4f171225d5	Gate Find native focus on painted Ask exit and Reader settle
+2ae4849a04dc24f0454005ad9dedf865d3ccf41e	Revalidate Compare actions against current owner reading
+cff5fe4163cb93f972e4783f28e7d625cc1b22d4	Share Reader native motion gate across focus admission and returns
+a499e98696daaef694a520f5efe936a008b9112f	feat(gui): route exact Cargo source receipts through live file reads
+1d0974a800b98f01272bd77a2ef399cc51c50eb7	fix(gui): explain incomplete Cargo source observation
+033197a047963b8b1dcf9ea6581849d5e1ed3d3e	fix(gui): draw Cargo bytes only from live revoked resource
+4770aea49b61fb5df3e9358240cfe8c3633e3dfb	fix(gui): key Cargo paging from live file digest
+c1a663d1de852f9c1241542325d746e216ce1b7b	feat(gui): distinguish unavailable same-version Cargo sources
+93e7e57f4e8ad64a189f3f7dc0a1d075c9acf199	fix(gui): refuse ambiguous inline README targets and lossy source proof
+7af6b24afa7d6d373605362bfe2038f7d2a4cfc0	fix(gui): retain exact Library release focus across source reorder
+3bb23dabf48bbf716285cebaa66e20cda770cfd1	style(gui): format source identity and README navigation files
+9eca4bf9376150c0107197e6ff976a26d952eec8	fix(gui): order release handles by exact identity
+1bb2419feefb41d2f18aeb4f5700a23c96f11d70	Carry exact project tree address through Cargo source routes and cold reads
+e2c0bd4bbb5893e258a2a44b64c71f52c37fd7fa	Browse bounded owner Cargo file inventory beside verified source
+bbc0da111e326d762f626c9c8c36e6fb881b9291	State inventory truncation as proven omitted files
+9b14b74140287cb202dd5e71e15194d6cbe78fff	Expose truthful retained project inventory in shared reading
+5706e7fe0f06378b405c80938348e5757a85f761	Browse every observed project package in a virtual Library inventory
+ec2faeb498e1ec2e00dc8d02b92dad6c2a6994cf	Label inventory receipt action as a package route
+98d36708399d64489721ff9b409de1787143063a	Keep absent and empty unknown source origins distinct
+babf19b59cc77384141907b18df3fe8a1c08d322	Preserve absent versus named unresolved release identity
+f9429b3c3c8a73396c4e49f3ed1495dad6c45971	feat(desktop): own native Library and Cargo navigation
+4463a10a210f7bddc9cdc17e62d20271169dd9e3	Unify Cargo route dependencies and live owner admission
+0bcc9940abfe8e327fe2083aa25e37f932ece884	Fence captured visits with atomic owner attachment admission
+16eaa92ac49208942ae06b8f8d386bc99c3efbf7	fix(desktop): fence mounted native controls to current owner visit
+612c759ea4725ebd994f06bd37760c0a0592a961	fix(desktop): keep local recovery available over retained reads
+efa7b0b3d2cd875748e07ca710a1ba49e04f9ce2	Revoke prior owner reads lazily across same-root replacements
+1479f7e3bcc2c4adf33029a376fc58de04d6022b	fix(desktop): admit local native recovery on unserved startup
+2a749e4f827f24cf1a09f4107ce90b67e5bce23d	fix(desktop): keep wrapped Cargo gutter labels inert
+17782a4dd32cbc348feb63ed68c9d973a1713407	fix(facet): refresh virtual Library row hints on reflow
+04f34e8fd21c56bed8f94e482661d3c8ef765d4a	Guard Library return focus by settled native visit
+db77bec83de1c0aaefad70895bae5473f4e61e59	Cancel Library return intent on interrupted navigation
+7a8ce93f9ef44149edb8953f37e21e2941e83e44	Cancel pending Library focus when Jump menu takes input
+9a69e492203de0de354513f55d095f66ef24af29	Check Library return generation before deferred focus
+3f2e276e2cb63dd698db9584863c48fbe50ca21b	Retain Library reading state across diagnostic observations
+6764b06f9688e82d342dffe3edfa7575793e425e	Make titlebar jump actions live and native
+0df8ab7f8988a928fbb4ff11ca76012fdf70fa85	Expose admitted manifest URLs as native header links
+3ebba0f4d0818284f7037215dd3d2139e3babe58	Make licence stamp an explicit native disclosure
+4a3871436ddfcbdd6cccd6708fc90996c475494d	Keep jump source and menu actions tied to current visit
+a8d6c0ed7023dddbe3e0e9582825f72216dce6e9	Revalidate jumped crumb in current outline
+f448addc17a373b3b632995cd0350ba5e7309f14	Toggle licence from its rendered expanded state
+63b6e550661d10ef441cc37e96e49576d0eb2b51	Recheck current package and source inputs for header links
+7b43666e94d761962569cd5c25fee799c6f554a3	Use click origin and verify native licence disclosure
+05fca506cac111a2cfa30cd217d494107a53ccba	Unify native licence toggle with folio disclosure state
+395e303fbb0d3ec730a67ae5b89ca14ba2ae63d4	Make licence disclosure one closed controlled mode
+a988093270cf2cc2a75ec062770ba37c58a7d9d3	Force native accessibility before disclosure test reads
+6bdfae52ae4c2a3d18e0f5f2c99da49bc5ef27da	Keep package ecosystems tied to exact typed records
+b9964a2c8d987cf20ad2fb8ae3994634fa973fde	Omit covered Reader pixels during Ask sheet motion
+9deb0af029f51b89fef422b78cd4c0e728cec52a	Keep Shell zone aligned with focused Reader control
+546dab9324d9934358088715025b26ce1b588576	Redraw Reader when native focus reconciles at walk edge
+d9e14f41e9fdc969605e1a46430d9496b2f3e23d	Share settled motion admission when reconciling native focus
+d3b8aa1ef806c40e8845ffa1007c6ca8bcfc1eff	feat(browse): preserve exact Cargo source authority
+9cc9956a9aae6679f138e8a5185ef6434d688ff7	feat(browse): add bounded Cargo source inventory
+f3dc28d44686d75d78ad36ac46ca49f9a6a59843	fix(browse): require metadata-listed manifests in witness
+dde23fd3241345e2f31c9b4d841dba429b422d00	fix(browse): bind metadata authority to toolchain bytes
+655e94458b3aa581353cf12b76ce8a5d2fd4d761	Admit measured Cargo compiler wrapper chains
+e21c54527a0797d07e0052a1d10593f08ac7ca9b	Watch platform sccache configuration paths
+d84bfb5131f6f5ae5aaf4c81b8a2226fe562f7de	fix(browse): resolve Cargo tool override chains
+c910733236ee7d5b9e610c0a8b09e6009cf3b801	Add owner-bound Cargo README reads and links
+29b13e95df1717de44cf8df5a9449a2f0248709c	fix(browse): honor Cargo config tool origins
+3006c75ec269a4f653326285f9149862fcd1b69b	fix(browse): retain bounded source observations per workspace
+eb695adb13179359df45d01a5da4da999034c347	feat(locald): isolate bounded Cargo browse reads from owner loop
+5fc5fd841af77dec09aa6d212f223b2b27e2e6d1	fix(browse): preserve admitted cache on cancelled freshness reads
+a99fe7844f80fb60d2748fb6df934b8762efb3b5	fix(browse): reap Cargo when output reader startup fails
+a85dfc1fbdc4d823dab671c53075d5cfce81602b	fix(locald): terminalize browse deadlines before late worker completion
+d6208740ba91b61b272f7a34be9fe4a3bf76306c	fix(browse): retry interrupted bounded file reads
+7c822ae6cde748692f54815aa0e88ae946c3462b	docs(locald): name bounded request-root browse sharding
+c398b4ba0b06066c3d7e40b4763e9e4757525b69	feat(platform): own bounded dual-stream Cargo child capture
+1863c95aab04bfe3d6796e1054b7ff573f3ef9a4	fix(locald): reserve reply payloads before browse execution
+812c60bc116baa9ccc82c45a1d93c69208e037d0	fix(platform): fail unsupported capture targets before spawn
+4b879386c9aa08970347ee02862831e14422e726	feat(platform): distinguish bounded capture capacity failure
+f05d0630e79b7a5b152e2383896551613d2414ba	Add owned Windows Job and overlapped dual-stream capture
+f55a0201eaad3c6b9d348933870b2dd816e156b2	Allow IOCP retirement polling alongside the original owner
+26e5ff1b7265cdb74021f0665ab534536815f4fd	fix(library): construct tampered digest JSON from bounded bytes
+b2660d736c2f68724d1a774af8c4c4c04859d9e8	fix(platform): retire Unix descendants before successful leader reap
+4e3bffbcd455c099491d7f19e7822b7230fa146d	fix(locald): retain browse reply permit through owner encoding
+b31d0c5ee24fb42a73e6b0d52c15cc0220077fac	docs(platform): state Darwin retirement cleanup bound
+27ebf4b0a5270ee31db26bcdef2b0aad934a41a6	Pin kernel-owned capture storage behind UnsafeCell
+7dd4384159252636352f6a4a02d96320bc534283	Detach every capture IOCP polling thread after dequeue
+c39e00290750d2b2123b47879728d47a91f803b2	Propagate Windows ordinal comparison errors before spawning
+7630c6ead573b5873d97381908a01097998f3eea	Document native syscall limits of Windows capture deadlines
+88b5e09f8bc5611e2fdd7a671ae9c5765bd4f018	fix(library): compile source authority witnesses on Rust 1.97
+f7afa37d5e01b37aa70e4cfdfd1fe9900bdeb40a	fix(library): preserve original README binding in negative fixtures
+728b6ac1612e9e1894084bd7e2490f23459c391d	fix(locald): compile Cargo browse regression on Rust 1.97
+9e1d2924ee6312b38851fdc78c7c13a91f30970a	fix(present): preserve typed README origin in borrowed replies
+19a63eba999ffb13949dda8a1c78c6cd3278644c	test(locald): identify Cargo source receipt failure state
+9cf80d0dcdc62949f3713e85f71f21736eaa0cdb	Recognize exact Nix-generated Cargo cache wrapper body
+78f17074ab5f7c5075df4d0bbd413abb5d9a27b2	Reject missing shebang in recognized cache wrapper fixtures
+cc4b17f3567553785ac823298d86c1b8aaf03c8f	Keep wrapper test byte fixture unshadowed
+4c8ecdb6a36c218ad0f986820416d6e0bfc20196	Bind subscription leases to a fresh owner boot nonce
+05075099277586d26e3d9e031a588cdd4cd65758	Preserve exact Cargo browse bindings through current route reads
+96312b6adab1370890a900c68d1b3288a323b317	Cancel withdrawn local package fallback before publishing
+b8e84de4c8ded0b95291926eeae50407dbcea126	Re-admit selected Cargo reads at deferred intent flush
+368bc35b4bfb0b021dc088c4ec0918a3d16b26bc	Unify content readiness with current read admission
+7061cd624116c9ec5403779b387601844ba3ed8e	Observe certified owner publications through durable local leases
+d9421d44a0f4eca4f6974766b5e56d2712149724	Gate Find return focus and browse actions by current native visit
+3bab7869eb843cbd404ef9fb9a9e152e2ad0d4c1	Exercise retained browse callbacks across renewed visits
