@@ -1478,7 +1478,8 @@ impl Render for Shell {
             cx,
         );
         self.ask_results_mounted = ask_scene.live_results;
-        self.reader.update(cx, |reader, cx| reader.set_ask_geometry(ask_scene.geometry, cx));
+        let background_input_allowed = !self.ask_open && self.background_input_allowed();
+        self.reader.update(cx, |reader, cx| reader.set_ask_scene(ask_scene.geometry, background_input_allowed, cx));
 
         let mut context = KeyContext::new_with_defaults();
         context.add(CONTEXT);
@@ -1489,7 +1490,7 @@ impl Render for Shell {
         } else if self.ask_presentation.blocks_background_input(false) {
             context.add("AskLeaving");
         }
-        if self.background_input_allowed() && !self.ask_open
+        if background_input_allowed
             && (matches!(snapshot.overlay(), Some(Overlay::Settings(_)))
                 || snapshot.overlay().is_none() && matches!(snapshot.route(), Route::Orbit(
                     crate::navigation::OrbitRoute::Browse(

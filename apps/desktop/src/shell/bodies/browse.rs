@@ -52,7 +52,7 @@ pub(super) fn body(route: &BrowseRoute, store: &Pages, ctx: &mut Ctx<'_>, cx: &m
                 source.links.retry(PageKey::Browse(source.key.clone()), cx);
             }));
         }
-        let leaves = vec![Leaf::new(facet::browse::find::find("find", model, actions, &ctx.measure).admission(admission).active(ctx.active && ctx.links.snapshot(cx).overlay().is_none()))];
+        let leaves = vec![Leaf::new(facet::browse::find::find("find", model, actions, &ctx.measure).admission(admission).active(ctx.native_input_active && ctx.links.snapshot(cx).overlay().is_none()))];
         return leaves;
     }
     match shown(&resource) {
@@ -275,7 +275,7 @@ fn compare_actions(route: &BrowseRoute, ctx: &Ctx<'_>, cx: &mut Context<Reader>)
     let links = ctx.links.clone();
     let reader = cx.weak_entity();
     let held = ctx.find_held.clone();
-    facet::browse::compare::Actions { active: ctx.active && ctx.links.snapshot(cx).overlay().is_none(), scroll: ctx.reader_scroll.clone(), open_package: open_package_action(ctx), open_symbol: open_symbol_action(ctx, false), open_code: open_symbol_action(ctx, true),
+    facet::browse::compare::Actions { active: ctx.native_input_active && ctx.links.snapshot(cx).overlay().is_none(), scroll: ctx.reader_scroll.clone(), open_package: open_package_action(ctx), open_symbol: open_symbol_action(ctx, false), open_code: open_symbol_action(ctx, true),
         remove_package: Rc::new(move |key, _, cx| {
             if let Ok(selection) = CompareSet::new(packages.iter().filter(|package| package.as_str() != key.as_ref()).cloned()) {
                 let updated = held.iter().filter(|package| package.key != key).cloned().collect();

@@ -77,6 +77,9 @@ impl Leaf {
 pub(crate) struct Ctx<'a> {
     /// Only the current page publishes shared motion endpoints.
     pub active: bool,
+    /// The current page may claim native input only after its own transition
+    /// and the shell's sampled Ask presentation have both released it.
+    pub native_input_active: bool,
     /// The folio's measure.
     pub measure: Measure,
     /// The margin's measure (the folio's when notes fold under).
