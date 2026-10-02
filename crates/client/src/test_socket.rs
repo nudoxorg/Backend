@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Returns the two ends of one connected local stream.
+#[allow(clippy::expect_used)]
 pub(crate) fn local_pair() -> (LocalStream, LocalStream) {
     static PAIRS: AtomicUsize = AtomicUsize::new(0);
     let path: PathBuf = std::env::temp_dir().join(format!(
@@ -27,6 +28,7 @@ pub(crate) fn local_pair() -> (LocalStream, LocalStream) {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use std::io::{Read, Write};

@@ -139,6 +139,7 @@ impl ResetBudget {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::lease_contract::{MAX_RESET_ROWS, PUBLICATION_CREDIT};

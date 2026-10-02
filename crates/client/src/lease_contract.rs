@@ -187,6 +187,7 @@ pub const fn max_reset_time() -> Duration {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

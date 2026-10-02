@@ -18,9 +18,9 @@ use crate::subscription::{
 use crate::subscription_local::ConnectionId;
 use crate::{ClientError, LocalSubscriptionTransport};
 use backend_library::{Cursor, CursorEvent, CursorRead, SnapshotHydrator, ViewRoot};
-use backend_replication::{LocalSubscriptionId, LocalSubscriptionResponse};
+use backend_replication::{AuthenticatedLocalPeer, LocalSubscriptionId, LocalSubscriptionResponse};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Read and write limit for the terminal cancel on an exact socket. A cancel
 /// that cannot finish this fast is abandoned to the owner's lease expiry.
@@ -41,17 +41,20 @@ pub struct PublicationLease {
 
 impl PublicationLease {
     /// Complete root whose producer proofs have been admitted.
+    #[must_use]
     pub fn root(&self) -> Arc<ViewRoot> {
         Arc::clone(&self.root)
     }
 
     /// Exact admitted producer cursor.
+    #[must_use]
     pub const fn cursor(&self) -> Cursor {
         self.cursor
     }
 
     /// How long a quiet holder may wait between renewals: half the term the
     /// owner granted, so one lost renewal still leaves a second chance.
+    #[must_use]
     pub const fn renew_after(&self) -> Duration {
         self.term.renewal_interval()
     }
@@ -173,13 +176,11 @@ impl LocalSubscriptionTransport {
         mut response: LocalSubscriptionResponse,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<(), ClientError> {
-        let mut budget = ResetBudget::begin(self.now())?;
         let previous = state.cursor;
-        let mut hydrator: Option<SnapshotHydrator> = None;
-        let mut expected_page: Box<[u8]> = Box::new([]);
+        let mut reset = ResetHydration::begin(previous, self.now())?;
         let (root, cursor) = loop {
             check(cancelled)?;
-            budget.check(self.now())?;
+            reset.check(self.now())?;
             if response.lease() != state.lease {
                 return Err(protocol("publication response changed lease identity"));
             }
@@ -191,7 +192,8 @@ impl LocalSubscriptionTransport {
                 | LocalSubscriptionResponse::Resumed {
                     cursor, lease_ms, ..
                 } => {
-                    if hydrator.is_some() || cursor.as_ref() != previous.encode_control().as_ref() {
+                    if reset.in_progress() || cursor.as_ref() != previous.encode_control().as_ref()
+                    {
                         return Err(protocol("publication acknowledgement changed its cursor"));
                     }
                     state.term = granted_term(lease_ms)?;
@@ -203,35 +205,12 @@ impl LocalSubscriptionTransport {
                     payload,
                     ..
                 } => {
-                    if hydrator.is_some()
+                    if reset.in_progress()
                         || predecessor.as_ref() != previous.encode_control().as_ref()
                     {
                         return Err(protocol("publication batch predecessor mismatch"));
                     }
-                    let read = subscription_read_from_bytes_against(
-                        &payload,
-                        previous,
-                        &state.root,
-                        state.root.capability(),
-                    )?;
-                    let CursorRead::Events { cursor, events } = read else {
-                        return Err(protocol("publication batch carried a reset"));
-                    };
-                    if events.len() > PUBLICATION_CREDIT
-                        || target.as_ref() != cursor.encode_control().as_ref()
-                    {
-                        return Err(protocol("publication batch credit/cursor mismatch"));
-                    }
-                    let mut root = Arc::clone(&state.root);
-                    for event in events {
-                        if let CursorEvent::View { delta } = event {
-                            root = Arc::new(delta.target_view().clone());
-                        }
-                    }
-                    if root.root() != cursor.root() {
-                        return Err(protocol("publication batch target mismatch"));
-                    }
-                    break (root, cursor);
+                    break admit_batch(state, previous, &target, &payload)?;
                 }
                 LocalSubscriptionResponse::SnapshotPage {
                     page,
@@ -239,52 +218,23 @@ impl LocalSubscriptionTransport {
                     payload,
                     ..
                 } => {
-                    if page != expected_page {
-                        return Err(protocol("publication reset page mismatch"));
-                    }
                     let peer = self.authenticated_peer().ok_or_else(|| {
                         protocol("publication reset requires authenticated producer")
                     })?;
-                    let claim =
-                        snapshot_page_from_bytes_with_verifier(&payload, previous, None, peer)?;
-                    budget.admit_page(claim.descriptor().row_count(), self.now())?;
-                    let admitted_next = claim.next_token().map_err(ClientError::Protocol)?;
-                    if next.as_deref() == Some(page.as_ref()) {
-                        return Err(ResetFault::RepeatedContinuation.into());
-                    }
-                    if admitted_next.as_deref() != next.as_deref() {
-                        return Err(protocol(
-                            "publication reset continuation is not authenticated",
-                        ));
-                    }
-                    let current = match hydrator.take() {
-                        Some(mut current) => {
-                            current.push_page(claim).map_err(ClientError::Protocol)?;
-                            current
+                    match reset.admit(peer, &page, next, &payload, self.now())? {
+                        ResetStep::Complete { root, cursor } => break (root, cursor),
+                        ResetStep::Continue(continuation) => {
+                            check(cancelled)?;
+                            response =
+                                self.snapshot_page(state.lease, continuation, PUBLICATION_CREDIT)?;
                         }
-                        None => SnapshotHydrator::start(previous, claim)
-                            .map_err(ClientError::Protocol)?,
-                    };
-                    if current.is_complete() {
-                        let CursorRead::Reset { cursor, root, .. } =
-                            current.finish().map_err(ClientError::Protocol)?
-                        else {
-                            return Err(protocol("publication hydration did not reset"));
-                        };
-                        break (Arc::from(root), cursor);
                     }
-                    expected_page =
-                        next.ok_or_else(|| protocol("publication reset omitted continuation"))?;
-                    hydrator = Some(current);
-                    check(cancelled)?;
-                    response =
-                        self.snapshot_page(state.lease, expected_page.clone(), PUBLICATION_CREDIT)?;
                 }
                 _ => return Err(protocol("unexpected publication lifecycle response")),
             }
         };
         check(cancelled)?;
-        budget.check(self.now())?;
+        reset.check(self.now())?;
         // Quiet Resume has already fenced this exact durable cursor; it
         // does not need another frame or a duplicate root publication.
         if cursor == previous {
@@ -297,11 +247,134 @@ impl LocalSubscriptionTransport {
             _ => return Err(protocol("publication acknowledgement cursor mismatch")),
         }
         check(cancelled)?;
-        budget.check(self.now())?;
+        reset.check(self.now())?;
         state.held_on = self.connection();
         state.cursor = cursor;
         state.root = root;
         Ok(())
+    }
+}
+
+/// Admits one certified event batch against the lease's retained root.
+fn admit_batch(
+    state: &PublicationLease,
+    previous: Cursor,
+    target: &[u8],
+    payload: &[u8],
+) -> Result<(Arc<ViewRoot>, Cursor), ClientError> {
+    let read = subscription_read_from_bytes_against(
+        payload,
+        previous,
+        &state.root,
+        state.root.capability(),
+    )?;
+    let CursorRead::Events { cursor, events } = read else {
+        return Err(protocol("publication batch carried a reset"));
+    };
+    if events.len() > PUBLICATION_CREDIT || target != cursor.encode_control().as_ref() {
+        return Err(protocol("publication batch credit/cursor mismatch"));
+    }
+    let mut root = Arc::clone(&state.root);
+    for event in events {
+        if let CursorEvent::View { delta } = event {
+            root = Arc::new(delta.target_view().clone());
+        }
+    }
+    if root.root() != cursor.root() {
+        return Err(protocol("publication batch target mismatch"));
+    }
+    Ok((root, cursor))
+}
+
+/// What admitting one reset page leads to.
+enum ResetStep {
+    /// More pages follow: ask the owner for this exact continuation.
+    Continue(Box<[u8]>),
+    /// The last page arrived and the root recomputed from every page matches
+    /// its certified commitment.
+    Complete { root: Arc<ViewRoot>, cursor: Cursor },
+}
+
+/// The pages of one reset collected so far, under that reset's budget.
+///
+/// Nothing here can replace the lease's admitted root: a reset only yields
+/// one when its final page has been certified.
+struct ResetHydration {
+    previous: Cursor,
+    budget: ResetBudget,
+    hydrator: Option<SnapshotHydrator>,
+    /// The only continuation the next page may answer; empty before the first.
+    expected: Box<[u8]>,
+}
+
+impl ResetHydration {
+    fn begin(previous: Cursor, now: Instant) -> Result<Self, ResetFault> {
+        Ok(Self {
+            previous,
+            budget: ResetBudget::begin(now)?,
+            hydrator: None,
+            expected: Box::new([]),
+        })
+    }
+
+    /// Whether a reset has delivered a page and is awaiting more.
+    const fn in_progress(&self) -> bool {
+        self.hydrator.is_some()
+    }
+
+    fn check(&self, now: Instant) -> Result<(), ResetFault> {
+        self.budget.check(now)
+    }
+
+    /// Admits one page. Strict by construction: it must answer the exact
+    /// continuation asked for, authenticate its own continuation, fit the
+    /// budget the first descriptor fixed, and extend the hydrator in order.
+    fn admit(
+        &mut self,
+        peer: &AuthenticatedLocalPeer,
+        page: &[u8],
+        next: Option<Box<[u8]>>,
+        payload: &[u8],
+        now: Instant,
+    ) -> Result<ResetStep, ClientError> {
+        if page != self.expected.as_ref() {
+            return Err(protocol("publication reset page mismatch"));
+        }
+        let claim = snapshot_page_from_bytes_with_verifier(payload, self.previous, None, peer)?;
+        self.budget
+            .admit_page(claim.descriptor().row_count(), now)?;
+        let admitted_next = claim.next_token().map_err(ClientError::Protocol)?;
+        if next.as_deref() == Some(page) {
+            return Err(ResetFault::RepeatedContinuation.into());
+        }
+        if admitted_next.as_deref() != next.as_deref() {
+            return Err(protocol(
+                "publication reset continuation is not authenticated",
+            ));
+        }
+        let hydrator = match self.hydrator.take() {
+            Some(mut current) => {
+                current.push_page(claim).map_err(ClientError::Protocol)?;
+                current
+            }
+            None => SnapshotHydrator::start(self.previous, claim).map_err(ClientError::Protocol)?,
+        };
+        if hydrator.is_complete() {
+            let CursorRead::Reset { cursor, root, .. } =
+                hydrator.finish().map_err(ClientError::Protocol)?
+            else {
+                return Err(protocol("publication hydration did not reset"));
+            };
+            return Ok(ResetStep::Complete {
+                root: Arc::from(root),
+                cursor,
+            });
+        }
+        let continuation =
+            next.ok_or_else(|| protocol("publication reset omitted continuation"))?;
+        self.expected = continuation.clone();
+        self.hydrator = Some(hydrator);
+        Ok(ResetStep::Continue(continuation))
     }
 }
 
