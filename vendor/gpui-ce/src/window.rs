@@ -9652,15 +9652,41 @@ mod grouped_animation_frame_tests {
             first_notified.set(0);
             second_notified.set(0);
             cx.update(|window, cx| {
-                // Ownership has committed before the coalesced delivery.
+                // Ownership has committed before delivery. Inspect the drain
+                // before reconciliation renders these continuous requesters.
                 let claims_capacity = window.grouped_animation_frame_requests.claims.capacity();
-                assert_eq!(window.simulate_reconciled_next_frame(cx).0, 1);
+                let callbacks = window.next_frame_callbacks.take();
+                assert_eq!(window.run_frame_callbacks(callbacks, cx), 1);
                 let pending = &window.grouped_animation_frame_requests;
                 assert!(!pending.scheduled);
                 assert!(pending.claims.is_empty());
                 assert!(pending.notified.is_empty());
                 assert_eq!(pending.claims.capacity(), claims_capacity);
                 assert!(pending.notified.capacity() >= if live { 2 } else { 1 });
+                let notified_capacity = pending.notified.capacity();
+
+                // The native reconciliation draw legitimately renews one
+                // bounded batch, reusing both buffers for the next delivery.
+                assert!(window.invalidator.is_dirty());
+                window.draw(cx).clear(cx);
+                let pending = &window.grouped_animation_frame_requests;
+                assert!(pending.scheduled);
+                assert_eq!(pending.claims.len(), if live { 2 } else { 1 });
+                assert!(pending.notified.is_empty());
+                assert_eq!(pending.claims.capacity(), claims_capacity);
+                assert_eq!(pending.notified.capacity(), notified_capacity);
+                assert_eq!(
+                    window
+                        .next_frame_callbacks
+                        .borrow()
+                        .iter()
+                        .filter(|callback| {
+                            matches!(callback.owner, Some(FrameCallbackOwner::AnimationGroup))
+                        })
+                        .count(),
+                    1,
+                    "reconciliation renews one window wake"
+                );
             });
             assert_eq!(first_notified.get(), if live { 1 } else { 0 });
             assert_eq!(
