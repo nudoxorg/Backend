@@ -29,7 +29,7 @@ use windows_sys::Win32::Security::{
     PSECURITY_DESCRIPTOR, SE_DACL_PROTECTED, SECURITY_DESCRIPTOR_CONTROL,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ATTRIBUTE_DIRECTORY,
+    DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY,
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD, FILE_DISPOSITION_FLAG_DELETE,
     FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
     FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FILE_GENERIC_WRITE, FILE_ID_BOTH_DIR_INFO,
@@ -1329,7 +1329,9 @@ fn ensure_private_handle(handle: *mut c_void) -> io::Result<()> {
     // ACCESS_ALLOWED_ACE begins with ACE_HEADER and a mask followed by SID.
     // SAFETY: GetAce returned the sole ACE in a valid ACL.
     let allowed = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
-    if u32::from(allowed.Header.AceType) != ACCESS_ALLOWED_ACE_TYPE || allowed.Mask != GENERIC_ALL {
+    if u32::from(allowed.Header.AceType) != ACCESS_ALLOWED_ACE_TYPE
+        || !is_full_control(allowed.Mask)
+    {
         return Err(invalid_data("workspace DACL is not current-user-only"));
     }
     let sid = current_user()?;
@@ -1356,6 +1358,16 @@ fn ensure_private_handle(handle: *mut c_void) -> io::Result<()> {
     }
     drop(allocation);
     Ok(())
+}
+
+/// Whether a stored ACE mask grants full control of a file object.
+///
+/// The private descriptor requests `GENERIC_ALL`, but the object manager maps
+/// generic rights through the file generic mapping when it stores the ACE, so
+/// a descriptor this module created reads back as `FILE_ALL_ACCESS`. An
+/// unmapped `GENERIC_ALL` is equivalent and also accepted.
+fn is_full_control(mask: u32) -> bool {
+    matches!(mask, FILE_ALL_ACCESS | GENERIC_ALL)
 }
 
 struct HandleRef(*mut c_void);
