@@ -12,7 +12,7 @@ use crate::shell::kit::{quiet, text};
 use crate::shell::reader::Reader;
 use facet::{Space, tokens::ty};
 use gpui::{
-    App, AppContext as _, ClickEvent, Context, ElementId, InteractiveElement, IntoElement,
+    App, AppContext as _, Context, ElementId, InteractiveElement, IntoElement,
     ParentElement, SharedString, StatefulInteractiveElement, Styled, StyledText, Window, div, px,
 };
 use sha2::{Digest, Sha256};
@@ -202,16 +202,14 @@ fn code(
             } else { String::new() };
             let gutter = if piece_index == 0 {
                 native_control(format!("cargo-source-copy-line-{number}-0").into(), format!("Copy source line {number}"), gpui::Role::Button, native_focus.clone(), copy.clone())
+                    .cursor_pointer()
             } else {
-                let gutter_copy = copy.clone();
                 div().id(format!("cargo-source-copy-line-{number}-{piece_index}"))
                     .role(gpui::Role::Label)
                     .aria_label(format!("Continuation of source line {number}"))
-                    .on_click(move |_: &ClickEvent, window, app| gutter_copy(window, app))
             }
                 .flex_none().w(number_width).flex().justify_end()
-                .child(text(ty::CODE, &measure, if requested == Some(number) { palette.peri.base } else { palette.ink3 }).child(label))
-                .cursor_pointer();
+                .child(text(ty::CODE, &measure, if requested == Some(number) { palette.peri.base } else { palette.ink3 }).child(label));
             pieces = pieces.child(div().flex().items_start().gap(gap).child(gutter).child(
                 div().set(ty::CODE, &measure).text_color(palette.ink1.hsla()).min_w(px(0.0))
                     .whitespace_nowrap().child(StyledText::new(SharedString::from(piece.text)).with_highlights(piece.runs))
