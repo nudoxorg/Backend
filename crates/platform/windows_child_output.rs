@@ -258,27 +258,73 @@ fn sweep_retired() {
 // Bool on errors says whether this operation's completion was dequeued. A
 // timeout has no packet and never authorizes freeing its storage.
 fn completion(port: HANDLE, expected: *mut OVERLAPPED) -> Result<Option<usize>, (bool, io::Error)> {
+    // GQCS associates even callers that time out with their port. Every call
+    // explicitly switches to a private empty port, then closes that port;
+    // hence no live caller stays associated with a capture/retirement port.
+    // Allocate the detach owner BEFORE touching the target. If allocation
+    // fails, there has been no new association or ownership receipt to lose.
+    // SAFETY: INVALID_HANDLE_VALUE creates a new port without any file handle.
+    let detach =
+        Handle::new(unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, ptr::null_mut(), 0, 1) })
+            .map_err(|source| (false, source))?;
     let mut bytes = 0;
     let mut key = 0;
     let mut request = ptr::null_mut();
     // SAFETY: owned completion port, initialized writable out pointers, zero
     // timeout. Every submitted operation remains allocated until this packet.
     let success = unsafe { GetQueuedCompletionStatus(port, &mut bytes, &mut key, &mut request, 0) };
-    if request.is_null() {
-        // SAFETY: last error belongs to this immediately preceding API.
-        let error = unsafe { GetLastError() };
+    // SAFETY: capture the target's error before the detach call overwrites it.
+    let error = if success == 0 {
+        unsafe { GetLastError() }
+    } else {
+        0
+    };
+    let result = if request.is_null() {
         if success == 0 && error == WAIT_TIMEOUT {
-            return Ok(None);
+            Ok(None)
+        } else {
+            Err((false, io::Error::from_raw_os_error(error as i32)))
         }
-        return Err((false, io::Error::from_raw_os_error(error as i32)));
-    }
-    if !ptr::eq(request, expected) {
-        return Err((false, io::Error::other("unexpected IOCP operation pointer")));
-    }
-    if success != 0 {
+    } else if !ptr::eq(request, expected) {
+        Err((false, io::Error::other("unexpected IOCP operation pointer")))
+    } else if success != 0 {
         Ok(Some(bytes as usize))
     } else {
-        Err((true, io::Error::last_os_error()))
+        Err((true, io::Error::from_raw_os_error(error as i32)))
+    };
+
+    let mut ignored_bytes = 0;
+    let mut ignored_key = 0;
+    let mut ignored_request = ptr::null_mut();
+    // SAFETY: this private empty port has no files or posted packets. Calling
+    // GQCS with valid out pointers and zero wait switches this thread's port
+    // association; closing the new port then clears it (Microsoft IOCP rules).
+    let detached = unsafe {
+        GetQueuedCompletionStatus(
+            detach.0,
+            &mut ignored_bytes,
+            &mut ignored_key,
+            &mut ignored_request,
+            0,
+        )
+    };
+    // SAFETY: retrieve the detach API's error before closing its owned handle.
+    let detach_error = if detached == 0 {
+        unsafe { GetLastError() }
+    } else {
+        0
+    };
+    drop(detach);
+    if detached == 0 && ignored_request.is_null() && detach_error == WAIT_TIMEOUT {
+        result
+    } else {
+        let completed = matches!(&result, Ok(Some(_)) | Err((true, _)));
+        Err((
+            completed,
+            io::Error::other(format!(
+                "unexpected private IOCP detach result: {detach_error}"
+            )),
+        ))
     }
 }
 
@@ -346,11 +392,11 @@ impl Pipe {
                 return Err(io::Error::from_raw_os_error(error as i32));
             }
         }
-        // Two runnable threads allow a retirement sweeper to dequeue after the
-        // original caller returns while still associated with the port. A slot
-        // CAS ensures there is only one sweeper. Neither call waits.
+        // Every completion poll detaches its thread before returning. A live
+        // Pipe has one caller; a retired slot has one CAS owner, so concurrency
+        // one cannot accumulate associations from earlier runnable callers.
         // SAFETY: associate this sole owned server handle with a new owned port.
-        let port = Handle::new(unsafe { CreateIoCompletionPort(handle.0, ptr::null_mut(), 0, 2) })?;
+        let port = Handle::new(unsafe { CreateIoCompletionPort(handle.0, ptr::null_mut(), 0, 1) })?;
         Ok((
             Self {
                 handle: Some(handle),
@@ -1213,6 +1259,81 @@ mod tests {
             .map(|_| Slot::reserve().expect("reclaimed slot"))
             .collect();
         drop(permits);
+        assert_eq!(occupied(), 0);
+    }
+
+    #[test]
+    fn successive_live_callers_do_not_throttle_a_later_completion_owner() {
+        let _serial = TESTS.lock().expect("test lock");
+        let (mut pipe, writer) = Pipe::pair(Slot::reserve().expect("slot")).expect("owned pipe");
+        pipe.poll(&mut Vec::new(), 1024, OutputStream::Stdout)
+            .expect("pending read");
+        assert!(pipe.pending);
+        // Only raw addresses cross threads. Stable UnsafeCell storage stays
+        // owned by this pinned Pipe until the final matching packet arrives.
+        let port = pipe.port.as_ref().expect("port").0 as usize;
+        let request = pipe.operation.as_ref().expect("operation").request() as usize;
+        let stop = AtomicBool::new(false);
+        struct Stop<'a>(&'a AtomicBool);
+        impl Drop for Stop<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        thread::scope(|scope| {
+            let _release_on_unwind = Stop(&stop);
+            let (done, ready) = std::sync::mpsc::channel();
+            for _ in 0..8 {
+                let done = done.clone();
+                let stop = &stop;
+                scope.spawn(move || {
+                    let result = completion(port as HANDLE, request as *mut OVERLAPPED);
+                    done.send(matches!(result, Ok(None)))
+                        .expect("report empty poll");
+                    // Remain runnable; a blocking wait would hide an IOCP
+                    // association leak by lowering its active-thread count.
+                    while !stop.load(Ordering::Acquire) {
+                        std::hint::spin_loop();
+                    }
+                });
+                assert!(
+                    ready
+                        .recv_timeout(Duration::from_secs(2))
+                        .expect("poll must not wait")
+                );
+            }
+            let mut written = 0;
+            // SAFETY: owned synchronous writer, valid three-byte input buffer.
+            assert_ne!(
+                unsafe {
+                    windows_sys::Win32::Storage::FileSystem::WriteFile(
+                        writer.0,
+                        b"end".as_ptr(),
+                        3,
+                        &mut written,
+                        ptr::null_mut(),
+                    )
+                },
+                0
+            );
+            let receipt = scope
+                .spawn(move || {
+                    let deadline = Instant::now() + Duration::from_secs(2);
+                    loop {
+                        match completion(port as HANDLE, request as *mut OVERLAPPED) {
+                            Ok(Some(count)) => return count,
+                            Ok(None) if Instant::now() < deadline => thread::sleep(POLL),
+                            other => panic!("later caller could not dequeue: {other:?}"),
+                        }
+                    }
+                })
+                .join()
+                .expect("later completion owner");
+            assert_eq!(receipt, 3);
+            pipe.pending = false; // the matching IOCP packet is the proof
+        });
+        drop(pipe);
+        drop(writer);
         assert_eq!(occupied(), 0);
     }
 
