@@ -776,6 +776,16 @@ pub(crate) struct ParsedContent {
     grammar_input_bytes: usize,
 }
 
+impl ParsedContent {
+    pub(crate) fn from_document(document: ParsedDocument, node_cx: node::NodeContext) -> Self {
+        Self {
+            document,
+            node_cx,
+            ..Self::default()
+        }
+    }
+}
+
 struct UpdateFuture {
     format: TextViewFormat,
     content: ParsedContent,

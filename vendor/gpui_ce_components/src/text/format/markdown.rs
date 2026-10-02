@@ -41,14 +41,13 @@ pub(crate) fn prepare_inline(
         end: source.len(),
     });
     node_cx.link_refs.finish_update();
-    crate::text::state::PreparedMarkdown::from_content(crate::text::state::ParsedContent {
-        document: ParsedDocument {
-            source: source.to_string().into(),
-            blocks: vec![BlockNode::Paragraph(paragraph)].into(),
-        },
-        node_cx,
-        ..crate::text::state::ParsedContent::default()
-    })
+    let document = ParsedDocument {
+        source: source.to_string().into(),
+        blocks: vec![BlockNode::Paragraph(paragraph)].into(),
+    };
+    crate::text::state::PreparedMarkdown::from_content(
+        crate::text::state::ParsedContent::from_document(document, node_cx),
+    )
 }
 
 fn parse_table_row(table: &mut Table, node: &mdast::TableRow, cx: &mut NodeContext) {
