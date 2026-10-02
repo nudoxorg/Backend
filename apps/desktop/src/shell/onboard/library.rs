@@ -89,7 +89,7 @@ pub(crate) fn tile_gem(project: &WorkspaceProject, edge: f32, active: bool, ctx:
 /// What the window has to say about this launch, once, at the top of the
 /// Library: a session it could not read, an index it set aside. Each is
 /// dismissed by the person, and none is written to disk.
-pub(crate) fn notes(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
+pub(crate) fn notes(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Vec<Leaf> {
     let measure = ctx.measure;
     let palette = ctx.palette;
     let mut leaves = Vec::new();
@@ -114,8 +114,12 @@ pub(crate) fn notes(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
         let links = ctx.links.clone();
         let held = note.clone();
         let act: Act = Rc::new(move |_, cx| links.dispatch(Intent::DismissNote(held.clone()), cx));
+        let act = ctx.native_action(act, cx);
         ctx.targets.push(Target { id: id.clone().into(), label: "Got it".into(), act: Rc::clone(&act), peek: None, source: None });
-        let dismiss = ctx.targets.track(id.clone(), button(SharedString::from(id), "Got it", &measure).ghost().on_click(move |window, cx| act(window, cx)));
+        let focus = ctx.native_handle(&SharedString::from(id.clone()), cx);
+        let mut control = button(SharedString::from(id.clone()), "Got it", &measure).ghost().on_click(move |window, cx| act(window, cx));
+        if let Some(focus) = focus { control = control.focus_handle(focus); }
+        let dismiss = ctx.targets.track(id, div().key_context(crate::shell::keys::NATIVE_CONTROL).child(control));
         leaves.push(Leaf::new(
             div()
                 .flex()
@@ -141,7 +145,7 @@ pub(crate) fn notes(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
 
 /// The Library with nothing on the shelf: what to do, in one line, with the
 /// one thing to press.
-pub(crate) fn empty(ctx: &mut Ctx<'_>) -> Leaf {
+pub(crate) fn empty(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
     let measure = ctx.measure;
     let palette = ctx.palette;
     let lede = ctx.say("Read the code you depend on.");
@@ -163,6 +167,7 @@ pub(crate) fn empty(ctx: &mut Ctx<'_>) -> Leaf {
         let links = links.clone();
         Rc::new(move |_, cx| links.dispatch(Intent::OpenAddProject, cx))
     };
+    let act = ctx.native_action(act, cx);
     ctx.targets.push(Target {
         id: "add-folder".into(),
         label: "Add a folder".into(),
@@ -170,10 +175,10 @@ pub(crate) fn empty(ctx: &mut Ctx<'_>) -> Leaf {
         peek: None,
         source: None,
     });
-    let add = ctx.targets.track(
-        "add-folder",
-        button("add-folder", "Add a folder", &measure).primary().on_click(move |window, cx| act(window, cx)),
-    );
+    let focus = ctx.native_handle(&SharedString::from("add-folder"), cx);
+    let mut control = button("add-folder", "Add a folder", &measure).primary().on_click(move |window, cx| act(window, cx));
+    if let Some(focus) = focus { control = control.focus_handle(focus); }
+    let add = ctx.targets.track("add-folder", div().key_context(crate::shell::keys::NATIVE_CONTROL).child(control));
     Leaf::new(
         div()
             .flex()
@@ -252,16 +257,17 @@ impl Arrival {
 
 /// The way to add another folder, under the projects already there: the same
 /// door the empty Library has, quieter.
-pub(crate) fn add_another(ctx: &mut Ctx<'_>) -> Leaf {
+pub(crate) fn add_another(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
     let measure = ctx.measure;
     let palette = ctx.palette;
     let links = ctx.links.clone();
     let act: Act = Rc::new(move |_, cx| links.dispatch(Intent::OpenAddProject, cx));
+    let act = ctx.native_action(act, cx);
     ctx.targets.push(Target { id: "add-folder".into(), label: "Add a folder".into(), act: Rc::clone(&act), peek: None, source: None });
-    let add = ctx.targets.track(
-        "add-folder",
-        button("add-folder", "Add a folder", &measure).ghost().glyph(Glyph::Plus).on_click(move |window, cx| act(window, cx)),
-    );
+    let focus = ctx.native_handle(&SharedString::from("add-folder"), cx);
+    let mut control = button("add-folder", "Add a folder", &measure).ghost().glyph(Glyph::Plus).on_click(move |window, cx| act(window, cx));
+    if let Some(focus) = focus { control = control.focus_handle(focus); }
+    let add = ctx.targets.track("add-folder", div().key_context(crate::shell::keys::NATIVE_CONTROL).child(control));
     Leaf::new(
         div()
             .flex()

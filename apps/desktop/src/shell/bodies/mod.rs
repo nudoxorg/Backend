@@ -25,7 +25,7 @@ use gpui::Window;
 /// waits for none before a capture).
 
 
-use super::focus::Targets;
+use super::focus::{Act, Targets};
 use super::kit::HoverIntent;
 use super::reader::Reader;
 use super::region::Links;
@@ -38,7 +38,7 @@ use crate::model::pages::{
 use crate::runtime::store::DataStore;
 use std::collections::BTreeMap;
 use facet::{Measure, Palette, Reveal};
-use gpui::{AnyElement, Context, SharedString};
+use gpui::{AnyElement, Context, FocusHandle, SharedString};
 
 /// One block of a page, with its margin note.
 pub(crate) struct Leaf {
@@ -138,6 +138,37 @@ pub(crate) struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
+    /// An action from a drawn control belongs to one Reader visit and one
+    /// owner revision. Retained transition bodies and stale pointer events
+    /// cannot navigate after that visit has been replaced.
+    pub(crate) fn native_action(&self, action: Act, cx: &mut Context<Reader>) -> Act {
+        self.native_action_with_inventory(action, None, cx)
+    }
+
+    pub(crate) fn native_inventory_action(&self, action: Act, revision: [u8; 32], cx: &mut Context<Reader>) -> Act {
+        self.native_action_with_inventory(action, Some(revision), cx)
+    }
+
+    fn native_action_with_inventory(&self, action: Act, inventory_revision: Option<[u8; 32]>, cx: &mut Context<Reader>) -> Act {
+        let reader = cx.weak_entity();
+        let place = self.place_key;
+        let snapshot = self.links.snapshot(cx);
+        let route = snapshot.route().clone();
+        let root = snapshot.key();
+        let source = inventory_revision.is_none().then_some(self.source_generation).flatten();
+        std::rc::Rc::new(move |window, app| {
+            if reader.upgrade().is_some_and(|reader| reader.read(app).admits_native_visit(place, &route, root, source, inventory_revision, app)) {
+                action(window, app);
+            }
+        })
+    }
+
+    /// Native input for a target in the current, mounted Reader body. The
+    /// Reader's target list remains the single source of walk order/actions.
+    pub(crate) fn native_handle(&self, id: &SharedString, cx: &mut Context<Reader>) -> Option<FocusHandle> {
+        self.active.then(|| self.targets.native_handle(id, cx))
+    }
+
     /// Records a string the body puts on screen.
     /// The one line a page says when its route reads no declaration.
     pub(crate) fn unread(&mut self, unread: &crate::runtime::store::Unread) -> Vec<Leaf> {
