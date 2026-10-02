@@ -234,6 +234,10 @@ impl State {
             input.set_value(query.clone(), window, cx);
             input
         });
+        // Opening Find from Ask (or the shelf) hands the keyboard to the
+        // query. The keyed state is retained while a refinement redraws it,
+        // so subsequent result focus is never stolen by a new reading.
+        input.update(cx, |input, cx| input.focus(window, cx));
         let subscription = cx.subscribe_in(&input, window, |state: &mut Self, input, event: &InputEvent, window, cx| {
             if !state.active { return; }
             if matches!(event, InputEvent::Change) {
