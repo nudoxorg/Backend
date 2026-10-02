@@ -1212,7 +1212,7 @@ mod tests {
     /// so a real pointer click can test who owns the following key.
     fn pointer_focus_current_pager(rig: &mut crate::shell::tests::Rig) -> crate::shell::focus::Targets {
         use crate::shell::focus::Zone;
-        rig.shell.update(rig.cx, |shell, cx| shell.set_zone(Zone::Shelf, cx));
+        rig.cx.update(|window, cx| rig.shell.update(cx, |shell, cx| shell.take_zone(Zone::Shelf, window, cx)));
         rig.draw();
         let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
         let bounds = targets.bounds_of("source-page-top-next").expect("mounted next-page control");

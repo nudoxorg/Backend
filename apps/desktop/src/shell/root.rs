@@ -833,7 +833,7 @@ impl Shell {
     /// The mounted native handle is the input origin even when a pointer or
     /// accessibility client moved it without a Shell zone action.
     fn adopt_reader_native_zone(&mut self, window: &Window, cx: &mut Context<Self>) {
-        if self.ask_open || super::titlebar::menu_open(window, cx) {
+        if self.ask_open || !self.background_input_allowed() || super::titlebar::menu_open(window, cx) {
             return;
         }
         if let Some(changed) = self.reader.read(cx).adopt_mounted_native_focus(window, cx) {

@@ -757,7 +757,7 @@ impl Reader {
     pub(crate) fn adopt_mounted_native_focus(&self, window: &Window, cx: &gpui::App) -> Option<bool> {
         let current = self.places.last()?;
         let snapshot = self.links.snapshot(cx);
-        if self.arrival.is_some() || self.transit.is_some()
+        if !self.native_motion_settled()
             || snapshot.route() != &current.route
             || snapshot.overlay().filter(|overlay| matches!(overlay, Overlay::Settings(_) | Overlay::Inbox)) != current.overlay
         {
@@ -889,7 +889,7 @@ impl Reader {
         {
             return ReturnDisposition::Invalid;
         }
-        if self.painted != Some(place) || self.transit.is_some() || self.arrival.is_some() {
+        if self.painted != Some(place) || !self.native_motion_settled() {
             return ReturnDisposition::Waiting;
         }
         ReturnDisposition::Applied
