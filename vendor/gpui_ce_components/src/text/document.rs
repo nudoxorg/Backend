@@ -44,6 +44,8 @@ impl ParsedDocument {
     }
 
     /// The selected text across all blocks, in `format`.
+    /// Plain text retains each block's line terminator, just like select-all;
+    /// joining paragraphs must not merge their words.
     ///
     /// In [`SelectionFormat::Source`] each block reconstructs its own Markdown
     /// source (inline markup, and block prefixes for headings and lists), and
@@ -76,6 +78,11 @@ impl ParsedDocument {
         let explicit_range = blocks.is_some();
         let (first, last) = match blocks {
             Some(blocks) => {
+                // Reject a reversed range before clamping can collapse both
+                // endpoints onto the final block.
+                if blocks.is_empty() {
+                    return String::new();
+                }
                 let first = *blocks.start().min(&last_ix);
                 let last = *blocks.end().min(&last_ix);
                 if first > last
@@ -297,7 +304,7 @@ mod tests {
 
         assert_eq!(
             document.selected_text(SelectionFormat::Plain, Some(0..=2)),
-            "startmiddleend"
+            "start\nmiddle\nend\n"
         );
     }
 
@@ -316,7 +323,7 @@ mod tests {
         );
         assert_eq!(
             document.selected_text(SelectionFormat::Plain, Some(0..=usize::MAX)),
-            "zeroonetwooutside"
+            "zero\none\ntwo\noutside\n"
         );
     }
 
@@ -332,6 +339,51 @@ mod tests {
             document.selected_text(SelectionFormat::Plain, Some(2..=1)),
             ""
         );
-        assert_eq!(document.selected_text(SelectionFormat::Plain, None), "id");
+        assert_eq!(document.selected_text(SelectionFormat::Plain, None), "id\n");
+        assert_eq!(
+            document.selected_text(SelectionFormat::Plain, Some(usize::MAX..=3)),
+            ""
+        );
+    }
+
+    #[test]
+    fn virtual_range_preserves_partial_unicode_endpoints_and_whole_interior_source() {
+        use crate::text::node::Span;
+
+        // Offsets are UTF-8 bytes. The interior has a stale partial selection,
+        // but the explicit endpoints cover it whole, including its original
+        // Markdown spelling and CRLF line ending in source mode.
+        let source = "a雪尾\r\n\r\n_é_  \r\nnext\r\n\r\n終z";
+        let interior_source = "_é_  \r\nnext";
+        let start = source.find(interior_source).unwrap();
+        let mut interior = paragraph("é\nnext", Some(0..2));
+        if let BlockNode::Paragraph(paragraph) = &mut interior {
+            paragraph.span = Some(Span {
+                start,
+                end: start + interior_source.len(),
+            });
+        }
+        let document = ParsedDocument {
+            source: source.into(),
+            blocks: vec![
+                paragraph("a雪尾", Some(1..7)),
+                interior,
+                paragraph("終z", Some(0..3)),
+            ]
+            .into(),
+        };
+
+        assert_eq!(
+            document.selected_text(SelectionFormat::Plain, Some(0..=2)),
+            "雪尾\né\nnext\n終\n"
+        );
+        assert_eq!(
+            document.selected_text(SelectionFormat::Source, Some(0..=2)),
+            "雪尾\n\n_é_  \r\nnext\n\n終"
+        );
+        document.clear_selection();
+        for format in [SelectionFormat::Plain, SelectionFormat::Source] {
+            assert_eq!(document.selected_text(format, Some(0..=2)), "");
+        }
     }
 }
